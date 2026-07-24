@@ -269,8 +269,8 @@
            queries `.knowledge-item` for keyboard navigation, bulk-edit
            checkbox state, etc. keeps working unchanged. */
         .memory-item.is-required {
-            background: #fffbeb;
-            border-color: #f59e0b;
+            background: var(--ds-accent-warn-bg);
+            border-color: var(--ds-accent-warn-line);
         }
         .memory-item__header {
             display: flex;
@@ -303,10 +303,10 @@
             background: color-mix(in srgb, var(--ds-primary) 12%, transparent);
             color: var(--ds-primary-dark);
         }
-        .badge--category { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
-        .badge--source   { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
-        .badge--required { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
-        .badge--status   { background: rgba(100, 116, 139, 0.18); color: #475569; }
+        .badge--category { background: color-mix(in srgb, var(--ds-kind-skill, #7c3aed) 14%, transparent); color: var(--ds-kind-skill, #6d28d9); }
+        .badge--source   { background: color-mix(in srgb, var(--ds-accent-success-ink) 14%, transparent); color: var(--ds-accent-success-ink); }
+        .badge--required { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); border: 1px solid var(--ds-accent-warn-line); }
+        .badge--status   { background: color-mix(in srgb, var(--ds-text-secondary) 18%, transparent); color: var(--ds-text-secondary); }
 
         .memory-item__content {
             font-size: var(--text-base);
@@ -438,10 +438,10 @@
         .category-badge.data_analysis { background: rgba(16, 183, 127, 0.1); color: var(--success); }
         .category-badge.api_integration { background: var(--ds-primary-light); color: var(--ds-primary); }
         .category-badge.debugging { background: rgba(234, 88, 12, 0.1); color: var(--error); }
-        .category-badge.performance { background: rgba(245, 159, 10, 0.1); color: #b45309; }
-        .category-badge.workflow { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
+        .category-badge.performance { background: color-mix(in srgb, var(--ds-accent-warn-ink) 10%, transparent); color: var(--ds-accent-warn-ink); }
+        .category-badge.workflow { background: color-mix(in srgb, var(--ds-kind-skill, #7c3aed) 10%, transparent); color: var(--ds-kind-skill, #7c3aed); }
         .category-badge.infrastructure { background: rgba(107, 114, 128, 0.1); color: var(--text-secondary); }
-        .category-badge.business_logic { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
+        .category-badge.business_logic { background: color-mix(in srgb, var(--ds-accent-success-ink) 10%, transparent); color: var(--ds-accent-success-ink); }
 
         /* Status Badges */
         .status-badge {
@@ -456,13 +456,13 @@
         }
 
         .status-badge.pending {
-            background: rgba(245, 159, 10, 0.15);
-            color: #b45309;
+            background: var(--ds-accent-warn-bg);
+            color: var(--ds-accent-warn-ink);
         }
 
         .status-badge.approved {
-            background: rgba(16, 183, 127, 0.15);
-            color: #0d9668;
+            background: var(--ds-accent-success-bg);
+            color: var(--ds-accent-success-ink);
         }
 
         .status-badge.mandatory {
@@ -471,8 +471,8 @@
         }
 
         .status-badge.rejected {
-            background: rgba(234, 88, 12, 0.15);
-            color: var(--error);
+            background: var(--ds-accent-danger-bg);
+            color: var(--ds-accent-danger-ink);
         }
 
         .status-badge.revoked {
@@ -658,13 +658,13 @@
         }
 
         .action-badge.approved {
-            background: rgba(16, 183, 127, 0.15);
-            color: #0d9668;
+            background: var(--ds-accent-success-bg);
+            color: var(--ds-accent-success-ink);
         }
 
         .action-badge.rejected {
-            background: rgba(234, 88, 12, 0.15);
-            color: var(--error);
+            background: var(--ds-accent-danger-bg);
+            color: var(--ds-accent-danger-ink);
         }
 
         .action-badge.mandated {
@@ -678,13 +678,13 @@
         }
 
         .action-badge.edited {
-            background: rgba(139, 92, 246, 0.15);
-            color: #7c3aed;
+            background: color-mix(in srgb, var(--ds-kind-skill, #7c3aed) 15%, transparent);
+            color: var(--ds-kind-skill, #7c3aed);
         }
 
         .action-badge.migration_auto_approved {
-            background: rgba(245, 159, 10, 0.15);
-            color: #b45309;
+            background: var(--ds-accent-warn-bg);
+            color: var(--ds-accent-warn-ink);
         }
 
         .audit-details {
@@ -698,9 +698,9 @@
 
         .audit-row { cursor: pointer; }
         .audit-row:hover { background: var(--bg-secondary, #f9fafb); }
-        .audit-row.expanded { background: #eff6ff; }
+        .audit-row.expanded { background: var(--ds-accent-info-bg); }
         .audit-detail-row > td {
-            background: #f8fafc;
+            background: var(--ds-surface-dim);
             border-top: 0;
             padding: var(--space-4) var(--space-5);
         }
@@ -988,21 +988,21 @@
              Remove this block after ~2026-08 once all instances are migrated. -->
         {% if knowledge_json_exists %}
         <div id="knowledgeMigrationBanner"
-             style="display:none; background:#fffbeb; border:1px solid #f59e0b;
+             style="display:none; background:var(--ds-accent-warn-bg); border:1px solid var(--ds-accent-warn-line);
                     border-radius:var(--radius-lg); padding:var(--space-4);
                     margin-bottom:var(--space-4);
                     align-items:center; gap:var(--space-4);">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                 stroke="#b45309" stroke-width="2" style="flex-shrink:0;">
+                 stroke="var(--ds-accent-warn-ink)" stroke-width="2" style="flex-shrink:0;">
                 <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
                 <line x1="12" y1="9" x2="12" y2="13"/>
                 <line x1="12" y1="17" x2="12.01" y2="17"/>
             </svg>
             <div style="flex:1;">
-                <strong style="color:#92400e; font-size:var(--text-sm);">
+                <strong style="color:var(--ds-accent-warn-ink); font-size:var(--text-sm);">
                     One-time migration available
                 </strong>
-                <p style="margin:2px 0 0; font-size:var(--text-xs); color:#78350f;">
+                <p style="margin:2px 0 0; font-size:var(--text-xs); color:var(--ds-accent-warn-ink)">
                     Sessions collected before v0.71.60 were saved only to
                     <code>knowledge.json</code> and are missing from the database.
                     Import them now — safe to run multiple times.
@@ -1015,7 +1015,7 @@
             </button>
             <button onclick="dismissMigrationBanner()"
                     style="background:none; border:none; cursor:pointer;
-                           color:#92400e; font-size:18px; line-height:1;
+                           color:var(--ds-accent-warn-ink); font-size:18px; line-height:1;
                            padding:0 4px;"
                     title="Dismiss">×</button>
         </div>
@@ -1191,32 +1191,32 @@
                         <div>
                             <span style="font-weight: var(--font-semibold); color: #dc2626;">Contradiction Detected</span>
                             {% if c.severity == 'hard' %}
-                            <span style="display: inline-block; padding: 2px 8px; background: #fee2e2; color: #991b1b; border-radius: 999px; font-size: 11px; margin-left: 8px;">Hard</span>
+                            <span style="display: inline-block; padding: 2px 8px; background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border-radius: 999px; font-size: 11px; margin-left: 8px;">Hard</span>
                             {% elif c.severity == 'soft' %}
-                            <span style="display: inline-block; padding: 2px 8px; background: #fef9c3; color: #854d0e; border-radius: 999px; font-size: 11px; margin-left: 8px;">Soft</span>
+                            <span style="display: inline-block; padding: 2px 8px; background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); border-radius: 999px; font-size: 11px; margin-left: 8px;">Soft</span>
                             {% endif %}
                         </div>
                         <span style="font-size: var(--text-xs); color: var(--text-secondary);">{{ (c.detected_at|string)[:10] if c.detected_at else '' }}</span>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-4);">
-                        <div style="padding: var(--space-4); background: #fef2f2; border-radius: var(--radius-lg); border: 1px solid #fecaca;">
+                        <div style="padding: var(--space-4); background: var(--ds-accent-danger-bg); border-radius: var(--radius-lg); border: 1px solid var(--ds-accent-danger-line);">
                             <div style="font-weight: var(--font-semibold); margin-bottom: var(--space-2);">Item A</div>
                             <div style="font-weight: var(--font-medium);">{{ c.item_a.title if c.item_a else 'Unknown' }}</div>
                             <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-1);">{{ c.item_a.content[:200] if c.item_a else '' }}</div>
-                            {% if c.item_a and c.item_a.domain %}<div style="margin-top: var(--space-2);"><span style="display: inline-block; padding: 2px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 999px; font-size: 11px;">{{ c.item_a.domain|title }}</span></div>{% endif %}
+                            {% if c.item_a and c.item_a.domain %}<div style="margin-top: var(--space-2);"><span style="display: inline-block; padding: 2px 8px; background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); border-radius: 999px; font-size: 11px;">{{ c.item_a.domain|title }}</span></div>{% endif %}
                         </div>
-                        <div style="padding: var(--space-4); background: #eff6ff; border-radius: var(--radius-lg); border: 1px solid #bfdbfe;">
+                        <div style="padding: var(--space-4); background: var(--ds-accent-info-bg); border-radius: var(--radius-lg); border: 1px solid var(--ds-accent-info-line);">
                             <div style="font-weight: var(--font-semibold); margin-bottom: var(--space-2);">Item B</div>
                             <div style="font-weight: var(--font-medium);">{{ c.item_b.title if c.item_b else 'Unknown' }}</div>
                             <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-1);">{{ c.item_b.content[:200] if c.item_b else '' }}</div>
-                            {% if c.item_b and c.item_b.domain %}<div style="margin-top: var(--space-2);"><span style="display: inline-block; padding: 2px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 999px; font-size: 11px;">{{ c.item_b.domain|title }}</span></div>{% endif %}
+                            {% if c.item_b and c.item_b.domain %}<div style="margin-top: var(--space-2);"><span style="display: inline-block; padding: 2px 8px; background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); border-radius: 999px; font-size: 11px;">{{ c.item_b.domain|title }}</span></div>{% endif %}
                         </div>
                     </div>
                     <div style="padding: var(--space-3); background: var(--bg-secondary, #f9fafb); border-radius: var(--radius-md); margin-bottom: var(--space-3); font-size: var(--text-sm);">
                         <strong>Analysis:</strong> {{ c.explanation }}
                     </div>
                     {% if c.suggested_resolution %}
-                    <div style="padding: var(--space-3); background: #f0fdf4; border-radius: var(--radius-md); margin-bottom: var(--space-3); font-size: var(--text-sm);">
+                    <div style="padding: var(--space-3); background: var(--ds-accent-success-bg); border-radius: var(--radius-md); margin-bottom: var(--space-3); font-size: var(--text-sm);">
                         <strong>Suggested:</strong> {{ c.suggested_resolution }}
                     </div>
                     {% endif %}
@@ -3866,7 +3866,7 @@
         const overflow = slugs.length - visible.length;
         const chip = (slug, title) =>
             `<span class="badge" `
-          + `style="background:#e8f0fe; color:#1a73e8; border:1px solid #c7d8f5;" `
+          + `style="background:var(--ds-accent-info-bg); color:var(--ds-accent-info-ink); border:1px solid var(--ds-accent-info-line);" `
           + `title="${escapeHtml(title || slug)}">📂 ${escapeHtml(slug)}</span>`;
         let out = visible.map(s => chip(s)).join('');
         if (overflow > 0) {

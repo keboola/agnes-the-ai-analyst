@@ -167,6 +167,11 @@ _NO_RAW_HEX_TEMPLATES = (
     "profile.html",
     "setup.html",
     "me_activity.html",
+    # Paper-theme rebrand sweep: page-local colours moved to --ds-* tokens.
+    # (marketplace_plugin_detail.html is intentionally excluded — its dark
+    # hero + terminal-mock retain fixed hex by design.)
+    "memory_domain_detail.html",
+    "activity_center.html",
 )
 
 

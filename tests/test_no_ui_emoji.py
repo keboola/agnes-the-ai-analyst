@@ -14,21 +14,21 @@ Scope of the ban (deliberately narrow):
     (→ ← ↗ ↓ …) and the monochrome ✓ / ✗ / ✕ marks. Converting those to
     SVG across every button/link would be a large, low-value churn.
 
-`ALLOWLIST` holds the surfaces not yet swept — admin pages and the two
-async-hydrated marketplace detail templates (folded in with their own
+`ALLOWLIST` holds the surfaces not yet swept — admin pages and the
+async-hydrated marketplace item detail template (folded in with its own
 redesign pass). The list may only shrink: do not add to it.
 """
+
 import re
 from pathlib import Path
 
 TEMPLATES = Path("app/web/templates")
 
-_EMOJI = re.compile("[\U0001F000-\U0001FAFF\U00002705\U000026A0\U0000FE0F]")
+_EMOJI = re.compile("[\U0001f000-\U0001faff\U00002705\U000026a0\U0000fe0f]")
 
 # Not yet swept — tracked for follow-up. Shrink this, never grow it.
 ALLOWLIST = {
-    "marketplace_plugin_detail.html",  # async-hydrated; own redesign pass
-    "marketplace_item_detail.html",    # async-hydrated; own redesign pass
+    "marketplace_item_detail.html",  # async-hydrated; own redesign pass
 }
 
 

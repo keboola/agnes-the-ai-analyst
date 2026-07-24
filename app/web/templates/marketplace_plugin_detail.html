@@ -17,7 +17,7 @@
     --surface-alt: var(--ds-surface-dim);
     --text-primary: var(--ds-text-primary);
     --text-secondary: var(--ds-text-secondary);
-    --warn-color: #b45309;
+    --warn-color: var(--ds-accent-warn-ink);
     --font-mono: var(--ds-font-mono);
     --font-medium: 500;
     --font-semibold: 600;
@@ -295,7 +295,7 @@
   .plugin-detail .lead-rendered ul,
   .plugin-detail .lead-rendered ol { margin: 0 0 12px 22px; padding: 0; }
   .plugin-detail .lead-rendered code {
-    background: var(--surface-alt, #f4f4f5); border-radius: 4px;
+    background: var(--surface-alt); border-radius: 4px;
     padding: 1px 5px; font-size: 0.92em;
     font-family: var(--font-mono);
   }
@@ -328,7 +328,7 @@
   .plugin-detail .use-case-card {
     border: 1px solid var(--border); border-radius: 10px;
     padding: 14px 16px;
-    background: var(--surface-alt, #fafafa);
+    background: var(--surface-alt);
     display: flex; flex-direction: column; gap: 8px;
   }
   .plugin-detail .use-case-card h3 {
@@ -509,7 +509,7 @@
   }
   .plugin-detail .doc-link-list li {
     padding: 10px 12px; border-radius: 8px;
-    background: var(--surface-alt, #f9fafb);
+    background: var(--surface-alt);
     border: 1px solid var(--border);
   }
   .plugin-detail .doc-link-list a {
@@ -541,7 +541,7 @@
   .plugin-detail .inner-card .photo {
     width: 100%; aspect-ratio: 715 / 310;
     display: flex; align-items: center; justify-content: center;
-    background: linear-gradient(135deg, var(--ds-primary-light) 0%, #fce7f3 100%);
+    background: linear-gradient(135deg, var(--ds-primary-light) 0%, var(--ds-kind-recipe-soft) 100%);
     color: var(--ds-primary);
     font-size: 18px; font-weight: var(--font-bold);
     letter-spacing: 0.5px;
@@ -552,12 +552,12 @@
     width: 100%; height: 100%; object-fit: cover; display: block;
   }
   .plugin-detail .inner-card[data-type="skill"] .photo {
-    background: linear-gradient(135deg, rgba(16,183,127,0.18) 0%, #ecfdf5 100%);
-    color: #0e9b6a;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--ds-kind-skill) 18%, transparent) 0%, var(--ds-kind-skill-soft) 100%);
+    color: var(--ds-kind-skill);
   }
   .plugin-detail .inner-card[data-type="agent"] .photo {
-    background: linear-gradient(135deg, rgba(124,58,237,0.18) 0%, #f5f3ff 100%);
-    color: #6d28d9;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--ds-kind-agent) 18%, transparent) 0%, var(--ds-kind-agent-soft) 100%);
+    color: var(--ds-kind-agent);
   }
   .plugin-detail .inner-card .body {
     padding: 12px 14px; flex: 1;
@@ -568,10 +568,10 @@
     display: inline-block; padding: 2px 7px; border-radius: 4px;
     font-size: 10px; font-weight: var(--font-semibold);
     text-transform: uppercase; letter-spacing: 0.5px;
-    background: rgba(16, 183, 127, 0.14); color: #0e9b6a;
+    background: color-mix(in srgb, var(--ds-kind-skill) 14%, transparent); color: var(--ds-kind-skill);
   }
   .plugin-detail .inner-card[data-type="agent"] .type-badge {
-    background: rgba(124,58,237,0.14); color: #6d28d9;
+    background: color-mix(in srgb, var(--ds-kind-agent) 14%, transparent); color: var(--ds-kind-agent);
   }
   .plugin-detail .inner-card .name {
     font-weight: var(--font-semibold); color: var(--text-primary);
@@ -605,11 +605,11 @@
   .plugin-detail .inner-card .inv-chip svg {
     width: 13px; height: 13px; flex-shrink: 0;
   }
-  .plugin-detail .inner-card .inv-chip .seg-installed > svg { color: #F59F0A; }
-  .plugin-detail .inner-card .inv-chip .seg-active    > svg { color: #0e9b6a; }
-  .plugin-detail .inner-card .inv-chip .seg-calls     > svg { color: #f97316; }
-  .plugin-detail .inner-card .inv-chip .trend-up   { color: #10b77f; font-weight: 600; }
-  .plugin-detail .inner-card .inv-chip .trend-down { color: #ef4444; font-weight: 600; }
+  .plugin-detail .inner-card .inv-chip .seg-installed > svg { color: var(--ds-accent-warn-line); }
+  .plugin-detail .inner-card .inv-chip .seg-active    > svg { color: var(--ds-accent-success-line); }
+  .plugin-detail .inner-card .inv-chip .seg-calls     > svg { color: var(--ds-orange); }
+  .plugin-detail .inner-card .inv-chip .trend-up   { color: var(--ds-accent-success-ink); font-weight: 600; }
+  .plugin-detail .inner-card .inv-chip .trend-down { color: var(--ds-accent-danger-ink); font-weight: 600; }
 
   /* Tables (commands, hooks, mcps) */
   .plugin-detail .substruct table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1089,8 +1089,8 @@
     installBtn.disabled = true;
     installBtn.title = 'This submission is not approved yet — install is disabled until checks pass.';
     installBtn.textContent = '+ Add to my stack (unavailable while under review)';
-    installBtn.style.background = '#e5e7eb';
-    installBtn.style.color = '#6b7280';
+    installBtn.style.background = 'var(--ds-surface-sunken)';
+    installBtn.style.color = 'var(--ds-text-muted)';
     installBtn.style.cursor = 'not-allowed';
   }
 

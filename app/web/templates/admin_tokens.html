@@ -47,10 +47,10 @@
     flex-shrink: 0;
     box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
   }
-  .tokens-counts .count-chip.active    .dot { background: #16a34a; }
-  .tokens-counts .count-chip.expiring  .dot { background: #ea580c; }
-  .tokens-counts .count-chip.expired   .dot { background: #dc2626; }
-  .tokens-counts .count-chip.revoked   .dot { background: #6b7280; }
+  .tokens-counts .count-chip.active    .dot { background: var(--ds-accent-success-line); }
+  .tokens-counts .count-chip.expiring  .dot { background: var(--ds-accent-warn-line); }
+  .tokens-counts .count-chip.expired   .dot { background: var(--ds-accent-danger-line); }
+  .tokens-counts .count-chip.revoked   .dot { background: var(--ds-text-muted); }
   .tokens-counts .count-chip .count-value {
     font-size: 24px;
     font-weight: 600;
@@ -135,10 +135,10 @@
     width: 7px; height: 7px; border-radius: 50%;
     flex-shrink: 0;
   }
-  .chip-btn[data-val="active"]   .chip-dot { background: #16a34a; }
-  .chip-btn[data-val="expiring"] .chip-dot { background: #ea580c; }
-  .chip-btn[data-val="expired"]  .chip-dot { background: #dc2626; }
-  .chip-btn[data-val="revoked"]  .chip-dot { background: #6b7280; }
+  .chip-btn[data-val="active"]   .chip-dot { background: var(--ds-accent-success-line); }
+  .chip-btn[data-val="expiring"] .chip-dot { background: var(--ds-accent-warn-line); }
+  .chip-btn[data-val="expired"]  .chip-dot { background: var(--ds-accent-danger-line); }
+  .chip-btn[data-val="revoked"]  .chip-dot { background: var(--ds-text-muted); }
   .chip-btn .chip-arrow {
     width: 10px; height: 10px;
     opacity: 0;
@@ -179,7 +179,7 @@
     color: var(--text-primary, #111827);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
-  .search-wrap input[type="search"]::placeholder { color: #9ca3af; }
+  .search-wrap input[type="search"]::placeholder { color: var(--ds-text-muted, #9ca3af); }
   .search-wrap input[type="search"]:hover { border-color: #cbd5e1; }
   .search-wrap input[type="search"]:focus {
     outline: none;
@@ -240,7 +240,7 @@
   }
   .token-card.is-revoked,
   .token-card.is-expired {
-    background: #fafbfc;
+    background: var(--ds-surface-dim, #f0f2f6);
   }
   .token-card.is-revoked .token-name,
   .token-card.is-revoked .owner-email {
@@ -327,9 +327,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .token-usage.soon .usage-main   { color: #c2410c; }
-  .token-usage.expired .usage-main{ color: #b91c1c; }
-  .token-usage.strike .usage-main { text-decoration: line-through; color: #9ca3af; font-weight: 400; }
+  .token-usage.soon .usage-main   { color: var(--ds-accent-warn-ink); }
+  .token-usage.expired .usage-main{ color: var(--ds-accent-danger-ink); }
+  .token-usage.strike .usage-main { text-decoration: line-through; color: var(--ds-text-muted); font-weight: 400; }
 
   .token-aside {
     display: flex;
@@ -355,14 +355,14 @@
     width: 7px; height: 7px; border-radius: 50%;
     flex-shrink: 0;
   }
-  .status-pill.status-active     { background: rgba(22, 163, 74, 0.12);  color: #15803d; }
-  .status-pill.status-active     .pill-dot { background: #16a34a; }
-  .status-pill.status-expiring   { background: rgba(234, 88, 12, 0.12);  color: #c2410c; }
-  .status-pill.status-expiring   .pill-dot { background: #ea580c; }
-  .status-pill.status-expired    { background: rgba(220, 38, 38, 0.12);  color: #b91c1c; }
-  .status-pill.status-expired    .pill-dot { background: #dc2626; }
-  .status-pill.status-revoked    { background: rgba(107, 114, 128, 0.12); color: #4b5563; }
-  .status-pill.status-revoked    .pill-dot { background: #6b7280; }
+  .status-pill.status-active     { background: var(--ds-accent-success-bg);  color: var(--ds-accent-success-ink); }
+  .status-pill.status-active     .pill-dot { background: var(--ds-accent-success-line); }
+  .status-pill.status-expiring   { background: var(--ds-accent-warn-bg);  color: var(--ds-accent-warn-ink); }
+  .status-pill.status-expiring   .pill-dot { background: var(--ds-accent-warn-line); }
+  .status-pill.status-expired    { background: var(--ds-accent-danger-bg);  color: var(--ds-accent-danger-ink); }
+  .status-pill.status-expired    .pill-dot { background: var(--ds-accent-danger-line); }
+  .status-pill.status-revoked    { background: var(--ds-surface-dim, #f0f2f6); color: var(--ds-text-secondary); }
+  .status-pill.status-revoked    .pill-dot { background: var(--ds-text-muted); }
 
   /* ── Revoke button ─────────────────────────────────────────────────────── */
   .revoke-btn {
@@ -377,15 +377,15 @@
     font-weight: 500;
     cursor: pointer;
     background: transparent;
-    color: #dc2626;
-    border: 1px solid rgba(220, 38, 38, 0.35);
+    color: var(--ds-accent-danger-ink);
+    border: 1px solid color-mix(in srgb, var(--ds-accent-danger-line) 35%, transparent);
     transition: all 0.12s ease;
     line-height: 1;
   }
   .revoke-btn:hover:not([disabled]) {
-    background: #dc2626;
-    color: #fff;
-    border-color: #dc2626;
+    background: var(--ds-accent-danger-line);
+    color: var(--ds-text-inverse, #fff);
+    border-color: var(--ds-accent-danger-line);
   }
   .revoke-btn:focus-visible {
     outline: 2px solid var(--ds-primary);
@@ -399,7 +399,7 @@
   }
   .revoke-btn svg { display: block; }
   .token-card:hover .revoke-btn:not([disabled]) {
-    border-color: #dc2626;
+    border-color: var(--ds-accent-danger-line);
   }
 
   /* ── Empty / loading ───────────────────────────────────────────────────── */
@@ -415,7 +415,7 @@
   .tokens-empty .empty-icon {
     margin: 0 auto 14px;
     width: 56px; height: 56px;
-    color: #d1d5db;
+    color: var(--ds-text-disabled, #d1d5db);
   }
   .tokens-empty .empty-title {
     font-size: 15px;
@@ -945,13 +945,13 @@ function renderCard(t, now) {
   const createdRel = relTime(t.created_at);
   let expPart = "";
   if (t.revoked_at) {
-    expPart = `<span style="color:#6b7280;">Revoked ${esc(relTime(t.revoked_at))}</span>`;
+    expPart = `<span style="color:var(--ds-text-muted);">Revoked ${esc(relTime(t.revoked_at))}</span>`;
   } else if (exp) {
     const delta = exp.getTime() - now;
     if (delta < 0) {
-      expPart = `<span style="color:#b91c1c;font-weight:500;">Expired ${esc(relTime(t.expires_at))}</span>`;
+      expPart = `<span style="color:var(--ds-accent-danger-ink);font-weight:500;">Expired ${esc(relTime(t.expires_at))}</span>`;
     } else if (delta < SEVEN_DAYS) {
-      expPart = `<span style="color:#c2410c;font-weight:500;">Expires ${esc(relTime(t.expires_at))}</span>`;
+      expPart = `<span style="color:var(--ds-accent-warn-ink);font-weight:500;">Expires ${esc(relTime(t.expires_at))}</span>`;
     } else {
       expPart = `Expires ${esc(relTime(t.expires_at))}`;
     }

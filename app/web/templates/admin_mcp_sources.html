@@ -12,20 +12,20 @@
   }
   .mcp-search {
     padding: 8px 12px 8px 32px; min-width: 280px;
-    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    border: 1px solid var(--ds-border); border-radius: 8px;
     font-size: 13px;
     background: var(--ds-surface) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
   }
 
   .mcp-name {
-    font-weight: 500; color: var(--text-primary, #111827);
+    font-weight: 500; color: var(--ds-text-primary);
     text-decoration: none;
   }
   .mcp-name:hover { color: var(--ds-primary); text-decoration: underline; }
 
   .mcp-endpoint {
     font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 12px; color: var(--text-secondary, #6b7280);
+    font-size: 12px; color: var(--ds-text-secondary);
     max-width: 320px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; display: inline-block; vertical-align: middle;
   }
@@ -35,47 +35,47 @@
     font-size: 11px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.4px;
   }
-  .transport-stdio { background: #e0e7ff; color: #3730a3; }
-  .transport-http  { background: #dcfce7; color: #166534; }
-  .transport-sse   { background: #fef3c7; color: #92400e; }
+  .transport-stdio { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
+  .transport-http  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .transport-sse   { background: var(--ds-accent-warn-bg);   color: var(--ds-accent-warn-ink); }
 
   .status-pill {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 600;
   }
-  .status-enabled  { background: #dcfce7; color: #166534; }
-  .status-disabled { background: #f3f4f6; color: #6b7280; }
+  .status-enabled  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .status-disabled { background: var(--ds-surface-dim);      color: var(--ds-text-secondary); }
 
   .secret-pill {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 600; margin-left: 6px;
-    background: #fef3c7; color: #92400e;
+    background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
   }
 
   .tool-count {
     display: inline-block; min-width: 22px; padding: 2px 8px;
-    border-radius: 999px; background: #ede9fe; color: #5b21b6;
+    border-radius: 999px; background: color-mix(in srgb, var(--ds-accent-info-bg) 80%, transparent); color: var(--ds-accent-info-ink);
     font-size: 11px; font-weight: 600; text-align: center;
   }
 
   .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
   .icon-btn {
-    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    background: transparent; border: 1px solid var(--ds-border); border-radius: 6px;
     padding: 5px 10px; font-size: 12px; cursor: pointer;
-    color: var(--text-secondary, #6b7280); transition: all 0.15s;
+    color: var(--ds-text-secondary); transition: all 0.15s;
     text-decoration: none; line-height: 1.4; white-space: nowrap;
   }
-  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
-  .icon-btn.primary { color: var(--ds-primary); border-color: #c7d2fe; }
-  .icon-btn.primary:hover { background: #eef2ff; }
-  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn:hover { color: var(--ds-text-primary); border-color: var(--ds-border); background: var(--ds-surface-dim); }
+  .icon-btn.primary { color: var(--ds-primary); border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent); }
+  .icon-btn.primary:hover { background: var(--ds-primary-light); }
+  .icon-btn.danger:hover { color: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-line); background: var(--ds-accent-danger-bg); }
   .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
 
   .mcp-empty, .mcp-loading {
     text-align: center; padding: 48px 16px;
-    color: var(--text-secondary, #6b7280); font-size: 13px;
+    color: var(--ds-text-secondary); font-size: 13px;
   }
-  .mcp-empty .big { font-size: 15px; color: var(--text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
+  .mcp-empty .big { font-size: 15px; color: var(--ds-text-primary); margin-bottom: 6px; font-weight: 500; }
 
   /* Modal — identical to admin_marketplaces.html */
   .modal-backdrop {
@@ -85,19 +85,19 @@
   }
   .modal-backdrop.is-open { display: flex; }
   .modal-card {
-    background: var(--surface, #fff); border-radius: 12px;
+    background: var(--ds-surface); border-radius: 12px;
     padding: 24px; width: 100%; max-width: 520px;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
     max-height: 90vh; overflow-y: auto;
   }
   .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
-  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
-  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
-  .modal-card .help { font-size: 11px; color: var(--text-secondary, #9ca3af); margin-top: 4px; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--ds-text-secondary); }
+  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--ds-text-secondary); margin: 12px 0 6px; }
+  .modal-card .help { font-size: 11px; color: var(--ds-text-muted); margin-top: 4px; }
   .modal-card input[type="text"], .modal-card input[type="url"], .modal-card select, .modal-card textarea {
-    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border);
     border-radius: 8px; font-size: 13px; box-sizing: border-box;
-    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    background: var(--ds-surface); color: var(--ds-text-primary);
     font-family: inherit;
   }
   .modal-card textarea { min-height: 60px; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); }
@@ -228,7 +228,7 @@
   <div class="modal-card">
     <h3 id="confirm-title">Delete MCP source?</h3>
     <p class="sub" id="confirm-text"></p>
-    <p class="sub" style="color:#b91c1c">All tools registered against this source will be removed (cascade).</p>
+    <p class="sub" style="color:var(--ds-accent-danger-ink)">All tools registered against this source will be removed (cascade).</p>
     <div class="modal-actions">
       {{ ds.button('Cancel', variant='secondary', attrs='data-close-modal="confirm-modal"') }}
       {{ ds.button('Delete', variant='danger', id='confirm-ok-btn') }}
@@ -331,8 +331,8 @@ function renderSources() {
   for (const s of filtered) {
     const tr = document.createElement("tr");
     const endpoint = s.transport === "stdio"
-      ? (s.command ? `${esc(s.command)}${s.args && s.args.length ? " " + s.args.map(esc).join(" ") : ""}` : "<span style='color:#9ca3af'>—</span>")
-      : (s.url ? esc(s.url) : "<span style='color:#9ca3af'>—</span>");
+      ? (s.command ? `${esc(s.command)}${s.args && s.args.length ? " " + s.args.map(esc).join(" ") : ""}` : "<span style='color:var(--ds-text-muted)'>—</span>")
+      : (s.url ? esc(s.url) : "<span style='color:var(--ds-text-muted)'>—</span>");
     const enabled = s.enabled !== false;
     const toolCount = (typeof s.tool_count === "number") ? s.tool_count : 0;
     tr.innerHTML = `
@@ -341,10 +341,10 @@ function renderSources() {
       </td>
       <td><span class="transport-pill transport-${esc(s.transport || "stdio")}">${esc(s.transport || "stdio")}</span></td>
       <td><span class="mcp-endpoint" title="${esc(s.url || s.command || "")}">${endpoint}</span></td>
-      <td>${toolCount > 0 ? `<span class="tool-count">${toolCount}</span>` : `<span style="color:#9ca3af">0</span>`}</td>
+      <td>${toolCount > 0 ? `<span class="tool-count">${toolCount}</span>` : `<span style="color:var(--ds-text-muted)">0</span>`}</td>
       <td>
         <span class="status-pill ${enabled ? "status-enabled" : "status-disabled"}">${enabled ? "Enabled" : "Disabled"}</span>
-        ${s.has_vault_secret ? `<span class="secret-pill" title="A vault-stored secret is set for this source">🔒 vault</span>` : ""}
+        ${s.has_vault_secret ? `<span class="secret-pill" title="A vault-stored secret is set for this source">vault</span>` : ""}
       </td>
       <td>
         <div class="row-actions">

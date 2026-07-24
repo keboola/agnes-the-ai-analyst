@@ -40,7 +40,7 @@
   .subs-filter-chip {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 10px; margin-bottom: 12px;
-    background: #dbeafe; color: #1e40af; border-radius: 999px;
+    background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); border-radius: 999px;
     font-size: 12px; font-weight: 500;
   }
   .subs-filter-chip a { color: inherit; text-decoration: none; }
@@ -78,7 +78,7 @@
   }
   .badge.pending_inline,
   .badge.pending_llm   {
-    background: #fef3c7; color: #92400e;
+    background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
     /* Subtle pulse so admins scanning the queue see in-flight reviews. */
     animation: pulse 1.6s ease-in-out infinite;
   }
@@ -86,12 +86,12 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.55; }
   }
-  .badge.approved      { background: #d1fae5; color: #065f46; }
-  .badge.overridden    { background: #dbeafe; color: #1e40af; }
+  .badge.approved      { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .badge.overridden    { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
   .badge.blocked_inline,
   .badge.blocked_llm,
-  .badge.review_error  { background: #fee2e2; color: #991b1b; }
-  .badge.archived      { background: #e5e7eb; color: #374151; }
+  .badge.review_error  { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+  .badge.archived      { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
   .badge.deleted       { background: #4b5563; color: #f3f4f6; }
 
   .findings {
@@ -261,7 +261,7 @@
             {%- if s.version_no -%}
               <strong>v{{ s.version_no }}</strong>
               {%- if s.entity_version_no and s.entity_version_no == s.version_no %}
-              <span style="display:inline-block;padding:1px 5px;margin-left:4px;border-radius:999px;background:#d1fae5;color:#065f46;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;">current</span>
+              <span style="display:inline-block;padding:1px 5px;margin-left:4px;border-radius:999px;background:var(--ds-accent-success-bg);color:var(--ds-accent-success-ink);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;">current</span>
               {%- endif %}
             {%- else -%}
               <span style="color: var(--text-secondary, #9ca3af);">—</span>
