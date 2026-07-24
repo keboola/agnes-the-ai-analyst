@@ -399,7 +399,17 @@ def redeploy_current(row: dict) -> None:
     row = repo.get(row["id"])  # refresh — carries the new (tentative) service_token_id
 
     secrets = _decrypt_secrets(row)
-    clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{slug}"
+    # Drafts share the parent app's git repo (they never get one of their
+    # own — see `create_draft`'s docstring), so the clone URL must point at
+    # the PARENT's slug, not the draft's own. `build_config_json` already
+    # selects the draft's pinned `draft_branch` off `row` via `is_draft`;
+    # this only fixes which repo that branch is cloned from.
+    repo_slug = slug
+    if row.get("is_draft") and row.get("parent_app_id"):
+        parent = repo.get(row["parent_app_id"])
+        if parent:
+            repo_slug = parent["slug"]
+    clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{repo_slug}"
 
     try:
         config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=jwt_token)
@@ -440,6 +450,7 @@ class CreateDataAppRequest(BaseModel):
 
 class DeployRequest(BaseModel):
     sha: Optional[str] = None
+    mode: Optional[str] = None
 
 
 class SecretsRequest(BaseModel):
@@ -561,7 +572,20 @@ async def deploy_data_app(
     _require_owner_or_admin(user, row)
 
     repo = data_apps_repo()
-    if row["repo_mode"] == "external":
+    if payload.mode == "dev":
+        # Dev-mode deploys serve the draft's pinned `draft_branch` straight
+        # from the parent's repo — `build_config_json` already selects it
+        # (`is_draft`) and `redeploy_current` already clones from the
+        # parent's slug for draft rows, so there is no ref to fast-forward
+        # here at all (drafts never advance `agnes-live`).
+        if not row.get("is_draft"):
+            raise HTTPException(status_code=400, detail="dev_requires_draft")
+        sha = ""
+    elif row.get("is_draft"):
+        # A draft has no `agnes-live` ref of its own to fast-forward to —
+        # only `mode="dev"` deploys are valid for a draft row.
+        raise HTTPException(status_code=400, detail="prod_on_draft")
+    elif row["repo_mode"] == "external":
         # External repos have no internal bare repo (`init_app_repo` is
         # internal-only at create) — nothing for `fast_forward_live` to
         # fast-forward. The runtime clones HEAD of `repo_branch` at boot

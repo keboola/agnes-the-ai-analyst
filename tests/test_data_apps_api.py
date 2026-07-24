@@ -718,6 +718,24 @@ class TestDeploy:
         assert r.json()["detail"] == "external_repo_sha_unsupported"
         assert not fake_runner.up_calls
 
+    def test_deploy_dev_mode_on_draft(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/deploy", json={"mode": "dev"})
+        assert r.status_code == 200, r.text
+        slug, spec, cfg = fake_runner.up_calls[-1]
+        assert slug == d["slug"]
+        assert cfg["dataApp"]["git"]["branch"] == "init"  # draft branch, not agnes-live
+        assert cfg["dataApp"]["git"]["repository"].endswith("/data-apps.git/sapp")  # PARENT repo
+
+    def test_deploy_dev_requires_draft(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/deploy", json={"mode": "dev"})
+        assert r.status_code == 400 and r.json()["detail"] == "dev_requires_draft"
+
+    def test_deploy_prod_on_draft_rejected(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/deploy", json={})
+        assert r.status_code == 400 and r.json()["detail"] == "prod_on_draft"
+
 
 class TestStop:
     def test_stop_happy_path(self, client_as_user, fake_runner, seeded_repo_with_commit):
