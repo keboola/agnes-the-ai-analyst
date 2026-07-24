@@ -103,10 +103,18 @@ def test_f8_from_string_literal_rejected():
 def test_f8_legitimate_queries_pass():
     from app.api.query import _assert_select_only
 
-    # String literals NOT in table position must still be allowed.
+    # String literals NOT in table position must still be allowed — including
+    # filter values that happen to end in a data-file extension or a path
+    # (the false-positive class flagged in PR review of the first F8 fix).
     _assert_select_only("select 'hello' as greeting from my_view")
     _assert_select_only("select * from my_view where name = 'alice'")
     _assert_select_only("with x as (select 1) select * from x")
+    _assert_select_only("select * from documents where filename = 'report.csv'")
+    _assert_select_only("select * from config where k = 'settings.json'")
+    _assert_select_only("select 'annual_report.xlsx' as f from my_view")
+    _assert_select_only("select * from documents where p = 'a/b/data.csv'")
+    _assert_select_only("select * from (select 'a.csv' as x from t) s")
+    _assert_select_only("select * from kbc.main.my_view")
 
 
 # --- F9: trusted client IP (X-Forwarded-For) -------------------------------

@@ -566,14 +566,48 @@ _BLOCKED_SQL_TOKENS = [
 # scan. Legitimate string literals sit after ``SELECT`` / ``WHERE`` /
 # operators, never in table position, so this does not touch valid queries.
 _FROM_STRING_LITERAL_RE = re.compile(r"\b(?:from|join)\s*\(*\s*'")
-# Also reject ANY quoted literal that names a data file by extension, which
-# catches the comma-separated FROM-list form (``FROM v, 'evil.parquet'``) and
-# glob forms the position-based check above would miss. No legitimate analytics
-# SELECT selects a string literal ending in one of these, so false-positive
-# risk is negligible. The external-access boundary on the analytics connection
-# stays ON because local views need ``read_parquet`` — these parse-level guards
-# are the file-access boundary.
-_FILE_EXT_LITERAL_RE = re.compile(r"""['"][^'"]*\.(?:parquet|parq|csv|tsv|json|ndjson|arrow|duckdb|xlsx)['"]""")
+
+# The comma-separated FROM-list form (``FROM v, 'evil.parquet'``) and glob forms
+# sit past the position-based check above, so we additionally inspect TABLE
+# SOURCES precisely via sqlglot: a real table/view is a SQL identifier
+# (optionally schema-qualified) and never contains a path separator, glob
+# metacharacter, or data-file extension, whereas a DuckDB replacement scan
+# (``FROM 'file.parquet'``) parses as a Table whose NAME carries exactly those.
+# Inspecting names — not arbitrary literals — is what makes this precise: a
+# legitimate value literal in SELECT/WHERE position (``WHERE f = 'report.csv'``)
+# is never a Table, so it is not flagged. The external-access boundary on the
+# analytics connection stays ON because local views need ``read_parquet`` —
+# these parse-level guards are the file-access boundary.
+_FILE_TABLE_EXTS = frozenset({"parquet", "parq", "csv", "tsv", "json", "ndjson", "arrow", "duckdb", "xlsx"})
+
+
+def _name_looks_like_file(name: str) -> bool:
+    if not name:
+        return False
+    if any(c in name for c in "/\\*?"):
+        return True
+    return "." in name and name.rsplit(".", 1)[-1].lower() in _FILE_TABLE_EXTS
+
+
+def _has_file_table_source(sql: str) -> bool:
+    """True if any FROM/JOIN table source is a file path (a DuckDB replacement
+    scan), inspected precisely via sqlglot. Falls back to the position-based
+    regex when the SQL can't be parsed as DuckDB, so the direct
+    ``FROM 'file'`` / ``JOIN 'file'`` form is still caught."""
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        statements = sqlglot.parse(sql, read="duckdb")
+    except Exception:
+        return bool(_FROM_STRING_LITERAL_RE.search(sql.lower()))
+    for statement in statements:
+        if statement is None:
+            continue
+        for table in statement.find_all(exp.Table):
+            if _name_looks_like_file(table.name):
+                return True
+    return False
 
 
 def _assert_select_only(sql_lower: str) -> None:
@@ -582,7 +616,9 @@ def _assert_select_only(sql_lower: str) -> None:
     be ``.strip().lower()``-ed by the caller."""
     if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
-    if _FROM_STRING_LITERAL_RE.search(sql_lower) or _FILE_EXT_LITERAL_RE.search(sql_lower):
+    # Direct string-literal table source (position-based; no false positives) OR
+    # a file-path table source anywhere in the FROM graph (sqlglot-precise).
+    if _FROM_STRING_LITERAL_RE.search(sql_lower) or _has_file_table_source(sql_lower):
         raise HTTPException(
             status_code=400,
             detail="File-path table sources are not allowed; query registered views by name",

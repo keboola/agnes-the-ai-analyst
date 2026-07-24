@@ -69,8 +69,11 @@ Remediation of the 2026-07-24 whole-repo security audit
   credential helper.
 - **F8 (MEDIUM) — `/api/query` file-replacement-scan bypass.** A quoted
   relative path in table position (`FROM 'data/…parquet'`) read files with no
-  `read_parquet()` call. The SELECT guard now rejects string literals in
-  `FROM`/`JOIN` position.
+  `read_parquet()` call. The SELECT guard now rejects string literals directly
+  in `FROM`/`JOIN` position and, via a sqlglot parse, any table source whose
+  name is a file path (path separator, glob, or data-file extension) — so
+  comma-list/glob forms are caught while legitimate value literals in
+  `SELECT`/`WHERE` (e.g. `WHERE f = 'report.csv'`) are not.
 - **F9 (MEDIUM) — auth rate limiter keyed on spoofable leftmost XFF hop.** The
   client IP is now derived from the `AGNES_TRUSTED_PROXY_HOPS` (default 1)
   rightmost X-Forwarded-For hops via a shared `app/auth/client_ip.py` helper,
