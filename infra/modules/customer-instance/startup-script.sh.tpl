@@ -9,6 +9,7 @@ CUSTOMER_NAME="${customer_name}"
 IMAGE_REPO="${image_repo}"
 IMAGE_TAG="${image_tag}"
 UPGRADE_MODE="${upgrade_mode}"
+UPGRADE_SCHEDULE="${upgrade_schedule}"
 TLS_MODE="${tls_mode}"
 DOMAIN="${domain}"
 ACME_EMAIL="${acme_email}"
@@ -687,7 +688,7 @@ if [ "$COMPOSE_UP_OK" != "1" ]; then
     exit 1
 fi
 
-# --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
+# --- 6. Auto-upgrade via cron (pulls new image digest on $UPGRADE_SCHEDULE) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
     # agnes-auto-upgrade.sh was already extracted to /usr/local/bin/ in
     # section 3 alongside the compose files — the host artifacts ship
@@ -695,7 +696,7 @@ if [ "$UPGRADE_MODE" = "auto" ]; then
     :
 
     # Install cron entry idempotently: remove any prior agnes-auto-upgrade line, then append ours.
-    CRON_LINE="*/5 * * * * /usr/local/bin/agnes-auto-upgrade.sh >> /var/log/agnes-auto-upgrade.log 2>&1"
+    CRON_LINE="$UPGRADE_SCHEDULE /usr/local/bin/agnes-auto-upgrade.sh >> /var/log/agnes-auto-upgrade.log 2>&1"
     (crontab -l 2>/dev/null | grep -v agnes-auto-upgrade || true; echo "$CRON_LINE") | crontab -
 fi
 
