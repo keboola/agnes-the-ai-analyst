@@ -1,13 +1,21 @@
 """Magic-link Slack identity binding.
 
 Covers the `bind_prompt`/`bind_link` helpers (the one-click link Agnes DMs)
-and the `GET /slack/bind` route that redeems the code server-side for the
-signed-in Agnes account — the auth-gated, no-copy-paste replacement for the
-old "visit /setup?slack=1 and paste this code" flow (which had no UI).
+and the `/slack/bind` route. Security audit F2: the code is redeemed only on
+POST with a matching double-submit CSRF token; the GET renders a confirmation
+page and never changes state (defeats the cross-user impersonation CSRF).
 """
+
+import re
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+def _extract_csrf(html: str) -> str:
+    m = re.search(r'name="csrf_token" value="([^"]+)"', html)
+    assert m, "confirm page must embed a csrf_token"
+    return m.group(1)
 
 
 def test_bind_link_and_prompt_build_one_click_link():
@@ -69,7 +77,27 @@ def test_slack_bind_unauthed_redirects_to_login(web_client):
     assert "/login" in loc and "next=" in loc
 
 
-def test_slack_bind_valid_code_binds_the_signed_in_account(web_client, authed_cookie):
+def test_slack_bind_get_does_not_redeem(web_client, authed_cookie):
+    """F2: the GET must only render a confirm page — never bind."""
+    from services.slack_bot.binding import issue_verification_code
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    code = issue_verification_code(conn, slack_user_id="U_NOREDEEM")
+    conn.close()
+
+    resp = web_client.get(f"/slack/bind?code={code}", cookies=authed_cookie)
+    assert resp.status_code == 200
+    assert "Link my Slack" in resp.text  # confirm button, not a success message
+    assert "Slack connected" not in resp.text
+
+    conn = get_system_db()
+    row = conn.execute("SELECT slack_user_id FROM users WHERE email = ?", ["user@test.com"]).fetchone()
+    conn.close()
+    assert row[0] is None, "GET must not have redeemed the code"
+
+
+def test_slack_bind_post_with_csrf_binds_the_signed_in_account(web_client, authed_cookie):
     from services.slack_bot.binding import issue_verification_code
     from src.db import get_system_db
 
@@ -77,7 +105,11 @@ def test_slack_bind_valid_code_binds_the_signed_in_account(web_client, authed_co
     code = issue_verification_code(conn, slack_user_id="U_TESTBIND")
     conn.close()
 
-    resp = web_client.get(f"/slack/bind?code={code}", cookies=authed_cookie)
+    web_client.cookies.set("access_token", authed_cookie["access_token"])
+    get_resp = web_client.get(f"/slack/bind?code={code}")
+    csrf = _extract_csrf(get_resp.text)
+
+    resp = web_client.post("/slack/bind", data={"code": code, "csrf_token": csrf})
     assert resp.status_code == 200
     assert "Slack connected" in resp.text
 
@@ -87,7 +119,32 @@ def test_slack_bind_valid_code_binds_the_signed_in_account(web_client, authed_co
     assert row[0] == "U_TESTBIND"
 
 
-def test_slack_bind_bad_code_shows_invalid(web_client, authed_cookie):
-    resp = web_client.get("/slack/bind?code=000000", cookies=authed_cookie)
+def test_slack_bind_post_without_valid_csrf_is_rejected(web_client, authed_cookie):
+    """F2: a POST whose csrf_token doesn't match the cookie must not bind."""
+    from services.slack_bot.binding import issue_verification_code
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    code = issue_verification_code(conn, slack_user_id="U_CSRF")
+    conn.close()
+
+    web_client.cookies.set("access_token", authed_cookie["access_token"])
+    web_client.get(f"/slack/bind?code={code}")  # sets a real csrf cookie
+
+    resp = web_client.post("/slack/bind", data={"code": code, "csrf_token": "forged-token"})
+    assert resp.status_code == 400
+
+    conn = get_system_db()
+    row = conn.execute("SELECT slack_user_id FROM users WHERE email = ?", ["user@test.com"]).fetchone()
+    conn.close()
+    assert row[0] is None
+
+
+def test_slack_bind_post_bad_code_shows_invalid(web_client, authed_cookie):
+    web_client.cookies.set("access_token", authed_cookie["access_token"])
+    # Prime a csrf cookie via a GET with any code, then POST a bad code with it.
+    get_resp = web_client.get("/slack/bind?code=000000")
+    csrf = _extract_csrf(get_resp.text)
+    resp = web_client.post("/slack/bind", data={"code": "000000", "csrf_token": csrf})
     assert resp.status_code == 200
     assert "expired or invalid" in resp.text

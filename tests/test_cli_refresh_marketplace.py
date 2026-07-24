@@ -664,15 +664,12 @@ def test_bootstrap_with_no_existing_clone_clones_and_registers(
     recorder,
 ):
     """--bootstrap on a fresh machine (no clone yet) must:
-      1. git clone https://x:<PAT>@host/marketplace.git/ to CLONE_DIR
-      2. git remote set-url origin <token-stripped URL>
-      3. claude plugin marketplace add <CLONE_DIR>
-      4. then proceed to the normal fetch+reset+reconcile flow
-
-    PAT must be in the clone URL (HTTP Basic in user-info, the only
-    auth path raw `git clone` understands), but stripped from the
-    origin URL after the clone so it doesn't sit at rest in
-    .git/config."""
+    1. git clone <token-free URL> to CLONE_DIR, authenticating via the
+       env-based credential helper (security audit F7 — the PAT must NOT
+       appear on argv or in the origin URL)
+    2. claude plugin marketplace add <CLONE_DIR>
+    3. then proceed to the normal fetch+reset+reconcile flow
+    """
     # `with_token` fixture already wrote token.json + set AGNES_CONFIG_DIR;
     # just append the server URL config so bootstrap can read it.
     cfg_dir = tmp_path / "_cfg"
@@ -689,7 +686,7 @@ def test_bootstrap_with_no_existing_clone_clones_and_registers(
     real_run = recorder.run
 
     def fake_run(cmd, *args, **kwargs):
-        if cmd[:2] == ["git", "clone"]:
+        if "clone" in cmd:
             (clone_target / ".git").mkdir(parents=True, exist_ok=True)
             (clone_target / ".claude-plugin").mkdir(parents=True, exist_ok=True)
             (clone_target / ".claude-plugin" / "marketplace.json").write_text(
@@ -703,22 +700,22 @@ def test_bootstrap_with_no_existing_clone_clones_and_registers(
     result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
     assert result.exit_code == 0, result.output
 
-    # 1. git clone with embedded PAT.
-    clone_calls = [c for c in recorder.calls if c.cmd[:2] == ["git", "clone"]]
+    # 1. git clone of the TOKEN-FREE URL via the env credential helper (F7).
+    clone_calls = [c for c in recorder.calls if "clone" in c.cmd]
     assert len(clone_calls) == 1
     clone = clone_calls[0]
-    assert any(with_token in arg and "agnes.example.com/marketplace.git/" in arg for arg in clone.cmd), (
-        f"PAT-bearing clone URL must be in argv, got: {clone.cmd}"
+    assert any("agnes.example.com/marketplace.git/" in arg for arg in clone.cmd), (
+        f"clean clone URL must be in argv, got: {clone.cmd}"
     )
+    # The PAT must NOT be on argv anywhere.
+    assert not any(with_token in arg for arg in clone.cmd), f"PAT leaked to argv: {clone.cmd}"
+    assert clone.cmd[clone.cmd.index("-c") + 1].startswith("credential.helper=")
+    assert clone.env.get("AGNES_TOKEN") == with_token
     assert str(clone_target) in clone.cmd
 
-    # 2. remote set-url (PAT-stripped URL).
+    # 2. No `remote set-url` step — origin is already the clean URL.
     set_url_calls = [c for c in recorder.calls if c.cmd[:5] == ["git", "-C", str(clone_target), "remote", "set-url"]]
-    assert len(set_url_calls) == 1
-    new_url = set_url_calls[0].cmd[6]
-    assert "agnes.example.com/marketplace.git/" in new_url
-    assert with_token not in new_url
-    assert "x:" not in new_url
+    assert set_url_calls == []
 
     # 3. claude plugin marketplace add <clone_target>.
     add_calls = [c for c in recorder.calls if c.cmd[:4] == ["claude", "plugin", "marketplace", "add"]]
@@ -751,7 +748,7 @@ def test_bootstrap_honors_marketplace_url_env_override(
     real_run = recorder.run
 
     def fake_run(cmd, *args, **kwargs):
-        if cmd[:2] == ["git", "clone"]:
+        if "clone" in cmd:
             (clone_target / ".git").mkdir(parents=True, exist_ok=True)
             (clone_target / ".claude-plugin").mkdir(parents=True, exist_ok=True)
             (clone_target / ".claude-plugin" / "marketplace.json").write_text(
@@ -765,21 +762,19 @@ def test_bootstrap_honors_marketplace_url_env_override(
     result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
     assert result.exit_code == 0, result.output
 
-    # Clone URL must point at the env-override host, NOT at the
-    # api server's hostname, and must carry the PAT.
-    clone_calls = [c for c in recorder.calls if c.cmd[:2] == ["git", "clone"]]
+    # Clone URL must point at the env-override host, NOT at the api server's
+    # hostname, and must be token-free (F7 — PAT flows via credential helper).
+    clone_calls = [c for c in recorder.calls if "clone" in c.cmd]
     assert len(clone_calls) == 1
     url_arg = next(a for a in clone_calls[0].cmd if a.startswith("https://"))
     assert "plugins.example.com/marketplace.git/" in url_arg
     assert "agnes.example.com" not in url_arg
-    assert with_token in url_arg
+    assert with_token not in url_arg
+    assert clone_calls[0].env.get("AGNES_TOKEN") == with_token
 
-    # PAT-stripped URL after clone is also the override host.
+    # No `remote set-url` step — origin is already the clean override URL.
     set_url_calls = [c for c in recorder.calls if c.cmd[:5] == ["git", "-C", str(clone_target), "remote", "set-url"]]
-    assert len(set_url_calls) == 1
-    new_url = set_url_calls[0].cmd[6]
-    assert "plugins.example.com/marketplace.git/" in new_url
-    assert with_token not in new_url
+    assert set_url_calls == []
 
 
 def test_bootstrap_rejects_invalid_marketplace_url_env(
@@ -823,7 +818,14 @@ def test_bootstrap_clone_failure_exits_nonzero(
     )
 
     monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "fresh_marketplace")
-    recorder.script(("git", "clone"), returncode=1, stderr="fatal: TLS error")
+    # F7: the clone now runs as `git -c credential.helper=<...> clone <url> <dir>`,
+    # so match the failure on the full 4-element prefix (won't collide with the
+    # `git -c <...> -C <dir> fetch` path, whose 4th token is `-C`, not `clone`).
+    recorder.script(
+        ("git", "-c", f"credential.helper={rm_module._CREDENTIAL_HELPER}", "clone"),
+        returncode=1,
+        stderr="fatal: TLS error",
+    )
 
     result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
     assert result.exit_code == 1
@@ -1705,7 +1707,7 @@ def test_bootstrap_reclones_when_origin_points_at_another_host(
     real_run = recorder.run
 
     def fake_run(cmd, *args, **kwargs):
-        if cmd[:2] == ["git", "clone"]:
+        if "clone" in cmd:
             (with_clone / ".git").mkdir(parents=True, exist_ok=True)
             (with_clone / ".claude-plugin").mkdir(parents=True, exist_ok=True)
             (with_clone / ".claude-plugin" / "marketplace.json").write_text(
@@ -1719,7 +1721,7 @@ def test_bootstrap_reclones_when_origin_points_at_another_host(
     result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
     assert result.exit_code == 0, result.output
 
-    clone_calls = [c for c in recorder.calls if c.cmd[:2] == ["git", "clone"]]
+    clone_calls = [c for c in recorder.calls if "clone" in c.cmd]
     assert len(clone_calls) == 1, "stale-origin bootstrap must re-clone"
     assert any("new.example.com" in arg for arg in clone_calls[0].cmd), clone_calls[0].cmd
     assert "old.example.com" in result.output

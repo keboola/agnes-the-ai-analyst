@@ -26,7 +26,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
-from jinja2 import Environment, StrictUndefined, TemplateError
+from jinja2 import TemplateError
+
+from src.prompt_render import make_prompt_env
 
 from app.instance_config import (
     get_instance_name,
@@ -266,7 +268,9 @@ def render_agent_prompt_banner(
         # autoescape=False to match /setup rendering — the outer Jinja2 template
         # applies escaping where needed.
         try:
-            env = Environment(undefined=StrictUndefined, autoescape=False)
+            # F4: SandboxedEnvironment — this renders the same admin-authored
+            # install-prompt override as /setup and must not be an SSTI sink.
+            env = make_prompt_env()
             template = env.from_string(content)
             ctx = build_context(user=user, server_url=server_url)
             rendered = template.render(**ctx)

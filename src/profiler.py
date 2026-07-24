@@ -27,6 +27,20 @@ from src.db import _open_duckdb
 logger = logging.getLogger(__name__)
 
 
+def quote_ident(name: str) -> str:
+    """Quote a SQL identifier, escaping embedded double-quotes.
+
+    Security audit F1: column names reaching the profiler originate from a
+    ``DESCRIBE`` of a parquet materialized from an attacker-uploaded collection
+    file, so they are untrusted. Wrapping a name in bare ``"..."`` without
+    doubling any embedded ``"`` lets a column named ``x") AS a, (SELECT ...) AS "b``
+    break out of the quoted identifier and execute arbitrary SQL against the
+    profiler's DuckDB. Doubling ``"`` per the SQL standard closes that hole.
+    Every ``f'"{col}"'`` interpolation in this module MUST route through here.
+    """
+    return '"' + str(name).replace('"', '""') + '"'
+
+
 # ---------------------------------------------------------------------------
 # Profiler configuration (loaded from instance.yaml, with defaults)
 # ---------------------------------------------------------------------------
@@ -548,7 +562,7 @@ def _batch_base_stats(
 
     parts = []
     for col_name in columns:
-        safe = f'"{col_name}"'
+        safe = quote_ident(col_name)
         parts.append(f"COUNT({safe})")
         parts.append(f"COUNT(DISTINCT {safe})")
 
@@ -577,7 +591,7 @@ def _batch_numeric_stats(
 
     parts = []
     for col_name in numeric_cols:
-        safe = f'"{col_name}"'
+        safe = quote_ident(col_name)
         parts.extend(
             [
                 f"MIN({safe})",
@@ -631,7 +645,7 @@ def _batch_string_stats(
 
     parts = []
     for col_name in string_cols:
-        safe = f'"{col_name}"'
+        safe = quote_ident(col_name)
         parts.extend(
             [
                 f"MIN(LENGTH({safe}))",
@@ -667,7 +681,7 @@ def _batch_date_stats(
 
     parts = []
     for col_name in date_cols:
-        safe = f'"{col_name}"'
+        safe = quote_ident(col_name)
         cast_expr = f"CAST({safe} AS DATE)" if category_map[col_name] == "TIMESTAMP" else safe
         parts.extend(
             [
@@ -711,7 +725,7 @@ def _batch_boolean_stats(
 
     parts = []
     for col_name in bool_cols:
-        safe = f'"{col_name}"'
+        safe = quote_ident(col_name)
         parts.extend(
             [
                 f"SUM(CASE WHEN {safe} = TRUE THEN 1 ELSE 0 END)",
@@ -866,7 +880,7 @@ def profile_table(
     for col_name in all_col_names:
         col_type = type_map[col_name]
         category = category_map[col_name]
-        safe_col = f'"{col_name}"'
+        safe_col = quote_ident(col_name)
         variable_types[category] = variable_types.get(category, 0) + 1
 
         non_null, unique_count = base_stats.get(col_name, (0, 0))
@@ -1068,7 +1082,7 @@ def profile_table(
     duplicate_rows = 0
     if pk_columns and working_rows > 0:
         try:
-            pk_expr = ", ".join(f'"{c}"' for c in pk_columns)
+            pk_expr = ", ".join(quote_ident(c) for c in pk_columns)
             distinct_pk = con.execute(f"SELECT COUNT(DISTINCT ({pk_expr})) FROM {view_name}").fetchone()[0]
             duplicate_rows = working_rows - distinct_pk
         except Exception as exc:

@@ -69,9 +69,7 @@ _WORKSPACE_SUBDIR = "workspace"
 # modal) rather than at extract time (analyst sees a confusing failure
 # half-way through ``agnes init``). The repo on disk stays unchanged —
 # admin must commit + push a fix.
-_RESERVED_PATHS: tuple[str, ...] = (
-    ".claude/init-complete",
-)
+_RESERVED_PATHS: tuple[str, ...] = (".claude/init-complete",)
 
 
 class TemplateValidationError(ValueError):
@@ -141,19 +139,12 @@ def validate_template_tree(root: Path) -> None:
             continue
         if entry.is_symlink():
             rel = entry.relative_to(workspace_dir).as_posix()
-            raise TemplateValidationError(
-                f"symlinks are not allowed in the template repo: "
-                f"{_WORKSPACE_SUBDIR}/{rel}"
-            )
+            raise TemplateValidationError(f"symlinks are not allowed in the template repo: {_WORKSPACE_SUBDIR}/{rel}")
         rel_posix = entry.relative_to(workspace_dir).as_posix()
         if ".." in rel_posix.split("/"):
-            raise TemplateValidationError(
-                f"path contains '..' segment: {_WORKSPACE_SUBDIR}/{rel_posix}"
-            )
+            raise TemplateValidationError(f"path contains '..' segment: {_WORKSPACE_SUBDIR}/{rel_posix}")
         if entry.is_absolute() and not str(entry).startswith(str(workspace_dir)):
-            raise TemplateValidationError(
-                f"path escapes template root: {_WORKSPACE_SUBDIR}/{rel_posix}"
-            )
+            raise TemplateValidationError(f"path escapes template root: {_WORKSPACE_SUBDIR}/{rel_posix}")
         if rel_posix in _RESERVED_PATHS:
             raise TemplateValidationError(
                 f"path {_WORKSPACE_SUBDIR}/{rel_posix} is reserved by Agnes "
@@ -207,9 +198,7 @@ def sync_template(
             stderr = _redact(e.stderr or "", token).strip()
             raise RuntimeError(f"git {action} failed: {stderr}") from None
         except subprocess.TimeoutExpired:
-            raise RuntimeError(
-                f"git {action} timed out after {GIT_TIMEOUT_SEC}s"
-            ) from None
+            raise RuntimeError(f"git {action} timed out after {GIT_TIMEOUT_SEC}s") from None
 
         # Run the strict validator AFTER the working tree is settled.
         # A failure here leaves the working dir on disk so the admin can
@@ -220,7 +209,9 @@ def sync_template(
         files = list_template_files()
         logger.info(
             "initial-workspace %s sha=%s files=%d",
-            action, sha, len(files),
+            action,
+            sha,
+            len(files),
         )
         return {"commit_sha": sha, "path": str(target), "file_count": len(files)}
 
@@ -338,15 +329,13 @@ def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
             if mode == "editor" and content is not None:
                 workspace_overlay = content
                 if user is not None and server_url is not None:
-                    from jinja2 import Environment, StrictUndefined
-
                     from src.claude_md import build_claude_md_context
+                    from src.prompt_render import make_prompt_env
 
-                    env = Environment(undefined=StrictUndefined, autoescape=False)
+                    # F4: sandboxed — 'workspace' override is admin-authored.
+                    env = make_prompt_env()
                     workspace_overlay = env.from_string(content).render(
-                        **build_claude_md_context(
-                            conn, user=user, server_url=server_url
-                        )
+                        **build_claude_md_context(conn, user=user, server_url=server_url)
                     )
         except Exception:
             # An overlay failure must NEVER block serving the clone — the
@@ -418,6 +407,7 @@ def is_configured() -> bool:
     """
     # Lazy import to avoid pulling app.api into src module load time.
     from app.api.initial_workspace import _read_section
+
     return bool(_read_section().get("url"))
 
 
@@ -635,8 +625,7 @@ def resolve_prompt(kind: str, conn=None) -> tuple[Optional[str], str]:
         if _is_within(iwt_root, target) and target.is_file():
             return (target.read_text(encoding="utf-8"), "git")
         logger.warning(
-            "resolve_prompt(%s): git mode bound to %r but file is absent in the "
-            "IWT clone — falling back to default",
+            "resolve_prompt(%s): git mode bound to %r but file is absent in the IWT clone — falling back to default",
             kind,
             rel_path,
         )
@@ -740,9 +729,7 @@ def _assert_safe_entry(name: str, workspace: Path) -> None:
     try:
         target.relative_to(workspace)
     except ValueError as exc:
-        raise ValueError(
-            f"unsafe zip entry escapes workspace: {name!r}"
-        ) from exc
+        raise ValueError(f"unsafe zip entry escapes workspace: {name!r}") from exc
 
 
 def extract_zip_to_workspace(zip_bytes: bytes, workspace: Path) -> ExtractResult:

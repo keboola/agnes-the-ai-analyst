@@ -27,7 +27,9 @@ from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from jinja2 import Environment, StrictUndefined, TemplateError
+from jinja2 import TemplateError
+
+from src.prompt_render import make_prompt_env
 from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
@@ -106,7 +108,7 @@ def _validate_template(kind: str, content: str) -> None:
             "is publicly accessible."
         )
 
-    env = Environment(undefined=StrictUndefined, autoescape=False)
+    env = make_prompt_env()  # F4: sandboxed — admin-authored content
     try:
         template = env.from_string(content)
         template.render(**_VALIDATION_STUB_CONTEXT)
@@ -386,7 +388,7 @@ async def preview_prompt(
 ):
     _validate_kind(kind)
     server_url = str(request.base_url).rstrip("/")
-    env = Environment(undefined=StrictUndefined, autoescape=False)
+    env = make_prompt_env()  # F4: sandboxed — admin-authored content
     try:
         template = env.from_string(payload.content)
         if kind == "workspace":

@@ -22,6 +22,97 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.34] - 2026-07-24
+
+### Added
+
+### Changed
+
+- **BREAKING: `agnes setup bootstrap` no longer takes `--password`.** The
+  first-admin password is now read from `AGNES_BOOTSTRAP_PASSWORD` or prompted
+  with hidden input via `--set-password`, so it never lands on the process argv
+  (security audit F14). Scripts passing `--password <secret>` must switch to the
+  env var.
+
+### Fixed
+
+### Removed
+
+- **MCP connect page: the "Generic URL" (`?token=<PAT>`) snippet is gone.** A
+  365-day PAT in a URL query string leaks into server/proxy access logs and
+  browser history (CWE-598); use the `Authorization: Bearer` header snippets
+  (Cursor / VS Code / Claude Code) instead (security audit F13).
+
+### Internal
+
+### Security
+
+Remediation of the 2026-07-24 whole-repo security audit
+(`CLAUDE-SECURITY-20260724`). 1 HIGH, 11 MEDIUM, 3 LOW:
+
+- **F1 (HIGH) — SQL injection via uploaded-file column names in the profiler.**
+  Column identifiers from a `DESCRIBE` of an attacker-uploaded parquet were
+  interpolated into profiling SQL wrapped only in bare double-quotes; a name
+  containing `"` broke out and executed arbitrary DuckDB SQL. All identifier
+  interpolation in `src/profiler.py` now routes through a `quote_ident()`
+  helper that doubles embedded `"`.
+- **F2 (MEDIUM) — CSRF on `GET /slack/bind`.** The Slack-identity bind
+  happened on a cookie-gated GET, letting an attacker bind their Slack to a
+  victim's account. Binding now requires a POST with a double-submit CSRF
+  token; the GET only renders a confirmation page.
+- **F3 (MEDIUM) — stored XSS in chat via `marked`→`innerHTML`.** Chat message
+  content (incl. co-presence peers') was rendered with no sanitizer. All
+  `marked.parse()`→`innerHTML` sinks now route through `renderMarkdownSafe()`,
+  which parses into an inert `<template>` and strips dangerous
+  elements/attributes and unsafe URL schemes; tool-call metadata is built via
+  `textContent`.
+- **F4 (MEDIUM) — SSTI in the admin install-prompt override.** The
+  admin-authored install/workspace-prompt override was rendered with a
+  non-sandboxed Jinja2 `Environment` — an SSTI → RCE sink. Every server-side
+  render of that content (the `/setup` page, the dashboard clipboard banner in
+  `src/welcome_template.py`, the workspace overlay in `src/initial_workspace.py`,
+  and the welcome/prompts preview endpoints) now routes through a single
+  sandboxed factory `src.prompt_render.make_prompt_env` (`SandboxedEnvironment`),
+  so no render path is left unsandboxed.
+- **F5 (MEDIUM) — ReDoS in the internal-query SQL sanitizer.** The `E''`
+  string-literal regex had an ambiguous alternation that backtracked
+  exponentially on a backslash run, freezing the worker. Rewritten with
+  disjoint branches for linear-time matching.
+- **F6 (MEDIUM) — path traversal in the marketplace asset mirror.** A
+  curator-controlled plugin name flowed into an on-disk path; names are now
+  validated as a single safe segment and `_write_body` asserts containment
+  under the cache root.
+- **F7 (MEDIUM) — PAT on the `git clone` command line.** `agnes` bootstrap
+  embedded the PAT in the clone URL (readable via `ps`/`/proc`). It now clones
+  the credential-free URL and supplies the token via the env-based git
+  credential helper.
+- **F8 (MEDIUM) — `/api/query` file-replacement-scan bypass.** A quoted
+  relative path in table position (`FROM 'data/…parquet'`) read files with no
+  `read_parquet()` call. The SELECT guard now rejects string literals directly
+  in `FROM`/`JOIN` position and, via a sqlglot parse, any table source whose
+  name is a file path (path separator, glob, or data-file extension) — so
+  comma-list/glob forms are caught while legitimate value literals in
+  `SELECT`/`WHERE` (e.g. `WHERE f = 'report.csv'`) are not.
+- **F9 (MEDIUM) — auth rate limiter keyed on spoofable leftmost XFF hop.** The
+  client IP is now derived from the `AGNES_TRUSTED_PROXY_HOPS` (default 1)
+  rightmost X-Forwarded-For hops via a shared `app/auth/client_ip.py` helper,
+  and the shipped Caddyfile overwrites `X-Forwarded-For` with the real peer.
+- **F10 / F11 (MEDIUM) — connector-controlled ATTACH URL had no host
+  allowlist.** An adversarial connector could exfiltrate an allowlisted
+  credential to `attacker.example`. Both attach paths now honor
+  `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` (enforced when set; warns when unset).
+- **F12 (MEDIUM) — one dev VM's `tls_mode=none` opened `:8000` fleet-wide.**
+  The Terraform raw-HTTP firewall is now per-instance (a raw-http network tag
+  attached only to VMs whose own `tls_mode != "caddy"`).
+- **F13 (LOW) — MCP connect embedded a 365-day PAT in a URL** (see Removed).
+- **F14 (LOW) — bootstrap admin password on argv** (see Changed).
+- **F15 (LOW) — Telegram `send_photo` read arbitrary caller-supplied paths.**
+  `photo_path` is now realpath-contained under `AGNES_TELEGRAM_PHOTO_DIR`
+  (default `DATA_DIR`).
+
+New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST`,
+`AGNES_BOOTSTRAP_PASSWORD`, `AGNES_TELEGRAM_PHOTO_DIR`.
+
 ## [0.76.33] - 2026-07-24
 
 ### Changed
@@ -99,6 +190,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   retype correctly now (previously a single bad value left the whole
   column VARCHAR), and an already-typed parquet skips the rewrite
   entirely.
+
 ## [0.76.30] - 2026-07-24
 
 ### Added
