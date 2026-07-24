@@ -145,6 +145,41 @@ def _kinds_for_lane(lane: str) -> list[str]:
     return [name for name, kind in JOB_KINDS.items() if kind.lane == lane]
 
 
+def _notify_agent_response_webhooks(job: dict, status: str) -> None:
+    """Best-effort outbound-webhook fan-out when an ``agent_response`` job
+    reaches a terminal state (V1b Task 6, ``app.chat.webhook_delivery``).
+
+    This is the single place an ``agent_response`` job's outcome becomes
+    externally observable via webhook: every other job kind driven by this
+    runtime is untouched (``job["kind"] != "agent_response"`` short-circuits
+    immediately) — webhooks are scoped to Agent-as-API responses, not this
+    runtime's internal maintenance kinds (``data-refresh``,
+    ``distribution-mirror``, ...), and not ``webhook-deliver`` jobs
+    themselves (which would recurse).
+
+    Privacy (C11 — see ``app.chat.webhook_delivery`` module docstring): the
+    notification payload built downstream never carries the agent's answer,
+    only ``{event, job_id, agent_slug, status, ts}``.
+
+    Best-effort by design, mirroring
+    ``app/worker/kinds.py::_maybe_enqueue_distribution_mirror``'s shape — a
+    failure to enqueue a webhook notification must never be able to
+    un-finalize (retry/fail) a job whose ``complete()``/``fail()`` call
+    above already committed.
+    """
+    if job.get("kind") != "agent_response":
+        return
+    agent_id = (job.get("payload_json") or {}).get("agent_id")
+    if not agent_id:
+        return
+    try:
+        from app.chat.webhook_delivery import enqueue_job_event_webhooks
+
+        enqueue_job_event_webhooks(agent_id=agent_id, job_id=job["id"], status=status)
+    except Exception:
+        logger.warning("worker: agent_response webhook notify failed for job %s (non-fatal)", job["id"], exc_info=True)
+
+
 def _sweep_stale_scratch() -> None:
     """Best-effort orphaned-scratch sweep, run before each HEAVY job.
 
@@ -295,6 +330,13 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             )
             obs_metrics.record_job_duration(job["kind"], "failed", time.monotonic() - started_at)
             obs_metrics.record_job_failure(job["kind"], type(exc).__name__)
+            if kind.retry_in_seconds is None:
+                # `retry_in_seconds is None` means `.fail()` above finalized
+                # straight to `'failed'` rather than requeuing for another
+                # attempt — see `_notify_agent_response_webhooks`'s
+                # docstring; a requeued attempt must not fire a premature
+                # `job.failed` webhook for a job that may still succeed.
+                _notify_agent_response_webhooks(job, "failed")
         else:
             # Same ordering rationale as the failure branch above.
             # `handler_result` is the handler's return value — `None` for
@@ -302,6 +344,7 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             # result dict `complete()` merges into `payload_json["result"]`.
             await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token, handler_result)
             obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
+            _notify_agent_response_webhooks(job, "completed")
         finally:
             if not handed_off:
                 obs_metrics.end_job_running(job["kind"], kind.lane)
@@ -413,6 +456,28 @@ async def _reap_loop(poll_interval_s: float) -> None:
         await asyncio.sleep(poll_interval_s)
 
 
+async def _notify_in_flight_agent_response(job_id: str, status: str) -> None:
+    """`_drain_in_flight`'s counterpart to `_notify_agent_response_webhooks`.
+
+    `_InFlightJob` (unlike the `job` dict `_run_one` already has in hand)
+    carries no `payload_json` — a handler that finished during the bounded
+    shutdown drain was handed off before its full job row was needed again
+    — so this re-fetches the row fresh via `jobs_repo().get()` before
+    delegating. Best-effort in its own right (separate from the
+    finalization `try`/`except` around the `complete()`/`fail()` call this
+    runs after), so a fetch/notify failure here is never misattributed as a
+    "finalization (complete/fail) failed" error for a job whose outcome was
+    already durably persisted."""
+    try:
+        job_row = await asyncio.to_thread(_jobs_repo().get, job_id)
+        if job_row is not None:
+            _notify_agent_response_webhooks(job_row, status)
+    except Exception:
+        logger.warning(
+            "worker: agent_response webhook notify (shutdown drain) failed for job %s", job_id, exc_info=True
+        )
+
+
 async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -> None:
     """Bounded shutdown drain: wait on every handler future handed off by
     ``_run_one`` (see module docstring) for up to
@@ -487,12 +552,16 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                     )
                     obs_metrics.record_job_duration(entry.kind_name, "failed", duration)
                     obs_metrics.record_job_failure(entry.kind_name, type(exc).__name__)
+                    if entry.kind_name == "agent_response" and entry.retry_in_seconds is None:
+                        await _notify_in_flight_agent_response(job_id, "failed")
                 else:
                     handler_result = fut.result()
                     await asyncio.to_thread(
                         _jobs_repo().complete, job_id, entry.worker_id, entry.lease_token, handler_result
                     )
                     obs_metrics.record_job_duration(entry.kind_name, "done", duration)
+                    if entry.kind_name == "agent_response":
+                        await _notify_in_flight_agent_response(job_id, "completed")
             except asyncio.CancelledError:
                 raise
             except Exception:

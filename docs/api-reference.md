@@ -1295,6 +1295,25 @@ The chat sandbox is a remote E2B microVM; files an agent writes under `/work/out
 - /api/v1/sessions/{session_id}/artifacts
 - /api/v1/sessions/{session_id}/artifacts/{artifact_id}
 
+### `/api/v1/agents/{slug}/webhooks` — outbound agent webhooks (V1b Task 6)
+
+SSRF-hardened, HMAC-signed outbound notifications: register an HTTPS URL to be POSTed a small notification whenever a background `agent_response` job (see `/api/v1/agents/{slug}/responses` above) reaches `job.completed` or `job.failed`. Owner-scoped standing config — every route requires an interactive session token (`require_session_token` rejects both plain PATs and agent PATs, same posture as `/api/v1/agents/{id}/tokens`).
+
+**SSRF guard.** `POST` validates the URL at create time (`app.chat.webhook_delivery.validate_and_resolve`): scheme must be `https`, and every IP the host resolves to must be public — any address that is private/loopback/link-local/reserved/multicast/the cloud metadata endpoint (`169.254.169.254`)/IPv6 ULA is denied with `400 {"code": "webhook_url_forbidden"}`. This is a courtesy check, not the actual guard: the SAME resolve-and-pin check re-runs on every delivery attempt (not just a re-validate — the connection goes to the freshly resolved IP directly, never the hostname), which is what actually closes the DNS-rebinding TOCTOU window between registration and send.
+
+**Delivery payload is a notification, not the answer.** The POST body is exactly `{event, job_id, agent_slug, status, ts}` — never the agent's answer, prompt, or any other job data. A receiver that wants the actual result fetches it afterward via `GET /api/v1/jobs/{job_id}` (owner/agent-PAT authenticated). Every delivery carries an `x-agnes-signature: sha256=<hex hmac>` header (HMAC-SHA256 over the raw JSON body, keyed by the webhook's own secret) so the receiver can verify authenticity.
+
+`GET /api/v1/agents/{slug}/webhooks` — `200 {data: [{id, agent_id, url, events, active, consecutive_failures, created_at}], has_more, next_cursor}`. The signing `secret` is never included here.
+
+`POST /api/v1/agents/{slug}/webhooks` — `{url: str (required, https), events?: ["job.completed", "job.failed"] (default both)}` → `201 {id, agent_id, url, events, active, consecutive_failures, created_at, secret}`. `secret` (a 64-hex-char HMAC key) is returned exactly once, at creation — like an agent PAT, it cannot be retrieved again.
+
+`DELETE /api/v1/agents/{slug}/webhooks/{webhook_id}` — `204`. `404` for an unknown id or one belonging to a different agent/owner.
+
+A webhook is auto-disabled (`active: false`) after `agent_api.webhook_max_failures` (default 5, `instance.yaml`'s `chat:` block) consecutive delivery failures — a dead or hostile endpoint stops being retried forever rather than accumulating unbounded `webhook-deliver` job attempts.
+
+- /api/v1/agents/{slug}/webhooks
+- /api/v1/agents/{slug}/webhooks/{webhook_id}
+
 ### `/api/v2` — v2 catalog and query APIs
 
 - /api/v2/catalog

@@ -104,6 +104,11 @@ class ChatConfig:
     # a later task.
     agent_api_artifact_max_bytes: int = 25 * 1024 * 1024
     agent_api_artifact_max_files: int = 20
+    # Outbound webhook delivery (V1b Task 6, `app.chat.webhook_delivery`):
+    # consecutive delivery failures after which a webhook is auto-disabled
+    # (`agent_webhooks_repo().disable`) rather than retried forever against
+    # a permanently-broken (or no-longer-owned) endpoint.
+    agent_api_webhook_max_failures: int = 5
     slack: "SlackConfig" = field(default_factory=SlackConfig)
 
 
@@ -165,5 +170,6 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         agent_api_budget_cache_ttl_s=int(raw.get("agent_api_budget_cache_ttl_s", 60)),
         agent_api_artifact_max_bytes=int(raw.get("agent_api_artifact_max_bytes", 25 * 1024 * 1024)),
         agent_api_artifact_max_files=int(raw.get("agent_api_artifact_max_files", 20)),
+        agent_api_webhook_max_failures=int(raw.get("agent_api_webhook_max_failures", 5)),
         slack=_parse_slack_config(raw),
     )

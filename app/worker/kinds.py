@@ -72,6 +72,18 @@ distribution mirror) map onto:
   ``asyncio.run``) would break those primitives across loops. No-ops
   (raises, so the job fails and retries) when chat is disabled on this
   process — see ``_run_agent_response`` below.
+- ``webhook-deliver``     (LIGHT) — V1b Task 6's SSRF-hardened, HMAC-signed
+  outbound webhook delivery. Enqueued by
+  ``app.chat.webhook_delivery.enqueue_job_event_webhooks`` (called from
+  ``app/worker/runtime.py`` when an ``agent_response`` job reaches
+  ``completed``/``failed``), one job per active webhook subscribed to that
+  event. The handler resolves the webhook row by id and calls
+  ``app.chat.webhook_delivery.deliver`` — see that module's docstring for
+  the resolve-and-pin SSRF guard and the notification-not-answer payload
+  contract. Registered UNCONDITIONALLY (unlike ``agent_response`` above) —
+  it's a plain outbound HTTP POST with no dependency on the live
+  ``ChatManager``/chat event loop, so it runs fine on a worker-only,
+  gateway-less process too.
 
 Every handler below is a THIN ADAPTER — it imports and calls the existing
 function/method and does not reimplement any of its logic. Each import is
@@ -636,6 +648,41 @@ def _flush_usage_accumulator() -> None:
         logger.exception("usage_accumulator.flush() failed — usage totals may undercount this response")
 
 
+def _run_webhook_deliver(payload: dict) -> None:
+    """V1b Task 6 — deliver one outbound webhook notification.
+
+    ``payload`` is ``{"webhook_id": ..., "notification": {...}}``, built by
+    ``app.chat.webhook_delivery.enqueue_job_event_webhooks``. Re-fetches the
+    webhook row fresh (rather than trusting anything enqueue-time snapshot
+    of it) so a webhook deleted or disabled between enqueue and this claim
+    is a clean no-op instead of a wasted/misdirected send.
+
+    Raises (so the worker's standard ``fail(..., retry_in_seconds=...)``
+    path requeues it, bounded by the ``webhook-deliver`` kind's own retry
+    config below) when ``app.chat.webhook_delivery.deliver`` returns
+    ``False`` — the send itself already recorded the failure against the
+    webhook row (consecutive-failure counter / auto-disable); this raise is
+    purely what drives the JOB's own retry, a separate concern from the
+    webhook's own failure bookkeeping.
+    """
+    webhook_id = payload.get("webhook_id")
+    if not webhook_id:
+        raise RuntimeError("webhook-deliver: payload missing webhook_id")
+
+    from src.repositories import agent_webhooks_repo
+
+    webhook = agent_webhooks_repo().get(webhook_id)
+    if webhook is None or not webhook.get("active", True):
+        logger.info("webhook-deliver: webhook %s no longer exists/active — skipping", webhook_id)
+        return
+
+    from app.chat.webhook_delivery import deliver
+
+    notification = payload.get("notification") or {}
+    if not deliver(webhook, notification):
+        raise RuntimeError(f"webhook-deliver: POST to webhook {webhook_id} failed")
+
+
 def register_all_kinds() -> None:
     """Register the real job kinds. Idempotent — safe to call more than
     once (e.g. across test re-imports); ``register_kind`` replaces any
@@ -753,6 +800,24 @@ def register_all_kinds() -> None:
             # the ducklake catalog operations that justified their own knob.
             lease_seconds=_DEFAULT_LIGHT_LEASE_S,
             retry_in_seconds=300,
+        )
+    )
+    register_kind(
+        JobKind(
+            name="webhook-deliver",
+            handler=_run_webhook_deliver,
+            lane=LIGHT_LANE,
+            # Plain outbound HTTP POST bounded by
+            # AGNES_WEBHOOK_DELIVERY_TIMEOUT_S (app.chat.webhook_delivery,
+            # default 10s) — the LIGHT-lane default lease is comfortably
+            # generous over that.
+            lease_seconds=_DEFAULT_LIGHT_LEASE_S,
+            # Short, bounded backoff — a transient outage on the receiving
+            # end should recover in a minute or two; agent_webhooks' own
+            # consecutive_failures/webhook_max_failures counter (not this
+            # job's attempts) is what ultimately disables a permanently-dead
+            # endpoint (see app.chat.webhook_delivery.deliver).
+            retry_in_seconds=60,
         )
     )
     from app.chat.manager import get_current_chat_manager

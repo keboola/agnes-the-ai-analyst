@@ -115,6 +115,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `GET /api/v1/jobs/{id}` — waiting out a background degrade has no MCP
   tool by design (a tool call blocking on a poll loop is a poor fit for a
   chat turn); use `agnes agent ask` or the REST endpoint directly for that.
+- **Outbound agent webhooks, SSRF-hardened (agent-api V1b Task 6).**
+  `GET/POST /api/v1/agents/{slug}/webhooks` and `DELETE
+  /api/v1/agents/{slug}/webhooks/{id}` register an HTTPS callback URL that
+  gets an HMAC-signed POST (`x-agnes-signature: sha256=...`) whenever a
+  background `agent_response` job reaches `job.completed`/`job.failed`.
+  Owner-only (`require_session_token`, rejects PATs). The notification body
+  is deliberately minimal — `{event, job_id, agent_slug, status, ts}`, never
+  the agent's answer — the receiver fetches the actual result afterward via
+  `GET /api/v1/jobs/{id}`. Registration validates the URL up front
+  (`400 webhook_url_forbidden` for anything resolving to a
+  private/loopback/link-local/reserved/cloud-metadata address); delivery
+  (a new `webhook-deliver` worker job kind) re-resolves and pins the target
+  IP fresh on every send, closing the DNS-rebinding window a create-time-only
+  check would leave open. A webhook auto-disables after
+  `agent_api.webhook_max_failures` (default 5) consecutive delivery
+  failures.
 
 ### Changed
 

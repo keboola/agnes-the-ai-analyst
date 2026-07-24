@@ -292,6 +292,19 @@ _AGENT_SESSION_REASON = (
     "ask`) and MCP (`agent_ask`) surface because it fits the request/"
     "response shape both need."
 )
+_AGENT_WEBHOOKS_REASON = (
+    "outbound agent webhook registration (agent-api V1b Task 6) — owner-scoped "
+    "standing-config CRUD (register/list/revoke an HTTPS callback URL + HMAC "
+    "secret for job.completed/job.failed notifications), explicitly named in "
+    "CONTRIBUTING.md's API-coverage exemption list alongside health checks and "
+    "OAuth callbacks ('health checks, webhooks, OAuth callbacks, and internal/"
+    "SSE routes'). No MCP analogue by design: minting a webhook secret and "
+    "pointing this server's outbound network identity at an arbitrary URL is "
+    "an SSRF-sensitive, human-witnessed action, never something an agent tool "
+    "call should be able to trigger on its own registration. CLI is planned "
+    "for Task 8 (`docs/superpowers/specs/"
+    "2026-07-21-agent-profiles-and-agent-api-design.md`), not yet landed."
+)
 _AGENT_ARTIFACTS_REASON = (
     "agent-as-API sandbox artifact harvest/download (agent-api V1b Task 5). "
     "No MCP analogue by design: the download route is a binary byte-stream "
@@ -308,6 +321,8 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/agents/{agent_id}/tokens": _AGENT_TOKENS_REASON,
     "/api/v1/jobs/{job_id}": _AGENT_JOBS_REASON,
     "/api/v1/agents/{slug}/sessions": _AGENT_SESSION_REASON,
+    "/api/v1/agents/{slug}/webhooks": _AGENT_WEBHOOKS_REASON,
+    "/api/v1/agents/{slug}/webhooks/{webhook_id}": _AGENT_WEBHOOKS_REASON,
     "/api/v1/sessions/{session_id}": _AGENT_SESSION_REASON,
     "/api/v1/sessions/{session_id}/messages": _AGENT_SESSION_REASON,
     "/api/v1/sessions/{session_id}/cancel": _AGENT_SESSION_REASON,

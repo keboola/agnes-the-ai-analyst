@@ -68,10 +68,12 @@ def jobs_db(tmp_path, monkeypatch):
 
 
 class TestRegisterAllKinds:
-    #: The eight kinds that register UNCONDITIONALLY, regardless of whether
+    #: The nine kinds that register UNCONDITIONALLY, regardless of whether
     #: this process has a live chat manager — everything except
     #: ``agent_response`` (role-split review carry-over; see
     #: ``TestAgentResponseRoleSplitRegistration`` below for that one).
+    #: ``webhook-deliver`` (V1b Task 6) joined this set because it's a plain
+    #: outbound HTTP POST with no dependency on the chat event loop.
     _ALWAYS_REGISTERED = {
         "data-refresh",
         "marketplaces-sync",
@@ -81,9 +83,10 @@ class TestRegisterAllKinds:
         "ducklake-maintenance",
         "analytics-migrate",
         "distribution-mirror",
+        "webhook-deliver",
     }
 
-    def test_registers_eight_kinds_without_chat_manager(self):
+    def test_registers_nine_kinds_without_chat_manager(self):
         """No live chat manager (the `clean_job_kinds_registry` fixture
         already reset the singleton to `None`) — a worker-only/non-gateway
         process. `agent_response` must NOT be in the registry."""
@@ -109,6 +112,7 @@ class TestRegisterAllKinds:
         assert JOB_KINDS["ducklake-maintenance"].lane == LIGHT_LANE
         assert JOB_KINDS["analytics-migrate"].lane == HEAVY_LANE
         assert JOB_KINDS["distribution-mirror"].lane == LIGHT_LANE
+        assert JOB_KINDS["webhook-deliver"].lane == LIGHT_LANE
 
     def test_idempotent_reregistration(self):
         """Calling register_all_kinds() twice (e.g. test re-imports, or a
@@ -357,6 +361,90 @@ class TestAnalyticsMigrateHandler:
 
         with pytest.raises(ValueError):
             JOB_KINDS["analytics-migrate"].handler({"to": "bogus"})
+
+
+class TestWebhookDeliverHandler:
+    """``webhook-deliver`` (V1b Task 6) — a thin adapter over
+    ``app.chat.webhook_delivery.deliver``; the SSRF guard / HMAC signing /
+    failure-tracking behavior of ``deliver`` itself is covered in
+    ``tests/test_webhook_delivery.py``. These tests cover only the handler's
+    own responsibilities: resolving the webhook row, skipping a
+    deleted/disabled one, and turning a failed delivery into a raised
+    exception so the worker's standard retry path engages."""
+
+    def test_missing_webhook_id_raises(self):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+
+        with pytest.raises(RuntimeError, match="webhook_id"):
+            JOB_KINDS["webhook-deliver"].handler({})
+
+    def test_deleted_webhook_is_a_clean_noop(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr("src.repositories.agent_webhooks_repo", lambda: _FakeAgentWebhooksRepo(row=None))
+
+        # Must not raise — the webhook was deleted between enqueue and claim.
+        JOB_KINDS["webhook-deliver"].handler({"webhook_id": "gone", "notification": {}})
+
+    def test_disabled_webhook_is_a_clean_noop(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr(
+            "src.repositories.agent_webhooks_repo",
+            lambda: _FakeAgentWebhooksRepo(row={"id": "w1", "active": False}),
+        )
+
+        JOB_KINDS["webhook-deliver"].handler({"webhook_id": "w1", "notification": {}})
+
+    def test_failed_delivery_raises_for_job_retry(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr(
+            "src.repositories.agent_webhooks_repo",
+            lambda: _FakeAgentWebhooksRepo(row={"id": "w1", "active": True, "url": "https://h/x", "secret": "s"}),
+        )
+        monkeypatch.setattr("app.chat.webhook_delivery.deliver", lambda webhook, payload: False)
+
+        with pytest.raises(RuntimeError, match="w1"):
+            JOB_KINDS["webhook-deliver"].handler({"webhook_id": "w1", "notification": {"event": "job.completed"}})
+
+    def test_successful_delivery_does_not_raise(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr(
+            "src.repositories.agent_webhooks_repo",
+            lambda: _FakeAgentWebhooksRepo(row={"id": "w1", "active": True, "url": "https://h/x", "secret": "s"}),
+        )
+        delivered = []
+        monkeypatch.setattr(
+            "app.chat.webhook_delivery.deliver",
+            lambda webhook, payload: (delivered.append((webhook, payload)), True)[1],
+        )
+
+        JOB_KINDS["webhook-deliver"].handler({"webhook_id": "w1", "notification": {"event": "job.completed"}})
+
+        assert delivered == [
+            ({"id": "w1", "active": True, "url": "https://h/x", "secret": "s"}, {"event": "job.completed"})
+        ]
+
+
+class _FakeAgentWebhooksRepo:
+    def __init__(self, row):
+        self._row = row
+
+    def get(self, webhook_id):
+        return self._row
 
 
 class TestJiraWebhookEnqueues:
