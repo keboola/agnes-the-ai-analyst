@@ -50,9 +50,17 @@ to `[data-theme="paper"]`; the rail chrome CSS is
    - `--ds-kind-{data,plugin,memory,library,recipe}` + `-soft` — the
      categorical "sticker" palette for entity-kind tags. Never the
      brand primary, so categories can't be mistaken for actions.
-   - `--ds-agnes` / `--ds-agnes-soft` / `--ds-agnes-line` — the
-     assistant's own voice (suggestion cards, "Agnes recommends"
-     surfaces). Never reused for structural UI.
+   - `--ds-kai` / `--ds-kai-dark` / `--ds-kai-soft` / `--ds-kai-line` —
+     the assistant **Kai's** identity accent (sky blue). The ONE accent
+     for "Kai said / suggests this / is showing you around" surfaces:
+     the guided tour, "Ask Kai" affordances, the "Ask Kai in Agnes"
+     card, assistant voice cards, the "Kai is using…" pill. Deliberately
+     distinct from `--ds-primary` (green brand) so Kai reads as its own
+     voice inside the Agnes platform. Never reused for structural UI.
+   - `--ds-agnes` / `--ds-agnes-soft` / `--ds-agnes-line` — the green
+     platform/brand accent kept for the user's own chat surfaces (e.g.
+     the user's message bubble) and legacy assistant callouts not yet
+     migrated to `--ds-kai`. Never reused for structural UI.
    - Status: `--ds-accent-{info,warn,success,danger}-{bg,ink,line}`.
 5. **Shape contrast is meaningful.** Pill radius
    (`--ds-radius-pill`) is reserved for the one prominent CTA per

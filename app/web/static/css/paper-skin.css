@@ -167,15 +167,31 @@
 /* ── Assistant voice — surfaces where the agent speaks ────────── */
 [data-theme="paper"] .agnes-card,
 [data-theme="paper"] .callout-agnes {
-    background: var(--ds-agnes-soft);
-    border: 1px solid var(--ds-agnes-line);
+    background: var(--ds-kai-soft);
+    border: 1px solid var(--ds-kai-line);
     border-radius: 12px;
     color: var(--ds-text-primary);
 }
 
 [data-theme="paper"] .agnes-card b,
 [data-theme="paper"] .callout-agnes b {
-    color: var(--ds-agnes);
+    color: var(--ds-kai);
+}
+
+/* ── Agnes-platform "connect / knowledge" surfaces keep emerald ──────
+   The app primary is now sky blue (Kai), but the surfaces that speak for
+   the Agnes *platform* — the "same knowledge, everywhere" connect banner,
+   the "Use your own AI tools" card, and the whole AI Connector page —
+   keep the emerald brand green. Scope-override the primary trio on those
+   containers so their CTAs/accents stay green without touching the app.
+   (Backgrounds/orbit already ride --ds-agnes, which stays emerald.) */
+[data-theme="paper"] .cbn,
+[data-theme="paper"] .klb-card--tools,
+[data-theme="paper"] .aic-flow {
+    --ds-primary: #10b981;
+    --ds-primary-dark: #059669;
+    --ds-primary-light: #ecfdf5;
+    --ds-brand-accent: #a7f3d0;
 }
 
 /* ── Hero — the light paper hero card ──────────────────────────────

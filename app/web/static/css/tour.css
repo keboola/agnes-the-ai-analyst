@@ -51,7 +51,7 @@
      lifted off the dimmed page regardless of the surface behind it. */
   box-shadow:
     0 0 0 6px var(--ds-surface),
-    0 0 0 8px var(--ds-primary);
+    0 0 0 8px var(--ds-kai);
   outline: none;
 }
 
@@ -100,7 +100,7 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: var(--ds-primary-light);
+  background: var(--ds-kai-soft);
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -109,7 +109,7 @@
 .tour-popover-header-orb svg {
   width: 16px;
   height: 16px;
-  color: var(--ds-primary);
+  color: var(--ds-kai);
 }
 
 .tour-popover-header-label {
@@ -166,7 +166,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--ds-primary);
+  background: var(--ds-kai);
 }
 
 /* Footer — progress dots (left) + action buttons (right) */
@@ -196,7 +196,7 @@
 }
 
 .tour-dot.on {
-  background: var(--ds-primary);
+  background: var(--ds-kai);
   transform: scale(1.3);
 }
 
@@ -262,22 +262,22 @@
 
 /* Next / Done */
 .tour-btn-next {
-  background: var(--ds-primary);
+  background: var(--ds-kai);
   color: var(--ds-text-inverse);
 }
 
 .tour-btn-next:hover {
-  background: var(--ds-primary-dark);
+  background: var(--ds-kai-dark);
 }
 
 /* Final choice — "Finish onboarding" (primary) */
 .tour-btn-finish {
-  background: var(--ds-primary);
+  background: var(--ds-kai);
   color: var(--ds-text-inverse);
 }
 
 .tour-btn-finish:hover {
-  background: var(--ds-primary-dark);
+  background: var(--ds-kai-dark);
 }
 
 /* Final choice — "Connect my AI tools" (secondary) */
@@ -324,5 +324,5 @@
 [data-theme="paper"] .tour-spotlight {
   box-shadow:
     0 0 0 6px var(--ds-surface),
-    0 0 0 8px var(--ds-primary);
+    0 0 0 8px var(--ds-kai);
 }

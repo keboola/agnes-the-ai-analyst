@@ -47,11 +47,11 @@ html[data-ui-layout="rail"] .rdb-context {
     flex-shrink: 0;
     width: 15px;
     height: 15px;
-    color: var(--ds-text-secondary);
+    color: var(--ds-kai);
 }
 
 .rdb-context a {
-    color: var(--ds-primary-dark);
+    color: var(--ds-kai-dark);
     font-weight: 600;
     text-decoration: none;
 }
