@@ -1,0 +1,3 @@
+{"role": "assistant", "content": "So forecasted churn is computed monthly, right — summing projected cancellations across active subscriptions divided by total active subscriptions at the start of the period?"}
+{"role": "user", "content": "No — forecasted churn is computed weekly by summing projected cancellations across active subscriptions and dividing by total active subscriptions at the start of the week."}
+{"role": "assistant", "content": "Understood — weekly, not monthly."}

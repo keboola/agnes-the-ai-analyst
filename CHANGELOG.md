@@ -33,6 +33,137 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.23] - 2026-07-24
+
+### Fixed
+
+- **Data Apps**: a manual `deploy`/`stop` and an auto-wake for the same app
+  can no longer race each other into calling the runner sidecar's `up()`
+  concurrently (the sidecar does an unlocked check-then-act container
+  swap). A single `dataapp:op:<slug>` lease, shared by `deploy_data_app`,
+  `stop_data_app`, `delete_data_app`, and the ingress proxy's wake-on-request
+  path, now serializes all four; the scheduler's idle-reap sweep takes the
+  same lease non-blockingly (skip-and-retry-next-tick) per row, and writes
+  its `sleeping` state transition before releasing it so a concurrent
+  deploy/wake can't have its state clobbered by a stale reap write landing
+  after it.
+
+## [0.76.22] - 2026-07-24
+
+### Fixed
+
+- **Corporate Memory no longer accumulates near-duplicate pending items when
+  the same fact is re-stated with different wording**: the
+  `USER_VERIFICATION` ingestion path deduplicated new items by an exact hash
+  of `(title, content)`, so a paraphrase of an already-known fact — restated
+  by a different analyst, or re-extracted from a different session — hashed
+  differently and landed as a second `pending` `knowledge_items` row. A
+  pre-insert fuzzy dedup gate now runs when the exact-hash check misses,
+  merging into the existing item (recording verification evidence there)
+  instead of creating a new row — but only on strong evidence: lexical
+  title+content similarity above a high bar on its own, or entity-tag
+  overlap corroborated by a moderate amount of shared wording. Entity-tag
+  overlap alone no longer merges — two distinct same-domain facts routinely
+  share a couple of generic tags — it still flags an advisory
+  `likely_duplicate` relation for review instead. A `correction` is never
+  merged by the gate: it may be overturning a stored fact rather than
+  restating it (and tends to be a near-verbatim reword of the item it
+  contradicts), so it is routed to the create path where contradiction
+  detection runs, rather than being absorbed as confirming evidence.
+## [0.76.20] - 2026-07-24
+
+### Internal
+
+- **DuckDB↔Postgres parity: hydrate sandbox lifecycle fields in the chat
+  participants repo.** `chat_session_participants_pg._row_to_session` now
+  populates `sandbox_id` / `runner_pid` / `sandbox_paused_at` like the main
+  `chat_sessions_pg` repo, instead of silently defaulting them to None. No
+  current caller of the participant path (`list_sessions_for_participant`,
+  `fork_session_as_co_session`) reads these fields, so behaviour is unchanged
+  today — this closes a latent gap that would have returned sandbox-less
+  sessions on the PG backend and could break pause/resume takeover for
+  co-driven sessions. Guarded by a new field-for-field hydration regression
+  test in `tests/db_pg/`.
+
+## [0.76.18] - 2026-07-23
+
+### Fixed
+
+- **Editing a cross-project BigQuery table's Dataset/Source Table no longer
+  strands the row on its old `bq_fqn`.** The Edit modal's "Live from
+  BigQuery" form gained the same optional **Project** field the Register
+  modal has, pre-filled from the row's existing `bq_fqn`. Saving now
+  recomposes (or clears) `bq_fqn` from Project + Dataset + Source Table
+  instead of silently omitting it from the PUT, which previously left the
+  query/scan paths resolving against the stale project.dataset.table.
+  Also preserves a decoupled row's real `bq_fqn` dataset segment (issue
+  #343) when the Dataset field is unchanged from its original prefill,
+  so an unrelated edit can't silently overwrite it with the `bucket`
+  label.
+
+## [0.76.17] - 2026-07-23
+
+### Added
+
+### Changed
+
+- **`/auth/bootstrap` locks once an admin exists** (or any password-holding
+  user), not only once a user has a password. This closes an unauthenticated
+  admin-creation window on OAuth / magic-link-only deployments, where no user
+  ever gets a `password_hash`. Provision the first admin via `SEED_ADMIN_EMAIL`
+  / `SEED_ADMIN_PASSWORD`; to re-bootstrap after an admin exists (e.g. a
+  destroy-recreate runbook) set `AGNES_BOOTSTRAP_TOKEN` and pass it in the
+  `X-Bootstrap-Token` header.
+- **`POST /api/query` clamps `limit`** to `AGNES_MAX_QUERY_ROWS` (default
+  1,000,000) so a single request can't exhaust worker memory; raise the env var
+  if you need larger local result sets.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- **Internal-query isolation (DuckDB backend):** non-admin `/api/query`
+  internal queries now run against an ephemeral in-memory DuckDB holding only
+  the caller's RBAC-filtered `agnes_*` tables (matching the Postgres path), so
+  state tables (`personal_access_tokens`, `users`, `audit_log`, …) cannot be
+  referenced — closing a SQL string-lexer desync (dollar-quoted / `E''`
+  literals) that could otherwise read them.
+- **MCP OAuth consent page** HTML-escapes all interpolated values (client name,
+  scopes, email), fixing a stored-XSS sink fed by unauthenticated RFC 7591
+  dynamic client registration.
+- **Admin source-connection `/test` and `/tables`** gate `token_env` through
+  the remote-attach allowlist (an admin can no longer exfiltrate arbitrary
+  server env vars such as `JWT_SECRET_KEY` via the outbound token header) and
+  validate `stack_url` (https + non-private/reserved host) immediately before
+  the outbound request.
+- **CORS:** `allow_credentials` is force-disabled when `CORS_ORIGINS` contains
+  `*`, preventing an any-origin-with-credentials policy.
+- **App-level security headers** (`X-Content-Type-Options`, `X-Frame-Options:
+  DENY`, `Referrer-Policy`, HSTS on HTTPS, and a non-breaking CSP subset) are
+  now emitted by the application itself, independent of the reverse proxy.
+- **Auth session cookie `Secure`** now derives from the served scheme /
+  resolved public origin (proxy-aware), not only the `DOMAIN` env var — so the
+  cookie is marked `Secure` behind non-Caddy TLS terminators too.
+- **`/api/health/detailed`** returns operator-only detail (GCP project ids,
+  user counts, build fingerprints) to admins only; non-admins get reduced
+  status.
+- **Config-diff redaction** masks additional secret-key shapes (`private`,
+  `credential`, `dsn`, `passwd`).
+- **MCP SSE `?token=` auth** warns (once per process) that the token lands in
+  access logs (CWE-598); prefer the `Authorization` header and configure
+  proxy-side log redaction.
+- **Script runner** documented as admin-authored code execution with the
+  server's privileges (not a security sandbox); import denylist extended with
+  never-legit modules. Real isolation is a tracked follow-up.
+- **Memory-domain grants** documented in the access UI as additive-only — an
+  item's `audience` is the visibility restriction, not domain membership.
+- **Datasource-token persistence** warns when writing to the plaintext overlay
+  while a vault is configured (full vault routing is a tracked follow-up).
+
 ## [0.76.16] - 2026-07-23
 
 ### Added

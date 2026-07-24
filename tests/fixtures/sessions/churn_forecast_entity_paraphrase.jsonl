@@ -1,0 +1,3 @@
+{"role": "assistant", "content": "Just to confirm — do we track forecasted churn monthly by summing projected cancellations across active subscriptions and dividing by active subscriptions at the period's start?"}
+{"role": "user", "content": "Yep, that's how we forecast churn: we track it monthly by summing up projected cancellations across active subscriptions and dividing by active subscriptions at the period's start."}
+{"role": "assistant", "content": "Confirmed — that matches what I have."}
