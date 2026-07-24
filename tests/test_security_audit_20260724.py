@@ -69,8 +69,10 @@ def test_f6_write_body_refuses_escape(tmp_path):
 
     cache = tmp_path / "cache"
     cache.mkdir()
-    # A relpath that climbs out of the cache root must be refused.
-    with pytest.raises(ValueError):
+    # A relpath that climbs out of the cache root must be refused. Raised as
+    # OSError so sync_assets' `except OSError` skips just this asset instead of
+    # aborting the whole sync (PR review).
+    with pytest.raises(OSError):
         _write_body(cache, "../../evil.txt", b"x")
     # A legitimate write still works.
     _write_body(cache, "plugin/cover.png", b"ok")

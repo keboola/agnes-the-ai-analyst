@@ -529,13 +529,18 @@ def _write_body(cache_dir: Path, relpath: str, body: bytes) -> None:
     resolved target stays under ``cache_dir`` (mirrors ``_safe_join`` in
     ``app/api/marketplace.py``) so no future caller can smuggle a ``..`` into
     ``relpath`` and write outside the cache root.
+
+    Raises ``OSError`` (not ``ValueError``) on a containment violation so it
+    satisfies ``sync_assets``' documented contract — the write call site catches
+    ``OSError`` and skips just the offending asset (``report.failed += 1``)
+    rather than aborting the whole sync. A refused write IS a failed write.
     """
     full = cache_dir / relpath
     cache_root = cache_dir.resolve()
     try:
         full.parent.resolve().relative_to(cache_root)
     except ValueError:
-        raise ValueError(f"refusing to write outside cache root: {relpath!r}")
+        raise OSError(f"refusing to write outside cache root: {relpath!r}")
     full.parent.mkdir(parents=True, exist_ok=True)
     tmp = full.with_suffix(full.suffix + ".tmp")
     tmp.write_bytes(body)
