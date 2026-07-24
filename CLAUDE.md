@@ -378,6 +378,7 @@ the right tool:
 
 | Need | Use | How |
 |---|---|---|
+| Verify a change before claiming it's done | `verify-agnes-change` | cheapest-first loop: `scripts/verify_syncmap.py` (instant, the sync-map rows no test guards) → the guards your diff touches → full suite → `/agnes-review`. Fix and re-run each gate until it passes. |
 | Review a change before merge | `/agnes-review` | scope-gated review **team** (rules / architecture / rbac / parity — only the in-scope subset fires) + `agnes-review-consolidator` → one advisory report (`file:line` + severity, ≤15 findings). Read-only working tree; optional comment-only PR post. |
 | Implement a whole plan in parallel | `/agnes-build` | decomposes a plan into independent tasks (sync-map coupling), builds each in its own git worktree via `agnes-builder`, integrates (migration serialized last), then runs `/agnes-review`. |
 | Implement a feature (connector / endpoint / web page / repo method / migration) | `agnes-builder` | disciplined implementer (TDD-first, DuckDB↔PG parity in the same change, migration-ladder sync, CHANGELOG, vendor-agnostic, scope discipline). Routes to the `agnes-conventions` playbooks. |
@@ -394,7 +395,8 @@ the right tool:
 
 **Skills** (`.claude/skills/`): knowledge — `agnes-orchestrator`, `agnes-rbac`,
 `agnes-connectors`, `agnes-release-process`; implementation playbooks —
-`agnes-conventions` (`SKILL.md` + `references/{connector,repo-parity,migration,endpoint-rbac,web-page}.md`).
+`agnes-conventions` (`SKILL.md` + `references/{connector,repo-parity,migration,endpoint-rbac,web-page}.md`);
+verification — `verify-agnes-change` (the pre-merge loop).
 Read the relevant one before editing that part of the codebase.
 
 **Invariants & guards:** the change-safety **sync-map** lives in `CONTRIBUTING.md`
