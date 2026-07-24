@@ -1107,3 +1107,40 @@ class TestDrafts:
         d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "a"}).json()
         r = client_as_user.post(f"/api/data-apps/{d['slug']}/drafts", json={"branch": "b"})
         assert r.status_code == 400 and r.json()["detail"] == "parent_is_draft"
+
+    def test_create_draft_near_max_slug_rejected(self, client_as_user, api_env):
+        """A parent slug close to the 40-char SLUG_RE cap leaves no room for
+        `--<branch>` before truncation — `_draft_slug` must reject that as
+        400 `invalid_slug` rather than silently collapsing to the parent's
+        own slug (which would surface as a misleading, branch-independent
+        409 `slug_exists`)."""
+        long_slug = "p" + "a" * 37 + "9"  # 39 chars, SLUG_RE-valid
+        assert len(long_slug) == 39
+        _seed_app_with_commit(api_env["data_dir"], slug=long_slug, owner_id="owner1")
+        r = client_as_user.post(f"/api/data-apps/{long_slug}/drafts", json={"branch": "init"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "invalid_slug"
+
+    def test_create_draft_invalid_branch_rejected(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "Bad Branch"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "invalid_branch"
+
+    def test_create_draft_owner_not_found_500(self, admin_client, seeded_repo_with_commit):
+        """If the parent app's owner row is gone by the time the git
+        credential is minted, `_mint_git_credential` raises
+        `OwnerNotFoundError` — the handler must map that to 500
+        `owner_not_found`, same as the sibling `mint_git_credential`
+        endpoint, rather than letting it bubble up as an unhandled 500."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            UserRepository(conn).delete("owner1")
+        finally:
+            conn.close()
+
+        r = admin_client.post("/api/data-apps/sapp/drafts", json={"branch": "orphan"})
+        assert r.status_code == 500, r.text
+        assert r.json()["detail"] == "owner_not_found"

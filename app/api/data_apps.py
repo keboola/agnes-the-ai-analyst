@@ -455,10 +455,16 @@ def _draft_slug(parent_slug: str, branch: str) -> str:
     ``<parent>--<branch>``, lowercased, non-``SLUG_RE`` characters folded to
     ``-``, truncated to 40 chars. Raises 400 ``invalid_slug`` if the result
     still fails ``SLUG_RE`` (e.g. an all-symbol branch name collapsing to
-    nothing usable, or a leading/trailing ``-`` after truncation)."""
+    nothing usable, or a leading/trailing ``-`` after truncation) — or if it
+    collapses to the parent's own slug, which the 40-char truncation can do
+    for near-max-length parent slugs (a 38-40 char parent leaves no room for
+    ``--<branch>`` before truncation cuts it back down to just the parent).
+    That case must not fall through to ``create_draft``'s UNIQUE constraint:
+    it would surface as a misleading 409 ``slug_exists`` that has nothing to
+    do with an actual name collision and is the same for every branch."""
     raw = f"{parent_slug}--{branch}".lower()
     cleaned = _re.sub(r"[^a-z0-9-]", "-", raw)[:40].strip("-")
-    if not SLUG_RE.match(cleaned):
+    if not SLUG_RE.match(cleaned) or cleaned == parent_slug:
         raise HTTPException(status_code=400, detail="invalid_slug")
     return cleaned
 
@@ -623,6 +629,16 @@ async def create_draft(
     git credential handed back is likewise minted against the parent
     (``_mint_git_credential(parent)``), since that's the repo the branch —
     and thus any push — actually lives in.
+
+    Ordering is deliberate: the registry row is inserted BEFORE the git
+    branch is created. Doing it the other way round would leave an orphaned
+    branch on the parent's repo whenever ``create_draft`` hits a slug
+    collision (409 ``slug_exists``) — a git side effect with no
+    corresponding row, invisible to any registry-driven cleanup. With the
+    row created first, a slug collision has no git side effect at all; if
+    ``ensure_branch`` then fails (409 ``parent_has_no_main``), the
+    just-inserted row is deleted so a failed create-draft call never leaves
+    a dangling draft behind either.
     """
     _feature_gate()
     parent = _get_row_or_404(slug)
@@ -632,13 +648,6 @@ async def create_draft(
     if not _BRANCH_RE.match(payload.branch):
         raise HTTPException(status_code=400, detail="invalid_branch")
     draft_slug = _draft_slug(slug, payload.branch)
-
-    from src.data_apps.git_repos import ensure_branch
-
-    try:
-        ensure_branch(slug, payload.branch, base="main")
-    except ValueError:
-        raise HTTPException(status_code=409, detail="parent_has_no_main")
 
     repo = data_apps_repo()
     try:
@@ -651,7 +660,19 @@ async def create_draft(
     except duckdb.ConstraintException:
         raise HTTPException(status_code=409, detail="slug_exists")
 
-    git_url = _mint_git_credential(parent)  # push credential is against the PROD repo
+    from src.data_apps.git_repos import ensure_branch
+
+    try:
+        ensure_branch(slug, payload.branch, base="main")
+    except ValueError:
+        repo.delete(draft_id)
+        raise HTTPException(status_code=409, detail="parent_has_no_main")
+
+    try:
+        git_url = _mint_git_credential(parent)  # push credential is against the PROD repo
+    except OwnerNotFoundError:
+        raise HTTPException(status_code=500, detail="owner_not_found")
+
     _audit(
         conn,
         user["id"],

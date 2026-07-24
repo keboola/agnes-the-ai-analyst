@@ -406,8 +406,8 @@ _EXEMPT: dict[str, str] = {
     "/api/data-apps/{slug}/git-credential": (
         "wave 3B AI-authoring flow — mints a 24h-scoped git push PAT for an "
         "authoring agent session (`_mint_git_credential`); no CLI/MCP "
-        "analogue (an interactive `agnes` user already has git access via "
-        "the internal repo clone, this is for the in-container agent)"
+        "analogue yet — `agnes app git-credential` (CLI) and "
+        "`data_app_git_credential` (MCP) land in wave 3B Task 8"
     ),
     "/api/data-apps/{slug}/drafts": (
         "wave 3B AI-authoring flow — creates a draft branch+row of a prod "
