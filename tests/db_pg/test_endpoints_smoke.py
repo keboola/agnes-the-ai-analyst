@@ -1505,6 +1505,9 @@ KNOWN_UNTESTED = {
     "POST /api/broker/anthropic/{subpath}",
     "POST /api/broker/agnes-api",
     "POST /api/broker/agnes-mcp",
+    # Sandboxed data-apps authoring replay (Task 7, wave 3B) — same
+    # ticket-authed, never parameter-free shape as the broker routes above.
+    "POST /api/broker/data-apps",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
     # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
@@ -1610,6 +1613,13 @@ KNOWN_UNTESTED = {
     "GET /api/data-apps/{slug}/logs",
     "GET /api/data-apps/{slug}/readiness",
     "POST /api/data-apps/reap-idle",
+    # Wave 3B AI-authoring flow (git-credential + drafts) — same "needs a
+    # real data_apps row + owner/Admin RBAC" non-goal as the rest of this
+    # block. Full coverage lives in tests/test_data_apps_api.py
+    # (TestGitCredential, TestDrafts).
+    "POST /api/data-apps/{slug}/git-credential",
+    "POST /api/data-apps/{slug}/drafts",
+    "DELETE /api/data-apps/{slug}/drafts/{draft_slug}",
     # Data apps web UI (Task 12) — HTML pages, not part of the parameter-free
     # API smoke sweep (same convention as the other `GET /admin/*` / `GET
     # /library*` web routes above). RBAC/rendering/feature-flag/route-collision

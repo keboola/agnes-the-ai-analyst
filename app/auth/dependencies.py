@@ -38,6 +38,7 @@ _AUTH_DETAIL_BY_REASON = {
     "pat_revoked": "Token revoked",
     "pat_expired": "Token expired",
     "pat_mismatch": "Token mismatch",
+    "pat_scope_forbidden": "git_scope_token_not_allowed",
     "invalid_token": "Invalid or expired token",
     "no_token": "Invalid or expired token",
 }
@@ -149,6 +150,7 @@ def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Opt
     ``conn`` retained for signature compat; ignored — uses the factory.
     """
     from src.repositories import users_repo
+
     user = users_repo().get_by_email(get_local_dev_email())
     if not user:
         logger.error(
@@ -158,9 +160,7 @@ def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Opt
     return user
 
 
-def _stash_chat_session_id_from_token(
-    request: Optional[Request], token: str
-) -> None:
+def _stash_chat_session_id_from_token(request: Optional[Request], token: str) -> None:
     """Decode ``token`` and, if it carries ``scope=chat`` plus a
     ``chat_session_id`` claim, stash that claim on ``request.state``.
 
@@ -175,6 +175,7 @@ def _stash_chat_session_id_from_token(
         return
     try:
         from app.auth.jwt import verify_token as _verify
+
         payload = _verify(token) or {}
     except Exception:
         return
@@ -252,6 +253,7 @@ def get_current_user(
     # verify_token() would log a spurious decode warning every cron tick.
     # See app/auth/scheduler_token.py for the threat model.
     from app.auth.scheduler_token import get_scheduler_user, is_scheduler_token
+
     if is_scheduler_token(token):
         scheduler_user = get_scheduler_user(conn)
         if scheduler_user:
@@ -264,6 +266,7 @@ def get_current_user(
 
     from app.auth.pat_resolver import resolve_token_to_user
     from app.auth.session_principal import SessionPrincipal
+
     user, reason = resolve_token_to_user(conn, token, request)
     if isinstance(user, SessionPrincipal):
         return user
@@ -296,6 +299,7 @@ def _attach_admin_flag(user: dict, conn: duckdb.DuckDBPyConnection) -> None:
     (the same call all server-side admin gates use).
     """
     from app.auth.access import is_user_admin
+
     user_id = user.get("id")
     if user_id:
         try:
@@ -351,12 +355,14 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
         token = request.cookies.get("access_token")
     if token:
         from app.auth.scheduler_token import is_scheduler_token
+
         if is_scheduler_token(token):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This endpoint requires an interactive session, not a service token",
             )
         from app.auth.jwt import verify_token
+
         payload = verify_token(token) or {}
         if payload.get("typ") == "pat":
             raise HTTPException(

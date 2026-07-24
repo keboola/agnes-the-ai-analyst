@@ -148,6 +148,33 @@ def test_list_page_hides_apps_from_stranger(web_env):
     assert "secretapp" not in resp.text
 
 
+def test_list_page_hides_drafts(web_env):
+    """Drafts are excluded from every other data-apps listing surface
+    (`GET /api/data-apps`, `agnes app list`, the MCP `data_apps_list` tool)
+    via `include_drafts=False` -- the human-facing `/apps` page must not be
+    the one place they leak through."""
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    parent_id = _create_app_row(slug="parentapp", owner_id="owner1", name="Parent", state="running")
+    conn = get_system_db()
+    try:
+        DataAppsRepository(conn).create_draft(
+            parent_app_id=parent_id,
+            slug="parentapp--init",
+            branch="init",
+            owner_user_id="owner1",
+        )
+    finally:
+        conn.close()
+
+    c = web_env["client"]
+    resp = c.get("/apps", headers=_auth(web_env["owner_pat"]))
+    assert resp.status_code == 200
+    assert "parentapp" in resp.text
+    assert "parentapp--init" not in resp.text
+
+
 def test_list_page_disabled_shows_empty_state(web_env):
     import app.instance_config as instance_config
     from pathlib import Path
