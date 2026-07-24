@@ -324,6 +324,10 @@ async def agnes_mcp(request: Request, row: Dict[str, Any] = Depends(require_brok
 _DATA_APPS_PATH_PREFIX = "/api/data-apps"
 
 
+def _within_data_apps_prefix(path: str) -> bool:
+    return path == _DATA_APPS_PATH_PREFIX or path.startswith(_DATA_APPS_PATH_PREFIX + "/")
+
+
 @router.post("/data-apps")
 async def data_apps_broker(request: Request, row: Dict[str, Any] = Depends(require_broker_ticket)) -> Response:
     """Replay a sandboxed authoring agent's request under the ticket identity,
@@ -334,12 +338,71 @@ async def data_apps_broker(request: Request, row: Dict[str, Any] = Depends(requi
     check keeps a data_apps-scoped ticket from reaching any other `/api/*`
     route even though `_replay` itself would happily dispatch there (its own
     gate only blocks admin-mutation routes).
+
+    The confinement check MUST decide on the same canonicalized path
+    `_replay`/ASGITransport actually dispatches on — a raw-string
+    ``.startswith()`` check on the agent-supplied path diverges from the
+    real dispatch target exactly like the admin-route gate's pre-#849 bug:
+    ``{"path": "/api/data-apps/../catalog"}`` passes a literal prefix check
+    but resolves (via `_normalize_broker_path`, the same canonicalizer
+    `_replay` uses) to `/api/catalog` — a real, non-admin, out-of-prefix
+    route. So canonicalize FIRST, gate on the canonicalized path, and hand
+    the SAME canonical path to `_replay` (never the raw agent-supplied
+    string) so the gate and the dispatch cannot diverge.
+
+    Beyond the prefix check, any canonicalized path that still contains a
+    literal ``..`` segment is rejected outright — httpx's dot-segment
+    collapse (which `_normalize_broker_path` relies on) only resolves
+    *literal* ``..`` at URL-construction time; a percent-encoded segment
+    (``%2e%2e``, ``..%2f``) survives decoding as a literal ``..`` string
+    that still starts with ``/api/data-apps/`` without being collapsed. No
+    legitimate `/api/data-apps/*` call ever needs a `..` segment, so this is
+    pure defense-in-depth against relying on "it happens to 404".
     """
     _require_scope(row, "data_apps")
     body = await request.json()
-    path = str(body.get("path") or "")
-    if not (path == _DATA_APPS_PATH_PREFIX or path.startswith(_DATA_APPS_PATH_PREFIX + "/")):
+    raw_path = body.get("path")
+
+    try:
+        target = _normalize_broker_path(raw_path)
+    except HTTPException:
+        try:
+            audit_repo().log(
+                action="broker_data_apps_path_rejected",
+                params={"raw_path": str(raw_path)[:200], "session_id": row.get("session_id")},
+                result="denied",
+                client_kind="broker",
+            )
+        except Exception:
+            pass
+        raise
+
+    norm_path = target.path
+    has_dot_segment = ".." in norm_path.split("/") or "." in norm_path.split("/")
+    if has_dot_segment or not _within_data_apps_prefix(norm_path):
+        try:
+            audit_repo().log(
+                action="broker_data_apps_path_rejected",
+                params={
+                    "raw_path": str(raw_path)[:200],
+                    "normalized_path": norm_path,
+                    "session_id": row.get("session_id"),
+                },
+                result="denied",
+                client_kind="broker",
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=403, detail="path_not_allowed")
+
+    # Hand `_replay` the SAME canonical path+query just validated — never the
+    # raw agent-supplied string — so its own (idempotent) re-normalization
+    # cannot land anywhere but here.
+    canonical = norm_path
+    if target.query:
+        canonical = f"{norm_path}?{target.query.decode('ascii')}"
+    body = {**body, "path": canonical}
+
     resp = await _replay(request, row, body)
     return _to_response(resp)
 

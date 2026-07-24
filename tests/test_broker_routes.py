@@ -710,7 +710,7 @@ def test_dispatcher_optin_empty_key_logs_warning(broker_app, monkeypatch, caplog
 
 
 @pytest.fixture
-def broker_env(e2e_env, monkeypatch):
+def broker_env(e2e_env):
     """A seeded user + chat session with a data_apps-scoped ticket, data_apps
     feature enabled, and a real TestClient(app) — standing in for the
     sandboxed authoring agent's broker call."""
@@ -738,7 +738,7 @@ def broker_env(e2e_env, monkeypatch):
 
 
 @pytest.fixture
-def broker_env_main_scope(e2e_env, monkeypatch):
+def broker_env_main_scope(e2e_env):
     """Same as `broker_env`, but the ticket is minted with the `main` scope —
     used to prove a wrong-scope ticket cannot authenticate the data-apps
     broker route."""
@@ -791,5 +791,57 @@ def test_broker_data_apps_path_confined(broker_env):
         "/api/broker/data-apps",
         headers={"Authorization": f"Bearer {ticket}"},
         json={"path": "/api/admin/users", "method": "GET"},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
+
+
+def test_broker_data_apps_dot_segment_traversal_rejected(broker_env):
+    """A literal `..` segment collapses (via the same `_normalize_broker_path`
+    canonicalizer `_replay` uses) to a real, non-admin, out-of-prefix route —
+    `/api/data-apps/../catalog` resolves to `/api/catalog`. A raw-string
+    prefix check on the agent-supplied path would pass this through; the gate
+    must decide on the canonicalized path instead (mirrors the admin-route
+    gate hardening on #849)."""
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/data-apps/../catalog", "method": "GET"},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
+
+
+@pytest.mark.parametrize(
+    "evil_path",
+    [
+        "/api/data-apps/%2e%2e/catalog",
+        "/api/data-apps/..%2fcatalog",
+    ],
+)
+def test_broker_data_apps_percent_encoded_traversal_rejected(broker_env, evil_path):
+    """Percent-encoded dot-segments survive `_normalize_broker_path`'s decode
+    without being collapsed (httpx only collapses *literal* `..` at URL
+    construction time), so the canonicalized path still starts with
+    `/api/data-apps/` while carrying a literal `..` segment. No legitimate
+    `/api/data-apps/*` call needs a `..` segment, so these are rejected
+    outright rather than trusted to 404 harmlessly."""
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": evil_path, "method": "GET"},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
+
+
+def test_broker_data_apps_prefix_boundary_rejected(broker_env):
+    """`/api/data-apps-evil` shares the `/api/data-apps` string prefix but is
+    a different (hypothetical) route, not a sub-path — the confinement check
+    must be an exact-or-slash-boundary match, not a bare `str.startswith`."""
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/data-apps-evil", "method": "GET"},
     )
     assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
