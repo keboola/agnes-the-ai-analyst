@@ -561,24 +561,27 @@ _BLOCKED_SQL_TOKENS = [
 # reads a file with NO ``read_parquet()`` call and slips past the function
 # denylist above. The existing ``'/`` / ``'../`` tokens only catch absolute or
 # dot-dot paths — a bare relative path like ``'data/…parquet'`` has neither.
-# Reject a single-quoted string literal that appears immediately after
-# ``FROM`` / ``JOIN`` (optionally wrapped in parens) — the direct replacement
-# scan. Legitimate string literals sit after ``SELECT`` / ``WHERE`` /
-# operators, never in table position, so this does not touch valid queries.
-_FROM_STRING_LITERAL_RE = re.compile(r"\b(?:from|join)\s*\(*\s*'")
-
-# The comma-separated FROM-list form (``FROM v, 'evil.parquet'``) and glob forms
-# sit past the position-based check above, so we additionally inspect TABLE
-# SOURCES precisely via sqlglot: a real table/view is a SQL identifier
-# (optionally schema-qualified) and never contains a path separator, glob
-# metacharacter, or data-file extension, whereas a DuckDB replacement scan
-# (``FROM 'file.parquet'``) parses as a Table whose NAME carries exactly those.
+#
+# We detect file table sources by inspecting TABLE SOURCES precisely via
+# sqlglot: a real table/view is a SQL identifier (optionally schema-qualified)
+# and never contains a path separator, glob metacharacter, or data-file
+# extension, whereas a DuckDB replacement scan (``FROM 'file.parquet'`` — direct,
+# comma-list, or glob) parses as a Table whose NAME carries exactly those.
 # Inspecting names — not arbitrary literals — is what makes this precise: a
-# legitimate value literal in SELECT/WHERE position (``WHERE f = 'report.csv'``)
-# is never a Table, so it is not flagged. The external-access boundary on the
-# analytics connection stays ON because local views need ``read_parquet`` —
-# these parse-level guards are the file-access boundary.
+# legitimate value literal in SELECT/WHERE position (``WHERE f = 'report.csv'``),
+# or a functional ``FROM`` such as ``TRIM(' ' FROM x)`` / ``EXTRACT(day FROM
+# ts)``, is never a Table and so is not flagged. The external-access boundary on
+# the analytics connection stays ON because local views need ``read_parquet`` —
+# this parse-level guard is the file-access boundary.
 _FILE_TABLE_EXTS = frozenset({"parquet", "parq", "csv", "tsv", "json", "ndjson", "arrow", "duckdb", "xlsx"})
+
+# Fallback ONLY for when sqlglot cannot parse the SQL at all: a quoted string
+# literal directly after ``FROM`` / ``JOIN``. This is deliberately not used on
+# parseable SQL because it over-matches functional FROM clauses like
+# ``TRIM(' ' FROM 'abc')`` — sqlglot models those correctly, so the primary
+# path never sees the false positive; an unparseable query is almost certainly
+# invalid anyway, so a conservative reject there is acceptable.
+_FROM_STRING_LITERAL_RE = re.compile(r"\b(?:from|join)\s*\(*\s*'")
 
 
 def _name_looks_like_file(name: str) -> bool:
@@ -591,16 +594,19 @@ def _name_looks_like_file(name: str) -> bool:
 
 def _has_file_table_source(sql: str) -> bool:
     """True if any FROM/JOIN table source is a file path (a DuckDB replacement
-    scan), inspected precisely via sqlglot. Falls back to the position-based
-    regex when the SQL can't be parsed as DuckDB, so the direct
-    ``FROM 'file'`` / ``JOIN 'file'`` form is still caught.
+    scan), inspected precisely via sqlglot. This is the PRIMARY and only F8
+    check on parseable SQL — it covers the direct ``FROM 'file'``, comma-list
+    (``FROM v, 'file'``), and glob forms uniformly, without the false positives
+    a position regex has on functional FROM clauses (TRIM/EXTRACT/SUBSTRING).
+    Falls back to the position-based regex only when the SQL can't be parsed as
+    DuckDB, so the direct/comma ``FROM 'file'`` form is still caught there.
 
     Depends on sqlglot (pinned ``sqlglot>=30.0.0`` in pyproject) modeling a
-    quoted comma-list/glob FROM source as an ``exp.Table`` whose ``.name``
-    carries the path. That behavioral assumption has a dedicated tripwire test
-    (``tests/test_security_audit_20260724.py::test_f8_sqlglot_models_file_table_source_as_table``)
-    so a future sqlglot upgrade that changes it fails loudly rather than
-    silently regressing comma-list detection."""
+    quoted FROM source as an ``exp.Table`` whose ``.name`` carries the path.
+    That behavioral assumption has dedicated tripwire tests
+    (``test_f8_sqlglot_models_file_table_source_as_table`` covers direct AND
+    comma-list) so a future sqlglot upgrade that changes it fails loudly rather
+    than silently regressing detection."""
     try:
         import sqlglot
         from sqlglot import exp
@@ -623,9 +629,11 @@ def _assert_select_only(sql_lower: str) -> None:
     be ``.strip().lower()``-ed by the caller."""
     if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
-    # Direct string-literal table source (position-based; no false positives) OR
-    # a file-path table source anywhere in the FROM graph (sqlglot-precise).
-    if _FROM_STRING_LITERAL_RE.search(sql_lower) or _has_file_table_source(sql_lower):
+    # File-path table source anywhere in the FROM graph (direct / comma-list /
+    # glob), detected precisely via sqlglot — the position regex is used only as
+    # the parse-failure fallback inside _has_file_table_source, so functional
+    # FROM clauses (TRIM/EXTRACT/SUBSTRING) don't false-positive.
+    if _has_file_table_source(sql_lower):
         raise HTTPException(
             status_code=400,
             detail="File-path table sources are not allowed; query registered views by name",

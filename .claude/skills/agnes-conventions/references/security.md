@@ -28,15 +28,17 @@ DuckDB resolves a quoted string in `FROM`/`JOIN` position as a file
 ("replacement scan"), so `FROM 'data/…parquet'` reads a file with no
 `read_parquet()` call — bypassing the function denylist. External access stays
 ON because legit views need `read_parquet`, so the boundary is **parse-level**:
-`app/api/query.py:_assert_select_only` rejects a string literal directly after
-`FROM`/`JOIN` (`_FROM_STRING_LITERAL_RE`) **and** inspects table sources via
-sqlglot (`_has_file_table_source`) — a real table/view name never contains a
-path separator, glob metacharacter, or data-file extension, so this flags file
-sources (incl. comma-list/glob forms) without rejecting a legitimate value
-literal in `SELECT`/`WHERE`. Match on table NAMES, never arbitrary literals
-(matching any quoted literal ending in `.csv` wrongly rejects
-`WHERE f = 'report.csv'`). Don't loosen it; don't add a new query entrypoint
-that skips `_assert_select_only`.
+`app/api/query.py:_assert_select_only` inspects table sources via sqlglot
+(`_has_file_table_source`) — a real table/view name never contains a path
+separator, glob metacharacter, or data-file extension, so this flags file
+sources (direct, comma-list, and glob) without rejecting a legitimate value
+literal in `SELECT`/`WHERE`. Match on table NAMES, never arbitrary literals: a
+literal-anywhere match (any quoted `.csv`) wrongly rejects
+`WHERE f = 'report.csv'`, and a `FROM '`-position regex wrongly rejects
+functional FROM clauses like `TRIM(' ' FROM 'abc')` — which is why the position
+regex (`_FROM_STRING_LITERAL_RE`) is used ONLY as the parse-failure fallback,
+never on parseable SQL. Don't loosen it; don't add a new query entrypoint that
+skips `_assert_select_only`.
 
 ## 3. HTML rendering — sanitize before `innerHTML` (F3)
 

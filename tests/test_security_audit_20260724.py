@@ -120,20 +120,39 @@ def test_f8_from_string_literal_rejected():
 
 def test_f8_sqlglot_models_file_table_source_as_table():
     """Tripwire for the sqlglot behavioral dependency in
-    ``app/api/query.py:_has_file_table_source``: the comma-list / glob file
-    detection relies on sqlglot (duckdb dialect) modeling a quoted FROM source
-    as an ``exp.Table`` whose ``.name`` carries the path. If a sqlglot upgrade
-    changes that, this fails loudly and points straight at the cause — the
-    direct ``FROM 'x'`` form is still covered by the position-regex fallback."""
+    ``app/api/query.py:_has_file_table_source``: on parseable SQL, ALL file
+    detection (direct, comma-list, glob) relies on sqlglot (duckdb dialect)
+    modeling a quoted FROM source as an ``exp.Table`` whose ``.name`` carries
+    the path. If a sqlglot upgrade changes that, this fails loudly and points
+    straight at the cause. Covers the DIRECT single form too (not just the
+    comma-list) — because the position regex is now fallback-only, the direct
+    case's rejection depends on this sqlglot behavior on parseable SQL."""
     import sqlglot
     from sqlglot import exp
 
-    stmt = sqlglot.parse_one("SELECT * FROM my_view, 'data/x.parquet'", read="duckdb")
-    names = [t.name for t in stmt.find_all(exp.Table)]
-    assert "data/x.parquet" in names, (
+    def table_names(sql):
+        return [t.name for t in sqlglot.parse_one(sql, read="duckdb").find_all(exp.Table)]
+
+    assert "data/x.parquet" in table_names("SELECT * FROM 'data/x.parquet'"), (
+        "sqlglot no longer models a DIRECT file source as a Table.name — "
+        "update app/api/query.py:_has_file_table_source (and pin sqlglot)"
+    )
+    assert "data/x.parquet" in table_names("SELECT * FROM my_view, 'data/x.parquet'"), (
         "sqlglot no longer models a comma-list file source as a Table.name — "
         "update app/api/query.py:_has_file_table_source (and pin sqlglot)"
     )
+
+
+def test_f8_functional_from_clauses_not_rejected():
+    """Regression guard: functional FROM clauses with a quoted arg
+    (TRIM/EXTRACT/SUBSTRING) must NOT be rejected. The old position-regex
+    OR-condition false-positived on ``TRIM(' ' FROM 'abc')``; sqlglot models
+    the quoted arg as a function literal, not a table source."""
+    from app.api.query import _assert_select_only
+
+    _assert_select_only("select trim(both ' ' from ' hi ') as t from my_view")
+    _assert_select_only("select extract(day from ts) from my_view")
+    _assert_select_only("select substring('abcx' from 2) from my_view")
 
 
 def test_f8_legitimate_queries_pass():
