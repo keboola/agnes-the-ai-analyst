@@ -244,6 +244,7 @@ def _make_app_with_fake_provider() -> "FastAPI":
         concurrency_per_user=3,
         on_detach="pause",
         detach_linger_seconds=0,
+        idle_grace_seconds=0,
     )
     mgr = ChatManager(
         provider=fake_provider,

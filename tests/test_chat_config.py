@@ -61,7 +61,27 @@ def test_detach_defaults():
     cfg = load_chat_config(Path("/nonexistent"))
     assert cfg.on_detach == "pause"
     assert cfg.detach_linger_seconds == 60
+    assert cfg.idle_grace_seconds == 60
     assert cfg.paused_ttl_seconds == 7 * 24 * 3600
+
+
+def test_idle_grace_seconds_defaults_to_detach_linger_seconds(tmp_path: Path):
+    """Tier 1 grace window: when idle_grace_seconds is not set explicitly,
+    it falls back to whatever detach_linger_seconds resolves to — an
+    operator pinning only the legacy knob keeps working unmodified."""
+    p = tmp_path / "instance.yaml"
+    p.write_text("chat:\n  enabled: true\n  detach_linger_seconds: 45\n")
+    cfg = load_chat_config(p)
+    assert cfg.detach_linger_seconds == 45
+    assert cfg.idle_grace_seconds == 45
+
+
+def test_idle_grace_seconds_explicit_override(tmp_path: Path):
+    p = tmp_path / "instance.yaml"
+    p.write_text("chat:\n  enabled: true\n  detach_linger_seconds: 45\n  idle_grace_seconds: 120\n")
+    cfg = load_chat_config(p)
+    assert cfg.detach_linger_seconds == 45
+    assert cfg.idle_grace_seconds == 120
 
 
 def test_legacy_kill_knob_maps_to_on_detach_kill(tmp_path, caplog):

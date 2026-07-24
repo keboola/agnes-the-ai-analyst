@@ -55,11 +55,10 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from app.api.data_apps import OwnerNotFoundError, _can_view, _feature_gate, redeploy_current
+from app.api.data_apps import OwnerNotFoundError, _can_view, _feature_gate, redeploy_current, try_acquire_op_lease
 from app.auth.dependencies import _get_db, get_current_user
 from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
-from app.coordination.leases import default_holder_id
 from src.data_apps.runner_client import RunnerClient, RunnerError, RunnerUnavailable
 from src.repositories import data_apps_repo
 
@@ -96,7 +95,6 @@ _HOP_BY_HOP = {
 # `Set-Cookie` on the way back is legitimate and none of this proxy's business.
 _CREDENTIAL_HEADERS = {"authorization", "cookie"}
 
-_WAKE_LEASE_TTL_S = 120
 _TOUCH_DEBOUNCE_TTL_S = 30
 
 # Strong references to in-flight background wake tasks. asyncio only holds a
@@ -203,17 +201,21 @@ async def _spawn_wake(fn, row: dict) -> None:
 
 
 async def _trigger_wake(app_row: dict) -> None:
-    """Wake a sleeping app — at most one in-flight attempt per app at a
-    time, enforced by the ``dataapp:wake:{slug}`` lease. Callers that lose
-    the race (another request/replica already holds the lease) just
-    return — their caller renders the holding page regardless, and the
-    already-in-progress wake will flip the state for everyone. The lease
-    is deliberately never explicitly released on success/failure here —
-    it's TTL-only, expiring naturally after ``_WAKE_LEASE_TTL_S`` seconds;
-    an explicit release the instant this coroutine returns (well before
-    the backgrounded redeploy actually finishes, for the recreate path)
-    would let a second concurrent request re-acquire it and fire a
-    duplicate wake while the first is still in flight.
+    """Wake a sleeping app — at most one in-flight runner-mutating
+    operation per app at a time, enforced by the ``dataapp:op:{slug}``
+    lease shared with ``deploy_data_app``/``stop_data_app``
+    (``app/api/data_apps.py``). Callers that lose the race (another
+    request/replica already holds the lease — a concurrent wake, or a
+    manual deploy/stop for the same app) just return — their caller
+    renders the holding page regardless, and whichever operation is
+    already in flight will flip the state for everyone. The lease is
+    deliberately never explicitly released on success/failure here —
+    it's TTL-only (see ``try_acquire_op_lease``), expiring naturally; an
+    explicit release the instant this coroutine returns (well before the
+    backgrounded redeploy actually finishes, for the recreate path) would
+    let a second concurrent request re-acquire it and fire a duplicate
+    wake — or a manual deploy/stop race the still-in-flight redeploy —
+    while the first is still going.
 
     ``sleep_mode="pause"`` unpauses synchronously — cheap enough to await
     inline, so this coroutine sets ``running`` itself once it's done
@@ -224,16 +226,9 @@ async def _trigger_wake(app_row: dict) -> None:
     NOT awaited to completion here, see that function's docstring.
     """
     slug = app_row["slug"]
-    holder = default_holder_id()
-    try:
-        acquired = coordination().lease_acquire(f"dataapp:wake:{slug}", holder, ttl_s=_WAKE_LEASE_TTL_S)
-    except CoordinationUnavailable:
-        # Single-process dev fallback: no cross-process lock available —
-        # proceed with the wake unlocked rather than leaving the app
-        # stuck asleep forever because coordination happens to be down.
-        acquired = True
+    acquired, _holder = try_acquire_op_lease(slug)
     if not acquired:
-        return  # another request/replica already owns this app's wake
+        return  # another request/replica already owns this app's wake, or a manual deploy/stop is in flight
 
     repo = data_apps_repo()
     if app_row.get("sleep_mode") == "pause":
