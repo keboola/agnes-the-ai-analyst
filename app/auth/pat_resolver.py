@@ -40,7 +40,18 @@ ResolutionReason = Literal[
     "pat_revoked",
     "pat_expired",
     "pat_mismatch",
+    "pat_scope_forbidden",
 ]
+
+# Scope prefix minted by `app.api.data_apps._mint_git_credential` for the
+# data-app git-over-HTTP authoring surface. A token carrying this scope must
+# never authenticate the JSON API (or any other git-over-HTTP surface, e.g.
+# the marketplace's) — only `app/api/data_apps_git.py` may pass
+# `allow_data_app_git_scope=True` to accept it. Without this check the
+# credential is, in practice, a full-privilege user PAT: nothing else reads
+# the `scope` claim, so a sandboxed authoring agent holding it could call any
+# non-admin (or admin, if the owner is Admin) REST/MCP endpoint.
+DATA_APP_GIT_SCOPE_PREFIX = "data-app-git:"
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -58,6 +69,8 @@ def resolve_token_to_user(
     conn: Optional[duckdb.DuckDBPyConnection],
     token: str,
     request: Optional[Request] = None,
+    *,
+    allow_data_app_git_scope: bool = False,
 ) -> Tuple[Optional[dict], Optional[ResolutionReason]]:
     """Validate a bearer token and return (user_dict, None) on success.
 
@@ -69,6 +82,12 @@ def resolve_token_to_user(
     ``conn`` is retained for signature stability — repositories are looked
     up via the factory in ``src.repositories`` (DuckDB or Postgres per
     ``AGNES_DB_URL``), so this argument is ignored.
+
+    ``allow_data_app_git_scope`` gates whether a token carrying the
+    ``data-app-git:<slug>`` scope (minted by
+    ``app.api.data_apps._mint_git_credential``) is accepted. Every caller
+    defaults to ``False`` (fail closed) except ``app/api/data_apps_git.py``,
+    the one surface that credential is meant to authenticate.
     """
     if not token:
         return None, "no_token"
@@ -76,6 +95,10 @@ def resolve_token_to_user(
     payload = verify_token(token)
     if not payload:
         return None, "invalid_token"
+
+    scope = payload.get("scope") or ""
+    if scope.startswith(DATA_APP_GIT_SCOPE_PREFIX) and not allow_data_app_git_scope:
+        return None, "pat_scope_forbidden"
 
     typ = payload.get("typ")
     co_session_id = payload.get("chat_session_id")
@@ -91,9 +114,8 @@ def resolve_token_to_user(
         if typ == "co_session":
             from src.grant_intersection import compute_grant_intersection
             from app.auth.session_principal import SessionPrincipal
-            participants = chat_session_participants_repo().get_session_participants(
-                co_session_id
-            )
+
+            participants = chat_session_participants_repo().get_session_participants(co_session_id)
             if not participants:
                 return None, "invalid_token"  # no live participants -> deny
             emails = [p.user_email for p in participants]
@@ -113,6 +135,7 @@ def resolve_token_to_user(
             return None, "invalid_token"  # FAIL CLOSED
 
     from src.repositories import users_repo, access_token_repo
+
     user = users_repo().get_by_id(payload.get("sub", ""))
     if not user:
         return None, "user_not_found"
@@ -156,6 +179,7 @@ def resolve_token_to_user(
     if already_used and current_ip and current_ip != previous_ip:
         try:
             from src.repositories import audit_repo
+
             audit_repo().log(
                 user_id=user["id"],
                 action="token.first_use_new_ip",

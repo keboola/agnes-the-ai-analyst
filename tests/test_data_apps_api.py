@@ -1112,6 +1112,40 @@ class TestGitCredential:
         assert now < expires_at <= now + timedelta(hours=24, minutes=1)
 
 
+def _extract_jwt_from_clone_url(url: str) -> str:
+    """Pull the JWT out of a `.../agnes:<jwt>@host/...` git clone URL."""
+    return url.split("agnes:", 1)[1].split("@", 1)[0]
+
+
+class TestGitScopeRejectedOnJsonApi:
+    """A `data-app-git:<slug>` credential is scoped to the git-over-HTTP
+    surface only (`app/api/data_apps_git.py`) — it must never authenticate
+    the JSON REST API. Without this, the credential is effectively a
+    full-privilege user PAT usable against the whole non-admin API surface,
+    escaping the sandboxed-authoring confinement it was minted for."""
+
+    def test_git_scoped_pat_rejected_on_list_data_apps(self, client_as_user, seeded_repo_with_commit):
+        mint = client_as_user.post("/api/data-apps/sapp/git-credential")
+        jwt = _extract_jwt_from_clone_url(mint.json()["git_clone_url"])
+
+        r = client_as_user.get("/api/data-apps", headers=_auth(jwt))
+        assert r.status_code == 401
+        assert r.json()["detail"] == "git_scope_token_not_allowed"
+
+    def test_git_scoped_pat_rejected_on_catalog(self, client_as_user, seeded_repo_with_commit):
+        mint = client_as_user.post("/api/data-apps/sapp/git-credential")
+        jwt = _extract_jwt_from_clone_url(mint.json()["git_clone_url"])
+
+        r = client_as_user.get("/api/catalog/tables", headers=_auth(jwt))
+        assert r.status_code == 401
+        assert r.json()["detail"] == "git_scope_token_not_allowed"
+
+    def test_normal_pat_still_works_on_json_api(self, client_as_user, seeded_repo_with_commit):
+        """Control: an ordinary (unscoped) PAT is unaffected by the new check."""
+        r = client_as_user.get("/api/data-apps")
+        assert r.status_code == 200
+
+
 class TestDrafts:
     def test_create_draft(self, client_as_user, seeded_repo_with_commit):
         r = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"})
