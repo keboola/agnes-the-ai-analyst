@@ -41,43 +41,15 @@
 .tour-spotlight {
   position: relative;
   z-index: 9010 !important;
-  border-radius: var(--ds-radius-pill);
-  /* Backing plate so the element always reads against white, regardless of
-     the page surface behind it. */
+  /* A normal panel radius — NOT the pill radius: on a large tabs+table zone a
+     pill radius rounds the corners by half its height and reads as a blob. */
+  border-radius: var(--ds-radius-lg);
+  /* Backing plate (white gap) + a clean primary ring, so the target reads
+     lifted off the dimmed page regardless of the surface behind it. */
   box-shadow:
     0 0 0 6px var(--ds-surface),
     0 0 0 8px var(--ds-primary);
   outline: none;
-  /* Animated ring — a rotating conic-gradient that traces the border. */
-  --_ring-size: 3px;
-}
-
-.tour-spotlight::after {
-  content: '';
-  position: absolute;
-  inset: calc(-1 * var(--_ring-size) - 6px);
-  border-radius: inherit;
-  background: conic-gradient(
-    from 0deg,
-    var(--ds-primary) 0deg 90deg,
-    transparent 90deg 270deg,
-    var(--ds-primary) 270deg 360deg
-  );
-  z-index: -1;
-  animation: tour-ring-spin 1.6s linear infinite;
-  opacity: 0.55;
-}
-
-@keyframes tour-ring-spin {
-  to { transform: rotate(360deg); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tour-spotlight::after {
-    animation: none;
-    background: var(--ds-primary);
-    opacity: 0.35;
-  }
 }
 
 /* ── Popover ─────────────────────────────────────────────────────────────────
