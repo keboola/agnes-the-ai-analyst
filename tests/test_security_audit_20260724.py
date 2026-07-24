@@ -100,6 +100,24 @@ def test_f8_from_string_literal_rejected():
             _assert_select_only(sql.strip().lower())
 
 
+def test_f8_sqlglot_models_file_table_source_as_table():
+    """Tripwire for the sqlglot behavioral dependency in
+    ``app/api/query.py:_has_file_table_source``: the comma-list / glob file
+    detection relies on sqlglot (duckdb dialect) modeling a quoted FROM source
+    as an ``exp.Table`` whose ``.name`` carries the path. If a sqlglot upgrade
+    changes that, this fails loudly and points straight at the cause — the
+    direct ``FROM 'x'`` form is still covered by the position-regex fallback."""
+    import sqlglot
+    from sqlglot import exp
+
+    stmt = sqlglot.parse_one("SELECT * FROM my_view, 'data/x.parquet'", read="duckdb")
+    names = [t.name for t in stmt.find_all(exp.Table)]
+    assert "data/x.parquet" in names, (
+        "sqlglot no longer models a comma-list file source as a Table.name — "
+        "update app/api/query.py:_has_file_table_source (and pin sqlglot)"
+    )
+
+
 def test_f8_legitimate_queries_pass():
     from app.api.query import _assert_select_only
 
@@ -182,6 +200,31 @@ def test_f10_host_with_port_matching(monkeypatch):
     monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", "host.example:9000")
     assert osec.is_attach_host_allowed("https://host.example:9000/x")
     assert not osec.is_attach_host_allowed("https://host.example:1234/x")
+
+
+def test_f10_real_keboola_url_shape_parses_and_is_allowed(monkeypatch):
+    """The shipped Keboola connector writes a standard
+    ``https://connection.<region>.gcp.keboola.com`` URL (see
+    connectors/keboola/extractor.py) — confirm it parses to a host and is
+    allowed when pinned, so operators can safely enable the allowlist."""
+    from src import orchestrator_security as osec
+
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", "connection.us-east4.gcp.keboola.com")
+    assert osec.is_attach_host_allowed("https://connection.us-east4.gcp.keboola.com")
+    assert osec.is_attach_host_allowed("https://connection.us-east4.gcp.keboola.com/")  # trailing slash
+
+
+def test_f10_unparseable_host_fails_closed_when_allowlist_set(monkeypatch):
+    """A credentialed url with no extractable host is refused when an operator
+    has opted into host pinning (deliberate fail-closed), but stays permissive
+    when the allowlist is unset."""
+    from src import orchestrator_security as osec
+
+    hostless = "/local/only/path"  # urlparse yields no host
+    monkeypatch.setenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", "connection.example.com")
+    assert not osec.is_attach_host_allowed(hostless)
+    monkeypatch.delenv("AGNES_REMOTE_ATTACH_HOST_ALLOWLIST", raising=False)
+    assert osec.is_attach_host_allowed(hostless)
 
 
 # --- F4: install-prompt override is rendered in a Jinja2 sandbox ------------

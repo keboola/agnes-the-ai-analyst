@@ -593,7 +593,14 @@ def _has_file_table_source(sql: str) -> bool:
     """True if any FROM/JOIN table source is a file path (a DuckDB replacement
     scan), inspected precisely via sqlglot. Falls back to the position-based
     regex when the SQL can't be parsed as DuckDB, so the direct
-    ``FROM 'file'`` / ``JOIN 'file'`` form is still caught."""
+    ``FROM 'file'`` / ``JOIN 'file'`` form is still caught.
+
+    Depends on sqlglot (pinned ``sqlglot>=30.0.0`` in pyproject) modeling a
+    quoted comma-list/glob FROM source as an ``exp.Table`` whose ``.name``
+    carries the path. That behavioral assumption has a dedicated tripwire test
+    (``tests/test_security_audit_20260724.py::test_f8_sqlglot_models_file_table_source_as_table``)
+    so a future sqlglot upgrade that changes it fails loudly rather than
+    silently regressing comma-list detection."""
     try:
         import sqlglot
         from sqlglot import exp

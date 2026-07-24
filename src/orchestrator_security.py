@@ -157,6 +157,18 @@ def is_attach_host_allowed(url: str) -> bool:
     credential-exfiltration-to-attacker-host hole. When the env var is UNSET the
     function returns True for backward compatibility, but callers log a warning
     (the risk is visible and operators are steered to configure the allowlist).
+
+    Fail-closed on an unparseable host is DELIBERATE: with an allowlist set, if
+    we cannot extract a host we cannot prove the credential is going somewhere
+    approved, so we refuse rather than send it blind. The credentialed ATTACH
+    branch that calls this only handles ``token_env``-based secrets — in the
+    shipped connectors that is the Keboola Storage URL, a standard
+    ``https://connection.<region>.gcp.keboola.com`` that parses cleanly (BigQuery
+    uses the metadata path with ``token_env=''`` and never reaches here). A
+    connector whose credentialed ``url`` is a non-URL connection string would be
+    refused only when an operator has opted into strict host pinning; that is the
+    correct trade-off for a security control (and the caller logs the refused
+    url so the operator can act).
     """
     allow = {h.lower() for h in _parse_csv_env(_ATTACH_HOST_ALLOWLIST_ENV)}
     if not allow:
