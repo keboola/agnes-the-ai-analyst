@@ -132,8 +132,9 @@ class TestRailOptIn:
             # Agents — build an assistant out of the caller's stack;
             # work-in-progress with a WIP badge.
             'href="/agents"',
-            # default brand lockup: the orb + wordmark
-            'class="rail-orb"',
+            # brand lockup: the "Kai" wordmark + the small Agnes orb sitting
+            # inline in the "powered by <brand>" sub-label.
+            'class="rail-brand-orb"',
         ):
             assert anchor in text, f"rail chrome is missing {anchor}"
         # The Artefacts entry carries a WIP badge.
@@ -391,8 +392,8 @@ class TestRailDashboard:
             '<p class="klb-sub">',  # the supporting sentence renders
             # The foot banner is now diagram-only (show_lead=False → no klb--lead).
             'class="klb klb--bare klb--compact"',
-            "Ask Kai in Agnes",  # banner LEFT card
-            "Use your own AI tools",  # banner RIGHT card
+            "Use Agnes in Kai",  # banner RIGHT card (Kai card, swapped to the right)
+            "Use your own AI tools",  # banner LEFT card (tools card, swapped to the left)
             "Agnes Knowledge Layer",  # banner CENTER hub
             'class="klb-cta-primary klb-card-cta" href="/me/ai-connector"',  # "Connect your tools" CTA now lives in the tools card
             'id="rdb-actions"',  # the one personalized section (heading retired)
