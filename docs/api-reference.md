@@ -1303,6 +1303,22 @@ The chat sandbox is a remote E2B microVM; files an agent writes under `/work/out
 - /api/v1/sessions/{session_id}/artifacts
 - /api/v1/sessions/{session_id}/artifacts/{artifact_id}
 
+### `POST /api/v1/sessions/{id}/memories` — the "remember" tool (V1c Task 4)
+
+In-sandbox write side of the per-agent memory notebook (`app/api/agent_memory.py`); the read side is the pre-spawn materialization into `.claude/agent-memory.md` (`app.chat.agent_profile.materialize_memories`, V1c Task 3). `{content: str (required)}` → `201 {id, status}`.
+
+Behavior is governed by the CALLING agent's `memory_write_mode`:
+
+- `off` — `403 {"code": "memory_writes_disabled"}`. The remember tool is also simply not advertised in the agent's context skill when its mode is `off` (`app.chat.agent_profile._context_skill`), but the endpoint enforces this regardless of what the agent was told.
+- `propose` — creates the row `status: "pending"` → `201 {"status": "pending"}`. Excluded from `list_active` (and therefore from what gets materialized into future spawns) until the owner approves it.
+- `auto` — creates the row `status: "active"` (with `activated_at` stamped) → `201 {"status": "active"}`, immediately eligible for materialization into future spawns.
+
+Guards, enforced in every mode (checked after the mode check, so an `off` agent always gets `memory_writes_disabled` rather than a guard-specific status): empty/whitespace-only `content` → `422`; `len(content) > agent_memory_max_chars` (default 2000) → `413 {"code": "memory_too_large"}`; `agent_memory_writes_per_hour` (default 20) rolling writes in the last hour → `429 {"code": "memory_rate_limited"}`; `agent_memory_max_pending` (default 100) total pending rows for the agent → `429 {"code": "memory_pending_full"}` — a cap independent of the hourly rate limit, since nothing else shrinks the pending backlog except the owner's own review. (Reaping/ignoring stale pending rows past `agent_memory_pending_ttl_days`, default 30, when counting toward this cap is a config knob landed for a future reaper — not enforced yet.)
+
+**Auth binds to the CALLING session, never the path `{id}`.** The in-sandbox agent reaches this route through the secret broker (`app/api/broker.py`), which authenticates as the sandbox's real owner and mints a JWT carrying `chat_session_id` for the session the ticket was minted for. Because the broker replays whatever path the sandboxed agent describes, a prompt-injected agent could otherwise target a DIFFERENT session belonging to the SAME owner but a DIFFERENT agent (with a different, possibly `off`, `memory_write_mode`) — `require_session_principal`'s ownership check alone would allow it, since both sessions share an owner. So whenever a broker-minted `chat_session_id` claim is present, it must equal the path `{id}` or the request is `403 {"code": "session_mismatch"}`, regardless of ownership. An interactive owner session token or an agent PAT (neither goes through the broker) carries no such claim, so the path `{id}` — already ownership/PAT-verified by `require_session_principal` — is trusted as-is.
+
+- /api/v1/sessions/{session_id}/memories
+
 ### `/api/v1/agents/{slug}/webhooks` — outbound agent webhooks (V1b Task 6)
 
 SSRF-hardened, HMAC-signed outbound notifications: register an HTTPS URL to be POSTed a small notification whenever a background `agent_response` job (see `/api/v1/agents/{slug}/responses` above) reaches `job.completed` or `job.failed`. Owner-scoped standing config — every route requires an interactive session token (`require_session_token` rejects both plain PATs and agent PATs, same posture as `/api/v1/agents/{id}/tokens`).

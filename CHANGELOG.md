@@ -170,6 +170,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `/api/v1/agents/{slug}/webhooks` registration API (landed REST-only in
   Task 6). `add` takes `--url` and repeatable `--event`, printing the HMAC
   signing secret exactly once, like `agnes agent token`.
+- **`POST /api/v1/sessions/{id}/memories`** — the "remember" tool
+  (agent-api V1c Task 4), the write side of the per-agent memory notebook
+  (read side: pre-spawn materialization into `.claude/agent-memory.md`,
+  Task 3). `{content: str}` → `201 {id, status}`, honoring the calling
+  agent's `memory_write_mode`: `off` → `403 memory_writes_disabled`;
+  `propose` → creates a `pending` row awaiting owner review; `auto` →
+  creates an already-`active` row. Guarded by a per-write size cap
+  (`agent_memory_max_chars`, default 2000 → `413`), a rolling hourly
+  write-rate cap (`agent_memory_writes_per_hour`, default 20 → `429
+  memory_rate_limited`), and a total-pending backlog cap
+  (`agent_memory_max_pending`, default 100 → `429 memory_pending_full`).
+  Auth binds the write to the CALLING session, never the path `{id}`: when
+  the request carries a broker-minted `chat_session_id` claim (the
+  in-sandbox-agent call path) that differs from the path id, it's `403
+  session_mismatch` — closing a same-owner-different-agent memory-poisoning
+  gap that ownership checks alone would miss. The agent's context skill
+  advertises this tool only when its `memory_write_mode != "off"`.
 
 ### Changed
 

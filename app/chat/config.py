@@ -109,6 +109,22 @@ class ChatConfig:
     # (`agent_webhooks_repo().disable`) rather than retried forever against
     # a permanently-broken (or no-longer-owned) endpoint.
     agent_api_webhook_max_failures: int = 5
+    # Agent memory notebook write endpoint (V1c Task 4, `app.api.agent_memory`):
+    # per-write content size cap, rolling hourly write-rate cap (both
+    # regardless of `memory_write_mode`), and a total-pending backlog cap
+    # (C3) — independent of the hourly rate — that a `propose`-mode agent
+    # writing steadily just under the rate limit would otherwise blow past
+    # forever, since nothing else shrinks the pending set except the
+    # owner's own review/approve action.
+    agent_memory_max_chars: int = 2000
+    agent_memory_writes_per_hour: int = 20
+    agent_memory_max_pending: int = 100
+    # Age threshold (days) past which a `pending` memory row is considered
+    # stale for a future reaper job. NOT YET enforced anywhere — see
+    # `app.api.agent_memory.remember`'s docstring for why reaping is
+    # deferred rather than wired into `count_pending` today. Landed now so
+    # that reaper has a config knob to read once it exists.
+    agent_memory_pending_ttl_days: int = 30
     slack: "SlackConfig" = field(default_factory=SlackConfig)
 
 
@@ -171,5 +187,9 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         agent_api_artifact_max_bytes=int(raw.get("agent_api_artifact_max_bytes", 25 * 1024 * 1024)),
         agent_api_artifact_max_files=int(raw.get("agent_api_artifact_max_files", 20)),
         agent_api_webhook_max_failures=int(raw.get("agent_api_webhook_max_failures", 5)),
+        agent_memory_max_chars=int(raw.get("agent_memory_max_chars", 2000)),
+        agent_memory_writes_per_hour=int(raw.get("agent_memory_writes_per_hour", 20)),
+        agent_memory_max_pending=int(raw.get("agent_memory_max_pending", 100)),
+        agent_memory_pending_ttl_days=int(raw.get("agent_memory_pending_ttl_days", 30)),
         slack=_parse_slack_config(raw),
     )

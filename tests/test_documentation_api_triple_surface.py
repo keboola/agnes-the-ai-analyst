@@ -318,6 +318,24 @@ _AGENT_ARTIFACTS_REASON = (
     "CLI subcommand either — same external-caller-only posture as the rest "
     "of the `/api/v1/sessions/{id}/*` surface (_AGENT_SESSION_REASON)."
 )
+_AGENT_MEMORY_WRITE_REASON = (
+    "the 'remember' tool (agent-api V1c Task 4) — an in-sandbox agent's own "
+    "write into its private memory notebook, called by the agent itself "
+    "against ITS OWN running session, never by an interactive human caller "
+    "choosing among agents/sessions. No CLI subcommand: there is no "
+    "analyst-facing 'write a memory for my agent' workflow (memory "
+    "management for owners is a future admin surface, V1c Task 5, not this "
+    "runtime write path). No MCP analogue either, permanently: this route's "
+    "auth model binds the write to `request.state.chat_session_id` (the "
+    "broker-minted claim identifying the CALLING session) and explicitly "
+    "REJECTS a path `{id}` that differs from it (`403 session_mismatch`) — "
+    "an MCP tool invoked by a human operator against an arbitrary session id "
+    "would never carry that claim, so exposing this as a generic MCP tool "
+    "would either be unusable (always 403) or require a different, weaker "
+    "auth path that reopens the exact cross-agent-same-owner memory-"
+    "poisoning gap this design closes. Same external-caller-only posture as "
+    "the rest of the `/api/v1/sessions/{id}/*` surface (_AGENT_SESSION_REASON)."
+)
 
 _EXEMPT: dict[str, str] = {
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
@@ -332,6 +350,7 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/sessions/{session_id}/cancel": _AGENT_SESSION_REASON,
     "/api/v1/sessions/{session_id}/artifacts": _AGENT_ARTIFACTS_REASON,
     "/api/v1/sessions/{session_id}/artifacts/{artifact_id}": _AGENT_ARTIFACTS_REASON,
+    "/api/v1/sessions/{session_id}/memories": _AGENT_MEMORY_WRITE_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "

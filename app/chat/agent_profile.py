@@ -100,6 +100,14 @@ def _context_skill(agent_row: dict) -> str:
     States the agent's name/description and that its capability is scoped
     by the owner's config — deliberately does not claim any live
     enforcement (see the module docstring's V1a/V1b split).
+
+    Also advertises the "remember" write tool (V1c Task 4,
+    `POST /api/v1/sessions/{id}/memories`) — but ONLY when this agent's
+    `memory_write_mode` is not `'off'`. The endpoint enforces the mode
+    regardless of what this text says (a stale/forged skill body can never
+    grant a write `off` denies), but a well-behaved agent should never even
+    attempt a call it knows is disabled — and telling an `off` agent about a
+    tool it cannot use would just invite a wasted/failed call.
     """
     name = agent_row.get("name") or agent_row.get("slug") or "agent"
     description = (agent_row.get("description") or "").strip()
@@ -118,6 +126,20 @@ def _context_skill(agent_row: dict) -> str:
         "memory domains it may use) is scoped by its owner's configuration "
         "in Agnes, not by this file.\n",
     ]
+    memory_write_mode = agent_row.get("memory_write_mode") or "propose"
+    if memory_write_mode != "off":
+        lines.append(
+            "\n## Remember\n\n"
+            "You can save a durable note to your own memory notebook by "
+            "calling `POST /api/v1/sessions/{session_id}/memories` with "
+            '`{"content": "..."}`, using this session\'s own id. '
+            + (
+                "Writes are reviewed by your owner before they become active (status starts `pending`)."
+                if memory_write_mode == "propose"
+                else "Writes take effect immediately (status `active`)."
+            )
+            + "\n"
+        )
     return "".join(lines)
 
 
