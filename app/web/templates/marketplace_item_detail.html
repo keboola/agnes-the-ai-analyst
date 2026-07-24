@@ -16,7 +16,7 @@
     --surface-alt: var(--ds-surface-dim);
     --text-primary: var(--ds-text-primary);
     --text-secondary: var(--ds-text-secondary);
-    --warn-color: #b45309;
+    --warn-color: var(--ds-accent-warn-ink);
     --font-mono: var(--ds-font-mono);
     --font-medium: 500;
     --font-semibold: 600;
@@ -348,7 +348,7 @@
   .item-detail .lead-rendered ul,
   .item-detail .lead-rendered ol { margin: 0 0 12px 22px; padding: 0; }
   .item-detail .lead-rendered code {
-    background: var(--surface-alt, #f4f4f5); border-radius: 4px;
+    background: var(--surface-alt); border-radius: 4px;
     padding: 1px 5px; font-size: 0.92em;
     font-family: var(--font-mono);
   }
@@ -383,7 +383,7 @@
   .item-detail .use-case-card {
     border: 1px solid var(--border); border-radius: 10px;
     padding: 14px 16px;
-    background: var(--surface-alt, #fafafa);
+    background: var(--surface-alt);
     display: flex; flex-direction: column; gap: 8px;
   }
   .item-detail .use-case-card h3 {
@@ -1114,7 +1114,7 @@
       const stateLabel = d.visibility_status === 'archived' ? 'archived' : 'under review';
       actions.innerHTML = `<button class="btn primary" type="button" disabled
         title="This submission is not approved yet — install is disabled until checks pass."
-        style="background:#e5e7eb;color:#6b7280;cursor:not-allowed;border:1px solid #d1d5db;">
+        style="background:var(--ds-surface-sunken);color:var(--ds-text-muted);cursor:not-allowed;border:1px solid var(--ds-border);">
           + Add to my stack (unavailable while ${stateLabel})
         </button>`;
     } else {
@@ -1350,7 +1350,7 @@
     document.getElementById('docs-section').hidden = false;
     document.getElementById('docs-count').textContent = String(d.docs.length);
     document.getElementById('docs-list').innerHTML = d.docs.map(doc => `
-      <li style="padding:10px 12px;border-radius:8px;background:var(--surface-alt,#f9fafb);border:1px solid var(--border);">
+      <li style="padding:10px 12px;border-radius:8px;background:var(--surface-alt);border:1px solid var(--border);">
         <a href="${esc(doc.url || '#')}" download
            style="color:var(--ds-primary);text-decoration:none;font-weight:500;display:block;"
            onmouseover="this.style.textDecoration='underline'"
