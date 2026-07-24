@@ -79,7 +79,6 @@ _BANNED_SCOPE_FLAGS = {"--remote", "--local", "--server", "--server-side", "--lo
 _AUTHZ_MARKERS = ("require_admin", "require_resource_access")
 
 _ROUTE_DECORATOR_RE = re.compile(r"@\w+\.(get|post|put|patch|delete)\s*\(")
-_FLAG_LITERAL_RE = re.compile(r"""["'](--[a-z0-9][a-z0-9-]*)["']""")
 _VERSION_RE = re.compile(r'^version\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 
 
@@ -285,23 +284,50 @@ def check_changelog(
 # ---------------------------------------------------------------------------
 
 
-def check_scope_flags(added: dict[str, list[tuple[int, str]]]) -> list[Finding]:
-    """A new read/find command must express scope as ``--scope``, not a boolean."""
+def check_scope_flags(added: dict[str, list[tuple[int, str]]], sources: dict[str, str]) -> list[Finding]:
+    """A new read/find command must express scope as ``--scope``, not a boolean.
+
+    AST-based rather than line-based: this repo overwhelmingly wraps
+    ``typer.Option`` across several lines (``cli/commands/search.py:27``,
+    ``cli/commands/snapshot.py:199``), so the ``bool`` annotation and the flag
+    literal sit on *different* physical lines. Matching both on one line let the
+    dominant style walk straight through a BLOCKING check.
+
+    Diff-scoped by the parameter's line span, so the frozen aliases already in
+    the tree are not re-reported when an unrelated line in the file changes.
+    """
     findings: list[Finding] = []
 
     for path, lines in added.items():
         if not path.startswith("cli/commands/") or not path.endswith(".py"):
             continue
-        for lineno, text in lines:
-            if "bool" not in text:
+        source = sources.get(path)
+        if not source:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+
+        added_linenos = {lineno for lineno, _ in lines}
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            for flag in _FLAG_LITERAL_RE.findall(text):
-                if flag not in _BANNED_SCOPE_FLAGS:
+            for arg, default in _params_with_defaults(node):
+                if not _mentions_bool(arg.annotation):
                     continue
+                banned = sorted(_option_flag_literals(default) & _BANNED_SCOPE_FLAGS)
+                if not banned:
+                    continue
+                span = range(arg.lineno, (getattr(default, "end_lineno", None) or arg.lineno) + 1)
+                if not (set(span) & added_linenos):
+                    continue
+                flag = banned[0]
                 findings.append(
                     Finding(
                         file=path,
-                        line=lineno,
+                        line=arg.lineno,
                         severity=BLOCKING,
                         rule="New CLI read/find command → command-UX standard",
                         message=(
@@ -316,6 +342,52 @@ def check_scope_flags(added: dict[str, list[tuple[int, str]]]) -> list[Finding]:
                 )
 
     return findings
+
+
+def _params_with_defaults(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[tuple[ast.arg, ast.expr]]:
+    """Pair each parameter that has a default with that default expression.
+
+    Positional defaults align to the TAIL of the argument list; keyword-only
+    defaults align one-to-one and may be ``None`` (no default).
+    """
+    pairs: list[tuple[ast.arg, ast.expr]] = []
+
+    positional = node.args.posonlyargs + node.args.args
+    defaults = node.args.defaults
+    if defaults:
+        for arg, default in zip(positional[-len(defaults) :], defaults):
+            pairs.append((arg, default))
+
+    for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
+        if default is not None:
+            pairs.append((arg, default))
+
+    return pairs
+
+
+def _mentions_bool(annotation: ast.expr | None) -> bool:
+    """True for ``bool``, ``bool | None``, ``Optional[bool]`` — anything whose
+    annotation subtree names ``bool``."""
+    if annotation is None:
+        return False
+    return any(isinstance(sub, ast.Name) and sub.id == "bool" for sub in ast.walk(annotation))
+
+
+def _option_flag_literals(default: ast.expr) -> set[str]:
+    """Flag strings passed to a ``typer.Option(...)`` / ``Option(...)`` call."""
+    if not isinstance(default, ast.Call):
+        return set()
+    func = default.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    if name not in ("Option", "Argument"):
+        return set()
+    return {
+        arg.value
+        for arg in default.args
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith("--")
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +625,7 @@ def collect_findings(base: str) -> list[Finding]:
             changed_paths=changed_paths,
             version_bumped=_version_bumped(base),
         )
-    findings += check_scope_flags(added)
+    findings += check_scope_flags(added, sources)
     findings += check_remote_attach(added)
     findings += check_entity_scoped_authz(added, sources)
 
