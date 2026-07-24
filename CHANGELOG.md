@@ -22,7 +22,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.76.24] - 2026-07-24
+## [0.76.25] - 2026-07-24
+
+### Changed
+
+- **Cloud chat reuses a paused sandbox across process restarts instead of
+  respawning fresh.** The resume-vs-respawn decision was gated on an
+  in-process set (`_known_protocol_sessions`) that is empty after any
+  restart/deploy, so every resumable session paid a full cold spawn (~6–8 s)
+  *and* lost conversation context on the first message after a restart. The
+  relay-protocol version a runner speaks is now persisted per session
+  (`chat_sessions.relay_protocol_version`, DuckDB v98 + Alembic `0045`), so a
+  current-protocol sandbox reconnects after a restart while a legacy
+  (pre-broker) runner still force-respawns — preserving the safety invariant
+  the in-process gate provided. A configurable grace window
+  (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
+  likely follow-up before it pauses.
+
+## [0.76.26] - 2026-07-24
 
 ### Fixed
 

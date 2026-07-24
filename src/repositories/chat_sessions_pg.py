@@ -20,7 +20,7 @@ from typing import Optional
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from app.chat.types import ChatSession, Surface
+from app.chat.types import RELAY_PROTOCOL_VERSION, ChatSession, Surface
 
 
 def _gen_id(prefix: str) -> str:
@@ -44,6 +44,9 @@ def _row_to_session(row) -> ChatSession:
         sandbox_id=row["sandbox_id"],
         runner_pid=int(row["runner_pid"]) if row["runner_pid"] is not None else None,
         sandbox_paused_at=row["sandbox_paused_at"],
+        relay_protocol_version=(
+            int(row["relay_protocol_version"]) if row["relay_protocol_version"] is not None else None
+        ),
     )
 
 
@@ -203,24 +206,39 @@ class ChatSessionPgRepository:
     # --- sandbox pause/resume refs -----------------------------------------
 
     def set_sandbox_ref(self, session_id: str, *, sandbox_id: str, runner_pid: int) -> None:
-        """Record the E2B sandbox id and runner pid; clear paused_at (live)."""
+        """Record the E2B sandbox id and runner pid; clear paused_at (live).
+
+        Also stamps ``relay_protocol_version`` with the current
+        ``RELAY_PROTOCOL_VERSION`` — mirrors
+        ``app.chat.persistence.ChatRepository.set_sandbox_ref`` (Tier 1,
+        restart-invariant reuse). See that method's docstring for the full
+        rationale.
+        """
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     "UPDATE chat_sessions "
-                    "SET sandbox_id = :sandbox_id, runner_pid = :runner_pid, sandbox_paused_at = NULL "
+                    "SET sandbox_id = :sandbox_id, runner_pid = :runner_pid, sandbox_paused_at = NULL, "
+                    "relay_protocol_version = :relay_protocol_version "
                     "WHERE id = :id"
                 ),
-                {"sandbox_id": sandbox_id, "runner_pid": runner_pid, "id": session_id},
+                {
+                    "sandbox_id": sandbox_id,
+                    "runner_pid": runner_pid,
+                    "relay_protocol_version": RELAY_PROTOCOL_VERSION,
+                    "id": session_id,
+                },
             )
 
     def clear_sandbox_ref(self, session_id: str) -> None:
-        """Wipe all three sandbox columns — called on real kill/error teardown."""
+        """Wipe all three sandbox columns plus relay_protocol_version —
+        called on real kill/error teardown."""
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     "UPDATE chat_sessions "
-                    "SET sandbox_id = NULL, runner_pid = NULL, sandbox_paused_at = NULL "
+                    "SET sandbox_id = NULL, runner_pid = NULL, sandbox_paused_at = NULL, "
+                    "relay_protocol_version = NULL "
                     "WHERE id = :id"
                 ),
                 {"id": session_id},

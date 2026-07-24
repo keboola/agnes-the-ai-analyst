@@ -1,7 +1,8 @@
-"""SQLAlchemy models for the cloud-chat cluster (DuckDB v70 parity).
+"""SQLAlchemy models for the cloud-chat cluster (DuckDB v70+ parity).
 
 Mirrors:
-  - chat_sessions              (src/db.py v68 base + v70 co-presence columns)
+  - chat_sessions              (src/db.py v68 base + v70 co-presence columns
+                                 + v73 sandbox refs + v98 relay_protocol_version)
   - chat_messages              (src/db.py v68 base + v70 sender_email)
   - chat_session_participants  (src/db.py v70)
   - user_workdirs              (src/db.py v68)
@@ -80,6 +81,10 @@ class ChatSession(Base):
     sandbox_id: Mapped[str | None] = mapped_column(String, nullable=True)
     runner_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sandbox_paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Relay protocol version of the runner these sandbox refs point at (v98,
+    # Tier 1 restart-invariant reuse). NULL = unknown/legacy — see
+    # app.chat.types.RELAY_PROTOCOL_VERSION's docstring for the full story.
+    relay_protocol_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("idx_chat_sessions_user", "user_email", "last_message_at"),

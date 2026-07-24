@@ -58,6 +58,17 @@ class ChatConfig:
     # Deprecated: use on_detach instead of e2b_kill_on_ws_disconnect.
     on_detach: str = "pause"
     detach_linger_seconds: int = 60
+    # Grace window (Tier 1, restart-invariant reuse — see
+    # docs/brainstorms/2026-07-23-chat-e2b-architecture-comparison.md §5) a
+    # detached-but-still-live sandbox is kept warm before ``_linger_then_pause``
+    # actually pauses it: a follow-up message inside this window reuses the
+    # already-live sandbox instead of paying a fresh cold spawn. This is the
+    # canonical knob ``ChatManager`` reads for that sleep; ``detach_linger_seconds``
+    # is kept as a back-compat alias — ``load_chat_config`` defaults
+    # ``idle_grace_seconds`` to whatever ``detach_linger_seconds`` resolves to
+    # when the operator's instance.yaml doesn't set ``idle_grace_seconds``
+    # explicitly, so existing configs need no changes.
+    idle_grace_seconds: int = 60
     paused_ttl_seconds: int = 7 * 24 * 3600
     # Back-compat echo only — new code reads on_detach, never this field.
     e2b_kill_on_ws_disconnect: bool = True
@@ -112,6 +123,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         return ChatConfig()
     data = yaml.safe_load(instance_yaml.read_text()) or {}
     raw = data.get("chat", {}) or {}
+    detach_linger_seconds = int(raw.get("detach_linger_seconds", 60))
     return ChatConfig(
         enabled=bool(raw.get("enabled", False)),
         provider=str(raw.get("provider", "e2b")),
@@ -129,7 +141,11 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         egress_allow_out=list(raw.get("egress_allow_out") or []),
         e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
         on_detach=_parse_on_detach(raw),
-        detach_linger_seconds=int(raw.get("detach_linger_seconds", 60)),
+        detach_linger_seconds=detach_linger_seconds,
+        # Falls back to detach_linger_seconds's own resolved value when the
+        # operator's instance.yaml doesn't set idle_grace_seconds explicitly
+        # — see ChatConfig.idle_grace_seconds's docstring.
+        idle_grace_seconds=int(raw.get("idle_grace_seconds", detach_linger_seconds)),
         paused_ttl_seconds=int(raw.get("paused_ttl_seconds", 7 * 24 * 3600)),
         e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
         bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),

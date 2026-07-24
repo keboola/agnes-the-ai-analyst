@@ -516,3 +516,23 @@ def test_sandbox_ref_roundtrip_after_messages(_chat_env):
     repo.clear_sandbox_ref(s.id)
     got2 = repo.get_session(s.id)
     assert (got2.sandbox_id, got2.runner_pid, got2.sandbox_paused_at) == (None, None, None)
+
+
+def test_relay_protocol_version_roundtrip(_chat_env):
+    """Tier 1 restart-invariant sandbox reuse: ``set_sandbox_ref`` stamps
+    ``relay_protocol_version`` with ``RELAY_PROTOCOL_VERSION`` on both
+    backends, and ``clear_sandbox_ref`` clears it back to NULL alongside
+    the other three sandbox columns. A brand-new session starts with NULL
+    (unknown/legacy)."""
+    from app.chat.types import RELAY_PROTOCOL_VERSION
+
+    repo = _chat_env
+    s = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    assert repo.get_session(s.id).relay_protocol_version is None
+
+    repo.set_sandbox_ref(s.id, sandbox_id="sbx_relay", runner_pid=42)
+    got = repo.get_session(s.id)
+    assert got.relay_protocol_version == RELAY_PROTOCOL_VERSION
+
+    repo.clear_sandbox_ref(s.id)
+    assert repo.get_session(s.id).relay_protocol_version is None

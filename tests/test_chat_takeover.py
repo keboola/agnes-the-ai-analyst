@@ -132,6 +132,7 @@ def _make_manager(tmp_path: Path, repo: ChatRepository, provider: FakeProvider) 
             concurrency_per_user=5,
             on_detach="pause",
             detach_linger_seconds=0,
+            idle_grace_seconds=0,
             paused_ttl_seconds=7 * 24 * 3600,
             idle_ttl_seconds=10**9,
         ),
@@ -751,10 +752,15 @@ def test_kill_racing_lockless_respawn_destroys_orphan(two_gateways, monkeypatch)
         live = mgr_a._live[chat_id]
 
         # Park the session, then make it "legacy" so _resume_live takes the
-        # _respawn_fresh branch (fresh spawn, not provider.resume).
+        # _respawn_fresh branch (fresh spawn, not provider.resume). Both the
+        # same-process fast-confirm set AND the persisted column (stamped
+        # current by set_sandbox_ref at spawn time) must be cleared —
+        # otherwise _is_current_protocol falls back to the still-current DB
+        # value (Tier 1, restart-invariant reuse).
         await mgr_a._pause_live(live)
         assert live.state == SessionState.PAUSED
         mgr_a._known_protocol_sessions.discard(chat_id)
+        mgr_a._repo._conn.execute("UPDATE chat_sessions SET relay_protocol_version = NULL WHERE id = ?", [chat_id])
 
         kill_counts: dict[str, int] = {}
         orig_spawn = provider.spawn
