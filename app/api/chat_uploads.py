@@ -29,11 +29,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from app.auth.access import require_resource_access
 from app.chat.workdir import _safe_email_dir
+from app.corpus_ingest import create_single_file_artefact
 from app.resource_types import ResourceType
 from app.utils import get_data_dir
 
@@ -113,6 +114,10 @@ class ChatUploadResponse(BaseModel):
     size_bytes: int
     kind: str
     table_name: Optional[str] = None
+    # Slug of the single-file artefact this upload was also saved as, when the
+    # file is a document/image (data files stay workspace-only). None when no
+    # artefact was created. Reachable at /library/{artefact_slug}.
+    artefact_slug: Optional[str] = None
     hint: str
 
 
@@ -311,6 +316,7 @@ def _register_workspace_table(
 
 @router.post("/uploads", response_model=ChatUploadResponse)
 async def chat_upload(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     kind: UploadKind = Form(...),
     register_as_table: bool = Form(False),
@@ -402,6 +408,34 @@ async def chat_upload(
                 resolved_table_name = _derive_table_name(Path(safe_name).stem)
             _register_workspace_table(uploads_dir, dest, resolved_table_name)
 
+        # --- also persist docs/images as a single-file artefact -------------
+        # A document/image dropped in chat shouldn't vanish with the session:
+        # persist + index it as a private single-file artefact (it then shows
+        # in Artefacts and is searchable). Data files stay workspace-only —
+        # their job is to become a queryable table, not searchable prose.
+        # Best-effort: a failure here never fails the workspace upload the user
+        # actually asked for.
+        artefact_slug: Optional[str] = None
+        if kind in (UploadKind.image, UploadKind.document) and user.get("id"):
+            try:
+                created = create_single_file_artefact(
+                    owner_id=user["id"],
+                    filename=safe_name,
+                    data=dest.read_bytes(),
+                )
+                if created:
+                    artefact_slug = (created.get("collection") or {}).get("slug")
+                    from src.ingest.runner import ingest_file
+
+                    background_tasks.add_task(ingest_file, created["file_id"])
+            except Exception:
+                logger.warning(
+                    "chat_upload: could not save artefact for user=%s file=%s",
+                    email,
+                    safe_name,
+                    exc_info=True,
+                )
+
         # --- workspace-relative path ----------------------------------------
         slug = _safe_email_dir(email)
         ws_root = get_data_dir() / "users" / slug / "workspace"
@@ -421,6 +455,8 @@ async def chat_upload(
                 f"File '{safe_name}' is in your workspace uploads folder. "
                 "It will be available in your next chat sandbox session."
             )
+        if artefact_slug:
+            hint += " Saved to your Artefacts."
 
         logger.info(
             "chat_upload: user=%s kind=%s file=%s size=%d table=%s",
@@ -437,6 +473,7 @@ async def chat_upload(
             size_bytes=size_bytes,
             kind=kind.value,
             table_name=resolved_table_name,
+            artefact_slug=artefact_slug,
             hint=hint,
         )
 
