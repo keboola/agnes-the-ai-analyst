@@ -177,6 +177,22 @@ def test_list_messages_after_cursor(repo: ChatRepository):
     assert [m.id for m in out] == [m2.id]
 
 
+def test_list_recent_messages_returns_newest_first(repo: ChatRepository):
+    """The counterpart to ``list_messages``'s oldest-first ``LIMIT`` —
+    ``_redeliver_pending_question``/``_build_restore_context`` need the
+    actual tail of a long conversation, not whatever ``list_messages``'s
+    default 500-row ``ORDER BY created_at ASC LIMIT`` happens to return
+    (Devin review on #1030)."""
+    s = repo.create_session(user_email="u@x", surface=Surface.WEB)
+    repo.append_message(session_id=s.id, role="user", content="one")
+    repo.append_message(session_id=s.id, role="assistant", content="two")
+    repo.append_message(session_id=s.id, role="user", content="three")
+    recent = repo.list_recent_messages(s.id)
+    assert [m.content for m in recent] == ["three", "two", "one"]
+    newest_only = repo.list_recent_messages(s.id, limit=1)
+    assert [m.content for m in newest_only] == ["three"]
+
+
 # ---------------------------------------------------------------------------
 # Workdirs
 # ---------------------------------------------------------------------------

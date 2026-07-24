@@ -1527,9 +1527,16 @@ class ChatManager:
         omitted, mirroring the old replay filter. Assistant turns stay — they
         were already visible to every remaining participant.
 
+        Uses ``list_recent_messages`` (``ORDER BY created_at DESC``), NOT
+        ``list_messages`` (``ASC``) — for a chat past the 500-row default
+        limit, ``list_messages`` returns the OLDEST 500 rows, so the
+        "newest win" accumulation below would silently restore stale
+        mid-conversation history instead of the actual recent tail (Devin
+        review on #1030).
+
         Returns ``None`` when there is nothing to restore (fresh session).
         """
-        msgs = self._repo.list_messages(session.id)
+        msgs = self._repo.list_recent_messages(session.id)
         if not msgs:
             return None
         allowed: Optional[set[str]] = None
@@ -1538,8 +1545,9 @@ class ChatManager:
             allowed = {p.user_email for p in parts if p.left_at is None}
         blocks: list[str] = []
         total = 0
-        # Accumulate newest-first under the budget, then restore order.
-        for msg in reversed(msgs):
+        # msgs is already newest-first; accumulate under the budget, then
+        # restore chronological order below.
+        for msg in msgs:
             if msg.role == "user":
                 author = getattr(msg, "sender_email", None) or session.user_email
                 if allowed is not None and author not in allowed:
@@ -1589,12 +1597,19 @@ class ChatManager:
         flight and can pause the sandbox mid-answer if the user
         disconnects while the redelivered question is still being
         answered (Devin review on #1030).
+
+        Uses ``list_recent_messages(limit=1)`` (``ORDER BY created_at
+        DESC``), NOT ``list_messages`` (``ASC LIMIT 500``) — for a chat past
+        that default limit, ``msgs[-1]`` on the ASC-ordered result is the
+        500th-oldest message, not the true latest turn, so this would
+        either miss the real pending question or re-deliver a stale
+        already-answered one (Devin review on #1030).
         """
         assert live.handle is not None
-        msgs = self._repo.list_messages(live.chat_id)
-        if not msgs or msgs[-1].role != "user":
+        msgs = self._repo.list_recent_messages(live.chat_id, limit=1)
+        if not msgs or msgs[0].role != "user":
             return
-        last = msgs[-1]
+        last = msgs[0]
         author = getattr(last, "sender_email", None) or live.user_email
         if live.participant_emails and author not in set(live.participant_emails):
             return  # SR-11
