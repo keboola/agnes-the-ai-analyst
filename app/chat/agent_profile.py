@@ -108,6 +108,13 @@ def _context_skill(agent_row: dict) -> str:
     grant a write `off` denies), but a well-behaved agent should never even
     attempt a call it knows is disabled — and telling an `off` agent about a
     tool it cannot use would just invite a wasted/failed call.
+
+    Includes a concrete curl invocation against `$AGNES_SERVER` +
+    `$AGNES_SESSION_ID` — the two env vars `app/chat/runner.py` sets in the
+    sandbox (`AGNES_SERVER` rewritten to the loopback relay, per
+    `_spawn_runner`; `AGNES_SESSION_ID` forwarded as-is) — since a bare route
+    path with no host or id source isn't actually callable from in-sandbox.
+    There is no `agnes` CLI subcommand for this by design (M2).
     """
     name = agent_row.get("name") or agent_row.get("slug") or "agent"
     description = (agent_row.get("description") or "").strip()
@@ -138,7 +145,15 @@ def _context_skill(agent_row: dict) -> str:
                 if memory_write_mode == "propose"
                 else "Writes take effect immediately (status `active`)."
             )
-            + "\n"
+            + "\n\n"
+            "Concretely, in this sandbox: the server host is `$AGNES_SERVER` "
+            "and your own session id is `$AGNES_SESSION_ID` (both already set "
+            "in your environment). For example:\n\n"
+            "```bash\n"
+            'curl -X POST "$AGNES_SERVER/api/v1/sessions/$AGNES_SESSION_ID/memories" \\\n'
+            "  -H 'content-type: application/json' \\\n"
+            '  -d \'{"content": "..."}\'\n'
+            "```\n"
         )
     return "".join(lines)
 

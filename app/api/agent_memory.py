@@ -48,7 +48,7 @@ from pydantic import BaseModel, field_validator
 
 from app.api.agent_sessions import SessionRuntimePrincipal, require_session_principal
 from app.chat.config import ChatConfig
-from src.repositories import agent_memories_repo
+from src.repositories import agent_memories_repo, audit_repo
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,35 @@ def _chat_config(request: Request) -> ChatConfig:
     return getattr(request.app.state, "chat_config", None) or _DEFAULTS
 
 
+def _audit(
+    *,
+    action: str,
+    result: str,
+    user_id: str,
+    agent_id: str,
+    session_id: str,
+    extra: Dict[str, Any] | None = None,
+) -> None:
+    """Best-effort audit log for a memory-write call — success or deny.
+
+    Mirrors `app.api.broker`'s own deny-audit pattern (e.g.
+    `_require_scope`'s `broker_ticket_scope_mismatch` log): wrapped in
+    try/except so a logging failure is a gap in the audit trail, never a
+    reason to fail a legitimate write or to let a denied one appear to
+    succeed. The C2 `session_mismatch` deny in particular is a
+    prompt-injection signal worth a durable record — a broker-replayed
+    request whose claimed calling session doesn't match the path it
+    targeted.
+    """
+    try:
+        params: Dict[str, Any] = {"agent_id": agent_id, "session_id": session_id}
+        if extra:
+            params.update(extra)
+        audit_repo().log(user_id=user_id, action=action, params=params, result=result, client_kind="agent")
+    except Exception:
+        logger.exception("agent memory audit log failed (action=%s, result=%s)", action, result)
+
+
 @router.post("/sessions/{session_id}/memories", status_code=201)
 async def remember(
     session_id: str,
@@ -93,20 +122,55 @@ async def remember(
     # path id IS the calling session, already ownership-checked above.
     calling_session_id = getattr(request.state, "chat_session_id", None)
     if calling_session_id is not None and calling_session_id != session_id:
+        _audit(
+            action="agent.memory.write",
+            result="denied:session_mismatch",
+            user_id=principal.user["id"],
+            agent_id=principal.agent["id"],
+            session_id=session_id,
+            extra={"calling_session_id": calling_session_id},
+        )
         raise _err(403, "session_mismatch")
 
     agent = principal.agent
     mode = agent.get("memory_write_mode") or "propose"
     if mode == "off":
+        _audit(
+            action="agent.memory.write",
+            result="denied:memory_writes_disabled",
+            user_id=principal.user["id"],
+            agent_id=agent["id"],
+            session_id=session_id,
+        )
         raise _err(403, "memory_writes_disabled")
 
     cfg = _chat_config(request)
     if len(body.content) > cfg.agent_memory_max_chars:
+        _audit(
+            action="agent.memory.write",
+            result="denied:memory_too_large",
+            user_id=principal.user["id"],
+            agent_id=agent["id"],
+            session_id=session_id,
+            extra={"content_length": len(body.content)},
+        )
         raise _err(413, "memory_too_large")
 
+    # Rate/pending guards below are read-then-write (count, then create):
+    # concurrent in-flight writes for the same agent can each pass the count
+    # check before any of them commits, so these are SOFT caps — they bound
+    # steady-state growth, not a hard guarantee never to exceed the
+    # configured limit by the number of requests racing at once.
     repo = agent_memories_repo()
     since = datetime.now(timezone.utc) - timedelta(hours=1)
     if repo.count_recent(agent["id"], since) >= cfg.agent_memory_writes_per_hour:
+        _audit(
+            action="agent.memory.write",
+            result="denied:memory_rate_limited",
+            user_id=principal.user["id"],
+            agent_id=agent["id"],
+            session_id=session_id,
+        )
         raise _err(429, "memory_rate_limited")
 
     # C3: total-pending cap, independent of the rolling hourly rate limit —
@@ -120,6 +184,13 @@ async def remember(
     # every pending row regardless of age, which is the safe (more
     # conservative, never under-counts) direction to be wrong in.
     if repo.count_pending(agent["id"]) >= cfg.agent_memory_max_pending:
+        _audit(
+            action="agent.memory.write",
+            result="denied:memory_pending_full",
+            user_id=principal.user["id"],
+            agent_id=agent["id"],
+            session_id=session_id,
+        )
         raise _err(429, "memory_pending_full")
 
     status = "active" if mode == "auto" else "pending"
@@ -131,5 +202,14 @@ async def remember(
         content=body.content,
         source_session_id=session_id,
         status=status,
+    )
+    _audit(
+        action="agent.memory.write",
+        result=f"success:{status}",
+        user_id=principal.user["id"],
+        agent_id=agent["id"],
+        session_id=session_id,
+        # content length only — never the content itself.
+        extra={"memory_id": memory_id, "status": status, "content_length": len(body.content)},
     )
     return {"id": memory_id, "status": status}

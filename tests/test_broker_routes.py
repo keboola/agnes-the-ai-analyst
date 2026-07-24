@@ -606,6 +606,13 @@ def test_cosession_ticket_mints_cosession_jwt(broker_app, e2e_env):
     # the co-session JWT carries no real user identity (synthetic sub), only the session
     assert co_payload.get("sub") == f"session:{co.id}"
     assert co_payload.get("chat_session_id") == co.id
+    # The solo mint must ALSO carry chat_session_id bound to the resolved
+    # session — this is the claim `app.api.agent_memory` compares against the
+    # path {session_id} (C2 binding). A refactor that drops it from the solo
+    # mint would keep every scope-only assertion green while silently
+    # degrading the memory-write endpoint's session binding to "trust the
+    # URL path" (M1).
+    assert solo_payload.get("chat_session_id") == solo.id
     # BOTH broker mints must carry scope="chat" so the per-session BigQuery
     # scan-budget stash (`_stash_chat_session_id_from_token`) fires — it ignores
     # the chat_session_id claim without that scope, silently disabling the cap

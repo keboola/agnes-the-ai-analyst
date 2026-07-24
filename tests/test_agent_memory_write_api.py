@@ -27,16 +27,18 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _chat_claim_token(user_id: str, email: str, chat_session_id: str) -> str:
-    """Mint the same shape of JWT `app.api.broker._mint_identity_jwt` mints
-    for a solo session: `scope=chat` + `chat_session_id`. This is what
+def _chat_claim_token(chat_session_id: str) -> str:
+    """Mint the token through the broker's real `_mint_identity_jwt` (solo
+    path), not a hand-rolled shape — this is what
     `app.auth.dependencies._stash_chat_session_id_from_token` parks on
-    `request.state.chat_session_id` — the in-sandbox-agent call shape."""
-    return create_access_token(
-        user_id=user_id,
-        email=email,
-        extra_claims={"scope": "chat", "chat_session_id": chat_session_id},
-    )
+    `request.state.chat_session_id` — the in-sandbox-agent call shape.
+    Exercising the actual mint function (rather than reconstructing its
+    claim shape by hand) means a refactor that silently drops
+    `chat_session_id` from the solo mint fails THIS test, not just the
+    broker's own narrower assertion (M1)."""
+    from app.api.broker import _mint_identity_jwt
+
+    return _mint_identity_jwt(chat_session_id)
 
 
 @pytest.fixture
@@ -260,7 +262,7 @@ def test_c2_broker_claim_for_different_agent_same_owner_returns_403_and_leaves_t
     session. `require_session_principal` alone would authorize this (same
     owner) — the C2 check must still reject it, and B's notebook must stay
     untouched."""
-    token = _chat_claim_token("owner1", "owner@test.com", env["auto_session"])
+    token = _chat_claim_token(env["auto_session"])
 
     r = env["client"].post(
         f"/api/v1/sessions/{env['off_session']}/memories",
@@ -280,7 +282,7 @@ def test_c2_broker_claim_for_different_agent_same_owner_returns_403_and_leaves_t
 def test_c2_matching_broker_claim_succeeds(env):
     """Sanity counterpart: when the claim DOES match the path id, the call
     proceeds normally (uses the calling/path agent's own memory_write_mode)."""
-    token = _chat_claim_token("owner1", "owner@test.com", env["auto_session"])
+    token = _chat_claim_token(env["auto_session"])
 
     r = env["client"].post(
         f"/api/v1/sessions/{env['auto_session']}/memories",
@@ -325,6 +327,86 @@ def test_unknown_session_returns_404(env):
 
 
 # ---------------------------------------------------------------------------
+# L5: audit trail — success and deny paths, especially the C2 prompt-
+# injection signal (session_mismatch)
+# ---------------------------------------------------------------------------
+
+
+def _audit_params(row: dict) -> dict:
+    """`audit_repo().query()` returns `params` as the raw stored JSON
+    string, not a parsed dict (only some other repo methods parse it) —
+    decode it here so tests can assert on the structured fields."""
+    import json
+
+    v = row.get("params")
+    return json.loads(v) if isinstance(v, str) else (v or {})
+
+
+def test_c2_mismatch_denial_is_audited(env):
+    """The session_mismatch deny is a prompt-injection signal — it must
+    leave a durable audit row, not just a 403 response."""
+    from src.repositories import audit_repo
+
+    token = _chat_claim_token(env["auto_session"])
+    r = env["client"].post(
+        f"/api/v1/sessions/{env['off_session']}/memories",
+        json={"content": "poison B's notebook"},
+        headers=_auth(token),
+    )
+    assert r.status_code == 403
+
+    rows, _ = audit_repo().query(action="agent.memory.write", limit=50)
+    matches = [row for row in rows if row["result"] == "denied:session_mismatch"]
+    assert len(matches) == 1
+    params = _audit_params(matches[0])
+    assert params["agent_id"] == env["off_agent"]
+    assert params["session_id"] == env["off_session"]
+    assert params["calling_session_id"] == env["auto_session"]
+
+
+def test_successful_write_is_audited_without_content(env):
+    """A successful write is audited with content length, never the raw
+    content (that would duplicate sensitive/PII notebook content into the
+    audit log)."""
+    from src.repositories import audit_repo
+
+    r = env["client"].post(
+        f"/api/v1/sessions/{env['auto_session']}/memories",
+        json={"content": "remember this secret"},
+        headers=_auth(env["owner_token"]),
+    )
+    assert r.status_code == 201
+    memory_id = r.json()["id"]
+
+    rows, _ = audit_repo().query(action="agent.memory.write", limit=50)
+    matches = [row for row in rows if _audit_params(row).get("memory_id") == memory_id]
+    assert len(matches) == 1
+    row = matches[0]
+    params = _audit_params(row)
+    assert row["result"] == "success:active"
+    assert params["agent_id"] == env["auto_agent"]
+    assert params["content_length"] == len("remember this secret")
+    assert "content" not in params
+    assert "remember this secret" not in str(params)
+
+
+def test_off_mode_denial_is_audited(env):
+    from src.repositories import audit_repo
+
+    r = env["client"].post(
+        f"/api/v1/sessions/{env['off_session']}/memories",
+        json={"content": "note"},
+        headers=_auth(env["owner_token"]),
+    )
+    assert r.status_code == 403
+
+    rows, _ = audit_repo().query(action="agent.memory.write", limit=50)
+    matches = [row for row in rows if row["result"] == "denied:memory_writes_disabled"]
+    assert len(matches) == 1
+    assert _audit_params(matches[0])["agent_id"] == env["off_agent"]
+
+
+# ---------------------------------------------------------------------------
 # _context_skill advertises the remember tool only when mode != off
 # ---------------------------------------------------------------------------
 
@@ -333,8 +415,9 @@ def test_context_skill_advertises_remember_tool_when_mode_propose():
     from app.chat.agent_profile import _context_skill
 
     row = {"id": "a1", "slug": "s", "name": "S", "memory_write_mode": "propose"}
-    assert "Remember" in _context_skill(row)
-    assert "/api/v1/sessions/{session_id}/memories" in _context_skill(row)
+    body = _context_skill(row)
+    assert "Remember" in body
+    assert "/api/v1/sessions/{session_id}/memories" in body
 
 
 def test_context_skill_advertises_remember_tool_when_mode_auto():
@@ -344,10 +427,26 @@ def test_context_skill_advertises_remember_tool_when_mode_auto():
     assert "Remember" in _context_skill(row)
 
 
+def test_context_skill_remember_tool_has_concrete_callable_invocation():
+    """M2: a bare route path with no host or session-id source isn't
+    actually callable from in-sandbox. The skill must spell out the two env
+    vars `app/chat/runner.py` sets in the sandbox (`AGNES_SERVER` — rewritten
+    to the loopback relay by `_spawn_runner` — and `AGNES_SESSION_ID`) plus a
+    concrete curl invocation using them."""
+    from app.chat.agent_profile import _context_skill
+
+    row = {"id": "a1", "slug": "s", "name": "S", "memory_write_mode": "auto"}
+    body = _context_skill(row)
+    assert "$AGNES_SERVER" in body
+    assert "$AGNES_SESSION_ID" in body
+    assert 'curl -X POST "$AGNES_SERVER/api/v1/sessions/$AGNES_SESSION_ID/memories"' in body
+
+
 def test_context_skill_omits_remember_tool_when_mode_off():
     from app.chat.agent_profile import _context_skill
 
     row = {"id": "a1", "slug": "s", "name": "S", "memory_write_mode": "off"}
     body = _context_skill(row)
     assert "Remember" not in body
+    assert "$AGNES_SERVER" not in body
     assert "/api/v1/sessions/{session_id}/memories" not in body

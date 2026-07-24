@@ -120,10 +120,12 @@ class ChatConfig:
     agent_memory_writes_per_hour: int = 20
     agent_memory_max_pending: int = 100
     # Age threshold (days) past which a `pending` memory row is considered
-    # stale for a future reaper job. NOT YET enforced anywhere — see
-    # `app.api.agent_memory.remember`'s docstring for why reaping is
-    # deferred rather than wired into `count_pending` today. Landed now so
-    # that reaper has a config knob to read once it exists.
+    # stale for a future reaper job. INERT — nothing reads this field today
+    # (NOT YET enforced anywhere); see `app.api.agent_memory.remember`'s
+    # docstring for why reaping is deferred rather than wired into
+    # `count_pending` today. Landed now so that reaper has a config knob to
+    # read once it exists — an operator setting this expecting it to bound
+    # the pending cap will be silently misled until the reaper lands.
     agent_memory_pending_ttl_days: int = 30
     slack: "SlackConfig" = field(default_factory=SlackConfig)
 
@@ -190,6 +192,8 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         agent_memory_max_chars=int(raw.get("agent_memory_max_chars", 2000)),
         agent_memory_writes_per_hour=int(raw.get("agent_memory_writes_per_hour", 20)),
         agent_memory_max_pending=int(raw.get("agent_memory_max_pending", 100)),
+        # Inert (see the field's own comment above) — parsed and stored for
+        # forward-compat with the not-yet-built reaper, not read anywhere yet.
         agent_memory_pending_ttl_days=int(raw.get("agent_memory_pending_ttl_days", 30)),
         slack=_parse_slack_config(raw),
     )
