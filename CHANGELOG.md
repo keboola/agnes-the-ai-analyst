@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.18] - 2026-07-23
+
+### Fixed
+
 - **Editing a cross-project BigQuery table's Dataset/Source Table no longer
   strands the row on its old `bq_fqn`.** The Edit modal's "Live from
   BigQuery" form gained the same optional **Project** field the Register
@@ -23,12 +33,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   recomposes (or clears) `bq_fqn` from Project + Dataset + Source Table
   instead of silently omitting it from the PUT, which previously left the
   query/scan paths resolving against the stale project.dataset.table.
-
-### Removed
-
-### Internal
-
-### Security
+  Also preserves a decoupled row's real `bq_fqn` dataset segment (issue
+  #343) when the Dataset field is unchanged from its original prefill,
+  so an unrelated edit can't silently overwrite it with the `bucket`
+  label.
 
 ## [0.76.17] - 2026-07-23
 
