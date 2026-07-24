@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 99
+SCHEMA_VERSION = 100
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1404,8 +1404,14 @@ CREATE TABLE IF NOT EXISTS corpus_files (
 -- (not partial) UNIQUE INDEX — DuckDB has no partial indexes, but NULLs are
 -- distinct on both DuckDB and Postgres, so path=NULL (plain-insert files,
 -- bundle children) is exempt while set paths stay unique.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path
-    ON corpus_files(corpus_id, path);
+--
+-- The index is created by the migration ladder (_v96_to_v97 / _v99_to_v100),
+-- NOT here: _ensure_schema runs this DDL *before* the ladder, and a DB
+-- stranded by the v97 renumbering has a corpus_files table WITHOUT the `path`
+-- column, so referencing `path` in an index here would throw and block boot
+-- before the heal step could add the column. The ladder runs on every path
+-- that creates the table (fresh install + upgrade), so the invariant still
+-- holds; it just lands after the column is guaranteed to exist.
 
 -- corpus_chunks: prose-document chunks + embedding vector.
 -- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
@@ -6528,6 +6534,27 @@ def _v98_to_v99(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 99")
 
 
+def _v99_to_v100(conn: duckdb.DuckDBPyConnection) -> None:
+    """v99→v100: heal ``corpus_files.path`` on DBs stranded by the migration
+    renumbering that landed ``corpus_files.path`` at v97 and
+    ``user_journey_state`` at v98 (see ``_v96_to_v97`` / ``_v97_to_v98``).
+
+    A DB that passed through the *old* numbering got stamped at v97+ before
+    v97 meant "add ``corpus_files.path``", so the version guard
+    (``if current < 97``) skips ``_v96_to_v97`` forever and the column never
+    lands — every ``list_for_corpus`` SELECT and every file-upload INSERT then
+    500s with ``Binder Error: Referenced column "path" not found``. Fresh
+    installs and clean sequential upgrades already carry the column; this step
+    repairs the stranded ones. Idempotent guarded ALTER + ``IF NOT EXISTS``
+    index, so it's a no-op everywhere else.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    if "path" not in cols:
+        conn.execute("ALTER TABLE corpus_files ADD COLUMN path VARCHAR")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path ON corpus_files(corpus_id, path)")
+    conn.execute("UPDATE schema_version SET version = 100")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6932,6 +6959,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # restart-invariant sandbox reuse). _SYSTEM_SCHEMA already
             # declares it on fresh installs (no-op ALTER here).
             _v98_to_v99(conn)
+            # v99→v100: heal corpus_files.path on DBs stranded by the
+            # migration renumbering (v97=path, v98=user_journey_state). On a
+            # fresh install _SYSTEM_SCHEMA already declares the column, so the
+            # ALTER is a no-op; this step also creates the (corpus_id, path)
+            # unique index, which _SYSTEM_SCHEMA deliberately no longer does.
+            _v99_to_v100(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7183,6 +7216,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v97_to_v98(conn)
             if current < 99:
                 _v98_to_v99(conn)
+            if current < 100:
+                _v99_to_v100(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

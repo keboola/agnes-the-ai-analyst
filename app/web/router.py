@@ -1440,14 +1440,18 @@ def _catalog_card_upload(c: dict) -> dict:
     n = c.get("file_count", 0) or 0
     ff = c.get("first_file") or None
     if n == 1 and ff:
-        ext = (ff.get("file_type") or "").upper()
         size = _human_size(ff.get("size_bytes") or 0)
-        meta = f"{ext} · {size}" if ext else size
+        fname = ff.get("filename")
+        # Title is the artefact's NAME (what the caller typed), not the
+        # filename — otherwise several single-file artefacts with distinct
+        # names all render as the same filename. The filename + size move to
+        # the meta line so the file's identity stays visible.
+        meta = f"{fname} · {size}" if fname else size
         return {
             "kind": "library",
             "glyph": "doc",  # single-document glyph — see kind_glyph()
             "kind_label": "File",
-            "title": ff.get("filename") or c["name"],
+            "title": c["name"] or fname,
             "href": f"/library/{c['slug']}",
             "curator": None,
             "category": None,

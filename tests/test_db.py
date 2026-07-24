@@ -373,18 +373,19 @@ class TestMigrationSafety:
         materialized — but the version row stays put."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
-        from src.db import _ensure_schema, get_schema_version
+        from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
 
+        future = SCHEMA_VERSION + 1
         db_path = tmp_path / "state" / "system.duckdb"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = _duckdb.connect(str(db_path))
         try:
             conn.execute(
                 "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
-                "INSERT INTO schema_version (version) VALUES (99);"
+                f"INSERT INTO schema_version (version) VALUES ({future});"
             )
             _ensure_schema(conn)
-            assert get_schema_version(conn) == 99
+            assert get_schema_version(conn) == future
         finally:
             conn.close()
 
@@ -409,16 +410,17 @@ class TestMigrationSafety:
         ``conn.execute(_SYSTEM_SCHEMA)`` call (run when ``current >=
         SCHEMA_VERSION``) materializes any missing tables *and* leaves
         the future-version ``schema_version`` row untouched. We
-        synthesize a v99 DB whose only table is ``schema_version``,
-        then assert that running ``_ensure_schema`` creates the v13-era
-        core tables that the binary needs (``user_groups``,
-        ``user_group_members``, ``resource_grants``, ``users``) while
-        keeping the version at 99.
+        synthesize a future-version DB (``SCHEMA_VERSION + 1``) whose only
+        table is ``schema_version``, then assert that running
+        ``_ensure_schema`` creates the v13-era core tables that the binary
+        needs (``user_groups``, ``user_group_members``, ``resource_grants``,
+        ``users``) while keeping the future version untouched.
         """
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
-        from src.db import _ensure_schema, get_schema_version
+        from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
 
+        future = SCHEMA_VERSION + 1
         db_path = tmp_path / "state" / "system.duckdb"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = _duckdb.connect(str(db_path))
@@ -430,7 +432,7 @@ class TestMigrationSafety:
             # that doesn't know the lab schema).
             conn.execute(
                 "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
-                "INSERT INTO schema_version (version) VALUES (99);"
+                f"INSERT INTO schema_version (version) VALUES ({future});"
             )
 
             # Sanity: the v13-era tables we expect the self-heal pass to
@@ -471,7 +473,7 @@ class TestMigrationSafety:
             )
 
             # The future-version contract still holds: version row untouched.
-            assert get_schema_version(conn) == 99
+            assert get_schema_version(conn) == future
         finally:
             conn.close()
 

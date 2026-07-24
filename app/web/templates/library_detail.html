@@ -99,11 +99,13 @@
 {% set _single = _n == 1 %}
 {% set _f0 = files[0] if _single else none %}
 {% set _noun = 'file' if _single else 'collection' %}
-{% set _title = _f0.filename if _single else collection.name %}
+{# Title is the artefact's NAME (what the caller typed), for both shapes — a
+   single-file artefact keeps the file glyph + filename-in-meta, but its name
+   is honored rather than overwritten by the filename. #}
+{% set _title = collection.name or (_f0.filename if _single else '') %}
 {% set _hero_glyph = 'doc' if _single else 'library' %}
 {% if _single %}
-  {% set _ext = (_f0.file_type or '')|upper %}
-  {% set _meta = [{'icon': 'file', 'text': (_ext ~ ' · ' if _ext else '') ~ ((_f0.size_bytes or 0)|humanbytes(1))}] %}
+  {% set _meta = [{'icon': 'file', 'text': _f0.filename ~ ' · ' ~ ((_f0.size_bytes or 0)|humanbytes(1))}] %}
 {% else %}
   {% set _meta = [{'icon': 'file', 'text': (_n|string) ~ ' file' ~ ('s' if _n != 1 else '')}] %}
 {% endif %}

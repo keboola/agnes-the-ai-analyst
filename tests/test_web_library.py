@@ -69,21 +69,25 @@ def test_library_lists_only_accessible(seeded_app):
 
 
 def test_single_file_artefact_presents_as_file(seeded_app, monkeypatch):
-    """One file in an artefact reads AS the file, not "a collection with 1
-    file": the Artefacts list shows the filename + single-document glyph (never
-    "1 file"), and the detail page frames it as a file."""
+    """One file in an artefact reads AS the file — single-document glyph,
+    filename + size in the meta, "File" framing, never "a collection with 1
+    file" — but the title is the artefact's NAME (what the caller typed), not
+    the filename, so distinct names stay distinct (they previously all
+    rendered as the same filename)."""
     monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
     c = seeded_app["client"]
     col = _create(seeded_app, "Solo Upload")
     _upload(seeded_app, col["id"], "report.pdf", b"%PDF-1.4 x", "application/pdf")
 
     lst = c.get("/artefacts", headers=_auth(seeded_app["admin_token"])).text
-    assert "report.pdf" in lst  # filename is the title
+    assert "Solo Upload" in lst  # the typed name is the title
+    assert "report.pdf" in lst  # filename is surfaced in the meta
     assert _DOC_GLYPH in lst  # single-document glyph
     assert "1 file" not in lst  # never the "1 file" container framing
 
     det = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["admin_token"])).text
-    assert "report.pdf" in det
+    assert "Solo Upload" in det  # the typed name is the hero title
+    assert "report.pdf" in det  # filename surfaced in the hero meta
     assert "Ask this file" in det
 
 
@@ -103,3 +107,20 @@ def test_multi_file_artefact_presents_as_collection(seeded_app, monkeypatch):
 
     det = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["admin_token"])).text
     assert "Ask this collection" in det
+
+
+def test_single_file_artefacts_with_same_filename_keep_distinct_names(seeded_app, monkeypatch):
+    """Regression: two single-file artefacts holding the *same* filename but
+    given different names must render under their own names on the Artefacts
+    list — the title is the name, not the filename, so they don't collapse
+    into two identical rows."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    c = seeded_app["client"]
+    a = _create(seeded_app, "First Report")
+    b = _create(seeded_app, "Second Report")
+    _upload(seeded_app, a["id"], "logo.png", b"\x89PNG\r\n\x1a\n x", "image/png")
+    _upload(seeded_app, b["id"], "logo.png", b"\x89PNG\r\n\x1a\n x", "image/png")
+
+    lst = c.get("/artefacts", headers=_auth(seeded_app["admin_token"])).text
+    assert "First Report" in lst
+    assert "Second Report" in lst

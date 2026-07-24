@@ -959,3 +959,42 @@ def test_v97_db_upgrades_to_v98(tmp_path):
     row = conn.execute("SELECT relay_protocol_version FROM chat_sessions WHERE id = 'chat_keep'").fetchone()
     assert row == (None,)
     conn.close()
+
+
+def test_v99_to_v100_heals_stranded_corpus_files_path(tmp_path):
+    """A DuckDB stranded by the migration renumbering — stamped at v97+ but
+    with ``corpus_files`` lacking the ``path`` column that v97 is *supposed*
+    to add — gets the column (and its unique index) back via the v99→v100
+    heal, without losing existing rows.
+
+    Reproduces the real bug: the ``if current < 97`` guard skips
+    ``_v96_to_v97`` on a DB already stamped 97, so ``path`` never lands and
+    every ``corpus_files`` read/insert 500s. Simulated by dropping the column
+    the fresh schema created, then re-running the ladder from v97."""
+    db_path = tmp_path / "stranded.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    # Recreate the stranded shape: drop the index + column the fresh schema
+    # gave us, and pin the version to 97 (the "already past v97" state).
+    conn.execute("DROP INDEX IF EXISTS idx_corpus_files_corpus_path")
+    conn.execute("ALTER TABLE corpus_files DROP COLUMN path")
+    conn.execute("UPDATE schema_version SET version = 97")
+    conn.execute("INSERT INTO file_corpora (id, name, slug, created_by) VALUES ('col_keep', 'keep', 'keep', 'u_keep')")
+    conn.execute(
+        "INSERT INTO corpus_files (id, corpus_id, filename, sha256, file_type, size_bytes, storage_path) "
+        "VALUES ('cf_keep', 'col_keep', 'keep.md', 'abc', 'md', 3, '/blobs/abc')"
+    )
+    pre = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    assert "path" not in pre  # confirm the stranded precondition
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    assert "path" in cols, "v99→v100 must heal the missing corpus_files.path column"
+    # The previously-failing read now works and the existing row survives.
+    row = conn.execute("SELECT id, path FROM corpus_files WHERE id = 'cf_keep'").fetchone()
+    assert row == ("cf_keep", None)
+    conn.close()
