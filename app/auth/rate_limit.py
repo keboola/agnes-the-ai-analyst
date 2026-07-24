@@ -8,9 +8,13 @@ and ``/auth/email/send-link`` open to SMTP/SendGrid email-bombing
 
 How: slowapi installs a starlette middleware that rejects with 429 when
 the per-route ``@limiter.limit("N/period")`` decorator is exceeded. The
-key is the client IP, taken from the leftmost X-Forwarded-For hop (Caddy
-in front of the app strips client-supplied XFF and sets its own — same
-trust model as ``app.auth.dependencies._client_ip``).
+key is the client IP, derived via ``app.auth.client_ip.trusted_client_ip``
+— which trusts only the ``AGNES_TRUSTED_PROXY_HOPS`` (default 1) RIGHTMOST
+X-Forwarded-For hops, not the fully client-controllable leftmost hop
+(security audit F9). Keying on the leftmost hop let an attacker rotate a
+fresh bucket per request and defeat the throttle; do not revert to
+``xff.split(",")[0]``. The shipped Caddyfile also overwrites
+X-Forwarded-For with the real peer as defense in depth.
 
 Operator override: set ``AGNES_AUTH_RATELIMIT_ENABLED=0`` and restart
 the process (no image rebuild needed — flip the env in the compose

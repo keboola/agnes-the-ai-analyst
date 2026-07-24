@@ -77,6 +77,22 @@ def test_f6_write_body_refuses_escape(tmp_path):
     assert (cache / "plugin" / "cover.png").read_bytes() == b"ok"
 
 
+def test_f6_unlink_guard_refuses_escape(tmp_path):
+    """Read-side containment: a poisoned pre-fix manifest with a ``../`` local
+    path must not let cleanup unlink a file outside the cache root."""
+    from src.marketplace_asset_mirror import _contained_cache_path
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    outside = tmp_path / "victim.txt"
+    outside.write_text("keepme")
+
+    assert _contained_cache_path(cache, "../victim.txt") is None
+    assert outside.exists()  # guard returned None → caller skips the unlink
+    # A legitimate in-cache path resolves normally.
+    assert _contained_cache_path(cache, "plugin/cover.png") == cache / "plugin" / "cover.png"
+
+
 # --- F8: /api/query file-replacement-scan denylist -------------------------
 
 

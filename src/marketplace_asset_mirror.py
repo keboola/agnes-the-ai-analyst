@@ -542,6 +542,24 @@ def _write_body(cache_dir: Path, relpath: str, body: bytes) -> None:
     tmp.replace(full)
 
 
+def _contained_cache_path(cache_dir: Path, relpath: str) -> Optional[Path]:
+    """Resolve ``cache_dir/relpath`` only if it stays under ``cache_dir``.
+
+    Security audit F6 (read side): manifest ``local`` values are read straight
+    off disk, and a manifest written by pre-fix vulnerable code could carry a
+    ``../`` in ``local``. Guard every unlink of a manifest-supplied path the
+    same way :func:`_write_body` guards writes, so cleanup can never delete a
+    file outside the cache root. Returns None (and logs) on an escaping path.
+    """
+    candidate = cache_dir / relpath
+    try:
+        candidate.resolve().relative_to(cache_dir.resolve())
+    except ValueError:
+        logger.warning("mirror refusing to unlink outside cache root: %r", relpath)
+        return None
+    return candidate
+
+
 # ---------------------------------------------------------------------------
 # Public API — one entry point per plugin
 # ---------------------------------------------------------------------------
@@ -752,10 +770,12 @@ def sync_assets(
                 continue
             # If the previous local file lived at a different path, drop it.
             if prior and prior.local and prior.local != relpath:
-                try:
-                    (cache_dir / prior.local).unlink(missing_ok=True)
-                except OSError:
-                    pass
+                old = _contained_cache_path(cache_dir, prior.local)
+                if old is not None:
+                    try:
+                        old.unlink(missing_ok=True)
+                    except OSError:
+                        pass
         else:
             prior.etag = outcome.etag or prior.etag
             prior.last_modified = outcome.last_modified or prior.last_modified
@@ -785,8 +805,11 @@ def sync_assets(
     _write_manifest(cache_dir, manifest)
 
     for relpath in removed_paths:
+        target = _contained_cache_path(cache_dir, relpath)
+        if target is None:
+            continue
         try:
-            (cache_dir / relpath).unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
         except OSError:
             pass
 
