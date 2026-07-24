@@ -344,12 +344,19 @@ async def handle_send_photo(request: web.Request) -> web.Response:
     if not username or not photo_path:
         return web.json_response({"error": "Missing required fields: user, photo_path"}, status=400)
 
-    # Security audit F15: constrain photo_path to the allowlisted base dir via
+    # Security audit F15: constrain photo_path to the allowlisted base dirs via
     # realpath containment so a caller on the socket cannot exfiltrate arbitrary
     # files the bot process can read (e.g. /etc/passwd, other users' data).
-    base = os.path.realpath(config.PHOTO_BASE_DIR)
+    # Realpath resolves symlinks first, so a symlink inside an allowed dir that
+    # points elsewhere is still rejected.
     resolved = os.path.realpath(photo_path)
-    if os.path.commonpath([base, resolved]) != base:
+    allowed = False
+    for base_dir in config.PHOTO_BASE_DIRS:
+        base = os.path.realpath(base_dir)
+        if os.path.commonpath([base, resolved]) == base:
+            allowed = True
+            break
+    if not allowed:
         logger.warning("send_photo rejected out-of-bounds path: %r", photo_path)
         return web.json_response({"error": "Photo path not permitted"}, status=403)
 

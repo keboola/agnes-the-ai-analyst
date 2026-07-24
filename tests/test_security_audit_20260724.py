@@ -245,6 +245,35 @@ def test_f10_unparseable_host_fails_closed_when_allowlist_set(monkeypatch):
     assert osec.is_attach_host_allowed(hostless)
 
 
+# --- F15: telegram send_photo path allowlist -------------------------------
+
+
+def test_f15_photo_base_dirs_default_and_override(monkeypatch):
+    """The default photo allowlist must include where report images actually
+    live (system temp dir — see test_report.py) plus DATA_DIR, and the env
+    override must parse an os.pathsep-separated list."""
+    import importlib
+    import os
+    import tempfile
+
+    import services.telegram_bot.config as cfg
+
+    monkeypatch.delenv("AGNES_TELEGRAM_PHOTO_DIR", raising=False)
+    monkeypatch.setenv("DATA_DIR", "/data")
+    importlib.reload(cfg)
+    try:
+        assert tempfile.gettempdir() in cfg.PHOTO_BASE_DIRS
+        assert "/data" in cfg.PHOTO_BASE_DIRS
+
+        monkeypatch.setenv("AGNES_TELEGRAM_PHOTO_DIR", os.pathsep.join(["/srv/out", "/run/imgs"]))
+        importlib.reload(cfg)
+        assert cfg.PHOTO_BASE_DIRS == ["/srv/out", "/run/imgs"]
+    finally:
+        # Restore default module state for any other test importing the module.
+        monkeypatch.delenv("AGNES_TELEGRAM_PHOTO_DIR", raising=False)
+        importlib.reload(cfg)
+
+
 # --- F4: install-prompt override is rendered in a Jinja2 sandbox ------------
 
 
