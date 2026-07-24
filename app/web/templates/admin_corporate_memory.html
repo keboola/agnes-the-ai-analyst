@@ -1587,7 +1587,7 @@
           <div style="display:flex; gap:var(--space-3);">
             <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
               <span style="font-size:12px; color:var(--text-muted);">Icon</span>
-              <input id="cmd-icon" type="text" value="🎯" maxlength="4"
+              <input id="cmd-icon" type="text" value="" maxlength="4"
                      style="padding:6px; border:1px solid var(--border);
                             border-radius:var(--radius-sm);
                             background:var(--bg); color:var(--text);">
@@ -1931,7 +1931,7 @@
           (typed || '').toLowerCase()
             .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
         document.getElementById('cmd-desc').value = '';
-        document.getElementById('cmd-icon').value = '🎯';
+        document.getElementById('cmd-icon').value = '';
         document.getElementById('cmd-color').value = '#e0f2fe';
         // Reset cover image state on every open.
         var coverUrl = document.getElementById('cmd-cover-url');
@@ -2199,7 +2199,7 @@
             }
             wrap.innerHTML = rows.map(d => {
                 const color = d.color || '#e0f2fe';
-                const icon = d.icon || '🎯';
+                const icon = d.icon || '';
                 const name = escapeHtml(d.name || d.slug || '');
                 const slug = escapeHtml(d.slug || '');
                 const desc = escapeHtml(d.description || '');
@@ -2263,7 +2263,7 @@
             document.getElementById('emd-name').value = d.name || '';
             document.getElementById('emd-slug').value = d.slug || '';
             document.getElementById('emd-desc').value = d.description || '';
-            document.getElementById('emd-icon').value = d.icon || '🎯';
+            document.getElementById('emd-icon').value = d.icon || '';
             document.getElementById('emd-color').value = d.color || '#e0f2fe';
             // v51 — pre-fill status from loaded domain.
             document.getElementById('emd-status').value = d.status || 'prod';
@@ -3867,7 +3867,7 @@
         const chip = (slug, title) =>
             `<span class="badge" `
           + `style="background:var(--ds-accent-info-bg); color:var(--ds-accent-info-ink); border:1px solid var(--ds-accent-info-line);" `
-          + `title="${escapeHtml(title || slug)}">📂 ${escapeHtml(slug)}</span>`;
+          + `title="${escapeHtml(title || slug)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:inline;vertical-align:-1px;"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg> ${escapeHtml(slug)}</span>`;
         let out = visible.map(s => chip(s)).join('');
         if (overflow > 0) {
             const rest = slugs.slice(max).join(', ');

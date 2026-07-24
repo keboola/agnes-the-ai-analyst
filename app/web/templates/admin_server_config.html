@@ -1584,7 +1584,7 @@ async function chatReadinessLoad() {
       const when = d.at ? " (last seen " + escHtml(d.at) + ")" : "";
       llmBanner =
         '<div style="margin: 8px 0; padding: 8px 10px; border-left: 3px solid var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg);">' +
-        '<strong style="color: var(--ds-accent-danger-ink);">⚠ ' + escHtml(label) + '</strong> — ' +
+        '<strong style="color: var(--ds-accent-danger-ink);"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:inline;vertical-align:-2px;"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg> ' + escHtml(label) + '</strong> — ' +
         escHtml(d.detail) + when +
         '<div style="margin-top: 4px; color: var(--ds-text-secondary, #666);">Fix via the Anthropic key field above (persists to the overlay), then re-test. See DEPLOYMENT.md → "Chat LLM credential failures".</div>' +
         '</div>';

@@ -14,9 +14,9 @@ Scope of the ban (deliberately narrow):
     (→ ← ↗ ↓ …) and the monochrome ✓ / ✗ / ✕ marks. Converting those to
     SVG across every button/link would be a large, low-value churn.
 
-`ALLOWLIST` holds the surfaces not yet swept — admin pages and the
-async-hydrated marketplace item detail template (folded in with its own
-redesign pass). The list may only shrink: do not add to it.
+`ALLOWLIST` holds the surfaces not yet swept — the async-hydrated marketplace
+item detail template (folded in with its own redesign pass). The list may only
+shrink: do not add to it.
 """
 
 import re
@@ -33,8 +33,6 @@ ALLOWLIST = {
 
 
 def _in_scope(rel: str) -> bool:
-    if rel.startswith("admin_"):  # admin surfaces: separate follow-up sweep
-        return False
     return rel not in ALLOWLIST
 
 

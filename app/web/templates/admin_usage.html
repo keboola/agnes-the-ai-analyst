@@ -501,7 +501,7 @@
         '<td>' + srcPill + '</td>' +
         '<td>' + escapeHtml(r.event_type || '') + '</td>' +
         '<td>' + escapeHtml(what) + '</td>' +
-        '<td>' + (r.is_error ? '⚠' : '') + '</td>';
+        '<td>' + (r.is_error ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:inline;vertical-align:-2px;"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>' : '') + '</td>';
       tbody.appendChild(tr);
     });
   }

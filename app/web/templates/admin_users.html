@@ -642,7 +642,7 @@ async function resetPassword(id, email) {
     resetNote.textContent = "Email sent. Copy the link below only if you need to deliver it manually.";
     resetNote.removeAttribute("data-no-smtp");
   } else {
-    resetNote.textContent = "⚠ Email transport not configured — copy this link and send it to the user directly.";
+    resetNote.textContent = "Warning: Email transport not configured — copy this link and send it to the user directly.";
     resetNote.setAttribute("data-no-smtp", "");
   }
   document.getElementById("reset-token-text").textContent = data.reset_url;
@@ -719,7 +719,7 @@ function showInviteLink(email, url, emailSent) {
     inviteNote.textContent = "Invitation email sent. Copy the link below only if you need to deliver it manually.";
     inviteNote.removeAttribute("data-no-smtp");
   } else {
-    inviteNote.textContent = "⚠ Email transport not configured — copy this link and send it to the user directly.";
+    inviteNote.textContent = "Warning: Email transport not configured — copy this link and send it to the user directly.";
     inviteNote.setAttribute("data-no-smtp", "");
   }
   document.getElementById("invite-url-text").textContent = url;
