@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.29] - 2026-07-24
+
+### Fixed
+
 - **Cloud-chat answers now stream token-by-token.** Both credential hops on
   the model-call path buffered the LLM's SSE response whole — the broker's
   Anthropic proxy read the full completion before responding, and the
