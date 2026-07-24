@@ -118,6 +118,31 @@
 }
 
 .sl-empty { color: var(--ds-text-muted); padding: var(--space-4); text-align: center; }
+
+/* Rendered-markdown description inside the detail. Headings authored in
+   descriptions are sub-headings of an already-small panel, so keep them close
+   to body size. Tables scroll inside the block rather than widening it. */
+.sl-detail__desc { margin: 0 0 var(--space-3); overflow-x: auto; }
+.sl-detail__desc h2, .sl-detail__desc h3, .sl-detail__desc h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+    margin: var(--space-3) 0 var(--space-1);
+}
+.sl-detail__desc table { border-collapse: collapse; margin: 0 0 var(--space-2); }
+.sl-detail__desc th, .sl-detail__desc td {
+    border: 1px solid var(--ds-border);
+    padding: 2px 8px;
+    font-size: 12px;
+}
+.sl-detail__desc code {
+    background: var(--ds-surface);
+    padding: 0 4px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+}
+
+.sl-detail__meta { color: var(--ds-text-muted); }
 </style>
 {% endblock %}
 
@@ -132,7 +157,7 @@
 <section class="sl-panel is-active" id="panel-metrics" role="tabpanel" aria-labelledby="tab-metrics">
     <div class="sl-toolbar">
         <input id="metric-filter" type="search" class="search-input"
-               placeholder="Filter metrics by name or description…" autocomplete="off">
+               placeholder="Filter metrics by name, description, or synonym…" autocomplete="off">
     </div>
     {% if metric_categories %}
     <div id="metrics-list">
@@ -142,17 +167,23 @@
             <div class="sl-list">
                 {% for m in cat.metrics %}
                 <div class="sl-item"
-                     data-filter-text="{{ ((m.name or '') ~ ' ' ~ (m.display_name or '') ~ ' ' ~ (m.description or '')) | lower }}">
+                     data-filter-text="{{ ((m.name or '') ~ ' ' ~ (m.display_name or '') ~ ' ' ~ (m.description_text or '') ~ ' ' ~ ((m.synonyms or []) | join(' '))) | lower }}">
                     <button type="button" class="sl-row">
                         <div class="sl-row__main">
                             <div class="sl-row__name">{{ m.display_name or m.name }}</div>
-                            {% if m.description %}<div class="sl-row__desc">{{ m.description }}</div>{% endif %}
+                            {% if m.description_text %}<div class="sl-row__desc">{{ m.description_text }}</div>{% endif %}
                         </div>
                         {{ source_badge(m.source) }}
                         {% if m.tables %}<span class="badge" title="Relationship-based JOIN metric">JOIN</span>{% endif %}
                         <span class="sl-row__chevron">&rsaquo;</span>
                     </button>
                     <div class="sl-detail">
+                        {#- description_html comes from render_safe(): rendered
+                            CommonMark funneled through the nh3 allowlist, safe
+                            to inject (same contract as marketplace detail). -#}
+                        {% if m.description_html %}<div class="sl-detail__desc">{{ m.description_html | safe }}</div>{% endif %}
+                        <p class="sl-detail__meta"><strong>Type:</strong> {{ m.type or 'n/a' }}{% if m.unit %} · <strong>Unit:</strong> {{ m.unit }}{% endif %}{% if m.grain %} · <strong>Grain:</strong> {{ m.grain }}{% endif %}</p>
+                        {% if m.dimensions %}<p><strong>Dimensions:</strong> {{ m.dimensions | join(', ') }}</p>{% endif %}
                         {% if m.tables %}
                         <p><strong>Tables:</strong> {{ m.tables | join(', ') }}</p>
                         {% elif m.table_name %}
