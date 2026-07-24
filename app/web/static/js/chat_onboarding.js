@@ -414,7 +414,7 @@ async function maybeHandleAddCommand(text) {
     .sort((a, b) => b.s - a.s);
   if (!scored.length) {
     hooks.renderAssistant(
-      `I couldn't find anything called "**${escapeHtml(m[1])}**" to add. Open the [Catalog](/stack?tab=browse) to see what's available.`,
+      `I couldn't find anything called "**${escapeHtml(m[1])}**" to add. Open the [Catalog](/catalog) to see what's available.`,
     );
     return true;
   }
@@ -423,7 +423,7 @@ async function maybeHandleAddCommand(text) {
     await subscribe(target.resource_type, target.id);
   } catch (_) {
     hooks.renderAssistant(
-      `I couldn't add **${escapeHtml(target.name || target.id)}** — you may not have access. Ask your admin, or pick another from the [Catalog](/stack?tab=browse).`,
+      `I couldn't add **${escapeHtml(target.name || target.id)}** — you may not have access. Ask your admin, or pick another from the [Catalog](/catalog).`,
     );
     return true;
   }

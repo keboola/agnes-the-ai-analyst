@@ -307,7 +307,7 @@ function _buildPopover(step, index, total) {
     backBtn.className = 'tour-btn tour-btn-back';
     backBtn.textContent = 'Back';
     if (index === 0) backBtn.disabled = true;
-    backBtn.addEventListener('click', () => _showStep(index - 1));
+    backBtn.addEventListener('click', () => _gotoStep(index - 1));
 
     const finishBtn = document.createElement('button');
     finishBtn.type = 'button';
@@ -346,7 +346,7 @@ function _buildPopover(step, index, total) {
     backBtn.className = 'tour-btn tour-btn-back';
     backBtn.textContent = 'Back';
     if (index === 0) backBtn.disabled = true;
-    backBtn.addEventListener('click', () => _showStep(index - 1));
+    backBtn.addEventListener('click', () => _gotoStep(index - 1));
 
     const isLastNonFinal = index === total - 2; // last before finalChoice
     const nextBtn = document.createElement('button');
