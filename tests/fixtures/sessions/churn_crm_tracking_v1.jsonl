@@ -1,0 +1,2 @@
+{"role": "user", "content": "We need to track forecasted churn on orders in the CRM — record the reason a client may leave and roll that up into internal reporting."}
+{"role": "assistant", "content": "Got it — I'll note that requirement."}
