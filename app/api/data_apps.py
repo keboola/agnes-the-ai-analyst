@@ -271,6 +271,37 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
     return token_id, jwt_token
 
 
+def _mint_git_credential(row: dict) -> str:
+    """Mint a PAT scoped `data-app-git:<slug>` for this app's owner and
+    return a clone URL with it embedded as `agnes:<jwt>@` basic-auth.
+
+    This is the *agent's* push credential for working on the app's repo —
+    independent of (and never stored as) the container's own
+    `service_token_id` runtime credential minted by `_mint_service_token`.
+    """
+    owner = users_repo().get_by_id(row["owner_user_id"])
+    if not owner:
+        raise OwnerNotFoundError(row["owner_user_id"])
+    slug = row["slug"]
+    token_id = str(uuid.uuid4())
+    jwt_token = create_access_token(
+        user_id=owner["id"],
+        email=owner["email"],
+        token_id=token_id,
+        typ="pat",
+        extra_claims={"scope": f"data-app-git:{slug}"},
+    )
+    access_token_repo().create(
+        id=token_id,
+        user_id=owner["id"],
+        name=f"data-app-git:{slug}",
+        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+        prefix=token_id.replace("-", "")[:8],
+        expires_at=None,
+    )
+    return f"{AGNES_INTERNAL_URL.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
+
+
 def _handle_runner_failure(repo, app_id: str, exc: Exception) -> None:
     detail = getattr(exc, "detail", None) or str(exc)
     repo.set_state(app_id, "error", str(detail))
@@ -521,6 +552,23 @@ async def deploy_data_app(
     _audit(conn, user["id"], "data_app.deploy", f"data_app:{slug}", {"sha": sha})
 
     return {"state": "running", "deployed_sha": sha}
+
+
+@router.post("/{slug}/git-credential")
+async def mint_git_credential(
+    slug: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    _feature_gate()
+    row = _get_row_or_404(slug)
+    _require_owner_or_admin(user, row)
+    try:
+        url = _mint_git_credential(row)
+    except OwnerNotFoundError:
+        raise HTTPException(status_code=500, detail="owner_not_found")
+    _audit(conn, user["id"], "data_app.git_credential", f"data_app:{slug}", {})
+    return {"git_clone_url": url}
 
 
 @router.post("/{slug}/stop")

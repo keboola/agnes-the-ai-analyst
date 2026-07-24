@@ -1039,3 +1039,15 @@ class TestReap:
         finally:
             conn.close()
         assert row["state"] == "deploying"
+
+
+class TestGitCredential:
+    def test_mint_git_credential(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/git-credential")
+        assert r.status_code == 200, r.text
+        url = r.json()["git_clone_url"]
+        assert "/data-apps.git/sapp" in url
+        assert "@" in url and url.startswith("http")
+
+    def test_git_credential_stranger_403(self, client_as_other_user, seeded_repo_with_commit):
+        assert client_as_other_user.post("/api/data-apps/sapp/git-credential").status_code == 403
