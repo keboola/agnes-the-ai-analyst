@@ -176,3 +176,14 @@ def test_delete_round_trip(repo):
     assert repo.delete(aid) is True
     assert repo.get(aid) is None
     assert repo.delete(aid) is False
+
+
+def test_draft_lifecycle(repo):
+    p = repo.create(slug="cp", name="CP", owner_user_id="u1")
+    d = repo.create_draft(parent_app_id=p, slug="cp--i", branch="i", owner_user_id="u1")
+    got = repo.get(d)
+    assert bool(got["is_draft"]) is True  # duckdb bool vs pg bool
+    assert got["parent_app_id"] == p
+    assert got["draft_branch"] == "i"
+    assert [r["id"] for r in repo.list_drafts(p)] == [d]
+    assert "cp--i" not in {r["slug"] for r in repo.list(include_drafts=False)}
