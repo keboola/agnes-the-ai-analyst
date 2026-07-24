@@ -1532,7 +1532,7 @@ html[data-ui-layout="rail"] .cloud-chat-capabilities {
 html[data-ui-layout="rail"] .cloud-chat-main > #chat-capabilities { order: 1; }
 html[data-ui-layout="rail"] .cloud-chat-main > #chat-form { order: 2; }
 html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-extras { order: 3; }
-html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-banner { order: 4; }
+html[data-ui-layout="rail"] .cloud-chat-main > #chat-empty-banner { order: 0; }
 html[data-ui-layout="rail"] .cloud-chat-main > .cloud-chat-empty-foot { order: 5; }
 /* The dashboard is ONE centered content column (~1280px): greeting, composer,
    Stack status line, the five suggested-action cards, and the banner all share
@@ -1559,8 +1559,8 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
      clear breathing room before the input. */
   width: var(--rdb-col);
   max-width: none;
-  margin-top: 40px;
-  padding: 0 0 28px;
+  margin-top: 4px;
+  padding: 0 0 20px;
   text-align: center;
 }
 /* Hero prominence for the lead — scoped to the chat hero so the foot banner
@@ -1620,9 +1620,9 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
      stretching the full --rdb-col (up to 1280px). */
   max-width: 1040px;
   flex: 0 0 auto;
-  /* Sits under the entry group: a modest gap above to separate it from the
-     suggested actions, a small gap below before the credit. */
-  margin: 20px 0 8px;
+  /* Banner leads the page (order 0); keep a little room above it and let the
+     heading group sit right beneath it (no bottom gap of its own). */
+  margin: 16px 0 0;
 }
 
 /* Keboola credit — pinned to the very bottom (margin-top:auto). No divider. */
@@ -1680,7 +1680,7 @@ html[data-ui-layout="rail"] .cloud-chat-composer {
   display: flex;
   align-items: center;
   background: var(--ds-surface);
-  border: 1.5px solid var(--ds-agnes-line);
+  border: 1.5px solid var(--ds-kai-line);
   border-radius: 26px;
   padding: 6px 6px 6px 18px;
 }
@@ -1689,17 +1689,17 @@ html[data-ui-layout="rail"] .cloud-chat-composer .cloud-chat-input {
   min-width: 0;
 }
 html[data-ui-layout="rail"] .cloud-chat-composer:focus-within {
-  border-color: var(--ds-agnes);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-agnes) 14%, transparent);
+  border-color: var(--ds-kai);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-kai) 14%, transparent);
 }
 html[data-ui-layout="rail"] .cloud-chat-send-btn {
   width: 44px; height: 44px; flex-shrink: 0; border: none; padding: 0;
   display: grid; place-items: center;
   border-radius: var(--ds-radius-pill, 999px);
-  background: var(--ds-agnes); color: var(--ds-text-inverse);
+  background: var(--ds-kai); color: var(--ds-text-inverse);
   cursor: pointer; transition: background .15s;
 }
-html[data-ui-layout="rail"] .cloud-chat-send-btn:hover { background: var(--ds-primary-dark); }
+html[data-ui-layout="rail"] .cloud-chat-send-btn:hover { background: var(--ds-kai-dark); }
 html[data-ui-layout="rail"] .cloud-chat-send-btn svg { width: 18px; height: 18px; }
 html[data-ui-layout="rail"] .cloud-chat-send-btn:disabled { opacity: .55; cursor: progress; }
 
@@ -2222,10 +2222,10 @@ html[data-ui-layout="rail"] .msg-user .msg-bubble {
   line-height: 1.4;
   border: none;
   border-radius: 16px;
-  background: var(--ds-agnes);
+  background: var(--ds-kai);
   color: var(--ds-text-inverse);
 }
-/* Keep inline code / links legible on the solid green user bubble. */
+/* Keep inline code / links legible on the solid Kai-blue user bubble. */
 html[data-ui-layout="rail"] .msg-user .msg-bubble a { color: var(--ds-text-inverse); text-decoration: underline; }
 html[data-ui-layout="rail"] .msg-user .msg-bubble code {
   background: color-mix(in srgb, var(--ds-text-inverse) 22%, transparent);
@@ -2329,15 +2329,20 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   border-radius: var(--ds-radius-pill);
   padding: 1px 8px;
 }
-.cloud-chat-journey-restart {
+.cloud-chat-journey-actions {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
+  gap: 4px;
+}
+.cloud-chat-journey-iconbtn {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   font-weight: 600;
   line-height: 1;
   color: var(--ds-text-muted);
@@ -2346,9 +2351,13 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   border-radius: var(--ds-radius-pill);
   cursor: pointer;
 }
-.cloud-chat-journey-restart:hover {
+.cloud-chat-journey-iconbtn:hover {
   color: var(--ds-text-primary);
   border-color: var(--ds-text-muted);
+}
+.cloud-chat-journey-iconbtn:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
 }
 .cloud-chat-journey-sub {
   margin: 4px 0 10px;

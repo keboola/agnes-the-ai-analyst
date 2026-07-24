@@ -40,7 +40,7 @@
 <svg class="klb-check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
 {%- endmacro %}
 
-{% macro agnes_usage_card(title='Ask Kai in Agnes',
+{% macro agnes_usage_card(title='Use Agnes in Kai',
                           copy=None,
                           points=['Company knowledge', 'Skills & capabilities', 'Memory & insights'],
                           badge="You're here") %}
@@ -50,6 +50,7 @@
       <svg viewBox="0 0 24 24" fill="none"><path d="M21 12a8 8 0 0 1-8 8H4l1.6-3.2A8 8 0 1 1 21 12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
     </span>
     <h3 class="klb-card-title">{{ title }}</h3>
+    {% if badge %}<span class="klb-here-badge">{{ badge }}</span>{% endif %}
   </div>
   {% if copy %}<p class="klb-card-copy">{{ copy }}</p>{% endif %}
   <ul class="klb-points" role="list">
@@ -57,7 +58,6 @@
     <li>{{ _check() }}{{ p }}</li>
     {% endfor %}
   </ul>
-  {% if badge %}<span class="klb-here-badge">{{ badge }}</span>{% endif %}
 </div>
 {% endmacro %}
 
@@ -153,11 +153,13 @@
     {% if _show_lead %}
     {{ knowledge_layer_lead(headline_1, headline_2, subcopy) }}
     {% endif %}
-    <div class="klb-slot klb-slot--left">{{ agnes_usage_card() }}</div>
-    <div class="klb-slot klb-slot--hub">{{ knowledge_hub() }}</div>
-    <div class="klb-slot klb-slot--right">
+    {# Swapped: the "connect your tools" card sits LEFT, the "Ask Kai in
+       Agnes" card RIGHT — Kai (the destination) reads on the right. #}
+    <div class="klb-slot klb-slot--left">
       {{ connected_tools_card(tools=tools, cta_label=primary_label, cta_href=primary_href) }}
     </div>
+    <div class="klb-slot klb-slot--hub">{{ knowledge_hub() }}</div>
+    <div class="klb-slot klb-slot--right">{{ agnes_usage_card() }}</div>
   </div>
 </section>
 {% endmacro %}

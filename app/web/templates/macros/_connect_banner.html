@@ -40,6 +40,17 @@
     <a class="cbn-cta" href="{{ cta_href }}">{{ cta_label }}</a>
   </div>
 </div>
+{% elif variant == 'bar' %}
+{# Compact single-row bar: an Agnes mark in a white "plugin" tile on the left,
+   copy in the middle, CTA pushed to the right. #}
+<div class="cbn cbn--bar">
+  <span class="cbn-bar-icon" aria-hidden="true">{{ _cbn_orb.orb(css_class='cbn-bar-orb', size=30) }}</span>
+  <div class="cbn-bar-text">
+    <div class="cbn-title">{{ title }}</div>
+    <p class="cbn-copy">{{ copy }}</p>
+  </div>
+  <a class="cbn-cta" href="{{ cta_href }}">{{ cta_label }}</a>
+</div>
 {% else %}
 <div class="cbn cbn--inline">
   <div class="cbn-lead">
