@@ -22,6 +22,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.33] - 2026-07-24
+
+### Changed
+
+- **Cloud-chat conversations survive a sandbox respawn with FULL context.**
+  A fresh sandbox for a chat with history (crash respawn, post-restart
+  spawn, cross-gateway takeover) previously replayed only the last 3 raw
+  user messages over stdin — dropping every assistant answer and tool
+  result (the agent lost the thread of its own analysis) and burning one
+  full LLM turn per replayed message. The manager now uploads a bounded
+  restored-conversation transcript (user + assistant turns, newest-first
+  under a character budget; departed co-session participants' turns still
+  omitted per SR-11) and the runner appends it to the agent's system
+  prompt at boot.
+
+### Fixed
+
+- **Redelivered pending question could be silently lost on a mid-answer disconnect.** The trailing-unanswered-turn redelivery introduced above wrote the live `user_msg` frame directly to stdin instead of going through the shared turn-delivery helper, so it never set `turn_in_flight`. If the user disconnected while the agent was still answering, the idle-linger-pause didn't know a turn was in flight and could pause the sandbox mid-answer, dropping the reply. Redelivery now goes through the same delivery path as every other live turn.
+- **Context restore and pending-question redelivery both used stale history in chats past 500 messages.** Both looked at the trailing element of `list_messages()`'s default `ORDER BY created_at ASC LIMIT 500`, so for a conversation longer than that the "latest" message they inspected was actually the 500th-oldest one — either dropping the real pending question, re-answering a stale one, or restoring context from the middle of the conversation instead of its recent tail. A new `list_recent_messages()` (`ORDER BY created_at DESC`, implemented on both the DuckDB and Postgres repos) replaces `list_messages()` at both call sites.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.76.32] - 2026-07-24
 
 ### Added

@@ -164,6 +164,35 @@ def test_list_messages_and_after_id(sessions, messages):
     assert [m.content for m in after] == ["two"]
 
 
+def test_list_recent_messages_returns_newest_first(sessions, messages):
+    """The counterpart to ``list_messages``'s oldest-first ``LIMIT`` —
+    ``_redeliver_pending_question``/``_build_restore_context`` need the
+    actual tail of a long conversation, not whatever ``list_messages``'s
+    default 500-row ``ORDER BY created_at ASC LIMIT`` happens to return
+    (Devin review on #1030)."""
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
+    messages.append_message(session_id=s.id, role="user", content="one")
+    messages.append_message(session_id=s.id, role="assistant", content="two")
+    messages.append_message(session_id=s.id, role="user", content="three")
+    recent = messages.list_recent_messages(s.id)
+    assert [m.content for m in recent] == ["three", "two", "one"]
+
+
+def test_list_recent_messages_respects_limit_past_default(sessions, messages):
+    """The actual bug this repro guards: with a conversation longer than
+    ``list_messages``'s default 500-row window, the true latest message
+    must still be reachable via ``list_recent_messages(limit=1)`` — this
+    uses a small limit to keep the test fast rather than seeding 500+ rows,
+    but pins the same ``ORDER BY ... DESC`` contract that makes it work at
+    any conversation length."""
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
+    for i in range(5):
+        messages.append_message(session_id=s.id, role="user", content=f"msg-{i}")
+    newest = messages.list_recent_messages(s.id, limit=1)
+    assert len(newest) == 1
+    assert newest[0].content == "msg-4"
+
+
 def test_tool_calls_round_trip(sessions, messages):
     s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
     payload = [{"name": "query", "args": {"sql": "SELECT 1"}}]
