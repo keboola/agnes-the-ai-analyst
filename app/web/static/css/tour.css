@@ -18,8 +18,9 @@
   position: fixed;
   inset: 0;
   z-index: 9000;
-  /* Translucent tint using the shadow color family (no raw hex). */
-  background: rgba(15, 27, 58, 0.38);
+  /* Translucent dark tint from the text-ink token (no raw color literal) —
+     matches the codebase's color-mix scrim pattern (e.g. chat.css). */
+  background: color-mix(in srgb, var(--ds-text-primary) 34%, transparent);
   pointer-events: none;
   /* Fade in */
   animation: tour-scrim-in var(--ds-motion-med) var(--ds-ease-enter) both;
@@ -42,8 +43,10 @@
   position: relative;
   z-index: 9010 !important;
   /* A normal panel radius — NOT the pill radius: on a large tabs+table zone a
-     pill radius rounds the corners by half its height and reads as a blob. */
-  border-radius: var(--ds-radius-lg);
+     pill radius rounds the corners by half its height and reads as a blob.
+     --ds-radius-lg isn't a declared token, so carry the 12px fallback (same as
+     chat.css) — without it border-radius resolves to 0 and the ring goes square. */
+  border-radius: var(--ds-radius-lg, 12px);
   /* Backing plate (white gap) + a clean primary ring, so the target reads
      lifted off the dimmed page regardless of the surface behind it. */
   box-shadow:
@@ -311,12 +314,11 @@
   margin-top: 4px;
 }
 
-/* Paper theme — slightly warmer popover shadow + tighter radius */
+/* Paper theme — tighter radius; shadow via the design-system token (the
+   default popover already uses --ds-shadow-lg; paper takes the softer md). */
 [data-theme="paper"] .tour-popover {
   border-radius: 14px;
-  box-shadow:
-    0 4px 24px rgba(15, 23, 42, 0.10),
-    0 1px 4px rgba(15, 23, 42, 0.06);
+  box-shadow: var(--ds-shadow-md);
 }
 
 [data-theme="paper"] .tour-spotlight {
