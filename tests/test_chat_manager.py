@@ -3245,14 +3245,10 @@ class TestRestoreContext:
         async def _run():
             s = await manager.create_session(user_email="owner@x", surface=Surface.WEB)
             # Co-session flag lives on the row; participants carry membership.
-            manager._repo._conn.execute(
-                "UPDATE chat_sessions SET is_co_session = TRUE WHERE id = ?", [s.id]
-            )
+            manager._repo._conn.execute("UPDATE chat_sessions SET is_co_session = TRUE WHERE id = ?", [s.id])
             manager._repo.add_session_participant(session_id=s.id, user_email="owner@x", user_id="u1", role="owner")
             manager._repo.add_session_participant(session_id=s.id, user_email="guest@x", user_id="u2", role="member")
-            manager._repo.append_message(
-                session_id=s.id, role="user", content="owner question", sender_email="owner@x"
-            )
+            manager._repo.append_message(session_id=s.id, role="user", content="owner question", sender_email="owner@x")
             manager._repo.append_message(
                 session_id=s.id, role="user", content="guest secret question", sender_email="guest@x"
             )
@@ -3297,6 +3293,12 @@ class TestRestoreContext:
             # The fresh runner got EXACTLY the one pending question, live.
             await _wait_until(lambda: "pending question?" in _stdin_user_texts(handles[1]))
             assert _stdin_user_texts(handles[1]).count("pending question?") == 1
+            # Redelivery must go through the same turn-state bookkeeping as
+            # any other live turn — otherwise _linger_then_pause doesn't know
+            # a turn is in flight and can pause the sandbox mid-answer if the
+            # user disconnects before the reply arrives (Devin review on
+            # #1030, follow-up finding).
+            assert manager._live[s.id].turn_in_flight, "redelivery must set turn_in_flight"
 
             await manager.kill(s.id, reason="test_done")
             handles[1].emit_eof()

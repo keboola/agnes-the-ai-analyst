@@ -1582,7 +1582,13 @@ class ChatManager:
         ONE live turn is re-sent — and only when the last persisted message
         is an unanswered user turn; the old 3-turn replay re-answered
         already-answered questions as a side effect. SR-11: a departed
-        co-session participant's pending turn is not re-delivered.
+        co-session participant's pending turn is not re-delivered. Goes
+        through ``_deliver_local_user_message`` (not a bare stdin write) so
+        this redelivery sets ``turn_in_flight`` like any other live turn —
+        without it, ``_linger_then_pause`` doesn't know a turn is in
+        flight and can pause the sandbox mid-answer if the user
+        disconnects while the redelivered question is still being
+        answered (Devin review on #1030).
         """
         assert live.handle is not None
         msgs = self._repo.list_messages(live.chat_id)
@@ -1592,10 +1598,7 @@ class ChatManager:
         author = getattr(last, "sender_email", None) or live.user_email
         if live.participant_emails and author not in set(live.participant_emails):
             return  # SR-11
-        payload = json.dumps({"type": "user_msg", "text": last.content}) + "\n"
-        async with live._stdin_lock:
-            live.handle.stdin.write(payload.encode("utf-8"))
-            await live.handle.stdin.drain()
+        await self._deliver_local_user_message(live, last.content)
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt, mint_co_session_jwt

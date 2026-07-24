@@ -39,6 +39,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Redelivered pending question could be silently lost on a mid-answer disconnect.** The trailing-unanswered-turn redelivery introduced above wrote the live `user_msg` frame directly to stdin instead of going through the shared turn-delivery helper, so it never set `turn_in_flight`. If the user disconnected while the agent was still answering, the idle-linger-pause didn't know a turn was in flight and could pause the sandbox mid-answer, dropping the reply. Redelivery now goes through the same delivery path as every other live turn.
+
 ### Removed
 
 ### Internal
