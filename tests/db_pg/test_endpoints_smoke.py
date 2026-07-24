@@ -2154,6 +2154,18 @@ KNOWN_UNTESTED = {
     # duplicated in this PG smoke sweep.
     "POST /api/v1/agents/{slug}/responses",
     "GET /api/v1/jobs/{job_id}",
+    # Agent-as-API multi-turn sessions (V1b Task 4) — SSE turn streaming,
+    # cancel, history, delete. Auth chain (owner/agent-PAT 404 matrix),
+    # SSE framing (RUN_STARTED once/turn, id: lines), turn-in-flight 409,
+    # and the create/history/cancel/delete lifecycle are covered by
+    # tests/test_agent_sessions_api.py; not duplicated in this PG smoke
+    # sweep (an open SSE response doesn't fit this harness's
+    # parameter-free happy-path-status-code shape).
+    "POST /api/v1/agents/{slug}/sessions",
+    "POST /api/v1/sessions/{session_id}/messages",
+    "GET /api/v1/sessions/{session_id}",
+    "POST /api/v1/sessions/{session_id}/cancel",
+    "DELETE /api/v1/sessions/{session_id}",
 }
 
 

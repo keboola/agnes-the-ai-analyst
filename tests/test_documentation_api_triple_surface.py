@@ -278,12 +278,30 @@ _AGENT_JOBS_REASON = (
     "deliberately sync-only (see its docstring) and never polls jobs itself — "
     "a tool call blocking on a poll loop is a poor fit for a chat turn."
 )
+_AGENT_SESSION_REASON = (
+    "agent-as-API multi-turn sessions (agent-api V1b Task 4) — session "
+    "create/history/cancel/delete around a Server-Sent Events turn stream. "
+    "No MCP analogue by design: the `/messages` turn is an open SSE response "
+    "(AG-UI event vocabulary), not a request/response tool call an MCP "
+    "client can await, and cancel/delete are lifecycle controls over that "
+    "same long-lived stream rather than a discrete query or action. No CLI "
+    "subcommand either — this surface is for external callers driving Agnes "
+    "as a headless multi-turn agent API, not for interactive analyst use "
+    "(that's the web chat UI); contrast the sync-only one-shot "
+    "`/api/v1/agents/{slug}/responses`, which DOES carry a CLI (`agnes agent "
+    "ask`) and MCP (`agent_ask`) surface because it fits the request/"
+    "response shape both need."
+)
 
 _EXEMPT: dict[str, str] = {
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
     "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
     "/api/v1/agents/{agent_id}/tokens": _AGENT_TOKENS_REASON,
     "/api/v1/jobs/{job_id}": _AGENT_JOBS_REASON,
+    "/api/v1/agents/{slug}/sessions": _AGENT_SESSION_REASON,
+    "/api/v1/sessions/{session_id}": _AGENT_SESSION_REASON,
+    "/api/v1/sessions/{session_id}/messages": _AGENT_SESSION_REASON,
+    "/api/v1/sessions/{session_id}/cancel": _AGENT_SESSION_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "

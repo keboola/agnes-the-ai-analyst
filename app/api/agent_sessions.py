@@ -1,0 +1,297 @@
+"""Agent-as-API multi-turn sessions — `POST /api/v1/agents/{slug}/sessions`
++ `POST/GET/DELETE /api/v1/sessions/{id}` + `POST /api/v1/sessions/{id}/cancel`
+(V1b Task 4, `docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api
+-design.md` §3). Split out of `app/api/agent_runtime.py` (which owns the
+one-shot `/responses` + `/jobs` runtime) to keep each router focused.
+
+Where the one-shot runtime spawns a fresh headless session per call, this
+router exposes the underlying multi-turn chat primitive directly: create a
+session bound to an agent, stream one turn at a time as Server-Sent Events
+in the AG-UI vocabulary (`app.api.agent_sse`), read history, cancel an
+in-flight turn, or archive the session.
+
+Auth: session routes have no `{slug}` in their path, so
+`require_agent_runtime_principal` (agent_runtime.py) cannot guard them, and
+`require_session_token` (app/auth/dependencies.py) rejects every PAT flavor
+outright — it would kill the agent-PAT flow this surface must support (per
+`app.auth.pat_resolver`'s `_AGENT_PAT_ALLOWED_PREFIXES`, agent PATs ARE
+allowed against `/api/v1/sessions/*`). `require_session_principal` below is
+the session-scoped auth dependency built for this router: resolve the
+session's owning agent, then allow either the agent's owner (interactive
+session token) or an agent PAT bound to that exact agent — anything else is
+`404`, never `403`, so a non-owner can't distinguish "session exists,
+not yours" from "session doesn't exist".
+
+SSE stream lifecycle: one `StreamingSink` (`app.chat.streaming_sink`) is
+attached per `POST .../messages` call — a fresh attach/detach pair per
+turn, which is also what makes `RUN_STARTED` (emitted once per `attach()`,
+see `ChatManager._seat_sink`) appear exactly once per turn rather than once
+per reconnect: there is no persistent WS connection here to reconnect. A
+client that disconnects mid-stream does NOT cancel the turn — `finally:
+detach_sink()` only removes this one sink; the runner keeps running and
+burns budget until it finishes, crashes, or `POST .../cancel` is called
+explicitly. A turn that never emits a terminal frame (`RUN_FINISHED`/
+`RUN_ERROR`) would otherwise hang the response forever; `_IDLE_TIMEOUT_S`
+bounds the wait between frames and forces a terminal `RUN_ERROR` instead.
+
+Concurrency: a per-session turn lock (`coordination().lease_acquire`, the
+same primitive `app.api.chat`'s WS ticket store and `app.chat.routing`'s
+routing leases use) rejects a second concurrent `POST .../messages` for the
+same session with `409 {"code": "turn_in_flight"}` rather than racing two
+turns onto the same runner.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from typing import Any, AsyncIterator, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, field_validator
+
+from app.api.agent_runtime import AgentRuntimePrincipal, require_agent_runtime_principal
+from app.api.agent_sse import SSE_TERMINAL_TYPES, frame_to_agui, sse_bytes
+from app.auth.dependencies import get_current_user
+from app.auth.pat_resolver import agent_id_from_request
+from app.auth.session_principal import SessionPrincipal
+from app.chat.manager import ConcurrencyCapHit, SessionNotFound, get_current_chat_manager
+from app.chat.streaming_sink import StreamingSink
+from app.chat.types import Surface
+from app.coordination.factory import coordination
+from app.logging_config import request_id_var
+from src.repositories import agents_repo, chat_message_repo, chat_session_repo
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1", tags=["agent-sessions"])
+
+#: Per-session in-flight-turn lease. TTL is a ceiling only — the lease is
+#: released explicitly in the streaming generator's `finally` on every exit
+#: path (success, error, idle-timeout, client disconnect); the TTL just
+#: bounds how long a crashed request (never reaching `finally`, e.g. the
+#: worker process itself dying) can wedge the session.
+_TURN_LOCK_PREFIX = "agent-session-turn:"
+_TURN_LOCK_TTL_S = 600
+
+#: Bound on the wait between successive frames from the sink. A turn that
+#: never emits a terminal frame (runner wedged, crashed without a `done`/
+#: `error`/`cancelled` broadcast) would otherwise hang the HTTP response
+#: forever — this forces a terminal RUN_ERROR instead.
+_IDLE_TIMEOUT_S = 300.0
+
+
+class CreateAgentSessionBody(BaseModel):
+    """Empty today — no prompt is sent at creation time (that's the first
+    `POST .../messages` call). A distinct model (rather than accepting no
+    body) leaves room to grow (e.g. an initial `title`) without a breaking
+    change to the request shape."""
+
+
+class SendSessionMessageBody(BaseModel):
+    input: str
+    #: Structured-output request. Accepted here so the wire contract is
+    #: stable from V1b Task 4 onward; NOT wired to enforcement yet — full
+    #: support (validating/coercing the model's output against this shape)
+    #: is V1b Task 7. Threading it through unenforced now means Task 7 adds
+    #: behavior, not a breaking request-shape change.
+    response_format: Optional[Dict[str, Any]] = None
+
+    @field_validator("input")
+    @classmethod
+    def _non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("input must be non-empty")
+        return v
+
+
+class SessionRuntimePrincipal:
+    """Resolved (user, agent, session) triple for one `/api/v1/sessions/{id}/...` call."""
+
+    def __init__(self, user: dict, agent: dict, session: Any) -> None:
+        self.user = user
+        self.agent = agent
+        self.session = session
+
+
+def require_session_principal(
+    session_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> SessionRuntimePrincipal:
+    """Auth dependency for every `/api/v1/sessions/{id}/...` route.
+
+    A co-session (`SessionPrincipal`) credential carries no single owner
+    identity — hard-denied, same posture as
+    `require_agent_runtime_principal`. Every other failure (session
+    missing, agent missing/deleted, wrong owner, agent PAT bound to a
+    DIFFERENT agent than this session's) collapses to the SAME `404` —
+    never `403` — so a non-owner request can't distinguish "no such
+    session" from "not yours".
+    """
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(status_code=404, detail={"code": "session_not_found"})
+
+    session = chat_session_repo().get_session(session_id)
+    if session is None or session.agent_id is None:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found"})
+
+    agent = agents_repo().get_by_id(session.agent_id)
+    if agent is None or agent.get("deleted_at") is not None:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found"})
+
+    pat_agent_id = agent_id_from_request(request)
+    if pat_agent_id is not None:
+        if pat_agent_id != agent["id"]:
+            raise HTTPException(status_code=404, detail={"code": "session_not_found"})
+    elif agent["owner_user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found"})
+
+    return SessionRuntimePrincipal(user=user, agent=agent, session=session)
+
+
+@router.post("/agents/{slug}/sessions", status_code=201)
+async def create_agent_session(
+    slug: str,
+    body: CreateAgentSessionBody,
+    principal: AgentRuntimePrincipal = Depends(require_agent_runtime_principal),
+) -> dict:
+    user, agent = principal.user, principal.agent
+    manager = get_current_chat_manager()
+    if manager is None:
+        raise HTTPException(status_code=503, detail={"code": "chat_disabled"})
+    try:
+        session = await manager.create_session(
+            user_email=user["email"],
+            surface=Surface.API,
+            agent_id=agent["id"],
+        )
+    except ConcurrencyCapHit as exc:
+        raise HTTPException(status_code=429, detail={"code": "concurrency_cap", "hint": str(exc)}) from exc
+    return {"session_id": session.id}
+
+
+async def _event_stream(
+    manager: Any,
+    session_id: str,
+    sink: StreamingSink,
+    lock_key: str,
+    lock_holder: str,
+) -> AsyncIterator[bytes]:
+    """SSE body generator: drain `sink`, mapping each frame to an AG-UI
+    event, until a terminal event or an idle timeout. Always detaches the
+    sink and releases the turn lock on the way out — success, error, or a
+    client disconnect (Starlette cancels this generator's task when the
+    connection drops, which surfaces here as `GeneratorExit`/cancellation
+    at whichever `await` is in flight; the `finally` still runs).
+    """
+    aiter = sink.__aiter__()
+    try:
+        while True:
+            try:
+                frame = await asyncio.wait_for(aiter.__anext__(), timeout=_IDLE_TIMEOUT_S)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                yield sse_bytes(
+                    {"type": "RUN_ERROR", "message": "stream idle timeout", "code": "idle_timeout"},
+                    None,
+                )
+                break
+            event = frame_to_agui(frame)
+            if event is None:
+                continue
+            yield sse_bytes(event, frame.get("id"))
+            if event["type"] in SSE_TERMINAL_TYPES:
+                break
+    finally:
+        try:
+            await manager.detach_sink(session_id, sink)
+        finally:
+            coordination().lease_release(lock_key, lock_holder)
+
+
+@router.post("/sessions/{session_id}/messages")
+async def post_session_message(
+    session_id: str,
+    body: SendSessionMessageBody,
+    request: Request,
+    principal: SessionRuntimePrincipal = Depends(require_session_principal),
+) -> StreamingResponse:
+    manager = get_current_chat_manager()
+    if manager is None:
+        raise HTTPException(status_code=503, detail={"code": "chat_disabled"})
+
+    lock_key = f"{_TURN_LOCK_PREFIX}{session_id}"
+    lock_holder = uuid.uuid4().hex
+    if not coordination().lease_acquire(lock_key, lock_holder, ttl_s=_TURN_LOCK_TTL_S):
+        raise HTTPException(status_code=409, detail={"code": "turn_in_flight"})
+
+    sink = StreamingSink()
+    try:
+        await manager.attach(session_id, sink)
+        await manager.send_user_message(session_id, body.input, sender_email=principal.user["email"])
+    except SessionNotFound:
+        coordination().lease_release(lock_key, lock_holder)
+        raise HTTPException(status_code=404, detail={"code": "session_not_found"})
+    except Exception:
+        coordination().lease_release(lock_key, lock_holder)
+        raise
+
+    request_id = request_id_var.get() or uuid.uuid4().hex
+    return StreamingResponse(
+        _event_stream(manager, session_id, sink, lock_key, lock_holder),
+        media_type="text/event-stream",
+        headers={"x-request-id": request_id},
+    )
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(
+    principal: SessionRuntimePrincipal = Depends(require_session_principal),
+) -> dict:
+    session = principal.session
+    msgs = chat_message_repo().list_messages(session.id)
+    return {
+        "session_id": session.id,
+        "agent_id": session.agent_id,
+        "state": "archived" if session.archived else "active",
+        "messages": [
+            {
+                "id": m.id,
+                "role": m.role,
+                "content": m.content,
+                "tool_calls": m.tool_calls,
+                "created_at": m.created_at.isoformat(),
+            }
+            for m in msgs
+        ],
+    }
+
+
+@router.post("/sessions/{session_id}/cancel", status_code=202)
+async def cancel_session(
+    session_id: str,
+    principal: SessionRuntimePrincipal = Depends(require_session_principal),
+) -> dict:
+    manager = get_current_chat_manager()
+    if manager is None:
+        raise HTTPException(status_code=503, detail={"code": "chat_disabled"})
+    await manager.cancel(session_id)
+    return {}
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(
+    session_id: str,
+    principal: SessionRuntimePrincipal = Depends(require_session_principal),
+) -> None:
+    manager = get_current_chat_manager()
+    if manager is not None:
+        try:
+            await manager.kill(session_id, reason="agent_api_delete")
+        except Exception:
+            logger.exception("kill on agent-session delete failed for %s", session_id)
+    chat_session_repo().archive_session(session_id)

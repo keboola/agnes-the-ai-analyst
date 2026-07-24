@@ -1265,6 +1265,25 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 - /api/v1/agents/{slug}/responses
 - /api/v1/jobs/{job_id}
 
+### `/api/v1/agents/{slug}/sessions` and `/api/v1/sessions/{id}` — Agent-as-API multi-turn sessions, SSE (V1b Task 4)
+
+Multi-turn counterpart to the one-shot runtime above: create a session bound to an agent, then stream one turn at a time as Server-Sent Events. Auth is owner/agent-PAT scoped exactly like `/responses` (`403 agent_pat_wrong_agent` on the create-session call; every `/api/v1/sessions/{id}/*` route instead collapses ANY mismatch — wrong owner, or an agent PAT bound to a different agent — to a uniform `404 session_not_found`, never leaking cross-owner existence).
+
+`POST /api/v1/agents/{slug}/sessions` — `{}` → `201 {"session_id": "..."}`. Creates an API-surface (`Surface.API`) chat session bound to the agent; no prompt is sent yet. `429 {"code": "concurrency_cap"}` on the same per-user concurrency cap `/responses` and the web chat UI enforce.
+
+`POST /api/v1/sessions/{id}/messages` — `{input: str (required), response_format?: dict}` → `200 text/event-stream`. Attaches a fresh sink for this one turn, sends `input`, and streams AG-UI events (`RUN_STARTED`, `TEXT_MESSAGE_CONTENT` deltas, `TOOL_CALL_START`/`TOOL_CALL_END`, then a terminal `RUN_FINISHED` or `RUN_ERROR`) until the turn ends. Each SSE record carries an `id: {session_id}:{seq}` line (monotonic per session). `response_format` is accepted on the wire but not yet enforced (full structured-output support lands in V1b Task 7). A second concurrent `POST .../messages` for the same session is rejected with `409 {"code": "turn_in_flight"}` — only one turn may be in flight per session. Disconnecting the SSE client does NOT cancel the turn — the run keeps going server-side (and burns budget) until it finishes or `POST .../cancel` is called explicitly; a turn that never emits a terminal frame is force-terminated with `RUN_ERROR{code: "idle_timeout"}` after a bounded idle window.
+
+`GET /api/v1/sessions/{id}` — `{session_id, agent_id, state, messages: [...]}` — session state (`active`/`archived`) plus full message history.
+
+`POST /api/v1/sessions/{id}/cancel` — `202 {}` — cancels the in-flight turn (if any); the session itself is preserved (contrast `DELETE`, which archives it).
+
+`DELETE /api/v1/sessions/{id}` — `204` — kills the live runner (if any) and archives the session.
+
+- /api/v1/agents/{slug}/sessions
+- /api/v1/sessions/{session_id}
+- /api/v1/sessions/{session_id}/messages
+- /api/v1/sessions/{session_id}/cancel
+
 ### `/api/v2` — v2 catalog and query APIs
 
 - /api/v2/catalog

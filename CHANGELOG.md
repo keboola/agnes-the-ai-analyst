@@ -53,6 +53,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   losing concurrent call gets `409 idempotency_key_in_flight`; identical-body
   replay of a completed call returns the original response verbatim; a
   different body under the same key is `409 idempotency_key_reuse`.
+- **Agent-as-API multi-turn sessions + SSE streaming** (agent-api V1b Task
+  4). `POST /api/v1/agents/{slug}/sessions` creates an API-surface session
+  bound to an agent (`201 {session_id}`); `POST
+  /api/v1/sessions/{id}/messages` streams one turn as Server-Sent Events in
+  the AG-UI event vocabulary (`RUN_STARTED`/`TEXT_MESSAGE_CONTENT`/
+  `TOOL_CALL_START`/`TOOL_CALL_END`/`RUN_FINISHED`/`RUN_ERROR`, each record
+  carrying a monotonic `id: {session_id}:{seq}` line), rejecting a second
+  concurrent turn on the same session with `409 {"code": "turn_in_flight"}`
+  and force-terminating a turn that never reaches a terminal event with
+  `RUN_ERROR{code: "idle_timeout"}`; `GET /api/v1/sessions/{id}` reads back
+  state + full message history; `POST /api/v1/sessions/{id}/cancel` cancels
+  the in-flight turn (`202`, session preserved); `DELETE
+  /api/v1/sessions/{id}` archives it. Same owner/agent-PAT auth model as
+  `/responses`, collapsed to a uniform `404` on any mismatch (wrong owner,
+  or an agent PAT bound to a different agent) so a non-owner can never
+  distinguish "no such session" from "not yours".
 - **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
   token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
   to every upstream credential mode — static key, workload identity, LLM
