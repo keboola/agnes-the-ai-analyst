@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse
 
 from app.auth.dependencies import get_current_user
 from app.web.router import _chrome_ctx, templates
-from src.repositories import agents_repo
+from src.repositories import agent_memories_repo, agents_repo
 
 router = APIRouter(tags=["web"])
 
@@ -30,11 +30,32 @@ router = APIRouter(tags=["web"])
 _SELECTED_MODE_FIELDS = ("plugins_mode", "connections_mode", "tables_mode", "memory_mode")
 
 
+def _memories_for_panel(agent_id: str) -> list[dict]:
+    """Every memory for `agent_id`, each carrying an `in_budget` flag for
+    active rows (C4, agent-api V1c Task 5) — the exact same `select_in_budget`
+    split `app.chat.agent_profile.materialize_memories` uses at spawn time,
+    so the panel can never show a memory as "in effect" that a live spawn
+    would actually shadow (or vice versa)."""
+    from app.chat.agent_profile import _MEMORY_BUDGET_CHARS, select_in_budget
+
+    repo = agent_memories_repo()
+    memories = repo.list_for_agent(agent_id)
+    active_rows = repo.list_active(agent_id)
+    in_budget, _shadowed = select_in_budget(active_rows, _MEMORY_BUDGET_CHARS)
+    in_budget_ids = {m["id"] for m in in_budget}
+    return [{**m, "in_budget": (m["id"] in in_budget_ids) if m["status"] == "active" else None} for m in memories]
+
+
 @router.get("/agents", response_class=HTMLResponse)
 async def agents_page(request: Request, user: dict = Depends(get_current_user)):
     rows = agents_repo().list_for_user(user["id"])
     agents = [
-        {**row, "token_ready": all(row.get(field) == "selected" for field in _SELECTED_MODE_FIELDS)} for row in rows
+        {
+            **row,
+            "token_ready": all(row.get(field) == "selected" for field in _SELECTED_MODE_FIELDS),
+            "memories": _memories_for_panel(row["id"]),
+        }
+        for row in rows
     ]
     ctx = _chrome_ctx(request, user)
     ctx["agents"] = agents

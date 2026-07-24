@@ -187,6 +187,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   session_mismatch` — closing a same-owner-different-agent memory-poisoning
   gap that ownership checks alone would miss. The agent's context skill
   advertises this tool only when its `memory_write_mode != "off"`.
+- **Agent memory management** — `GET/PATCH/DELETE
+  /api/v1/agents/{id}/memories[/{memory_id}]` (agent-api V1c Task 5), the
+  owner-facing inspect/approve/archive/delete surface over the notebook the
+  "remember" tool writes into. `GET` supports a `?status=` filter and marks
+  every `active` row `in_budget: bool` — the same `select_in_budget` split
+  `materialize_memories` uses at spawn time, so an owner who just approved a
+  memory can see whether it's actually going to land in the next spawn or
+  is shadowed behind newer active content past the ~6000-token materialize
+  budget. `PATCH {action: "approve"|"archive"}` → `200`; unrecognized
+  action → `400 invalid_action`. `DELETE` → `204`. Surfaced on `/agents` as
+  a per-agent Memory panel (status badges, in-effect/shadowed marker,
+  Approve/Delete buttons). REST-only for now — CLI (`agnes agent memory
+  ...`) lands in Task 7.
 
 ### Changed
 

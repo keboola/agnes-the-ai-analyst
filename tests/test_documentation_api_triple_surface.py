@@ -324,8 +324,9 @@ _AGENT_MEMORY_WRITE_REASON = (
     "against ITS OWN running session, never by an interactive human caller "
     "choosing among agents/sessions. No CLI subcommand: there is no "
     "analyst-facing 'write a memory for my agent' workflow (memory "
-    "management for owners is a future admin surface, V1c Task 5, not this "
-    "runtime write path). No MCP analogue either, permanently: this route's "
+    "management for owners is the separate admin surface at "
+    "_AGENT_MEMORY_ADMIN_REASON below, not this runtime write path). No MCP "
+    "analogue either, permanently: this route's "
     "auth model binds the write to `request.state.chat_session_id` (the "
     "broker-minted claim identifying the CALLING session) and explicitly "
     "REJECTS a path `{id}` that differs from it (`403 session_mismatch`) — "
@@ -335,6 +336,18 @@ _AGENT_MEMORY_WRITE_REASON = (
     "auth path that reopens the exact cross-agent-same-owner memory-"
     "poisoning gap this design closes. Same external-caller-only posture as "
     "the rest of the `/api/v1/sessions/{id}/*` surface (_AGENT_SESSION_REASON)."
+)
+_AGENT_MEMORY_ADMIN_REASON = (
+    "owner-facing memory management (agent-api V1c Task 5) — inspect/"
+    "approve/archive/delete over an agent's private memory notebook, the "
+    "management-surface counterpart to the 'remember' tool "
+    "(_AGENT_MEMORY_WRITE_REASON above). REST-only for now: `agnes agent "
+    "memory list/approve/archive/delete` (the CLI surface) lands in Task 7, "
+    "at which point this becomes a _COHORT entry, not an _EXEMPT one. No MCP "
+    "analogue: reviewing and approving what an agent is allowed to "
+    "'remember' about itself must stay an interactive, human-witnessed "
+    "action, never something reachable through a tool call — mirrors the "
+    "same posture as _AGENT_SCOPE_REASON and _AGENT_TOKENS_REASON above."
 )
 
 _EXEMPT: dict[str, str] = {
@@ -351,6 +364,8 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/sessions/{session_id}/artifacts": _AGENT_ARTIFACTS_REASON,
     "/api/v1/sessions/{session_id}/artifacts/{artifact_id}": _AGENT_ARTIFACTS_REASON,
     "/api/v1/sessions/{session_id}/memories": _AGENT_MEMORY_WRITE_REASON,
+    "/api/v1/agents/{agent_id}/memories": _AGENT_MEMORY_ADMIN_REASON,
+    "/api/v1/agents/{agent_id}/memories/{memory_id}": _AGENT_MEMORY_ADMIN_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "

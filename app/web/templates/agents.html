@@ -106,6 +106,25 @@
     margin-bottom: var(--space-4);
   }
   .ag-modal-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+
+  /* ── Memory panel ─────────────────────────────────────────────────── */
+  .ag-memories { margin-top: var(--space-6); }
+  .ag-memories h2 { font-size: var(--text-15); margin: 0 0 var(--space-4); }
+  .ag-memory-card {
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-md, 8px);
+    background: var(--ds-surface);
+    padding: var(--space-4) var(--space-5);
+    margin-bottom: var(--space-4);
+  }
+  .ag-memory-card h3 { font-size: var(--text-13); margin: 0 0 var(--space-3); color: var(--ds-text-secondary); }
+  .ag-memory-empty { color: var(--ds-text-secondary); font-size: var(--text-13); margin: 0; }
+  .ag-memory-content {
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 </style>
 {% endblock %}
 
@@ -188,6 +207,71 @@
     {% endfor %}
   </tbody>
 </table>
+{% endif %}
+
+{% if agents %}
+<section class="ag-memories">
+  <h2>Memory</h2>
+  {% for agent in agents %}
+  <div class="ag-memory-card" data-memory-agent="{{ agent.id }}">
+    <h3>{{ agent.name }}</h3>
+    {% if not agent.memories %}
+    <p class="ag-memory-empty">No memories yet.</p>
+    {% else %}
+    <table class="data-table ag-memory-table">
+      <thead>
+        <tr>
+          <th>Content</th>
+          <th>Status</th>
+          <th>In effect</th>
+          <th>Created</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for memory in agent.memories %}
+        <tr data-memory-row="{{ memory.id }}">
+          <td class="ag-memory-content" title="{{ memory.content }}">{{ memory.content }}</td>
+          <td>
+            {% if memory.status == 'pending' %}
+            <span class="badge badge--warn">Pending</span>
+            {% elif memory.status == 'active' %}
+            <span class="badge badge--success">Active</span>
+            {% else %}
+            <span class="badge">Archived</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if memory.status == 'active' %}
+              {% if memory.in_budget %}
+              <span class="badge badge--success">In effect</span>
+              {% else %}
+              <span class="badge badge--warn">Shadowed</span>
+              {% endif %}
+            {% else %}
+            &mdash;
+            {% endif %}
+          </td>
+          <td>{{ memory.created_at }}</td>
+          <td>
+            <div class="ag-actions">
+              {% if memory.status == 'pending' %}
+              <button type="button" class="btn btn-secondary btn-sm" data-approve-memory
+                      data-agent-id="{{ agent.id }}" data-memory-id="{{ memory.id }}">Approve</button>
+              {% endif %}
+              <button type="button" class="btn btn-danger btn-sm" data-delete-memory
+                      data-agent-id="{{ agent.id }}" data-memory-id="{{ memory.id }}">Delete</button>
+            </div>
+            <p class="ag-row-error" data-row-error></p>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
 {% endif %}
 
 <!-- ═════════ TOKEN-ISSUED MODAL — secret shown exactly once ═════════ -->
@@ -286,6 +370,45 @@
         var name = deleteBtn.getAttribute("data-agent-name");
         if (!confirm("Delete agent \"" + name + "\"? This revokes its tokens and cannot be undone.")) return;
         var r = await api("DELETE", "/api/v1/agents/" + encodeURIComponent(agentId));
+        if (!r.ok && r.status !== 204) { showRowError(await errorText(r)); return; }
+        location.reload();
+      });
+    }
+  });
+
+  // ── Memory panel actions ────────────────────────────────────────────
+  document.querySelectorAll("[data-memory-row]").forEach(function (row) {
+    var rowError = row.querySelector("[data-row-error]");
+    function showRowError(msg) {
+      rowError.textContent = msg;
+      rowError.classList.add("is-visible");
+    }
+
+    var approveBtn = row.querySelector("[data-approve-memory]");
+    if (approveBtn) {
+      approveBtn.addEventListener("click", async function () {
+        var agentId = approveBtn.getAttribute("data-agent-id");
+        var memoryId = approveBtn.getAttribute("data-memory-id");
+        var r = await api(
+          "PATCH",
+          "/api/v1/agents/" + encodeURIComponent(agentId) + "/memories/" + encodeURIComponent(memoryId),
+          { action: "approve" }
+        );
+        if (!r.ok) { showRowError(await errorText(r)); return; }
+        location.reload();
+      });
+    }
+
+    var deleteMemoryBtn = row.querySelector("[data-delete-memory]");
+    if (deleteMemoryBtn) {
+      deleteMemoryBtn.addEventListener("click", async function () {
+        var agentId = deleteMemoryBtn.getAttribute("data-agent-id");
+        var memoryId = deleteMemoryBtn.getAttribute("data-memory-id");
+        if (!confirm("Delete this memory? This cannot be undone.")) return;
+        var r = await api(
+          "DELETE",
+          "/api/v1/agents/" + encodeURIComponent(agentId) + "/memories/" + encodeURIComponent(memoryId)
+        );
         if (!r.ok && r.status !== 204) { showRowError(await errorText(r)); return; }
         location.reload();
       });

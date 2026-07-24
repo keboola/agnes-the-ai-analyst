@@ -93,3 +93,75 @@ def test_agents_page_issue_token_disabled_for_all_mode(agents_page_env):
     html = _get(agents_page_env).text
     assert "data-issue-token" in html
     assert "disabled" in html
+
+
+def test_agents_page_memory_panel_renders_pending_memory_with_approve_control(agents_page_env):
+    """A seeded pending memory shows up in the per-agent Memory panel with a
+    'Pending' status badge and a clickable Approve control (PATCH-driven,
+    Task 5)."""
+    import uuid
+
+    from src.repositories import agent_memories_repo, agents_repo
+
+    agent_id = "agent-mem-1"
+    agents_repo().create(
+        id=agent_id,
+        owner_user_id=agents_page_env["owner_id"],
+        name="Memory Agent",
+        slug="memory-agent",
+        plugins_mode="selected",
+        connections_mode="selected",
+        tables_mode="selected",
+        memory_mode="selected",
+    )
+    memory_id = str(uuid.uuid4())
+    agent_memories_repo().create(
+        id=memory_id,
+        agent_id=agent_id,
+        owner_user_id=agents_page_env["owner_id"],
+        content="Prefers concise summaries.",
+        source_session_id=None,
+        status="pending",
+    )
+
+    html = _get(agents_page_env).text
+    assert "Memory Agent" in html
+    assert "Prefers concise summaries." in html
+    assert "data-approve-memory" in html
+    assert f'data-memory-id="{memory_id}"' in html
+    assert "Pending" in html
+
+
+def test_agents_page_memory_panel_marks_shadowed_active_memory(agents_page_env, monkeypatch):
+    """C4: an active memory that falls outside the materialize budget must
+    render as 'Shadowed', not 'In effect' — the panel must never mislead an
+    owner into thinking an approved memory is actually live."""
+    import uuid
+
+    from app.chat import agent_profile
+    from src.repositories import agent_memories_repo, agents_repo
+
+    monkeypatch.setattr(agent_profile, "_MEMORY_BUDGET_CHARS", 5)
+
+    agent_id = "agent-mem-2"
+    agents_repo().create(
+        id=agent_id,
+        owner_user_id=agents_page_env["owner_id"],
+        name="Shadow Agent",
+        slug="shadow-agent",
+        plugins_mode="selected",
+        connections_mode="selected",
+        tables_mode="selected",
+        memory_mode="selected",
+    )
+    agent_memories_repo().create(
+        id=str(uuid.uuid4()),
+        agent_id=agent_id,
+        owner_user_id=agents_page_env["owner_id"],
+        content="x" * 50,
+        source_session_id=None,
+        status="active",
+    )
+
+    html = _get(agents_page_env).text
+    assert "Shadowed" in html

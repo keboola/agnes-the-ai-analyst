@@ -490,3 +490,116 @@ async def create_agent_token(
         "expires_at": str(expires_at) if expires_at else None,
         "created_at": str(datetime.now(timezone.utc)),
     }
+
+
+# ---------------------------------------------------------------------------
+# Memory management — inspect/approve/archive/delete (agent-api V1c Task 5)
+# ---------------------------------------------------------------------------
+
+_MEMORY_ACTIONS = frozenset({"approve", "archive"})
+
+
+class MemoryActionRequest(BaseModel):
+    action: str
+
+
+def _in_budget_ids(agent_id: str) -> set:
+    """The set of memory ids that actually materialize into a fresh spawn
+    right now — see the C4 binding addition in the V1c Task 5 brief:
+    "active" alone doesn't mean "in effect" once the active set exceeds
+    `app.chat.agent_profile._MEMORY_BUDGET_CHARS`. Reuses the exact same
+    `select_in_budget` split `materialize_memories` uses at spawn time, so
+    this list can never drift from what actually lands in a session."""
+    from app.chat.agent_profile import _MEMORY_BUDGET_CHARS, select_in_budget
+
+    active_rows = agent_memories_repo().list_active(agent_id)
+    in_budget, _shadowed = select_in_budget(active_rows, _MEMORY_BUDGET_CHARS)
+    return {m["id"] for m in in_budget}
+
+
+def _serialize_memory(row: Dict[str, Any], in_budget_ids: set) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "id": row["id"],
+        "agent_id": row["agent_id"],
+        "content": row["content"],
+        "status": row["status"],
+        "source_session_id": row.get("source_session_id"),
+        "created_at": str(row["created_at"]) if row.get("created_at") is not None else None,
+        "activated_at": str(row["activated_at"]) if row.get("activated_at") is not None else None,
+        "archived_at": str(row["archived_at"]) if row.get("archived_at") is not None else None,
+    }
+    # Only meaningful for active rows — pending/archived memories never
+    # materialize into a spawn regardless of budget, so the key is omitted
+    # rather than misleadingly reporting `false`.
+    if row["status"] == "active":
+        out["in_budget"] = row["id"] in in_budget_ids
+    return out
+
+
+def _load_agent_memory(agent_id: str, memory_id: str) -> Dict[str, Any]:
+    row = agent_memories_repo().get(memory_id)
+    if row is None or row["agent_id"] != agent_id:
+        raise _err(404, "memory_not_found", "Memory not found")
+    return row
+
+
+@router.get("/{agent_id}/memories")
+async def list_agent_memories(
+    agent_id: str,
+    status: Optional[str] = None,
+    user: dict = Depends(require_session_token),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    # Read-only — admins may inspect (require_owner=False), mirrors get_agent.
+    _load_agent(agent_id, user, conn, require_owner=False)
+    rows = agent_memories_repo().list_for_agent(agent_id, status=status)
+    in_budget_ids = _in_budget_ids(agent_id)
+    return {
+        "data": [_serialize_memory(r, in_budget_ids) for r in rows],
+        "has_more": False,
+        "next_cursor": None,
+    }
+
+
+@router.patch("/{agent_id}/memories/{memory_id}")
+async def update_agent_memory(
+    agent_id: str,
+    memory_id: str,
+    payload: MemoryActionRequest,
+    user: dict = Depends(require_session_token),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    _load_agent(agent_id, user, conn, require_owner=True)
+    _load_agent_memory(agent_id, memory_id)
+
+    if payload.action not in _MEMORY_ACTIONS:
+        raise _err(
+            400,
+            "invalid_action",
+            f"action must be one of {sorted(_MEMORY_ACTIONS)}, got '{payload.action}'",
+        )
+
+    repo = agent_memories_repo()
+    if payload.action == "approve":
+        repo.approve(memory_id)
+    else:
+        repo.archive(memory_id)
+    _audit(user["id"], f"agent.memory.{payload.action}", memory_id, {"agent_id": agent_id})
+
+    updated = repo.get(memory_id)
+    assert updated is not None  # just mutated above, same transaction/connection
+    return _serialize_memory(updated, _in_budget_ids(agent_id))
+
+
+@router.delete("/{agent_id}/memories/{memory_id}", status_code=204)
+async def delete_agent_memory(
+    agent_id: str,
+    memory_id: str,
+    user: dict = Depends(require_session_token),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    _load_agent(agent_id, user, conn, require_owner=True)
+    _load_agent_memory(agent_id, memory_id)
+
+    agent_memories_repo().delete(memory_id)
+    _audit(user["id"], "agent.memory.delete", memory_id, {"agent_id": agent_id})

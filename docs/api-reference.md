@@ -1258,6 +1258,23 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 - /api/v1/agents/{agent_id}/scope
 - /api/v1/agents/{agent_id}/tokens
 
+### `/api/v1/agents/{agent_id}/memories` — memory management (V1c Task 5)
+
+Owner-facing inspect/approve/archive/delete over an agent's private memory notebook — the management counterpart to the "remember" tool (`POST /api/v1/sessions/{id}/memories`, above). Same auth matrix as the rest of `agents_admin.py`: `GET` allows admin read (`require_owner=False`, mirrors `GET /api/v1/agents/{id}`); `PATCH`/`DELETE` require ownership (403 `agent_not_owned` for an admin on someone else's agent, 404 for anyone else). Every route 404s `agent_not_found` for a non-owner/non-admin caller, and `memory_not_found` for a memory id that doesn't exist or belongs to a different agent than the path.
+
+**C4 — "active" ≠ "in effect".** `materialize_memories` packs an agent's active memories (newest-first) into a spawned session's workdir up to a ~6000-token budget (`app.chat.agent_profile._MEMORY_BUDGET_CHARS`); with enough active memories, older ones — including a just-approved one sitting behind newer content — never actually materialize. `GET` marks every `active` row with `in_budget: bool`, computed via the same `select_in_budget` split `materialize_memories` uses at spawn time, so this list can never drift from what a live spawn would actually see. The key is omitted entirely for `pending`/`archived` rows (neither ever materializes, budget or not).
+
+`GET /api/v1/agents/{agent_id}/memories?status=` — `200 {data: [{id, agent_id, content, status, source_session_id, created_at, activated_at, archived_at, in_budget?}], has_more, next_cursor}`. `status` (optional) filters to one value (`pending`/`active`/`archived`); omitted returns all statuses, newest-first.
+
+`PATCH /api/v1/agents/{agent_id}/memories/{memory_id}` — `{action: "approve" | "archive"}` → `200` (the updated memory, same shape as a `GET` row). `approve` flips a `pending` row to `active` (no-op if it isn't currently `pending` — mirrors `agent_memories_repo().approve`'s semantics); `archive` moves any row to `archived`. An unrecognized `action` is `400 {"code": "invalid_action"}`.
+
+`DELETE /api/v1/agents/{agent_id}/memories/{memory_id}` — `204`.
+
+CLI (`agnes agent memory list/approve/archive/delete`) is not yet landed — REST-only for now (V1c Task 7); see `tests/test_documentation_api_triple_surface.py`'s `_AGENT_MEMORY_ADMIN_REASON`.
+
+- /api/v1/agents/{agent_id}/memories
+- /api/v1/agents/{agent_id}/memories/{memory_id}
+
 ### `/api/v1/agents/{slug}/responses` and `/api/v1/jobs/{job_id}` — Agent-as-API runtime (one-shot)
 
 `POST /api/v1/agents/{slug}/responses` — one-shot request/response over an owner's agent. `{input: str (required), background?: bool, timeout_s?: int = 120 (clamped 1..600), metadata?: dict}` → `200 {answer, session_id, response_id, usage, agent_config_hash, request_id}` when the turn completes within `timeout_s`, or `202 {job_id}` when `background: true` was requested OR the sync wait outran `timeout_s` (the run itself is never killed — only the wait is bounded; a timed-out sync call degrades to a background job that resumes waiting on the SAME session instead of re-sending the prompt). Callable with either an interactive session token or an agent PAT scoped to this exact agent (403 `agent_pat_wrong_agent` otherwise); requires the same `ResourceType.CHAT` grant the web chat UI does. Supports an `Idempotency-Key` header (scoped to the caller+agent): a replay with an identical request body returns the original response verbatim; a replay with a different body under the same key is `409 idempotency_key_reuse`.
