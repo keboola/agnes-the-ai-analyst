@@ -1209,6 +1209,20 @@ def monkeypatch_workdir(mgr: ChatManager) -> None:
     mgr._workdir_mgr.prepare_session_dir = mock.MagicMock(return_value=Path("/tmp/fake-session-dir"))
 
 
+def _stdin_user_texts(handle) -> list[str]:
+    """Texts of user_msg frames written to a FakeHandle's stdin (ignores
+    ticket_push and other control frames)."""
+    out = []
+    for raw in handle._stdin_buf:
+        try:
+            frame = json.loads(raw.decode("utf-8"))
+        except Exception:
+            continue
+        if frame.get("type") == "user_msg":
+            out.append(frame.get("text", ""))
+    return out
+
+
 def _ws_seated(mgr: ChatManager, chat_id: str, ws) -> bool:
     """True once ``ws`` is registered as a sink on ``chat_id``'s live session.
 
@@ -3144,3 +3158,181 @@ def test_turn_buffer_holds_tool_results_for_midturn_replay(manager: ChatManager)
         attach_task.cancel()
 
     asyncio.run(_run())
+
+
+class TestRestoreContext:
+    """Tier 3 continuity: fresh sandboxes get a restored-conversation
+    transcript (system-prompt append) instead of the old 3-user-turn stdin
+    replay that dropped assistant context and ran an LLM turn per message."""
+
+    def test_returns_none_for_fresh_session(self, manager: ChatManager):
+        async def _run():
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            sess = manager._repo.get_session(s.id)
+            assert manager._build_restore_context(sess) is None
+
+        asyncio.run(_run())
+
+    def test_includes_user_and_assistant_turns_in_order(self, manager: ChatManager):
+        async def _run():
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            manager._repo.append_message(session_id=s.id, role="user", content="how many rows?")
+            manager._repo.append_message(session_id=s.id, role="assistant", content="There are 42 rows.")
+            manager._repo.append_message(session_id=s.id, role="user", content="which table?")
+            sess = manager._repo.get_session(s.id)
+            ctx = manager._build_restore_context(sess)
+            assert ctx is not None
+            assert "Restored conversation context" in ctx
+            # Assistant turns are the whole point — the old replay dropped them.
+            assert "There are 42 rows." in ctx
+            assert ctx.index("how many rows?") < ctx.index("There are 42 rows.") < ctx.index("which table?")
+
+        asyncio.run(_run())
+
+    def test_total_char_budget_keeps_newest(self, manager: ChatManager):
+        async def _run():
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            for i in range(30):
+                manager._repo.append_message(session_id=s.id, role="user", content=f"msg-{i} " + "x" * 3000)
+            sess = manager._repo.get_session(s.id)
+            ctx = manager._build_restore_context(sess)
+            assert ctx is not None
+            assert len(ctx) <= manager._RESTORE_TOTAL_CHAR_CAP + 2000  # header slack
+            assert "msg-29" in ctx, "newest message must survive the budget"
+            assert "msg-0 " not in ctx, "oldest message must be dropped first"
+
+        asyncio.run(_run())
+
+    def test_spawn_uploads_restore_context_when_history_exists(self, manager: ChatManager, tmp_path, monkeypatch):
+        from app.chat.e2b_workspace_sync import SANDBOX_CONTEXT_RESTORE
+
+        monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+        async def _run():
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            manager._repo.append_message(session_id=s.id, role="assistant", content="earlier answer")
+            sess = manager._repo.get_session(s.id)
+
+            handle = FakeHandle()
+            writes: dict = {}
+            sb = MagicMock()
+            sb.files = MagicMock()
+
+            async def _write(path, data):
+                writes[path] = data
+
+            sb.files.write = AsyncMock(side_effect=_write)
+            sb.commands = MagicMock()
+            sb.commands.run = AsyncMock()
+            handle._sandbox = sb
+
+            async def fake_spawn(**kw):
+                return handle
+
+            manager._provider.spawn = fake_spawn
+            manager._provider.syncs_workspace = False
+            await manager._spawn_runner(sess, tmp_path)
+            assert SANDBOX_CONTEXT_RESTORE in writes
+            assert "earlier answer" in str(writes[SANDBOX_CONTEXT_RESTORE])
+
+        asyncio.run(_run())
+
+    def test_sr11_departed_participant_turns_omitted(self, manager: ChatManager):
+        """SR-11: a departed co-session participant's user turns must not be
+        restored into the fresh runner's context; assistant turns stay (they
+        were already visible to every remaining participant)."""
+
+        async def _run():
+            s = await manager.create_session(user_email="owner@x", surface=Surface.WEB)
+            # Co-session flag lives on the row; participants carry membership.
+            manager._repo._conn.execute("UPDATE chat_sessions SET is_co_session = TRUE WHERE id = ?", [s.id])
+            manager._repo.add_session_participant(session_id=s.id, user_email="owner@x", user_id="u1", role="owner")
+            manager._repo.add_session_participant(session_id=s.id, user_email="guest@x", user_id="u2", role="member")
+            manager._repo.append_message(session_id=s.id, role="user", content="owner question", sender_email="owner@x")
+            manager._repo.append_message(
+                session_id=s.id, role="user", content="guest secret question", sender_email="guest@x"
+            )
+            manager._repo.append_message(session_id=s.id, role="assistant", content="shared answer")
+            manager._repo.remove_participant(s.id, "guest@x")
+
+            sess = manager._repo.get_session(s.id)
+            ctx = manager._build_restore_context(sess)
+            assert ctx is not None
+            assert "owner question" in ctx
+            assert "guest secret question" not in ctx, "departed participant's turn leaked into restored context"
+            assert "shared answer" in ctx
+
+        asyncio.run(_run())
+
+    def test_crash_respawn_redelivers_trailing_unanswered_question(self, manager: ChatManager, monkeypatch):
+        """A crash mid-turn leaves a persisted user turn with no assistant
+        reply (send_user_message persists BEFORE delivering). The respawn
+        must re-deliver exactly that one question as a LIVE turn — the
+        restored transcript is read-only by instruction, so without this the
+        user saw a crash notice and then silence (Devin review on #1030)."""
+        monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+        async def _run():
+            handles = [FakeHandle(), FakeHandle()]
+            spawn_calls = iter(handles)
+
+            async def fake_spawn(**kw):
+                return next(spawn_calls)
+
+            manager._provider.spawn = fake_spawn
+
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            ws = FakeWS()
+            attach_task = asyncio.create_task(manager.attach(s.id, ws))
+            await _wait_until(lambda: _ws_seated(manager, s.id, ws))
+            # Pending question: persisted, never answered (crash follows).
+            manager._repo.append_message(session_id=s.id, role="user", content="pending question?")
+            handles[0].emit_eof()
+            handles[0].killed = True
+            await _wait_until(lambda: any(m.get("type") == "ready" for m in ws.sent))
+            # The fresh runner got EXACTLY the one pending question, live.
+            await _wait_until(lambda: "pending question?" in _stdin_user_texts(handles[1]))
+            assert _stdin_user_texts(handles[1]).count("pending question?") == 1
+            # Redelivery must go through the same turn-state bookkeeping as
+            # any other live turn — otherwise _linger_then_pause doesn't know
+            # a turn is in flight and can pause the sandbox mid-answer if the
+            # user disconnects before the reply arrives (Devin review on
+            # #1030, follow-up finding).
+            assert manager._live[s.id].turn_in_flight, "redelivery must set turn_in_flight"
+
+            await manager.kill(s.id, reason="test_done")
+            handles[1].emit_eof()
+            await attach_task
+
+        asyncio.run(_run())
+
+    def test_crash_respawn_skips_redelivery_when_last_turn_answered(self, manager: ChatManager, monkeypatch):
+        """No trailing unanswered turn → nothing is re-delivered (the old
+        3-turn replay re-answered already-answered questions)."""
+        monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+        async def _run():
+            handles = [FakeHandle(), FakeHandle()]
+            spawn_calls = iter(handles)
+
+            async def fake_spawn(**kw):
+                return next(spawn_calls)
+
+            manager._provider.spawn = fake_spawn
+
+            s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+            ws = FakeWS()
+            attach_task = asyncio.create_task(manager.attach(s.id, ws))
+            await _wait_until(lambda: _ws_seated(manager, s.id, ws))
+            manager._repo.append_message(session_id=s.id, role="user", content="answered question")
+            manager._repo.append_message(session_id=s.id, role="assistant", content="the answer")
+            handles[0].emit_eof()
+            handles[0].killed = True
+            await _wait_until(lambda: any(m.get("type") == "ready" for m in ws.sent))
+            assert _stdin_user_texts(handles[1]) == []
+
+            await manager.kill(s.id, reason="test_done")
+            handles[1].emit_eof()
+            await attach_task
+
+        asyncio.run(_run())

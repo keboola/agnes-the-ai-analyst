@@ -510,6 +510,38 @@ class ChatRepository:
             for r in rows
         ]
 
+    def list_recent_messages(self, session_id: str, *, limit: int = 500) -> list[ChatMessage]:
+        """Newest-first slice of the conversation — the counterpart to
+        ``list_messages``'s oldest-first ``LIMIT``. A caller that only cares
+        about the tail of a long conversation (redelivering the pending
+        question, building a restore transcript) must use this, not
+        ``list_messages``: that method's ``ORDER BY created_at ASC LIMIT``
+        returns the OLDEST ``limit`` rows, so for a chat past ``limit``
+        messages its last element is nowhere near the actual latest turn."""
+        if self._messages_pg is not None:
+            return self._messages_pg.list_recent_messages(session_id, limit=limit)
+        rows = self._conn.execute(
+            "SELECT id, session_id, role, content, tool_calls, tokens_in, tokens_out, "
+            "model, sender_email, created_at FROM chat_messages WHERE session_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            [session_id, limit],
+        ).fetchall()
+        return [
+            ChatMessage(
+                id=r[0],
+                session_id=r[1],
+                role=r[2],
+                content=r[3],
+                tool_calls=json.loads(r[4]) if r[4] else None,
+                tokens_in=r[5],
+                tokens_out=r[6],
+                model=r[7],
+                sender_email=r[8],
+                created_at=r[9],
+            )
+            for r in rows
+        ]
+
     # --- participants ------------------------------------------------------
 
     def add_session_participant(
