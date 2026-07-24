@@ -43,18 +43,47 @@ every single user — O(spawns), not O(scope changes) — with zero audit
 value. Any deviation from that all-'all' shape (a non-default agent, or a
 defensively-possible 'selected' mode on a default row) still gets a row,
 since that *does* carry information worth auditing.
+
+3. ``materialize_memories`` (V1c Task 3) writes an agent's active memories
+   into the session workdir *before* spawn — the same host-dir-then-
+   uploaded seam ``build_profile``'s persona takes (``ChatManager.
+   _spawn_live`` calls it right before ``_spawn_runner``, which is what
+   actually uploads ``session_dir`` into the remote sandbox). This is the
+   read side of agent memory; the write side is the remember tool (V1c
+   Task 4).
+
+   **Precedence note (important):** ``agent_memories_repo().list_active``
+   returns memories newest-first, and ``select_in_budget`` consumes them
+   in that order, packing as many as fit under ``_MEMORY_BUDGET_CHARS``.
+   A memory's "active" status therefore does NOT guarantee it is actually
+   "in effect" for a given spawn — if the active set exceeds the budget,
+   older active memories (and, in principle, a just-approved one sitting
+   behind enough older-but-still-active content) are silently shadowed for
+   that spawn. ``select_in_budget`` returns both halves precisely so a
+   management surface (V1c Task 5) can show admins which active memories
+   are in-budget vs shadowed, instead of that distinction only being
+   visible by reading generated sandbox files.
+
+``materialize_memories`` must never raise into the spawn path, for the
+same reason as ``record_snapshot`` — see below.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
 from app.chat.profiles import ChatProfile
 
 logger = logging.getLogger(__name__)
+
+# ~6000 tokens at a conservative 4 chars/token — the active-memory budget
+# materialized into a spawned session's workdir. See the module docstring's
+# "Precedence note" for what happens when the active set exceeds this.
+_MEMORY_BUDGET_CHARS = 6000 * 4
 
 # agents.<field>_mode -> (scope key, agent_scope.item_type)
 _MODE_FIELD_TO_SCOPE = {
@@ -196,3 +225,96 @@ def record_snapshot(session_id: str, agent_row: dict) -> None:
             "agent scope snapshot failed for session %s — spawn continues without an audit row",
             session_id,
         )
+
+
+def select_in_budget(memories: list[dict], max_chars: int) -> tuple[list[dict], list[dict]]:
+    """Split ``memories`` — assumed already newest-first, the order
+    ``agent_memories_repo().list_active`` returns — into ``(in_budget,
+    shadowed)`` by a cumulative character budget on each memory's
+    ``content``.
+
+    Newest-first precedence: memories are consumed in list order: the
+    earliest ones that fit land in ``in_budget``; everything after the
+    budget is exhausted lands in ``shadowed``, regardless of how relevant a
+    later (older) memory might be. See the module docstring's "Precedence
+    note" — this is what makes "active" not synonymous with "in effect".
+    Reused by both ``materialize_memories`` and the memory-management
+    surface (V1c Task 5), which needs to render the same split for admins.
+    """
+    in_budget: list[dict] = []
+    shadowed: list[dict] = []
+    used = 0
+    for memory in memories:
+        content = memory.get("content") or ""
+        length = len(content)
+        if used + length <= max_chars:
+            in_budget.append(memory)
+            used += length
+        else:
+            shadowed.append(memory)
+    return in_budget, shadowed
+
+
+def _memory_date(memory: dict) -> str:
+    """Best-effort ``YYYY-MM-DD`` from a memory's ``created_at``, which may
+    arrive as a ``datetime``, a ``date``, an ISO string, or (defensively)
+    be missing — DuckDB and Postgres don't guarantee the same Python type
+    back from the repo layer."""
+    value = memory.get("created_at")
+    if not value:
+        return "unknown-date"
+    text = str(value)
+    return text[:10] if text else "unknown-date"
+
+
+def materialize_memories(agent_row: dict, session_dir: Path) -> int:
+    """Write this agent's active memories into the session workdir.
+
+    Called from ``ChatManager._spawn_live`` at the same pre-spawn seam as
+    ``build_profile`` — before ``_spawn_runner`` uploads ``session_dir``
+    into the (remote, E2B microVM) sandbox. A file written after spawn
+    would never reach the agent; see the module docstring.
+
+    Reads ``agent_memories_repo().list_active(agent_id)`` (newest-first),
+    caps it to ``_MEMORY_BUDGET_CHARS`` via ``select_in_budget``, and
+    renders the in-budget set as a simple dated list at
+    ``session_dir / ".claude" / "agent-memory.md"``. No active memories
+    (or nothing fits the budget) -> no file is written, returns ``0``.
+
+    This is the read side of agent memory; the write side is the remember
+    tool (V1c Task 4).
+
+    Never raises into spawn — mirrors ``record_snapshot``: any failure
+    (repo error, malformed row, disk error) is logged via
+    ``logger.exception`` and swallowed, so a memory-materialization bug can
+    never block the chat spawn the user is waiting on.
+    """
+    agent_id = agent_row.get("id")
+    try:
+        if not agent_id:
+            return 0
+
+        from src.repositories import agent_memories_repo
+
+        memories = agent_memories_repo().list_active(agent_id)
+        if not memories:
+            return 0
+
+        in_budget, _shadowed = select_in_budget(memories, _MEMORY_BUDGET_CHARS)
+        if not in_budget:
+            return 0
+
+        claude_dir = session_dir / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        lines = ["# Agent memory\n\n"]
+        for memory in in_budget:
+            content = (memory.get("content") or "").strip()
+            lines.append(f"- **{_memory_date(memory)}** — {content}\n")
+        (claude_dir / "agent-memory.md").write_text("".join(lines), encoding="utf-8")
+        return len(in_budget)
+    except Exception:
+        logger.exception(
+            "agent memory materialization failed for agent_id=%s — spawn continues without memories",
+            agent_id,
+        )
+        return 0

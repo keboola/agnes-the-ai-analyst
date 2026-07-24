@@ -901,6 +901,15 @@ class ChatManager:
             prof = dynamic_prof or prof
             session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id, profile=prof)
 
+        # V1c Task 3: materialize this agent's active memories into the
+        # workdir BEFORE spawn — the same host-dir-then-uploaded seam
+        # build_profile's persona took above. session_dir is a host path;
+        # _spawn_runner (next line) is what actually uploads it into the
+        # remote sandbox, so this must run first or the agent never sees
+        # its memories. Never raises — see agent_profile.materialize_memories.
+        if agent_row is not None:
+            agent_profile.materialize_memories(agent_row, session_dir)
+
         handle = await self._spawn_runner(session, session_dir)
         import time as _t
 
