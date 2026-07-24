@@ -22,6 +22,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.23] - 2026-07-24
+
+### Fixed
+
+- **Data Apps**: a manual `deploy`/`stop` and an auto-wake for the same app
+  can no longer race each other into calling the runner sidecar's `up()`
+  concurrently (the sidecar does an unlocked check-then-act container
+  swap). A single `dataapp:op:<slug>` lease, shared by `deploy_data_app`,
+  `stop_data_app`, `delete_data_app`, and the ingress proxy's wake-on-request
+  path, now serializes all four; the scheduler's idle-reap sweep takes the
+  same lease non-blockingly (skip-and-retry-next-tick) per row, and writes
+  its `sleeping` state transition before releasing it so a concurrent
+  deploy/wake can't have its state clobbered by a stale reap write landing
+  after it.
+
 ## [0.76.22] - 2026-07-24
 
 ### Fixed

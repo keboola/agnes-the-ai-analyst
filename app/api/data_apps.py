@@ -144,6 +144,94 @@ def _release_create_lease(lease_name: str, holder: str) -> None:
         pass
 
 
+# `POST /{slug}/deploy`, `POST /{slug}/stop`, `DELETE /{slug}`, the
+# scheduler's idle-reap sweep, and the ingress proxy's wake-on-request path
+# (`_trigger_wake` in `app/api/data_apps_proxy.py`) all end up calling the
+# runner sidecar's `up()`/`stop()` for the same slug.
+# `services/apps_runner/api.py::up()` does an unlocked check-then-act (get
+# old container -> remove -> run new) — two of these calls racing for the
+# same slug can both observe the same "old" container and both call
+# `containers.run(...)`, landing two containers fighting over the same
+# name/network. `dataapp:op:{slug}` is the single lease shared by all these
+# call sites so at most one runner-mutating operation is ever in flight per
+# app. The idle-reap sweep uses the non-blocking `try_acquire_op_lease`
+# directly (skip-and-retry-next-tick) rather than `require_op_lease`
+# (retry-then-409) since it has no HTTP caller to return an error to.
+#
+# It intentionally lives here rather than inside `redeploy_current`:
+# `_trigger_wake` and `deploy_data_app` both call `redeploy_current`, and
+# each already holds this lease itself before doing so — acquiring it
+# again inside `redeploy_current` would be a self-deadlock (`lease_acquire`
+# is not reentrant for the same holder, see `CoordinationBackend`'s
+# docstring).
+_OP_LEASE_TTL_S = 120
+_OP_LEASE_RETRIES = 3
+_OP_LEASE_RETRY_DELAY_S = 0.1
+
+
+def _op_lease_name(slug: str) -> str:
+    return f"dataapp:op:{slug}"
+
+
+def try_acquire_op_lease(slug: str) -> tuple[bool, str]:
+    """One non-blocking attempt to acquire the per-slug op lease.
+
+    Used by `_trigger_wake`, which must never block the ingress request
+    on another in-flight operation — losing the race just means
+    returning immediately (the caller renders the holding page either
+    way), same as the wake-specific lease this replaces. Synchronous
+    endpoints that need retry-then-409 semantics instead call
+    `require_op_lease`.
+
+    Returns `(acquired, holder)`. On `CoordinationUnavailable` (no
+    cross-process backend configured), treats the lease as acquired —
+    single-process dev fallback: proceed unserialized rather than
+    refusing the operation just because coordination happens to be down.
+    """
+    from app.coordination.base import CoordinationUnavailable
+    from app.coordination.factory import coordination
+    from app.coordination.leases import default_holder_id
+
+    holder = default_holder_id()
+    try:
+        acquired = coordination().lease_acquire(_op_lease_name(slug), holder, ttl_s=_OP_LEASE_TTL_S)
+    except CoordinationUnavailable:
+        return True, holder
+    return acquired, holder
+
+
+def release_op_lease(slug: str, holder: str) -> None:
+    from app.coordination.base import CoordinationUnavailable
+    from app.coordination.factory import coordination
+
+    try:
+        coordination().lease_release(_op_lease_name(slug), holder)
+    except CoordinationUnavailable:
+        pass
+
+
+def require_op_lease(slug: str) -> str:
+    """Synchronous-endpoint policy for `deploy_data_app`/`stop_data_app`: a
+    few quick retries against `try_acquire_op_lease`, then 409
+    `operation_in_progress` if the lease is still held by someone else
+    (a concurrent deploy/stop request, or an in-flight wake). The retries
+    only smooth over near-simultaneous requests about to release on their
+    own — a genuinely in-flight operation (e.g. a wake's backgrounded
+    redeploy, held for up to `_OP_LEASE_TTL_S`) is expected to make the
+    caller retry later, not block the request for the full TTL.
+
+    Returns the holder id to pass to `release_op_lease` in a `finally`.
+    """
+    holder = ""
+    for attempt in range(_OP_LEASE_RETRIES):
+        acquired, holder = try_acquire_op_lease(slug)
+        if acquired:
+            return holder
+        if attempt < _OP_LEASE_RETRIES - 1:
+            time.sleep(_OP_LEASE_RETRY_DELAY_S)
+    raise HTTPException(status_code=409, detail="operation_in_progress")
+
+
 def _effective_config() -> dict:
     return {**_CONFIG_DEFAULTS, **get_data_apps_config()}
 
@@ -489,38 +577,42 @@ async def deploy_data_app(
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
 
-    repo = data_apps_repo()
-    if row["repo_mode"] == "external":
-        # External repos have no internal bare repo (`init_app_repo` is
-        # internal-only at create) — nothing for `fast_forward_live` to
-        # fast-forward. The runtime clones HEAD of `repo_branch` at boot
-        # (spec §2: external repos are HEAD-at-wake; sha pinning is future
-        # work), so an explicit sha in the request can't be honored.
-        if payload.sha:
-            raise HTTPException(status_code=400, detail="external_repo_sha_unsupported")
-        sha = ""
-    else:
-        try:
-            sha = fast_forward_live(slug, payload.sha)
-        except ValueError as exc:
-            if "no commits to deploy" in str(exc):
-                raise HTTPException(status_code=409, detail="deploy_empty_repo")
-            raise HTTPException(status_code=400, detail=str(exc))
-
+    holder = require_op_lease(slug)
     try:
-        redeploy_current(row)
-    except OwnerNotFoundError:
-        raise HTTPException(status_code=500, detail="owner_not_found")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except (RunnerUnavailable, RunnerError):
-        raise HTTPException(status_code=502, detail="runner_unavailable")
+        repo = data_apps_repo()
+        if row["repo_mode"] == "external":
+            # External repos have no internal bare repo (`init_app_repo` is
+            # internal-only at create) — nothing for `fast_forward_live` to
+            # fast-forward. The runtime clones HEAD of `repo_branch` at boot
+            # (spec §2: external repos are HEAD-at-wake; sha pinning is future
+            # work), so an explicit sha in the request can't be honored.
+            if payload.sha:
+                raise HTTPException(status_code=400, detail="external_repo_sha_unsupported")
+            sha = ""
+        else:
+            try:
+                sha = fast_forward_live(slug, payload.sha)
+            except ValueError as exc:
+                if "no commits to deploy" in str(exc):
+                    raise HTTPException(status_code=409, detail="deploy_empty_repo")
+                raise HTTPException(status_code=400, detail=str(exc))
 
-    repo.record_deploy(row["id"], sha)
-    repo.set_state(row["id"], "running")
-    _audit(conn, user["id"], "data_app.deploy", f"data_app:{slug}", {"sha": sha})
+        try:
+            redeploy_current(row)
+        except OwnerNotFoundError:
+            raise HTTPException(status_code=500, detail="owner_not_found")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except (RunnerUnavailable, RunnerError):
+            raise HTTPException(status_code=502, detail="runner_unavailable")
 
-    return {"state": "running", "deployed_sha": sha}
+        repo.record_deploy(row["id"], sha)
+        repo.set_state(row["id"], "running")
+        _audit(conn, user["id"], "data_app.deploy", f"data_app:{slug}", {"sha": sha})
+
+        return {"state": "running", "deployed_sha": sha}
+    finally:
+        release_op_lease(slug, holder)
 
 
 @router.post("/{slug}/stop")
@@ -533,22 +625,26 @@ async def stop_data_app(
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
 
-    repo = data_apps_repo()
+    holder = require_op_lease(slug)
     try:
-        _runner().stop(slug, mode="recreate")
-    except (RunnerUnavailable, RunnerError) as exc:
-        _handle_runner_failure(repo, row["id"], exc)
-        raise HTTPException(status_code=502, detail="runner_unavailable")
+        repo = data_apps_repo()
+        try:
+            _runner().stop(slug, mode="recreate")
+        except (RunnerUnavailable, RunnerError) as exc:
+            _handle_runner_failure(repo, row["id"], exc)
+            raise HTTPException(status_code=502, detail="runner_unavailable")
 
-    repo.set_state(row["id"], "stopped")
-    # Spec §8/§10: an explicit stop revokes the service token — unlike
-    # reap-idle's sleep transition (see reap_idle_data_apps), which leaves
-    # it live so the app can wake later. A stop is an operator decision that
-    # the app isn't coming back on its own; the credential goes with it.
-    _revoke_service_token(row)
-    repo.update(row["id"], service_token_id="")
-    _audit(conn, user["id"], "data_app.stop", f"data_app:{slug}")
-    return {"state": "stopped"}
+        repo.set_state(row["id"], "stopped")
+        # Spec §8/§10: an explicit stop revokes the service token — unlike
+        # reap-idle's sleep transition (see reap_idle_data_apps), which leaves
+        # it live so the app can wake later. A stop is an operator decision that
+        # the app isn't coming back on its own; the credential goes with it.
+        _revoke_service_token(row)
+        repo.update(row["id"], service_token_id="")
+        _audit(conn, user["id"], "data_app.stop", f"data_app:{slug}")
+        return {"state": "stopped"}
+    finally:
+        release_op_lease(slug, holder)
 
 
 @router.delete("/{slug}", status_code=204)
@@ -574,32 +670,36 @@ async def delete_data_app(
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
 
-    # Best-effort: a dead runner must not block deleting the registry row
-    # (there'd otherwise be no way to remove an app whose container host is
-    # gone).
+    holder = require_op_lease(slug)
     try:
-        _runner().stop(slug, mode="recreate")
-    except (RunnerUnavailable, RunnerError):
-        logger.warning("delete_data_app: runner stop failed for %s (continuing)", slug)
+        # Best-effort: a dead runner must not block deleting the registry row
+        # (there'd otherwise be no way to remove an app whose container host is
+        # gone).
+        try:
+            _runner().stop(slug, mode="recreate")
+        except (RunnerUnavailable, RunnerError):
+            logger.warning("delete_data_app: runner stop failed for %s (continuing)", slug)
 
-    _revoke_service_token(row)
-    data_apps_repo().delete(row["id"])
+        _revoke_service_token(row)
+        data_apps_repo().delete(row["id"])
 
-    config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
-    try:
-        shutil.rmtree(config_dir, ignore_errors=False)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        logger.warning("delete_data_app: failed to remove config dir %s (continuing)", config_dir)
+        config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
+        try:
+            shutil.rmtree(config_dir, ignore_errors=False)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("delete_data_app: failed to remove config dir %s (continuing)", config_dir)
 
-    _audit(
-        conn,
-        user["id"],
-        "data_app.delete",
-        f"data_app:{slug}",
-        {"repo_dir_left_on_disk": True},
-    )
+        _audit(
+            conn,
+            user["id"],
+            "data_app.delete",
+            f"data_app:{slug}",
+            {"repo_dir_left_on_disk": True},
+        )
+    finally:
+        release_op_lease(slug, holder)
 
 
 @router.put("/{slug}/secrets")
@@ -711,6 +811,14 @@ async def reap_idle_data_apps(
             last_request_at = last_request_at.replace(tzinfo=timezone.utc)
         if (now - last_request_at).total_seconds() <= row["idle_timeout_s"]:
             continue
+        # Non-blocking: a row with a deploy/stop/wake already in flight is
+        # left running and picked up on the next scheduler tick rather than
+        # having this sweep block or race the in-flight operation's own
+        # runner.stop()/up() call (see the op-lease invariant above).
+        acquired, holder = try_acquire_op_lease(row["slug"])
+        if not acquired:
+            logger.info("reap-idle: skipping %s — another operation is in flight", row["slug"])
+            continue
         try:
             _runner().stop(row["slug"], mode=row.get("sleep_mode") or "recreate")
         except (RunnerUnavailable, RunnerError) as exc:
@@ -718,8 +826,15 @@ async def reap_idle_data_apps(
             repo.set_state(row["id"], "error", f"reap-idle stop failed: {detail}")
             logger.warning("reap-idle: runner stop failed for %s: %s", row["slug"], detail)
             continue
-        repo.set_state(row["id"], "sleeping")
-        reaped.append(row["slug"])
+        finally:
+            # The state write must happen while still holding the lease —
+            # releasing first (as a bare `finally: release_op_lease(...)`
+            # would) opens a window where a concurrent deploy/wake grabs the
+            # freed lease, starts a container, and then this sweep's
+            # "sleeping" write lands after it and clobbers that state.
+            repo.set_state(row["id"], "sleeping")
+            reaped.append(row["slug"])
+            release_op_lease(row["slug"], holder)
 
     recovered: list[str] = []
     timed_out: list[str] = []

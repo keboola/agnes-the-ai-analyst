@@ -57,7 +57,7 @@ def _reset_coordination():
     (`app.coordination.factory._instance`) with no autouse reset in
     `tests/conftest.py` — without this, a wake/touch lease acquired by one
     test (many of this module's fixtures reuse slug `"s"`, so they'd share
-    lease names like `dataapp:wake:s`) stays held for its full TTL and
+    lease names like `dataapp:op:s`) stays held for its full TTL and
     leaks into the next test on the same xdist worker."""
     from app.coordination.factory import reset_coordination_for_tests
 
@@ -410,6 +410,32 @@ def test_sleeping_pause_mode_resumes_and_sets_running(client_granted, fake_runne
 
     row = data_apps_repo().get_by_slug("p")
     assert row["state"] == "running"
+
+
+def test_sleeping_app_wake_suppressed_by_op_lease_held_elsewhere(client_granted, fake_runner, sleeping_app):
+    """The `dataapp:op:{slug}` lease is shared with `deploy_data_app`/
+    `stop_data_app` (`app/api/data_apps.py`) — a manual deploy/stop
+    currently in flight for this slug must suppress an auto-wake the same
+    way a concurrent wake already suppresses a second one (see
+    `test_sleeping_app_wake_fires_exactly_once_under_repeat_requests`).
+    Simulates the "manual op in flight" side by holding the lease
+    directly rather than actually racing a real deploy request — the
+    real-request race is covered on the deploy/stop side in
+    `tests/test_data_apps_api.py::TestOpLeaseSerialization`."""
+    from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+    acquired, holder = try_acquire_op_lease("s")
+    assert acquired
+    try:
+        r = client_granted.get("/apps/s/", headers={"accept": "application/json"})
+        assert r.status_code == 503
+        assert not fake_runner.up_calls  # wake never triggered — op lease was already held
+
+        from src.repositories import data_apps_repo
+
+        assert data_apps_repo().get_by_slug("s")["state"] == "sleeping"  # never flipped to "deploying"
+    finally:
+        release_op_lease("s", holder)
 
 
 def test_stranger_gets_403(client_stranger, running_app):
