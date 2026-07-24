@@ -6,7 +6,7 @@
 auto-upgrade recreate, but the file never lands on any VM) and make the
 auto-upgrade cron cadence overridable per instance, so agnes-prod can move
 off the current `*/5 * * * *` to a quiet nightly window without touching
-dev/monika's fast iteration cadence.
+dev/staging's fast iteration cadence.
 
 **Architecture:** Two independent, additive fixes in the `customer-instance`
 Terraform module and its baked ops scripts — no new services, no schema
@@ -34,7 +34,7 @@ or cloud credentials needed for any test in this plan).
 - Full suite (`.venv/bin/pytest tests/ --tb=short -n auto -q`) green before
   the final commit.
 - No customer-specific values (e.g. the `"30 3 * * *"` schedule for the
-  actual Keboola prod VM) land in this repo — that's a private-infra-repo
+  actual production instance) land in this repo — that's a private-infra-repo
   follow-up, out of scope here (see spec's Non-goals).
 
 ---
@@ -385,7 +385,7 @@ Add `upgrade_schedule` right after `upgrade_mode`:
     # Standard 5-field cron expression consumed by startup-script.sh.tpl's
     # crontab install line. Default matches the historical fixed cadence —
     # override to reduce upgrade-triggered blips on a customer-facing
-    # instance (e.g. a nightly window) while dev/monika stay on fast
+    # instance (e.g. a nightly window) while dev/staging stay on fast
     # iteration.
     upgrade_schedule = optional(string, "*/5 * * * *")
     tls_mode          = optional(string, "caddy")
@@ -617,7 +617,7 @@ git commit -m "docs(changelog): auto-upgrade cadence override + maintenance-page
 
 ## Follow-up (explicitly out of scope, not a task in this plan)
 
-In the private `agnes-infra-keboola` repo, set
+In the private customer infra repo that consumes this module, set
 `prod_instance.upgrade_schedule = "30 3 * * *"` and apply. Because
 `startup-script.sh.tpl` changes don't reach a running VM
 (`lifecycle { ignore_changes = [metadata_startup_script] }`), landing the

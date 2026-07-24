@@ -32,7 +32,7 @@ two independent, pre-existing defects rather than one:
   explicitly out of scope here. This spec only makes the existing,
   unavoidable upgrade blip both rarer and visibly graceful.
 - **No VM scale-up.** Bumping agnes-prod's `machine_type` is a one-line
-  Terraform value change in the private `agnes-infra-keboola` repo, tracked
+  Terraform value change in a private customer infra repo (outside this repo's scope), tracked
   separately, not part of this spec.
 - **No change to the Jira `incremental_transform` path-mismatch bug** found
   during the same investigation — that's a separate, unrelated defect
@@ -86,13 +86,12 @@ instance into a different cadence.
 
 ### Rollout (out of this repo's scope, noted for the private infra repo)
 
-In `agnes-infra-keboola`, set `prod_instance.upgrade_schedule = "30 3 * * *"`
+In the private infra repo that consumes this module, set `prod_instance.upgrade_schedule = "30 3 * * *"`
 (03:30 UTC daily — right after the existing `agnes-db-backup.timer`,
 03:17 UTC, so a fresh backup exists before any upgrade-triggered recreate).
-`dev`/`monika` instances keep the default 5-minute cadence for fast
+Other (dev/staging) instances keep the default 5-minute cadence for fast
 iteration. Since `startup-script.sh.tpl` has
-`lifecycle { ignore_changes = [metadata_startup_script] }` (established in
-[[agnes-dev-pg-vm]]), a plain `terraform apply` after this Terraform change
+`lifecycle { ignore_changes = [metadata_startup_script] }`, a plain `terraform apply` after this Terraform change
 will NOT reach a running VM — it needs either a `-replace` recreate of that
 one instance, or a manual `crontab` edit on agnes-prod as an interim step.
 That operational choice is the infra repo's call, not this spec's.
