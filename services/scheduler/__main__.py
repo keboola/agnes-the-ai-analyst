@@ -87,11 +87,18 @@ def _load_last_run(job_names: set[str]) -> dict[str, "str | None"]:
 def _persist_last_run(last_run: dict[str, "str | None"]) -> None:
     """Atomically write last_run to the durable file. Best-effort — a write
     failure (read-only mount, disk full) is logged once and swallowed so the
-    scheduler keeps running on its in-memory copy."""
+    scheduler keeps running on its in-memory copy.
+
+    The tmp filename is suffixed with our own PID: two scheduler containers
+    sharing ``DATA_DIR`` (the anti-synchronize bq-metadata-refresh offset
+    logic above assumes exactly this topology) would otherwise race on the
+    same shared tmp path — one process's write clobbering the other's before
+    either calls ``os.replace``. ``_last_run_lock`` only serializes threads
+    within this process; it does nothing across processes."""
     try:
         with _last_run_lock:
             _LAST_RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
-            tmp = _LAST_RUN_PATH.with_suffix(".json.tmp")
+            tmp = _LAST_RUN_PATH.with_suffix(f".json.{os.getpid()}.tmp")
             tmp.write_text(json.dumps(last_run))
             os.replace(tmp, _LAST_RUN_PATH)
     except Exception:

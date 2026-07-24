@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.24] - 2026-07-24
+
+### Fixed
+
 - Worker lane slots now wake immediately on a fresh Postgres enqueue instead
   of waiting out their poll interval: `enqueue` emits `NOTIFY agnes_jobs` and
   the worker `LISTEN`s on it (`app/worker/wakeup.py`). Polling stays the floor
@@ -25,13 +35,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `${DATA_DIR}/state/scheduler_last_run.json` and restored on startup, so a
   restart/recreate no longer resets every job to "never ran" and re-fires the
   whole set on the first post-grace tick. Best-effort: a load/persist failure
-  falls back to the previous in-memory behavior.
-
-### Removed
-
-### Internal
-
-### Security
+  falls back to the previous in-memory behavior. The persisted-file write uses
+  a per-process tmp filename so two scheduler containers sharing `DATA_DIR`
+  can't race on the same tmp path.
 
 ## [0.76.23] - 2026-07-24
 

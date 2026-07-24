@@ -58,6 +58,21 @@ def test_persist_is_atomic_and_best_effort(tmp_path, monkeypatch):
     sched._persist_last_run({"a": "2026-01-01T00:00:00"})  # must not raise
 
 
+def test_persist_tmp_filename_is_per_process(tmp_path, monkeypatch):
+    """Two scheduler containers sharing DATA_DIR (the anti-synchronize
+    bq-metadata offset logic assumes this topology) must not race on the
+    same tmp path — the tmp filename must bake in our own PID so a
+    concurrent process's write can't clobber it before either replaces."""
+    from unittest.mock import patch
+
+    _point_at(tmp_path, monkeypatch)
+    monkeypatch.setattr(sched.os, "getpid", lambda: 12345)
+    with patch.object(sched.os, "replace") as mock_replace:
+        sched._persist_last_run({"a": "2026-01-01T00:00:00"})
+    tmp_arg = mock_replace.call_args[0][0]
+    assert str(tmp_arg).endswith(".json.12345.tmp")
+
+
 def test_run_job_persists_last_run(tmp_path, monkeypatch):
     import threading
 
