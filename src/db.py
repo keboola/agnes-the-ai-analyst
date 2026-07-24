@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 100
+SCHEMA_VERSION = 101
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -6555,6 +6555,25 @@ def _v99_to_v100(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 100")
 
 
+def _v100_to_v101(conn: duckdb.DuckDBPyConnection) -> None:
+    """v100→v101: heal ``mcp_sources.connect_hint`` on DBs stranded by the
+    same migration renumbering that motivated ``_v99_to_v100``.
+
+    ``connect_hint`` is added by ``_v91_to_v92``, guarded ``if current < 92``.
+    A DB stamped at v92+ under the *old* numbering (before v92 meant this
+    column) skips that step forever, so the column never lands and every
+    ``mcp_sources`` read that selects it (e.g. the connect page) 500s with
+    ``Binder Error: ... connect_hint``. Fresh installs and clean sequential
+    upgrades already carry it; this repairs the stranded ones. Idempotent
+    ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a no-op
+    everywhere else.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'mcp_sources'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS connect_hint VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 101")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6965,6 +6984,11 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # ALTER is a no-op; this step also creates the (corpus_id, path)
             # unique index, which _SYSTEM_SCHEMA deliberately no longer does.
             _v99_to_v100(conn)
+            # v100→v101: heal mcp_sources.connect_hint on DBs stranded by the
+            # same renumbering (connect_hint's add-step, v91→v92, is skipped on
+            # a DB already stamped ≥92 under the old numbering). No-op on fresh
+            # installs — the column is already present.
+            _v100_to_v101(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7218,6 +7242,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v98_to_v99(conn)
             if current < 100:
                 _v99_to_v100(conn)
+            if current < 101:
+                _v100_to_v101(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

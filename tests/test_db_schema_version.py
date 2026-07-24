@@ -998,3 +998,34 @@ def test_v99_to_v100_heals_stranded_corpus_files_path(tmp_path):
     row = conn.execute("SELECT id, path FROM corpus_files WHERE id = 'cf_keep'").fetchone()
     assert row == ("cf_keep", None)
     conn.close()
+
+
+def test_v100_to_v101_heals_stranded_mcp_connect_hint(tmp_path):
+    """A DuckDB stranded by the migration renumbering — stamped past v92 but
+    with ``mcp_sources`` lacking the ``connect_hint`` column that v92 is
+    *supposed* to add — gets the column back via the v100→v101 heal, without
+    losing existing rows.
+
+    Same disease as corpus_files.path: the ``if current < 92`` guard skips
+    ``_v91_to_v92`` on a DB already stamped ≥92, so ``connect_hint`` never
+    lands and every ``mcp_sources`` read that selects it 500s. Simulated by
+    dropping the column the fresh schema created, then re-running the ladder."""
+    db_path = tmp_path / "stranded_mcp.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("ALTER TABLE mcp_sources DROP COLUMN connect_hint")
+    conn.execute("UPDATE schema_version SET version = 100")
+    conn.execute("INSERT INTO mcp_sources (id, name, transport, enabled) VALUES ('mcp_keep', 'keep', 'stdio', TRUE)")
+    pre = {r[1] for r in conn.execute("PRAGMA table_info('mcp_sources')").fetchall()}
+    assert "connect_hint" not in pre  # confirm the stranded precondition
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('mcp_sources')").fetchall()}
+    assert "connect_hint" in cols, "v100→v101 must heal the missing mcp_sources.connect_hint column"
+    row = conn.execute("SELECT id, connect_hint FROM mcp_sources WHERE id = 'mcp_keep'").fetchone()
+    assert row == ("mcp_keep", None)
+    conn.close()
