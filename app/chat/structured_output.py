@@ -62,17 +62,27 @@ def validate(answer: str, response_format: Optional[dict]) -> Tuple[bool, Any, O
     ``jsonschema``. Returns ``(True, parsed_object, None)`` on success,
     ``(False, None, error_message)`` on either a JSON parse failure or a
     schema violation.
+
+    The raw (un-stripped) answer is tried first, and ``_strip_fence`` is only
+    used as a fallback when that fails. Otherwise a valid, unfenced JSON
+    answer whose string content happens to contain an embedded ``` fenced
+    snippet (e.g. a schema field holding example code) would have
+    ``_strip_fence`` mangle it into the substring between the embedded
+    fences instead of parsing the whole answer as-is.
     """
     if not response_format or response_format.get("type") != "json_schema":
         return True, None, None
 
     schema = response_format.get("schema") or {}
-    candidate = _strip_fence(answer)
 
     try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError as exc:
-        return False, None, f"answer is not valid JSON: {exc}"
+        parsed = json.loads((answer or "").strip())
+    except json.JSONDecodeError:
+        candidate = _strip_fence(answer)
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            return False, None, f"answer is not valid JSON: {exc}"
 
     try:
         jsonschema.validate(parsed, schema)

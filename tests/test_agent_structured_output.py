@@ -52,6 +52,19 @@ def test_validate_tolerates_fenced_block_without_json_tag():
     assert parsed == {"name": "Ada", "age": 30}
 
 
+def test_validate_unfenced_json_with_embedded_fence_in_string_value():
+    """A correct, unfenced top-level JSON answer whose string value happens
+    to contain an embedded ```-fenced snippet must parse as-is — not get
+    mangled by `_strip_fence` scanning for ANY triple-backtick pair in the
+    whole answer and returning only the substring between them."""
+    schema = {"type": "object"}
+    answer = '{"snippet": "here is code: ```python\\nprint(1)\\n``` end"}'
+    ok, parsed, err = validate(answer, {"type": "json_schema", "schema": schema})
+    assert ok is True
+    assert parsed == {"snippet": "here is code: ```python\nprint(1)\n``` end"}
+    assert err is None
+
+
 def test_validate_malformed_json_returns_error():
     ok, parsed, err = validate("not json at all {", _RESPONSE_FORMAT)
     assert ok is False
