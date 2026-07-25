@@ -1501,7 +1501,7 @@ body.chat-page-body main { margin: 0; padding: 0; }
    default topnav chrome keeps the classic capability cards + composer
    unchanged (guarded by tests/test_ui_layout_theme.py). Makes the empty
    rail /chat visually 1:1 with /ask (ask_landing.html): same orb + "Ask
-   anything / Reuse everything" headline, condensed "Operated by Kai"
+   anything / Reuse everything" headline, condensed "Operated by Agnes"
    pill, suggestion chips, and the slim paper composer with a circular
    send button. Values mirror the .ask-* rules on /ask. Colours ride the
    shared --ds-* tokens (paper skin overrides them under
@@ -1553,35 +1553,35 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
 }
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities {
   align-self: center;
-  align-items: stretch;
-  /* The Knowledge Layer lead (headline + subcopy) is the page hero: centered
-     in the wide column, stating what Agnes is before the composer below, with
-     clear breathing room before the input. */
+  align-items: center;
+  /* The transition into usage: trust caption + "Ask Agnes anything" heading,
+     centered above the composer. The hero banner (order 0) already said what
+     Agnes is, so this stays lightweight. The tight gap keeps the caption and
+     heading reading as ONE block; breathing room before the composer comes
+     from the #chat-form margin below. */
   width: var(--rdb-col);
   max-width: none;
-  /* Sits just below the diagram (the trust caption + headline lead moved out
-     of the orb into this block); tight enough that the hero fits the viewport
-     without scrolling, with balanced breathing room before the composer. */
-  margin-top: 12px;
-  padding: 0 0 14px;
+  /* Don't glue the interaction group to the banner: `auto` lets the flex
+     column split the free space between banner and footer evenly — the
+     caption + heading + composer + suggestions sit balanced in that space,
+     and it self-adjusts across viewport heights (collapses to 0 and scrolls
+     when the content is taller than the viewport). The footer's own
+     margin-top:auto is the matching second stop. */
+  margin-top: auto;
+  padding: 0;
+  gap: 5px;
   text-align: center;
 }
-/* Hero prominence for the lead — scoped to the chat hero so the foot banner
-   and other pages that embed the lead are unaffected. The base `.klb-lead`
-   carries `align-self: start` for the banner grid; in the flex-column hero that
-   would pin it left and shrink-wrap it, so stretch it full-width and let the
-   centered text sit on the page's centre line. */
-html[data-ui-layout="rail"] #chat-capabilities .klb-lead {
-  align-self: stretch;
-}
-html[data-ui-layout="rail"] #chat-capabilities .klb-headline {
-  font-size: clamp(25px, 2.2vw, 32px);
-  line-height: 1.16;
-}
-html[data-ui-layout="rail"] #chat-capabilities .klb-sub {
-  margin: 12px auto 0;   /* auto side-margins center the capped-width sentence */
-  max-width: 460px;
-  font-size: 15px;
+/* "Ask Agnes anything" — the heading that hands off to the composer below.
+   No top margin: the caption sits directly above it (the 5px flex gap), so the
+   two read as a single block. */
+html[data-ui-layout="rail"] #chat-capabilities .rdb-ask-heading {
+  margin: 0;
+  font-size: clamp(23px, 2vw, 28px);
+  line-height: 1.15;
+  font-weight: 720;
+  letter-spacing: -0.025em;
+  color: var(--ds-text-primary);
 }
 /* The composer is the primary entry point — it should sit high, right under
    the hero, not float in the vertical center. Cancel the base
@@ -1589,7 +1589,7 @@ html[data-ui-layout="rail"] #chat-capabilities .klb-sub {
    empty state so banner → greeting → composer flow from the top; the footer's
    own ``margin-top: auto`` still pins the credit to the bottom. */
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-form {
-  margin-top: 6px;
+  margin-top: 22px;
 }
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-empty-extras {
   padding: 0;
@@ -1614,51 +1614,23 @@ html[data-ui-layout="rail"] .cloud-chat-empty-extras {
   padding: 0 24px;
 }
 
-/* Banner — below the suggested actions (order 4), above the credit. The bare
-   diagram sits flat on the page; centered wide column. */
+/* Hero banner — leads the page (order 0). Self-contained premium banner that
+   spans almost the full content column; a cap keeps it a tidy composition on
+   very wide displays. */
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-empty-banner {
   align-self: center;
   width: var(--rdb-col);
-  /* Cap the diagram so it stays a tidy composition on wide displays instead of
-     stretching the full --rdb-col (up to 1280px). */
-  max-width: 1040px;
+  max-width: 1200px;
   flex: 0 0 auto;
-  /* Banner leads the page (order 0); keep a little room above it and let the
-     heading group sit right beneath it (no bottom gap of its own). */
-  margin: 10px 0 0;
+  margin: 12px 0 0;
 }
-/* Tighten the docked diagram's own padding so the whole hero (diagram → caption
-   → headline → composer → suggested actions) fits a standard laptop viewport
-   without scrolling, while keeping the composition balanced. */
-html[data-ui-layout="rail"] #chat-empty-banner .klb--compact {
-  padding-top: 14px;
-  padding-bottom: 14px;
-}
-/* The Knowledge Layer trust caption ("Secure. Private. Always in sync.") is
-   lifted OUT of the diagram's orb (banner rendered with hub_label=False) and
-   re-hosted as a small eyebrow directly above the headline lead. Centre it and
-   tuck it tight against the heading so the two read as one block. */
+/* The trust caption ("Secure. Private. Always in sync.") sits centered just
+   below the hero banner, leading the "Ask Agnes anything" heading. */
 html[data-ui-layout="rail"] #chat-capabilities .klb-hub-label--lead {
   margin: 0;
 }
 html[data-ui-layout="rail"] #chat-capabilities .klb-hub-label--lead .klb-hub-caption {
   justify-content: center;
-}
-/* Pull the headline lead up tight under the caption (cancels the big font's
-   line-box leading) so caption + headline read as one grouped block. */
-html[data-ui-layout="rail"] #chat-capabilities .klb-lead {
-  margin-top: -8px;
-}
-/* On wide screens (3-column diagram) lift the whole hero text block up into the
-   diagram's empty centre band so it sits higher on the page; the footer keeps
-   its margin-top:auto and stays pinned to the bottom (the freed space becomes a
-   balanced gap above it). The flanking cards sit at the column edges, clear of
-   the centred caption/headline. Narrow (stacked) layouts have no band, so they
-   keep the base positive margin. */
-@media (min-width: 981px) {
-  html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) > #chat-capabilities {
-    margin-top: -28px;
-  }
 }
 
 /* Keboola credit — pinned to the very bottom (margin-top:auto). No divider. */
@@ -1684,7 +1656,7 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
   max-width: none;
   padding: 6px 0 4px;
 }
-/* Primary Kai input — a slim fully-rounded pill (height 56, radius = 56/2 = 28).
+/* Primary Agnes input — a slim fully-rounded pill (height 56, radius = 56/2 = 28).
    The 44px circular send button sits concentric with the rounded ends: the 6px
    inset padding = pill radius (28) − button radius (22), so the button aligns
    perfectly inside the rounded corner. */
@@ -1716,7 +1688,7 @@ html[data-ui-layout="rail"] .cloud-chat-composer {
   display: flex;
   align-items: center;
   background: var(--ds-surface);
-  border: 1.5px solid var(--ds-kai-line);
+  border: 1.5px solid var(--ds-assistant-line);
   border-radius: 26px;
   padding: 6px 6px 6px 18px;
 }
@@ -1725,17 +1697,17 @@ html[data-ui-layout="rail"] .cloud-chat-composer .cloud-chat-input {
   min-width: 0;
 }
 html[data-ui-layout="rail"] .cloud-chat-composer:focus-within {
-  border-color: var(--ds-kai);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-kai) 14%, transparent);
+  border-color: var(--ds-assistant);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-assistant) 14%, transparent);
 }
 html[data-ui-layout="rail"] .cloud-chat-send-btn {
   width: 44px; height: 44px; flex-shrink: 0; border: none; padding: 0;
   display: grid; place-items: center;
   border-radius: var(--ds-radius-pill, 999px);
-  background: var(--ds-kai); color: var(--ds-text-inverse);
+  background: var(--ds-assistant); color: var(--ds-text-inverse);
   cursor: pointer; transition: background .15s;
 }
-html[data-ui-layout="rail"] .cloud-chat-send-btn:hover { background: var(--ds-kai-dark); }
+html[data-ui-layout="rail"] .cloud-chat-send-btn:hover { background: var(--ds-assistant-dark); }
 html[data-ui-layout="rail"] .cloud-chat-send-btn svg { width: 18px; height: 18px; }
 html[data-ui-layout="rail"] .cloud-chat-send-btn:disabled { opacity: .55; cursor: progress; }
 
@@ -2258,10 +2230,10 @@ html[data-ui-layout="rail"] .msg-user .msg-bubble {
   line-height: 1.4;
   border: none;
   border-radius: 16px;
-  background: var(--ds-kai);
+  background: var(--ds-assistant);
   color: var(--ds-text-inverse);
 }
-/* Keep inline code / links legible on the solid Kai-blue user bubble. */
+/* Keep inline code / links legible on the solid sky-blue user bubble. */
 html[data-ui-layout="rail"] .msg-user .msg-bubble a { color: var(--ds-text-inverse); text-decoration: underline; }
 html[data-ui-layout="rail"] .msg-user .msg-bubble code {
   background: color-mix(in srgb, var(--ds-text-inverse) 22%, transparent);

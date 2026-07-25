@@ -74,7 +74,7 @@
      description=table.description, meta=_meta,
      back_href=_back_href, back_label=_back_label) %}
   <button type="button" class="btn btn-secondary" onclick="openTablePreviewModal()">Preview data</button>
-  {{ detail.ask_kai('Show me a sample of the ' ~ table.name ~ ' table and what I can query from it.') }}
+  {{ detail.ask_agnes('Show me a sample of the ' ~ table.name ~ ' table and what I can query from it.') }}
 {% endcall %}
 
 {# Columns #}
@@ -122,7 +122,7 @@
 
 {# Example questions #}
 {% if sample_questions %}
-{{ detail.section_open('Example questions you can ask Kai', icon='spark') }}
+{{ detail.section_open('Example questions you can ask Agnes', icon='spark') }}
   <ul class="detail-questions">
     {% for q in sample_questions %}
     <li><a href="/chat?q={{ q | urlencode }}">{{ detail.ico('spark') }}<span>{{ q }}</span>{{ detail.ico('back') }}</a></li>

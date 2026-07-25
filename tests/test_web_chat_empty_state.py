@@ -1,10 +1,10 @@
 """Web UI route — the ``/chat`` pre-conversation Dashboard (issue #896).
 
 The rail empty state is the Dashboard: greeting, the real composer, a
-"Kai is using N knowledge sources and M capabilities from your Stack"
+"Agnes is using N knowledge sources and M capabilities from your Stack"
 context line, activity panels, and guided task starters. (Its ancestors —
 the standalone ``/ask`` hero, then the ``/chat`` "Ask anything." hero with
-the "Operated by Kai" pill — are retired.) The counts are the caller's
+the "Operated by Agnes" pill — are retired.) The counts are the caller's
 ACTUAL Stack contents, matching the /stack page the line links to:
 knowledge sources = ``StackResolver.stack()`` over data packages + memory
 domains (``_stack_knowledge_source_count``); capabilities = the
@@ -106,17 +106,21 @@ class TestChatEmptyStatePill:
         resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text
         body = resp.text
-        # The Knowledge Layer lead (headline + subcopy) is the page hero —
-        # it replaced the time-of-day greeting.
+        # The Knowledge Layer hero — a single premium banner: text lead + CTA
+        # on the left, orb in the centre, floating integration chips on the
+        # right (no inner "Ask Agnes" / tools cards).
         assert '<div class="klb-lead">' in body
-        # The Knowledge Layer banner — the product-model diagram (the
-        # aria-label carries the joined headline; the cards remain).
-        assert "One knowledge layer. Everywhere you work." in body
-        assert "Use Agnes in Kai" in body
-        assert "Use your own AI tools" in body
-        assert "Connect your tools" in body
+        assert "Agnes is your knowledge layer." in body
+        assert "Use it here or connect your tools." in body
+        assert "Connect your tools" in body  # the green CTA
+        # Floating integration chips (no surrounding card).
+        assert 'class="klb-chips"' in body
+        assert "Claude Code" in body and "CLI and more" in body
+        # Below the banner: the trust caption + the "Ask Agnes anything" heading.
+        assert "Secure. Private. Always in sync." in body
+        assert "Ask Agnes anything" in body
         assert 'id="rdb-actions"' in body
-        assert "Kai is using" in body and "from your Stack" in body
+        assert "Agnes is using" in body and "from your Stack" in body
         # The retired hero copy must be gone.
         assert "Ask anything." not in body
         assert "Operated by" not in body
@@ -124,7 +128,7 @@ class TestChatEmptyStatePill:
 
     def test_context_line_hidden_at_zero(self, seeded_app, monkeypatch):
         """analyst1 has no data/plugin grants → both counts are 0 and the
-        context line hides entirely ("Kai is using 0 knowledge sources"
+        context line hides entirely ("Agnes is using 0 knowledge sources"
         would read as broken). The CHAT grant only unlocks the route; it is
         not a knowledge source, so it doesn't bump N."""
         _enable_rail_chat(seeded_app, monkeypatch)
@@ -132,7 +136,7 @@ class TestChatEmptyStatePill:
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200, resp.text
-        assert "Kai is using" not in resp.text
+        assert "Agnes is using" not in resp.text
         # The rest of the dashboard still renders.
         assert 'id="rdb-actions"' in resp.text
 
@@ -146,7 +150,7 @@ class TestChatEmptyStatePill:
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200, resp.text
-        assert "Kai is using" in resp.text
+        assert "Agnes is using" in resp.text
         assert ">1 knowledge source</a>" in resp.text
         # Singular, not plural — the plural fragment must be absent.
         assert "1 knowledge sources</a>" not in resp.text

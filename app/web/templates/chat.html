@@ -1,6 +1,6 @@
 {% extends 'base_ds.html' %}
 {% import "macros/_icon.html" as ico %}
-{% from "macros/_knowledge_layer.html" import knowledge_layer_banner, knowledge_layer_lead, knowledge_hub_label %}
+{% from "macros/_knowledge_layer.html" import knowledge_layer_banner, knowledge_hub_label %}
 
 {# Cloud chat page. Extends the canonical Agnes design-system base so
    the Agnes top nav, footer, and shared design tokens (colors, type,
@@ -184,26 +184,24 @@
        #chat-capabilities (sibling rule) the moment a conversation starts —
        so "New chat" simply returns here. #}
     {# Dashboard landing (issue #896): the Knowledge Layer lead (headline +
-       supporting sentence) is the page hero → Kai composer → suggested actions
+       supporting sentence) is the page hero → Agnes composer → suggested actions
        → the diagram-only Knowledge Layer banner docked at the FOOT. Leading
        with the product value proposition (not a greeting) states what Agnes is
        before the input; the diagram at the foot shows the two ways to use it.
        Blocks share the one --rdb-col column (see the "HERO" section of
        chat.css). #}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
-      {# The Knowledge Layer trust caption is lifted OUT of the diagram's orb
-         (banner rendered with hub_label=False below) and re-hosted here as a
-         small eyebrow directly above the headline lead — the "Agnes Knowledge
-         Layer" title is dropped, leaving just "Secure. Private. Always in
-         sync." tucked against the heading so they read as one text block. #}
+      {# The hero banner (order 0) has already said what Agnes is; this block
+         is the transition into usage: the trust caption, then a plain "Ask
+         Agnes anything" heading directly above the composer. #}
       <div class="klb-hub-label klb-hub-label--lead">{{ knowledge_hub_label(show_title=False) }}</div>
-      {{ knowledge_layer_lead() }}
+      <h2 class="rdb-ask-heading">Ask {{ instance_brand_short or 'Agnes' }} anything</h2>
     </aside>
     {% else %}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
       <header class="cloud-chat-capabilities-header">
         <h2>What can I help you with?</h2>
-        <p>I'm Kai, your data agent. I run inside an isolated sandbox with the full <code>agnes</code> CLI and your per-user workspace. Ask me anything about your data.</p>
+        <p>I'm Agnes, your data agent. I run inside an isolated sandbox with the full <code>agnes</code> CLI and your per-user workspace. Ask me anything about your data.</p>
       </header>
       <div class="cloud-chat-capabilities-grid">
         <div class="ds-card cloud-chat-cap-card" data-card="data">
@@ -259,16 +257,16 @@
            role="listbox" aria-label="Skills and commands">
         <ul id="chat-slash-menu-results" class="cloud-chat-slash-menu-results"></ul>
       </div>
-      {# Rail: Kai-branded placeholder + an inner .cloud-chat-composer
+      {# Rail: Agnes-branded placeholder + an inner .cloud-chat-composer
          wrapper so the green pill can live INSIDE the form while the form
          itself acts as the hero box's middle row in the dashboard empty
          state (chat_dashboard.css). Topnav keeps its classic markup —
          the wrapper would break its grid composer. #}
       {% if ui_layout == 'rail' %}
       <div class="cloud-chat-composer">
-      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Kai anything... (try: summarize revenue trends)" rows="1"></textarea>
+      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes anything... (try: summarize revenue trends)" rows="1"></textarea>
       {% else %}
-      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Kai… (try / for skills)" rows="2"></textarea>
+      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes… (try / for skills)" rows="2"></textarea>
       {% endif %}
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
@@ -351,7 +349,7 @@
           <button type="button" class="cloud-chat-upload-close" data-close-upload aria-label="Close">&#x2715;</button>
         </div>
         <p class="cloud-chat-upload-desc">
-          CSV, Parquet, or Excel files land in your chat workspace so Kai can read them in the next session.
+          CSV, Parquet, or Excel files land in your chat workspace so Agnes can read them in the next session.
           Optionally register the file as a queryable table (workspace-local, no admin required).
           Max 20 MB.
         </p>
@@ -443,7 +441,7 @@
         </div>
         <p class="cloud-chat-upload-desc">
           PDF, images (PNG/JPEG/WebP/SVG/GIF), or plain text files land in your workspace
-          so Kai can read them in the next session. Max 20 MB.
+          so Agnes can read them in the next session. Max 20 MB.
         </p>
         <div id="chat-media-drop" class="cloud-chat-drop-zone" role="button" tabindex="0"
              aria-label="Drop an image or document here, or click to browse">
@@ -476,7 +474,7 @@
         {% if knowledge_source_count or capability_count %}
         <svg class="rdb-context-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
         <span>
-          Kai is using
+          Agnes is using
           <a href="/stack">{{ knowledge_source_count }} knowledge source{{ '' if knowledge_source_count == 1 else 's' }}</a>
           and
           <a href="/stack">{{ capability_count }} capabilit{{ 'y' if capability_count == 1 else 'ies' }}</a>
@@ -486,7 +484,7 @@
       </p>
 
       <div class="rdb">
-        {# Guided Kai conversation-starters, sitting directly under the composer
+        {# Guided Agnes conversation-starters, sitting directly under the composer
            (no heading) so they read as suggestions FOR the input. Items render
            from the typed task model in js/chat_dashboard.js — each collects any
            missing input in the shared dialog primitive and submits through
@@ -499,7 +497,7 @@
           <div id="rdb-actions-empty" class="rdb-actions-empty" hidden>
             <p class="rdb-actions-empty-title">No suggested actions yet</p>
             <p class="rdb-panel-note">
-              Ask Kai anything above, or add more relevant sources and
+              Ask Agnes anything above, or add more relevant sources and
               capabilities to <a href="/stack">your Stack</a>.
             </p>
           </div>
@@ -507,14 +505,14 @@
       </div>
     </div>
 
-    {# Knowledge Layer banner — floated to the VERY TOP via flex order (chat.css);
-       the greeting + composer + suggestions center in the free space below it,
-       and the Keboola credit pins to the very bottom. bare=True: no outer box,
-       "Connect your tools" inside the tools card. Both the banner and the credit
-       are placed after #chat-capabilities in the DOM so the empty-state hide
-       rule (#chat-capabilities[hidden] ~ …) still catches them. #}
+    {# Knowledge Layer hero — floated to the VERY TOP via flex order (chat.css);
+       the trust caption + "Ask Agnes anything" heading + composer + suggestions
+       follow below it, and the Keboola credit pins to the very bottom. The hero
+       is self-contained (its own gradient banner). Both it and the credit are
+       placed after #chat-capabilities in the DOM so the empty-state hide rule
+       (#chat-capabilities[hidden] ~ …) still catches them. #}
     <div id="chat-empty-banner" class="cloud-chat-empty-banner">
-      {{ knowledge_layer_banner(bare=True, compact=True, show_lead=False, hub_label=False) }}
+      {{ knowledge_layer_banner() }}
     </div>
 
     {# Keboola credit — pinned to the very bottom of the page. #}

@@ -44,7 +44,7 @@ function fixGreeting() {
 // ---- Guided task definitions ------------------------------------------------
 //
 // Conversation starters. Clicking a suggested-action item sends the task's
-// `opener` as the first user message, which starts a chat where Kai asks what
+// `opener` as the first user message, which starts a chat where Agnes asks what
 // it needs and guides the user to the goal. Suggested-next-actions rows are
 // derived from these via buildSuggestedActions() below.
 //
@@ -56,7 +56,7 @@ function fixGreeting() {
 //   available    render enabled; false → disabled with the unavailable hint
 //   opener       first user message that kicks off the guided conversation
 //
-// Openers ground Kai in COMPANY knowledge first (catalog / metric definitions
+// Openers ground Agnes in COMPANY knowledge first (catalog / metric definitions
 // / memory over generic model knowledge) and ask it to say so honestly when
 // something can't be found instead of inventing an answer.
 
@@ -80,8 +80,8 @@ const ICONS = {
 };
 
 // Each task's `opener` is the first user message sent when the card is
-// clicked. It states the goal and asks Kai to guide the user — so the click
-// STARTS a conversation and Kai replies with what it needs / what to do next
+// clicked. It states the goal and asks Agnes to guide the user — so the click
+// STARTS a conversation and Agnes replies with what it needs / what to do next
 // to reach the goal, rather than opening a form up front.
 const TASKS = [
   {
@@ -169,7 +169,7 @@ function _runAction(action) {
   if (!action.available) return;
   if (action.kind === "task" && _submitPrompt && action.task?.opener) {
     // Start the conversation: send the opener as the first user message, and
-    // Kai replies asking what it needs / what to do next to reach the goal.
+    // Agnes replies asking what it needs / what to do next to reach the goal.
     _submitPrompt(action.task.opener);
   }
 }

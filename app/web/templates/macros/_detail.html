@@ -159,9 +159,9 @@
 </section>
 {% endmacro %}
 
-{# ── Ask-Kai action button (assistant-green) ────────────────────────── #}
-{% macro ask_kai(question, label='Ask Kai') %}
-<a class="detail-ask" href="/chat?q={{ question | urlencode }}" title="Ask Kai about this">
+{# ── Ask-Agnes action button (assistant-green) ──────────────────────── #}
+{% macro ask_agnes(question, label='Ask Agnes') %}
+<a class="detail-ask" href="/chat?q={{ question | urlencode }}" title="Ask Agnes about this">
   {{ ico('spark') }}{{ label }}
 </a>
 {% endmacro %}
@@ -344,7 +344,7 @@
   }
   .detail-hero__actions { display: flex; gap: 9px; align-items: center; align-self: flex-start; flex-shrink: 0; }
   /* Keep every hero action on one radius — the paper skin turns .btn into a
-     pill, which clashes with the rounded-rect Ask Kai / Edit controls. */
+     pill, which clashes with the rounded-rect Ask Agnes / Edit controls. */
   .detail-hero__actions .btn { border-radius: var(--radius-md, 8px); }
   /* Hero buttons ride the dark gradient, so the design-system variants are
      retinted here: primary → solid white with kind-coloured text (the
@@ -371,9 +371,9 @@
     display: inline-flex; align-items: center; gap: 7px;
     padding: 9px 15px; border-radius: var(--radius-md, 8px);
     font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
-    background: var(--ds-kai); border: 1px solid var(--ds-kai); color: #fff; text-decoration: none;
+    background: var(--ds-assistant); border: 1px solid var(--ds-assistant); color: #fff; text-decoration: none;
   }
-  .detail-ask:hover { background: var(--ds-kai-dark); color: #fff; }
+  .detail-ask:hover { background: var(--ds-assistant-dark); color: #fff; }
   .detail-ask svg { width: 16px; height: 16px; }
   .detail-edit-icon {
     display: inline-flex; align-items: center; justify-content: center;
@@ -413,7 +413,7 @@
   .detail-use-skip .use h3 svg, .detail-use-skip .use li svg { color: var(--ds-primary); }
   .detail-use-skip .skip h3 svg, .detail-use-skip .skip li svg { color: var(--ds-text-muted); }
 
-  /* ── Example-questions panel (Ask-Kai chips) ── */
+  /* ── Example-questions panel (Ask-Agnes chips) ── */
   .detail-questions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .detail-questions li { margin: 0; }
   .detail-questions a, .detail-questions .q {

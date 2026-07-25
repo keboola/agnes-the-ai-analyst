@@ -255,7 +255,7 @@ function _buildPopover(step, index, total) {
     <span class="tour-popover-header-orb" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="3.5" fill="currentColor" opacity=".6"/></svg>
     </span>
-    <span class="tour-popover-header-label">Kai is showing you around</span>`;
+    <span class="tour-popover-header-label">Agnes is showing you around</span>`;
 
   // Body
   const body = document.createElement('div');

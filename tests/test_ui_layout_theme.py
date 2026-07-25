@@ -132,9 +132,9 @@ class TestRailOptIn:
             # Agents — build an assistant out of the caller's stack;
             # work-in-progress with a WIP badge.
             'href="/agents"',
-            # brand lockup: the "Kai" wordmark + the small Agnes orb sitting
-            # inline in the "powered by <brand>" sub-label.
-            'class="rail-brand-orb"',
+            # brand lockup: the Agnes orb mark + the Agnes wordmark beside it.
+            'class="rail-orb"',
+            'class="rail-logo-txt"',
         ):
             assert anchor in text, f"rail chrome is missing {anchor}"
         # The Artefacts entry carries a WIP badge.
@@ -202,6 +202,10 @@ class TestRailOptIn:
         # Data apps are still in design — a WIP banner stands in for them.
         assert "Data apps" in text
         assert "af-apps" in text
+        # The shared "same knowledge, everywhere" connect banner rides the page
+        # header, same component + copy as My Stack.
+        assert 'class="cbn cbn--bar"' in text
+        assert "Connect your AI tools to give them access to the same knowledge." in text
 
     def test_agents_page_renders_builder(self, web_client, admin_cookie, monkeypatch):
         """/agents hosts the agent builder (WIP): list + builder views, the
@@ -325,7 +329,7 @@ class TestDashboardLandingRedirect:
     there. Under the rail, the Dashboard IS Chat's pre-conversation state
     (chat.html's rail empty state, see TestRailDashboard), so /dashboard
     302s to /chat for chat-granted users; grant-less users keep the 302 to
-    My Stack (the page exists to start Kai conversations, so without a
+    My Stack (the page exists to start Agnes conversations, so without a
     grant it would be a dead shell)."""
 
     def test_topnav_dashboard_still_renders(self, web_client, admin_cookie, monkeypatch):
@@ -364,7 +368,7 @@ class TestDashboardLandingRedirect:
 
 class TestRailDashboard:
     """The rail Dashboard = Chat's pre-conversation state: /chat with no
-    active conversation renders the Kai-centric dashboard (greeting, the
+    active conversation renders the Agnes-centric dashboard (greeting, the
     REAL composer, activity panels, guided task starters) and hides it the
     moment a conversation starts. One composer, one conversation flow —
     there is no separate dashboard page or second chat input."""
@@ -384,24 +388,24 @@ class TestRailDashboard:
         text = resp.text
         assert 'data-ui-layout="rail"' in text
         for anchor in (
-            # The Knowledge Layer lead is the page HERO (top), not inside the
-            # banner — headline + subcopy render in #chat-capabilities.
-            '<div class="klb-lead">',  # hero lead block
-            "One knowledge layer.",  # hero headline
-            "Everywhere you work.",
+            # The Knowledge Layer hero — one premium banner: text lead + green
+            # CTA on the left, orb in the centre, floating integration chips on
+            # the right (no inner "Ask Agnes" / tools cards).
+            'class="klb"',  # self-contained hero banner
+            '<div class="klb-lead">',  # left text lead block
+            "Agnes is your knowledge layer.",  # hero headline line 1
+            "Use it here or connect your tools.",  # hero headline line 2 (gradient)
             '<p class="klb-sub">',  # the supporting sentence renders
-            # The foot banner is now diagram-only (show_lead=False → no klb--lead).
-            'class="klb klb--bare klb--compact"',
-            "Use Agnes in Kai",  # banner RIGHT card (Kai card, swapped to the right)
-            "Use your own AI tools",  # banner LEFT card (tools card, swapped to the left)
-            # The banner CENTER hub is orb-only (hub_label=False): its "Agnes
-            # Knowledge Layer" title is dropped and the trust caption is lifted
-            # out into the headline lead as a small eyebrow (klb-hub-label--lead).
-            "klb-hub--orb-only",
-            "klb-hub-label--lead",  # the relocated caption eyebrow
-            "Secure. Private. Always in sync.",  # caption text, now above the headline
-            'class="klb-cta-primary klb-card-cta" href="/me/ai-connector"',  # "Connect your tools" CTA now lives in the tools card
-            'id="rdb-actions"',  # the one personalized section (heading retired)
+            'href="/me/ai-connector"',  # the green "Connect your tools" CTA target
+            'class="klb-chips"',  # floating integration chips (no card)
+            "Claude Code",  # a chip label
+            "CLI and more",  # a chip label
+            # Below the banner: the trust caption + "Ask Agnes anything" heading.
+            "klb-hub-label--lead",  # the trust-caption wrapper
+            "Secure. Private. Always in sync.",  # caption text, below the banner
+            'class="rdb-ask-heading"',  # the usage heading above the composer
+            "Ask Agnes anything",
+            'id="rdb-actions"',  # the one personalized section
             'id="rdb-actions-list"',  # suggested-actions list
             "css/chat_dashboard.css",  # dashboard styles
             'id="chat-input"',  # the REAL composer serves the dashboard
@@ -422,7 +426,7 @@ class TestRailDashboard:
         # The retired ask-hero brand block is gone too.
         assert "Ask anything." not in text
         # The "Agnes Knowledge Layer" hub title was dropped as redundant with the
-        # "One knowledge layer." headline — it must not render anywhere.
+        # "Agnes is your knowledge layer." headline — it must not render anywhere.
         assert "Agnes Knowledge Layer" not in text
 
     def test_rail_dashboard_actions_section(self, web_client, admin_cookie, monkeypatch):

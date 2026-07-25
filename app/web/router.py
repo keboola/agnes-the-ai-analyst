@@ -915,7 +915,7 @@ async def dashboard(
 ):
     # Layout-aware dashboard split. Under the rail chrome the Dashboard IS
     # Chat's pre-conversation state: /chat with no active conversation
-    # renders the Kai-centric dashboard (greeting, composer, activity
+    # renders the Agnes-centric dashboard (greeting, composer, activity
     # panels, guided task starters — see chat.html's rail empty-state
     # blocks), so /dashboard 302s there and the two surfaces can never
     # drift apart. Topnav falls straight through to the historical
@@ -923,7 +923,7 @@ async def dashboard(
     #
     # `can_chat` mirrors the rail nav's own predicate exactly (see
     # _build_context: chat enabled AND has_explicit_grant) so the LANDING and
-    # the NAV agree. The dashboard exists to start Kai conversations, so
+    # the NAV agree. The dashboard exists to start Agnes conversations, so
     # without a chat grant it would be a dead shell — those users keep the
     # existing 302 to My Stack (the data-estate home). has_explicit_grant is
     # stricter than /chat's own can_access guard, so the /chat redirect is
@@ -4893,7 +4893,7 @@ async def chat_page(
     if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
         return RedirectResponse("/")
     # Rail pre-conversation state = the Dashboard (issue #896): greeting,
-    # the real composer, a "Kai is using N knowledge sources and M
+    # the real composer, a "Agnes is using N knowledge sources and M
     # capabilities from your Stack" context line, activity panels, and
     # guided task starters — rendered by chat.html's rail empty-state
     # blocks and hidden the moment a conversation starts. The counts are

@@ -1,34 +1,22 @@
-{# Knowledge Layer banner — the product-model hero: company knowledge lives
-   in Agnes, and there are exactly two ways to use it — ask Kai here, or
-   bring the same knowledge into the AI tools you already use (Claude Code,
-   Cursor, VS Code, CLI). The composition matches the dashboard reference:
-   headline + one supporting sentence in the top-left, the "Ask Kai in
-   Agnes" card beneath them, the Agnes orb hub in the middle with thin
-   connectors to both sides, and the "Use your own AI tools" card on the
-   right (which carries the "Connect your tools" CTA at its foot).
+{# Knowledge Layer hero — the product-model banner: company knowledge lives
+   in Agnes, and there are two ways to use it — ask Agnes here, or bring the
+   same knowledge into the AI tools you already use (Claude Code, Cursor, VS
+   Code, CLI). One premium horizontal hero: a text lead + green CTA on the
+   left, the Agnes orb as the visual anchor in the centre, and lightweight
+   floating integration chips (dotted connectors fanning out to the orb) on
+   the right. No inner cards, no hard borders — depth comes from soft
+   gradients and spacing. Styles live under the `.klb-*` prefix in
+   style-custom.css, all `--ds-*` tokens so it follows every palette theme.
 
-   Deliberately NOT setup-step messaging (no "add knowledge / configure /
-   build your Stack") — it communicates the access model, not onboarding.
-
-   Reusable + configurable: copy and CTA targets are macro args, the
-   integrations list is data-driven (swap `tools` to change the roster).
-   `bare=True` drops the section's own box (background/border/padding) so a
-   host container can carry it — the rail chat dashboard does this to fuse
-   the banner with the greeting, composer, and Stack context line into one
-   hero. Styles live under the `.klb-*` prefix in style-custom.css (shared
-   component sheet, same pattern as the `.cbn-*` connect banner), all
-   `--ds-*` tokens.
-
-   Composed from four macros so pieces can be reused independently:
-     knowledge_layer_banner()  — the whole hero (copy + diagram + CTAs)
-     agnes_usage_card()        — LEFT: using Agnes directly ("You're here")
-     knowledge_hub()           — CENTER: the orb + layer caption
-     connected_tools_card()    — RIGHT: the integrations card            #}
+   Two macros:
+     knowledge_layer_banner()  — the whole hero
+     knowledge_hub_label()     — the "Secure. Private. Always in sync." trust
+                                 caption, rendered on its own beneath the hero
+                                 by the rail chat dashboard.                #}
 {% import "macros/_agnes_orb.html" as _klb_orb %}
 
 {# Default integrations roster. `icon` is a static_url-relative image; the
-   entry with no icon renders the inline terminal SVG instead (same glyph
-   as the connect banner). #}
+   entry with `glyph` renders the inline terminal SVG instead. #}
 {% set KLB_DEFAULT_TOOLS = [
     {'label': 'Claude Code', 'icon': 'img/tools/claude-code.ico'},
     {'label': 'Cursor', 'icon': 'img/tools/cursor.ico'},
@@ -36,34 +24,9 @@
     {'label': 'CLI and more', 'glyph': 'cli'},
 ] %}
 
-{% macro _check() -%}
-<svg class="klb-check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-{%- endmacro %}
-
-{% macro agnes_usage_card(title='Use Agnes in Kai',
-                          copy=None,
-                          points=['Company knowledge', 'Skills & capabilities', 'Memory & insights'],
-                          badge="You're here") %}
-<div class="klb-card klb-card--agnes">
-  <div class="klb-card-head">
-    <span class="klb-card-icon klb-card-icon--agnes" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none"><path d="M21 12a8 8 0 0 1-8 8H4l1.6-3.2A8 8 0 1 1 21 12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-    </span>
-    <h3 class="klb-card-title">{{ title }}</h3>
-    {% if badge %}<span class="klb-here-badge">{{ badge }}</span>{% endif %}
-  </div>
-  {% if copy %}<p class="klb-card-copy">{{ copy }}</p>{% endif %}
-  <ul class="klb-points" role="list">
-    {% for p in points %}
-    <li>{{ _check() }}{{ p }}</li>
-    {% endfor %}
-  </ul>
-</div>
-{% endmacro %}
-
-{# The hub's label — product name + trust caption with the lock glyph. Split
-   out so a host can render it OUTSIDE the diagram (the rail chat dashboard
-   drops it from the orb and re-hosts it atop the headline lead). #}
+{# The trust caption — product name + lock glyph. Split out so the rail chat
+   dashboard can render it on its own line beneath the hero (show_title=False
+   drops the "Agnes Knowledge Layer" title, leaving just the caption). #}
 {% macro knowledge_hub_label(title='Agnes Knowledge Layer',
                              caption='Secure. Private. Always in sync.',
                              show_title=True) %}
@@ -74,103 +37,71 @@
 </div>
 {% endmacro %}
 
-{% macro knowledge_hub(title='Agnes Knowledge Layer',
-                       caption='Secure. Private. Always in sync.',
-                       show_label=True) %}
-<div class="klb-hub{% if not show_label %} klb-hub--orb-only{% endif %}">
-  <span class="klb-hub-line klb-hub-line--left" aria-hidden="true"></span>
-  <span class="klb-hub-line klb-hub-line--right" aria-hidden="true"></span>
-  <div class="klb-hub-orb-ring" aria-hidden="true">
-    {{ _klb_orb.orb(css_class='klb-hub-orb', size=92) }}
-  </div>
-  {% if show_label %}{{ knowledge_hub_label(title, caption) }}{% endif %}
-</div>
-{% endmacro %}
-
-{% macro connected_tools_card(title='Use your own AI tools',
-                              copy='Connect your tools and work with the same company knowledge&mdash;without switching.',
-                              tools=None,
-                              cta_label=None,
-                              cta_href='/me/ai-connector') %}
-<div class="klb-card klb-card--tools">
-  <div class="klb-card-head">
-    <span class="klb-card-icon klb-card-icon--tools" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </span>
-    <h3 class="klb-card-title">{{ title }}</h3>
-  </div>
-  <p class="klb-card-copy">{{ copy | safe }}</p>
-  <ul class="klb-tools" role="list">
-    {% for t in (tools or KLB_DEFAULT_TOOLS) %}
-    <li class="klb-tool">
-      {% if t.icon %}
-      <img src="{{ static_url(t.icon) }}" alt="" width="20" height="20">
-      {% else %}
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M7 9l3 3-3 3M12.5 15H17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      {% endif %}
-      <span>{{ t.label }}</span>
-    </li>
-    {% endfor %}
-  </ul>
-  {% if cta_label %}
-  <a class="klb-cta-primary klb-card-cta" href="{{ cta_href }}">
-    {{ cta_label }}
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7V3.5M15 7V3.5M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-  </a>
-  {% endif %}
-</div>
-{% endmacro %}
-
-{# The full product-model banner: headline/subcopy lead, the three-part
-   diagram (Agnes card · orb hub · tools card), and a centered CTA row below
-   with the primary "Connect your tools" and a secondary "Learn how it works".
-   `compact=True` drops the headline lead and the CTA row and instead hosts the
-   primary CTA at the foot of the tools card — a tight docked diagram. The rail
-   chat dashboard uses the default (full) banner. #}
-{# The headline + supporting sentence, on their own. Rendered inside the banner
-   grid (top-left cell) when the banner carries its own lead, OR standalone as a
-   page hero above a separate diagram-only banner — the rail chat dashboard does
-   the latter (lead leads the page, diagram closes it). Same `.klb-lead` markup
-   either way so the copy + styles stay in one place. #}
-{% macro knowledge_layer_lead(headline_1='One knowledge layer.',
-                              headline_2='Everywhere you work.',
-                              subcopy='Use Kai here, or connect your favorite AI tools to work with the same company knowledge.') %}
-<div class="klb-lead">
-  <h2 class="klb-headline">{{ headline_1 }}<br>{{ headline_2 }}</h2>
-  <p class="klb-sub">{{ subcopy }}</p>
-</div>
-{% endmacro %}
-
-{% macro knowledge_layer_banner(headline_1='One knowledge layer.',
-                                headline_2='Everywhere you work.',
-                                subcopy='Use Kai here, or connect your favorite AI tools to work with the same company knowledge.',
+{% macro knowledge_layer_banner(pill_label='Work everywhere with the same knowledge',
+                                headline_1='Agnes is your knowledge layer.',
+                                headline_2='Use it here or connect your tools.',
+                                subcopy='Connect your favorite AI tools and work with the same company knowledge—without switching.',
                                 primary_label='Connect your tools',
                                 primary_href='/me/ai-connector',
-                                secondary_label='Learn how it works',
-                                secondary_href='/home',
-                                tools=None,
-                                bare=False,
-                                compact=False,
-                                show_lead=None,
-                                hub_label=True) %}
-{# show_lead: force the headline/subcopy lead on or off independently of
-   `compact`. Defaults to `not compact` (full banner leads, compact one omits
-   it), but a compact banner can opt the lead back in (the rail chat foot does
-   this) — CSS spans it across the top row via the `klb--lead` modifier. #}
-{% set _show_lead = (not compact) if show_lead is none else show_lead %}
-<section class="klb{% if bare %} klb--bare{% endif %}{% if compact %} klb--compact{% endif %}{% if _show_lead %} klb--lead{% endif %}"
-         aria-label="{{ headline_1 }} {{ headline_2 }}">
-  <div class="klb-grid">
-    {% if _show_lead %}
-    {{ knowledge_layer_lead(headline_1, headline_2, subcopy) }}
-    {% endif %}
-    {# Swapped: the "connect your tools" card sits LEFT, the "Ask Kai in
-       Agnes" card RIGHT — Kai (the destination) reads on the right. #}
-    <div class="klb-slot klb-slot--left">
-      {{ connected_tools_card(tools=tools, cta_label=primary_label, cta_href=primary_href) }}
+                                tools=None) %}
+<section class="klb" aria-label="{{ headline_1 }} {{ headline_2 }}">
+  {# Decorative background layers — a faint dotted field fading in from the
+     far left, and thin curved lines in the top-right corner. Purely visual. #}
+  <div class="klb-decor" aria-hidden="true">
+    <span class="klb-decor-dots"></span>
+    <svg class="klb-decor-curves" viewBox="0 0 320 220" fill="none" preserveAspectRatio="xMaxYMin meet">
+      <path d="M60 -20 C 170 20, 250 60, 340 40" stroke="currentColor" stroke-width="1"/>
+      <path d="M110 -30 C 210 10, 280 44, 360 26" stroke="currentColor" stroke-width="1"/>
+      <path d="M160 -40 C 250 -2, 310 30, 380 14" stroke="currentColor" stroke-width="1"/>
+    </svg>
+  </div>
+
+  <div class="klb-inner">
+    {# LEFT — the text lead + primary CTA. #}
+    <div class="klb-lead">
+      <span class="klb-pill">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 9l-3 3 3 3M15 9l3 3-3 3M13 7l-2 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        {{ pill_label }}
+      </span>
+      <h2 class="klb-headline">{{ headline_1 }}<br><span class="klb-headline-grad">{{ headline_2 }}</span></h2>
+      <p class="klb-sub">{{ subcopy }}</p>
+      <a class="klb-cta" href="{{ primary_href }}">
+        {{ primary_label }}
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7V3.5M15 7V3.5M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </a>
     </div>
-    <div class="klb-slot klb-slot--hub">{{ knowledge_hub(show_label=hub_label) }}</div>
-    <div class="klb-slot klb-slot--right">{{ agnes_usage_card() }}</div>
+
+    {# CENTER — the Agnes orb, the visual anchor: glow + dotted halo ring. #}
+    <div class="klb-orb">
+      <span class="klb-orb-glow" aria-hidden="true"></span>
+      <span class="klb-orb-ring">{{ _klb_orb.orb(css_class='klb-orb-img', size=108) }}</span>
+    </div>
+
+    {# RIGHT — floating integration chips with dotted connectors fanning back
+       to the orb. No surrounding card. The connector paths run in a stretched
+       viewBox so their endpoints track the four evenly-spaced chip rows. #}
+    <div class="klb-integrations">
+      <svg class="klb-connectors" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M0 50 C 46 50, 58 14, 100 14"/>
+        <path d="M0 50 C 46 50, 58 38, 100 38"/>
+        <path d="M0 50 C 46 50, 58 62, 100 62"/>
+        <path d="M0 50 C 46 50, 58 86, 100 86"/>
+      </svg>
+      <ul class="klb-chips" role="list">
+        {% for t in (tools or KLB_DEFAULT_TOOLS) %}
+        <li class="klb-chip">
+          <span class="klb-chip-logo" aria-hidden="true">
+            {% if t.icon %}
+            <img src="{{ static_url(t.icon) }}" alt="" width="20" height="20">
+            {% else %}
+            <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M7 9l3 3-3 3M12.5 15H17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            {% endif %}
+          </span>
+          <span class="klb-chip-label">{{ t.label }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
   </div>
 </section>
 {% endmacro %}

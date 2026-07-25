@@ -2713,7 +2713,7 @@ function renderCoPresence(host, participants) {
   // every suggestion starts (or resumes) a conversation through the exact
   // same flow as a typed message.
   initChatDashboard({ submitPrompt: submitUserMessage, openSession });
-  // Pre-seeded question (/chat?q=… — the detail pages' "Ask Kai" links):
+  // Pre-seeded question (/chat?q=… — the detail pages' "Ask Agnes" links):
   // prefill the composer and focus, but never auto-send — a GET must stay
   // side-effect free (a reload would otherwise re-create sessions).
   const _seededQ = new URLSearchParams(window.location.search).get("q");
@@ -2723,7 +2723,7 @@ function renderCoPresence(host, participants) {
     autosizeComposer();
     _composer.focus();
   } else if (_composer && $("rdb-actions")) {
-    // Dashboard empty state — the Kai input is the page's main affordance.
+    // Dashboard empty state — the Agnes input is the page's main affordance.
     _composer.focus();
   }
   // Sidebar list — a failed fetch must not break the page: the history list

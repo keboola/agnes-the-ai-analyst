@@ -113,7 +113,7 @@
   {% else %}
     {{ ds.button('Download locally', variant='primary', type='button', id='pkg-add-btn') }}
   {% endif %}
-  {{ detail.ask_kai('Tell me about the ' ~ pkg.name ~ ' data package — what can I analyze with it?') }}
+  {{ detail.ask_agnes('Tell me about the ' ~ pkg.name ~ ' data package — what can I analyze with it?') }}
   {% if user.is_admin %}
     {{ detail.edit_icon('/admin/tables?edit_package=' ~ pkg.id, 'Edit package metadata (admin)') }}
   {% endif %}
@@ -175,9 +175,9 @@
   {% endif %}
 {{ detail.section_close() }}
 
-{# ── Example questions you can ask Kai ───────────────────── #}
+{# ── Example questions you can ask Agnes ───────────────────── #}
 {% if pkg.example_questions %}
-{{ detail.section_open('Example questions you can ask Kai', icon='spark') }}
+{{ detail.section_open('Example questions you can ask Agnes', icon='spark') }}
   <ul class="detail-questions">
     {% for q in pkg.example_questions %}
     <li>

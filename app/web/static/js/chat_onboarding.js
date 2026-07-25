@@ -37,17 +37,17 @@ const DEFAULT_JOURNEY = {
 const STEP_META = {
   first_asked: {
     label: "Ask your first question",
-    why: "Start from your real goal so Kai can shape onboarding around what you need.",
+    why: "Start from your real goal so Agnes can shape onboarding around what you need.",
   },
   stack_setup_done: {
     label: "Set up your Stack",
-    why: "Kai needs the right company knowledge in your Stack to answer usefully.",
+    why: "Agnes needs the right company knowledge in your Stack to answer usefully.",
     href: "/stack",
     launchTour: "stack",
   },
   explored_stack: {
     label: "Explore My Stack",
-    why: "My Stack shows what Kai can already use and what you added.",
+    why: "My Stack shows what Agnes can already use and what you added.",
     href: "/stack",
     launchTour: "stack",
   },
@@ -182,7 +182,7 @@ function renderJourneyPanel() {
       ${complete ? '<span class="cloud-chat-journey-badge">Complete ✓</span>' : ""}
       <div class="cloud-chat-journey-actions">
         <button type="button" class="cloud-chat-journey-iconbtn" data-journey-replay
-          title="Replay Kai's tour" aria-label="Replay the tour">↻</button>
+          title="Replay Agnes's tour" aria-label="Replay the tour">↻</button>
         <button type="button" class="cloud-chat-journey-iconbtn" data-journey-close
           title="Close" aria-label="Close onboarding">×</button>
       </div>
@@ -273,7 +273,7 @@ function updateGetStartedIndicator(done, total, complete) {
 function greetOnce(synced) {
   if (journey.onboarded) return;
   hooks.renderAssistant(
-    "Hi, I'm **Kai** 👋 I'll answer using the company knowledge in your Stack, and I'll always say where an answer came from.",
+    "Hi, I'm **Agnes** 👋 I'll answer using the company knowledge in your Stack, and I'll always say where an answer came from.",
   );
   if (synced === false) {
     hooks.renderAssistant(
@@ -284,7 +284,7 @@ function greetOnce(synced) {
 }
 
 // Replay the guided tour on demand — the "↻" in the journey head relaunches
-// Kai's spotlight tour from step 0. The tour is cross-page (it stashes +
+// Agnes's spotlight tour from step 0. The tour is cross-page (it stashes +
 // navigates to /stack itself), so this works from any page the panel is
 // mounted on. Uses window._agTourUrl (stamped by the tour boot script in
 // base_ds.html) with a bare-path fallback, mirroring the journey-step launch.

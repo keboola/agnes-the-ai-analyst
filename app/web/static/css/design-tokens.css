@@ -206,15 +206,15 @@
      palette, deepened where needed to clear 4.5:1 text contrast on
      their -soft tints. NEVER use the brand primary for category tags —
      categories must not be mistakable for the one brand action color.
-   - --ds-kai-*: the assistant Kai's identity accent (sky blue) — the
-     ONE accent for "Kai said / suggests this / is showing you around"
-     surfaces (the guided tour, "Ask Kai" affordances, the "Ask Kai in
-     Agnes" card, assistant voice cards, the "Kai is using…" pill).
+   - --ds-assistant-*: the assistant Agnes's identity accent (sky blue) — the
+     ONE accent for "Agnes said / suggests this / is showing you around"
+     surfaces (the guided tour, "Ask Agnes" affordances, the "Ask Agnes"
+     card, assistant voice cards, the "Agnes is using…" pill).
      Deliberately distinct from the green brand primary and from
-     --ds-agnes so Kai reads as its own voice inside the Agnes platform.
+     --ds-agnes so the assistant voice reads as its own accent.
    - --ds-agnes-*: the platform/brand green accent retained for chat
      surfaces that are the user's own (e.g. the user's message bubble)
-     and legacy assistant-voice callouts not yet migrated to --ds-kai.
+     and legacy assistant-voice callouts not yet migrated to --ds-assistant.
      Never reused for structural UI.
    - --ds-motion-* / --ds-ease-*: shared motion vocabulary so page and
      panel transitions feel identical everywhere. Honor
@@ -245,13 +245,13 @@
     --ds-agnes-soft: #ecfdf5;
     --ds-agnes-line: #a7f3d0;
 
-    /* Kai identity — sky blue. Solid value (sky-600) doubles as button
+    /* Assistant identity — sky blue. Solid value (sky-600) doubles as button
        background (white text, AA) and emphasis text on the -soft tint,
        mirroring the --ds-agnes emerald-700/50/200 structure. */
-    --ds-kai: #0284c7;
-    --ds-kai-dark: #0369a1;
-    --ds-kai-soft: #e0f2fe;
-    --ds-kai-line: #bae6fd;
+    --ds-assistant: #0284c7;
+    --ds-assistant-dark: #0369a1;
+    --ds-assistant-soft: #e0f2fe;
+    --ds-assistant-line: #bae6fd;
 
     --ds-motion-fast: .16s;
     --ds-motion-med: .24s;
@@ -281,9 +281,9 @@
      --ds-primary-dark  #059669 → 3.2:1 (large text / fills only;
                                   body-copy accents use --ds-agnes) */
 :root[data-theme="paper"] {
-    /* Brand — sky blue (Kai). Sky is the app's primary color under paper;
+    /* Brand — sky blue. Sky is the app's primary color under paper;
        hover darkens (see .btn skin in paper-skin.css), soft tint + hairline
-       for selected states. Kept in lockstep with --ds-kai so the whole app
+       for selected states. Kept in lockstep with --ds-assistant so the whole app
        and the assistant read as one sky-blue identity. */
     --ds-primary: #0284c7;
     --ds-primary-dark: #0369a1;
@@ -291,7 +291,7 @@
     --ds-brand-accent: #7dd3fc;
     /* NB: --ds-agnes stays emerald (defined globally) — it's the Agnes
        *platform* green kept for the "connect to Agnes" banners + AI
-       Connector page. Kai/chat surfaces use --ds-kai (sky) explicitly. */
+       Connector page. Assistant/chat surfaces use --ds-assistant (sky) explicitly. */
 
     /* Surfaces — page canvas is a cool paper grey; panels are white.
        The dim variant is the inset/wash surface (table headers,
