@@ -1,5 +1,6 @@
 {% extends "base_index.html" %}
 {% from "macros/_catalog_card.html" import kind_glyph %}
+{% from "macros/_connect_banner.html" import connect_banner %}
 {% import "macros/_icon.html" as ico %}
 {# Artefacts — the caller's private artefacts: collections today, data apps
    soon. "Artefacts" is the umbrella (a typed home for things you create);
@@ -17,10 +18,14 @@
 <style>
   /* Page chrome only — the table rides the shared .data-table primitive
      (style-custom.css); all colors come from --ds-* tokens. */
-  /* padding-bottom (not margin): base_index zeroes the last head child's
-     margin-bottom so a tab strip sits flush with the band. This head ends in
-     the description, so it needs its own breathing room above the band line. */
-  .af-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; padding-bottom: 24px; }
+  .af-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; }
+  /* The "same knowledge, everywhere" banner is the shared connect-banner
+     component (macros/_connect_banner.html, `.cbn-*` in style-custom.css) —
+     same placement as My Stack. It's the last head child, so base_index
+     zeroes its margin-bottom; use padding-bottom (not stripped) for the gap
+     between the banner and the white band, and a top margin for the gap under
+     the description. */
+  .af-connect { margin: 12px 0 0; padding-bottom: 24px; }
   .af-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
   .af-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
   /* Header WIP pill — signals the surface itself is still evolving. */
@@ -78,9 +83,16 @@
 <div class="af-head">
   <div>
     <h1>Artefacts <span class="af-wip">WIP</span></h1>
-    <p class="lede">Your private artefacts — files and collections today, data apps soon. Upload a single file to keep it on its own, or group several into a collection. Everything stays private to you, and {{ instance_brand_short or 'Agnes' }} indexes it so your agents can search across it.</p>
+    <p class="lede">Your private files today. Data Apps coming soon. Upload a file on its own or organize multiple files into a collection. Everything stays private to you and your {{ instance_brand_short or 'Agnes' }}.</p>
   </div>
   <button type="button" class="cc-btn cc-btn--primary" data-new-upload style="flex-shrink:0">+ Upload</button>
+</div>
+
+{# ── "Same knowledge, everywhere" connect banner — same shared component and
+     placement as My Stack. #}
+<div class="af-connect">
+  {{ connect_banner('bar', cta_href='/me/ai-connector',
+       copy='Connect your AI tools to give them access to the same knowledge.') }}
 </div>
 {% endblock %}
 
