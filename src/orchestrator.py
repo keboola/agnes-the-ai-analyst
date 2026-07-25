@@ -40,7 +40,9 @@ import duckdb
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
 from src.db import _open_duckdb
 from src.orchestrator_security import (
+    attach_host_allowlist_configured,
     escape_sql_string_literal,
+    is_attach_host_allowed,
     is_builtin_extension,
     is_extension_allowed,
     is_token_env_allowed,
@@ -1336,6 +1338,26 @@ class SyncOrchestrator:
                     apply_bq_session_settings(conn)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                 elif token:
+                    # #F10 — never ship a real credential to a connector-chosen
+                    # host that the operator has not approved.
+                    if not is_attach_host_allowed(url):
+                        logger.error(
+                            "Remote attach %s: url host %r is not in %s; refusing to send credential from %s.",
+                            alias,
+                            url,
+                            "AGNES_REMOTE_ATTACH_HOST_ALLOWLIST",
+                            token_env,
+                        )
+                        continue
+                    if not attach_host_allowlist_configured():
+                        logger.warning(
+                            "Remote attach %s: sending credential (%s) to connector-chosen "
+                            "url %r with no AGNES_REMOTE_ATTACH_HOST_ALLOWLIST configured — "
+                            "set it in production to pin allowed hosts.",
+                            alias,
+                            token_env,
+                            url,
+                        )
                     escaped_token = escape_sql_string_literal(token)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
                     # Apply BQ session settings on every BQ-extension attach,

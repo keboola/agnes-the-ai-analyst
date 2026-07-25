@@ -18,10 +18,12 @@ def setup_init(
     typer.echo(f"Server: {server}")
 
     from cli.config import _config_dir
+
     config_dir = _config_dir()
     config_file = config_dir / "config.yaml"
 
     import yaml
+
     config = {"server": server}
     config_file.write_text(yaml.dump(config), encoding="utf-8")
     typer.echo(f"Config saved to {config_file}")
@@ -33,31 +35,49 @@ def setup_init(
 def bootstrap(
     email: str = typer.Argument(..., help="Admin email"),
     name: str = typer.Option("", help="Display name"),
-    password: str = typer.Option("", help="Optional password"),
+    set_password: bool = typer.Option(
+        False,
+        "--set-password",
+        help="Prompt for an optional admin password (hidden input)",
+    ),
     server: str = typer.Option(None, help="Server URL override"),
 ):
     """Create the first admin user on a fresh instance.
 
     Only works when the database has zero users.
     After this, use 'agnes login' for normal auth.
+
+    Security audit F14: the password is never accepted as a CLI flag (it would
+    land on argv, readable via ``ps`` / ``/proc/<pid>/cmdline`` by co-tenant
+    local users). It is read from the ``AGNES_BOOTSTRAP_PASSWORD`` env var, or
+    prompted for with hidden input via ``--set-password``. OAuth / magic-link
+    orgs need no password and can omit both.
     """
     if server:
         os.environ["AGNES_SERVER"] = server
 
+    password = os.environ.get("AGNES_BOOTSTRAP_PASSWORD", "")
+    if set_password and not password:
+        password = typer.prompt("Admin password", hide_input=True, confirmation_prompt=True)
+
     typer.echo("Bootstrapping first admin user...")
     try:
-        resp = api_post("/auth/bootstrap", json={
-            "email": email,
-            "name": name or email.split("@")[0],
-            "password": password,
-        })
+        resp = api_post(
+            "/auth/bootstrap",
+            json={
+                "email": email,
+                "name": name or email.split("@")[0],
+                "password": password,
+            },
+        )
         if resp.status_code == 200:
             data = resp.json()
             # Save token automatically
             from cli.config import save_token
+
             save_token(data["access_token"], data["email"])
             typer.echo(f"Admin user created: {data['email']}")
-            typer.echo(f"Token saved — you are now logged in as admin.")
+            typer.echo("Token saved — you are now logged in as admin.")
             typer.echo("\nNext: agnes setup test-connection")
         elif resp.status_code == 403:
             typer.echo(f"Bootstrap disabled: {resp.json().get('detail', '')}")
@@ -147,18 +167,22 @@ def verify(as_json: bool = typer.Option(False, "--json", help="Output as JSON"))
         try:
             resp_d = api_get("/api/health/detailed")
             hd = resp_d.json()
-            checks.append({
-                "name": "server",
-                "status": "pass" if hd.get("status") == "healthy" else "warn",
-                "detail": hd.get("status"),
-            })
+            checks.append(
+                {
+                    "name": "server",
+                    "status": "pass" if hd.get("status") == "healthy" else "warn",
+                    "detail": hd.get("status"),
+                }
+            )
         except Exception:
             # Auth not configured yet — minimal reachability is enough
-            checks.append({
-                "name": "server",
-                "status": "pass" if h.get("status") == "ok" else "warn",
-                "detail": h.get("status"),
-            })
+            checks.append(
+                {
+                    "name": "server",
+                    "status": "pass" if h.get("status") == "ok" else "warn",
+                    "detail": h.get("status"),
+                }
+            )
     except Exception as e:
         checks.append({"name": "server", "status": "fail", "detail": str(e)})
         _report(checks, as_json)
@@ -166,6 +190,7 @@ def verify(as_json: bool = typer.Option(False, "--json", help="Output as JSON"))
 
     # 2. Auth works (token valid)
     from cli.config import get_token
+
     token = get_token()
     if token:
         try:
@@ -208,22 +233,26 @@ def verify(as_json: bool = typer.Option(False, "--json", help="Output as JSON"))
     # 5. Web UI accessible
     try:
         resp = api_get("/login")
-        checks.append({
-            "name": "web_ui",
-            "status": "pass" if resp.status_code == 200 else "fail",
-            "detail": f"HTTP {resp.status_code}, {len(resp.content)} bytes",
-        })
+        checks.append(
+            {
+                "name": "web_ui",
+                "status": "pass" if resp.status_code == 200 else "fail",
+                "detail": f"HTTP {resp.status_code}, {len(resp.content)} bytes",
+            }
+        )
     except Exception as e:
         checks.append({"name": "web_ui", "status": "fail", "detail": str(e)})
 
     # 6. Swagger docs
     try:
         resp = api_get("/docs")
-        checks.append({
-            "name": "api_docs",
-            "status": "pass" if resp.status_code == 200 else "fail",
-            "detail": f"HTTP {resp.status_code}",
-        })
+        checks.append(
+            {
+                "name": "api_docs",
+                "status": "pass" if resp.status_code == 200 else "fail",
+                "detail": f"HTTP {resp.status_code}",
+            }
+        )
     except Exception as e:
         checks.append({"name": "api_docs", "status": "fail", "detail": str(e)})
 
@@ -235,10 +264,15 @@ def _report(checks: list, as_json: bool):
     has_fail = any(c["status"] == "fail" for c in checks)
 
     if as_json:
-        typer.echo(json.dumps({
-            "overall": "pass" if all_pass else ("fail" if has_fail else "warn"),
-            "checks": checks,
-        }, indent=2))
+        typer.echo(
+            json.dumps(
+                {
+                    "overall": "pass" if all_pass else ("fail" if has_fail else "warn"),
+                    "checks": checks,
+                },
+                indent=2,
+            )
+        )
     else:
         for c in checks:
             icon = {"pass": "OK", "fail": "FAIL", "warn": "WARN"}[c["status"]]

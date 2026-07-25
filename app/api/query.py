@@ -556,12 +556,88 @@ _BLOCKED_SQL_TOKENS = [
 ]
 
 
+# Security audit F8: DuckDB resolves a quoted string in table position as a
+# file to scan (a "replacement scan"), so ``SELECT * FROM 'data/extracts/…'``
+# reads a file with NO ``read_parquet()`` call and slips past the function
+# denylist above. The existing ``'/`` / ``'../`` tokens only catch absolute or
+# dot-dot paths — a bare relative path like ``'data/…parquet'`` has neither.
+#
+# We detect file table sources by inspecting TABLE SOURCES precisely via
+# sqlglot: a real table/view is a SQL identifier (optionally schema-qualified)
+# and never contains a path separator, glob metacharacter, or data-file
+# extension, whereas a DuckDB replacement scan (``FROM 'file.parquet'`` — direct,
+# comma-list, or glob) parses as a Table whose NAME carries exactly those.
+# Inspecting names — not arbitrary literals — is what makes this precise: a
+# legitimate value literal in SELECT/WHERE position (``WHERE f = 'report.csv'``),
+# or a functional ``FROM`` such as ``TRIM(' ' FROM x)`` / ``EXTRACT(day FROM
+# ts)``, is never a Table and so is not flagged. The external-access boundary on
+# the analytics connection stays ON because local views need ``read_parquet`` —
+# this parse-level guard is the file-access boundary.
+_FILE_TABLE_EXTS = frozenset({"parquet", "parq", "csv", "tsv", "json", "ndjson", "arrow", "duckdb", "xlsx"})
+
+# Fallback ONLY for when sqlglot cannot parse the SQL at all: a quoted string
+# literal directly after ``FROM`` / ``JOIN``. This is deliberately not used on
+# parseable SQL because it over-matches functional FROM clauses like
+# ``TRIM(' ' FROM 'abc')`` — sqlglot models those correctly, so the primary
+# path never sees the false positive; an unparseable query is almost certainly
+# invalid anyway, so a conservative reject there is acceptable.
+_FROM_STRING_LITERAL_RE = re.compile(r"\b(?:from|join)\s*\(*\s*'")
+
+
+def _name_looks_like_file(name: str) -> bool:
+    if not name:
+        return False
+    if any(c in name for c in "/\\*?"):
+        return True
+    return "." in name and name.rsplit(".", 1)[-1].lower() in _FILE_TABLE_EXTS
+
+
+def _has_file_table_source(sql: str) -> bool:
+    """True if any FROM/JOIN table source is a file path (a DuckDB replacement
+    scan), inspected precisely via sqlglot. This is the PRIMARY and only F8
+    check on parseable SQL — it covers the direct ``FROM 'file'``, comma-list
+    (``FROM v, 'file'``), and glob forms uniformly, without the false positives
+    a position regex has on functional FROM clauses (TRIM/EXTRACT/SUBSTRING).
+    Falls back to the position-based regex only when the SQL can't be parsed as
+    DuckDB, so the direct/comma ``FROM 'file'`` form is still caught there.
+
+    Depends on sqlglot (pinned ``sqlglot>=30.0.0`` in pyproject) modeling a
+    quoted FROM source as an ``exp.Table`` whose ``.name`` carries the path.
+    That behavioral assumption has dedicated tripwire tests
+    (``test_f8_sqlglot_models_file_table_source_as_table`` covers direct AND
+    comma-list) so a future sqlglot upgrade that changes it fails loudly rather
+    than silently regressing detection."""
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        statements = sqlglot.parse(sql, read="duckdb")
+    except Exception:
+        return bool(_FROM_STRING_LITERAL_RE.search(sql.lower()))
+    for statement in statements:
+        if statement is None:
+            continue
+        for table in statement.find_all(exp.Table):
+            if _name_looks_like_file(table.name):
+                return True
+    return False
+
+
 def _assert_select_only(sql_lower: str) -> None:
     """Raise HTTPException(400) unless ``sql_lower`` is a single SELECT/WITH
     query free of the blocked keywords/functions. ``sql_lower`` MUST already
     be ``.strip().lower()``-ed by the caller."""
     if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
+    # File-path table source anywhere in the FROM graph (direct / comma-list /
+    # glob), detected precisely via sqlglot — the position regex is used only as
+    # the parse-failure fallback inside _has_file_table_source, so functional
+    # FROM clauses (TRIM/EXTRACT/SUBSTRING) don't false-positive.
+    if _has_file_table_source(sql_lower):
+        raise HTTPException(
+            status_code=400,
+            detail="File-path table sources are not allowed; query registered views by name",
+        )
     # Accept any whitespace (newline, tab, space) after the keyword so
     # multi-line SQL doesn't 400 on `SELECT\n  col, ...`. Strip leading `--`
     # / `/* */` comments first so a query whose stored SQL opens with a header

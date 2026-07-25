@@ -127,23 +127,17 @@ def _get_db():
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
-    """Return the request's client IP, preferring the first hop of X-Forwarded-For.
+    """Return the request's client IP (security audit F9).
 
-    Trust model: this deployment runs behind Caddy (see repo Caddyfile), which
-    strips incoming X-Forwarded-For and sets its own. The leftmost hop is
-    therefore trustworthy. If the app is ever exposed directly to the internet
-    without a proxy, this value becomes client-settable and should only be
-    relied on for audit/diagnostics, never access control. Value is stored in
+    Delegates to :func:`app.auth.client_ip.trusted_client_ip`, which trusts only
+    the ``AGNES_TRUSTED_PROXY_HOPS`` rightmost X-Forwarded-For hops rather than
+    the fully client-controllable leftmost hop. Value is stored in
     personal_access_tokens.last_used_ip and audit_log entries — informational
     only, never authorization.
     """
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",", 1)[0].strip() or None
-    client = getattr(request, "client", None)
-    return getattr(client, "host", None) if client else None
+    from app.auth.client_ip import trusted_client_ip
+
+    return trusted_client_ip(request)
 
 
 def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[dict]:

@@ -2,7 +2,19 @@
 
 {% block content %}
 <div class="container">
-  {% if bind_status == "ok" %}
+  {% if bind_status == "confirm" %}
+    <h1>Link your Slack identity?</h1>
+    <p>This links the Slack account that requested this code to your Agnes account
+       <strong>{{ user.email }}</strong>. Only continue if you started this from a Slack DM to <strong>Agnes</strong>.</p>
+    <form method="post" action="/slack/bind">
+      <input type="hidden" name="code" value="{{ bind_code }}" />
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit" class="btn btn-primary">Link my Slack</button>
+    </form>
+  {% elif bind_status == "csrf" %}
+    <h1>Couldn't verify that request</h1>
+    <p>The confirmation could not be verified (expired or invalid security token). Open the link <strong>Agnes</strong> DM'd you again and retry.</p>
+  {% elif bind_status == "ok" %}
     <h1>✅ Slack connected</h1>
     <p>Your Slack identity is now linked to <strong>{{ user.email }}</strong>.</p>
     <p>Head back to Slack and message <strong>Agnes</strong> — it will recognize you and answer with your data. You only need to do this once.</p>

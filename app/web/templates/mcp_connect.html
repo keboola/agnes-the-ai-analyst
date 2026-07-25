@@ -126,9 +126,6 @@
         <button class="mcp-tab-btn" role="tab"
                 aria-selected="false" aria-controls="tab-claude-code" id="tbtn-claude-code"
                 data-tab="claude-code">Claude Code</button>
-        <button class="mcp-tab-btn" role="tab"
-                aria-selected="false" aria-controls="tab-url" id="tbtn-url"
-                data-tab="url">Generic URL</button>
       </div>
 
       {# Cursor — ~/.cursor/mcp.json #}
@@ -165,17 +162,10 @@
         </div>
       </div>
 
-      {# Generic URL for clients that accept only a URL with ?token= #}
-      <div class="mcp-tab-panel" id="tab-url" role="tabpanel" aria-labelledby="tbtn-url">
-        <div class="mcp-snippet-wrap">
-          <pre class="mcp-snippet" id="snippet-url"><span class="mcp-placeholder">Token will appear here…</span></pre>
-          <button class="btn btn-secondary btn-sm mcp-copy-btn" type="button"
-                  data-copy-target="snippet-url">Copy</button>
-        </div>
-        <div class="mcp-path-hint">
-          Use <code>?token=&lt;PAT&gt;</code> for clients that cannot set HTTP headers on SSE GET requests.
-        </div>
-      </div>
+      {# Security audit F13: the query-string token snippet (?token=<PAT>) was
+         removed. A 365-day PAT in a URL lands in server/proxy access logs and
+         browser history (CWE-598). Use the Authorization: Bearer header
+         snippets above instead. #}
 
     {% endcall %}
   </div>
@@ -218,12 +208,9 @@
     var claudeCode = 'claude mcp add --transport sse agnes ' + sseUrl + ' \\\n' +
       '  --header "Authorization: Bearer ' + token + '"';
 
-    var genericUrl = sseUrl + '?token=' + token;
-
     document.getElementById('snippet-cursor').textContent = cursor;
     document.getElementById('snippet-vscode').textContent = vscode;
     document.getElementById('snippet-claude-code').textContent = claudeCode;
-    document.getElementById('snippet-url').textContent   = genericUrl;
   }
 
   generateBtn.addEventListener('click', function () {
