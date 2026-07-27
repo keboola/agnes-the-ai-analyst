@@ -7,12 +7,15 @@ DuckDB and PG impls converge on identical semantics.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+from src.repositories.sync_state import _deserialize_parts
 
 
 class SyncStatePgRepository:
@@ -29,7 +32,7 @@ class SyncStatePgRepository:
                 .mappings()
                 .first()
             )
-        return dict(row) if row else None
+        return _deserialize_parts(dict(row)) if row else None
 
     def get_last_sync(self, table_id: str) -> Optional[datetime]:
         with self._engine.connect() as conn:
@@ -42,7 +45,7 @@ class SyncStatePgRepository:
     def get_all_states(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text("SELECT * FROM sync_state ORDER BY table_id")).mappings().all()
-        return [dict(r) for r in rows]
+        return [_deserialize_parts(dict(r)) for r in rows]
 
     def update_sync(
         self,
@@ -56,6 +59,7 @@ class SyncStatePgRepository:
         error: Optional[str] = None,
         duration_ms: Optional[int] = None,
         bump_last_sync: bool = True,
+        parts: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Upsert the row's sync bookkeeping.
 
@@ -63,15 +67,21 @@ class SyncStatePgRepository:
         touching ``last_sync`` (NULL on a first-ever write) — used by the
         filesystem-fallback publish for materialized rows, whose schedule
         gate reads ``last_sync`` and must stay open for same-day retries.
+
+        ``parts`` is the per-partition manifest for a partitioned table — a
+        list of ``{path, hash, size_bytes}``. ``None`` (the default) means a
+        single-file table and writes SQL NULL (backward compatible).
         """
         now = datetime.now(timezone.utc) if bump_last_sync else None
+        parts_json = json.dumps(parts) if parts is not None else None
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     """INSERT INTO sync_state
                        (table_id, last_sync, rows, file_size_bytes,
-                        uncompressed_size_bytes, columns, hash, status, error)
-                       VALUES (:table_id, :now, :rows, :fsb, :usb, :cols, :hash, :status, :error)
+                        uncompressed_size_bytes, columns, hash, parts, status, error)
+                       VALUES (:table_id, :now, :rows, :fsb, :usb, :cols, :hash,
+                               CAST(:parts AS JSONB), :status, :error)
                        ON CONFLICT (table_id) DO UPDATE SET
                          last_sync = COALESCE(EXCLUDED.last_sync, sync_state.last_sync),
                          rows = EXCLUDED.rows,
@@ -79,6 +89,7 @@ class SyncStatePgRepository:
                          uncompressed_size_bytes = EXCLUDED.uncompressed_size_bytes,
                          columns = EXCLUDED.columns,
                          hash = EXCLUDED.hash,
+                         parts = EXCLUDED.parts,
                          status = EXCLUDED.status,
                          error = EXCLUDED.error"""
                 ),
@@ -90,6 +101,7 @@ class SyncStatePgRepository:
                     "usb": uncompressed_size_bytes,
                     "cols": columns,
                     "hash": hash,
+                    "parts": parts_json,
                     "status": status,
                     "error": error,
                 },

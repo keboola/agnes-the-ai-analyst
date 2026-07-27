@@ -148,6 +148,47 @@ def _get_extracts_dir() -> Path:
     return data_dir / "extracts"
 
 
+def _hash_table_parts(table_dir: Path) -> list[dict] | None:
+    """Per-part manifest for a partitioned table stored as a *directory* of
+    parquet parts — Jira hive (``month=*/data.parquet``) and Keboola
+    partitioned (``<key>.parquet``). Returns a list of
+    ``{path, hash, size_bytes}`` sorted by relpath, where ``hash`` is the
+    full content MD5 of the part (same contract as the single-file hash
+    ``agnes pull`` re-verifies), or ``None`` when *table_dir* is not a
+    directory of parquets (i.e. a single-file table).
+    """
+    if not table_dir.is_dir():
+        return None
+    parts: list[dict] = []
+    for pq in sorted(
+        table_dir.rglob("*.parquet"),
+        key=lambda p: p.relative_to(table_dir).as_posix(),
+    ):
+        h = hashlib.md5()
+        with open(pq, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        parts.append(
+            {
+                "path": pq.relative_to(table_dir).as_posix(),
+                "hash": h.hexdigest(),
+                "size_bytes": pq.stat().st_size,
+            }
+        )
+    return parts or None
+
+
+def _parts_rollup_hash(parts: list[dict]) -> str:
+    """Deterministic whole-table hash for a partitioned table, derived from
+    the path-sorted ``(path, hash)`` pairs. Lets the manifest's top-level
+    ``hash`` / object-store mirror-index compare keep working unchanged for
+    partitioned tables. Full 32-char MD5."""
+    joined = "\n".join(
+        f"{p['path']}:{p['hash']}" for p in sorted(parts, key=lambda p: p["path"])
+    )
+    return hashlib.md5(joined.encode("utf-8")).hexdigest()
+
+
 class SyncOrchestrator:
     """Scans /data/extracts/*, ATTACHes each extract.duckdb, creates master views."""
 
@@ -1415,19 +1456,32 @@ class SyncOrchestrator:
                 if query_mode == "materialized":
                     continue
                 pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                table_dir = extracts_dir / source_name / "data" / table_name
                 file_hash = ""
+                parts = None
+                out_size = size_bytes or 0
                 if pq_path.exists():
+                    # Single-file table: full content MD5 (see docstring).
                     h = hashlib.md5()
                     with open(pq_path, "rb") as f:
                         for chunk in iter(lambda: f.read(8192), b""):
                             h.update(chunk)
                     file_hash = h.hexdigest()
+                else:
+                    # Partitioned table (no single {table}.parquet): hash each
+                    # part; the rollup keeps the whole-table hash contract, and
+                    # the summed part sizes replace the missing single-file size.
+                    parts = _hash_table_parts(table_dir)
+                    if parts:
+                        file_hash = _parts_rollup_hash(parts)
+                        out_size = sum(p["size_bytes"] for p in parts)
 
                 repo.update_sync(
                     table_id=table_name,
                     rows=rows or 0,
-                    file_size_bytes=size_bytes or 0,
+                    file_size_bytes=out_size,
                     hash=file_hash,
+                    parts=parts,
                 )
         except Exception as e:
             logger.warning("Could not update sync_state: %s", e)

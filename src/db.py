@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 99
+SCHEMA_VERSION = 100
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
     uncompressed_size_bytes BIGINT,
     columns INTEGER,
     hash VARCHAR,
+    parts JSON,
     status VARCHAR DEFAULT 'ok',
     error TEXT
 );
@@ -6522,6 +6523,17 @@ def _v98_to_v99(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 99")
 
 
+def _v99_to_v100(conn: duckdb.DuckDBPyConnection) -> None:
+    """v99→v100: sync_state.parts — per-partition manifest for partitioned
+    tables (partitioned distribution). Holds a JSON list of
+    ``{path, hash, size_bytes}`` per part; NULL means a single-file table
+    (backward compatible — the manifest/pull treat NULL as single-file)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('sync_state')").fetchall()}
+    if "parts" not in cols:
+        conn.execute("ALTER TABLE sync_state ADD COLUMN parts JSON")
+    conn.execute("UPDATE schema_version SET version = 100")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6926,6 +6938,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # draft_branch). _SYSTEM_SCHEMA already declares the columns on
             # fresh installs (no-op ALTER here).
             _v98_to_v99(conn)
+            # v99→v100: sync_state.parts (per-partition manifest for
+            # partitioned distribution). _SYSTEM_SCHEMA already declares the
+            # column on fresh installs (no-op ALTER here).
+            _v99_to_v100(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7177,6 +7193,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v97_to_v98(conn)
             if current < 99:
                 _v98_to_v99(conn)
+            if current < 100:
+                _v99_to_v100(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
