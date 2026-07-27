@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Cloud-chat answers finally stream token-by-token on TLS-fronted
+  deployments.** The real cause of the "silence, then the whole answer at
+  once" behavior was Caddy, not the app: Caddy only auto-flushes a reverse-
+  proxied response when the Content-Type is EXACTLY `text/event-stream`, but
+  Starlette appends `; charset=utf-8`, so the SSE completion was buffered and
+  every token delta arrived in one end-of-turn burst. Every Caddy
+  `reverse_proxy` that fronts the app now sets `flush_interval -1` (main
+  `Caddyfile` + the m-tier and apps-subdomain variants), forcing an immediate
+  flush. Diagnosed by a live A/B: `mac→Caddy→app→Anthropic` delivered all
+  deltas at a single timestamp, while the identical request straight to the
+  app streamed over seconds. (Supersedes the earlier `/api/broker/anthropic`
+  GZip skip-list attempt, which was a no-op — GZip never buffered the stream;
+  the buffering was entirely in the proxy.)
+
 ### Removed
 
 ### Internal
