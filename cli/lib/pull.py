@@ -547,6 +547,13 @@ def _sync_partitioned_table(
             bool(fetch or prune),
             None,
         )
+    except Exception as exc:
+        # A transport/IO error (e.g. `stream_download` network blip) or a
+        # promote/prune failure must be RETURNED as a per-table error, not
+        # raised — otherwise one flaky partitioned table would abort the whole
+        # pull and discard tables that already downloaded fine. All-or-nothing
+        # still holds: nothing was promoted, the prior table dir is intact.
+        return None, False, f"partitioned sync failed: {exc}"
     finally:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -971,6 +978,9 @@ def run_pull(
                 # current) must not inflate the "tables updated" summary.
                 if changed:
                     result.tables_updated += 1
+                    # Parts are fetched via the app-served `?part=` route, so
+                    # keep the per-route breakdown summing to tables_updated.
+                    result.tables_via_app += 1
 
         # 4b. #506 — prune local parquets that left the authorized typed
         # stack. Runs only when the manifest carries typed sections (else

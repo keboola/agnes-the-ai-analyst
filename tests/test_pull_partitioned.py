@@ -143,3 +143,25 @@ def test_sync_partitioned_noop_reports_not_changed(tmp_path):
     assert err is None
     assert changed is False
     assert entry is not None  # still returns the current state entry
+
+
+def test_sync_partitioned_download_error_is_returned_not_raised(tmp_path):
+    """A network/transport error while fetching a part must be RETURNED as an
+    error (so run_pull records it and moves on), never RAISED — a raise would
+    abort the whole pull, discarding tables that already downloaded fine
+    (Devin re-review #A)."""
+    tdir = tmp_path / "issues" / "month=2026-05"
+    tdir.mkdir(parents=True)
+    (tdir / "data.parquet").write_bytes(b"prior-good")
+    server = [_sp("month=2026-06/data.parquet", b"x")]
+
+    def boom(relpath, dest):
+        raise ConnectionError("network blip")
+
+    entry, changed, err = _sync_partitioned_table(
+        "issues", server, {}, tmp_path, boom, "R", rows=1)
+    assert entry is None
+    assert changed is False
+    assert err is not None and "network blip" in err
+    # prior data untouched (all-or-nothing)
+    assert (tmp_path / "issues" / "month=2026-05" / "data.parquet").read_bytes() == b"prior-good"
