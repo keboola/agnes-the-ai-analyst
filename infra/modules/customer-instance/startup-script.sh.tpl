@@ -583,6 +583,28 @@ DISPYAML
 
 COMPOSE_FILE_VALUE="$COMPOSE_FILE_VALUE:docker-compose.dispatcher.yml"
 %{ endif ~}
+%{ if data_apps_enabled ~}
+# --- Data apps (apps-runner sidecar) ---
+# APPS_RUNNER_TOKEN — shared secret between the app and the apps-runner sidecar
+# (both source the same .env). Preserve across reboots like SCHEDULER_API_TOKEN:
+# read back from an existing .env, mint fresh only on first boot.
+APPS_RUNNER_TOKEN=""
+if [ -f "$APP_DIR/.env" ]; then
+    APPS_RUNNER_TOKEN=$(grep -E '^APPS_RUNNER_TOKEN=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -z "$APPS_RUNNER_TOKEN" ]; then
+    APPS_RUNNER_TOKEN=$(openssl rand -hex 32)
+fi
+# DOCKER_GID — the apps-runner runs as the image's non-root uid 999 but must
+# reach the root:docker-owned socket; docker-compose.yml adds $${DOCKER_GID} as
+# a supplementary group. Resolve the host socket's gid so uid 999 can talk to
+# the daemon (else every up()/stop() 502s with PermissionError(13)).
+DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 999)
+# The runner only pulls images under this prefix (everything before the last
+# ':' of the full runtime image); the app reads the full image via the env var.
+DATA_APPS_RUNTIME_IMAGE="${data_apps_runtime_image}"
+APPS_RUNNER_IMAGE_PREFIX="$${DATA_APPS_RUNTIME_IMAGE%:*}"
+%{ endif ~}
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
 SESSION_SECRET=$SESSION_KEY
@@ -623,6 +645,14 @@ LLM_DISPATCHER_URL=http://dispatcher:8600
 LLM_DISPATCHER_API_KEY=$DISPATCHER_KEY
 %{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
+%{ if data_apps_enabled ~}
+COMPOSE_PROFILES=apps
+AGNES_DATA_APPS_ENABLED=true
+AGNES_DATA_APPS_RUNTIME_IMAGE=${data_apps_runtime_image}
+APPS_RUNNER_TOKEN=$APPS_RUNNER_TOKEN
+APPS_RUNNER_IMAGE_PREFIX=$APPS_RUNNER_IMAGE_PREFIX
+DOCKER_GID=$DOCKER_GID
+%{ endif ~}
 $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE
 ENVEOF
