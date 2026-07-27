@@ -3339,13 +3339,13 @@ class TestRestoreContext:
 
 
 def test_shutdown_drains_inflight_turn_with_notice(tmp_path):
-    """A session whose turn is IN FLIGHT at shutdown gets a user-facing
-    'server_restarting' notice + a done frame (so the composer unwedges),
-    THEN is paused/killed — instead of the answer stopping mid-generation
+    """A session whose turn is IN FLIGHT at shutdown and is about to be
+    KILLED gets a user-facing 'server_restarting' notice + a done frame (so
+    the composer unwedges) — instead of the answer stopping mid-generation
     with no explanation (robustness parity drain notice)."""
 
     async def _run():
-        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        mgr = _make_kill_manager(tmp_path)
         monkeypatch_workdir(mgr)
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
@@ -3358,6 +3358,68 @@ def test_shutdown_drains_inflight_turn_with_notice(tmp_path):
 
         kinds = [m.get("kind") for m in ws.sent if m.get("type") == "error"]
         assert "server_restarting" in kinds, f"expected drain notice; got {ws.sent}"
+        assert any(m.get("type") == "done" for m in ws.sent), "expected a done frame to unwedge the composer"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_shutdown_pause_path_suppresses_notice(tmp_path):
+    """When the session is successfully PAUSED, the in-flight turn survives
+    the restart (the sandbox snapshot keeps it running; `_resume_live`
+    delivers its frames on reconnect) — so no 'please resend' notice must be
+    sent, or the user would be invited to fire a duplicate turn."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None)
+        mgr._live[s.id].turn_in_flight = True
+
+        await mgr.shutdown()
+
+        kinds = [m.get("kind") for m in ws.sent if m.get("type") == "error"]
+        assert "server_restarting" not in kinds, f"pause path must stay silent; got {ws.sent}"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_shutdown_pause_failure_falls_back_to_notice(tmp_path):
+    """If the pause attempt fails, the session falls back to the kill path —
+    the in-flight turn IS lost there, so the drain notice must fire."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None)
+        mgr._live[s.id].turn_in_flight = True
+
+        async def _boom(live):
+            raise RuntimeError("pause backend down")
+
+        mgr._pause_live = _boom
+
+        await mgr.shutdown()
+
+        kinds = [m.get("kind") for m in ws.sent if m.get("type") == "error"]
+        assert "server_restarting" in kinds, f"expected drain notice on pause failure; got {ws.sent}"
         assert any(m.get("type") == "done" for m in ws.sent), "expected a done frame to unwedge the composer"
 
         attach_task.cancel()

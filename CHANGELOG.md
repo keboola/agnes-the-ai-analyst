@@ -14,13 +14,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-- **Cloud-chat sessions get a resend notice on server restart.** A chat whose
-  turn was mid-generation when the server drained (deploy/restart) previously
-  just stopped mid-answer with the composer wedged in the "running" state (it
-  only clears on done/error/cancelled). `ChatManager.shutdown()` now
-  broadcasts a `server_restarting` notice + a `done` frame to any in-flight
-  session before pausing/killing it, so the client can prompt a resend
-  against the replacement process. Idle sessions drain silently as before.
+- **Cloud-chat sessions get a resend notice on server restart — but only when
+  the turn is actually lost.** A chat whose turn was mid-generation when the
+  server drained (deploy/restart) previously just stopped mid-answer with the
+  composer wedged in the "running" state (it only clears on
+  done/error/cancelled). `ChatManager.shutdown()` now broadcasts a
+  `server_restarting` notice + a `done` frame to an in-flight session on the
+  kill path (`on_detach="kill"`, or a failed pause), so the client can prompt
+  a resend against the replacement process. On the default successful-pause
+  path the notice is deliberately suppressed: the snapshot keeps the turn
+  running and it finishes after resume, so "please resend" there would invite
+  a duplicate turn. Idle sessions drain silently as before.
 
 ### Fixed
 
