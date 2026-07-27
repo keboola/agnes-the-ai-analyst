@@ -73,3 +73,16 @@ def test_auto_upgrade_appends_apps_profile_flag():
     body = Path("scripts/ops/agnes-auto-upgrade.sh").read_text()
     assert "AGNES_DATA_APPS_ENABLED" in body
     assert "PROFILE_ARGS+=( --profile apps )" in body
+    # ...and the tls append must be `+=`, not `=`, or it would clobber the
+    # COMPOSE_PROFILES-folded flags below.
+    assert "PROFILE_ARGS+=( --profile tls )" in body
+    assert "PROFILE_ARGS=( --profile tls )" not in body
+
+
+def test_auto_upgrade_folds_compose_profiles_into_flags():
+    # Any COMPOSE_PROFILES from .env (e.g. mtier) is converted to --profile flags
+    # so adding --profile tls/apps never silently drops it (compose ignores the
+    # env var once any --profile flag is present).
+    body = Path("scripts/ops/agnes-auto-upgrade.sh").read_text()
+    assert "IFS=',' read -ra _cp_list <<< \"$COMPOSE_PROFILES\"" in body
+    assert 'PROFILE_ARGS+=( --profile "$_cp" )' in body
