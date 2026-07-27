@@ -708,3 +708,26 @@ class TestSyncSanitizesTableNames:
             assert (local_data / "sales" / "Sales_2024.parquet").exists()
             # Survivor is deterministic regardless of input order.
             assert state["sales"]["Sales_2024"]["table_id"] == "t_a"
+
+
+class TestStackSyncSkipsPartitioned:
+    """Devin #3: the stack-sync path (direct_tables / data_packages) downloads
+    one `{name}.parquet` per table and is NOT part-aware, so partitioned
+    tables must be skipped there (they 404 otherwise) — they are distributed
+    via the main flat-`tables` per-part path into server/parquet/ instead."""
+
+    def test_skip_remote(self):
+        from cli.lib.pull_sync import _server_table_skip
+        assert _server_table_skip({"query_mode": "remote"}) is True
+
+    def test_skip_partitioned(self):
+        from cli.lib.pull_sync import _server_table_skip
+        assert _server_table_skip({
+            "query_mode": "local",
+            "parts": [{"path": "month=2026-06/data.parquet", "hash": "aa", "size_bytes": 1}],
+        }) is True
+
+    def test_single_file_not_skipped(self):
+        from cli.lib.pull_sync import _server_table_skip
+        assert _server_table_skip({"query_mode": "local"}) is False
+        assert _server_table_skip({"query_mode": "local", "parts": None}) is False

@@ -1593,6 +1593,11 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
         server_only = bool(reg.get("server_only"))
         entry = {
             "hash": state.get("hash", ""),
+            # Per-partition manifest — the cli/lib/pull.py download-set loop
+            # reads THIS flat dict (not the typed sections), so `parts` MUST
+            # live here for partitioned tables to route to the per-part sync.
+            # None for single-file tables (treated as single-file downstream).
+            "parts": state.get("parts"),
             "updated": state.get("last_sync").isoformat() if state.get("last_sync") else None,
             "size_bytes": state.get("file_size_bytes", 0),
             "rows": state.get("rows", 0),

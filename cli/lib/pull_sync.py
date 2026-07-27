@@ -303,9 +303,19 @@ def _server_table_url(t: dict) -> str:
 
 
 def _server_table_skip(t: dict) -> bool:
-    """Remote-mode tables have no parquet — skip them in the per-type
-    sync (the master DuckDB ATTACH still resolves them on demand)."""
-    return (t.get("query_mode") or "").lower() == "remote"
+    """Tables the per-type stack sync must skip:
+
+    - remote-mode: no parquet at all (the master DuckDB ATTACH resolves
+      them on demand);
+    - partitioned: distributed as a *directory* of parts (``parts`` set),
+      which this single-`{name}.parquet` fetcher can't handle — they are
+      synced via the main flat-``tables`` per-part path into
+      ``server/parquet/{id}/`` instead. Without this skip, a partitioned
+      table in a data package / direct-tables list 404s on
+      ``/api/data/{id}/download`` (no single file exists)."""
+    if (t.get("query_mode") or "").lower() == "remote":
+        return True
+    return bool(t.get("parts"))
 
 
 # ---------------------------------------------------------------------------

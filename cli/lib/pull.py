@@ -499,7 +499,7 @@ def _sync_partitioned_table(
     fetch_part,
     rollup_hash: str,
     rows: int = 0,
-) -> tuple[dict | None, str | None]:
+) -> tuple[dict | None, bool, str | None]:
     """Incrementally sync one partitioned table into ``parquet_dir/{tid}/``.
 
     All-or-nothing: changed parts are fetched into a staging dir and md5-
@@ -510,7 +510,9 @@ def _sync_partitioned_table(
 
     ``fetch_part(relpath, dest)`` fetches one part's bytes to ``dest`` (its
     parent dir already exists) — injected so the download transport is
-    testable. Returns ``(local_entry, None)`` or ``(None, error)``.
+    testable. Returns ``(local_entry, changed, None)`` or
+    ``(None, False, error)``. ``changed`` is True only when at least one part
+    was fetched or pruned — so a no-op sync is not over-counted as an update.
     """
     table_dir = parquet_dir / tid
     fetch, prune = _diff_parts(server_parts, local_parts, table_dir)
@@ -526,7 +528,7 @@ def _sync_partitioned_table(
             fetch_part(relpath, dest)
             got = _file_md5(dest)
             if got != expected:
-                return None, f"part {relpath} hash mismatch: expected {expected} got {got}"
+                return None, False, f"part {relpath} hash mismatch: expected {expected} got {got}"
             staged[relpath] = dest
         # Every fetched part verified → promote atomically, then prune.
         for relpath, dest in staged.items():
@@ -542,6 +544,7 @@ def _sync_partitioned_table(
                 "rows": rows,
                 "size_bytes": sum(int(p.get("size_bytes") or 0) for p in server_parts),
             },
+            bool(fetch or prune),
             None,
         )
     finally:
@@ -951,7 +954,7 @@ def run_pull(
                     str(dest),
                 )
 
-            entry, err = _sync_partitioned_table(
+            entry, changed, err = _sync_partitioned_table(
                 tid,
                 server_parts,
                 local_parts,
@@ -964,7 +967,10 @@ def run_pull(
                 result.errors.append({"table": tid, "error": err})
             else:
                 local_tables[tid] = entry
-                result.tables_updated += 1
+                # Only count a real change — a no-op sync (every part already
+                # current) must not inflate the "tables updated" summary.
+                if changed:
+                    result.tables_updated += 1
 
         # 4b. #506 — prune local parquets that left the authorized typed
         # stack. Runs only when the manifest carries typed sections (else

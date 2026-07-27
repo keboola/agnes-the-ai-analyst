@@ -249,3 +249,41 @@ def test_manifest_entry_parts_none_for_single_file_table():
 
     entry = _table_manifest_entry(state, reg)
     assert entry["parts"] is None
+
+
+def test_flat_manifest_tables_dict_carries_parts_for_partitioned(tmp_path, monkeypatch):
+    """REGRESSION (Devin #1): the FLAT `manifest['tables']` dict — the one
+    `cli/lib/pull.py:run_pull` actually reads for download decisions — must
+    carry `parts` for a partitioned table, else the client never routes it to
+    the per-part sync and tries a single-file download that 404s."""
+    db_module = _reload_db_module(monkeypatch, tmp_path)
+
+    from src.repositories.sync_state import SyncStateRepository
+    from src.repositories.table_registry import TableRegistryRepository
+    from app.api.sync import _build_manifest_for_user
+
+    conn = db_module.get_system_db()
+    try:
+        _ensure_admin1(conn)
+        TableRegistryRepository(conn).register(
+            id="issues", name="issues", source_type="jira",
+            bucket="", source_table="issues", query_mode="local",
+        )
+        TableRegistryRepository(conn).register(
+            id="account", name="account", source_type="keboola",
+            bucket="sales", source_table="account", query_mode="local",
+        )
+        parts = [
+            {"path": "month=2026-06/data.parquet", "hash": "aa", "size_bytes": 100},
+            {"path": "month=2026-07/data.parquet", "hash": "bb", "size_bytes": 250},
+        ]
+        SyncStateRepository(conn).update_sync(
+            table_id="issues", rows=5, file_size_bytes=350, hash="rollup", parts=parts)
+        SyncStateRepository(conn).update_sync(
+            table_id="account", rows=9, file_size_bytes=90, hash="h")  # single-file
+
+        manifest = _build_manifest_for_user(conn, {"id": "admin1", "email": "a@x.com"})
+        assert manifest["tables"]["issues"]["parts"] == parts
+        assert manifest["tables"]["account"]["parts"] is None
+    finally:
+        conn.close()

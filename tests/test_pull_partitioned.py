@@ -72,10 +72,11 @@ def test_sync_partitioned_fresh_download(tmp_path):
     b6, b7 = b"june-data", b"july-data-longer"
     server = [_sp("month=2026-06/data.parquet", b6), _sp("month=2026-07/data.parquet", b7)]
     rollup = "ROLLUP123"
-    entry, err = _sync_partitioned_table(
+    entry, changed, err = _sync_partitioned_table(
         "issues", server, {}, tmp_path, _fetcher({
             "month=2026-06/data.parquet": b6, "month=2026-07/data.parquet": b7}), rollup, rows=42)
     assert err is None
+    assert changed is True
     assert (tmp_path / "issues" / "month=2026-06" / "data.parquet").read_bytes() == b6
     assert (tmp_path / "issues" / "month=2026-07" / "data.parquet").read_bytes() == b7
     assert entry["parts"] == {"month=2026-06/data.parquet": server[0]["hash"],
@@ -93,10 +94,11 @@ def test_sync_partitioned_all_or_nothing_on_hash_mismatch(tmp_path):
     (tdir / "data.parquet").write_bytes(b"prior-good")
     server = [_sp("month=2026-06/data.parquet", b"correct")]
     # fetcher writes WRONG bytes → hash mismatch
-    entry, err = _sync_partitioned_table(
+    entry, changed, err = _sync_partitioned_table(
         "issues", server, {}, tmp_path,
         _fetcher({"month=2026-06/data.parquet": b"CORRUPT"}), "R", rows=1)
     assert entry is None and "mismatch" in err
+    assert changed is False
     # prior data untouched; the bad part never promoted
     assert (tmp_path / "issues" / "month=2026-05" / "data.parquet").read_bytes() == b"prior-good"
     assert not (tmp_path / "issues" / "month=2026-06" / "data.parquet").exists()
@@ -114,11 +116,30 @@ def test_sync_partitioned_incremental_and_prune(tmp_path):
     server = [_sp("month=2026-06/data.parquet", b6), _sp("month=2026-07/data.parquet", b7)]
     local = {"month=2026-06/data.parquet": hashlib.md5(b6).hexdigest(),
              "month=2026-05/data.parquet": hashlib.md5(b"drop-me").hexdigest()}
-    entry, err = _sync_partitioned_table(
+    entry, changed, err = _sync_partitioned_table(
         "issues", server, local, tmp_path,
         _fetcher({"month=2026-07/data.parquet": b7}), "R", rows=2)
     assert err is None
+    assert changed is True
     assert (tdir / "month=2026-06" / "data.parquet").read_bytes() == b6  # kept
     assert (tdir / "month=2026-07" / "data.parquet").read_bytes() == b7  # fetched
     assert not (tdir / "month=2026-05" / "data.parquet").exists()        # pruned
     assert set(entry["parts"]) == {"month=2026-06/data.parquet", "month=2026-07/data.parquet"}
+
+
+def test_sync_partitioned_noop_reports_not_changed(tmp_path):
+    """When every part is already current (nothing fetched, nothing pruned),
+    the sync succeeds but reports changed=False so the pull summary does not
+    over-count it as an update (Devin #2)."""
+    tdir = tmp_path / "issues" / "month=2026-06"
+    tdir.mkdir(parents=True)
+    b = b"already-here"
+    (tdir / "data.parquet").write_bytes(b)
+    server = [_sp("month=2026-06/data.parquet", b)]
+    local = {"month=2026-06/data.parquet": hashlib.md5(b).hexdigest()}
+
+    entry, changed, err = _sync_partitioned_table(
+        "issues", server, local, tmp_path, _fetcher({}), "R", rows=1)
+    assert err is None
+    assert changed is False
+    assert entry is not None  # still returns the current state entry
