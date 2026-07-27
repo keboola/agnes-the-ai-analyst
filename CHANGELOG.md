@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.35] - 2026-07-27
+
+### Added
+
 - **Partitioned local tables can now be distributed to analyst laptops via `agnes pull`.** Tables stored as a *directory* of parquet parts — Jira (hive `month=*/data.parquet`) and Keboola `sync_strategy=partitioned` (`<key>.parquet`) — were previously undistributable: the manifest/download/pull path assumed exactly one `{table}.parquet` per table, so the orchestrator wrote an empty hash, `/api/data/{id}/download` 404'd, and the client couldn't build a view. Now the whole chain is part-aware: `sync_state` gains a `parts` JSON column (per-part `{path, hash, size_bytes}`; DuckDB + Postgres, schema v100 / alembic `0047`); the orchestrator hashes each part (`_hash_table_parts`) and stores a rollup hash so the whole-table "changed?" compare + object-store mirror keep working; the manifest emits `parts`; `GET /api/data/{id}/download?part=<relpath>` serves a single part (path-traversal-guarded); and `agnes pull` fetches only the changed parts into `server/parquet/{id}/`, swaps them all-or-nothing (a failed part leaves the prior dir intact — never a silently-partial view), prunes server-dropped parts, and builds one hive-partitioned local view per table (`union_by_name=true, hive_partitioning=true`, byte-identical to the server view). Single-file tables are unchanged (`parts` is `NULL`/absent → treated as single-file). Incremental by design: an analyst re-pulls only the month(s) that changed.
 
 ### Changed
