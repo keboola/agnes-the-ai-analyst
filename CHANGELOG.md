@@ -16,6 +16,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Cloud-chat token streaming now actually reaches the browser** — the
+  final missing link after the broker/relay stream-through (#1020). The app
+  wraps responses in `GZipMiddleware`, which buffers a `StreamingResponse`
+  whole to compress it, re-collapsing the model's SSE completion into one
+  end-of-turn burst one hop above the broker. `/api/broker/anthropic` is now
+  gzip-skip-listed alongside the existing `/api/mcp` SSE endpoint, so the
+  streamed deltas pass through uncompressed and arrive incrementally.
+  Diagnosed with an in-sandbox trace: the in-sandbox CLI was receiving all
+  SSE events at a single timestamp (one text delta for a 500-char answer);
+  skip-listing restores true token-by-token delivery.
+
 ### Removed
 
 ### Internal
