@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.36] - 2026-07-27
+
+### Added
+
+### Changed
+
+### Fixed
+
 - **Cloud-chat token streaming now actually reaches the browser** — the
   final missing link after the broker/relay stream-through (#1020). The app
   wraps responses in `GZipMiddleware`, which buffers a `StreamingResponse`
