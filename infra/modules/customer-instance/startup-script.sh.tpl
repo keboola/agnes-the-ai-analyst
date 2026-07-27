@@ -646,7 +646,6 @@ LLM_DISPATCHER_API_KEY=$DISPATCHER_KEY
 %{ endif ~}
 COMPOSE_FILE=$COMPOSE_FILE_VALUE
 %{ if data_apps_enabled ~}
-COMPOSE_PROFILES=apps
 AGNES_DATA_APPS_ENABLED=true
 AGNES_DATA_APPS_RUNTIME_IMAGE=${data_apps_runtime_image}
 APPS_RUNNER_TOKEN=$APPS_RUNNER_TOKEN
@@ -674,6 +673,17 @@ COMPOSE_PROFILES_ARG=""
 if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
     COMPOSE_PROFILES_ARG="--profile tls"
 fi
+%{ if data_apps_enabled ~}
+# The `apps` profile MUST be a command-line --profile flag, not COMPOSE_PROFILES
+# in .env: docker compose does not merge the two — the moment ANY --profile flag
+# is passed (e.g. `--profile tls` on the default caddy/TLS instance) the
+# COMPOSE_PROFILES env var is ignored entirely, so an apps profile carried
+# through .env would be silently dropped and the apps-runner sidecar never start
+# (data-app deploys then 502). Multiple --profile flags DO union, so appending
+# here activates apps alongside tls. agnes-auto-upgrade.sh mirrors this so the
+# recurring upgrade tick keeps the sidecar running.
+COMPOSE_PROFILES_ARG="$COMPOSE_PROFILES_ARG --profile apps"
+%{ endif ~}
 
 # Honor COMPOSE_FILE from /opt/agnes/.env. The .env write above sets the
 # full list ``docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml``
