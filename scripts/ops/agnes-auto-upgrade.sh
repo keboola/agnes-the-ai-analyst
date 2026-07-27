@@ -149,7 +149,20 @@ IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # colon-separator so docker compose sees a unified list — interleaving
 # ``-f`` args and a COMPOSE_FILE env var is unspecified behaviour.
 export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml}"
+# Fold any COMPOSE_PROFILES from .env (e.g. the m-tier topology's
+# ``COMPOSE_PROFILES=mtier``) into explicit ``--profile`` flags up front. Docker
+# compose ignores COMPOSE_PROFILES entirely the moment ANY ``--profile`` flag is
+# present (they are not merged), so once we add ``--profile tls``/``--profile
+# apps`` below a bare COMPOSE_PROFILES env value would be silently dropped —
+# flipping ROLE_SPLIT off on an mtier VM. Converting it to flags here keeps every
+# profile active regardless of the tls/apps combination.
 PROFILE_ARGS=()
+if [ -n "$COMPOSE_PROFILES" ]; then
+    IFS=',' read -ra _cp_list <<< "$COMPOSE_PROFILES"
+    for _cp in "${_cp_list[@]}"; do
+        [ -n "$_cp" ] && PROFILE_ARGS+=( --profile "$_cp" )
+    done
+fi
 
 # Re-fetch the bind-mounted config files (compose overlays + Caddyfile)
 # from the OSS main branch on every tick. Without this, an image-only
@@ -237,7 +250,7 @@ if [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem
       *:docker-compose.tls.yml:*) : ;;
       *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.tls.yml" ;;
     esac
-    PROFILE_ARGS=( --profile tls )
+    PROFILE_ARGS+=( --profile tls )
 elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ]; then
     logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
 fi
