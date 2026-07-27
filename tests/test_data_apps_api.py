@@ -571,7 +571,10 @@ class TestDeploy:
         slug, spec, config_json = fake_runner.up_calls[0]
         assert slug == "sapp"
         assert "dataApp" in config_json
-        assert config_json["dataApp"]["git"]["repository"].startswith("http://app:8000/data-apps.git/")
+        # Internal host, now with the push token embedded (the runtime image
+        # won't add creds to a plain-HTTP clone URL — src/data_apps/spec.py).
+        assert config_json["dataApp"]["git"]["repository"].startswith("http://agnes:")
+        assert "@app:8000/data-apps.git/" in config_json["dataApp"]["git"]["repository"]
         assert "secrets" in config_json["dataApp"]
 
         row = client_as_user.get("/api/data-apps/sapp").json()
@@ -1341,7 +1344,10 @@ class TestGitCredential:
         r = client_as_user.post("/api/data-apps/sapp/deploy", json={})
         assert r.status_code == 200, r.text
         _, _, config_json = fake_runner.up_calls[0]
-        assert config_json["dataApp"]["git"]["repository"].startswith("http://app:8000/data-apps.git/")
+        # Internal host, now with the push token embedded (the runtime image
+        # won't add creds to a plain-HTTP clone URL — src/data_apps/spec.py).
+        assert config_json["dataApp"]["git"]["repository"].startswith("http://agnes:")
+        assert "@app:8000/data-apps.git/" in config_json["dataApp"]["git"]["repository"]
 
 
 def _extract_jwt_from_clone_url(url: str) -> str:
