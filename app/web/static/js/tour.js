@@ -9,7 +9,8 @@
  *
  * State:
  *   localStorage  'agnes.tour.<id>.seen'  — don't auto-launch a seen tour
- *   sessionStorage 'agnes.tour.pending'   — cross-page resume {id, index}
+ *   sessionStorage 'agnes.tour.pending'   — cross-page resume
+ *                                           {id, index, ts, skipped?}
  *
  * Usage:
  *   import { launchTour, TOURS } from './tour.js';
@@ -124,9 +125,14 @@ function markSeen(id) {
   } catch (_) { /* storage unavailable — non-fatal */ }
 }
 
-function stashPending(id, index) {
+function stashPending(id, index, skipped) {
   try {
-    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ id, index, ts: Date.now() }));
+    // `skipped` rides along so steps dropped for a missing anchor stay dropped
+    // across the tour's cross-page hops — otherwise the progress dots would
+    // re-count them after every navigation.
+    const rec = { id, index, ts: Date.now() };
+    if (skipped && skipped.size) rec.skipped = Array.from(skipped);
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify(rec));
   } catch (_) { /* storage unavailable — non-fatal */ }
 }
 
@@ -146,19 +152,40 @@ function getPending() {
 }
 
 // ── Journey patch helper (fire-and-forget) ──────────────────────────────────
-// Marks all journey steps done via the existing /api/chat/journey endpoint.
-async function markAllJourneyDone() {
+// Mark ONLY the journey steps the tour genuinely walks the user through.
+//
+// The tour visits My Stack (explored_stack) and the Marketplace
+// (catalog_discovered), so it may assert those. It must NOT touch the
+// activity-driven flags — chat_onboarding.js deliberately leaves those to real
+// activity: `first_asked` completes when a question is asked, and
+// `stack_setup_done` when a package is actually subscribed. `stack_setup_done`
+// additionally gates the in-chat gap resolver, so asserting it here would
+// permanently suppress the "your Stack is empty, here's what I'd add" card for
+// anyone who takes the tour before asking their first question.
+//
+// `use_anywhere` is likewise left alone: the final step OFFERS "Connect my AI
+// tools" but finishing the tour is not the same as having connected one.
+async function markTourStepsDone() {
   try {
     await fetch('/api/chat/journey', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        first_asked: true,
-        stack_setup_done: true,
         explored_stack: true,
         catalog_discovered: true,
-        use_anywhere: true,
       }),
+    });
+  } catch (_) { /* fire-and-forget — onboarding is soft state */ }
+}
+
+// Mark the "Use Agnes from other AI tools" step — fired when the final step's
+// "Connect my AI tools" button navigates to the AI Connector page.
+async function markUseAnywhereDone() {
+  try {
+    await fetch('/api/chat/journey', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ use_anywhere: true }),
     });
   } catch (_) { /* fire-and-forget — onboarding is soft state */ }
 }
@@ -193,7 +220,7 @@ function pathMatches(page, path) {
   return norm(page) === norm(path);
 }
 
-function _startTour(id, steps, index) {
+function _startTour(id, steps, index, skipped) {
   _endTour(false); // clean up any prior run
   // Wire Escape + resize/scroll reflow for EVERY launch path (direct
   // launchTour on the current page as well as resumePendingTour). Guarded by
@@ -244,9 +271,12 @@ function _showStep(index) {
   if (!step.centered && step.selector) {
     anchor = document.querySelector(step.selector);
     if (!anchor) {
-      // Resilient: the anchor is absent here. Route through _gotoStep so a next
-      // step on another page cross-navigates instead of recursing on the current
-      // page (which would blow through cross-page steps to the final screen).
+      // Resilient: the anchor is absent here. Record it so the progress dots
+      // stop counting a step the user will never see, then route through
+      // _gotoStep so a next step on another page cross-navigates instead of
+      // recursing on the current page (which would blow through cross-page
+      // steps to the final screen).
+      _active.skipped.add(index);
       _gotoStep(index + 1);
       return;
     }
@@ -275,7 +305,7 @@ function _showStep(index) {
   // cross-page hops), so a reload mid-tour resumes here — and re-stamp its
   // freshness. Combined with the RESUME_FRESH_MS window, an abandoned tour
   // stops re-popping once the record goes stale.
-  stashPending(_active.id, index);
+  stashPending(_active.id, index, _active.skipped);
 
   // Build popover.
   const popover = _buildPopover(step, index, steps.length);
@@ -381,12 +411,19 @@ function _buildPopover(step, index, total) {
   // Dots
   const dots = document.createElement('div');
   dots.className = 'tour-dots';
-  dots.setAttribute('aria-label', `Step ${index + 1} of ${total}`);
-  for (let i = 0; i < total; i++) {
+  // Count only the steps that will actually render. A step whose anchor was
+  // missing is dropped from the progress indicator entirely, so the label never
+  // promises a step the user cannot reach.
+  const skipped = (_active && _active.skipped) || new Set();
+  const shown = [];
+  for (let i = 0; i < total; i++) if (!skipped.has(i)) shown.push(i);
+  const position = shown.indexOf(index);
+  dots.setAttribute('aria-label', `Step ${position + 1} of ${shown.length}`);
+  shown.forEach((i) => {
     const dot = document.createElement('span');
     dot.className = 'tour-dot' + (i === index ? ' on' : '');
     dots.appendChild(dot);
-  }
+  });
 
   // Actions
   const actions = document.createElement('div');
@@ -407,7 +444,7 @@ function _buildPopover(step, index, total) {
     finishBtn.textContent = 'Finish onboarding';
     finishBtn.addEventListener('click', async () => {
       markSeen(_active ? _active.id : 'stack');
-      await markAllJourneyDone();
+      await markTourStepsDone();
       _endTour(true);
       window.location.href = '/chat';
     });
@@ -418,6 +455,11 @@ function _buildPopover(step, index, total) {
     connectBtn.textContent = 'Connect my AI tools';
     connectBtn.addEventListener('click', () => {
       markSeen(_active ? _active.id : 'stack');
+      // Navigating to the AI Connector is exactly what the journey panel's
+      // "Use Agnes from other AI tools" step does, and that step marks itself
+      // done on click — mirror it so the same action doesn't behave two ways.
+      // Fire-and-forget: the navigation below must not wait on it.
+      markUseAnywhereDone();
       _endTour(true);
       // The AI Connector page (/me/ai-connector) is the per-tool MCP guide
       // (Claude Code · Cursor · VS Code · …) that matches this button's intent
@@ -489,7 +531,7 @@ function _gotoStep(nextIndex) {
   if (!pathMatches(nextStep.page, window.location.pathname)) {
     // Cross-page: persist progress (as pending, NOT "seen" — the tour isn't
     // done) + navigate. resumePendingTour resumes it on the destination page.
-    stashPending(id, nextIndex);
+    stashPending(id, nextIndex, _active.skipped);
     window.location.href = nextStep.page;
     return;
   }
@@ -646,7 +688,7 @@ export function resumePendingTour() {
     return false;
   }
 
-  const { id, index } = pending;
+  const { id, index, skipped } = pending;
   const steps = TOURS[id];
   if (!steps) { clearPending(); return false; }
 
@@ -656,6 +698,6 @@ export function resumePendingTour() {
   if (!pathMatches(step.page, window.location.pathname)) return false;
 
   // Resume — don't clearPending yet; _endTour will. _startTour attaches listeners.
-  _startTour(id, steps, index);
+  _startTour(id, steps, index, skipped);
   return true;
 }
