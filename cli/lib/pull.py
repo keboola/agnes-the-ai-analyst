@@ -521,11 +521,14 @@ def _sync_partitioned_table(
 ) -> tuple[dict | None, bool, str | None]:
     """Incrementally sync one partitioned table into ``parquet_dir/{tid}/``.
 
-    All-or-nothing: changed parts are fetched into a staging dir and md5-
-    verified there; only when EVERY fetched part verifies are they swapped
+    Staged-then-swapped: changed parts are fetched into a staging dir and
+    md5-verified there; only when EVERY fetched part verifies are they moved
     into the table dir (unchanged parts stay put) and server-dropped parts
-    pruned. On any failure nothing is swapped — the prior table dir is left
-    intact, so a partial pull never yields a silently-undercounting view.
+    pruned. On any fetch/verify failure nothing is moved — the prior table dir
+    is left intact. The per-part moves themselves are not one atomic unit, so a
+    process crash *during* the swap can leave a mix of old/new parts; that is
+    self-healing — ``local_tables`` is only updated on success, so the next
+    pull re-detects and re-syncs the affected parts.
 
     ``fetch_part(relpath, dest)`` fetches one part's bytes to ``dest`` (its
     parent dir already exists) — injected so the download transport is
