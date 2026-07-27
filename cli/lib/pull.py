@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -465,6 +466,121 @@ def _override_server_env(server_url: str, token: str) -> Iterator[None]:
             os.environ["AGNES_TOKEN"] = prev_token
 
 
+def _diff_parts(
+    server_parts: list[dict], local_parts: dict, table_dir: Path
+) -> tuple[list[dict], set[str]]:
+    """Compute ``(fetch, prune)`` for a partitioned table.
+
+    ``fetch`` = server part dicts whose local hash differs OR whose file is
+    missing on disk (a matching local hash is NOT proof the file is present —
+    same existence-guard rationale as the single-file path). ``prune`` =
+    relpaths present locally (on disk or in prior state) that the server no
+    longer lists.
+    """
+    server_by_path = {p["path"]: p for p in server_parts}
+    fetch = [
+        p
+        for path, p in server_by_path.items()
+        if local_parts.get(path) != p["hash"] or not (table_dir / path).exists()
+    ]
+    on_disk: set[str] = set()
+    if table_dir.is_dir():
+        for f in table_dir.rglob("*.parquet"):
+            on_disk.add(f.relative_to(table_dir).as_posix())
+    prune = (on_disk | set(local_parts)) - set(server_by_path)
+    return fetch, prune
+
+
+def _drop_stale_layout(parquet_dir: Path, tid: str, *, partitioned: bool) -> None:
+    """Remove the local copy of the OTHER storage layout after a table
+    switches single-file <-> partitioned on the server.
+
+    Without this, both ``{tid}.parquet`` (single-file) and ``{tid}/`` (parts)
+    can coexist locally; the view rebuild would then build a view from
+    whichever it iterates first and could serve the abandoned layout's stale
+    rows. Called after a successful sync in each direction.
+    """
+    if partitioned:
+        # Now a directory of parts → drop the stale single-file copy.
+        (parquet_dir / f"{tid}.parquet").unlink(missing_ok=True)
+    else:
+        # Now a single file → drop the stale parts directory.
+        stale_dir = parquet_dir / tid
+        if stale_dir.is_dir():
+            shutil.rmtree(stale_dir, ignore_errors=True)
+
+
+def _sync_partitioned_table(
+    tid: str,
+    server_parts: list[dict],
+    local_parts: dict,
+    parquet_dir: Path,
+    fetch_part,
+    rollup_hash: str,
+    rows: int = 0,
+) -> tuple[dict | None, bool, str | None]:
+    """Incrementally sync one partitioned table into ``parquet_dir/{tid}/``.
+
+    Staged-then-swapped: changed parts are fetched into a staging dir and
+    md5-verified there; only when EVERY fetched part verifies are they moved
+    into the table dir (unchanged parts stay put) and server-dropped parts
+    pruned. On any fetch/verify failure nothing is moved — the prior table dir
+    is left intact. The per-part moves themselves are not one atomic unit, so a
+    process crash *during* the swap can leave a mix of old/new parts; that is
+    self-healing — ``local_tables`` is only updated on success, so the next
+    pull re-detects and re-syncs the affected parts.
+
+    ``fetch_part(relpath, dest)`` fetches one part's bytes to ``dest`` (its
+    parent dir already exists) — injected so the download transport is
+    testable. Returns ``(local_entry, changed, None)`` or
+    ``(None, False, error)``. ``changed`` is True only when at least one part
+    was fetched or pruned — so a no-op sync is not over-counted as an update.
+    """
+    table_dir = parquet_dir / tid
+    fetch, prune = _diff_parts(server_parts, local_parts, table_dir)
+    staging = parquet_dir / f".staging-{tid}"
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    try:
+        staged: dict[str, Path] = {}
+        for part in fetch:
+            relpath, expected = part["path"], part["hash"]
+            dest = staging / relpath
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            fetch_part(relpath, dest)
+            got = _file_md5(dest)
+            if got != expected:
+                return None, False, f"part {relpath} hash mismatch: expected {expected} got {got}"
+            staged[relpath] = dest
+        # Every fetched part verified → promote atomically, then prune.
+        for relpath, dest in staged.items():
+            final = table_dir / relpath
+            final.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(dest, final)
+        for relpath in prune:
+            (table_dir / relpath).unlink(missing_ok=True)
+        return (
+            {
+                "hash": rollup_hash,
+                "parts": {p["path"]: p["hash"] for p in server_parts},
+                "rows": rows,
+                "size_bytes": sum(int(p.get("size_bytes") or 0) for p in server_parts),
+            },
+            bool(fetch or prune),
+            None,
+        )
+    except Exception as exc:
+        # A transport/IO error (e.g. `stream_download` network blip) or a
+        # promote/prune failure must be RETURNED as a per-table error, not
+        # raised — otherwise one flaky partitioned table would abort the whole
+        # pull and discard tables that already downloaded fine. All-or-nothing
+        # still holds: nothing was promoted, the prior table dir is intact.
+        return None, False, f"partitioned sync failed: {exc}"
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def run_pull(
     server_url: str,
     token: str,
@@ -576,6 +692,7 @@ def run_pull(
         # the download and the downstream DuckDB view rebuild fails on a
         # missing file. Hash-equal-but-file-missing → force re-download.
         to_download: list[str] = []
+        partitioned_tids: list[str] = []
         non_remote_total = 0
         parquet_dir = workspace / "server" / "parquet"
         for tid, info in server_tables.items():
@@ -603,6 +720,14 @@ def run_pull(
             # row HAS a server parquet, we just don't ship it.
             if info.get("server_only"):
                 continue
+            # Partitioned tables (partitioned distribution) are a directory of
+            # parts under parquet_dir/{tid}/, synced per-part below — NOT via
+            # the single-file `_download_one` path (which fetches one
+            # {tid}.parquet). Always attempt the sync; `_diff_parts` makes it a
+            # no-op when every part is already current.
+            if info.get("parts") is not None:
+                partitioned_tids.append(tid)
+                continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
             target = parquet_dir / f"{tid}.parquet"
@@ -628,7 +753,7 @@ def run_pull(
         # bypass-uvicorn fix (Caddy file_server) is the other half —
         # without it, parallel downloads would still queue on the single
         # uvicorn worker.
-        if to_download and not parquet_dir.exists():
+        if (to_download or partitioned_tids) and not parquet_dir.exists():
             parquet_dir.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -835,10 +960,54 @@ def run_pull(
                 result.errors.append({"table": tid, "error": err})
             else:
                 local_tables[tid] = entry
+                # Drop a stale parts dir if this table just switched
+                # partitioned -> single-file.
+                _drop_stale_layout(parquet_dir, tid, partitioned=False)
                 result.tables_updated += 1
                 if source == "signed_url":
                     result.tables_via_signed_url += 1
                 elif source == "app":
+                    result.tables_via_app += 1
+
+        # 4a-parts. Partitioned tables — per-part incremental sync into
+        # parquet_dir/{tid}/. Only changed parts are fetched; the swap is
+        # all-or-nothing (a failed part leaves the prior dir intact, never a
+        # silently-partial view); server-dropped parts are pruned.
+        from urllib.parse import quote as _urlquote
+
+        for tid in partitioned_tids:
+            info = server_tables[tid]
+            server_parts = info.get("parts") or []
+            local_parts = (local_tables.get(tid) or {}).get("parts") or {}
+
+            def _fetch_part(relpath: str, dest: Path, _tid: str = tid) -> None:
+                stream_download(
+                    f"/api/data/{_tid}/download?part={_urlquote(relpath)}",
+                    str(dest),
+                )
+
+            entry, changed, err = _sync_partitioned_table(
+                tid,
+                server_parts,
+                local_parts,
+                parquet_dir,
+                _fetch_part,
+                info.get("hash", ""),
+                rows=info.get("rows", 0),
+            )
+            if err is not None:
+                result.errors.append({"table": tid, "error": err})
+            else:
+                local_tables[tid] = entry
+                # Drop a stale single-file copy if this table just switched
+                # single-file -> partitioned.
+                _drop_stale_layout(parquet_dir, tid, partitioned=True)
+                # Only count a real change — a no-op sync (every part already
+                # current) must not inflate the "tables updated" summary.
+                if changed:
+                    result.tables_updated += 1
+                    # Parts are fetched via the app-served `?part=` route, so
+                    # keep the per-route breakdown summing to tables_updated.
                     result.tables_via_app += 1
 
         # 4b. #506 — prune local parquets that left the authorized typed
@@ -870,6 +1039,21 @@ def run_pull(
                     continue
                 pq_file.unlink(missing_ok=True)
                 local_tables.pop(stem, None)
+                result.tables_removed += 1
+            # Same prune for partitioned tables, which live as a DIRECTORY of
+            # parts (parquet_dir/{tid}/) rather than a top-level file — a
+            # de-authorized or now-server_only partitioned table must have its
+            # whole dir removed, else the view rebuild would resurrect it and
+            # leak data the analyst no longer has access to.
+            for tdir in sorted(p for p in parquet_dir.iterdir() if p.is_dir()):
+                if tdir.name.startswith(".staging-"):
+                    continue
+                tid = tdir.name
+                authorized = authorized_names is None or tid in authorized_names
+                if authorized and tid not in server_only_names:
+                    continue
+                shutil.rmtree(tdir, ignore_errors=True)
+                local_tables.pop(tid, None)
                 result.tables_removed += 1
 
         # 4c. K3 (#798) — knowledge artifacts: same download/verify/promote/
@@ -1226,17 +1410,43 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
         # download, partial write left over from a previous run, ...) must
         # not abort the whole rebuild — skip and keep going.
         if parquet_dir.exists():
-            for pq_file in parquet_dir.rglob("*.parquet"):
-                view_name = pq_file.stem
-                if view_name in existing_tables:
+            for entry in sorted(parquet_dir.iterdir()):
+                # Interrupted partitioned syncs leave a `.staging-<tid>` dir;
+                # never expose it as a view.
+                if entry.name.startswith(".staging-"):
                     continue
-                if not _is_valid_parquet(pq_file):
-                    continue
-                abs_path = str(pq_file.resolve())
-                try:
-                    conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
-                except duckdb.Error:
-                    continue
+                if entry.is_dir():
+                    # Partitioned table: ONE view over all parts (Jira hive
+                    # `month=*/data.parquet`, Keboola flat `<key>.parquet`),
+                    # unioned + hive-partitioned so it reads byte-identically
+                    # to the server-side view and a per-month schema drift is
+                    # tolerated. View name = table id (dir name), NOT the part
+                    # file stems (which all collide on `data`).
+                    view_name = entry.name
+                    if view_name in existing_tables:
+                        continue
+                    if not any(_is_valid_parquet(p) for p in entry.rglob("*.parquet")):
+                        continue
+                    glob_lit = str((entry / "**" / "*.parquet").resolve()).replace("'", "''")
+                    try:
+                        conn.execute(
+                            f'CREATE VIEW "{view_name}" AS SELECT * FROM '
+                            f"read_parquet('{glob_lit}', union_by_name=true, hive_partitioning=true)"
+                        )
+                    except duckdb.Error:
+                        continue
+                elif entry.suffix == ".parquet":
+                    # Single-file table.
+                    view_name = entry.stem
+                    if view_name in existing_tables:
+                        continue
+                    if not _is_valid_parquet(entry):
+                        continue
+                    abs_path = str(entry.resolve()).replace("'", "''")
+                    try:
+                        conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+                    except duckdb.Error:
+                        continue
     finally:
         conn.close()
 
