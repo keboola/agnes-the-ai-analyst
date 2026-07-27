@@ -248,7 +248,7 @@ def test_manifest_entry_parts_none_for_single_file_table():
     reg = {"id": "account", "name": "account", "query_mode": "materialized", "source_type": "keboola"}
 
     entry = _table_manifest_entry(state, reg)
-    assert entry["parts"] is None
+    assert "parts" not in entry  # single-file entries stay byte-identical
 
 
 def test_flat_manifest_tables_dict_carries_parts_for_partitioned(tmp_path, monkeypatch):
@@ -284,6 +284,6 @@ def test_flat_manifest_tables_dict_carries_parts_for_partitioned(tmp_path, monke
 
         manifest = _build_manifest_for_user(conn, {"id": "admin1", "email": "a@x.com"})
         assert manifest["tables"]["issues"]["parts"] == parts
-        assert manifest["tables"]["account"]["parts"] is None
+        assert "parts" not in manifest["tables"]["account"]  # single-file: no parts key
     finally:
         conn.close()
