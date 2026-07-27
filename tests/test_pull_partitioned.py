@@ -165,3 +165,32 @@ def test_sync_partitioned_download_error_is_returned_not_raised(tmp_path):
     assert err is not None and "network blip" in err
     # prior data untouched (all-or-nothing)
     assert (tmp_path / "issues" / "month=2026-05" / "data.parquet").read_bytes() == b"prior-good"
+
+
+def test_drop_stale_layout_removes_flat_when_now_partitioned(tmp_path):
+    """A table that switched single-file -> partitioned: the stale
+    {tid}.parquet must be removed so the view build can't resurrect it
+    (Devin re-review: layout-switch stale data)."""
+    from cli.lib.pull import _drop_stale_layout
+    (tmp_path / "issues.parquet").write_bytes(b"stale-single")
+    (tmp_path / "issues" / "month=2026-06").mkdir(parents=True)
+    (tmp_path / "issues" / "month=2026-06" / "data.parquet").write_bytes(b"new")
+
+    _drop_stale_layout(tmp_path, "issues", partitioned=True)
+
+    assert not (tmp_path / "issues.parquet").exists()          # stale flat gone
+    assert (tmp_path / "issues" / "month=2026-06" / "data.parquet").exists()  # dir kept
+
+
+def test_drop_stale_layout_removes_dir_when_now_single_file(tmp_path):
+    """A table that switched partitioned -> single-file: the stale {tid}/
+    directory must be removed."""
+    from cli.lib.pull import _drop_stale_layout
+    (tmp_path / "issues" / "month=2026-06").mkdir(parents=True)
+    (tmp_path / "issues" / "month=2026-06" / "data.parquet").write_bytes(b"stale-parts")
+    (tmp_path / "issues.parquet").write_bytes(b"new-single")
+
+    _drop_stale_layout(tmp_path, "issues", partitioned=False)
+
+    assert not (tmp_path / "issues").exists()                  # stale dir gone
+    assert (tmp_path / "issues.parquet").read_bytes() == b"new-single"  # file kept

@@ -82,3 +82,20 @@ def test_staging_dir_is_ignored(tmp_path):
         assert not any(n.startswith(".staging") for n in names)
     finally:
         conn.close()
+
+
+def test_flat_partitioned_layout_builds_queryable_view(tmp_path):
+    """Keboola flat-partitioned layout ({key}.parquet, NO key=value dirs) must
+    build a queryable view — hive_partitioning=true must not error on it
+    (Devin re-review: flat layout untested)."""
+    pq = tmp_path / "server" / "parquet"
+    _write_parquet(pq / "cost" / "2025_11.parquet", 4)
+    _write_parquet(pq / "cost" / "2025_12.parquet", 6)
+
+    _rebuild_duckdb_views(tmp_path, pq)
+
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM cost").fetchone()[0] == 10
+    finally:
+        conn.close()

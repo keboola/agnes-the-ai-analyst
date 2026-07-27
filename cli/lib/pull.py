@@ -491,6 +491,25 @@ def _diff_parts(
     return fetch, prune
 
 
+def _drop_stale_layout(parquet_dir: Path, tid: str, *, partitioned: bool) -> None:
+    """Remove the local copy of the OTHER storage layout after a table
+    switches single-file <-> partitioned on the server.
+
+    Without this, both ``{tid}.parquet`` (single-file) and ``{tid}/`` (parts)
+    can coexist locally; the view rebuild would then build a view from
+    whichever it iterates first and could serve the abandoned layout's stale
+    rows. Called after a successful sync in each direction.
+    """
+    if partitioned:
+        # Now a directory of parts → drop the stale single-file copy.
+        (parquet_dir / f"{tid}.parquet").unlink(missing_ok=True)
+    else:
+        # Now a single file → drop the stale parts directory.
+        stale_dir = parquet_dir / tid
+        if stale_dir.is_dir():
+            shutil.rmtree(stale_dir, ignore_errors=True)
+
+
 def _sync_partitioned_table(
     tid: str,
     server_parts: list[dict],
@@ -938,6 +957,9 @@ def run_pull(
                 result.errors.append({"table": tid, "error": err})
             else:
                 local_tables[tid] = entry
+                # Drop a stale parts dir if this table just switched
+                # partitioned -> single-file.
+                _drop_stale_layout(parquet_dir, tid, partitioned=False)
                 result.tables_updated += 1
                 if source == "signed_url":
                     result.tables_via_signed_url += 1
@@ -974,6 +996,9 @@ def run_pull(
                 result.errors.append({"table": tid, "error": err})
             else:
                 local_tables[tid] = entry
+                # Drop a stale single-file copy if this table just switched
+                # single-file -> partitioned.
+                _drop_stale_layout(parquet_dir, tid, partitioned=True)
                 # Only count a real change — a no-op sync (every part already
                 # current) must not inflate the "tables updated" summary.
                 if changed:
