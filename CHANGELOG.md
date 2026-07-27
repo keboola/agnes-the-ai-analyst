@@ -14,6 +14,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **Cloud-chat sessions get a resend notice on server restart.** A chat whose
+  turn was mid-generation when the server drained (deploy/restart) previously
+  just stopped mid-answer with the composer wedged in the "running" state (it
+  only clears on done/error/cancelled). `ChatManager.shutdown()` now
+  broadcasts a `server_restarting` notice + a `done` frame to any in-flight
+  session before pausing/killing it, so the client can prompt a resend
+  against the replacement process. Idle sessions drain silently as before.
+
 ### Fixed
 
 ### Removed

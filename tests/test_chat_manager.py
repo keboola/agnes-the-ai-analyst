@@ -3336,3 +3336,61 @@ class TestRestoreContext:
             await attach_task
 
         asyncio.run(_run())
+
+
+def test_shutdown_drains_inflight_turn_with_notice(tmp_path):
+    """A session whose turn is IN FLIGHT at shutdown gets a user-facing
+    'server_restarting' notice + a done frame (so the composer unwedges),
+    THEN is paused/killed — instead of the answer stopping mid-generation
+    with no explanation (robustness parity drain notice)."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None)
+        # Simulate a turn in progress.
+        mgr._live[s.id].turn_in_flight = True
+
+        await mgr.shutdown()
+
+        kinds = [m.get("kind") for m in ws.sent if m.get("type") == "error"]
+        assert "server_restarting" in kinds, f"expected drain notice; got {ws.sent}"
+        assert any(m.get("type") == "done" for m in ws.sent), "expected a done frame to unwedge the composer"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_shutdown_no_notice_when_idle(tmp_path):
+    """A session with no in-flight turn is drained silently (no spurious
+    server_restarting notice)."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None)
+        mgr._live[s.id].turn_in_flight = False
+
+        await mgr.shutdown()
+
+        kinds = [m.get("kind") for m in ws.sent if m.get("type") == "error"]
+        assert "server_restarting" not in kinds
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())

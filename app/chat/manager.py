@@ -635,12 +635,34 @@ class ChatManager:
         When on_detach='pause', ACTIVE sessions are paused so they survive the
         restart (sandboxes preserve memory + running processes). When
         on_detach='kill' (or pause fails), the session is killed as before.
+
+        Drain notice (robustness parity): a session whose turn is IN FLIGHT
+        when the server goes down would otherwise show the answer simply stop
+        mid-generation with no explanation — the frontend keeps the composer
+        wedged in the "running" state (it only clears on done/error/cancelled).
+        Before pausing/killing, such sessions get a user-facing notice frame
+        plus a ``done`` so the client can prompt a resend against the
+        replacement process. Best-effort and per-session isolated; a broadcast
+        failure never blocks the rest of the drain.
         """
         chat_ids = list(self._live.keys())
         for chat_id in chat_ids:
             live = self._live.get(chat_id)
             if live is None:
                 continue
+            if live.turn_in_flight:
+                try:
+                    await self._broadcast(
+                        live,
+                        {
+                            "type": "error",
+                            "kind": "server_restarting",
+                            "message": "The chat server is restarting — please resend your last message.",
+                        },
+                    )
+                    await self._broadcast(live, {"type": "done"})
+                except Exception:
+                    logger.exception("shutdown drain notice failed for %s", chat_id)
             if live.state == SessionState.ACTIVE and self._config.on_detach == "pause":
                 try:
                     await self._pause_live(live)
