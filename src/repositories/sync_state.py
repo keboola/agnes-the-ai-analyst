@@ -1,10 +1,28 @@
 """Repository for sync state and history."""
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional, List, Dict
 
 import duckdb
+
+
+def _deserialize_parts(d: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Normalize the ``parts`` field to ``list[dict] | None``.
+
+    DuckDB returns a JSON column as a *string*; PG JSONB returns an already
+    parsed object. Both repos route reads through this so the cross-engine
+    contract yields identical Python values.
+    """
+    if d is None:
+        return None
+    v = d.get("parts")
+    if isinstance(v, (bytes, bytearray)):
+        v = v.decode("utf-8")
+    if isinstance(v, str):
+        d["parts"] = json.loads(v) if v else None
+    return d
 
 
 class SyncStateRepository:
@@ -15,13 +33,13 @@ class SyncStateRepository:
         if not row:
             return None
         columns = [desc[0] for desc in self.conn.description]
-        return dict(zip(columns, row))
+        return _deserialize_parts(dict(zip(columns, row)))
 
     def _rows_to_dicts(self, rows) -> List[Dict[str, Any]]:
         if not rows:
             return []
         columns = [desc[0] for desc in self.conn.description]
-        return [dict(zip(columns, row)) for row in rows]
+        return [_deserialize_parts(dict(zip(columns, row))) for row in rows]
 
     def get_table_state(self, table_id: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute("SELECT * FROM sync_state WHERE table_id = ?", [table_id]).fetchone()
@@ -47,6 +65,7 @@ class SyncStateRepository:
         error: Optional[str] = None,
         duration_ms: Optional[int] = None,
         bump_last_sync: bool = True,
+        parts: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Upsert the row's sync bookkeeping.
 
@@ -54,12 +73,18 @@ class SyncStateRepository:
         touching ``last_sync`` (NULL on a first-ever write) — used by the
         filesystem-fallback publish for materialized rows, whose schedule
         gate reads ``last_sync`` and must stay open for same-day retries.
+
+        ``parts`` is the per-partition manifest for a partitioned table — a
+        list of ``{path, hash, size_bytes}``. ``None`` (the default) means a
+        single-file table and writes SQL NULL, so the manifest/pull keep
+        treating it as single-file (backward compatible).
         """
         now = datetime.now(timezone.utc) if bump_last_sync else None
+        parts_json = json.dumps(parts) if parts is not None else None
         self.conn.execute(
             """INSERT INTO sync_state (table_id, last_sync, rows, file_size_bytes,
-                uncompressed_size_bytes, columns, hash, status, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                uncompressed_size_bytes, columns, hash, parts, status, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (table_id) DO UPDATE SET
                 last_sync = COALESCE(excluded.last_sync, sync_state.last_sync),
                 rows = excluded.rows,
@@ -67,9 +92,10 @@ class SyncStateRepository:
                 uncompressed_size_bytes = excluded.uncompressed_size_bytes,
                 columns = excluded.columns,
                 hash = excluded.hash,
+                parts = excluded.parts,
                 status = excluded.status,
                 error = excluded.error""",
-            [table_id, now, rows, file_size_bytes, uncompressed_size_bytes, columns, hash, status, error],
+            [table_id, now, rows, file_size_bytes, uncompressed_size_bytes, columns, hash, parts_json, status, error],
         )
         # History rows always carry a real timestamp — `now` is None when the
         # caller preserves last_sync, but the history event still happened.

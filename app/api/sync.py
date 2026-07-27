@@ -1267,6 +1267,12 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
         "name": name,
         "hash": state.get("hash", ""),
         "md5": state.get("hash", ""),
+        # Per-partition manifest for partitioned tables (partitioned
+        # distribution). ``None`` for single-file tables — the CLI treats a
+        # missing/None ``parts`` as single-file (backward compatible). The
+        # whole-table ``hash`` above is the rollup of the sorted part hashes,
+        # so the cheap "changed?" compare + object-store mirror still work.
+        "parts": state.get("parts"),
         "size_bytes": state.get("file_size_bytes", 0),
         "rows": state.get("rows", 0),
         "query_mode": reg.get("query_mode") or "local",

@@ -959,3 +959,28 @@ def test_v97_db_upgrades_to_v98(tmp_path):
     row = conn.execute("SELECT relay_protocol_version FROM chat_sessions WHERE id = 'chat_keep'").fetchone()
     assert row == (None,)
     conn.close()
+
+
+def test_v99_db_migrates_to_v100_adds_sync_state_parts(tmp_path):
+    """A v99 DB whose ``sync_state`` predates the ``parts`` column upgrades
+    to v100 via ``_v99_to_v100``, adding ``parts`` (NULL on existing rows)
+    without losing data. ``parts`` has no FK dependents, so this simulates a
+    genuinely column-free table by dropping it."""
+    db_path = tmp_path / "v99.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    # Simulate the pre-v100 shape: sync_state without `parts`, version 99.
+    conn.execute("ALTER TABLE sync_state DROP COLUMN parts")
+    conn.execute("UPDATE schema_version SET version = 99")
+    conn.execute("INSERT INTO sync_state (table_id, rows, hash, status) VALUES ('keep', 7, 'h', 'ok')")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('sync_state')").fetchall()}
+    assert "parts" in cols
+    row = conn.execute("SELECT rows, parts FROM sync_state WHERE table_id = 'keep'").fetchone()
+    assert row == (7, None)  # data preserved, parts NULL on the legacy row
+    conn.close()

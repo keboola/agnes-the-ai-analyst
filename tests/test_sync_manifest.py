@@ -212,3 +212,40 @@ def test_manifest_defaults_query_mode_local_for_unregistered_state(tmp_path, mon
         assert manifest["tables"]["orphan"]["source_type"] == ""
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# parts[] surfaced in the manifest (partitioned distribution). A partitioned
+# table's per-part list rides through to the manifest entry; single-file
+# tables carry parts=None (backward compatible).
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_entry_includes_parts_for_partitioned_table():
+    from app.api.sync import _table_manifest_entry
+
+    parts = [
+        {"path": "month=2026-06/data.parquet", "hash": "aa", "size_bytes": 100},
+        {"path": "month=2026-07/data.parquet", "hash": "bb", "size_bytes": 250},
+    ]
+    state = {
+        "table_id": "issues", "hash": "rollup", "file_size_bytes": 350,
+        "rows": 5, "parts": parts, "last_sync": None,
+    }
+    reg = {"id": "issues", "name": "issues", "query_mode": "local", "source_type": "jira"}
+
+    entry = _table_manifest_entry(state, reg)
+    assert entry["parts"] == parts
+    # Whole-table fields still present for the single-compare fast path.
+    assert entry["hash"] == "rollup"
+    assert entry["size_bytes"] == 350
+
+
+def test_manifest_entry_parts_none_for_single_file_table():
+    from app.api.sync import _table_manifest_entry
+
+    state = {"table_id": "account", "hash": "h", "file_size_bytes": 10, "rows": 1, "last_sync": None}
+    reg = {"id": "account", "name": "account", "query_mode": "materialized", "source_type": "keboola"}
+
+    entry = _table_manifest_entry(state, reg)
+    assert entry["parts"] is None
