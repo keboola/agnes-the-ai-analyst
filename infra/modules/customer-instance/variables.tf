@@ -332,3 +332,15 @@ variable "alert_webhook_url" {
   default     = ""
   sensitive   = true
 }
+
+variable "data_apps_enabled" {
+  description = "Enable hosted data apps for this instance: brings up the `apps` compose profile (the apps-runner sidecar that alone holds the docker socket), mints an APPS_RUNNER_TOKEN, computes DOCKER_GID for the sidecar's socket access, and sets AGNES_DATA_APPS_ENABLED so the app serves the feature. Off by default — existing instances render byte-identically."
+  type        = bool
+  default     = false
+}
+
+variable "data_apps_runtime_image" {
+  description = "Full runtime image (with tag) the data-app containers run. The registry prefix (everything before the last `:`) is also handed to the apps-runner as APPS_RUNNER_IMAGE_PREFIX to gate which images it may pull. Only consulted when data_apps_enabled = true."
+  type        = string
+  default     = "keboolapublic.azurecr.io/data-app-python-js:1.6.2_python-3.13_node-24"
+}
