@@ -1812,6 +1812,14 @@ def create_app() -> FastAPI:
         skip_prefixes=(
             "/api/data/",
             "/api/mcp",  # SSE stream — do not gzip
+            # Chat sandbox LLM proxy: the model completion streams back as
+            # text/event-stream. GZipMiddleware buffers a StreamingResponse
+            # whole to compress it, which collapses every token delta into one
+            # end-of-turn burst (verified live: the in-sandbox CLI saw all SSE
+            # events arrive at one timestamp). Skipping gzip here is what makes
+            # the broker's stream-through (#1020) actually reach the sandbox
+            # incrementally.
+            "/api/broker/anthropic",  # SSE stream — do not gzip
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats

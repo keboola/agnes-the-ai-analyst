@@ -85,3 +85,49 @@ def test_selective_gzip_wrapper_dispatches_on_prefix():
     # Non-http scope (websocket, lifespan) → gzip app (it handles lifespan as pass-through)
     asyncio.run(wrapper({"type": "lifespan"}, None, None))
     assert calls == {"raw": 1, "gzip": 2}
+
+
+def test_broker_anthropic_path_is_in_gzip_skip_list():
+    """The chat sandbox LLM proxy streams the model completion back as
+    text/event-stream. GZipMiddleware buffers a StreamingResponse whole to
+    compress it, collapsing every token delta into one end-of-turn burst
+    (verified live: the in-sandbox CLI saw all SSE events at one timestamp).
+    /api/broker/anthropic MUST be skip-listed alongside /api/mcp so the
+    broker's stream-through actually reaches the sandbox incrementally."""
+    import inspect
+
+    import app.main as main_mod
+
+    src = inspect.getsource(main_mod.create_app)
+    assert '"/api/broker/anthropic"' in src, (
+        "the broker anthropic SSE endpoint must be in _SelectiveGZipMiddleware "
+        "skip_prefixes, or GZip re-buffers the streamed completion"
+    )
+
+
+def test_selective_gzip_skips_configured_sse_prefixes():
+    """Behavioral: the middleware bypasses gzip (delegates to the raw app)
+    for a skip-listed SSE prefix, so a StreamingResponse is never buffered
+    for compression."""
+    import asyncio
+
+    from app.main import _SelectiveGZipMiddleware
+
+    calls = {"raw": 0, "gzip": 0}
+
+    async def _raw_app(scope, receive, send):
+        calls["raw"] += 1
+
+    mw = _SelectiveGZipMiddleware(_raw_app, skip_prefixes=("/api/broker/anthropic",))
+
+    async def _noop_receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _noop_send(msg):
+        pass
+
+    async def _drive(path):
+        await mw({"type": "http", "path": path, "headers": []}, _noop_receive, _noop_send)
+
+    asyncio.run(_drive("/api/broker/anthropic/v1/messages"))
+    assert calls["raw"] == 1, "skip-listed SSE path must bypass GZip (delegate to raw app)"

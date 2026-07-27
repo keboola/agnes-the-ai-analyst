@@ -215,3 +215,66 @@ def test_status_counts_since_empty_window_returns_empty_dict(sync_repo):
 
     since = datetime.now(timezone.utc) + timedelta(hours=1)
     assert repo.status_counts_since(since) == {}
+
+
+# ---------------------------------------------------------------------------
+# parts[] — per-partition manifest for partitioned tables (partitioned
+# distribution). A partitioned table stores its per-part {path,hash,size}
+# list; single-file tables carry parts=None. Must round-trip type-identical
+# on both backends (DuckDB JSON string vs PG JSONB object).
+# ---------------------------------------------------------------------------
+
+
+def test_update_sync_round_trips_parts(sync_repo):
+    repo, _, _ = sync_repo
+
+    parts = [
+        {"path": "month=2026-06/data.parquet", "hash": "aa11", "size_bytes": 100},
+        {"path": "month=2026-07/data.parquet", "hash": "bb22", "size_bytes": 250},
+    ]
+    repo.update_sync(
+        table_id="jira.issues",
+        rows=5,
+        file_size_bytes=350,
+        hash="rollup",
+        parts=parts,
+    )
+
+    state = repo.get_table_state("jira.issues")
+    assert state["parts"] == parts
+
+
+def test_update_sync_without_parts_is_none(sync_repo):
+    """Single-file tables never carry parts — the column stays NULL so the
+    manifest treats them as single-file (backward compatible)."""
+    repo, _, _ = sync_repo
+
+    repo.update_sync(table_id="kbc.account", rows=9, file_size_bytes=90, hash="h")
+
+    state = repo.get_table_state("kbc.account")
+    assert state["parts"] is None
+
+
+def test_set_skipped_preserves_parts(sync_repo):
+    """A skip must not wipe a partitioned table's parts — analysts keep
+    serving the last-good part set while this run's skip reason is recorded."""
+    repo, _, _ = sync_repo
+
+    parts = [{"path": "month=2026-06/data.parquet", "hash": "aa11", "size_bytes": 100}]
+    repo.update_sync(table_id="jira.comments", rows=1, file_size_bytes=100, hash="r", parts=parts)
+    repo.set_skipped("jira.comments", "in_flight")
+
+    state = repo.get_table_state("jira.comments")
+    assert state["status"] == "skipped"
+    assert state["parts"] == parts
+
+
+def test_get_all_states_deserializes_parts(sync_repo):
+    """get_all_states must deserialize parts identically to get_table_state."""
+    repo, _, _ = sync_repo
+
+    parts = [{"path": "2025_11.parquet", "hash": "cc33", "size_bytes": 42}]
+    repo.update_sync(table_id="kbc.partitioned", rows=1, file_size_bytes=42, hash="r", parts=parts)
+
+    all_states = {s["table_id"]: s for s in repo.get_all_states()}
+    assert all_states["kbc.partitioned"]["parts"] == parts

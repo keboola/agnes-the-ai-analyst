@@ -52,9 +52,18 @@
 	handle @download {
 		forward_auth app:8000 {
 			uri /api/data/{re.tid.1}/check-access
-			# Bearer PAT or session cookie travels in Authorization
-			# / Cookie; copy_headers ensures the upstream sees them.
-			copy_headers Authorization Cookie
+			# NO copy_headers here. forward_auth already forwards the
+			# ORIGINAL request (incl. Authorization / Cookie) to the
+			# check-access upstream, so the bearer PAT / session cookie
+			# authenticate the RBAC probe. copy_headers does the opposite
+			# — it copies headers FROM check-access's response back onto
+			# the request; since /check-access returns 204 with no such
+			# headers, on Caddy >= 2.11.2 (GHSA-7r4p-vjf4-gxv4) that
+			# DELETES the client's Authorization/Cookie from the request,
+			# so any download that falls through to the app reverse_proxy
+			# below (e.g. a partitioned-table `?part=` fetch, or any table
+			# not served by the file_server static path) hits the app with
+			# no credential and 401s. Leave it off.
 		}
 		# Caddy's own /data is occupied by the caddy_data volume, so the
 		# agnes data dir is mounted at /srv (read-only) instead — see the

@@ -212,3 +212,78 @@ def test_manifest_defaults_query_mode_local_for_unregistered_state(tmp_path, mon
         assert manifest["tables"]["orphan"]["source_type"] == ""
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# parts[] surfaced in the manifest (partitioned distribution). A partitioned
+# table's per-part list rides through to the manifest entry; single-file
+# tables carry parts=None (backward compatible).
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_entry_includes_parts_for_partitioned_table():
+    from app.api.sync import _table_manifest_entry
+
+    parts = [
+        {"path": "month=2026-06/data.parquet", "hash": "aa", "size_bytes": 100},
+        {"path": "month=2026-07/data.parquet", "hash": "bb", "size_bytes": 250},
+    ]
+    state = {
+        "table_id": "issues", "hash": "rollup", "file_size_bytes": 350,
+        "rows": 5, "parts": parts, "last_sync": None,
+    }
+    reg = {"id": "issues", "name": "issues", "query_mode": "local", "source_type": "jira"}
+
+    entry = _table_manifest_entry(state, reg)
+    assert entry["parts"] == parts
+    # Whole-table fields still present for the single-compare fast path.
+    assert entry["hash"] == "rollup"
+    assert entry["size_bytes"] == 350
+
+
+def test_manifest_entry_parts_none_for_single_file_table():
+    from app.api.sync import _table_manifest_entry
+
+    state = {"table_id": "account", "hash": "h", "file_size_bytes": 10, "rows": 1, "last_sync": None}
+    reg = {"id": "account", "name": "account", "query_mode": "materialized", "source_type": "keboola"}
+
+    entry = _table_manifest_entry(state, reg)
+    assert "parts" not in entry  # single-file entries stay byte-identical
+
+
+def test_flat_manifest_tables_dict_carries_parts_for_partitioned(tmp_path, monkeypatch):
+    """REGRESSION (Devin #1): the FLAT `manifest['tables']` dict — the one
+    `cli/lib/pull.py:run_pull` actually reads for download decisions — must
+    carry `parts` for a partitioned table, else the client never routes it to
+    the per-part sync and tries a single-file download that 404s."""
+    db_module = _reload_db_module(monkeypatch, tmp_path)
+
+    from src.repositories.sync_state import SyncStateRepository
+    from src.repositories.table_registry import TableRegistryRepository
+    from app.api.sync import _build_manifest_for_user
+
+    conn = db_module.get_system_db()
+    try:
+        _ensure_admin1(conn)
+        TableRegistryRepository(conn).register(
+            id="issues", name="issues", source_type="jira",
+            bucket="", source_table="issues", query_mode="local",
+        )
+        TableRegistryRepository(conn).register(
+            id="account", name="account", source_type="keboola",
+            bucket="sales", source_table="account", query_mode="local",
+        )
+        parts = [
+            {"path": "month=2026-06/data.parquet", "hash": "aa", "size_bytes": 100},
+            {"path": "month=2026-07/data.parquet", "hash": "bb", "size_bytes": 250},
+        ]
+        SyncStateRepository(conn).update_sync(
+            table_id="issues", rows=5, file_size_bytes=350, hash="rollup", parts=parts)
+        SyncStateRepository(conn).update_sync(
+            table_id="account", rows=9, file_size_bytes=90, hash="h")  # single-file
+
+        manifest = _build_manifest_for_user(conn, {"id": "admin1", "email": "a@x.com"})
+        assert manifest["tables"]["issues"]["parts"] == parts
+        assert "parts" not in manifest["tables"]["account"]  # single-file: no parts key
+    finally:
+        conn.close()
