@@ -38,12 +38,16 @@ def test_tpl_env_block_guarded_by_toggle():
     body = (MODULE / "startup-script.sh.tpl").read_text()
     # The .env keys the feature needs, all inside a single `if data_apps_enabled`.
     for key in (
-        "COMPOSE_PROFILES=apps",
         "AGNES_DATA_APPS_ENABLED=true",
         "APPS_RUNNER_TOKEN=$APPS_RUNNER_TOKEN",
         "DOCKER_GID=$DOCKER_GID",
     ):
         assert key in body, key
+    # The `apps` profile is a --profile FLAG, never COMPOSE_PROFILES in .env:
+    # compose ignores that env var whenever any --profile flag (e.g. tls) is
+    # present, so an .env COMPOSE_PROFILES=apps would be dropped on TLS instances.
+    assert "COMPOSE_PROFILES_ARG --profile apps" in body
+    assert "COMPOSE_PROFILES=apps" not in body
     # No unconditional AGNES_DATA_APPS_ENABLED leak.
     assert body.count("AGNES_DATA_APPS_ENABLED=true") == 1
     # Token minted with the same read-back-then-openssl pattern as the scheduler token.
@@ -54,10 +58,18 @@ def test_tpl_env_block_guarded_by_toggle():
 
 def test_tpl_data_apps_blocks_are_toggle_gated():
     body = (MODULE / "startup-script.sh.tpl").read_text()
-    # Two positive `if data_apps_enabled` blocks (the token/DOCKER_GID prep
-    # before the .env heredoc + the .env keys inside it), only positive guards
-    # (no `!data_apps_enabled`), so a default instance renders none of it.
-    assert body.count("%{ if data_apps_enabled ~}") == 2
+    # Three positive `if data_apps_enabled` blocks (token/DOCKER_GID prep, the
+    # --profile apps flag, and the .env keys), only positive guards (no
+    # `!data_apps_enabled`), so a default instance renders none of it.
+    assert body.count("%{ if data_apps_enabled ~}") == 3
     assert "!data_apps_enabled" not in body
     # The APPS_RUNNER_TOKEN prep must precede its use in the .env heredoc.
     assert body.index("APPS_RUNNER_TOKEN=$(openssl") < body.index("APPS_RUNNER_TOKEN=$APPS_RUNNER_TOKEN")
+
+
+def test_auto_upgrade_appends_apps_profile_flag():
+    # The recurring upgrade tick must also add `--profile apps` (not rely on
+    # COMPOSE_PROFILES) so the sidecar survives upgrades on TLS instances.
+    body = Path("scripts/ops/agnes-auto-upgrade.sh").read_text()
+    assert "AGNES_DATA_APPS_ENABLED" in body
+    assert "PROFILE_ARGS+=( --profile apps )" in body
