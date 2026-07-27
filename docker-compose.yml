@@ -158,6 +158,26 @@ services:
       # silent auth bypass.
       - APPS_RUNNER_TOKEN=${APPS_RUNNER_TOKEN:-}
       - APPS_RUNNER_IMAGE_PREFIX=${APPS_RUNNER_IMAGE_PREFIX:-keboolapublic.azurecr.io/data-app-python-js}
+    # The bind-mounted docker socket is owned by root:docker, and its gid
+    # varies per host. The agnes image runs as the non-root uid 999 (USER
+    # agnes in the Dockerfile), so the sidecar can only talk to the daemon if
+    # uid 999 is a member of the socket's group — otherwise every up()/stop()
+    # fails the daemon handshake with `PermissionError(13)`, surfaced to the
+    # caller as a 502 `runner_unavailable`. Add the host's docker gid as a
+    # supplementary group. Running as root instead would work too, but the
+    # sidecar writes each app's `config.json` under `/data/apps/<slug>/`, and
+    # the app (uid 999) must be able to remove that dir on delete — so the
+    # sidecar must stay uid 999 and gain socket access via the group, not by
+    # becoming root. DOCKER_GID must be set to `stat -c '%g'
+    # /var/run/docker.sock` on the host: the customer-instance startup script
+    # sets it when data apps are enabled, and a hand-run `docker compose
+    # --profile apps up` must export it too. Soft-default (not `:?`) so
+    # non-apps compose invocations still parse (see the APPS_RUNNER_TOKEN
+    # note above / #1007); the harmless fallback is the agnes gid itself,
+    # which grants no socket access — the feature simply won't work until
+    # DOCKER_GID is set, the same fail-safe posture as the empty token.
+    group_add:
+      - "${DOCKER_GID:-999}"
     networks: [default, agnes-apps]
     restart: unless-stopped
     mem_limit: 256m
