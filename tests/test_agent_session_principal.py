@@ -320,3 +320,37 @@ def test_agent_session_token_cannot_be_replayed_against_a_different_session(e2e_
     assert principal_b.owner_user_id == owner_b
     assert principal_b.agent_id != principal.agent_id
     assert principal_b.owner_user_id != principal.owner_user_id
+
+
+# ---------------------------------------------------------------------------
+# get_current_user — principal path stashes the chat-session claim
+# ---------------------------------------------------------------------------
+
+
+def test_get_current_user_stashes_chat_session_id_for_principal(e2e_env):
+    """Regression (Devin review): the principal early-return must stash the
+    chat-session claim FIRST — app/api/query.py's per-session BQ scan
+    accumulator reads ``request.state.chat_session_id``, and without the
+    stash a scoped agent's brokered queries would escape the per-session
+    scan cap that ``scope="chat"`` promises to keep."""
+    from types import SimpleNamespace
+
+    from app.auth.access import mint_agent_session_jwt
+    from app.auth.dependencies import get_current_user
+    from app.auth.session_principal import PRINCIPAL_TYPES
+    from src.db import get_system_db
+
+    owner_id, owner_email = _make_user()
+    agent_id = _make_agent(owner_id, tables_mode="selected")
+    session_id = _make_session(owner_email, agent_id=agent_id)
+    token = mint_agent_session_jwt(session_id)
+
+    req = SimpleNamespace(state=SimpleNamespace(), cookies={}, headers={})
+    conn = get_system_db()
+    try:
+        user = get_current_user(request=req, authorization=f"Bearer {token}", conn=conn)
+    finally:
+        conn.close()
+
+    assert isinstance(user, PRINCIPAL_TYPES)
+    assert getattr(req.state, "chat_session_id", None) == session_id

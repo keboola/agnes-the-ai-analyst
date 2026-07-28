@@ -269,6 +269,13 @@ def get_current_user(
         # dataclass, so ``_attach_admin_flag`` / ``_stash_user`` (both of
         # which assign into the user dict) would raise. It also must never
         # carry ``is_admin`` — the admin seam denies principals outright.
+        #
+        # The chat-session claim IS stashed first: the per-session BQ scan
+        # accumulator (app/api/query.py::_maybe_charge_chat_session_bq_budget)
+        # reads request.state.chat_session_id, and without this a scoped
+        # agent's (or co-session's) brokered queries would escape the
+        # per-session scan cap that scope="chat" promises to keep.
+        _stash_chat_session_id_from_token(request, token)
         return user
     if user:
         _attach_admin_flag(user, conn)

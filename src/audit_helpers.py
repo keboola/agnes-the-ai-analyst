@@ -27,3 +27,23 @@ def client_kind_from_user(user) -> str:
     if user.get("token_type") == "pat":
         return "cli"
     return "web"
+
+
+def identity_for_audit(user) -> tuple:
+    """``(user_id, email)`` for audit-log rows and quota-key bookkeeping
+    only — NEVER for an authorization decision (a narrowed principal must
+    not inherit its owner's admin bit; see ``_bq_guardrail_inputs`` in
+    ``app/api/query.py``).
+
+    A restricted principal (co-session / agent-session, V1d) is a frozen
+    dataclass with no ``.get``: an ``AgentPrincipal`` reports its owner
+    (the request legitimately runs on the owner's behalf, just
+    intersection-narrowed); a ``SessionPrincipal`` reports neither.
+    Supertype-agnostic ``isinstance(user, dict)`` check for the same
+    future-proofing reason as ``client_kind_from_user`` above.
+    """
+    if user is None:
+        return None, None
+    if not isinstance(user, dict):
+        return getattr(user, "owner_user_id", None), getattr(user, "owner_email", None)
+    return user.get("id"), user.get("email")

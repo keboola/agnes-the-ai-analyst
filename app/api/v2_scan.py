@@ -15,7 +15,7 @@ import duckdb
 from app.auth.dependencies import get_current_user, _get_db
 from src.db import _open_duckdb
 from app.instance_config import get_value
-from src.audit_helpers import client_kind_from_user
+from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
 from app.api.where_validator import (
     safe_where_predicate,
@@ -310,7 +310,7 @@ def scan_estimate_endpoint(
         result = estimate(conn, user, raw, bq=bq)
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="snapshot.estimate",
                 resource=resource,
                 params={
@@ -335,7 +335,7 @@ def scan_estimate_endpoint(
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="snapshot.estimate",
                 resource=resource,
                 params={"duration_ms": int((time.monotonic() - t0) * 1000), "error": str(exc)[:200]},
@@ -479,7 +479,7 @@ def run_scan(
     _validate_order_by(req.order_by, schema)
 
     source_type = row.get("source_type") or ""
-    user_id = user.get("email") or "anon"
+    user_id = identity_for_audit(user)[1] or "anon"
 
     # Pre-flight quota check — fail BEFORE running the BQ scan so the user
     # doesn't pay for a query whose result we'd then refuse to return.
@@ -578,7 +578,7 @@ def scan_endpoint(
             rows_written = None
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="snapshot.create",
                 resource=resource,
                 params={
@@ -607,7 +607,7 @@ def scan_endpoint(
         # original status + detail. Devin Review ANALYSIS_0001 on #620.
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="snapshot.create",
                 resource=resource,
                 params={
@@ -640,7 +640,7 @@ def scan_endpoint(
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="snapshot.create",
                 resource=resource,
                 params={"duration_ms": int((time.monotonic() - t0) * 1000), "error": str(exc)[:200]},
