@@ -63,7 +63,7 @@ from app.api.agent_sse import SSE_TERMINAL_TYPES, frame_to_agui, sse_bytes
 from app.auth.access import can_access
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.pat_resolver import agent_id_from_request
-from app.auth.session_principal import SessionPrincipal
+from app.auth.session_principal import PRINCIPAL_TYPES
 from app.chat.artifact_harvest import sanitize_filename
 from app.chat.manager import ConcurrencyCapHit, SessionNotFound, get_current_chat_manager
 from app.chat.streaming_sink import StreamingSink
@@ -167,7 +167,7 @@ def require_session_principal(
     `403 chat_access_denied` here matches what `/responses` returns for the
     same condition.
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(status_code=404, detail={"code": "session_not_found"})
 
     session = chat_session_repo().get_session(session_id)

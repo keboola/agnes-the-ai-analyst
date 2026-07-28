@@ -117,17 +117,17 @@ def build_sample(
             INTERNAL_TABLES_BY_ID, build_filter_clause, sample_internal_rows,
         )
         from app.auth.access import is_user_admin as _is_admin
-        from app.auth.session_principal import SessionPrincipal
+        from app.auth.session_principal import PRINCIPAL_TYPES
         if table_id not in INTERNAL_TABLES_BY_ID:
             raise FileNotFoundError(table_id)
         internal_def = INTERNAL_TABLES_BY_ID[table_id]
         # is_user_admin takes (user_id, conn) — earlier draft passed the
         # whole user dict and crashed with TypeError on first request
         # (review #278/2). Same fix as app/api/query.py:_run_internal_query.
-        # A SessionPrincipal has no .get("id") — treat co-session as non-admin
+        # A Principal has no .get("id") — treat co-session / agent-session as non-admin
         # for internal row-level filter. build_filter_clause expects a dict
         # so pass a shim when user is a principal.
-        if isinstance(user, SessionPrincipal):
+        if isinstance(user, PRINCIPAL_TYPES):
             is_admin = False
             user_dict_shim = {"id": "", "email": ""}
         else:

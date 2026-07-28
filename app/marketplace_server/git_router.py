@@ -352,7 +352,10 @@ async def _marketplace_git(path: str, request: Request):
         try:
             repo_path = git_backend.ensure_repo_for_user(conn, user)
         except Exception:
-            logger.exception("Failed to build repo for user %r", user.get("email") or user.get("id"))
+            # ``user`` may be a restricted principal (frozen dataclass, no
+            # ``.get``) — never let the diagnostic label raise inside except.
+            label = user.get("email") or user.get("id") if isinstance(user, dict) else type(user).__name__
+            logger.exception("Failed to build repo for user %r", label)
             return user, None
         return user, repo_path
 

@@ -44,3 +44,14 @@ class AgentPrincipal:
 #: use the intersection, deny admin" should branch on this union, not on one
 #: member, so a new principal kind cannot silently bypass a seam.
 Principal = Union[SessionPrincipal, AgentPrincipal]
+
+#: Runtime companion to :data:`Principal` for ``isinstance`` checks —
+#: ``isinstance(x, Principal)`` is a TypeError on a ``typing.Union``. Every
+#: seam that means "restricted principal" MUST test against this tuple, never
+#: against a single member, so adding a third principal kind cannot silently
+#: leave a seam behind. Checks that are deliberately co-drive-specific (the
+#: participant bookkeeping in ``app/api/chat_copresence.py``, the resolver's
+#: construction site in ``app/auth/pat_resolver.py``) keep naming
+#: ``SessionPrincipal`` directly — that is the signal they are NOT a
+#: restricted-principal seam.
+PRINCIPAL_TYPES: tuple[type, ...] = (SessionPrincipal, AgentPrincipal)
