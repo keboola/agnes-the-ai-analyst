@@ -18,15 +18,16 @@
               SyncOrchestrator.rebuild()
               ATTACH → master views in analytics.duckdb
                          │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-          FastAPI      CLI
-          (serve)    (agnes pull)
+              ┌──────────┴──────────┐
+              ▼                     ▼
+          FastAPI                  CLI
+          (serve)               (agnes pull)
 ```
 
-Three source types:
-- **Batch pull** (Keboola): DuckDB extension downloads to parquet, scheduled
-- **Remote attach** (BigQuery): DuckDB BQ extension, no download, queries go to BQ
+Four source modes (per-table `query_mode`):
+- **Batch pull** (Keboola, `local`): DuckDB extension downloads to parquet, scheduled
+- **Remote attach** (BigQuery, `remote`): DuckDB BQ extension, no download, queries go to BQ
+- **Materialized SQL** (`materialized`): scheduler runs admin-registered SQL through DuckDB and writes the result to parquet, distributed like local tables
 - **Real-time push** (Jira): Webhooks update parquets incrementally
 
 ## Components
@@ -37,7 +38,7 @@ DuckDB-backed data orchestration and state management.
 
 | File | Role |
 |------|------|
-| `src/db.py` | DuckDB schema (system.duckdb v14, analytics.duckdb), auto-migration v1→…→v14 |
+| `src/db.py` | DuckDB schema (system.duckdb, analytics.duckdb), auto-migrating v1→vN (current version lives in `src/db.py`) |
 | `src/orchestrator.py` | SyncOrchestrator — ATTACHes extract.duckdb files, rebuilds master views |
 | `src/orchestrator_security.py` | Extension allowlist, token-env validation, SQL string escaping |
 | `src/identifier_validation.py` | Shared regex validators for SQL identifiers (used by orchestrator + extractors) |
