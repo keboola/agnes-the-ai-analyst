@@ -114,6 +114,12 @@ class TestPreviewGrantEndpoint:
         assert "Path=/apps/dash/" in cookie
         assert "SameSite=Lax" in cookie
         assert "HttpOnly" in cookie
+        # The cookie must ALSO ride a real Set-Cookie response header — an
+        # HttpOnly cookie can only be installed by the browser via the server's
+        # Set-Cookie (the frontend fetches this endpoint same-origin), never
+        # through document.cookie, which silently discards HttpOnly cookies.
+        set_cookie = r.headers.get("set-cookie", "")
+        assert set_cookie.startswith("adp_preview=") and "HttpOnly" in set_cookie
 
     def test_grantee_can_request_a_grant(self, preview_api_env):
         """Unlike git-credential, preview-grant is view-access, not

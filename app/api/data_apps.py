@@ -59,6 +59,7 @@ from typing import Any, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import exc as sa_exc
 
@@ -939,7 +940,15 @@ async def create_preview_grant(
     _token, cookie = _mint_preview_token(row, user)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
     _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
-    return {"preview_cookie": cookie, "expires_at": expires_at.isoformat()}
+    # Install the cookie via a real Set-Cookie response header, not just the JSON
+    # body: the cookie is `HttpOnly`, and a browser silently discards an HttpOnly
+    # cookie set through `document.cookie` (RFC 6265bis). The chat frontend makes
+    # a same-origin `fetch()` to this endpoint (the browser is already the chat
+    # user), so this header lands the cookie on the app origin for the iframe to
+    # send — HttpOnly intact. `preview_cookie` stays in the body for callers/tests.
+    resp = JSONResponse({"preview_cookie": cookie, "expires_at": expires_at.isoformat()})
+    resp.headers.append("set-cookie", cookie)
+    return resp
 
 
 @router.post("/{slug}/drafts", status_code=201)

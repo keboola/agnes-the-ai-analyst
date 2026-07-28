@@ -1641,22 +1641,24 @@ function _teardownPreviewPane() {
   previewSlug = null;
 }
 
-/** Apply the server-minted preview cookie to the current (same-site) app
- *  origin. The cookie string already carries `Path=/apps/<slug>/;
- *  SameSite=Lax` (deliberately no `HttpOnly` — a client-set cookie
- *  can't be, and the whole point is that chat.js has to be able to set
- *  it), so passing it straight through to the `document.cookie` setter
- *  preserves the scoping the proxy's preview-token branch expects. */
-function _applyPreviewCookie(cookieHeader) {
-  if (!cookieHeader) return;
+/** Install the preview cookie on the (same-site) app origin by hitting the
+ *  preview-grant endpoint same-origin — the browser is already the chat user,
+ *  so its `Set-Cookie` response lands the cookie the proxy's preview-token
+ *  branch authorizes. This is done server-side (not `document.cookie`) because
+ *  the cookie is `HttpOnly`, which a client-set cookie can never be — a browser
+ *  silently discards an HttpOnly cookie assigned through `document.cookie`. */
+async function _installPreviewCookie(slug) {
   try {
-    document.cookie = cookieHeader;
+    await fetch(`/api/data-apps/${encodeURIComponent(slug)}/preview-grant`, {
+      method: "POST",
+      credentials: "same-origin",
+    });
   } catch (err) {
-    console.warn("could not set preview cookie", err);
+    console.warn("could not obtain preview cookie", err);
   }
 }
 
-function renderDataAppPreview(directive) {
+async function renderDataAppPreview(directive) {
   const pane = _ensurePreviewPane();
   if (!pane) return;
   previewSlug = directive.slug;
@@ -1670,11 +1672,9 @@ function renderDataAppPreview(directive) {
     return;
   }
 
-  // The cookie MUST land on the app origin before the iframe's first
-  // request, so the proxy's preview-token branch authorizes it.
-  if (directive.preview_cookie) {
-    _applyPreviewCookie(directive.preview_cookie);
-  }
+  // The cookie MUST land on the app origin before the iframe's first request,
+  // so the proxy's preview-token branch authorizes it.
+  await _installPreviewCookie(directive.slug);
   if (placeholder) placeholder.hidden = true;
   if (iframe) {
     iframe.hidden = false;
