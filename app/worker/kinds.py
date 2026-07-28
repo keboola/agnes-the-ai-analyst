@@ -747,7 +747,12 @@ def _run_agent_response(payload: dict) -> dict:
     # finalizes straight to `'failed'`, matching C13 ("the job goes failed
     # with the same structured error").
     response_format = payload.get("response_format")
-    if response_format is not None:
+    if response_format is not None and not run_result["timed_out"]:
+        # Validation applies to FINAL answers only. A timed-out leg's
+        # answer is empty/partial by definition — validating it would fail
+        # the job as schema_validation_failed and misreport a healthy
+        # long-running turn (see the bounded-wait-leg contract below);
+        # the caller continues the wait and the FINAL leg gets validated.
         from app.chat.structured_output import validate
 
         ok, parsed, validation_error = validate(run_result["answer"], response_format)

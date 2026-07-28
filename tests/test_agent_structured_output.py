@@ -295,3 +295,56 @@ def test_background_job_schema_violation_fails_job_with_structured_error(env, mo
     assert finished["error"]["code"] == "schema_validation_failed"
     assert finished["error"]["session_id"] == "chat-bg-bad"
     assert finished["error"]["raw_answer"] == '{"name": "Ada"}'
+
+
+def test_background_job_timed_out_answer_skips_schema_validation(env, monkeypatch):
+    """Bounded-wait-leg contract: a timed-out leg's answer is empty/partial
+    by definition — validating it would fail the job as
+    schema_validation_failed and misreport a healthy long-running turn.
+    The leg must COMPLETE with ``timed_out: true`` and no ``parsed``; only
+    the final (non-timed-out) leg is schema-validated."""
+    import asyncio
+
+    import app.chat.headless as headless
+
+    async def _fake_run_one_shot(manager, *, user_email, agent_id, prompt, timeout_s, **_kwargs):
+        return {"chat_id": "chat-bg-slow", "answer": "", "timed_out": True}
+
+    monkeypatch.setattr(headless, "run_one_shot", _fake_run_one_shot)
+
+    from app.worker.kinds import _run_agent_response
+
+    async def _drive():
+        from app.chat.manager import set_current_chat_manager
+        from src.repositories import jobs_repo
+
+        set_current_chat_manager(object())
+        try:
+            job = jobs_repo().enqueue(
+                "agent_response",
+                {
+                    "mode": "fresh",
+                    "owner_user_id": "owner1",
+                    "owner_email": "owner@test.com",
+                    "agent_id": env["agent_id"],
+                    "prompt": "give me a person",
+                    "response_format": _RESPONSE_FORMAT,
+                },
+            )
+            claimed = jobs_repo().claim_next(kinds=["agent_response"], worker_id="w1")
+            assert claimed["id"] == job["id"]
+            result = await asyncio.to_thread(_run_agent_response, claimed["payload_json"])
+            jobs_repo().complete(job["id"], "w1", claimed["lease_token"], result=result)
+            return job["id"]
+        finally:
+            set_current_chat_manager(None)
+
+    job_id = asyncio.run(_drive())
+
+    r = env["client"].get(f"/api/v1/jobs/{job_id}", headers=_auth(env["owner_token"]))
+    assert r.status_code == 200
+    finished = r.json()
+    assert finished["status"] == "completed"
+    assert finished["result"]["timed_out"] is True
+    assert finished["result"]["answer"] == ""
+    assert "parsed" not in finished["result"]
