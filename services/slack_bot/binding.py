@@ -312,7 +312,9 @@ def redeem_verification_code(
             from src.repositories import audit_repo
 
             audit_repo().log(
-                user_id=user_email,
+                # users.id when the account resolved above; email fallback
+                # keeps the row searchable if the bind raced a user delete.
+                user_id=_u["id"] if _u else user_email,
                 action="slack.bind",
                 params={"slack_user_id": slack_user_id, "email": user_email},
             )
