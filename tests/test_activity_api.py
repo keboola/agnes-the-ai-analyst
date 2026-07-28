@@ -212,3 +212,73 @@ def test_activity_endpoints_silent_when_posthog_disabled(seeded_app, admin_user)
         # capture may be called but the inner SDK is no-op; that's the contract.
         # Assert: no exception, healthy response.
         assert resp.status_code == 200
+
+
+class TestKpiTableParity:
+    """The regression this whole change exists to prevent: KPI cards, facets
+    and the timeline must tell one story for any filter state."""
+
+    def _seed(self):
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+
+        conn = get_system_db()
+        repo = AuditRepository(conn)
+        repo.log(user_id="alice", action="table.read", result="success", client_kind="web")
+        repo.log(user_id="alice", action="table.read", result="success", client_kind="cli")
+        repo.log(user_id="alice", action="query.run", result="error.400", client_kind="web")
+        repo.log(user_id="bob", action="query.run", result="denied", client_kind="cli")
+        repo.log(user_id="sched-user", action="run_session_processor:usage", result="success")
+        conn.close()
+
+    def _counts(self, client, admin_user, qs):
+        kpi = client.get(f"/api/admin/observability/kpis?since_minutes=60&{qs}",
+                         headers=admin_user).json()
+        tl = client.get(f"/api/admin/activity?since_minutes=60&limit=200&{qs}",
+                        headers=admin_user).json()
+        return kpi["events_total"], len(tl["rows"])
+
+    def test_kpis_match_timeline_under_filters(self, seeded_app, admin_user):
+        self._seed()
+        c = seeded_app["client"]
+        for qs in (
+            "user_id=alice",
+            "result_class=success",
+            "result_class=denied",
+            "source=cli",
+            "user_id=alice&source=web",
+        ):
+            k, t = self._counts(c, admin_user, qs)
+            assert k == t, f"KPI {k} != timeline {t} for {qs}"
+
+    def test_self_reads_hidden_by_default(self, seeded_app, admin_user):
+        self._seed()
+        c = seeded_app["client"]
+        # generate one self-read row
+        c.get("/api/admin/activity?since_minutes=60", headers=admin_user)
+        from app.api.activity import _RECENT_AUDITS
+
+        _RECENT_AUDITS.clear()
+        tl = c.get("/api/admin/activity?since_minutes=60&limit=200",
+                   headers=admin_user).json()
+        assert "activity.read" not in {r["action"] for r in tl["rows"]}
+        tl2 = c.get("/api/admin/activity?since_minutes=60&limit=200&include_self_reads=1",
+                    headers=admin_user).json()
+        assert "activity.read" in {r["action"] for r in tl2["rows"]}
+
+    def test_active_users_counts_people_only(self, seeded_app, admin_user):
+        self._seed()
+        c = seeded_app["client"]
+        kpi = c.get("/api/admin/observability/kpis?since_minutes=60",
+                    headers=admin_user).json()
+        assert kpi["active_users"] == 2  # alice + bob; scheduler row excluded
+        assert "duration_coverage" in kpi
+
+    def test_facets_carry_result_classes_and_honor_filters(self, seeded_app, admin_user):
+        self._seed()
+        c = seeded_app["client"]
+        f = c.get("/api/admin/observability/facets?since_minutes=60&user_id=alice",
+                  headers=admin_user).json()
+        assert {a["value"] for a in f["actions"]} == {"table.read", "query.run"}
+        classes = {x["value"]: x["count"] for x in f["result_classes"]}
+        assert classes["success"] == 2 and classes["error"] == 1
