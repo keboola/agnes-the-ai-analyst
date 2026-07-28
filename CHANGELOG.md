@@ -22,6 +22,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.4] - 2026-07-28
+
+### Added
+
+- **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
+  with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
+  carrying a bare `*` (implicit `SELECT *`), now prints an advisory stderr
+  warning before proceeding — making the `CLAUDE.md` query rails mechanical at
+  the point the fetch is issued. WARN-only: it never blocks the fetch, and the
+  `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
+  Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
+
 ## [0.77.3] - 2026-07-28
 
 ### Added
