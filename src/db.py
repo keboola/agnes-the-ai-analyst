@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 100
+SCHEMA_VERSION = 101
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -6534,6 +6534,29 @@ def _v99_to_v100(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 100")
 
 
+def _v100_to_v101(conn: duckdb.DuckDBPyConnection) -> None:
+    """v100→v101: audit_log identity backfill — user_id values holding an
+    email are rewritten to the matching users.id, but only when the email
+    resolves to exactly one account (case-insensitive). Unresolvable or
+    ambiguous emails stay as-is: a searchable email beats a dropped row.
+    Fixes the Activity Center facet split where one person appeared as both
+    an email row and a UUID row (chat/memory/authoring/slack writers)."""
+    conn.execute(
+        """
+        UPDATE audit_log SET user_id = (
+            SELECT min(u.id) FROM users u
+            WHERE lower(u.email) = lower(audit_log.user_id)
+        )
+        WHERE user_id LIKE '%@%'
+          AND (
+            SELECT COUNT(*) FROM users u
+            WHERE lower(u.email) = lower(audit_log.user_id)
+          ) = 1
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 101")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6942,6 +6965,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # partitioned distribution). _SYSTEM_SCHEMA already declares the
             # column on fresh installs (no-op ALTER here).
             _v99_to_v100(conn)
+            # v100→v101: audit_log identity backfill — no-op on a fresh
+            # install (empty audit_log), kept for ladder chronology.
+            _v100_to_v101(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7195,6 +7221,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v98_to_v99(conn)
             if current < 100:
                 _v99_to_v100(conn)
+            if current < 101:
+                _v100_to_v101(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
