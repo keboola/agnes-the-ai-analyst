@@ -443,3 +443,33 @@ def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
         # co-session is a chat session and must be capped too. (#849)
         extra_claims={"scope": "chat", "chat_session_id": session_id},
     )
+
+
+def mint_agent_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
+    """Mint an agent-scoped session runner token (V1d). Carries ONLY
+    chat_session_id + typ='agent_session' + a synthetic sub (never a user
+    UUID or the agent_id) — the same no-baked-in-authority contract as
+    ``mint_co_session_jwt``: no grants, no real user id, no agent identity.
+
+    The resolver (``app.auth.pat_resolver``) rebuilds the owner-grants ∩
+    agent-scope intersection live per request
+    (``src.agent_scope_intersection.compute_agent_intersection``), so
+    narrowing an agent or revoking a grant takes effect on the very next
+    request — no stale-replay window.
+
+    Encoded with the canonical auth secret (app/auth/jwt) so verify_token
+    decodes it in every env.
+    """
+    from datetime import timedelta
+    from app.auth.jwt import create_access_token
+
+    return create_access_token(
+        user_id=f"agent-session:{session_id}",
+        email="",  # no real identity; resolver never reads this
+        expires_delta=timedelta(seconds=ttl),
+        typ="agent_session",
+        # scope="chat" triggers the per-session BigQuery budget stash
+        # (`_stash_chat_session_id_from_token`) — a brokered agent session
+        # must stay capped too, same as the co-session and solo paths.
+        extra_claims={"scope": "chat", "chat_session_id": session_id},
+    )
