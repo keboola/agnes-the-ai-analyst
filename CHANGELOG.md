@@ -16,6 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.14] - 2026-07-28
+
+### Fixed
+
 - Store guardrails: the LLM security review no longer false-positives on the
   pipeline's own file-truncation marker. Oversized files clipped to fit the
   review budget used to get an anonymous `[... truncated N bytes ...]` marker
