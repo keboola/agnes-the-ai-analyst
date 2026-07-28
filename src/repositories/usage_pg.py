@@ -635,6 +635,18 @@ class UsagePgRepository:
             "tool_errors_total": tool_errors_total,
         }
 
+    def session_file_basenames_since(self, since: datetime) -> "set[str]":
+        """Mirror of ``UsageRepository.session_file_basenames_since``."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT session_file FROM usage_session_summary "
+                    "WHERE COALESCE(uploaded_at, started_at) >= :since"
+                ),
+                {"since": since},
+            ).fetchall()
+        return {r[0].rsplit("/", 1)[-1] for r in rows if r[0]}
+
     def sessions_facets(self, since: datetime) -> dict:
         """Distinct usernames + models present in usage_session_summary for the window."""
         with self._engine.connect() as conn:
