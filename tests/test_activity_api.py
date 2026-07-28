@@ -282,3 +282,52 @@ class TestKpiTableParity:
         assert {a["value"] for a in f["actions"]} == {"table.read", "query.run"}
         classes = {x["value"]: x["count"] for x in f["result_classes"]}
         assert classes["success"] == 2 and classes["error"] == 1
+
+
+def test_sessions_kpis_match_adoption_kpis(seeded_app, admin_user):
+    """Glossary pin (consistency spec Phase D): the sessions browser and the
+    adoption dashboard read the same table with the same anchor — their
+    headline numbers must be equal for an equivalent window."""
+    from datetime import datetime, timezone
+
+    from src.db import get_system_db
+    from src.repositories.usage import UsageRepository
+
+    conn = get_system_db()
+    repo = UsageRepository(conn)
+    now = datetime.now(timezone.utc)
+    for i, (user, sid) in enumerate(
+        [("ann", "s1"), ("ann", "s2"), ("ben", "s3")]
+    ):
+        repo.upsert_summary(
+            {
+                "session_file": f"{user}/{sid}.jsonl",
+                "session_id": sid,
+                "username": f"{user}@example.com",
+                "user_id": f"uid-{user}",
+                "started_at": now,
+                "ended_at": now,
+                "active_seconds": 60 + i,
+                "wall_seconds": 60 + i,
+                "user_messages": 1,
+                "assistant_messages": 1,
+                "tool_calls": 2,
+                "tool_errors": 0,
+                "skill_invocations": 0,
+                "subagent_dispatches": 0,
+                "mcp_calls": 0,
+                "slash_commands": 0,
+                "distinct_tools": 1,
+                "distinct_skills": 0,
+                "primary_model": "test-model",
+                "total_tokens": 10,
+            },
+            processor_version=1,
+        )
+    conn.close()
+
+    c = seeded_app["client"]
+    sk = c.get("/api/admin/sessions/kpis?since_minutes=10080", headers=admin_user).json()
+    ak = c.get("/api/admin/adoption/kpis?window=7d", headers=admin_user).json()
+    assert sk["sessions_total"] == ak["sessions"] == 3
+    assert sk["distinct_users"] == ak["active_users"] == 2
