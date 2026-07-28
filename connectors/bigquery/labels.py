@@ -34,26 +34,39 @@ def _sanitize_label_value(raw: str) -> str:
     return s[:63]
 
 
-def _user_id_label(user: dict | None) -> str:
-    """Sanitized email local-part for the requesting human user.
+def _user_id_label(user) -> str:
+    """Sanitized identity local-part for the requesting caller.
 
     Returns '' for no user or the scheduler service account — those jobs
     carry no user_id label (agent_name still conveys the path).
+
+    ``user`` is a plain dict for almost every caller, but a restricted
+    principal (``SessionPrincipal`` / ``AgentPrincipal``, V1d) is a frozen
+    dataclass with no ``.get``. Calling ``.get`` on one raised
+    AttributeError, which ``build_bq_job_labels``' totality guard turned
+    into "proceeding unlabeled" — dropping EVERY label on the job
+    (``workload_type``, ``agent_name``, ``environment``), not just
+    ``user_id``, so a scoped agent's BQ spend was unattributable in
+    INFORMATION_SCHEMA.JOBS and the billing export. ``identity_for_audit``
+    resolves both shapes: an ``AgentPrincipal`` reports its owner, a
+    ``SessionPrincipal`` reports neither (the other labels still ship).
+    Bookkeeping only — never an authorization input.
     """
     if not user:
         return ""
     # Local import avoids a module-load cycle (audit_helpers imports auth).
-    from src.audit_helpers import client_kind_from_user
+    from src.audit_helpers import client_kind_from_user, identity_for_audit
 
     if client_kind_from_user(user) == "scheduler":
         return ""
-    identity = user.get("email") or user.get("id") or ""
+    uid, email = identity_for_audit(user)
+    identity = email or uid or ""
     local_part = str(identity).split("@", 1)[0]
     return _sanitize_label_value(local_part)
 
 
 def build_bq_job_labels(
-    user: dict | None,
+    user,
     agent_name: str,
     environment: str | None,
     workload_type: str = _WORKLOAD_TYPE,
@@ -83,7 +96,7 @@ def build_bq_job_labels(
         return {}
 
 
-def job_labels_for(user: dict | None, agent_name: str) -> dict[str, str]:
+def job_labels_for(user, agent_name: str) -> dict[str, str]:
     """Read ``instance.environment`` / ``instance.workload_type`` from config
     and build the label dict.
 

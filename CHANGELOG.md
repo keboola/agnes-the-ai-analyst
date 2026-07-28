@@ -22,7 +22,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.8] - 2026-07-28
+## [0.77.13] - 2026-07-28
+
 
 ### Fixed
 
@@ -36,6 +37,98 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   caller-less, so a per-user source with no shared fallback secret probed
   anonymously and failed with 401 even though the admin had a working token
   connected). Sources with a shared/fallback secret behave as before.
+
+## [0.77.11] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Chat bootstrap reads the feature overlay from the same file the admin
+  panel writes.** `app/main.py` resolved the chat `instance.yaml` overlay as
+  `DATA_DIR/state/instance.yaml`, ignoring a `STATE_DIR` override — on a
+  flat-mount deployment the admin server-config toggle wrote a file the chat
+  runtime never read, so the panel and the running app could disagree about
+  chat being enabled. The bootstrap now resolves via the same
+  `app.secrets._state_dir()` helper as the overlay writer and
+  `load_instance_config`.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.10] - 2026-07-28
+
+### Added
+
+- **Canonical feature-flag convention.** `app.instance_config.feature_enabled`
+  is now the single resolver (env var > instance.yaml/server-config overlay >
+  default) for every operator-facing feature toggle, backed by a
+  `FEATURE_FLAGS` registry; `/admin/server-config` gained a read-only
+  "Feature flags" inventory panel (also surfaced via
+  `GET /api/admin/server-config`'s new `feature_flags` field).
+  `get_studio_enabled` and `get_guardrails_enabled` now delegate to it
+  (behavior-preserving); `guardrails.enabled` gained a new
+  `AGNES_GUARDRAILS_ENABLED` env override (additive); `chat.enabled` gained a
+  new `AGNES_CHAT_ENABLED` env override at its `load_chat_config` read site;
+  `data_apps.enabled`'s read sites (the existing `AGNES_DATA_APPS_ENABLED`
+  var) now route through the same resolver. See `docs/feature-flags.md`.
+  (#1022)
+
+### Changed
+
+- `AGNES_DATA_APPS_ENABLED` now follows the canonical flag resolution: when
+  set, it wins over `data_apps.enabled` in instance.yaml in **both**
+  directions (a falsy value forces the feature off; previously falsy values
+  were ignored and the yaml decided). Unset behavior is unchanged, and the
+  shipped infra module only ever writes `true`. (#1022)
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.9] - 2026-07-28
+
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **BigQuery jobs from a restricted principal keep their cost-attribution
+  labels.** `_user_id_label` reached for `user.get("email")` on a frozen
+  `SessionPrincipal` / `AgentPrincipal`; the `AttributeError` hit
+  `build_bq_job_labels`' totality guard, which dropped the ENTIRE label set
+  (`workload_type`, `agent_name`, `environment` — not just `user_id`), so a
+  scoped agent's BQ spend was unattributable in `INFORMATION_SCHEMA.JOBS` and
+  the billing export. Identity now routes through `identity_for_audit()`: an
+  agent's jobs carry its owner, a co-session's carry the remaining labels.
+- **`GET /api/v2/catalog` writes its audit row for a restricted principal.**
+  The last `user.get("id")` audit call site missed by the identity rollout —
+  the `AttributeError` landed in the `except Exception` around the audit
+  write, so a co-session or agent-session listed the catalog (200) while its
+  `catalog.list` row was silently dropped.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.8] - 2026-07-28
+
+### Changed
+
+- Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
 
 ## [0.77.7] - 2026-07-28
 

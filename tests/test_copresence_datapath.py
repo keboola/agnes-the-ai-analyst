@@ -183,3 +183,134 @@ def test_stack_resolver_with_session_principal(rbac_conn):
     )
     entries = StackResolver(rbac_conn).stack(p, ResourceType.DATA_PACKAGE)
     assert {e.id for e in entries} == {"pkgA"}
+
+
+# ---------------------------------------------------------------------------
+# Success (200) datapath for a SessionPrincipal.
+#
+# Every co-session test above stops at a denial (403/404), and a denial never
+# exercises the audit-log call sites — those sit inside a
+# `try/except Exception: logger.exception(...)` that swallows the failure and
+# re-raises the original HTTPException. That is why the `user.get("id")` crash
+# on a frozen principal (fixed by `identity_for_audit`) went unnoticed: on
+# /api/v2/scan it 500'd a request RBAC had ALLOWED, and on the other endpoints
+# it silently dropped the audit row. These tests pin the allowed path.
+# ---------------------------------------------------------------------------
+
+_CO_TABLE = "co_local_tbl"
+
+
+@pytest.fixture
+def co_app_local(e2e_env, mock_extract_factory):
+    """Co-session where BOTH participants hold `co_local_tbl` — a real local
+    table with a parquet on disk, so the v2 read endpoints reach a 200."""
+    from src.db import get_system_db
+    from src.repositories.table_registry import TableRegistryRepository
+    from app.main import create_app
+
+    mock_extract_factory("keboola", [{"name": _CO_TABLE, "data": [{"n": "1"}, {"n": "2"}]}])
+    conn = get_system_db()
+    co_id = _seed_co_app_base(conn)
+    TableRegistryRepository(conn).register(id=_CO_TABLE, name=_CO_TABLE, source_type="keboola")
+    _grant_table_direct(conn, _CO_TABLE, "ua", "g-co-local-a")
+    _grant_table_direct(conn, _CO_TABLE, "ub", "g-co-local-b")
+    conn.close()
+    client = TestClient(create_app(), raise_server_exceptions=False)
+    yield client, co_id
+
+
+def _co_hdr(co_id):
+    from app.auth.access import mint_co_session_jwt
+
+    return {"Authorization": f"Bearer {mint_co_session_jwt(co_id)}"}
+
+
+def _audit_rows(action: str) -> list:
+    """(user_id, result) of every audit_log row for `action`, newest last."""
+    from src.db import get_system_db
+
+    c = get_system_db()
+    try:
+        return c.execute(
+            "SELECT user_id, result FROM audit_log WHERE action = ? ORDER BY timestamp", [action]
+        ).fetchall()
+    finally:
+        c.close()
+
+
+def _assert_audited(action: str, expected_result: str) -> None:
+    """A row was written, and the co-session is attributed to no participant.
+
+    `identity_for_audit` reports no identity for a SessionPrincipal — several
+    live participants, naming one would misattribute the others — so the row
+    carries a NULL user_id. The row EXISTING is the regression guard: before
+    the fix the write raised and was swallowed.
+    """
+    rows = _audit_rows(action)
+    assert rows, f"no audit_log row for {action}"
+    user_id, result = rows[-1]
+    assert result == expected_result, rows[-1]
+    assert user_id is None, f"co-session audit row must name no participant, got {user_id!r}"
+
+
+def test_co_token_200_sample_writes_audit_row(co_app_local):
+    client, co_id = co_app_local
+    resp = client.get(f"/api/v2/sample/{_CO_TABLE}", headers=_co_hdr(co_id))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["table_id"] == _CO_TABLE
+    _assert_audited("catalog.sample", "success")
+
+
+def test_co_token_200_schema_writes_audit_row(co_app_local):
+    client, co_id = co_app_local
+    resp = client.get(f"/api/v2/schema/{_CO_TABLE}", headers=_co_hdr(co_id))
+    assert resp.status_code == 200, resp.text
+    assert [c["name"] for c in resp.json()["columns"]] == ["n"]
+    _assert_audited("catalog.schema", "success")
+
+
+def test_co_token_200_scan_writes_audit_row(co_app_local):
+    """The path that used to 500: the quota-key derivation in `run_scan` sits
+    outside every `except` clause in `scan_endpoint`, so the AttributeError
+    escaped as a 500 on a request RBAC had allowed."""
+    client, co_id = co_app_local
+    resp = client.post("/api/v2/scan", json={"table_id": _CO_TABLE}, headers=_co_hdr(co_id))
+    assert resp.status_code == 200, resp.text
+    _assert_audited("snapshot.create", "success")
+
+
+def test_co_token_200_scan_estimate_writes_audit_row(co_app_local):
+    client, co_id = co_app_local
+    resp = client.post("/api/v2/scan/estimate", json={"table_id": _CO_TABLE}, headers=_co_hdr(co_id))
+    assert resp.status_code == 200, resp.text
+    _assert_audited("snapshot.estimate", "success")
+
+
+def test_co_token_200_data_download_writes_audit_row(co_app_local):
+    client, co_id = co_app_local
+    resp = client.get(f"/api/data/{_CO_TABLE}/download", headers=_co_hdr(co_id))
+    assert resp.status_code == 200, resp.text
+    _assert_audited("data.download", "success")
+
+
+def test_co_token_204_check_access_writes_audit_row(co_app_local):
+    client, co_id = co_app_local
+    resp = client.get(f"/api/data/{_CO_TABLE}/check-access", headers=_co_hdr(co_id))
+    assert resp.status_code == 204
+    _assert_audited("data.access_check", "success")
+
+
+def test_co_token_200_v2_catalog_writes_audit_row(co_app_local):
+    client, co_id = co_app_local
+    resp = client.get("/api/v2/catalog", headers=_co_hdr(co_id))
+    assert resp.status_code == 200, resp.text
+    assert any(t.get("id") == _CO_TABLE for t in resp.json().get("tables", []))
+    _assert_audited("catalog.list", "success")
+
+
+def test_co_token_403_still_writes_audit_row(co_app_local):
+    """The denial path writes its row too — it was swallowed by the same
+    `except Exception`, leaving no trace of a co-session's refused read."""
+    client, co_id = co_app_local
+    assert client.get("/api/v2/sample/t1", headers=_co_hdr(co_id)).status_code == 403
+    _assert_audited("catalog.sample", "error.403")

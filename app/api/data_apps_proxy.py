@@ -416,9 +416,9 @@ def _ws_authenticate(websocket: WebSocket) -> Optional[dict]:
 
 @router.websocket("/apps/{slug}/{path:path}")
 async def proxy_ws(websocket: WebSocket, slug: str, path: str):
-    from app.instance_config import get_data_apps_config
+    from app.instance_config import feature_enabled
 
-    if not get_data_apps_config().get("enabled"):
+    if not feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
         await websocket.close(code=4404, reason="data_apps_disabled")
         return
 
