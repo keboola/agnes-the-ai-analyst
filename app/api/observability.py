@@ -14,7 +14,7 @@ needs that didn't exist yet:
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from typing import Any
 
 import duckdb
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -27,6 +27,7 @@ from src.repositories import (
     observability_views_repo,
     users_repo,
 )
+
 router = APIRouter(prefix="/api/admin/observability", tags=["observability"])
 
 
@@ -34,18 +35,11 @@ router = APIRouter(prefix="/api/admin/observability", tags=["observability"])
 # Facets — distinct values for the filter dropdowns, scoped to the window
 # ---------------------------------------------------------------------------
 
-# Source classification mirrors the rule on /admin/scheduler-runs:
-# a row is `scheduler` when client_kind = 'scheduler' OR when its action
-# matches one of these hardcoded names (back-compat with pre-v41 audit rows
-# that didn't carry client_kind). 'cli' / 'web' come straight from
-# client_kind. Anything else is bucketed as 'other' so the dropdown is
-# closed-set.
-_SCHEDULER_ACTION_FALLBACK = (
-    "run_session_collector",
-    "run_verification_detector",
-    "run_corporate_memory",
-    "marketplace.sync_all",
-)
+# Source classification lives in the repo layer now — one shared rule
+# (src.audit_helpers.AUDIT_SOURCE_CASE_SQL, `action LIKE 'run_%'`), the same
+# predicate last_scheduler_tick() uses. The previous hardcoded action list
+# here had gone stale (it named four actions that no longer exist), which
+# silently bucketed all scheduler ticks as 'other'.
 
 
 def _window_since(since_minutes: int) -> datetime:
@@ -68,10 +62,7 @@ def facets(
     """
     since = _window_since(since_minutes)
 
-    data = audit_repo().facets(
-        since=since,
-        scheduler_actions=list(_SCHEDULER_ACTION_FALLBACK),
-    )
+    data = audit_repo().facets(since=since)
 
     # The facets 'users' bucket carries ids + counts only; resolve readable
     # labels here, reproducing the old COALESCE(email, user_id).
@@ -79,20 +70,18 @@ def facets(
 
     return {
         "window_minutes": since_minutes,
-        "users":     [
-            {"id": u["id"], "label": emails.get(u["id"]) or u["id"], "count": u["count"]}
-            for u in data["users"]
-        ],
-        "actions":   data["actions"],
-        "results":   data["results"],
+        "users": [{"id": u["id"], "label": emails.get(u["id"]) or u["id"], "count": u["count"]} for u in data["users"]],
+        "actions": data["actions"],
+        "results": data["results"],
         "resources": data["resources"],
-        "sources":   data["sources"],
+        "sources": data["sources"],
     }
 
 
 # ---------------------------------------------------------------------------
 # KPIs — headline numbers for the top-bar stats cards
 # ---------------------------------------------------------------------------
+
 
 @router.get("/kpis")
 def kpis(
@@ -123,6 +112,7 @@ def kpis(
 # Saved views — per-user CRUD
 # ---------------------------------------------------------------------------
 
+
 @router.get("/views")
 def list_views(
     user: dict = Depends(require_admin),
@@ -151,6 +141,7 @@ def save_view(
     # with a malformed save. 64 KiB is generous for the saved-view shape
     # (window + a handful of short filter values + sort).
     import json as _json
+
     if len(_json.dumps(query)) > 64 * 1024:
         raise HTTPException(
             status_code=400,

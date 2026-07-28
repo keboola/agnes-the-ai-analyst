@@ -7,6 +7,7 @@ whichever side is wrong.
 This is the test that proves the dual-write window in the parent plan
 (Phase 2 step 3) can work without invisible behaviour deltas.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,6 +20,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repo(tmp_path):
     from src.db import _ensure_schema
@@ -43,10 +45,12 @@ def _make_pg_repo(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     db_pg.get_engine()
 
     from src.repositories.audit_pg import AuditPgRepository
+
     return AuditPgRepository(db_pg.get_engine()), None
 
 
@@ -67,6 +71,7 @@ def audit_repo(request, tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 # contract assertions — same SQL questions, same answers
 # ---------------------------------------------------------------------------
+
 
 def test_log_returns_id(audit_repo):
     repo, _, _ = audit_repo
@@ -175,6 +180,7 @@ def test_query_ordering_newest_first(audit_repo):
     """Both impls must order by (timestamp DESC, id DESC)."""
     repo, _, _ = audit_repo
     import time
+
     repo.log(action="first")
     time.sleep(0.01)
     repo.log(action="second")
@@ -209,6 +215,7 @@ def test_query_for_resources_helper(audit_repo):
 def test_query_cursor_pagination(audit_repo):
     repo, _, _ = audit_repo
     import time
+
     for i in range(5):
         repo.log(action=f"a.{i}")
         time.sleep(0.005)
@@ -227,6 +234,7 @@ def test_query_cursor_pagination(audit_repo):
 # ---------------------------------------------------------------------------
 # aggregates — count_for_user / query_governance / facets / kpis
 # ---------------------------------------------------------------------------
+
 
 def test_count_for_user(audit_repo):
     repo, _, _ = audit_repo
@@ -262,6 +270,7 @@ def test_query_governance_action_filter(audit_repo):
 def test_query_governance_offset_paging(audit_repo):
     repo, _, _ = audit_repo
     import time
+
     for i in range(5):
         repo.log(action=f"corporate_memory.evt_{i}")
         time.sleep(0.005)
@@ -281,9 +290,14 @@ def test_facets_group_buckets(audit_repo):
     repo.log(user_id="u1", action="a", resource="r1", result="success", client_kind="web")
     repo.log(user_id="u1", action="a", resource="r1", result="success", client_kind="web")
     repo.log(user_id="u2", action="b", resource="r2", result="error.x", client_kind="cli")
-    repo.log(user_id=None, action="run_corporate_memory")  # scheduler via action fallback
-    sched = ["run_corporate_memory", "marketplace.sync_all"]
-    out = repo.facets(since=since, scheduler_actions=sched, limit=50)
+    # scheduler classification is rule-based (action LIKE 'run_%'), not a
+    # hardcoded action list — these two must land in 'scheduler' without any
+    # caller-supplied fallback names.
+    repo.log(user_id="u3", action="run_session_processor:usage")
+    repo.log(user_id="u3", action="marketplace.sync_all")
+    # NULL user + non-scheduler action → 'system'
+    repo.log(user_id=None, action="job.enqueue")
+    out = repo.facets(since=since, limit=50)
     assert set(out.keys()) == {"users", "actions", "results", "resources", "sources"}
     user_counts = {u["id"]: u["count"] for u in out["users"]}
     assert user_counts["u1"] == 2
@@ -293,7 +307,22 @@ def test_facets_group_buckets(audit_repo):
     sources = {s["value"]: s["count"] for s in out["sources"]}
     assert sources.get("web") == 2
     assert sources.get("cli") == 1
-    assert sources.get("scheduler") == 1
+    assert sources.get("scheduler") == 2
+    assert sources.get("system") == 1
+
+
+def test_query_rows_carry_computed_source(audit_repo):
+    repo, _, _ = audit_repo
+    repo.log(user_id="u1", action="table.read", client_kind="cli")
+    repo.log(user_id="u1", action="run_session_processor:usage")
+    repo.log(user_id=None, action="job.enqueue")
+    repo.log(user_id="u1", action="table.read")
+    rows, _ = repo.query(limit=10)
+    by_action_kind = {(r["action"], r["client_kind"]): r["source"] for r in rows}
+    assert by_action_kind[("table.read", "cli")] == "cli"
+    assert by_action_kind[("run_session_processor:usage", None)] == "scheduler"
+    assert by_action_kind[("job.enqueue", None)] == "system"
+    assert by_action_kind[("table.read", None)] == "other"
 
 
 def test_kpis(audit_repo):
@@ -352,6 +381,7 @@ def test_active_users_since_excludes_rows_before_window(audit_repo):
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _as_dict(v):
     """Normalize ``params``/``params_before`` to a dict for cross-backend

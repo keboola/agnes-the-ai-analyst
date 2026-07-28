@@ -7,6 +7,8 @@ from typing import Any, Optional, List, Dict
 
 import duckdb
 
+from src.audit_helpers import AUDIT_SOURCE_CASE_SQL
+
 
 class AuditRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
@@ -41,11 +43,18 @@ class AuditRepository:
                 params_before, client_ip, client_kind, correlation_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                entry_id, now, user_id, action, resource,
+                entry_id,
+                now,
+                user_id,
+                action,
+                resource,
                 json.dumps(params) if params else None,
-                result, duration_ms,
+                result,
+                duration_ms,
                 json.dumps(params_before) if params_before else None,
-                client_ip, client_kind, correlation_id,
+                client_ip,
+                client_kind,
+                correlation_id,
             ],
         )
         return entry_id
@@ -56,7 +65,7 @@ class AuditRepository:
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
         user_id: Optional[str] = None,
-        action: Optional[str] = None,         # legacy single-action filter
+        action: Optional[str] = None,  # legacy single-action filter
         action_prefix: Optional[str] = None,
         action_in: Optional[List[str]] = None,
         resource: Optional[str] = None,
@@ -64,7 +73,7 @@ class AuditRepository:
         result_pattern: Optional[str] = None,
         correlation_id: Optional[str] = None,
         q: Optional[str] = None,
-        cursor: Optional[tuple] = None,        # keyset (timestamp, id)
+        cursor: Optional[tuple] = None,  # keyset (timestamp, id)
         limit: int = 100,
     ) -> tuple[List[Dict[str, Any]], Optional[tuple]]:
         """Query audit_log with rich filters; returns (rows, next_cursor).
@@ -77,27 +86,36 @@ class AuditRepository:
         where = []
         params: List[Any] = []
         if since is not None:
-            where.append("timestamp >= ?"); params.append(since)
+            where.append("timestamp >= ?")
+            params.append(since)
         if until is not None:
-            where.append("timestamp < ?"); params.append(until)
+            where.append("timestamp < ?")
+            params.append(until)
         if user_id is not None:
-            where.append("user_id = ?"); params.append(user_id)
+            where.append("user_id = ?")
+            params.append(user_id)
         if action is not None:
-            where.append("action = ?"); params.append(action)
+            where.append("action = ?")
+            params.append(action)
         if action_prefix is not None:
-            where.append("action LIKE ?"); params.append(action_prefix + "%")
+            where.append("action LIKE ?")
+            params.append(action_prefix + "%")
         if action_in:
             placeholders = ",".join("?" for _ in action_in)
             where.append(f"action IN ({placeholders})")
             params.extend(action_in)
         if resource is not None:
-            where.append("resource = ?"); params.append(resource)
+            where.append("resource = ?")
+            params.append(resource)
         if resource_prefix is not None:
-            where.append("resource LIKE ?"); params.append(resource_prefix + "%")
+            where.append("resource LIKE ?")
+            params.append(resource_prefix + "%")
         if result_pattern is not None:
-            where.append("result LIKE ?"); params.append(result_pattern)
+            where.append("result LIKE ?")
+            params.append(result_pattern)
         if correlation_id is not None:
-            where.append("correlation_id = ?"); params.append(correlation_id)
+            where.append("correlation_id = ?")
+            params.append(correlation_id)
         if q:
             # Full-text search is a table scan on `params` JSON cast to text.
             # Safeguard: if caller passes `q` without a `since` filter, force a
@@ -105,15 +123,19 @@ class AuditRepository:
             # in Phase B/C (see parent spec §5.5).
             if since is None:
                 since = datetime.now(timezone.utc) - timedelta(days=7)
-                where.append("timestamp >= ?"); params.append(since)
-            where.append("CAST(params AS VARCHAR) LIKE ?"); params.append(f"%{q}%")
+                where.append("timestamp >= ?")
+                params.append(since)
+            where.append("CAST(params AS VARCHAR) LIKE ?")
+            params.append(f"%{q}%")
         if cursor is not None:
             ts, cid = cursor
             # Keyset: rows strictly older than the cursor, breaking ties by id desc
             where.append("(timestamp, id) < (?, ?)")
             params.extend([ts, cid])
 
-        sql = "SELECT * FROM audit_log"
+        # `source` is computed server-side so every consumer (web, CLI, MCP)
+        # classifies rows identically — no client-side re-derivation.
+        sql = f"SELECT *, {AUDIT_SOURCE_CASE_SQL} AS source FROM audit_log"
         if where:
             sql += " WHERE " + " AND ".join(where)
         # Fetch limit+1 to determine whether there's a next page
@@ -164,10 +186,7 @@ class AuditRepository:
         if not resources:
             return []
         placeholders = ",".join("?" for _ in resources)
-        sql = (
-            f"SELECT * FROM audit_log WHERE resource IN ({placeholders}) "
-            f"ORDER BY timestamp DESC LIMIT ?"
-        )
+        sql = f"SELECT * FROM audit_log WHERE resource IN ({placeholders}) ORDER BY timestamp DESC LIMIT ?"
         results = self.conn.execute(sql, list(resources) + [limit]).fetchall()
         if not results:
             return []
@@ -189,9 +208,7 @@ class AuditRepository:
     # -----------------------------------------------------------------
     def count_for_user(self, user_id: str) -> int:
         """Total audit rows recorded for one user."""
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]
-        ).fetchone()
+        row = self.conn.execute("SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]).fetchone()
         return int(row[0]) if row and row[0] is not None else 0
 
     def query_governance(
@@ -211,10 +228,7 @@ class AuditRepository:
         """
         p0, p1 = prefixes
         if action:
-            sql = (
-                "SELECT * FROM audit_log WHERE action IN (?, ?) "
-                "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
-            )
+            sql = "SELECT * FROM audit_log WHERE action IN (?, ?) ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
             params: List[Any] = [f"{p0}{action}", f"{p1}{action}", limit, offset]
         else:
             sql = (
@@ -233,14 +247,15 @@ class AuditRepository:
         self,
         *,
         since: datetime,
-        scheduler_actions: list[str],
         limit: int = 50,
     ) -> "dict[str, list[dict]]":
         """Distinct facet values present in ``audit_log`` since ``since``.
 
         Five GROUP BY COUNT(*) buckets (no users JOIN — the caller resolves
         user emails separately): users, actions, results, resources, sources.
-        Each bucket is largest-first, capped at ``limit``.
+        Each bucket is largest-first, capped at ``limit``. Source
+        classification uses the shared ``AUDIT_SOURCE_CASE_SQL`` rule — no
+        caller-supplied action list.
         """
         users = self.conn.execute(
             "SELECT user_id AS id, COUNT(*) AS n FROM audit_log "
@@ -266,28 +281,20 @@ class AuditRepository:
             "GROUP BY resource ORDER BY n DESC LIMIT ?",
             [since, limit],
         ).fetchall()
-        sched_in = ",".join("?" for _ in scheduler_actions)
         source_rows = self.conn.execute(
             f"""
-            SELECT
-              CASE
-                WHEN client_kind IS NOT NULL AND client_kind != '' THEN client_kind
-                WHEN action IN ({sched_in}) THEN 'scheduler'
-                WHEN user_id IS NULL THEN 'system'
-                ELSE 'other'
-              END AS src,
-              COUNT(*) AS n
+            SELECT {AUDIT_SOURCE_CASE_SQL} AS src, COUNT(*) AS n
             FROM audit_log WHERE timestamp >= ?
             GROUP BY src ORDER BY n DESC LIMIT ?
             """,
-            list(scheduler_actions) + [since, limit],
+            [since, limit],
         ).fetchall()
         return {
-            "users":     [{"id": r[0], "count": r[1]} for r in users],
-            "actions":   [{"value": r[0], "count": r[1]} for r in actions],
-            "results":   [{"value": r[0], "count": r[1]} for r in results],
+            "users": [{"id": r[0], "count": r[1]} for r in users],
+            "actions": [{"value": r[0], "count": r[1]} for r in actions],
+            "results": [{"value": r[0], "count": r[1]} for r in results],
             "resources": [{"value": r[0], "count": r[1]} for r in resources],
-            "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
+            "sources": [{"value": r[0], "count": r[1]} for r in source_rows],
         }
 
     def last_scheduler_tick(self) -> "datetime | None":
