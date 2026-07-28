@@ -6540,7 +6540,17 @@ def _v100_to_v101(conn: duckdb.DuckDBPyConnection) -> None:
     resolves to exactly one account (case-insensitive). Unresolvable or
     ambiguous emails stay as-is: a searchable email beats a dropped row.
     Fixes the Activity Center facet split where one person appeared as both
-    an email row and a UUID row (chat/memory/authoring/slack writers)."""
+    an email row and a UUID row (chat/memory/authoring/slack writers).
+
+    Guarded on ``users.email`` existing — legacy snapshots migrated through
+    the whole ladder in one pass (and test fixtures) can reach this step
+    with a minimal ``users`` shape; the backfill is then a no-op and the
+    version still advances."""
+    user_cols = {r[1] for r in conn.execute("PRAGMA table_info('users')").fetchall()}
+    audit_cols = {r[1] for r in conn.execute("PRAGMA table_info('audit_log')").fetchall()}
+    if "email" not in user_cols or "user_id" not in audit_cols:
+        conn.execute("UPDATE schema_version SET version = 101")
+        return
     conn.execute(
         """
         UPDATE audit_log SET user_id = (
