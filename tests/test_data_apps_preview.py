@@ -123,6 +123,36 @@ class TestPreviewGrantEndpoint:
         r = env["client"].post("/api/data-apps/dash/preview-grant", headers=_auth(env["grantee_pat"]))
         assert r.status_code == 200, r.text
 
+    def test_grant_minted_under_requester_not_app_owner(self, preview_api_env):
+        """The preview token belongs to the CALLER who requested it (a grantee
+        here, `grantee1`), not the app's owner (`owner1`). This is what lets the
+        SessionEnd revoke — keyed on the chat session's own user — actually tear
+        the grant down, so a grantee-previews-a-draft grant isn't left live for
+        the full TTL after their session ends."""
+        from src.repositories import access_token_repo
+        from app.api.data_apps import revoke_preview_tokens_for_user
+
+        env = preview_api_env
+        r = env["client"].post("/api/data-apps/dash/preview-grant", headers=_auth(env["grantee_pat"]))
+        assert r.status_code == 200, r.text
+
+        repo = access_token_repo()
+
+        def _live_preview_names(uid):
+            return [
+                t["name"]
+                for t in repo.list_for_user(uid, include_revoked=False)
+                if t["name"].startswith("data-app-preview:")
+            ]
+
+        assert _live_preview_names("grantee1") == ["data-app-preview:dash"], "token must be under the requester"
+        assert _live_preview_names("owner1") == [], "token must NOT be under the app owner"
+
+        # SessionEnd revoke keyed on the requester's id revokes it (the hard cap works;
+        # pat_resolver rejects revoked tokens, so it stops serving immediately).
+        revoke_preview_tokens_for_user("grantee1")
+        assert _live_preview_names("grantee1") == []
+
     def test_stranger_forbidden(self, preview_api_env):
         env = preview_api_env
         r = env["client"].post("/api/data-apps/dash/preview-grant", headers=_auth(env["other_pat"]))

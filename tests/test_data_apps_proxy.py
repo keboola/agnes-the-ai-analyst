@@ -694,11 +694,12 @@ def mint_preview(proxy_env):
     isolation from the grant endpoint's own RBAC (covered separately in
     `tests/test_data_apps_preview.py`)."""
     from app.api.data_apps import _mint_preview_token
-    from src.repositories import data_apps_repo
+    from src.repositories import data_apps_repo, users_repo
 
     def _mint(slug: str, ttl_s: int = 1800) -> _PreviewToken:
         row = data_apps_repo().get_by_slug(slug)
-        jwt_token, cookie = _mint_preview_token(row, ttl_s=ttl_s)
+        requester = users_repo().get_by_id(row["owner_user_id"])
+        jwt_token, cookie = _mint_preview_token(row, requester, ttl_s=ttl_s)
         return _PreviewToken(jwt_token, cookie)
 
     return _mint
