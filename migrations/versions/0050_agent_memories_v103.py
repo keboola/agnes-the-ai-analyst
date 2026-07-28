@@ -1,7 +1,7 @@
 """agent memories (DuckDB v103).
 
 Revision ID: 0050_agent_memories_v103
-Revises: 0049_agent_webhooks_artifacts_v102
+Revises: 0049_webhooks_artifacts_v102
 
 Mirrors DuckDB's ``_v102_to_v103`` / ``_SYSTEM_SCHEMA`` addition (agent-api
 V1c). Creates the per-agent private memory notebook (``agent_memories``,
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0050_agent_memories_v103"
-down_revision: Union[str, None] = "0049_agent_webhooks_artifacts_v102"
+down_revision: Union[str, None] = "0049_webhooks_artifacts_v102"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
