@@ -43,8 +43,9 @@ from app.api.broker_agent_policy import (
     parse_usage,
     usage_accumulator,
 )
-from app.auth.access import mint_co_session_jwt, require_admin
+from app.auth.access import mint_agent_session_jwt, mint_co_session_jwt, require_admin
 from app.auth.jwt import create_access_token
+from src.agent_scope_intersection import agent_narrows
 from src.repositories import agents_repo, audit_repo, chat_session_repo, ticket_repo, users_repo
 
 logger = logging.getLogger(__name__)
@@ -230,17 +231,34 @@ def _mint_identity_jwt(session_id: str) -> str:
       with ``left_at IS NULL``). Resolving a co-session to its single stored
       owner (the previous behaviour) both over-authorized guests and went
       stale when the owner left — see §11.
-    - **Solo session**: resolve the owner via the dual-backend chat-session +
-      users lookup and mint an ordinary identity JWT.
+    - **Solo session with a narrowing agent** (V1d): when the session's
+      ``agent_id`` resolves to a live (non-deleted) agent whose scope
+      actually restricts something (``agent_narrows`` — any of its four
+      ``*_mode`` columns is ``'selected'``), mint an ``agent_session`` JWT
+      (``mint_agent_session_jwt``). Same no-baked-in-authority contract as
+      the co-session branch: the resolver rebuilds owner-grants ∩
+      agent-scope live, per request. An all-``'all'`` agent (every user's
+      lazily-seeded default) does NOT narrow anything — it falls through to
+      the plain owner-identity branch below so web chat's JWT shape is
+      unchanged (identical authority either way; this is an optimization,
+      not a security exception).
+    - **Solo session, no narrowing agent**: resolve the owner via the
+      dual-backend chat-session + users lookup and mint an ordinary
+      identity JWT (unchanged legacy/no-agent path).
 
-    Both carry ``chat_session_id`` so ``execute_query``'s per-session BigQuery
-    budget accounting works identically to a direct call.
+    All three carry ``chat_session_id`` so ``execute_query``'s per-session
+    BigQuery budget accounting works identically to a direct call.
     """
     session = chat_session_repo().get_session(session_id)
     if session is None:
         raise HTTPException(status_code=401, detail="ticket_session_not_found")
     if getattr(session, "is_co_session", False):
         return mint_co_session_jwt(session_id)
+    agent_id = getattr(session, "agent_id", None)
+    if agent_id:
+        agent = agents_repo().get_by_id(agent_id)
+        if agent is not None and agent.get("deleted_at") is None and agent_narrows(agent):
+            return mint_agent_session_jwt(session_id)
     user = users_repo().get_by_email(session.user_email)
     if user is None:
         raise HTTPException(status_code=401, detail="ticket_user_not_found")
