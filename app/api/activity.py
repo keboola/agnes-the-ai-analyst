@@ -88,7 +88,10 @@ def activity_timeline(
     resource: Optional[str] = None,
     resource_prefix: Optional[str] = None,
     result_pattern: Optional[str] = None,
+    result_class: Optional[str] = None,
     q: Optional[str] = None,
+    source: Optional[str] = None,
+    include_self_reads: bool = Query(default=False),
     cursor_ts: Optional[datetime] = None,
     cursor_id: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -104,7 +107,10 @@ def activity_timeline(
         resource=resource,
         resource_prefix=resource_prefix,
         result_pattern=result_pattern,
+        result_class=result_class,
         q=q,
+        source=source,
+        include_self_reads=include_self_reads,
         cursor=cursor,
         limit=limit,
     )
@@ -125,7 +131,8 @@ def activity_timeline(
         "since_minutes": since_minutes,
         "user_id": user_id, "action_prefix": action_prefix,
         "resource": resource, "resource_prefix": resource_prefix,
-        "result_pattern": result_pattern, "q": q,
+        "result_pattern": result_pattern, "result_class": result_class,
+        "source": source, "q": q,
     })
     return {
         "rows": rows,
@@ -140,6 +147,9 @@ def activity_timeline(
             "resource": resource,
             "resource_prefix": resource_prefix,
             "result_pattern": result_pattern,
+            "result_class": result_class,
+            "source": source,
+            "include_self_reads": include_self_reads,
             "q": q,
         },
     }
@@ -248,9 +258,12 @@ def _compute_health(now: datetime) -> dict:
 
 
 def _format_age(seconds: int) -> str:
-    if seconds < 60: return f"{seconds}s ago"
-    if seconds < 3600: return f"{seconds // 60}m ago"
-    if seconds < 86400: return f"{seconds // 3600}h ago"
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
     return f"{seconds // 86400}d ago"
 
 

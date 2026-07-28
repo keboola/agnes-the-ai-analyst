@@ -102,6 +102,16 @@ def timeline(
     user: Optional[str] = typer.Option(None, "--user", help="Filter by user_id (full or prefix)"),
     resource: Optional[str] = typer.Option(None, "--resource", help="Filter by resource (e.g. table:orders)"),
     result: Optional[str] = typer.Option(None, "--result", help="Filter by result prefix (e.g. error)"),
+    result_class: Optional[str] = typer.Option(
+        None, "--result-class", help="Filter by result class (success|error|denied|none|other)"
+    ),
+    source: Optional[str] = typer.Option(
+        None, "--source", help="Filter by source (web|cli|scheduler|system|api|broker|other)"
+    ),
+    include_self_reads: bool = typer.Option(
+        False, "--include-self-reads",
+        help="Include the Activity Center's own activity.read audit rows (hidden by default)",
+    ),
     search: Optional[str] = typer.Option(None, "--search", help="Full-text search on params JSON"),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON to stdout"),
 ):
@@ -127,6 +137,12 @@ def timeline(
         params["resource"] = resource
     if result:
         params["result_pattern"] = result
+    if result_class:
+        params["result_class"] = result_class
+    if source:
+        params["source"] = source
+    if include_self_reads:
+        params["include_self_reads"] = "true"
     if search:
         params["q"] = search
 
