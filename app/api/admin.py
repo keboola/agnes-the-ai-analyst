@@ -33,6 +33,7 @@ from src.repositories import (
     usage_repo,
     user_store_installs_repo,
 )
+from src.audit_helpers import client_kind_from_user
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
 
@@ -4242,6 +4243,7 @@ def run_session_collector(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_session_collector",
         resource="job:session-collector",
         params=audit_params,
@@ -4367,6 +4369,7 @@ def run_session_processor(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action=f"run_session_processor:{processor}",
         resource=f"job:session-processor:{processor}",
         params=audit_params,
@@ -4421,6 +4424,7 @@ def run_corporate_memory(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_corporate_memory",
         resource="job:corporate-memory",
         params=audit_params,
@@ -4469,6 +4473,7 @@ def run_knowledge_packaging(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_knowledge_packaging",
         resource="job:knowledge-packaging",
         params=audit_params,
@@ -4515,6 +4520,7 @@ def run_knowledge_digests(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_knowledge_digests",
         resource="job:knowledge-digests",
         params=audit_params,
@@ -4588,6 +4594,7 @@ def run_knowledge_migration(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_knowledge_migration",
         resource="job:knowledge-migration",
         params={"knowledge_imported": count},
@@ -4638,6 +4645,7 @@ def run_jira_sla_poll(
         # operator sees the no-op in audit_log without alert noise.
         audit_repo().log(
             user_id=user.get("id"),
+            client_kind=client_kind_from_user(user),
             action="run_jira_sla_poll",
             resource="job:jira-sla-poll",
             params={"status": "skipped", "reason": str(e)[:200]},
@@ -4665,6 +4673,7 @@ def run_jira_sla_poll(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_jira_sla_poll",
         resource="job:jira-sla-poll",
         params=audit_params,
@@ -4703,6 +4712,7 @@ def run_jira_consistency_check(
     except (ValueError, KeyError) as e:
         audit_repo().log(
             user_id=user.get("id"),
+            client_kind=client_kind_from_user(user),
             action="run_jira_consistency_check",
             resource="job:jira-consistency-check",
             params={"status": "skipped", "reason": str(e)[:200]},
@@ -4737,6 +4747,7 @@ def run_jira_consistency_check(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_jira_consistency_check",
         resource="job:jira-consistency-check",
         params=audit_params,
@@ -4948,7 +4959,7 @@ async def admin_override_store_submission(
             "prior_inline": sub.get("inline_checks"),
             "promoted_to_version_no": promoted_to,
         },
-        result="ok",
+        result="success",
     )
     return {"ok": True, "submission_id": submission_id, "entity_id": entity_id}
 
@@ -5333,6 +5344,7 @@ async def run_blocked_purge(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_blocked_purge",
         resource="job:store-blocked-purge",
         params={"ttl_days": ttl, "purged": result.get("purged", 0), "skipped": result.get("skipped", False)},
@@ -5366,6 +5378,7 @@ async def run_reap_stuck_reviews(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_reap_stuck_reviews",
         resource="job:store-reap-stuck-reviews",
         params={"grace_seconds": grace, "reaped": result.get("reaped", 0), "skipped": result.get("skipped", False)},

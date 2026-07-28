@@ -337,7 +337,7 @@ other.
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **102** (auto-migrated from any earlier version on startup — see `src/db.py`).
+Current schema version: **105** (auto-migrated from any earlier version on startup — see `src/db.py`; the authoritative constant is `SCHEMA_VERSION` there).
 
 | Table | Purpose |
 |-------|---------|

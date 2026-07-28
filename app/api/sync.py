@@ -1717,7 +1717,7 @@ def sync_manifest(
                 user_id=user["id"],
                 action="manifest.fetch",
                 resource="manifest",
-                result="ok",
+                result="success",
                 client_kind="api",
             )
         except Exception:

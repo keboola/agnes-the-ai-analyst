@@ -42,6 +42,140 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.9] - 2026-07-28
+
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **BigQuery jobs from a restricted principal keep their cost-attribution
+  labels.** `_user_id_label` reached for `user.get("email")` on a frozen
+  `SessionPrincipal` / `AgentPrincipal`; the `AttributeError` hit
+  `build_bq_job_labels`' totality guard, which dropped the ENTIRE label set
+  (`workload_type`, `agent_name`, `environment` — not just `user_id`), so a
+  scoped agent's BQ spend was unattributable in `INFORMATION_SCHEMA.JOBS` and
+  the billing export. Identity now routes through `identity_for_audit()`: an
+  agent's jobs carry its owner, a co-session's carry the remaining labels.
+- **`GET /api/v2/catalog` writes its audit row for a restricted principal.**
+  The last `user.get("id")` audit call site missed by the identity rollout —
+  the `AttributeError` landed in the `except Exception` around the audit
+  write, so a co-session or agent-session listed the catalog (200) while its
+  `catalog.list` row was silently dropped.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.8] - 2026-07-28
+
+### Changed
+
+- Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
+
+## [0.77.7] - 2026-07-28
+
+### Added
+
+- `usage_session_summary.uploaded_at` (schema v105): sessions record when
+  they ARRIVED, not just when they started. The health pulse gains a
+  `session_ingest` field reconciling `session.upload` audit rows against
+  ingested summaries (joined on the file name — resumed/forked sessions
+  carry a different content-derived session id); the browser hints the file
+  id when it differs.
+
+### Changed
+
+- **The sessions browser windows on arrival by default** (`anchor=uploaded`;
+  `anchor=started` and `agnes admin sessions list --anchor started` restore
+  the old view). Previously a session uploaded late (queue catch-up) never
+  appeared in any recent window and read as data loss — on a production
+  dataset, 34 of 157 uploads in 30 days were invisible this way. Adoption
+  charts stay anchored on `started_at` (usage-over-time semantics).
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.6] - 2026-07-28
+
+### Added
+
+- Activity Center timeline rows carry a server-computed `source`
+  (web/cli/scheduler/system/…) so every consumer classifies rows by one rule
+  (landed unreleased in #1071; recorded here after a changelog-section
+  collision with the concurrent 0.77.3/0.77.4 cuts).
+- Activity Center **result classes**: the Result filter now partitions every
+  row (`success` = success/ok, `errors`, `denied` = denied/blocked/
+  invalid_password/deactivated, `no result`, `other`) — previously 35% of
+  rows matched neither dropdown option. Facets expose per-class counts;
+  `agnes admin activity` gains `--result-class`, `--source`,
+  `--include-self-reads`.
+- `duration_ms` is now auto-measured for every HTTP-triggered audit write via
+  a request-start contextvar (no per-endpoint instrumentation); the p95 card
+  shows what fraction of rows carry a measurement.
+
+### Changed
+
+- **Activity Center KPI cards, facet dropdowns and the timeline share one
+  server-side filter surface** — KPIs/facets accept the same filters as the
+  table (user, action, resource, result class, source, search), so the cards
+  finally change when the filters do. The `source` filter is applied
+  server-side (was client-side on the loaded page only).
+- **Activity Center hides its own `activity.read` audit rows by default**
+  (toggle "Include Activity Center reads" to see them); the rows are still
+  written for governance.
+- Activity Center "Active users" counts people — scheduler/system actors are
+  excluded from the user count (events totals still include them); card
+  sub-labels state each number's population.
+
+### Fixed
+
+- Audit rows record `users.id` in `user_id` everywhere — the chat,
+  corporate-memory governance, authoring-suggestion, and Slack-binding
+  writers previously stored the email, splitting one person into two
+  Activity Center facet entries. Schema v104 backfills historical rows
+  (exact single-account email matches only). (#1071)
+- Scheduler-tick audit writers (`run_*`) stamp `client_kind`, and source
+  classification uses the shared `action LIKE 'run_%'` rule instead of a
+  stale hardcoded action list — scheduler traffic no longer floods the
+  "other" bucket in the Activity Center source facet. (#1071)
+- Activity Center Reset button clears the Resource and Source filters too.
+- Audit writers standardize on `result="success"` (`"ok"` retired; a guard
+  test pins the vocabulary to the classification map).
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.5] - 2026-07-28
+
+### Changed
+
+- **Infra (customer-instance module): `data_apps_enabled` is now a per-VM field.** It moved from a module-global variable to an `optional(bool, false)` field on the `prod_instance` / `dev_instances[*]` object types (mirroring `dispatcher_enabled`), so an operator can enable hosted data apps on a single dev VM without also flipping every other VM in the instance — including prod. `data_apps_runtime_image` stays instance-wide. Consumed by a new `infra-v1.20.0` module tag.
+
+## [0.77.4] - 2026-07-28
+
+### Added
+
+- **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
+  with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
+  carrying a bare `*` (implicit `SELECT *`), now prints an advisory stderr
+  warning before proceeding — making the `CLAUDE.md` query rails mechanical at
+  the point the fetch is issued. WARN-only: it never blocks the fetch, and the
+  `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
+  Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
+
 ## [0.77.3] - 2026-07-28
 
 ### Added
