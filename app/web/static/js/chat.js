@@ -56,6 +56,11 @@ function renderMarkdownSafe(text) {
 let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
+// tool_use_ids of in-flight preview tools. tool_result frames carry the call id
+// in `frame.tool` (NOT the tool name — see runner._emit_tool_result), so a
+// non-directive preview result (error / data_apps_disabled) is identified by
+// tracking the ids from the suppressed tool_call, not by matching a name.
+const _previewToolCallIds = new Set();
 
 // Per-session monotonic frame sequence tracking (wave-2F task 2). The
 // server stamps every outbound WS frame with `seq` (monotonic int per
@@ -609,37 +614,52 @@ function handleFrame(frame) {
     case "tool_call":
       // Data-app preview/refresh/close/credentials tools drive the split
       // pane instead of the generic "running…" tool block — suppress the
-      // usual start-render for them (see handlePreviewDirective below).
+      // usual start-render for them (see handlePreviewDirective below), and
+      // remember the call id so the result frame (which carries no tool name)
+      // can be recognized as a preview result.
       if (_isPreviewTool(frame.tool)) {
+        if (frame.tool_use_id) _previewToolCallIds.add(frame.tool_use_id);
         clearThinkingPlaceholder();
         break;
       }
       renderToolCallStart(frame);
       break;
-    case "tool_result":
-      if (_isPreviewDirective(frame.result)) {
-        handlePreviewDirective(frame.result);
+    case "tool_result": {
+      // MCP tool results arrive as a list of text blocks that the runner
+      // collapses into a joined string (runner._emit_tool_result), so the
+      // directive is often a JSON *string*, not a parsed object — parse it.
+      let result = frame.result;
+      if (typeof result === "string") {
+        try {
+          result = JSON.parse(result);
+        } catch (_e) {
+          /* not JSON — leave as the original string */
+        }
+      }
+      if (_isPreviewDirective(result)) {
+        handlePreviewDirective(result);
+        if (frame.tool_use_id) _previewToolCallIds.delete(frame.tool_use_id);
         break;
       }
       // A preview tool whose result isn't a directive (a raised error, or the
-      // friendly `data_apps_disabled` payload) would otherwise leave the
-      // placeholder spinner running forever — its tool_call start was
-      // suppressed, so renderToolCallEnd has no card to finish. Surface it in
-      // the pane instead.
-      if (_isPreviewTool(frame.tool)) {
-        // A pane is open (preview/refresh/close) — surface the error there.
-        // The credentials tool opens no pane, so route its error to an inline
-        // message instead, or the user (whose start card was suppressed) sees
-        // nothing at all.
+      // friendly `data_apps_disabled` payload) — matched by the tracked call id
+      // (tool_result's `frame.tool` is the id, not the name). Without this the
+      // pane spinner runs forever (its tool_call start was suppressed, so
+      // renderToolCallEnd has no card to finish).
+      if (frame.tool_use_id && _previewToolCallIds.has(frame.tool_use_id)) {
+        _previewToolCallIds.delete(frame.tool_use_id);
+        // Pane open (preview/refresh/close) — surface there; the credentials
+        // tool opens no pane, so render its error inline instead.
         if (previewPaneEl) {
-          _previewPaneError(frame.result);
+          _previewPaneError(result);
         } else {
-          _renderPreviewToolError(frame.result);
+          _renderPreviewToolError(result);
         }
         break;
       }
       renderToolCallEnd(frame);
       break;
+    }
     case "assistant_message":
       finalizeAssistantMessage(frame);
       break;
