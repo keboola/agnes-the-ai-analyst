@@ -129,12 +129,12 @@ class TestRunWritersStampClientKind:
         assert row[0] == "web"
 
 
-def test_v101_backfill_rewrites_email_user_ids(tmp_path):
-    """The v101 migration maps audit_log.user_id emails → users.id where the
+def test_v104_backfill_rewrites_email_user_ids(tmp_path):
+    """The v104 migration maps audit_log.user_id emails → users.id where the
     email resolves to exactly one account; unresolvable emails stay put."""
     import duckdb as _duckdb
 
-    from src.db import _ensure_schema, _v100_to_v101
+    from src.db import _ensure_schema, _v103_to_v104
 
     conn = _duckdb.connect(str(tmp_path / "mig.duckdb"))
     _ensure_schema(conn)
@@ -149,7 +149,7 @@ def test_v101_backfill_rewrites_email_user_ids(tmp_path):
         "('e3', current_timestamp, 'u-1', 'x'), "
         "('e4', current_timestamp, 'dup@b.c', 'x')"
     )
-    _v100_to_v101(conn)
+    _v103_to_v104(conn)
     rows = dict(conn.execute("SELECT id, user_id FROM audit_log").fetchall())
     assert rows["e1"] == "u-1"  # case-insensitive single match rewritten
     assert rows["e2"] == "ghost@x.y"  # unresolvable email untouched
