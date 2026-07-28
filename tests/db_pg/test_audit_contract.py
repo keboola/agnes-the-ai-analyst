@@ -485,3 +485,19 @@ def test_log_autofills_duration_from_request_context(audit_repo):
     by_action = {r["action"]: r["duration_ms"] for r in rows}
     assert by_action["no.scope"] is None
     assert by_action["in.scope"] is not None and by_action["in.scope"] >= 0
+
+
+def test_upload_filenames_since_parses_params_on_both_engines(audit_repo):
+    """PR-C: the reconciliation source — distinct session.upload filenames.
+    Exercises the JSONB-vs-JSON-string params divergence between engines."""
+    repo, _, _ = audit_repo
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    repo.log(user_id="u1", action="session.upload",
+             params={"bytes": 1, "filename": "aaa.jsonl"})
+    repo.log(user_id="u1", action="session.upload",
+             params={"bytes": 2, "filename": "aaa.jsonl"})  # dup → distinct
+    repo.log(user_id="u2", action="session.upload",
+             params={"bytes": 3, "filename": "bbb.jsonl"})
+    repo.log(user_id="u2", action="session.upload", params={"bytes": 4})  # no filename
+    repo.log(user_id="u2", action="other.action", params={"filename": "zzz.jsonl"})
+    assert repo.upload_filenames_since(since) == ["aaa.jsonl", "bbb.jsonl"]

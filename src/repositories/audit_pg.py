@@ -365,6 +365,31 @@ class AuditPgRepository:
             ).first()
         return row[0] if row else None
 
+    def upload_filenames_since(self, since: datetime) -> "list[str]":
+        """Mirror of ``AuditRepository.upload_filenames_since``."""
+        import json as _json
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT params FROM audit_log "
+                    "WHERE action = 'session.upload' AND timestamp >= :since"
+                ),
+                {"since": since},
+            ).fetchall()
+        out: set[str] = set()
+        for (p,) in rows:
+            d = p if isinstance(p, dict) else None
+            if d is None:
+                try:
+                    d = _json.loads(p) if p else {}
+                except (TypeError, ValueError):
+                    continue
+            fn = (d or {}).get("filename")
+            if fn:
+                out.add(fn)
+        return sorted(out)
+
     def active_users_since(self, since: datetime) -> int:
         """Mirrors ``AuditRepository.active_users_since``."""
         with self._engine.connect() as conn:

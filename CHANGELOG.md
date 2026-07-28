@@ -22,11 +22,39 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.7] - 2026-07-28
+## [0.77.8] - 2026-07-28
 
 ### Changed
 
 - Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
+
+## [0.77.7] - 2026-07-28
+
+### Added
+
+- `usage_session_summary.uploaded_at` (schema v105): sessions record when
+  they ARRIVED, not just when they started. The health pulse gains a
+  `session_ingest` field reconciling `session.upload` audit rows against
+  ingested summaries (joined on the file name — resumed/forked sessions
+  carry a different content-derived session id); the browser hints the file
+  id when it differs.
+
+### Changed
+
+- **The sessions browser windows on arrival by default** (`anchor=uploaded`;
+  `anchor=started` and `agnes admin sessions list --anchor started` restore
+  the old view). Previously a session uploaded late (queue catch-up) never
+  appeared in any recent window and read as data loss — on a production
+  dataset, 34 of 157 uploads in 30 days were invisible this way. Adoption
+  charts stay anchored on `started_at` (usage-over-time semantics).
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
 
 ## [0.77.6] - 2026-07-28
 

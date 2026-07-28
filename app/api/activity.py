@@ -28,6 +28,7 @@ from src.repositories import (
     audit_repo,
     session_processor_state_repo,
     sync_state_repo,
+    usage_repo,
     users_repo,
 )
 router = APIRouter(prefix="/api/admin/activity", tags=["activity"])
@@ -238,7 +239,21 @@ def _compute_health(now: datetime) -> dict:
         mem_color = "yellow"
         mem_value = "idle 1h+"
 
-    # 5) diagnose warnings — placeholder
+    # 5) session-ingest reconciliation (24h): every uploaded file must have
+    # a summary row. Join on the FILE basename, never session_id —
+    # resumed/forked sessions carry a different content-derived id.
+    up_files = set(audit_repo().upload_filenames_since(now - timedelta(hours=24)))
+    if up_files:
+        ingested_files = usage_repo().session_file_basenames_since(
+            now - timedelta(hours=25)  # 1h grace for the processor cadence
+        )
+        ingest_gap = len(up_files - ingested_files)
+    else:
+        ingest_gap = 0
+    ingest_color = "green" if ingest_gap == 0 else "yellow"
+    ingest_value = f"{len(up_files)} up / {len(up_files) - ingest_gap} ingested"
+
+    # 6) diagnose warnings — placeholder
     diag_color = "green"
     diag_value = "0"
 
@@ -247,6 +262,7 @@ def _compute_health(now: datetime) -> dict:
         {"key": "sync_24h",           "value": sync_value,      "raw": {"ok": ok, "fail": fail}, "color": sync_color},
         {"key": "active_users_today", "value": str(active),     "raw": active, "color": "green"},
         {"key": "memory_pipeline",    "value": mem_value,       "raw": None, "color": mem_color},
+        {"key": "session_ingest",     "value": ingest_value,    "raw": ingest_gap, "color": ingest_color},
         {"key": "diagnose_warnings",  "value": diag_value,      "raw": 0, "color": diag_color},
     ]
 

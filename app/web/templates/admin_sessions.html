@@ -334,8 +334,15 @@
                        + '/' + encodeURIComponent(r.session_file.split('/').pop());
       const dlHref = '/api/admin/sessions/' + encodeURIComponent(sessionDir)
                    + '/' + encodeURIComponent(r.session_file.split('/').pop()) + '/download';
+      const fileStem = (r.session_file.split('/').pop() || '').replace(/\.jsonl$/, '');
+      const idHint = (r.session_id && fileStem && r.session_id !== fileStem)
+        ? ' <span style="color:var(--text-secondary, #6b7280);font-size:12px" title="Resumed/forked session: the transcript file id differs from the content session id. Audit session.upload rows reference the FILE id.">file: ' + escapeHtml(fileStem.slice(0, 8)) + '…</span>'
+        : '';
+      const whenTitle = r.uploaded_at
+        ? ' title="uploaded ' + escapeHtml(fmtTime(r.uploaded_at)) + '"'
+        : '';
       tr.innerHTML =
-        '<td>' + escapeHtml(fmtTime(r.started_at)) + '</td>' +
+        '<td' + whenTitle + '>' + escapeHtml(fmtTime(r.started_at)) + idHint + '</td>' +
         '<td>' + escapeHtml(r.username || '—') + '</td>' +
         '<td class="obs-num">' + escapeHtml(fmtDuration(r.active_seconds)) + '</td>' +
         '<td class="obs-num">' + fmtN(r.tool_calls) + '</td>' +

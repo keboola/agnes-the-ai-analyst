@@ -354,6 +354,27 @@ class AuditRepository:
         row = self.conn.execute(f"SELECT MAX(timestamp) FROM audit_log WHERE {SCHEDULER_ACTION_SQL}").fetchone()
         return row[0] if row else None
 
+    def upload_filenames_since(self, since: datetime) -> "list[str]":
+        """Distinct ``filename`` values from ``session.upload`` audit rows at/
+        after *since*. Parsed in Python (portable across engines). Backs the
+        health pulse's session-ingest reconciliation — joined against
+        ``usage_session_summary.session_file`` BASENAMES, never session_id
+        (resumed/forked sessions carry a different content-derived id)."""
+        rows = self.conn.execute(
+            "SELECT params FROM audit_log WHERE action = 'session.upload' AND timestamp >= ?",
+            [since],
+        ).fetchall()
+        out: set[str] = set()
+        for (p,) in rows:
+            try:
+                d = json.loads(p) if isinstance(p, str) else (p or {})
+            except (TypeError, ValueError):
+                continue
+            fn = (d or {}).get("filename")
+            if fn:
+                out.add(fn)
+        return sorted(out)
+
     def active_users_since(self, since: datetime) -> int:
         """Distinct ``user_id`` count over audit rows at/after *since*, NULL
         user_ids excluded. Backs the Activity Center health pulse's
