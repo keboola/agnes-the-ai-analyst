@@ -141,11 +141,14 @@ class SlowAPIMiddleware(_SlowAPIMiddleware):
 
     BaseHTTPMiddleware buffers the full response body, which breaks SSE
     streaming (Python 3.13 raises AssertionError on the second
-    http.response.start). Bypass for /api/mcp so MCP SSE connections work.
+    http.response.start). Bypass every SSE path (MCP, broker LLM proxy) so
+    streamed responses pass through untouched.
     """
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope.get("type") == "http" and scope.get("path", "").startswith("/api/mcp"):
+        from app.middleware import SSE_BYPASS_PREFIXES
+
+        if scope.get("type") == "http" and scope.get("path", "").startswith(SSE_BYPASS_PREFIXES):
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)
