@@ -160,6 +160,19 @@ class TestTimeline:
         data = json.loads(r.output)
         assert "rows" in data
 
+    def test_timeline_result_class_and_source_filters(self, cli_admin):
+        runner, app = cli_admin
+        r = runner.invoke(app, ["--result-class", "success", "--source", "cli", "--json"])
+        assert r.exit_code == 0, _clean(r.output)
+        data = json.loads(r.output)
+        assert data["filter"]["result_class"] == "success"
+        assert data["filter"]["source"] == "cli"
+        # self-reads hidden by default; flag flips it
+        assert data["filter"]["include_self_reads"] is False
+        r2 = runner.invoke(app, ["--include-self-reads", "--json"])
+        assert r2.exit_code == 0, _clean(r2.output)
+        assert json.loads(r2.output)["filter"]["include_self_reads"] is True
+
     def test_timeline_admin_only(self, cli_non_admin):
         runner, app = cli_non_admin
         r = runner.invoke(app, ["--json"])

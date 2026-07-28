@@ -28,6 +28,7 @@ from src.repositories import (
     audit_repo,
     session_processor_state_repo,
     sync_state_repo,
+    usage_repo,
     users_repo,
 )
 router = APIRouter(prefix="/api/admin/activity", tags=["activity"])
@@ -88,7 +89,10 @@ def activity_timeline(
     resource: Optional[str] = None,
     resource_prefix: Optional[str] = None,
     result_pattern: Optional[str] = None,
+    result_class: Optional[str] = None,
     q: Optional[str] = None,
+    source: Optional[str] = None,
+    include_self_reads: bool = Query(default=False),
     cursor_ts: Optional[datetime] = None,
     cursor_id: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -104,7 +108,10 @@ def activity_timeline(
         resource=resource,
         resource_prefix=resource_prefix,
         result_pattern=result_pattern,
+        result_class=result_class,
         q=q,
+        source=source,
+        include_self_reads=include_self_reads,
         cursor=cursor,
         limit=limit,
     )
@@ -125,7 +132,8 @@ def activity_timeline(
         "since_minutes": since_minutes,
         "user_id": user_id, "action_prefix": action_prefix,
         "resource": resource, "resource_prefix": resource_prefix,
-        "result_pattern": result_pattern, "q": q,
+        "result_pattern": result_pattern, "result_class": result_class,
+        "source": source, "q": q,
     })
     return {
         "rows": rows,
@@ -140,6 +148,9 @@ def activity_timeline(
             "resource": resource,
             "resource_prefix": resource_prefix,
             "result_pattern": result_pattern,
+            "result_class": result_class,
+            "source": source,
+            "include_self_reads": include_self_reads,
             "q": q,
         },
     }
@@ -228,7 +239,21 @@ def _compute_health(now: datetime) -> dict:
         mem_color = "yellow"
         mem_value = "idle 1h+"
 
-    # 5) diagnose warnings — placeholder
+    # 5) session-ingest reconciliation (24h): every uploaded file must have
+    # a summary row. Join on the FILE basename, never session_id —
+    # resumed/forked sessions carry a different content-derived id.
+    up_files = set(audit_repo().upload_filenames_since(now - timedelta(hours=24)))
+    if up_files:
+        ingested_files = usage_repo().session_file_basenames_since(
+            now - timedelta(hours=25)  # 1h grace for the processor cadence
+        )
+        ingest_gap = len(up_files - ingested_files)
+    else:
+        ingest_gap = 0
+    ingest_color = "green" if ingest_gap == 0 else "yellow"
+    ingest_value = f"{len(up_files)} up / {len(up_files) - ingest_gap} ingested"
+
+    # 6) diagnose warnings — placeholder
     diag_color = "green"
     diag_value = "0"
 
@@ -237,6 +262,7 @@ def _compute_health(now: datetime) -> dict:
         {"key": "sync_24h",           "value": sync_value,      "raw": {"ok": ok, "fail": fail}, "color": sync_color},
         {"key": "active_users_today", "value": str(active),     "raw": active, "color": "green"},
         {"key": "memory_pipeline",    "value": mem_value,       "raw": None, "color": mem_color},
+        {"key": "session_ingest",     "value": ingest_value,    "raw": ingest_gap, "color": ingest_color},
         {"key": "diagnose_warnings",  "value": diag_value,      "raw": 0, "color": diag_color},
     ]
 
@@ -248,9 +274,12 @@ def _compute_health(now: datetime) -> dict:
 
 
 def _format_age(seconds: int) -> str:
-    if seconds < 60: return f"{seconds}s ago"
-    if seconds < 3600: return f"{seconds // 60}m ago"
-    if seconds < 86400: return f"{seconds // 3600}h ago"
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
     return f"{seconds // 86400}d ago"
 
 

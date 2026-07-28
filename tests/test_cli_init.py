@@ -958,10 +958,11 @@ def test_shortcut_windows_writes_cmd_shim(tmp_path, monkeypatch):
 
     shim = _bin(home) / "myworkspace.cmd"
     assert shim.exists()
-    # newline="" reads the raw bytes' line endings: the shim must carry
-    # exactly \r\n (write_text without newline="" would double to \r\r\n on
-    # Windows via universal-newline translation).
-    content = shim.read_text(encoding="utf-8", newline="")
+    # Reading raw bytes preserves the shim's exact line endings (\r\n): the
+    # shim must carry \r\n, not \r\r\n from universal-newline translation.
+    # Path.read_text(newline=...) isn't available until Python 3.13, so we
+    # decode the bytes ourselves instead.
+    content = shim.read_bytes().decode("utf-8")
     assert "\r\r" not in content
     assert "\r\n" in content
     content = content.replace("\r\n", "\n")

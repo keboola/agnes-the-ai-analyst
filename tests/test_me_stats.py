@@ -273,5 +273,5 @@ def test_sync_manifest_writes_audit_row(stats_conn, monkeypatch, tmp_path):
     action, resource, result, client_kind = rows[0]
     assert action == "manifest.fetch"
     assert resource == "manifest"
-    assert result == "ok"
+    assert result == "success"
     assert client_kind == "api"

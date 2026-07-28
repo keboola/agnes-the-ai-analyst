@@ -60,6 +60,7 @@ _GROUP_BY_COLUMNS = {
 
 _SESSION_SORT_KEYS = {
     "started_at": "started_at",
+    "uploaded_at": "uploaded_at",
     "ended_at": "ended_at",
     "tool_calls": "tool_calls",
     "tool_errors": "tool_errors",
@@ -74,6 +75,7 @@ _SESSION_COLS = [
     "username",
     "started_at",
     "ended_at",
+    "uploaded_at",
     "active_seconds",
     "wall_seconds",
     "user_messages",
@@ -563,7 +565,13 @@ class UsagePgRepository:
 
     @staticmethod
     def _sessions_where(filters: dict) -> tuple[str, dict]:
-        where = ["started_at >= :since"]
+        # anchor mirror of the DuckDB sibling (browser default: uploaded)
+        anchor_col = (
+            "COALESCE(uploaded_at, started_at)"
+            if filters.get("anchor") == "uploaded"
+            else "started_at"
+        )
+        where = [f"{anchor_col} >= :since"]
         params: dict = {"since": filters["since"]}
         if filters.get("username"):
             where.append("username = :username")
@@ -626,6 +634,18 @@ class UsagePgRepository:
             "tool_calls_total": tool_calls_total,
             "tool_errors_total": tool_errors_total,
         }
+
+    def session_file_basenames_since(self, since: datetime) -> "set[str]":
+        """Mirror of ``UsageRepository.session_file_basenames_since``."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT session_file FROM usage_session_summary "
+                    "WHERE COALESCE(uploaded_at, started_at) >= :since"
+                ),
+                {"since": since},
+            ).fetchall()
+        return {r[0].rsplit("/", 1)[-1] for r in rows if r[0]}
 
     def sessions_facets(self, since: datetime) -> dict:
         """Distinct usernames + models present in usage_session_summary for the window."""
@@ -973,6 +993,7 @@ class UsagePgRepository:
         return {r[0]: {"active_users": int(r[1] or 0), "skill_events": int(r[2] or 0)} for r in rows}
 
     def adoption_top_users(self, since: datetime, limit: int = 10, q: Optional[str] = None) -> List[dict]:
+        # adoption stays anchored on started_at (usage-over-time semantics)
         where = ["started_at >= :since"]
         params: dict = {"since": since, "lim": limit}
         if q:
@@ -1239,13 +1260,15 @@ class UsagePgRepository:
                          tool_calls, tool_errors, skill_invocations, subagent_dispatches,
                          mcp_calls, slash_commands, distinct_tools, distinct_skills,
                          primary_model, input_tokens, output_tokens, cache_read_tokens,
-                         cache_creation_tokens, processor_version, user_id)
+                         cache_creation_tokens, processor_version, user_id,
+                         uploaded_at)
                     VALUES (:sf, :sid, :u, :sa, :ea,
                             :acts, :walls, :um, :am,
                             :tc, :te, :si, :sd,
                             :mc, :sc, :dt, :ds,
                             :pm, :it, :ot, :crt,
-                            :cct, :pv, :uid)
+                            :cct, :pv, :uid,
+                            COALESCE(:upat, CURRENT_TIMESTAMP))
                     ON CONFLICT (session_file) DO UPDATE SET
                       session_id           = EXCLUDED.session_id,
                       username             = EXCLUDED.username,
@@ -1269,7 +1292,9 @@ class UsagePgRepository:
                       cache_read_tokens    = EXCLUDED.cache_read_tokens,
                       cache_creation_tokens= EXCLUDED.cache_creation_tokens,
                       processor_version    = EXCLUDED.processor_version,
-                      user_id              = EXCLUDED.user_id
+                      user_id              = EXCLUDED.user_id,
+                      -- first arrival wins (anchor semantics, spec Phase C)
+                      uploaded_at = COALESCE(usage_session_summary.uploaded_at, EXCLUDED.uploaded_at)
                     """
                 ),
                 {
@@ -1297,6 +1322,7 @@ class UsagePgRepository:
                     "cct": summary.get("cache_creation_tokens", 0),
                     "pv": processor_version,
                     "uid": summary.get("user_id"),
+                    "upat": summary.get("uploaded_at"),
                 },
             )
 

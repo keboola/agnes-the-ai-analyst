@@ -298,7 +298,7 @@ def test_facets_group_buckets(audit_repo):
     # NULL user + non-scheduler action → 'system'
     repo.log(user_id=None, action="job.enqueue")
     out = repo.facets(since=since, limit=50)
-    assert set(out.keys()) == {"users", "actions", "results", "resources", "sources"}
+    assert set(out.keys()) == {"users", "actions", "results", "result_classes", "resources", "sources"}
     user_counts = {u["id"]: u["count"] for u in out["users"]}
     assert user_counts["u1"] == 2
     assert user_counts["u2"] == 1
@@ -394,3 +394,110 @@ def _as_dict(v):
     if isinstance(v, str):
         return json.loads(v)
     return v
+
+
+# ---------------------------------------------------------------------------
+# PR-B: facets/kpis honor the timeline filter set; result_class / source /
+# include_self_reads filters (same semantics both backends)
+# ---------------------------------------------------------------------------
+
+def _seed_parity_rows(repo):
+    repo.log(user_id="u1", action="table.read", result="success", client_kind="cli")
+    repo.log(user_id="u1", action="table.read", result="ok", client_kind="cli")
+    repo.log(user_id="u1", action="query.run", result="error.400", client_kind="web")
+    repo.log(user_id="u2", action="query.run", result="denied", client_kind="web")
+    repo.log(user_id="sched", action="run_session_processor:usage", result="success")
+    repo.log(user_id=None, action="job.enqueue")
+    repo.log(user_id="u1", action="activity.read", result="success", client_kind="web")
+
+
+def test_kpis_honor_filters(audit_repo):
+    repo, _, _ = audit_repo
+    _seed_parity_rows(repo)
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    k = repo.kpis(since=since, user_id="u1")
+    # u1 rows: table.read x2, query.run, activity.read (self-read included by default)
+    assert k["events_total"] == 4
+    k2 = repo.kpis(since=since, user_id="u1", include_self_reads=False)
+    assert k2["events_total"] == 3
+    k3 = repo.kpis(since=since, source="cli")
+    assert k3["events_total"] == 2
+
+
+def test_kpis_active_users_excludes_system_actors(audit_repo):
+    repo, _, _ = audit_repo
+    _seed_parity_rows(repo)
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    k = repo.kpis(since=since)
+    # u1 + u2 are people; 'sched' rows classify as scheduler, NULL as system
+    assert k["active_users"] == 2
+    # errors counts result_class='error' only (denied is its own class)
+    assert k["errors"] == 1
+    assert 0.0 <= k["duration_coverage"] <= 1.0
+
+
+def test_query_result_class_and_source_filters(audit_repo):
+    repo, _, _ = audit_repo
+    _seed_parity_rows(repo)
+    rows, _ = repo.query(result_class="success", limit=50)
+    assert {r["result"] for r in rows} == {"success", "ok"}
+    rows, _ = repo.query(result_class="denied", limit=50)
+    assert {r["result"] for r in rows} == {"denied"}
+    rows, _ = repo.query(source="scheduler", limit=50)
+    assert {r["action"] for r in rows} == {"run_session_processor:usage"}
+    rows, _ = repo.query(include_self_reads=False, limit=50)
+    assert "activity.read" not in {r["action"] for r in rows}
+
+
+def test_facets_honor_filters(audit_repo):
+    repo, _, _ = audit_repo
+    _seed_parity_rows(repo)
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    out = repo.facets(since=since, user_id="u1", include_self_reads=False)
+    assert {a["value"] for a in out["actions"]} == {"table.read", "query.run"}
+    assert [u["id"] for u in out["users"]] == ["u1"]
+    # result_classes bucket present for the UI dropdown
+    classes = {c["value"]: c["count"] for c in out["result_classes"]}
+    assert classes["success"] == 2  # success + ok
+    assert classes["error"] == 1
+
+
+def test_log_autofills_duration_from_request_context(audit_repo):
+    """duration_ms=None auto-fills from the request-timing contextvar in
+    BOTH backends; outside a request scope it stays NULL."""
+    import contextvars
+
+    from src.audit_context import mark_request_start
+
+    repo, _, _ = audit_repo
+
+    def _in_fresh_context(fn):
+        return contextvars.copy_context().run(fn)
+
+    _in_fresh_context(lambda: repo.log(user_id="u1", action="no.scope"))
+
+    def _scoped():
+        mark_request_start()
+        repo.log(user_id="u1", action="in.scope")
+
+    _in_fresh_context(_scoped)
+    rows, _ = repo.query(limit=10)
+    by_action = {r["action"]: r["duration_ms"] for r in rows}
+    assert by_action["no.scope"] is None
+    assert by_action["in.scope"] is not None and by_action["in.scope"] >= 0
+
+
+def test_upload_filenames_since_parses_params_on_both_engines(audit_repo):
+    """PR-C: the reconciliation source — distinct session.upload filenames.
+    Exercises the JSONB-vs-JSON-string params divergence between engines."""
+    repo, _, _ = audit_repo
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    repo.log(user_id="u1", action="session.upload",
+             params={"bytes": 1, "filename": "aaa.jsonl"})
+    repo.log(user_id="u1", action="session.upload",
+             params={"bytes": 2, "filename": "aaa.jsonl"})  # dup → distinct
+    repo.log(user_id="u2", action="session.upload",
+             params={"bytes": 3, "filename": "bbb.jsonl"})
+    repo.log(user_id="u2", action="session.upload", params={"bytes": 4})  # no filename
+    repo.log(user_id="u2", action="other.action", params={"filename": "zzz.jsonl"})
+    assert repo.upload_filenames_since(since) == ["aaa.jsonl", "bbb.jsonl"]

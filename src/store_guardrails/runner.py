@@ -388,7 +388,7 @@ def run_llm_review(
                         "visibility_flipped": visibility_flipped,
                         "promoted_to_version_no": promoted_to,
                     },
-                    result="ok",
+                    result="success",
                 )
         else:
             written = subs_repo.update_status(
