@@ -14,6 +14,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.38] - 2026-07-28
+
+### Added
+
+### Changed
+
 - **Cloud-chat sessions get a resend notice on server restart — but only when
   the turn is actually lost.** A chat whose turn was mid-generation when the
   server drained (deploy/restart) previously just stopped mid-answer with the
