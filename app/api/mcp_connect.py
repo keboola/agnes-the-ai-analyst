@@ -91,6 +91,9 @@ async def create_mcp_headless_token(
         token_hash=token_hash,
         prefix=prefix,
         expires_at=expires_at,
+        # v106: self-service MCP connection = agent surface — the connected
+        # client's catalog/query follows the owner's stack (analyst default).
+        surface="stack",
     )
     try:
         alog.log(

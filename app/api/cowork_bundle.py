@@ -1473,6 +1473,8 @@ async def generate_bundle(
         token_hash=_hl.sha256(pat_jwt.encode()).hexdigest(),
         prefix=pat_id.replace("-", "")[:8],
         expires_at=expires_at,
+        # v106: Cowork onboarding is an analyst surface — stack default.
+        surface="stack",
     )
 
     _audit(conn, user["id"], "cowork_bundle.create", token_id, {"server_url": server_url})
@@ -1601,6 +1603,8 @@ async def exchange_setup_token(
         token_hash=pat_hash,
         prefix=prefix,
         expires_at=expires_at,
+        # v106: Cowork onboarding is an analyst surface — stack default.
+        surface="stack",
     )
 
     _audit(conn, user_row["id"], "cowork_bundle.exchange", row["id"], {"pat_id": token_id})

@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 105
+SCHEMA_VERSION = 106
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -507,7 +507,12 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     -- v101: agent-as-API — non-NULL when this PAT was minted for/by an
     -- agent (see docs/superpowers/specs/2026-07-21-agent-profiles-and-
     -- agent-api-design.md). Deliberately unindexed.
-    agent_id     VARCHAR
+    agent_id     VARCHAR,
+    -- v106: credential data-read surface — 'all' (legacy/admin opt-up) or
+    -- 'stack' (catalog/query scoped to the owner's stack even for admins).
+    -- Enforced in src/rbac.py via user["credential_surface"]; the schema
+    -- DEFAULT backfills every pre-v106 row to 'all' (grandfather).
+    surface      VARCHAR DEFAULT 'all'
 );
 
 -- v60: short-lived setup tokens for the Agnes Cowork one-click setup flow.
@@ -6814,7 +6819,6 @@ def _v102_to_v103(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 103")
 
 
-
 def _v103_to_v104(conn: duckdb.DuckDBPyConnection) -> None:
     """v103→v104: audit_log identity backfill — user_id values holding an
     email are rewritten to the matching users.id, but only when the email
@@ -6874,11 +6878,26 @@ def _v104_to_v105(conn: duckdb.DuckDBPyConnection) -> None:
             ) WHERE uploaded_at IS NULL
             """
         )
-    conn.execute(
-        "UPDATE usage_session_summary SET uploaded_at = "
-        "COALESCE(uploaded_at, started_at, CURRENT_TIMESTAMP)"
-    )
+    conn.execute("UPDATE usage_session_summary SET uploaded_at = COALESCE(uploaded_at, started_at, CURRENT_TIMESTAMP)")
     conn.execute("UPDATE schema_version SET version = 105")
+
+
+def _v105_to_v106(conn: duckdb.DuckDBPyConnection) -> None:
+    """v105→v106: ``personal_access_tokens.surface`` — credential data-read
+    surface ('all' | 'stack').
+
+    Schema-level DEFAULT 'all' backfills every existing row in the same
+    ALTER, so legacy PATs keep today's behavior (admin god-mode) without an
+    app-level NULL sentinel. New mint sites pass 'stack' explicitly where
+    the analyst default applies (cli_auth exchange, cowork bundle,
+    mcp_connect). Enforcement: src/rbac.py reads it via
+    ``user["credential_surface"]`` stashed by ``resolve_token_to_user``.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('personal_access_tokens')").fetchall()}
+    if "surface" not in cols:
+        conn.execute("ALTER TABLE personal_access_tokens ADD COLUMN surface VARCHAR DEFAULT 'all'")
+    conn.execute("UPDATE personal_access_tokens SET surface = 'all' WHERE surface IS NULL")
+    conn.execute("UPDATE schema_version SET version = 106")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7309,6 +7328,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v104→v105: usage_session_summary.uploaded_at — declared in
             # _SYSTEM_SCHEMA on fresh installs; backfill is a no-op.
             _v104_to_v105(conn)
+            # v105→v106: personal_access_tokens.surface — declared in
+            # _SYSTEM_SCHEMA on fresh installs (no-op ALTER here).
+            _v105_to_v106(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7572,6 +7594,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v103_to_v104(conn)
             if current < 105:
                 _v104_to_v105(conn)
+            if current < 106:
+                _v105_to_v106(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -129,6 +129,9 @@ class PersonalAccessToken(Base):
     # v96: agent-as-API — non-NULL when this PAT was minted for/by an agent.
     # Deliberately unindexed (see src/db.py's _v94_to_v95 ART-index note).
     agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v106: credential data-read surface — 'all' (legacy/admin opt-up) or
+    # 'stack'. server_default backfills legacy rows to 'all'.
+    surface: Mapped[str | None] = mapped_column(String, nullable=True, server_default=text("'all'"))
 
     __table_args__ = (
         Index("ix_personal_access_tokens_user_id", "user_id"),
