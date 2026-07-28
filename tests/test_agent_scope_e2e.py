@@ -330,3 +330,64 @@ def test_audit_snapshot_matches_enforced_intersection(scoped_agent_env):
     assert enforced.get("table") == frozenset({env["t1_id"]})
     assert set(effective["tables"]) == enforced["table"]
     assert env["t2_id"] not in enforced.get("table", frozenset())
+
+
+# ---------------------------------------------------------------------------
+# The v2 read endpoints under an AgentPrincipal
+# ---------------------------------------------------------------------------
+
+
+def _broker_call(client: httpx.AsyncClient, tok: str, method: str, path: str, body=None):
+    payload = {"method": method, "path": path}
+    if body is not None:
+        payload["body"] = body
+    return client.post("/api/broker/agnes-api", headers=_auth(tok), json=payload)
+
+
+def _audit_user_ids(action: str) -> list:
+    conn = get_system_db()
+    try:
+        return [
+            r[0]
+            for r in conn.execute(
+                "SELECT user_id FROM audit_log WHERE action = ? AND result = 'success' ORDER BY timestamp",
+                [action],
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def test_agent_reads_an_in_scope_table_through_the_v2_endpoints(scoped_agent_env):
+    """An AgentPrincipal is a frozen dataclass with no ``.get``. Every one of
+    these handlers writes an audit row keyed off the caller identity, and the
+    write sits inside a `try/except Exception` that swallows failures — so a
+    `.get` on the principal either 500'd the request (``/api/v2/scan``, whose
+    quota-key derivation is outside every `except`) or silently dropped the
+    row. Only denial paths were covered before, and a denial never reaches
+    these call sites. Assert the ALLOWED path end to end, plus the audit row
+    attributed to the owner (an agent runs on its owner's behalf)."""
+    env = scoped_agent_env
+    t1 = env["t1_id"]
+
+    async def _run():
+        transport = httpx.ASGITransport(app=env["app"])
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return (
+                await _broker_call(c, env["tok"], "GET", f"/api/v2/sample/{t1}"),
+                await _broker_call(c, env["tok"], "GET", f"/api/v2/schema/{t1}"),
+                await _broker_call(c, env["tok"], "POST", "/api/v2/scan/estimate", {"table_id": t1}),
+                await _broker_call(c, env["tok"], "GET", f"/api/data/{t1}/check-access"),
+            )
+
+    sample, schema, estimate, access = asyncio.run(_run())
+
+    assert sample.status_code == 200, sample.text
+    assert schema.status_code == 200, schema.text
+    assert estimate.status_code == 200, estimate.text
+    assert access.status_code in (200, 204), access.text
+
+    for action in ("catalog.sample", "catalog.schema", "snapshot.estimate", "data.access_check"):
+        ids = _audit_user_ids(action)
+        assert ids, f"no successful audit_log row for {action}"
+        assert ids[-1] == env["owner_id"], (action, ids[-1])

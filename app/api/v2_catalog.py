@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.v2_cache import TTLCache
 from app.auth.dependencies import _get_db, get_current_user
-from src.audit_helpers import client_kind_from_user
+from src.audit_helpers import client_kind_from_user, identity_for_audit
 from src.rbac import get_accessible_tables
 
 from src.repositories import (
@@ -376,11 +376,16 @@ def catalog(
     # the request path is pure local I/O (DuckDB reads + filesystem
     # stat()) and uses a sync DuckDB cursor.
     t0 = time.monotonic()
+    # Bookkeeping identity only — a restricted principal (co-session /
+    # agent-session) has no ``.get``, and both audit writes below sit inside
+    # an ``except Exception`` that would swallow the AttributeError and drop
+    # the row. Never an authorization input.
+    audit_user_id, _audit_email = identity_for_audit(user)
     try:
         result = build_catalog(conn, user)
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=audit_user_id,
                 action="catalog.list",
                 resource="catalog",
                 params={
@@ -396,7 +401,7 @@ def catalog(
     except Exception as exc:
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=audit_user_id,
                 action="catalog.list",
                 resource="catalog",
                 params={"error": str(exc)[:200], "duration_ms": int((time.monotonic() - t0) * 1000)},
