@@ -326,7 +326,15 @@ function dismissJourney() {
   if (popover) {
     popover.hidden = true;
     const wrap = document.getElementById("railGetStarted");
-    if (wrap) wrap.classList.remove("is-open");
+    if (wrap) {
+      wrap.classList.remove("is-open");
+      // `[hidden]` and removing `.is-open` both lose to rail.css's CSS-only
+      // :hover / :focus-within reveal — the cursor is, by definition, over
+      // the launcher at the exact moment "×" is clicked. `.is-closed`
+      // (rail.css) is the only rule that overrides those with !important;
+      // rail_history.js clears it again once the cursor actually leaves.
+      wrap.classList.add("is-closed");
+    }
     const toggle = document.getElementById("rail-getstarted-toggle");
     if (toggle) toggle.setAttribute("aria-expanded", "false");
     return;
