@@ -610,7 +610,7 @@ function handleFrame(frame) {
       // Data-app preview/refresh/close/credentials tools drive the split
       // pane instead of the generic "running…" tool block — suppress the
       // usual start-render for them (see handlePreviewDirective below).
-      if (_PREVIEW_TOOL_NAMES.has(frame.tool)) {
+      if (_isPreviewTool(frame.tool)) {
         clearThinkingPlaceholder();
         break;
       }
@@ -1535,6 +1535,16 @@ const _PREVIEW_TOOL_NAMES = new Set([
   "agnes_data_app_close",
   "agnes_data_app_credentials",
 ]);
+
+/** MCP tools arrive name-prefixed (`mcp__<server>__agnes_data_app_preview`), so
+ *  match on the bare name after the last `__` — a plain Set.has() on the prefixed
+ *  name never hits, which would leave the suppressed "running…" tool block
+ *  spinning forever (its result is routed to the preview pane, not renderToolCallEnd). */
+function _isPreviewTool(toolName) {
+  if (!toolName) return false;
+  const bare = toolName.includes("__") ? toolName.slice(toolName.lastIndexOf("__") + 2) : toolName;
+  return _PREVIEW_TOOL_NAMES.has(bare);
+}
 
 const _PREVIEW_RENDER_KINDS = new Set([
   "data_app_preview",
