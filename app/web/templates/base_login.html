@@ -13,6 +13,7 @@
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
+    <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
     {# Design-system tokens (`--ds-*`) — required so `.btn-primary`
