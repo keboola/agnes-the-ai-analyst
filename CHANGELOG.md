@@ -22,6 +22,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.13] - 2026-07-28
+
+
+### Fixed
+
+- Admin MCP connect probes (`POST /api/admin/mcp-sources/{id}/introspect`,
+  `/classify`, `/test`) now surface the real upstream failure (e.g.
+  `httpx.HTTPStatusError: Client error '401 Unauthorized' …`) instead of the
+  MCP SDK's opaque `unhandled errors in a TaskGroup (1 sub-exception)`
+  ExceptionGroup wrapper.
+- The same probes on a `per_user`-scoped source now use the calling admin's
+  own connected secret when one exists (previously they always ran
+  caller-less, so a per-user source with no shared fallback secret probed
+  anonymously and failed with 401 even though the admin had a working token
+  connected). Sources with a shared/fallback secret behave as before.
 ## [0.77.12] - 2026-07-28
 
 ### Added
