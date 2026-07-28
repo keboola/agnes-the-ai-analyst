@@ -137,14 +137,17 @@ def test_compute_effective_scope_selected_with_no_items_is_empty_list():
     assert scope["plugins"] == []
 
 
-def test_compute_effective_scope_unrecognized_mode_fails_open_and_warns(caplog):
-    """An unrecognized *_mode value must still resolve to 'all' (backward
-    safety) but must not be silent — a logger.warning naming the field and
-    the bad value is the only trace an admin has of config drift."""
+def test_compute_effective_scope_unrecognized_mode_fails_closed_and_warns(caplog):
+    """An unrecognized *_mode value must resolve to an empty selection
+    (fail CLOSED, V1d) — matching live enforcement
+    (src/agent_scope_intersection.py) so the audit view never disagrees
+    with what is actually enforced. Must not be silent — a logger.warning
+    naming the field and the bad value is the only trace an admin has of
+    config drift."""
     row = _agent_row(plugins_mode="bogus-mode")
     with caplog.at_level("WARNING", logger="app.chat.agent_profile"):
         scope = agent_profile.compute_effective_scope(row, scope_items=[])
-    assert scope["plugins"] == "all"
+    assert scope["plugins"] == []
     assert any("plugins_mode" in record.message and "bogus-mode" in record.message for record in caplog.records), (
         caplog.text
     )
