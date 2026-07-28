@@ -16,6 +16,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Store guardrails: the LLM security review no longer false-positives on the
+  pipeline's own file-truncation marker. Oversized files clipped to fit the
+  review budget used to get an anonymous `[... truncated N bytes ...]` marker
+  that reviewer models flagged as submitter-side "intentional content hiding"
+  (`prompt_injection`, medium) and blocked the submission. The marker now
+  self-identifies as pipeline-authored (`[AGNES-REVIEW-PIPELINE: …]`), the
+  reviewer system prompts declare it benign, and submitter forgeries of the
+  marker are defused by the same escaping that protects the `<bundle>`
+  sentinels (applies to the security review, the whole-bundle truncation note,
+  and the SL010 craft review).
+
 ### Removed
 
 ### Internal
