@@ -1207,6 +1207,44 @@ def _ensure_bq_optional_fields(sections: Dict[str, Any]) -> None:
         bq.setdefault(key, default)
 
 
+_UNSET = object()
+
+
+def _feature_flags_inventory() -> List[Dict[str, Any]]:
+    """Read-only snapshot of every registered feature flag (#1022).
+
+    ``source`` tells the operator where the effective value came from:
+    ``"env"`` when the flag's env var is present in the process environment
+    (wins regardless of instance.yaml), ``"config"`` when instance.yaml (the
+    static base or the admin server-config overlay, deep-merged — see
+    ``load_instance_config``) sets the key explicitly, or ``"default"`` when
+    neither is set and the flag's hardcoded default applies. The
+    ``config``-vs-``default`` distinction is resolved with a sentinel probe
+    through ``get_value`` rather than re-deciding truthiness here, so this
+    stays a thin read of ``feature_enabled``'s own resolution.
+    """
+    from app.instance_config import FEATURE_FLAGS, feature_enabled, get_value
+
+    out = []
+    for flag in FEATURE_FLAGS:
+        if os.environ.get(flag.env_var) is not None:
+            source = "env"
+        else:
+            probe = get_value(*flag.config_keys, default=_UNSET)
+            source = "default" if probe is _UNSET else "config"
+        out.append(
+            {
+                "name": flag.name,
+                "effective": feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default),
+                "source": source,
+                "default": flag.default,
+                "env_var": flag.env_var,
+                "description": flag.description,
+            }
+        )
+    return out
+
+
 @router.get("/server-config")
 async def get_server_config(
     user: dict = Depends(require_admin),
@@ -1239,6 +1277,11 @@ async def get_server_config(
         # mechanism is wired end-to-end and adding entries is purely a
         # data-edit in `_KNOWN_FIELDS` above.
         "known_fields": _KNOWN_FIELDS,
+        # Read-only feature-flag inventory (#1022 canonicalization) — every
+        # flag registered in app.instance_config.FEATURE_FLAGS, its effective
+        # value, and where it resolved from. Toggling still happens through
+        # the per-section editors above (or an env var); this is display-only.
+        "feature_flags": _feature_flags_inventory(),
     }
 
 

@@ -12,7 +12,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Canonical feature-flag convention.** `app.instance_config.feature_enabled`
+  is now the single resolver (env var > instance.yaml/server-config overlay >
+  default) for every operator-facing feature toggle, backed by a
+  `FEATURE_FLAGS` registry; `/admin/server-config` gained a read-only
+  "Feature flags" inventory panel (also surfaced via
+  `GET /api/admin/server-config`'s new `feature_flags` field).
+  `get_studio_enabled` and `get_guardrails_enabled` now delegate to it
+  (behavior-preserving); `guardrails.enabled` gained a new
+  `AGNES_GUARDRAILS_ENABLED` env override (additive); `chat.enabled` gained a
+  new `AGNES_CHAT_ENABLED` env override at its `load_chat_config` read site;
+  `data_apps.enabled`'s read sites (the existing `AGNES_DATA_APPS_ENABLED`
+  var) now route through the same resolver. See `docs/feature-flags.md`.
+  (#1022)
+
 ### Changed
+
+- `AGNES_DATA_APPS_ENABLED` now follows the canonical flag resolution: when
+  set, it wins over `data_apps.enabled` in instance.yaml in **both**
+  directions (a falsy value forces the feature off; previously falsy values
+  were ignored and the yaml decided). Unset behavior is unchanged, and the
+  shipped infra module only ever writes `true`. (#1022)
 
 ### Fixed
 

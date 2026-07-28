@@ -1,0 +1,105 @@
+# Feature flags
+
+Canonical convention for gating a feature on/off in Agnes (#1022). Before this,
+gating was heterogeneous — some flags read `instance.yaml` directly, some
+consulted an env var only, some duplicated the truthy-string parsing inline.
+This doc is the one pattern every new flag follows.
+
+## The convention
+
+**Naming.** A feature that owns a config section uses `<section>.enabled`
+(e.g. `chat.enabled`, `guardrails.enabled`, `studio.enabled`,
+`data_apps.enabled`). A small or experimental toggle with no section of its
+own lives under the reserved `features.<name>` namespace instead of inventing
+a top-level key.
+
+**Resolution order**, identical for every flag:
+
+```
+env var  >  server-config overlay (DATA_DIR/state/instance.yaml)  >  instance.yaml (static base)  >  default
+```
+
+The middle two collapse into one step in code: `config/loader.py` deep-merges
+the writable admin overlay over the static `config/instance.yaml` at load
+time (see `app/instance_config.py::load_instance_config`), so
+`get_value(*keys)` already returns the fully-resolved value. A flag's
+resolver is therefore just:
+
+```
+env var (if set)  >  get_value(*keys)  >  default
+```
+
+**Env var naming**: `AGNES_<SECTION>_ENABLED` (uppercased section name), e.g.
+`AGNES_CHAT_ENABLED`, `AGNES_STUDIO_ENABLED`, `AGNES_GUARDRAILS_ENABLED`,
+`AGNES_DATA_APPS_ENABLED`. Terraform/infra-friendly — operators can flip a
+flag per-deployment without touching the YAML.
+
+**Truthy parsing** is shared across every boolean config/env value in Agnes,
+not just feature flags: a Python `bool` passes through unchanged; a string is
+false only for `"0"`, `"false"`, `"no"`, `"off"`, or `""` (case-insensitive) —
+everything else, including an unrecognized typo, is true. This avoids a
+truthy operator intent silently degrading to disabled because of a casing
+mismatch.
+
+**Default posture**: **new user-visible features default OFF** (`default=False`).
+Two flags are grandfathered on (`studio`, `guardrails`) because they shipped
+enabled before this convention existed and flipping them off by default would
+be a breaking change for existing instances — don't use them as a precedent
+for a new flag's default.
+
+## The helper
+
+`app/instance_config.py::feature_enabled`:
+
+```python
+def feature_enabled(*keys: str, env_var: str | None = None, default: bool = False) -> bool:
+    ...
+
+feature_enabled("chat", "enabled", env_var="AGNES_CHAT_ENABLED", default=False)
+```
+
+Every flag resolver in the codebase (`get_studio_enabled`,
+`get_guardrails_enabled`, the `chat.enabled` / `data_apps.enabled` read
+sites) delegates to this function — nothing re-derives the truthy-string
+rule or the env-over-yaml order by hand.
+
+One exception, by necessity rather than choice: `app.chat.config.load_chat_config`
+parses a *caller-supplied* `instance.yaml` path (tests pass an isolated
+`tmp_path` fixture), not the process-global merged config `get_value()`
+reads from. Its `chat.enabled` resolution therefore reuses only the shared
+truthy-parsing primitive (`app.instance_config.coerce_flag_value`) rather
+than calling `feature_enabled` directly — the value *source* differs, the
+resolution *order* and *parsing rule* do not.
+
+## The registry
+
+`app/instance_config.py::FEATURE_FLAGS` is a tuple of `FeatureFlag` entries
+— `name`, `config_keys`, `env_var`, `default`, `description` — one per flag
+resolved through `feature_enabled`. It backs the read-only **Feature flags**
+panel on `/admin/server-config` (fed by the `feature_flags` block in
+`GET /api/admin/server-config`), so an operator can see every flag's
+effective value and where it came from (`env` / `config` / `default`)
+without grepping the codebase.
+
+## How to add a flag
+
+1. Pick a name and decide: does the feature own a config section
+   (`<section>.enabled`), or is it small enough for `features.<name>`?
+2. At the read site, call `feature_enabled(*keys, env_var="AGNES_<SECTION>_ENABLED", default=...)`
+   instead of hand-rolling `os.environ.get(...)` / `get_value(...)`.
+3. Append an entry to `FEATURE_FLAGS` in `app/instance_config.py` with a short
+   operator-facing `description`.
+4. Add a row to this doc's flag list below (or update the section it belongs
+   to) so operators reading `docs/feature-flags.md` see it without reading
+   the registry source.
+5. See `CONTRIBUTING.md`'s sync-map — a new user-visible feature flag is a
+   tracked row there too.
+
+## Current flags
+
+| Flag | Config key | Env var | Default | Notes |
+|---|---|---|---|---|
+| `studio` | `studio.enabled` | `AGNES_STUDIO_ENABLED` | `true` | Grandfathered — shipped enabled before this convention. |
+| `guardrails` | `guardrails.enabled` | `AGNES_GUARDRAILS_ENABLED` | `true` | Grandfathered. Env override added in #1022 (new, additive). |
+| `chat` | `chat.enabled` | `AGNES_CHAT_ENABLED` | `false` | New feature — off by default. |
+| `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | New feature — off by default. |

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+from app.instance_config import coerce_flag_value
 
 logger = logging.getLogger(__name__)
 
@@ -168,14 +171,34 @@ def _parse_on_detach(raw: dict) -> str:
     return on_detach
 
 
+def _resolve_chat_enabled(raw: dict) -> bool:
+    """``chat.enabled`` resolution: ``AGNES_CHAT_ENABLED`` env (new, additive
+    — #1022 feature-flag canonicalization) > the ``enabled`` key in the
+    parsed ``chat:`` block > ``False``.
+
+    Kept local rather than calling ``app.instance_config.feature_enabled``
+    directly: this function's yaml source is whichever ``instance_yaml``
+    path the caller passed to :func:`load_chat_config` (e.g. an isolated
+    ``tmp_path`` fixture in tests), not the process-global
+    ``load_instance_config()`` merge ``feature_enabled`` reads from — so
+    only the truthy-parsing convention
+    (:func:`app.instance_config.coerce_flag_value`) is shared here, not the
+    value source. See ``docs/feature-flags.md``.
+    """
+    env = os.environ.get("AGNES_CHAT_ENABLED")
+    if env is not None:
+        return coerce_flag_value(env, default=False)
+    return coerce_flag_value(raw.get("enabled"), default=False)
+
+
 def load_chat_config(instance_yaml: Path) -> ChatConfig:
     if not instance_yaml.exists():
-        return ChatConfig()
+        return ChatConfig(enabled=_resolve_chat_enabled({}))
     data = yaml.safe_load(instance_yaml.read_text()) or {}
     raw = data.get("chat", {}) or {}
     detach_linger_seconds = int(raw.get("detach_linger_seconds", 60))
     return ChatConfig(
-        enabled=bool(raw.get("enabled", False)),
+        enabled=_resolve_chat_enabled(raw),
         provider=str(raw.get("provider", "e2b")),
         concurrency_per_user=int(raw.get("concurrency_per_user", 3)),
         idle_ttl_seconds=int(raw.get("idle_ttl_seconds", 30 * 60)),

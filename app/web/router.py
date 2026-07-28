@@ -41,6 +41,7 @@ from app.instance_config import (
     get_custom_scripts,
     get_data_apps_config,
     get_studio_enabled,
+    feature_enabled,
 )
 from src.repositories import (
     audit_repo,
@@ -311,7 +312,7 @@ def _data_apps_nav_enabled() -> bool:
     import time) so an admin flipping `data_apps.enabled` via
     /admin/server-config takes effect without a process restart."""
     try:
-        return bool(get_data_apps_config().get("enabled"))
+        return feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False)
     except Exception:
         return False
 
@@ -2162,7 +2163,7 @@ async def data_apps_list_page(
     from src.repositories import data_apps_repo, users_repo
 
     cfg = get_data_apps_config()
-    enabled = bool(cfg.get("enabled"))
+    enabled = feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False)
     apps: list[dict] = []
     if enabled:
         u_repo = users_repo()
