@@ -3,9 +3,12 @@
 Mirrors ``test_startup_studio_toggle.py``. Pins the three-part infra contract so
 a rename or dropped template argument can't silently break durable enablement:
 
-* ``variables.tf`` declares ``data_apps_enabled`` (bool, default false) +
-  ``data_apps_runtime_image`` (string);
-* ``main.tf`` forwards both into ``templatefile(...)``;
+* ``variables.tf`` carries ``data_apps_enabled`` as a PER-VM field
+  (``optional(bool, false)``) on both prod_instance and dev_instances — like
+  ``dispatcher_enabled``, so enabling it targets one VM, never all of them —
+  plus the instance-wide ``data_apps_runtime_image`` variable;
+* ``main.tf`` forwards ``each.value.data_apps_enabled`` (per-VM) +
+  ``var.data_apps_runtime_image`` into ``templatefile(...)``;
 * ``startup-script.sh.tpl`` — ONLY when ``data_apps_enabled`` — mints/persists
   ``APPS_RUNNER_TOKEN``, resolves ``DOCKER_GID`` from the docker socket, and
   emits ``COMPOSE_PROFILES=apps`` + ``AGNES_DATA_APPS_ENABLED=true`` (+ the
@@ -19,18 +22,23 @@ from pathlib import Path
 MODULE = Path("infra/modules/customer-instance")
 
 
-def test_variables_tf_declares_toggle_and_image():
+def test_data_apps_enabled_is_per_vm_field():
     body = (MODULE / "variables.tf").read_text()
-    m = re.search(r'variable\s+"data_apps_enabled"\s*\{(.*?)\n\}', body, re.DOTALL)
-    assert m, "variables.tf must declare data_apps_enabled"
-    assert re.search(r"type\s*=\s*bool", m.group(1))
-    assert re.search(r"default\s*=\s*false", m.group(1))
+    # Per-VM field on BOTH instance object types (like dispatcher_enabled), so a
+    # dev-first enable can't flip prod. Exactly two declarations, both optional.
+    decls = re.findall(r"data_apps_enabled\s*=\s*optional\(bool,\s*false\)", body)
+    assert len(decls) == 2, f"expected data_apps_enabled optional on prod+dev object types, got {len(decls)}"
+    # NOT a module-global variable (that would enable every VM at once).
+    assert not re.search(r'variable\s+"data_apps_enabled"\s*\{', body)
+    # runtime image stays an instance-wide variable.
     assert re.search(r'variable\s+"data_apps_runtime_image"\s*\{', body)
 
 
-def test_main_tf_forwards_both_into_templatefile():
+def test_main_tf_forwards_per_vm_toggle_into_templatefile():
     body = (MODULE / "main.tf").read_text()
-    assert re.search(r"data_apps_enabled\s*=\s*var\.data_apps_enabled", body)
+    # Per-VM: read off each.value, mirroring dispatcher_enabled.
+    assert re.search(r"data_apps_enabled\s*=\s*each\.value\.data_apps_enabled", body)
+    assert not re.search(r"data_apps_enabled\s*=\s*var\.data_apps_enabled", body)
     assert re.search(r"data_apps_runtime_image\s*=\s*var\.data_apps_runtime_image", body)
 
 
