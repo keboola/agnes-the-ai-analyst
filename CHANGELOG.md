@@ -16,6 +16,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Chat bootstrap reads the feature overlay from the same file the admin
+  panel writes.** `app/main.py` resolved the chat `instance.yaml` overlay as
+  `DATA_DIR/state/instance.yaml`, ignoring a `STATE_DIR` override — on a
+  flat-mount deployment the admin server-config toggle wrote a file the chat
+  runtime never read, so the panel and the running app could disagree about
+  chat being enabled. The bootstrap now resolves via the same
+  `app.secrets._state_dir()` helper as the overlay writer and
+  `load_instance_config`.
+
 ### Removed
 
 ### Internal
