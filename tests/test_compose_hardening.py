@@ -16,11 +16,30 @@ from pathlib import Path
 import yaml
 
 COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+COMPOSE_PROD = Path(__file__).resolve().parents[1] / "docker-compose.prod.yml"
 CA_PATH = "/etc/ssl/certs/ca-certificates.crt"
 
 
 def _service(name):
     return yaml.safe_load(COMPOSE.read_text())["services"][name]
+
+
+def test_every_build_service_has_prod_image_override():
+    """Every ``build: .`` service must get an ``image:`` override in
+    docker-compose.prod.yml. Production/Terraform VMs extract only the compose
+    files + host scripts into /opt/agnes (no Dockerfile / source on disk), so a
+    ``build:`` service with no prod image override makes ``docker compose up``
+    try to build from an empty dir and abort the whole stack's boot — which is
+    exactly how enabling the ``apps`` profile bricked VM boot before this guard
+    (apps-runner had no override)."""
+    base = yaml.safe_load(COMPOSE.read_text())["services"]
+    prod = yaml.safe_load(COMPOSE_PROD.read_text())["services"]
+    build_services = {n for n, s in base.items() if isinstance(s, dict) and "build" in s}
+    missing = [n for n in build_services if "image" not in (prod.get(n) or {})]
+    assert not missing, (
+        f"build: services with no image override in docker-compose.prod.yml: {sorted(missing)} "
+        "— on a source-less prod VM these force a build and abort boot"
+    )
 
 
 def _env_dict(service):

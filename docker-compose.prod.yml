@@ -13,5 +13,12 @@ services:
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   telegram-bot:
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
+  # apps-runner (compose profile `apps`) is a `build: .` service like the four
+  # above and MUST get the same image override: production/Terraform VMs extract
+  # only the compose files + host scripts into /opt/agnes (no Dockerfile / source
+  # on disk), so without this `docker compose --profile apps up` would try to
+  # build it, find no Dockerfile, and abort the whole stack's boot.
+  apps-runner:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   # corporate-memory and session-collector were dropped in #176 —
   # the scheduler container drives them via /api/admin/run-* endpoints.
