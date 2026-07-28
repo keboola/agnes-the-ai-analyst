@@ -4880,7 +4880,7 @@ async def admin_override_store_submission(
             "prior_inline": sub.get("inline_checks"),
             "promoted_to_version_no": promoted_to,
         },
-        result="ok",
+        result="success",
     )
     return {"ok": True, "submission_id": submission_id, "entity_id": entity_id}
 
