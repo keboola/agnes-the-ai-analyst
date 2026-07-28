@@ -433,6 +433,47 @@ def test_put_journey_partial_update(api_client: TestClient, logged_in_user):
     assert r3.json() == r2.json()
 
 
+def test_put_journey_can_reset_explicit_false(api_client: TestClient, logged_in_user):
+    """The "Start over" journey-panel button (#1038) PUTs explicit `false`
+    for every step. `JourneyUpdateBody`'s partial-update filter only drops
+    `None` (`if v is not None`), so `False` — a legitimate value, not "field
+    absent" — must be written through, not silently skipped."""
+    from src.repositories import user_journey_repo
+
+    user_journey_repo().reset(TEST_USER["id"])
+    api_client.put(
+        "/api/chat/journey",
+        json={
+            "first_asked": True,
+            "stack_setup_done": True,
+            "explored_stack": True,
+            "catalog_discovered": True,
+            "use_anywhere": True,
+        },
+    )
+
+    r = api_client.put(
+        "/api/chat/journey",
+        json={
+            "first_asked": False,
+            "stack_setup_done": False,
+            "explored_stack": False,
+            "catalog_discovered": False,
+            "use_anywhere": False,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == {
+        "first_asked": False,
+        "stack_setup_done": False,
+        "explored_stack": False,
+        "catalog_discovered": False,
+        "use_anywhere": False,
+        "onboarded": False,
+        "successful_answers": 0,
+    }
+
+
 def test_journey_requires_rbac_grant():
     """Same default-deny gate as the rest of chat — no grant means 403."""
     from app.api.chat import router as chat_router

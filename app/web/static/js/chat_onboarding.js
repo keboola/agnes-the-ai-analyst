@@ -189,14 +189,10 @@ function renderJourneyPanel() {
     </div>
     <p class="cloud-chat-journey-sub">Learn what Agnes is and make it yours.</p>
     <div class="cloud-chat-journey-list">${rows}</div>
-    ${
-      !complete
-        ? `<button type="button" class="cloud-chat-journey-finish" data-journey-finish-all
-            style="margin-top:10px;width:100%;padding:7px 12px;border:1px solid var(--ds-border);border-radius:8px;background:var(--ds-surface-dim);color:var(--ds-text-muted);font:inherit;font-size:12.5px;cursor:pointer;">
-            Finish onboarding
-          </button>`
-        : ""
-    }`;
+    <button type="button" class="cloud-chat-journey-finish" ${complete ? "data-journey-restart" : "data-journey-finish-all"}
+        style="margin-top:10px;width:100%;padding:7px 12px;border:1px solid var(--ds-border);border-radius:8px;background:var(--ds-surface-dim);color:var(--ds-text-muted);font:inherit;font-size:12.5px;cursor:pointer;">
+      ${complete ? "Start over" : "Finish onboarding"}
+    </button>`;
 
   el.querySelectorAll("[data-journey-go]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -250,6 +246,26 @@ function renderJourneyPanel() {
         finishAllBtn.textContent = "Onboarding marked complete ✓";
         finishAllBtn.disabled = true;
       }
+    });
+  }
+
+  // "Start over" — only rendered once every step is done (the "Finish
+  // onboarding" button above disappears in that state with nothing to
+  // replace it, and "↻" only relaunches the Stack coach-mark tour, not the
+  // journey checklist itself, so there was no way back to the start).
+  // patchJourney's optimistic merge + synchronous re-render is the feedback:
+  // the checklist unchecks, the "Complete ✓" badge drops, and this button
+  // reverts to "Finish onboarding" — no separate toast needed.
+  const restartBtn = el.querySelector("[data-journey-restart]");
+  if (restartBtn) {
+    restartBtn.addEventListener("click", () => {
+      patchJourney({
+        first_asked: false,
+        stack_setup_done: false,
+        explored_stack: false,
+        catalog_discovered: false,
+        use_anywhere: false,
+      });
     });
   }
 
