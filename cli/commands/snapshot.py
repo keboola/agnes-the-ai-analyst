@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-import duckdb
 import httpx
 import pyarrow.parquet as pq
 
@@ -16,8 +15,13 @@ from src.duckdb_conn import _open_duckdb
 import typer
 
 from cli.snapshot_meta import (
-    list_snapshots, read_meta, write_meta, delete_snapshot,
-    snapshot_lock, sweep_expired_snapshots, SnapshotMeta,
+    list_snapshots,
+    read_meta,
+    write_meta,
+    delete_snapshot,
+    snapshot_lock,
+    sweep_expired_snapshots,
+    SnapshotMeta,
 )
 from cli.v2_client import api_post_arrow, api_post_json, V2ClientError
 
@@ -53,10 +57,7 @@ def list_cmd(
     if not snaps:
         typer.echo("(no snapshots)")
         return
-    typer.echo(
-        f"{'NAME':30s}  {'ROWS':>10s}  {'SIZE':>10s}  {'AGE':>10s}  "
-        f"{'EXPIRES':>20s}  {'TABLE':30s}  WHERE"
-    )
+    typer.echo(f"{'NAME':30s}  {'ROWS':>10s}  {'SIZE':>10s}  {'AGE':>10s}  {'EXPIRES':>20s}  {'TABLE':30s}  WHERE")
     now = datetime.now(timezone.utc)
     for s in sorted(snaps, key=lambda x: x.name):
         try:
@@ -120,7 +121,8 @@ def refresh_cmd(
     name: str,
     where: str = typer.Option(None, "--where", help="Override stored WHERE"),
     ttl: str = typer.Option(
-        None, "--ttl",
+        None,
+        "--ttl",
         help=(
             "Reset the snapshot's TTL (e.g. 7d / 24h / 90m), re-anchored to "
             "now. Omit to keep the existing expiry unchanged."
@@ -169,16 +171,18 @@ def refresh_cmd(
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
         # --ttl re-anchors the expiry to now; otherwise keep the stored one.
-        expires_at = (
-            (now_dt + _parse_duration(ttl)).isoformat() if ttl is not None
-            else meta.expires_at
-        )
+        expires_at = (now_dt + _parse_duration(ttl)).isoformat() if ttl is not None else meta.expires_at
         new_meta = SnapshotMeta(
-            name=name, table_id=meta.table_id,
-            select=req.get("select"), where=req.get("where"),
-            limit=req.get("limit"), order_by=req.get("order_by"),
-            fetched_at=now, effective_as_of=now,
-            rows=new_rows, bytes_local=new_bytes,
+            name=name,
+            table_id=meta.table_id,
+            select=req.get("select"),
+            where=req.get("where"),
+            limit=req.get("limit"),
+            order_by=req.get("order_by"),
+            fetched_at=now,
+            effective_as_of=now,
+            rows=new_rows,
+            bytes_local=new_bytes,
             estimated_scan_bytes_at_fetch=meta.estimated_scan_bytes_at_fetch,
             result_hash_md5=new_hash,
             expires_at=expires_at,
@@ -197,7 +201,8 @@ def prune_cmd(
     older_than: str = typer.Option(None, "--older-than", help="e.g. 7d, 24h"),
     larger_than: str = typer.Option(None, "--larger-than", help="e.g. 1g, 500m"),
     expired: bool = typer.Option(
-        False, "--expired",
+        False,
+        "--expired",
         help="Drop snapshots whose --ttl has elapsed (same sweep `agnes pull` runs).",
     ),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -305,7 +310,8 @@ def create_cmd(
     no_estimate: bool = typer.Option(False, "--no-estimate", help="Skip the pre-fetch estimate"),
     force: bool = typer.Option(False, "--force", help="Overwrite existing snapshot of the same name"),
     from_query: str = typer.Option(
-        None, "--from-query",
+        None,
+        "--from-query",
         help=(
             "Materialize a snapshot from a raw SELECT executed remotely "
             "(BigQuery does the projection in the query — no --select/--where "
@@ -314,7 +320,8 @@ def create_cmd(
         ),
     ),
     ttl: str = typer.Option(
-        None, "--ttl",
+        None,
+        "--ttl",
         help=(
             "Time-to-live, e.g. 7d / 24h / 90m. After it elapses the snapshot "
             "is removed by the lazy sweep on the next `agnes pull` (or "
@@ -328,10 +335,59 @@ def create_cmd(
     # can invoke the create logic directly without re-deriving Typer
     # OptionInfo defaults (#616).
     _create_snapshot(
-        table_id=table_id, select=select, where=where, limit=limit,
-        order_by=order_by, as_name=as_name, estimate=estimate,
-        no_estimate=no_estimate, force=force, from_query=from_query, ttl=ttl,
+        table_id=table_id,
+        select=select,
+        where=where,
+        limit=limit,
+        order_by=order_by,
+        as_name=as_name,
+        estimate=estimate,
+        no_estimate=no_estimate,
+        force=force,
+        from_query=from_query,
+        ttl=ttl,
     )
+
+
+def _fetch_shape_warnings(
+    *,
+    select: Optional[str],
+    where: Optional[str],
+    limit: Optional[int],
+    from_query: Optional[str],
+) -> list[str]:
+    """Advisory warnings for a wasteful remote fetch shape (spec Phase 1a/1b:
+    `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`).
+
+    WARN-only — the caller prints these to stderr and proceeds. Never blocks a
+    fetch: `agnes snapshot create` is a shipping command, and a fetch the analyst
+    wants should not be refused. Pure so it is unit-testable offline.
+
+    `--from-query` is exempt: it carries its own projection, and it is the path
+    the internal `agnes query --remote --auto-snapshot` caller uses, so exempting
+    it also keeps that machine-generated fetch quiet.
+    """
+    if from_query is not None:
+        return []
+
+    warnings: list[str] = []
+
+    # 1b — implicit SELECT *: no --select, or a --select carrying a bare `*`.
+    columns = [c.strip() for c in (select or "").split(",") if c.strip()]
+    if not columns or any(c == "*" for c in columns):
+        warnings.append(
+            "no explicit --select: list specific columns instead of an implicit "
+            "SELECT * (cheaper, and safe against wide/changing remote schemas)."
+        )
+
+    # 1a — unbounded fetch: neither a --where predicate nor a --limit.
+    if not where and limit is None:
+        warnings.append(
+            "unbounded remote fetch: add a --where predicate, or pass --limit, "
+            "so the scan does not pull the whole table."
+        )
+
+    return warnings
 
 
 def _create_snapshot(
@@ -360,8 +416,7 @@ def _create_snapshot(
     # --from-query carries its own projection; reject the select/where path.
     if from_query is not None and any(x is not None for x in (select, where, order_by, limit)):
         typer.echo(
-            "Error: --from-query is mutually exclusive with "
-            "--select/--where/--order-by/--limit.",
+            "Error: --from-query is mutually exclusive with --select/--where/--order-by/--limit.",
             err=True,
         )
         raise typer.Exit(2)
@@ -381,6 +436,7 @@ def _create_snapshot(
     # the user's local analytics.duckdb. Validate up-front with the same
     # regex used elsewhere for safe identifiers.
     import re as _re
+
     if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$", name):
         typer.echo(
             f"Error: snapshot name {name!r} is not a safe identifier. "
@@ -455,6 +511,13 @@ def _create_snapshot(
     if estimate:
         return
 
+    # Advisory fetch-shape warnings (spec Phase 1a/1b). WARN-only: printed then
+    # the fetch proceeds. `--estimate` returned above, so these fire only on a
+    # real fetch, and `quiet` (the auto-snapshot caller) already routes through
+    # `from_query`, which is exempt.
+    for _warning in _fetch_shape_warnings(select=select, where=where, limit=limit, from_query=from_query):
+        typer.echo(f"Warning: {_warning}", err=True)
+
     # Cheap existence pre-check (outside the lock) so we don't waste a BQ
     # scan on an obviously-redundant fetch. Authoritative re-check happens
     # under the lock below — necessary because between this check and the
@@ -498,9 +561,7 @@ def _create_snapshot(
         conn = _open_duckdb(str(local_db))
         try:
             safe_path = str(parquet_path).replace("'", "''")
-            conn.execute(
-                f"CREATE OR REPLACE VIEW \"{name}\" AS SELECT * FROM read_parquet('{safe_path}')"
-            )
+            conn.execute(f"CREATE OR REPLACE VIEW \"{name}\" AS SELECT * FROM read_parquet('{safe_path}')")
         finally:
             conn.close()
 
@@ -510,10 +571,14 @@ def _create_snapshot(
         now = now_dt.isoformat()
         expires_at = (now_dt + _parse_duration(ttl)).isoformat() if ttl else None
         meta = SnapshotMeta(
-            name=name, table_id=table_id,
-            select=req.get("select"), where=req.get("where"),
-            limit=req.get("limit"), order_by=req.get("order_by"),
-            fetched_at=now, effective_as_of=now,
+            name=name,
+            table_id=table_id,
+            select=req.get("select"),
+            where=req.get("where"),
+            limit=req.get("limit"),
+            order_by=req.get("order_by"),
+            fetched_at=now,
+            effective_as_of=now,
             rows=int(table.num_rows),
             bytes_local=parquet_path.stat().st_size,
             estimated_scan_bytes_at_fetch=int(est.get("estimated_scan_bytes", 0)) if est is not None else 0,
@@ -541,7 +606,7 @@ def _parse_duration(s: str) -> timedelta:
 
 def _parse_size(s: str) -> int:
     s = s.strip().lower()
-    multipliers = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
+    multipliers = {"k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
     if s[-1] in multipliers:
         return int(float(s[:-1]) * multipliers[s[-1]])
     return int(s)
