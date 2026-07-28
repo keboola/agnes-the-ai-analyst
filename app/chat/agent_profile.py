@@ -205,19 +205,22 @@ def compute_effective_scope(agent_row: dict, scope_items: list[dict]) -> dict:
         elif mode == "all":
             effective[scope_key] = "all"
         else:
-            # Fail open (treat as "all") for backward safety, but the
-            # audit trail must not silently mask config drift — an
-            # unrecognized mode value means something upstream (a bad
+            # Fail CLOSED (treat as empty selection), matching live
+            # enforcement (src/agent_scope_intersection.py). The audit
+            # view must never disagree with what is actually enforced —
+            # an unrecognized mode value means something upstream (a bad
             # migration, a hand-edited row, a future mode this code
             # doesn't know about yet) put the agent in a state this
-            # function doesn't understand.
+            # function doesn't understand, and reporting "all" here would
+            # make the audit trail lie about a spawn that was in fact
+            # denied everything for that scope key.
             logger.warning(
-                "agent %s has unrecognized %s=%r — treating as 'all'",
+                "agent %s has unrecognized %s=%r — treating as empty (fail closed)",
                 agent_row.get("id"),
                 mode_field,
                 mode,
             )
-            effective[scope_key] = "all"
+            effective[scope_key] = []
     return effective
 
 
