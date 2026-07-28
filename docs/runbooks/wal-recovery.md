@@ -96,7 +96,7 @@ docker logs agnes-app-1 2>&1 | grep "WAL replay failed"
 docker exec agnes-app-1 /usr/local/bin/python3 -c \
   "from src.db import get_system_db, get_schema_version; \
    conn = get_system_db(); print('schema_version:', get_schema_version(conn))"
-# Expected: schema_version: 99
+# Expected: schema_version: 103
 ```
 
 Verify row counts are reasonable (see §6).
@@ -299,7 +299,7 @@ print('ok' if orphan_members == 0 and orphan_grants == 0 else 'MISMATCH — inve
 
 ```bash
 curl -sf http://localhost:5000/api/health | python3 -m json.tool
-# Expected: {"status": "ok", "db_schema": "ok", "current": 99, "expected": 99, ...}
+# Expected: {"status": "ok", "db_schema": "ok", "current": 103, "expected": 103, ...}
 # (db_schema is a status string — "ok" / "mismatch" / "unreachable";
 #  the numeric schema version is in "current".)
 ```

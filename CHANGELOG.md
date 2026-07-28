@@ -574,8 +574,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Security
 
-### Security
-
 - **Data Apps: enforce the `data-app-git:<slug>` PAT scope.** The credential minted by `POST /{slug}/git-credential` (and `data_app_git_credential`) now authenticates only the `/data-apps.git/{slug}` surface it was minted for, pinned to that one app's slug — previously the `scope` claim was unenforced, so the credential was a full-privilege user PAT usable against the whole non-admin (and, for an Admin owner, admin) REST/MCP API. Rejected JSON-API calls get 401 `git_scope_token_not_allowed`.
 
 ## [0.76.29] - 2026-07-24
