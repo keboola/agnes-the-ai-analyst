@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.10] - 2026-07-28
+
+### Added
+
 - **Canonical feature-flag convention.** `app.instance_config.feature_enabled`
   is now the single resolver (env var > instance.yaml/server-config overlay >
   default) for every operator-facing feature toggle, backed by a
