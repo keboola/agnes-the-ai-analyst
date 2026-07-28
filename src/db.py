@@ -6684,20 +6684,75 @@ def _v103_to_v104(conn: duckdb.DuckDBPyConnection) -> None:
     DuckDB does not enforce the CHECK constraints declared in
     ``_SYSTEM_SCHEMA``, and ``ADD COLUMN`` cannot carry them anyway — the
     repository layer validates both enums on write.
+
+    The DDL lives in :func:`_add_store_entity_trust_columns` so the heal path can
+    reuse it **without** re-stamping the version — see
+    :func:`_heal_store_entity_trust_columns`.
+    """
+    _add_store_entity_trust_columns(conn)
+    conn.execute("UPDATE schema_version SET version = 104")
+
+
+def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
+    """The v104 column DDL on its own, with no version stamp.
+
+    Shared by ``_v103_to_v104`` (the ladder step) and
+    :func:`_heal_store_entity_trust_columns` (the stamp-independent repair).
+    Keeping the stamp out of here matters: a heal that called the versioned step
+    directly would write ``version = 104`` and silently DOWNGRADE the stamp on any
+    instance already past 104.
     """
     exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'store_entities'").fetchone()
-    if exists:
-        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS publisher_kind VARCHAR DEFAULT 'user'")
-        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_state VARCHAR DEFAULT 'none'")
-        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP")
-        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_by VARCHAR")
-        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_note TEXT")
-        # A row that predates the columns reads NULL, not the DEFAULT — the
-        # default only applies to inserts. Normalize so every read path can
-        # treat these as non-null enums.
-        conn.execute("UPDATE store_entities SET publisher_kind = 'user' WHERE publisher_kind IS NULL")
-        conn.execute("UPDATE store_entities SET verification_state = 'none' WHERE verification_state IS NULL")
-    conn.execute("UPDATE schema_version SET version = 104")
+    if not exists:
+        return
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS publisher_kind VARCHAR DEFAULT 'user'")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_state VARCHAR DEFAULT 'none'")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_by VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_note TEXT")
+    # A row that predates the columns reads NULL, not the DEFAULT — the default
+    # only applies to inserts. Normalize so every read path can treat these as
+    # non-null enums.
+    conn.execute("UPDATE store_entities SET publisher_kind = 'user' WHERE publisher_kind IS NULL")
+    conn.execute("UPDATE store_entities SET verification_state = 'none' WHERE verification_state IS NULL")
+
+
+def _heal_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
+    """Ensure ``store_entities``' v104 trust columns exist, whatever the stamp says.
+
+    ``schema_version`` is not sufficient evidence that a versioned step ran. The
+    ladder's tail stamps ``SCHEMA_VERSION`` unconditionally, so a database opened
+    by a build where ``SCHEMA_VERSION`` had already been bumped but the matching
+    ``_v103_to_v104`` step did not yet exist gets marked 104 **without** the
+    columns — and is then skipped forever, because ``current < 104`` is false. It
+    then fails at query time with ``Binder Error: Referenced column
+    "publisher_kind" not found``, but only on the code paths that name the column
+    in a WHERE (a bare ``SELECT *`` keeps working, which is what makes it look
+    intermittent).
+
+    Deployed instances cannot hit this — constant and step ship in the same
+    commit — but development and multi-worktree checkouts can, and the same class
+    of stranding already required two heal steps (``_v99_to_v100``,
+    ``_v100_to_v101``). Rather than add a third version bump, the presence of the
+    columns is checked directly: cheap (one ``information_schema`` read per
+    boot), authoritative, and immune to a wrong stamp in either direction.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'store_entities'").fetchone()
+    if not exists:
+        return
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
+        ).fetchall()
+    }
+    if "publisher_kind" in cols and "verification_state" in cols:
+        return
+    logger.warning(
+        "store_entities is missing its v104 trust columns despite schema_version "
+        "— healing (see _heal_store_entity_trust_columns)"
+    )
+    _add_store_entity_trust_columns(conn)
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7438,6 +7493,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # seeding here would side-channel state writes into the wrong backend.
     if get_schema_version(conn) <= SCHEMA_VERSION and not _state_backend_is_pg():
         _seed_system_groups(conn)
+
+    # Same reasoning as the seed above — this has to live OUTSIDE the
+    # `if current < SCHEMA_VERSION` migration guard. A DB already stamped at
+    # SCHEMA_VERSION skips the entire ladder, so a stamp written by a build that
+    # lacked the matching v104 step can never be repaired from inside it. Checks
+    # for the columns directly instead of trusting the stamp; one
+    # information_schema read per connect. See
+    # _heal_store_entity_trust_columns.
+    if not _state_backend_is_pg():
+        _heal_store_entity_trust_columns(conn)
 
 
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:
