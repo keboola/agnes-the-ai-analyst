@@ -385,10 +385,17 @@ def introspect_source(source: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in list_tools(source)]
 
 
-async def introspect_source_async(source: Dict[str, Any]) -> List[Dict[str, Any]]:
+async def introspect_source_async(
+    source: Dict[str, Any],
+    *,
+    caller_user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Async-safe variant of ``introspect_source`` — call from FastAPI
-    handlers (and any code already inside a running event loop)."""
+    handlers (and any code already inside a running event loop).
+
+    ``caller_user_id`` is threaded to the secret lookup so a ``per_user``
+    source can be probed under the caller's own credential."""
     from connectors.mcp.client import list_tools_async  # local import keeps duckdb-free
 
-    tools = await list_tools_async(source)
+    tools = await list_tools_async(source, caller_user_id=caller_user_id)
     return [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools]

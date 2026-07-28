@@ -345,6 +345,49 @@ def _merge_tool_patch(existing: Dict[str, Any], patch: UpdateToolRequest) -> Dic
     }
 
 
+def _exc_summary(exc: BaseException) -> str:
+    """Flatten an exception — including (Base)ExceptionGroup trees — to its
+    leaf causes.
+
+    The MCP SDK's HTTP transports raise through an anyio TaskGroup, so the
+    real failure (e.g. an httpx 401 from the upstream) arrives wrapped in an
+    ExceptionGroup whose ``str()`` is just "unhandled errors in a TaskGroup
+    (1 sub-exception)" — useless in the admin UI. Surface the leaves instead,
+    first line only, deduplicated.
+    """
+    subs = getattr(exc, "exceptions", None)
+    if subs:
+        leaves: List[str] = []
+        for sub in subs:
+            s = _exc_summary(sub)
+            if s not in leaves:
+                leaves.append(s)
+        return "; ".join(leaves)
+    msg = str(exc).strip()
+    first_line = msg.splitlines()[0] if msg else ""
+    return f"{type(exc).__name__}: {first_line}" if first_line else type(exc).__name__
+
+
+def _probe_caller_user_id(src: Dict[str, Any], user: dict) -> Optional[str]:
+    """Caller identity for the admin connect probes (introspect/classify/test).
+
+    A ``per_user``-scoped source is probed under the calling admin's own
+    connected secret when they have one; otherwise (and always for
+    ``shared`` scope) the probe stays on the caller-less shared-vault path,
+    preserving the pre-existing fallback behavior. The client's fail-closed
+    rule (an identified caller never borrows the shared credential) is why
+    this pre-check lives here rather than passing ``user["id"]`` blindly.
+    """
+    if (src.get("scope") or "shared") != "per_user":
+        return None
+    try:
+        if per_user_secrets_repo().get(src["id"], user["id"]):
+            return user["id"]
+    except Exception:  # vault/db unavailable — keep the legacy path
+        pass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Source CRUD
 # ---------------------------------------------------------------------------
@@ -623,10 +666,10 @@ async def introspect_mcp_source(
     try:
         # introspect_source_async — async-safe; the sync variant calls
         # asyncio.run() which blows up inside FastAPI's running loop.
-        tools = await mcp_extractor.introspect_source_async(src)
+        tools = await mcp_extractor.introspect_source_async(src, caller_user_id=_probe_caller_user_id(src, user))
     except Exception as exc:
         logger.exception("introspect failed for source %s", source_id)
-        raise HTTPException(status_code=502, detail=f"introspect_failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"introspect_failed: {_exc_summary(exc)}")
     _audit(
         conn,
         user["id"],
@@ -651,10 +694,10 @@ async def classify_mcp_source(
     try:
         from connectors.mcp.client import list_tools_async as _list_tools_async
 
-        tool_infos = await _list_tools_async(src)
+        tool_infos = await _list_tools_async(src, caller_user_id=_probe_caller_user_id(src, user))
     except Exception as exc:
         logger.exception("classify (list_tools) failed for source %s", source_id)
-        raise HTTPException(status_code=502, detail=f"introspect_failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"introspect_failed: {_exc_summary(exc)}")
     proposals = mcp_classifier.classify_all(tool_infos)
     _audit(
         conn,
@@ -690,11 +733,12 @@ async def test_mcp_source(
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     try:
-        tools = await mcp_extractor.introspect_source_async(src)
+        tools = await mcp_extractor.introspect_source_async(src, caller_user_id=_probe_caller_user_id(src, user))
         result = {"ok": True, "tool_count": len(tools), "error": None}
     except Exception as exc:
-        logger.warning("test connection failed for source %s: %s", source_id, exc)
-        result = {"ok": False, "tool_count": 0, "error": str(exc)}
+        summary = _exc_summary(exc)
+        logger.warning("test connection failed for source %s: %s", source_id, summary)
+        result = {"ok": False, "tool_count": 0, "error": summary}
     _audit(
         conn,
         user["id"],
