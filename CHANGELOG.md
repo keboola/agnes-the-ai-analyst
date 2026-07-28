@@ -22,7 +22,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.14] - 2026-07-28
+## [0.77.15] - 2026-07-28
+
 
 ### Added
 
@@ -44,6 +45,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   passthrough tools, so the connect step 403'd exactly at the start of the
   register → connect → introspect flow (tools only exist after the first
   introspect). Non-admin callers still require a grant on the source.
+
+## [0.77.14] - 2026-07-28
+
+### Added
+
 - **Data Apps: in-chat AI authoring loop (wave 3C).** A chat conversation can now scaffold, preview, and promote a hosted data app end-to-end with no shell access. The bundled `agnes-data-apps-extras` skill (the first bundled skill; loads alongside the upstream `dataapp-development` skill) drives a baked `nodejs-dashboard` React+Vite+Tailwind+Express scaffold (with `server/agnesQuery.ts` helpers over `AGNES_TOKEN`/`AGNES_URL`) onto a draft branch, deploys it in `dev` mode, and shows it live in a split-pane preview iframe. Four chat-surface MCP tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) render the preview, authorized by a short-TTL scoped `data-app-preview:<slug>` grant (`POST /api/data-apps/{slug}/preview-grant`) that the ingress proxy accepts for the view-only serving path only — reusing the existing `access_tokens` table (no migration) and mirroring the `data-app-git:<slug>` fail-closed scope guard. On approval the agent merges the draft into `main` and redeploys prod. Operators register the upstream `dataapp-developer` marketplace plugin per the new `docs/DEPLOYMENT.md` runbook.
 
 ### Changed
