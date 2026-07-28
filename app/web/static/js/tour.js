@@ -282,12 +282,45 @@ function _showStep(index) {
   document.body.appendChild(popover);
   _active.popover = popover;
 
-  // Position after a short yield (scroll settles).
-  requestAnimationFrame(() => {
+  // Position once the scroll above has actually settled — `scrollIntoView`
+  // with `behavior: 'smooth'` takes ~300-500ms, while a single
+  // requestAnimationFrame fires in ~16ms. Positioning on the very next frame
+  // reads the anchor's PRE-scroll rect, so the popover lands wherever the
+  // anchor used to be and is never corrected once the scroll finishes. Wait
+  // for the anchor's rect to stop moving instead of guessing a fixed delay.
+  _waitForScrollSettle(anchor, () => {
     if (_active && _active.index === index) {
       _positionPopover(popover, anchor, step.centered);
     }
   });
+}
+
+// Resolve once `anchor`'s bounding rect is unchanged across two consecutive
+// animation frames (the scroll driving it has settled), or after
+// SCROLL_SETTLE_TIMEOUT_MS elapses — whichever comes first, so a scroll that
+// never quite stabilizes (e.g. a still-loading page) can't hang the tour
+// forever. No-op (fires on the next frame) when there's no anchor, i.e. a
+// centered step.
+const SCROLL_SETTLE_TIMEOUT_MS = 600;
+
+function _waitForScrollSettle(anchor, cb) {
+  if (!anchor) {
+    requestAnimationFrame(cb);
+    return;
+  }
+  const start = performance.now();
+  let last = anchor.getBoundingClientRect();
+  const check = () => {
+    const rect = anchor.getBoundingClientRect();
+    const stable = rect.top === last.top && rect.left === last.left;
+    if (stable || performance.now() - start > SCROLL_SETTLE_TIMEOUT_MS) {
+      cb();
+      return;
+    }
+    last = rect;
+    requestAnimationFrame(check);
+  };
+  requestAnimationFrame(check);
 }
 
 // ── Popover builder ─────────────────────────────────────────────────────────
@@ -535,35 +568,25 @@ function _positionPopover(popover, anchor, centered) {
   const vh = window.innerHeight;
   const vw = window.innerWidth;
 
-  // Try below the anchor first, then flip above.
-  let top = rect.bottom + POPOVER_GAP;
-  const fitsBelow = top + popH <= vh - VIEWPORT_PAD;
-  const aboveTop = rect.top - POPOVER_GAP - popH;
-  const fitsAbove = aboveTop >= VIEWPORT_PAD;
+  // Room available on each side of the anchor (clamped at 0 — an anchor
+  // partly scrolled off-screen must not report negative space).
+  const spaceBelow = Math.max(0, vh - rect.bottom - POPOVER_GAP - VIEWPORT_PAD);
+  const spaceAbove = Math.max(0, rect.top - POPOVER_GAP - VIEWPORT_PAD);
 
-  if (!fitsBelow && !fitsAbove) {
-    // Neither band has room — a tall popover against a mid-page anchor. The
-    // old clamp-to-top parked the card on top of the very thing it points at
-    // (the Skills coach-mark landed squarely over the "+ New skill" card), so
-    // go beside the anchor instead, on whichever side has room.
-    const roomRight = vw - rect.right - POPOVER_GAP - VIEWPORT_PAD;
-    const roomLeft = rect.left - POPOVER_GAP - VIEWPORT_PAD;
-    if (Math.max(roomRight, roomLeft) >= popW) {
-      const sideLeft = roomRight >= popW
-        ? rect.right + POPOVER_GAP
-        : rect.left - POPOVER_GAP - popW;
-      // Vertically centre on the anchor, clamped into the viewport.
-      const sideTop = Math.max(
-        VIEWPORT_PAD,
-        Math.min(rect.top + rect.height / 2 - popH / 2, vh - popH - VIEWPORT_PAD),
-      );
-      popover.style.top = `${sideTop}px`;
-      popover.style.left = `${sideLeft}px`;
-      return;
-    }
+  if (popH > spaceBelow && popH > spaceAbove) {
+    // The card fits on neither side of the anchor — e.g. a short viewport, or
+    // an anchor near an edge after the rail collapses to a top bar on mobile.
+    // Pinning to `top: VIEWPORT_PAD` in this case reads as broken (the card
+    // floats disconnected from what it's supposed to be pointing at); centering
+    // at least reads as an intentional layout, and `.tour-popover`'s own
+    // max-height + scroll (tour.css) keeps the content reachable either way.
+    _positionPopover(popover, anchor, true);
+    return;
   }
 
-  if (!fitsBelow) top = fitsAbove ? aboveTop : VIEWPORT_PAD;
+  // Try below the anchor first, else flip above.
+  let top = popH <= spaceBelow ? rect.bottom + POPOVER_GAP : rect.top - POPOVER_GAP - popH;
+  top = Math.max(VIEWPORT_PAD, Math.min(top, vh - popH - VIEWPORT_PAD));
 
   // Horizontal: align to anchor left, clamped into viewport.
   let left = rect.left;
