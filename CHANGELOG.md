@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.37] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
 - **Broker SSE stream no longer re-buffered by PostHog/rate-limit middleware.**
   Follow-up to the GZip skip (0.76.36): `PosthogInjectionMiddleware` and the
   auth `SlowAPIMiddleware` both subclass Starlette's `BaseHTTPMiddleware`,
