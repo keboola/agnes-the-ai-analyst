@@ -136,7 +136,7 @@ class TestPreviewGrantEndpoint:
     def test_disabled_feature_404s(self, preview_api_env, monkeypatch):
         import app.api.data_apps as data_apps_api
 
-        monkeypatch.setattr(data_apps_api, "get_data_apps_config", lambda: {"enabled": False})
+        monkeypatch.setattr(data_apps_api, "feature_enabled", lambda *a, **k: False)
         env = preview_api_env
         r = env["client"].post("/api/data-apps/dash/preview-grant", headers=_auth(env["owner_pat"]))
         assert r.status_code == 404
@@ -248,7 +248,7 @@ def test_credentials_is_terminal_render(preview_env):
 def test_preview_live_url_friendly_when_disabled(preview_env, monkeypatch):
     import app.api.data_apps as data_apps_api
 
-    monkeypatch.setattr(data_apps_api, "get_data_apps_config", lambda: {"enabled": False})
+    monkeypatch.setattr(data_apps_api, "feature_enabled", lambda *a, **k: False)
     client, call_tool = preview_env
     r = call_tool("agnes_data_app_preview", slug="dash", url="/apps/dash/")
     assert r == {
@@ -260,7 +260,7 @@ def test_preview_live_url_friendly_when_disabled(preview_env, monkeypatch):
 def test_credentials_friendly_when_disabled(preview_env, monkeypatch):
     import app.api.data_apps as data_apps_api
 
-    monkeypatch.setattr(data_apps_api, "get_data_apps_config", lambda: {"enabled": False})
+    monkeypatch.setattr(data_apps_api, "feature_enabled", lambda *a, **k: False)
     client, call_tool = preview_env
     r = call_tool("agnes_data_app_credentials", slug="dash")
     assert r["error"] == "data_apps_disabled"
