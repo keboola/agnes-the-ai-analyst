@@ -85,9 +85,7 @@ def test_repo_list_for_source_returns_user_ids_only():
 # ── REST: PUT / GET / DELETE /my-secret ───────────────────────────────────
 
 
-def _seed_per_user_source(
-    scope: str = "per_user", source_id: str = "src_pu", grant_to: str = "analyst1"
-) -> None:
+def _seed_per_user_source(scope: str = "per_user", source_id: str = "src_pu", grant_to: str = "analyst1") -> None:
     """Seed the source plus one passthrough tool granted to ``grant_to`` — the
     my-secret endpoints require a grant on the source, so tests acting as a
     non-admin must be entitled to it."""
@@ -174,6 +172,33 @@ def test_my_secret_admin_bypasses_grant(seeded_app):
         headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
     )
     assert r.status_code == 200, r.text
+
+
+def test_my_secret_admin_works_on_source_with_no_tools(seeded_app):
+    """Admin can connect their credential on a FRESHLY registered source that
+    has no passthrough tools yet — the register→connect→introspect flow starts
+    tool-less, and the first introspect is what discovers the tools. The admin
+    short-circuit must not depend on `_visible_passthrough_tools` (which lists
+    sources via their registered tools). Non-admins still 403 without a grant."""
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_fresh",
+        name="pu-up-src_fresh",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    conn.close()
+    client = seeded_app["client"]
+    admin_hdr = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    assert client.get("/api/mcp/sources/src_fresh/my-secret", headers=admin_hdr).status_code == 200
+    assert (
+        client.put("/api/mcp/sources/src_fresh/my-secret", headers=admin_hdr, json={"value": "tok"}).status_code == 204
+    )
+    assert client.delete("/api/mcp/sources/src_fresh/my-secret", headers=admin_hdr).status_code == 204
+    analyst_hdr = {"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    assert client.get("/api/mcp/sources/src_fresh/my-secret", headers=analyst_hdr).status_code == 403
 
 
 def test_my_secret_404_for_unknown_source(seeded_app):

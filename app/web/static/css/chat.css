@@ -22,6 +22,7 @@
   --chat-sidebar-width: 280px;
   --chat-sidebar-width-mini: 56px;
   --chat-reading-width: 880px;
+  --chat-preview-width: 420px;
 }
 /* When the sidebar is collapsed, ``.is-mini`` on the shell — or the
    transitional ``data-chat-sidebar="mini"`` on <html>, set by the
@@ -59,6 +60,13 @@ body.chat-page-body main { margin: 0; padding: 0; }
   background: var(--ds-surface);
   overflow: hidden;
   border-top: 1px solid var(--ds-border);
+}
+
+/* Data-app preview pane open — add a third grid track so the pane sits
+   beside the chat thread without displacing the sidebar. Grid column is
+   sized off the same local var the pane itself reads. */
+.cloud-chat-shell.has-preview-pane {
+  grid-template-columns: var(--chat-sidebar-width) 1fr var(--chat-preview-width);
 }
 
 /* ============================================================ sidebar */
@@ -1493,4 +1501,131 @@ body.chat-page-body main { margin: 0; padding: 0; }
 
 .cloud-chat-shell.is-mini .cloud-chat-paused-badge {
   display: none;
+}
+
+/* --- Data-app preview split pane (wave-3C) -------------------------------
+ * Renders the `agnes_data_app_preview`/`_refresh`/`_close` render
+ * directives as a persistent third column beside the chat thread. Built
+ * lazily by chat.js (`_ensurePreviewPane`) and only present in the DOM
+ * while a preview is open — `.cloud-chat-shell.has-preview-pane` above
+ * grows the grid to make room for it. Tokens only (var(--ds-*)); no raw
+ * hex, mirroring the rest of this file. */
+.cloud-chat-preview-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+}
+
+.cloud-chat-preview-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--ds-border);
+  background: var(--ds-surface-dim);
+}
+
+.cloud-chat-preview-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
+}
+
+.cloud-chat-preview-close-btn {
+  line-height: 1;
+  padding: var(--space-1) var(--space-2);
+}
+
+.cloud-chat-preview-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.cloud-chat-preview-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.cloud-chat-preview-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
+  padding: var(--space-4);
+}
+
+.cloud-chat-preview-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid var(--ds-border);
+  border-top-color: var(--ds-primary);
+  animation: cloud-chat-preview-spin 0.8s linear infinite;
+}
+
+@keyframes cloud-chat-preview-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-chat-preview-spinner { animation: none; }
+}
+
+/* Narrow viewports already collapse the shell to a single column (see
+   the 768px breakpoint below); overlay the preview pane full-screen
+   there instead of fighting the stacked layout for space. */
+@media (max-width: 768px) {
+  .cloud-chat-preview-pane {
+    position: fixed;
+    inset: 72px 0 0 0;
+    z-index: 1000;
+    border-left: none;
+  }
+}
+
+/* --- Data-app credentials card -------------------------------------------
+ * Terminal render of `agnes_data_app_credentials` — a shareable URL (+
+ * password when the owner set basic-auth) rendered as its own assistant
+ * message block (see renderDataAppCredentials in chat.js). */
+.cloud-chat-credentials {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-md);
+  background: var(--ds-surface-dim);
+}
+
+.cloud-chat-credentials-url { margin: 0; word-break: break-all; }
+.cloud-chat-credentials-url a { color: var(--ds-primary); font-weight: var(--font-semibold); }
+
+.cloud-chat-credentials-password {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+}
+.cloud-chat-credentials-label { font-weight: var(--font-semibold); }
+.cloud-chat-credentials-password code {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
 }

@@ -56,6 +56,12 @@ function renderMarkdownSafe(text) {
 let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
+// tool_use_ids of in-flight preview tools. tool_result frames carry the call id
+// in `frame.tool` (NOT the tool name — see runner._emit_tool_result), so a
+// non-directive preview result (error / data_apps_disabled) is identified by
+// tracking the ids from the suppressed tool_call, not by matching a name.
+// call id -> bare tool name (tool_result frames carry no tool name)
+const _previewToolCallIds = new Map();
 
 // Per-session monotonic frame sequence tracking (wave-2F task 2). The
 // server stamps every outbound WS frame with `seq` (monotonic int per
@@ -607,11 +613,57 @@ function handleFrame(frame) {
       appendToken(frame.text);
       break;
     case "tool_call":
+      // Data-app preview/refresh/close/credentials tools drive the split
+      // pane instead of the generic "running…" tool block — suppress the
+      // usual start-render for them (see handlePreviewDirective below), and
+      // remember the call id so the result frame (which carries no tool name)
+      // can be recognized as a preview result.
+      if (_isPreviewTool(frame.tool)) {
+        if (frame.tool_use_id) _previewToolCallIds.set(frame.tool_use_id, _bareToolName(frame.tool));
+        clearThinkingPlaceholder();
+        break;
+      }
       renderToolCallStart(frame);
       break;
-    case "tool_result":
+    case "tool_result": {
+      // MCP tool results arrive as a list of text blocks that the runner
+      // collapses into a joined string (runner._emit_tool_result), so the
+      // directive is often a JSON *string*, not a parsed object — parse it.
+      let result = frame.result;
+      if (typeof result === "string") {
+        try {
+          result = JSON.parse(result);
+        } catch (_e) {
+          /* not JSON — leave as the original string */
+        }
+      }
+      if (_isPreviewDirective(result)) {
+        handlePreviewDirective(result);
+        if (frame.tool_use_id) _previewToolCallIds.delete(frame.tool_use_id);
+        break;
+      }
+      // A preview tool whose result isn't a directive (a raised error, or the
+      // friendly `data_apps_disabled` payload) — matched by the tracked call id
+      // (tool_result's `frame.tool` is the id, not the name). Without this the
+      // pane spinner runs forever (its tool_call start was suppressed, so
+      // renderToolCallEnd has no card to finish).
+      if (frame.tool_use_id && _previewToolCallIds.has(frame.tool_use_id)) {
+        const erroredTool = _previewToolCallIds.get(frame.tool_use_id);
+        _previewToolCallIds.delete(frame.tool_use_id);
+        // Route by WHICH tool errored, not merely whether a pane is open:
+        // the credentials tool drives no pane, so its failure must render
+        // inline — otherwise it would clobber a live preview the user is
+        // watching (pane placeholder re-shown, iframe hidden).
+        if (erroredTool !== "agnes_data_app_credentials" && previewPaneEl) {
+          _previewPaneError(result);
+        } else {
+          _renderPreviewToolError(result);
+        }
+        break;
+      }
       renderToolCallEnd(frame);
       break;
+    }
     case "assistant_message":
       finalizeAssistantMessage(frame);
       break;
@@ -1494,6 +1546,291 @@ function _coerceToTablePreview(result) {
 
   enhanceTables(wrap);
   return wrap;
+}
+
+// ---------- Data-app split-pane preview ----------------------------------
+// The four `agnes_data_app_preview` / `_refresh` / `_close` / `_credentials`
+// chat-surface MCP tools (wave-3C) don't render as generic tool blocks —
+// their `tool_result.result` carries a render directive (fixed JSON
+// contract, see docs/superpowers/plans/2026-07-27-data-apps-wave3c-
+// preview-extras.md) that drives a persistent split pane next to the
+// chat thread instead:
+//
+//   {render:"data_app_preview", slug, url: null|"/apps/<slug>/", preview_cookie?}
+//   {render:"data_app_preview_refresh", slug}
+//   {render:"data_app_preview_close", slug}
+//   {render:"data_app_credentials", slug, url, password}
+//
+// `url:null` opens the pane immediately with a placeholder (spec §7
+// mandate — the user sees something is happening before the app container
+// is actually up); the follow-up call with a real `url` swaps the pane to
+// the live iframe. The preview cookie (when present) is applied to the
+// app origin BEFORE the iframe loads, never as a URL query parameter —
+// putting a capability token in `iframe.src` would leak it via browser
+// history/referrer, and the proxy's preview-token branch expects a cookie
+// or Authorization header, not a query string.
+
+const _PREVIEW_TOOL_NAMES = new Set([
+  "agnes_data_app_preview",
+  "agnes_data_app_refresh",
+  "agnes_data_app_close",
+  "agnes_data_app_credentials",
+]);
+
+/** MCP tools arrive name-prefixed (`mcp__<server>__agnes_data_app_preview`), so
+ *  match on the bare name after the last `__` — a plain Set.has() on the prefixed
+ *  name never hits, which would leave the suppressed "running…" tool block
+ *  spinning forever (its result is routed to the preview pane, not renderToolCallEnd). */
+function _bareToolName(toolName) {
+  if (!toolName) return "";
+  return toolName.includes("__") ? toolName.slice(toolName.lastIndexOf("__") + 2) : toolName;
+}
+
+function _isPreviewTool(toolName) {
+  return _PREVIEW_TOOL_NAMES.has(_bareToolName(toolName));
+}
+
+const _PREVIEW_RENDER_KINDS = new Set([
+  "data_app_preview",
+  "data_app_preview_refresh",
+  "data_app_preview_close",
+  "data_app_credentials",
+]);
+
+function _isPreviewDirective(result) {
+  return !!(
+    result &&
+    typeof result === "object" &&
+    typeof result.render === "string" &&
+    _PREVIEW_RENDER_KINDS.has(result.render)
+  );
+}
+
+function handlePreviewDirective(directive) {
+  clearThinkingPlaceholder();
+  switch (directive.render) {
+    case "data_app_preview":
+      renderDataAppPreview(directive);
+      break;
+    case "data_app_preview_refresh":
+      refreshDataAppPreview(directive);
+      break;
+    case "data_app_preview_close":
+      closeDataAppPreview(directive);
+      break;
+    case "data_app_credentials":
+      renderDataAppCredentials(directive);
+      break;
+    default:
+      break;
+  }
+}
+
+let previewPaneEl = null;
+let previewIframeEl = null;
+let previewSlug = null;
+
+/** Lazily build the split-pane DOM the first time a preview directive
+ *  arrives. Idempotent — a second call just returns the existing pane. */
+function _ensurePreviewPane() {
+  if (previewPaneEl) return previewPaneEl;
+  const shell = document.querySelector(".cloud-chat-shell");
+  if (!shell) return null;
+
+  const pane = document.createElement("aside");
+  pane.className = "cloud-chat-preview-pane";
+  pane.setAttribute("aria-label", "App preview");
+
+  const head = document.createElement("header");
+  head.className = "cloud-chat-preview-head";
+  const title = document.createElement("span");
+  title.className = "cloud-chat-preview-title";
+  title.textContent = "App preview";
+  head.appendChild(title);
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "btn btn-ghost btn-sm cloud-chat-preview-close-btn";
+  closeBtn.setAttribute("aria-label", "Close preview");
+  closeBtn.textContent = "✕";
+  closeBtn.onclick = () => _teardownPreviewPane();
+  head.appendChild(closeBtn);
+  pane.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "cloud-chat-preview-body";
+
+  const placeholder = document.createElement("div");
+  placeholder.className = "cloud-chat-preview-placeholder";
+  placeholder.innerHTML =
+    '<span class="cloud-chat-preview-spinner" aria-hidden="true"></span>' +
+    "<p>Setting up your app…</p>";
+  body.appendChild(placeholder);
+
+  const iframe = document.createElement("iframe");
+  iframe.className = "cloud-chat-preview-iframe";
+  iframe.setAttribute("title", "App preview");
+  iframe.hidden = true;
+  body.appendChild(iframe);
+
+  pane.appendChild(body);
+  shell.appendChild(pane);
+  shell.classList.add("has-preview-pane");
+
+  previewPaneEl = pane;
+  previewIframeEl = iframe;
+  return pane;
+}
+
+function _teardownPreviewPane() {
+  if (previewIframeEl) {
+    // Drop the iframe's document so the app's JS stops running once the
+    // pane is gone rather than lingering as a detached background tab.
+    previewIframeEl.src = "about:blank";
+  }
+  if (previewPaneEl) previewPaneEl.remove();
+  const shell = document.querySelector(".cloud-chat-shell");
+  if (shell) shell.classList.remove("has-preview-pane");
+  previewPaneEl = null;
+  previewIframeEl = null;
+  previewSlug = null;
+}
+
+/** Install the preview cookie on the (same-site) app origin by hitting the
+ *  preview-grant endpoint same-origin — the browser is already the chat user,
+ *  so its `Set-Cookie` response lands the cookie the proxy's preview-token
+ *  branch authorizes. This is done server-side (not `document.cookie`) because
+ *  the cookie is `HttpOnly`, which a client-set cookie can never be — a browser
+ *  silently discards an HttpOnly cookie assigned through `document.cookie`. */
+async function _installPreviewCookie(slug) {
+  try {
+    await fetch(`/api/data-apps/${encodeURIComponent(slug)}/preview-grant`, {
+      method: "POST",
+      credentials: "same-origin",
+    });
+  } catch (err) {
+    console.warn("could not obtain preview cookie", err);
+  }
+}
+
+/** Extract a human message from a preview tool's non-directive result (the
+ *  friendly `data_apps_disabled` payload, or a raised error). */
+function _previewErrorMessage(result) {
+  if (result && typeof result === "object") {
+    return result.message || (result.error ? String(result.error) : "Preview unavailable.");
+  }
+  return "Preview unavailable.";
+}
+
+/** Render a preview tool's error inline as a small assistant message — used when
+ *  no preview pane is open (the credentials tool opens none), so a disabled /
+ *  failed result isn't silently dropped after its start card was suppressed. */
+function _renderPreviewToolError(result) {
+  const article = createMessageShell({ role: "assistant" });
+  const bodyEl = article.querySelector(".msg-body");
+  const p = document.createElement("p");
+  p.className = "cloud-chat-preview-error";
+  p.textContent = _previewErrorMessage(result);
+  (bodyEl || article).appendChild(p);
+  $("chat-messages").appendChild(article);
+  maybeScrollToBottom();
+}
+
+/** Replace the placeholder spinner with an error message when a preview tool
+ *  fails or the feature is disabled — so the pane never spins indefinitely.
+ *  No-op if no pane is open. */
+function _previewPaneError(result) {
+  if (!previewPaneEl) return;
+  const placeholder = previewPaneEl.querySelector(".cloud-chat-preview-placeholder");
+  if (!placeholder) return;
+  placeholder.innerHTML = "";
+  const p = document.createElement("p");
+  p.className = "cloud-chat-preview-error";
+  p.textContent = _previewErrorMessage(result);
+  placeholder.appendChild(p);
+  placeholder.hidden = false;
+  if (previewIframeEl) previewIframeEl.hidden = true;
+}
+
+async function renderDataAppPreview(directive) {
+  const pane = _ensurePreviewPane();
+  if (!pane) return;
+  previewSlug = directive.slug;
+  const placeholder = pane.querySelector(".cloud-chat-preview-placeholder");
+  const iframe = previewIframeEl;
+
+  if (!directive.url) {
+    // First call — placeholder only, container isn't up yet.
+    if (placeholder) placeholder.hidden = false;
+    if (iframe) iframe.hidden = true;
+    return;
+  }
+
+  // The cookie MUST land on the app origin before the iframe's first request,
+  // so the proxy's preview-token branch authorizes it.
+  await _installPreviewCookie(directive.slug);
+  if (placeholder) placeholder.hidden = true;
+  if (iframe) {
+    iframe.hidden = false;
+    iframe.src = directive.url;
+  }
+}
+
+function refreshDataAppPreview(directive) {
+  if (!previewIframeEl || previewSlug !== directive.slug) return;
+  const src = previewIframeEl.src;
+  // A bare re-assignment of the same `src` is a no-op in most browsers —
+  // bounce through about:blank to force a real reload.
+  previewIframeEl.src = "about:blank";
+  requestAnimationFrame(() => {
+    if (previewIframeEl) previewIframeEl.src = src;
+  });
+}
+
+function closeDataAppPreview(directive) {
+  if (previewSlug && directive.slug && previewSlug !== directive.slug) return;
+  _teardownPreviewPane();
+}
+
+/** `data_app_credentials` is the terminal render of its turn (spec: "the
+ *  shareable URL, rendered as the final element of the reply") — append
+ *  it as its own assistant message block rather than folding it into the
+ *  split pane, so it reads naturally in the transcript and survives
+ *  scrollback after the pane is closed. */
+function renderDataAppCredentials(directive) {
+  const article = createMessageShell({ role: "assistant" });
+  const bodyEl = article.querySelector(".msg-body");
+
+  const wrap = document.createElement("div");
+  wrap.className = "cloud-chat-credentials";
+
+  const urlRow = document.createElement("p");
+  urlRow.className = "cloud-chat-credentials-url";
+  const link = document.createElement("a");
+  link.href = directive.url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = directive.url;
+  urlRow.appendChild(link);
+  wrap.appendChild(urlRow);
+
+  if (directive.password) {
+    const pwRow = document.createElement("p");
+    pwRow.className = "cloud-chat-credentials-password";
+    const label = document.createElement("span");
+    label.className = "cloud-chat-credentials-label";
+    label.textContent = "Password:";
+    pwRow.appendChild(label);
+    const code = document.createElement("code");
+    code.textContent = directive.password;
+    pwRow.appendChild(code);
+    wrap.appendChild(pwRow);
+  }
+
+  bodyEl.appendChild(wrap);
+  $("chat-messages").appendChild(article);
+  attachMessageActions(article, directive.url || "");
+  _markLatestAssistant(article);
+  maybeScrollToBottom();
 }
 
 /** Make sure a WebSocket is live, or open one.

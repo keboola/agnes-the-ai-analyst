@@ -280,6 +280,34 @@
     </div>
   </div>
 
+  <!-- Your connection card — per_user sources only. Same my-secret API the
+       /me/connections page uses, surfaced inline so an admin can register,
+       connect their own token, and introspect without leaving this page. -->
+  <div class="src-card" id="my-connection-card" hidden>
+    <div class="src-card-head">
+      <h3>Your connection</h3>
+      <span id="myconn-status" style="font-size: 12px; color: var(--text-secondary, #6b7280);">…</span>
+    </div>
+    <div class="src-card-body">
+      <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
+        This source is <strong>per_user</strong>-scoped: every analyst connects
+        their own credential (yours is what Introspect / Test connection run
+        under). Analysts do this on <a href="/me/connections">My connections</a>;
+        as an admin you can connect yours right here. Write-only — the value is
+        never shown back.
+      </p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input id="myconn-token" type="password" autocomplete="new-password"
+               placeholder="Paste your personal token for this source"
+               style="flex:1; min-width:240px; padding:8px 11px; border:1px solid var(--border, #e5e7eb); border-radius:6px; font-size:13px; box-sizing:border-box;">
+        {{ ds.button('Save', variant='primary', id='myconn-save-btn') }}
+        {{ ds.button('Test', variant='secondary', id='myconn-test-btn') }}
+        {{ ds.button('Disconnect', variant='danger', id='myconn-clear-btn') }}
+      </div>
+      <div id="myconn-result" class="test-result"></div>
+    </div>
+  </div>
+
   <!-- Discover / introspect card -->
   <div class="src-card">
     <div class="src-card-head">
@@ -401,6 +429,7 @@ function renderConfigSummary() {
   document.getElementById("cfg-auth-secret-env").textContent = source.auth_secret_env || "—";
   document.getElementById("cfg-enabled").textContent = (source.enabled === false) ? "no" : "yes";
   renderSecretStatus();
+  renderMyConnection();
 }
 
 function renderSecretStatus() {
@@ -588,6 +617,110 @@ document.getElementById("clear-secret-btn").addEventListener("click", async () =
   } catch (e) {
     showSecretResult("Failed: " + e.message, "err");
     toast("Clear failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Your connection (per_user sources) ─────────────────────────────────
+// Same API the /me/connections page uses; admin grant short-circuit means
+// this always works for the operator viewing this page.
+const MYCONN_API = `/api/mcp/sources/${encodeURIComponent(SOURCE_ID)}/my-secret`;
+
+function showMyConnResult(msg, kind) {
+  const out = document.getElementById("myconn-result");
+  out.className = "test-result " + (kind === "ok" ? "ok" : "err");
+  out.textContent = msg;
+}
+
+async function renderMyConnection() {
+  const card = document.getElementById("my-connection-card");
+  if (!card || !source) return;
+  const isPerUser = (source.scope || "shared") === "per_user";
+  card.hidden = !isPerUser;
+  if (!isPerUser) return;
+  const el = document.getElementById("myconn-status");
+  try {
+    const r = await fetch(MYCONN_API, { credentials: "include" });
+    if (!r.ok) throw new Error(r.statusText);
+    const st = await r.json();
+    if (st.has_secret) {
+      el.textContent = "🔗 Connected" + (st.updated_at ? ` (since ${st.updated_at.slice(0, 10)})` : "");
+      el.style.color = "#166534";
+    } else {
+      el.textContent = "Not connected — Introspect will run without your credential";
+      el.style.color = "#b45309";
+    }
+  } catch (_) {
+    el.textContent = "Status unavailable";
+    el.style.color = "var(--text-secondary, #6b7280)";
+  }
+}
+
+document.getElementById("myconn-save-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("myconn-save-btn");
+  const input = document.getElementById("myconn-token");
+  const value = input.value;
+  if (!value) { toast("Paste your token first", "error"); return; }
+  document.getElementById("myconn-result").className = "test-result";
+  btn.disabled = true;
+  try {
+    const r = await fetch(MYCONN_API, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    if (r.status === 204 || r.ok) {
+      input.value = "";  // never keep the plaintext around
+      toast("Connected", "success");
+      await renderMyConnection();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      showMyConnResult("Failed: " + detail, "err");
+    }
+  } catch (e) {
+    showMyConnResult("Failed: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("myconn-test-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("myconn-test-btn");
+  document.getElementById("myconn-result").className = "test-result";
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${MYCONN_API}/test`, { method: "POST", credentials: "include" });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok && body.ok) {
+      showMyConnResult(`OK — ${body.tool_count} tool(s) visible under your credential`, "ok");
+    } else {
+      showMyConnResult(body.message || body.detail || r.statusText, "err");
+    }
+  } catch (e) {
+    showMyConnResult("Failed: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("myconn-clear-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("myconn-clear-btn");
+  document.getElementById("myconn-result").className = "test-result";
+  btn.disabled = true;
+  try {
+    const r = await fetch(MYCONN_API, { method: "DELETE", credentials: "include" });
+    if (r.status === 204 || r.ok) {
+      toast("Disconnected", "success");
+      await renderMyConnection();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      showMyConnResult("Failed: " + detail, "err");
+    }
+  } catch (e) {
+    showMyConnResult("Failed: " + e.message, "err");
   } finally {
     btn.disabled = false;
   }
