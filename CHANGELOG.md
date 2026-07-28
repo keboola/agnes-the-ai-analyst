@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.3] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
 - **Agent scope is now enforced at request time, not merely recorded.** A
   `selected`-scoped agent's brokered requests are authorized against
   `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`
@@ -39,18 +53,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   actually-successful principal-authenticated query. Fixed via a
   principal-aware `_identity_for_audit` helper used only for audit/quota
   bookkeeping, never for an authorization decision.
-- **Schema upgrade crashed on any DB between v82 and v96.** The
-  `corpus_files(corpus_id, path)` UNIQUE INDEX was declared inside
-  `_SYSTEM_SCHEMA`, which executes *before* the migration ladder. Because
-  `corpus_files` is created at v82 but its `path` column is only ALTER-added at
-  v97, the `CREATE TABLE IF NOT EXISTS` was a no-op on those DBs and the index
-  statement then raised `BinderException: Table "corpus_files" does not have a
-  column named "path"` — aborting the whole schema pass before the ALTER could
-  run, so the instance never started. The index is now created by
-  `_ensure_corpus_path_index()` after the ladder, guarded on the column
-  existing, which covers fresh installs, incremental upgrades, and the
-  split-brain future-version self-heal path alike.
-
 ### Removed
 
 ### Internal

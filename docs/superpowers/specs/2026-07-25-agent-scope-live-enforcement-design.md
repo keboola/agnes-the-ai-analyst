@@ -292,9 +292,11 @@ authorization decision) plus a `PRINCIPAL_TYPES` guard on the one
 authorization-relevant call site (`_bq_guardrail_inputs`'s `is_admin` check,
 which must stay `False` for any principal — resolving it via the owner's id
 would have reintroduced admin inheritance). The identical `user.get(...)`
-pattern still exists, unfixed, in `app/api/v2_scan.py`, `v2_sample.py`,
-`v2_schema.py`, and `app/api/data.py`'s audit-log calls — same latent crash
-class for a co-session/agent-session hitting those endpoints on a real
-table, out of scope for this PR (touches four more files, no security
-impact — denies still deny correctly, only successful-request audit
-logging crashes). Worth a follow-up sweep.
+pattern in `app/api/v2_scan.py`, `v2_sample.py`, `v2_schema.py`, and
+`app/api/data.py`'s audit-log/quota-key calls was swept in this PR too —
+they now route through the shared `src/audit_helpers.identity_for_audit`
+(owner identity for an `AgentPrincipal`, `None` for a co-session); the
+only remaining dict-style access in those files sits inside a
+principal-guarded `else` branch (`v2_sample.py`'s admin check, which must
+stay dict-only so a narrowed principal cannot inherit the owner's admin
+bit).
