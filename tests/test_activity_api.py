@@ -331,3 +331,41 @@ def test_sessions_kpis_match_adoption_kpis(seeded_app, admin_user):
     ak = c.get("/api/admin/adoption/kpis?window=7d", headers=admin_user).json()
     assert sk["sessions_total"] == ak["sessions"] == 3
     assert sk["distinct_users"] == ak["active_users"] == 2
+
+
+def test_health_reconciles_uploads_vs_ingested(seeded_app, admin_user):
+    """Health pulse: uploaded session files without a summary row show as a
+    yellow ingest gap; complete ingest is green. Join on file basename."""
+    from datetime import datetime, timezone
+
+    from src.db import get_system_db
+    from src.repositories.audit import AuditRepository
+    from src.repositories.usage import UsageRepository
+
+    conn = get_system_db()
+    audit = AuditRepository(conn)
+    usage = UsageRepository(conn)
+    for fn in ("aaa.jsonl", "bbb.jsonl", "ccc.jsonl"):
+        audit.log(
+            user_id="u-1", action="session.upload",
+            params={"bytes": 1, "filename": fn}, result="success",
+        )
+    for sid in ("aaa", "bbb"):
+        usage.upsert_summary(
+            {
+                "session_file": f"u-1/{sid}.jsonl",
+                "session_id": f"content-id-{sid}",  # differs from file stem on purpose
+                "username": "ann@example.com",
+                "user_id": "u-1",
+                "started_at": datetime.now(timezone.utc),
+            },
+            processor_version=1,
+        )
+    conn.close()
+
+    c = seeded_app["client"]
+    h = c.get("/api/admin/activity/health", headers=admin_user).json()
+    field = next(f for f in h["fields"] if f["key"] == "session_ingest")
+    assert field["value"] == "3 up / 2 ingested"
+    assert field["color"] == "yellow"
+    assert field["raw"] == 1

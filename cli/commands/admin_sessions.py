@@ -48,6 +48,11 @@ def list_sessions(
         "--since",
         help="How far back to look (e.g. 1h, 24h, 7d, 30d, or raw minutes)",
     ),
+    anchor: str = typer.Option(
+        "uploaded",
+        "--anchor",
+        help="Window anchor: 'uploaded' (arrival — default) or 'started'",
+    ),
     user: Optional[str] = typer.Option(
         None,
         "--user",
@@ -87,6 +92,7 @@ def list_sessions(
     """
     params = {
         "since_minutes": _parse_since(since),
+        "anchor": anchor,
         "limit": limit,
         "offset": offset,
         "sort": sort,
@@ -236,12 +242,13 @@ def download(
 @sessions_app.command("kpis")
 def kpis(
     since: str = typer.Option("7d", "--since"),
+    anchor: str = typer.Option("uploaded", "--anchor", help="Window anchor: uploaded|started"),
     user: Optional[str] = typer.Option(None, "--user", "-u"),
     errors_only: bool = typer.Option(False, "--errors"),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Show top-level numbers (sessions, distinct users, error rate)."""
-    params = {"since_minutes": _parse_since(since)}
+    params = {"since_minutes": _parse_since(since), "anchor": anchor}
     if user:
         params["username"] = user
     if errors_only:
