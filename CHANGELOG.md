@@ -22,6 +22,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.2] - 2026-07-28
+
+### Added
+
+- **Data Apps: durable enablement via the customer-instance Terraform module.** A new `data_apps_enabled` module variable (off by default; `data_apps_runtime_image` sets the runtime image) brings the feature up on VM boot without hand-editing config: the startup script mints/persists an `APPS_RUNNER_TOKEN`, resolves `DOCKER_GID` from the docker socket, writes `AGNES_DATA_APPS_ENABLED=true` (plus the runner token/prefix/gid) into the app `.env`, and enables the `apps` compose profile via a `--profile apps` command-line flag in both the startup script and `agnes-auto-upgrade.sh` (not `COMPOSE_PROFILES` in `.env` — docker compose ignores that env var whenever any `--profile` flag such as `--profile tls` is present). The app honors a Terraform-friendly `AGNES_DATA_APPS_ENABLED` env override (mirrors `AGNES_HOME_ROUTE`/`PUBLIC_URL`) that flips the feature on and backfills the example-config `data_apps:` defaults, so no instance.yaml edit is needed. Disabled instances render byte-identically.
+
+### Changed
+
+### Fixed
+
+- **Data Apps: the apps-runner sidecar can now reach the docker socket.** The sidecar runs as the image's non-root uid 999 but bind-mounts the root:docker-owned socket; with no group membership every container `up`/`stop` failed the daemon handshake with `PermissionError(13)`, surfaced as a 502 `runner_unavailable` (found in a live end-to-end run). `docker-compose.yml` now adds `${DOCKER_GID}` to the sidecar via `group_add` (the customer-instance startup resolves the host gid; a hand-run `--profile apps` must export it), keeping the sidecar uid 999 so the `config.json` it writes stays owner-deletable by the app.
+- **Data Apps: internal-repo containers can now clone their app.** The runtime image only embeds git credentials into HTTPS clone URLs and leaves plain-HTTP URLs untouched, so the container cloning Agnes's internal `http://app:8000/...` git backend prompted for a username in a non-interactive shell and crash-looped (proxy then 502 `container_unreachable`). `build_config_json` now embeds the percent-encoded push token directly in the repository URL (`http://agnes:<token>@app:8000/...`), which the image preserves.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.77.1] - 2026-07-28
 
 ### Added
