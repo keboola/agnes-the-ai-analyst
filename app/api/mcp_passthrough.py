@@ -35,11 +35,13 @@ from app.api.mcp_policy import (
     MutatingNotAllowed,
     PerUserCredentialMissing,
     RateLimited,
+    caller_authority,
+    connection_scope_ids,
     enforce_passthrough_access,
     enforce_per_user_credential,
     redact_response,
 )
-from app.auth.access import _user_group_ids, is_user_admin
+from app.auth.access import _user_group_ids
 from app.auth.dependencies import get_current_user
 from connectors.mcp.client import call_tool_async
 from src.repositories import mcp_sources_repo, tool_registry_repo
@@ -93,22 +95,38 @@ def _to_dto(tool: Dict[str, Any], source_name: str) -> PassthroughToolDTO:
     )
 
 
-def _visible_passthrough_tools(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _visible_passthrough_tools(user: Any) -> List[Dict[str, Any]]:
     """List of passthrough tool rows the caller is allowed to see.
 
     Admin sees every enabled passthrough tool. Non-admin sees the
     intersection of ``tool_grants`` with their ``user_group_members``.
+
+    An ``AgentPrincipal`` (V1d) sees its OWNER's set — with the admin
+    short-circuit forced off, so an admin-owned agent never inherits the full
+    surface — further narrowed to the MCP sources in its ``connection`` scope
+    when its ``connections_mode`` is ``'selected'``. A co-session principal
+    has no single owner to resolve credentials or grants from and sees
+    nothing. The same ``caller_authority`` / ``connection_scope_ids`` pair
+    drives ``enforce_passthrough_access``, so this listing can never advertise
+    a tool the call seam would refuse (or hide one it would allow).
 
     Backend-aware: reads tool_registry through the factory and resolves RBAC
     via ``is_user_admin`` / ``_user_group_ids`` without a connection, so it hits
     the active backend (was a raw DuckDB-conn read that returned nothing on a
     Postgres instance — empty tool list / failed passthrough calls).
     """
+    authority = caller_authority(user)
+    if not authority.user_id:
+        return []
     tools_repo = tool_registry_repo()
-    if is_user_admin(user["id"]):
-        return tools_repo.list_by_mode(PASSTHROUGH, enabled_only=True)
-    group_ids = list(_user_group_ids(user["id"]))
-    return tools_repo.list_passthrough_for_groups(group_ids)
+    if authority.is_admin:
+        rows = tools_repo.list_by_mode(PASSTHROUGH, enabled_only=True)
+    else:
+        rows = tools_repo.list_passthrough_for_groups(list(_user_group_ids(authority.user_id)))
+    allowed_sources = connection_scope_ids(authority)
+    if allowed_sources is None:
+        return rows
+    return [t for t in rows if t.get("source_id") in allowed_sources]
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +166,16 @@ async def invoke_passthrough_tool(
     """Forward a tool call to the upstream MCP source and return its content.
 
     RBAC: admin short-circuit; otherwise the caller must be in a group
-    listed in ``tool_grants`` for this tool.
+    listed in ``tool_grants`` for this tool. An agent-session caller (V1d)
+    runs on its owner's grants minus the admin short-circuit, and only on the
+    MCP sources in its ``connection`` scope — enforced HERE, at the call seam,
+    not merely by omission from ``/tools``.
     """
+    authority = caller_authority(user)
+    if not authority.user_id:
+        # A restricted principal with no single owner (co-session) — nothing
+        # to resolve grants or per-user credentials from. Fail closed.
+        raise HTTPException(status_code=403, detail="not available to this token")
     tools_repo = tool_registry_repo()
     tool = tools_repo.get(tool_id)
     if tool is None or tool.get("mode") != PASSTHROUGH or not tool.get("enabled", True):
@@ -158,10 +184,10 @@ async def invoke_passthrough_tool(
     # Authorization + policy gates (RFC #461 §3), via the one gate stack shared
     # with the SSE / Streamable-HTTP transport closures (app/api/mcp/
     # tools_generator) so the interactive-forward paths can't drift: grant →
-    # mutating → rate-limit. PII redaction is applied *after* a successful
-    # forward, below.
+    # mutating → connection scope → rate-limit. PII redaction is applied
+    # *after* a successful forward, below.
     try:
-        enforce_passthrough_access(tool, user["id"])
+        enforce_passthrough_access(tool, user)
     except (GrantDenied, MutatingNotAllowed) as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RateLimited as exc:
@@ -182,18 +208,20 @@ async def invoke_passthrough_tool(
     # stored credential, else the forward would connect anonymously and degrade
     # to an opaque upstream auth error.
     try:
-        enforce_per_user_credential(source, user["id"])
+        enforce_per_user_credential(source, authority.user_id)
     except PerUserCredentialMissing as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     try:
         # Thread the caller's user_id through so sources with
-        # ``scope='per_user'`` resolve the analyst's own credential.
+        # ``scope='per_user'`` resolve the analyst's own credential. An agent
+        # forwards under its OWNER's credential — it holds none of its own,
+        # and the connection it is using is one the owner authorized above.
         result = await call_tool_async(
             source,
             tool["original_name"],
             arguments=body.arguments,
-            caller_user_id=user["id"],
+            caller_user_id=authority.user_id,
         )
     except Exception as exc:
         logger.exception("passthrough call to %s failed", tool_id)

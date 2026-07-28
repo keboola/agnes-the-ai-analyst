@@ -287,6 +287,17 @@ def _allowed_passthrough_names(caller_user_id: Optional[str]) -> set[str]:
     of ``tool_grants`` with their groups, an unresolved caller sees none. This
     mirrors ``app/api/mcp_passthrough.py::_visible_passthrough_tools`` (the REST
     listing) so the transports and REST agree on visibility.
+
+    A caller here is always a **bare user id** — the transports resolve one
+    from their access token — which cannot express an agent-session caller
+    ("the owner, minus this agent's ``connection`` scope"). Both transports
+    therefore refuse a restricted principal outright (SSE:
+    ``mcp_http._AuthMiddleware``; Streamable-HTTP: OAuth tokens only), and the
+    sandbox reaches MCP through the principal-aware REST endpoints instead.
+    If a transport ever starts resolving principals, it must pass the
+    principal (not an id) into ``caller_authority`` here and in
+    ``_forward_with_gates`` — otherwise the connection filter silently
+    disappears on that path.
     """
     from app.auth.access import _user_group_ids, is_user_admin
 
