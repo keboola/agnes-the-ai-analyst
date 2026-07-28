@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **BigQuery jobs from a restricted principal keep their cost-attribution
+  labels.** `_user_id_label` reached for `user.get("email")` on a frozen
+  `SessionPrincipal` / `AgentPrincipal`; the `AttributeError` hit
+  `build_bq_job_labels`' totality guard, which dropped the ENTIRE label set
+  (`workload_type`, `agent_name`, `environment` — not just `user_id`), so a
+  scoped agent's BQ spend was unattributable in `INFORMATION_SCHEMA.JOBS` and
+  the billing export. Identity now routes through `identity_for_audit()`: an
+  agent's jobs carry its owner, a co-session's carry the remaining labels.
+- **`GET /api/v2/catalog` writes its audit row for a restricted principal.**
+  The last `user.get("id")` audit call site missed by the identity rollout —
+  the `AttributeError` landed in the `except Exception` around the audit
+  write, so a co-session or agent-session listed the catalog (200) while its
+  `catalog.list` row was silently dropped.
+
 ### Removed
 
 ### Internal
