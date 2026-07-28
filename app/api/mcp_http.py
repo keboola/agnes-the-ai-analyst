@@ -38,6 +38,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.api.mcp.foundation_tools import register_foundation_tools
+from app.auth.session_principal import PRINCIPAL_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,15 @@ class _AuthMiddleware:
             await _send_401(scope, send)
             return
 
-        if user is None:
+        # A restricted principal (co-session / agent-session token) is refused
+        # at the door. This transport's passthrough closures identify their
+        # caller by a bare user id (`_current_user_id`), which cannot express
+        # "the owner, minus this agent's connection scope" — resolving a
+        # principal to `owner_user_id` here would hand the sandbox the OWNER's
+        # full tool surface with the scope filter silently skipped. The
+        # sandbox reaches MCP through the stdio server + the REST passthrough
+        # endpoints (which are principal-aware), never through SSE.
+        if user is None or isinstance(user, PRINCIPAL_TYPES):
             await _send_401(scope, send)
             return
 

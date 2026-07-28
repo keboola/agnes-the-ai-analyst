@@ -25,8 +25,10 @@ Fail-closed contract (spec §2, normative):
 
 ``connections_mode`` is deliberately absent from ``MODE_TO_RESOURCE_TYPE``:
 there is no ``ResourceType.CONNECTION`` — per-user MCP connections are
-authorized through a separate mechanism entirely, and a later task filters
-them there. Do not "fix" this by inventing a resource type here.
+authorized through a separate mechanism entirely (``tool_registry``
+passthrough grants keyed on groups). Do not "fix" this by inventing a
+resource type here; the axis is enforced at its own seam via
+``agent_scope_filter`` below.
 """
 
 from __future__ import annotations
@@ -75,6 +77,58 @@ def _agent_scope_ids(
 
     items = agents_repo().get_scope(agent_id)
     return frozenset(item["item_id"] for item in items if item.get("item_type") == item_type)
+
+
+def agent_scope_filter(
+    agent_id: Optional[str],
+    mode_field: str,
+    item_type: str,
+) -> Optional[frozenset[str]]:
+    """Live allow-set for ONE scope axis, or ``None`` when the agent does not
+    narrow that axis.
+
+    The intersection map can only carry resources authorized through
+    ``resource_grants``. Two axes are authorized elsewhere and therefore need
+    a filter at their own seam, reading the agent's ``agent_scope`` rows
+    directly:
+
+    - ``connections_mode`` / ``connection`` — per-user MCP connections
+      (``tool_registry`` grants keyed on groups); item_id is an
+      ``mcp_sources.id``.
+    - ``plugins_mode`` / ``plugin`` for **Store installs** — personal
+      flea-market installs live in ``user_store_installs``, never in
+      ``resource_grants``, so they survive the intersection untouched. (The
+      admin-curated half of the same axis IS in the intersection and is
+      filtered there; this helper covers only the store union.)
+
+    Return contract, deliberately three-valued:
+
+    - ``None`` — mode is ``'all'``: the agent does not narrow this axis, so
+      the caller must apply **no** filter. Keying off this (rather than off
+      "the caller is an ``AgentPrincipal``") is the whole point: the broker
+      mints an agent-session token as soon as an agent narrows *anything*, so
+      a tables-narrowed agent legitimately keeps every connection and store
+      install its owner has.
+    - a ``frozenset`` — mode is ``'selected'``: exactly the declared
+      ``item_id`` set, possibly empty (an empty allowlist is a real answer,
+      never a pass-through).
+    - ``frozenset()`` — fail closed for a missing / soft-deleted agent row or
+      an unrecognized mode value, mirroring ``compute_agent_intersection``.
+    """
+    from src.repositories import agents_repo
+
+    if not agent_id:
+        return frozenset()
+    repo = agents_repo()
+    agent = repo.get_by_id(agent_id)
+    if not agent or agent.get("deleted_at") is not None:
+        return frozenset()
+    mode = agent.get(mode_field)
+    if mode == "all":
+        return None
+    if mode != "selected":
+        return frozenset()
+    return frozenset(item["item_id"] for item in repo.get_scope(agent_id) if item.get("item_type") == item_type)
 
 
 def agent_narrows(agent_row: dict) -> bool:

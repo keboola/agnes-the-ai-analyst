@@ -16,6 +16,13 @@ Endpoints (all under ``/api/mcp/sources/{source_id}/my-secret``):
 For ``scope='shared'`` sources we still accept the PUT (operators may
 flip scope later) but warn the caller that the value won't be used
 until scope flips.
+
+Every route here is human-only (``deny_principal``): the credential is the
+*owner's*, and each route either reads its metadata, writes it, or opens a
+live upstream connection under it. An agent-session token must not do any of
+those on its owner's behalf — least of all ``/test``, which would connect to
+an arbitrary source with the owner's credential, sidestepping the agent's
+``connection`` scope entirely (V1d Task 5).
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
+from app.chat.session_principal_guard import deny_principal
 from app.secrets_vault import VaultKeyNotConfiguredError
 from src.repositories import mcp_sources_repo, per_user_secrets_repo
 
@@ -72,6 +80,7 @@ async def set_my_secret(
     the same vault key as the shared secrets table; if you wonder where
     your token lives, it's in there. Cleartext is never returned.
     """
+    deny_principal(user)
     if not body.value:
         raise HTTPException(status_code=400, detail="secret value required")
     if not mcp_sources_repo().get(source_id):
@@ -93,6 +102,7 @@ async def delete_my_secret(
 ):
     """Drop the caller's per-user secret. For ``scope='per_user'``
     sources the next call falls through to the shared vault path."""
+    deny_principal(user)
     if not mcp_sources_repo().get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     _require_source_grant(source_id, user)
@@ -106,6 +116,7 @@ async def get_my_secret_status(
 ) -> HasSecretResponse:
     """Return ``has_secret: bool`` for the caller + the source's scope so
     a UI can show "Connect your <source>" or "Connected"."""
+    deny_principal(user)
     source = mcp_sources_repo().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
@@ -157,6 +168,7 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
     )
     from connectors.mcp.client import list_tools_async
 
+    deny_principal(user)
     source = mcp_sources_repo().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
