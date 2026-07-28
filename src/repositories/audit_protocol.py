@@ -103,6 +103,20 @@ class AuditRepositoryProtocol(Protocol):
         """Governance audit feed: corporate_memory.* + legacy km_* rows."""
         ...
 
+    def upload_filenames_since(self, since: datetime) -> List[str]:
+        """Distinct ``session.upload`` filenames at/after *since* — the
+        health pulse's ingest-reconciliation source (joined against
+        summary FILE basenames, never session_id)."""
+        ...
+
+    def last_scheduler_tick(self) -> Optional[datetime]:
+        """Most recent scheduler-classified audit row timestamp."""
+        ...
+
+    def active_users_since(self, since: datetime) -> int:
+        """Distinct non-NULL user_id count at/after *since*."""
+        ...
+
     def facets(
         self,
         *,

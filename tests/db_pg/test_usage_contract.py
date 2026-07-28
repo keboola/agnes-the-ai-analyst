@@ -1140,3 +1140,37 @@ def test_upsert_summary_uploaded_at_first_arrival_wins(usage_repo):
     )
     second = next(r for r in rows if r["session_id"] == "arr")["uploaded_at"]
     assert second == first
+
+
+def test_session_file_basenames_since_windows_on_arrival(usage_repo):
+    """PR-C: the reconciliation target — basenames of ingested summaries,
+    windowed on COALESCE(uploaded_at, started_at). Both backends."""
+    from datetime import datetime, timedelta, timezone
+
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    for sid, uploaded in (("new1", now), ("new2", now)):
+        repo.upsert_summary(
+            {
+                "session_file": f"u-7/{sid}.jsonl",
+                "session_id": sid,
+                "username": "rec@example.com",
+                "user_id": "u-7",
+                "started_at": now - timedelta(days=90),
+                "uploaded_at": uploaded,
+            },
+            processor_version=1,
+        )
+    repo.upsert_summary(
+        {
+            "session_file": "u-7/old.jsonl",
+            "session_id": "old",
+            "username": "rec@example.com",
+            "user_id": "u-7",
+            "started_at": now - timedelta(days=90),
+            "uploaded_at": now - timedelta(days=90),
+        },
+        processor_version=1,
+    )
+    got = repo.session_file_basenames_since(now - timedelta(days=1))
+    assert got == {"new1.jsonl", "new2.jsonl"}
