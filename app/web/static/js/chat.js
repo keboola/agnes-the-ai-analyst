@@ -60,7 +60,8 @@ let inFlightToolCalls = new Map();
 // in `frame.tool` (NOT the tool name — see runner._emit_tool_result), so a
 // non-directive preview result (error / data_apps_disabled) is identified by
 // tracking the ids from the suppressed tool_call, not by matching a name.
-const _previewToolCallIds = new Set();
+// call id -> bare tool name (tool_result frames carry no tool name)
+const _previewToolCallIds = new Map();
 
 // Per-session monotonic frame sequence tracking (wave-2F task 2). The
 // server stamps every outbound WS frame with `seq` (monotonic int per
@@ -618,7 +619,7 @@ function handleFrame(frame) {
       // remember the call id so the result frame (which carries no tool name)
       // can be recognized as a preview result.
       if (_isPreviewTool(frame.tool)) {
-        if (frame.tool_use_id) _previewToolCallIds.add(frame.tool_use_id);
+        if (frame.tool_use_id) _previewToolCallIds.set(frame.tool_use_id, _bareToolName(frame.tool));
         clearThinkingPlaceholder();
         break;
       }
@@ -647,10 +648,13 @@ function handleFrame(frame) {
       // pane spinner runs forever (its tool_call start was suppressed, so
       // renderToolCallEnd has no card to finish).
       if (frame.tool_use_id && _previewToolCallIds.has(frame.tool_use_id)) {
+        const erroredTool = _previewToolCallIds.get(frame.tool_use_id);
         _previewToolCallIds.delete(frame.tool_use_id);
-        // Pane open (preview/refresh/close) — surface there; the credentials
-        // tool opens no pane, so render its error inline instead.
-        if (previewPaneEl) {
+        // Route by WHICH tool errored, not merely whether a pane is open:
+        // the credentials tool drives no pane, so its failure must render
+        // inline — otherwise it would clobber a live preview the user is
+        // watching (pane placeholder re-shown, iframe hidden).
+        if (erroredTool !== "agnes_data_app_credentials" && previewPaneEl) {
           _previewPaneError(result);
         } else {
           _renderPreviewToolError(result);
@@ -1577,10 +1581,13 @@ const _PREVIEW_TOOL_NAMES = new Set([
  *  match on the bare name after the last `__` — a plain Set.has() on the prefixed
  *  name never hits, which would leave the suppressed "running…" tool block
  *  spinning forever (its result is routed to the preview pane, not renderToolCallEnd). */
+function _bareToolName(toolName) {
+  if (!toolName) return "";
+  return toolName.includes("__") ? toolName.slice(toolName.lastIndexOf("__") + 2) : toolName;
+}
+
 function _isPreviewTool(toolName) {
-  if (!toolName) return false;
-  const bare = toolName.includes("__") ? toolName.slice(toolName.lastIndexOf("__") + 2) : toolName;
-  return _PREVIEW_TOOL_NAMES.has(bare);
+  return _PREVIEW_TOOL_NAMES.has(_bareToolName(toolName));
 }
 
 const _PREVIEW_RENDER_KINDS = new Set([
