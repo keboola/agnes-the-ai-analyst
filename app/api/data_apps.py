@@ -529,6 +529,12 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
         prefix=token_id.replace("-", "")[:8],
         expires_at=expires_at,
     )
+    # `Path=/apps/<slug>/` assumes path-prefix ingress (the verified default;
+    # `data_apps.subdomain_base` unset). In subdomain mode the app is served at
+    # `<slug>.<subdomain_base>/` — a different origin whose paths start at `/` —
+    # so the preview loop (same-origin fetch + this cookie) is path-prefix-only
+    # for now; subdomain-mode preview is a follow-up (needs a cross-origin
+    # cookie set on the subdomain, which the same-origin fetch can't do).
     cookie = f"{_PREVIEW_COOKIE_NAME}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/apps/{slug}/; SameSite=Lax; HttpOnly"
     return jwt_token, cookie
 

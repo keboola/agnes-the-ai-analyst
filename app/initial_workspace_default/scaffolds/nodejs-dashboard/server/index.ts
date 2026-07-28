@@ -1,10 +1,15 @@
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runQuery } from "./agnesQuery";
+import { runQuery } from "./agnesQuery.js";
 
+// `"type": "module"` (ESM) means Node needs the explicit `.js` extension above,
+// even though the source is `agnesQuery.ts` — TS resolves the `.js` specifier to
+// the `.ts` sibling at build time and keeps it verbatim in the emitted JS.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const distDir = path.resolve(__dirname, "..", "dist");
+// The server runs from `server/dist/index.js`, so the built Vite SPA (`dist/` at
+// the project root, per vite.config `outDir`) is two levels up: server/dist -> server -> root -> dist.
+const distDir = path.resolve(__dirname, "..", "..", "dist");
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);

@@ -60,3 +60,15 @@ def test_server_index_has_health_check():
     src = (ROOT / "server" / "index.ts").read_text()
     assert "app.post" in src or "app.post(" in src
     assert "'/'" in src or '"/"' in src
+
+
+def test_server_index_is_runtime_valid():
+    """Guard the two runtime bugs an npm/type check wouldn't catch: ESM (`"type":
+    "module"`) needs explicit `.js` import extensions, and the built SPA lives at
+    the project-root `dist/` (two levels up from `server/dist/index.js`)."""
+    src = (ROOT / "server" / "index.ts").read_text()
+    # ESM import must carry the .js extension (Node refuses extensionless in ESM).
+    assert 'from "./agnesQuery.js"' in src, "ESM import needs the .js extension"
+    assert 'from "./agnesQuery"' not in src.replace('from "./agnesQuery.js"', "")
+    # Static dir must point at the root-level Vite dist, not server/dist.
+    assert '"..", "..", "dist"' in src, "distDir must resolve to the project-root dist/"
