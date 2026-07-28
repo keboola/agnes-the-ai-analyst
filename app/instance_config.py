@@ -825,6 +825,21 @@ def get_corporate_memory_config() -> dict:
     return get_value("corporate_memory", default={})
 
 
+# Defaults backfilled when the feature is enabled via the AGNES_DATA_APPS_ENABLED
+# env override but instance.yaml carries no ``data_apps:`` block — mirror
+# config/instance.yaml.example so downstream spec-builders (which read
+# ``default_sleep_mode``/``default_mem_limit``/… by key) don't KeyError.
+_DATA_APPS_ENV_DEFAULTS = {
+    "runtime_image": "keboolapublic.azurecr.io/data-app-python-js:1.6.2_python-3.13_node-24",
+    "subdomain_base": "",
+    "default_idle_timeout_s": 1800,
+    "default_sleep_mode": "recreate",
+    "default_mem_limit": "1g",
+    "default_cpus": 1.0,
+    "max_apps_per_user": 3,
+}
+
+
 def get_data_apps_config() -> dict:
     """``data_apps:`` block — hosted user web apps feature (v96).
 
@@ -836,8 +851,25 @@ def get_data_apps_config() -> dict:
     (``app/data_apps_subdomain.py``) and ``session_cookie_domain()`` below
     (itself called from every login flow), so callers should never need
     their own ``(get_data_apps_config() or {})`` guard.
+
+    ``AGNES_DATA_APPS_ENABLED`` env override (Terraform-friendly, mirrors
+    :func:`get_home_route` / :func:`get_public_url`): the customer-instance
+    module flips the feature on by setting this in ``.env`` — alongside the
+    apps-runner token, ``DOCKER_GID`` and ``COMPOSE_PROFILES=apps`` — instead
+    of editing the instance.yaml overlay on disk. Only takes effect when the
+    var is truthy, so instances without it are byte-for-byte unchanged; the
+    example-config defaults are backfilled for any key instance.yaml omits so
+    the spec-builders have a complete block. ``runtime_image`` can be further
+    pinned with ``AGNES_DATA_APPS_RUNTIME_IMAGE``.
     """
-    return get_value("data_apps", default={}) or {}
+    cfg = dict(get_value("data_apps", default={}) or {})
+    raw = os.environ.get("AGNES_DATA_APPS_ENABLED")
+    if raw is not None and raw.strip().lower() in ("1", "true", "yes", "on"):
+        cfg = {**_DATA_APPS_ENV_DEFAULTS, **cfg, "enabled": True}
+        env_image = os.environ.get("AGNES_DATA_APPS_RUNTIME_IMAGE")
+        if env_image:
+            cfg["runtime_image"] = env_image
+    return cfg
 
 
 def session_cookie_domain() -> Optional[str]:
