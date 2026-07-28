@@ -16,6 +16,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- The `/me/connections` page (connect your own accounts for `per_user` MCP
+  sources) is now reachable from the user dropdown menu ("My connections").
+  It shipped in #919 but was never wired into the header, so users could
+  only reach it by typing the URL.
+
 ### Removed
 
 ### Internal
