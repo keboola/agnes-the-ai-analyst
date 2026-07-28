@@ -532,6 +532,16 @@ end via MCP tools and the ai-kit `dataapp-development` skill — see
 
 #### AI authoring — marketplace registration (Path D)
 
+**The authoring flow.** With the plugin registered (below), a chat conversation
+builds a hosted data app end-to-end without shell access: the bundled
+`agnes-data-apps-extras` skill (ships in every chat sandbox, loads alongside the
+upstream `dataapp-development` skill) copies the baked `nodejs-dashboard`
+scaffold onto a draft branch, `data_app_deploy(mode=dev)` boots it, and the
+`agnes_data_app_preview` tool shows it live in a split-pane iframe (authorized by
+a short-TTL scoped preview grant). On approval the agent merges the draft into
+`main` and redeploys prod. The two most expensive pieces — the general authoring
+knowledge and the templates — are reused from `dataapp-developer`, not rewritten.
+
 The in-chat AI-authoring loop (scaffold → draft → preview → promote) leans on
 the upstream, source-available `dataapp-developer` plugin from
 [`keboola/ai-kit`](https://github.com/keboola/ai-kit) — the shared,
