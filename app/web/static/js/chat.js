@@ -621,6 +621,15 @@ function handleFrame(frame) {
         handlePreviewDirective(frame.result);
         break;
       }
+      // A preview tool whose result isn't a directive (a raised error, or the
+      // friendly `data_apps_disabled` payload) would otherwise leave the
+      // placeholder spinner running forever — its tool_call start was
+      // suppressed, so renderToolCallEnd has no card to finish. Surface it in
+      // the pane instead.
+      if (_isPreviewTool(frame.tool)) {
+        _previewPaneError(frame.result);
+        break;
+      }
       renderToolCallEnd(frame);
       break;
     case "assistant_message":
@@ -1666,6 +1675,26 @@ async function _installPreviewCookie(slug) {
   } catch (err) {
     console.warn("could not obtain preview cookie", err);
   }
+}
+
+/** Replace the placeholder spinner with an error message when a preview tool
+ *  fails or the feature is disabled — so the pane never spins indefinitely.
+ *  No-op if no pane is open. */
+function _previewPaneError(result) {
+  if (!previewPaneEl) return;
+  const placeholder = previewPaneEl.querySelector(".cloud-chat-preview-placeholder");
+  if (!placeholder) return;
+  let msg = "Preview unavailable.";
+  if (result && typeof result === "object") {
+    msg = result.message || (result.error ? String(result.error) : msg);
+  }
+  placeholder.innerHTML = "";
+  const p = document.createElement("p");
+  p.className = "cloud-chat-preview-error";
+  p.textContent = msg;
+  placeholder.appendChild(p);
+  placeholder.hidden = false;
+  if (previewIframeEl) previewIframeEl.hidden = true;
 }
 
 async function renderDataAppPreview(directive) {

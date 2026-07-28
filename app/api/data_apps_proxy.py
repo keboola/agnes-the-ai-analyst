@@ -424,7 +424,11 @@ async def proxy_app(slug: str, path: str, request: Request, conn=Depends(_get_db
     """
     _feature_gate()
     row = _get_row_or_404(slug)
-    user, via_preview = _resolve_proxy_caller(request, slug, conn)
+    # Off the event loop: _resolve_proxy_caller does DB-backed auth
+    # (get_current_user + resolve_token_to_user), which would otherwise
+    # serialize every proxied request behind one blocking lookup (503s under
+    # load on Postgres) — same run_in_threadpool discipline as the runner calls.
+    user, via_preview = await run_in_threadpool(_resolve_proxy_caller, request, slug, conn)
     if user is None:
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     if not via_preview and not _can_view(user, row):
