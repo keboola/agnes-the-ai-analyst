@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.7] - 2026-07-28
+
+### Added
+
 - `usage_session_summary.uploaded_at` (schema v105): sessions record when
   they ARRIVED, not just when they started. The health pulse gains a
   `session_ingest` field reconciling `session.upload` audit rows against
