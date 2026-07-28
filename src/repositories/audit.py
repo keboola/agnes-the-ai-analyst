@@ -7,7 +7,7 @@ from typing import Any, Optional, List, Dict
 
 import duckdb
 
-from src.audit_helpers import AUDIT_SOURCE_CASE_SQL
+from src.audit_helpers import AUDIT_SOURCE_CASE_SQL, SCHEDULER_ACTION_SQL
 
 
 class AuditRepository:
@@ -303,7 +303,7 @@ class AuditRepository:
         Activity Center health pulse's "scheduler" freshness field
         (``app/api/activity.py`` ``_compute_health``)."""
         row = self.conn.execute(
-            "SELECT MAX(timestamp) FROM audit_log WHERE action LIKE 'run_%' OR action='marketplace.sync_all'"
+            f"SELECT MAX(timestamp) FROM audit_log WHERE {SCHEDULER_ACTION_SQL}"
         ).fetchone()
         return row[0] if row else None
 
