@@ -804,6 +804,14 @@ html[data-ui-layout="rail"] .cloud-chat-journey-step.locked:hover {
         align-items: center;
         border-right: none;
         border-bottom: 1px solid var(--ds-border);
+        /* The base rule sets `overflow: visible` so the Studio hover flyout can
+           escape the fixed column's right edge — harmless there since the rail
+           IS the viewport-height column. In this row layout `.rail` is back in
+           normal document flow, so unconstrained overflow drags the whole page
+           horizontally (most visibly when the tour scrolls a nav item into
+           view). Cap the bar's own width and let it scroll internally instead. */
+        max-width: 100%;
+        overflow-x: auto;
     }
 
     html[data-ui-layout="rail"] .rail-nav {

@@ -55,6 +55,20 @@
   outline: none;
 }
 
+/* A z-index on `.tour-spotlight` only outranks the scrim (9000) if the
+   spotlighted element is NOT inside another positioned ancestor with its own
+   z-index — e.g. the rail (`position: fixed; z-index: 40`, rail.css). Such an
+   ancestor creates its own stacking context, and `.tour-spotlight`'s 9010 is
+   then resolved INSIDE that context (painted at the ancestor's z-index, 40),
+   never against the root-level scrim. tour.js walks up from the anchor to
+   find that ancestor and adds this class for the step's duration, promoting
+   the whole context to just above the scrim (9000 < 9011 < the popover's
+   9020, so the popover still renders on top of everything). Removed when the
+   step ends — the rail's normal z-index: 40 is otherwise untouched. */
+.tour-lifts-ancestor {
+  z-index: 9011 !important;
+}
+
 /* ── Popover ─────────────────────────────────────────────────────────────────
    role="dialog" aria-modal="false". Sits above scrim + spotlight.
    pointer-events:auto so only the popover captures interactions. */
