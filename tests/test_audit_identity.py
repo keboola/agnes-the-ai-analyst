@@ -81,3 +81,49 @@ def test_write_audit_caches_email_resolution(monkeypatch):
     chat_audit.write_audit(user_email="a@b.c", action="chat.x", details={})
     chat_audit.write_audit(user_email="a@b.c", action="chat.y", details={})
     assert calls["n"] == 1
+
+
+class TestRunWritersStampClientKind:
+    def test_run_session_processor_audit_row_carries_client_kind(self, seeded_app):
+        """run_* scheduler-tick writers must classify their source — a JWT
+        admin trigger stamps 'web'; NULL client_kind lands the row in the
+        'other' facet bucket (the pre-fix bug)."""
+        from unittest.mock import patch
+
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        from services.session_processors import _build_registry
+
+        _build_registry.cache_clear()
+        fake_stats = {
+            "processor": "usage",
+            "scanned": 0,
+            "processed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "items_extracted": 0,
+            "errors_detail": [],
+        }
+        with patch(
+            "services.session_pipeline.runner.run_processor",
+            return_value=fake_stats,
+        ):
+            resp = c.post(
+                "/api/admin/run-session-processor?processor=usage",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200, resp.text
+
+        conn = get_system_db()
+        try:
+            row = conn.execute(
+                "SELECT client_kind FROM audit_log "
+                "WHERE action = 'run_session_processor:usage' "
+                "ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] == "web"
