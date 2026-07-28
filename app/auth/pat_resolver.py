@@ -174,6 +174,38 @@ def resolve_token_to_user(
             )
             _stash_payload(request, payload)
             return principal, None
+
+        if typ == "agent_session":
+            # V1d: session -> agent_id -> agent row -> owner -> AgentPrincipal.
+            # Fail closed on every missing link — a token that decodes fine
+            # but names a session/agent/owner that no longer resolves must
+            # never fall through to the owner-identity path below.
+            from src.repositories import agents_repo, users_repo
+            from src.agent_scope_intersection import compute_agent_intersection
+            from app.auth.session_principal import AgentPrincipal
+
+            session = chat_session_repo().get_session(co_session_id)
+            if session is None:
+                return None, "invalid_token"
+            agent_id = getattr(session, "agent_id", None)
+            if not agent_id:
+                return None, "invalid_token"
+            agent = agents_repo().get_by_id(agent_id)
+            if not agent or agent.get("deleted_at") is not None:
+                return None, "invalid_token"
+            owner = users_repo().get_by_id(agent.get("owner_user_id") or "")
+            if not owner:
+                return None, "invalid_token"
+            agent_principal = AgentPrincipal(
+                session_id=co_session_id,
+                agent_id=agent_id,
+                owner_user_id=owner["id"],
+                owner_email=owner["email"],
+                intersection=compute_agent_intersection(owner["id"], agent),
+            )
+            _stash_payload(request, payload)
+            return agent_principal, None
+
         # Defense-in-depth (SR-3): a plain single-user token that names a
         # co-session must never drive it, regardless of _spawn_runner.
         session = chat_session_repo().get_session(co_session_id)

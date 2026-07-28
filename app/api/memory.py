@@ -12,7 +12,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin, can_access, can_access_session
-from app.auth.session_principal import SessionPrincipal
+from app.auth.session_principal import PRINCIPAL_TYPES
 
 from src.repositories import (
     audit_repo,
@@ -83,10 +83,11 @@ def _is_privileged_viewer(user, conn: duckdb.DuckDBPyConnection) -> bool:
     ``ResourceType.CORPORATE_MEMORY_ADMIN`` resource type and gate with
     ``require_resource_access`` instead of extending this helper.
 
-    A SessionPrincipal is NEVER a privileged viewer — co-sessions never
-    hold admin authority.
+    A restricted principal is NEVER a privileged viewer — neither a
+    co-session nor an agent-session holds admin authority, even when the
+    agent's owner is an admin.
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         return False
     user_id = user.get("id")
     if not user_id:
@@ -103,12 +104,13 @@ def _effective_groups(user, conn: duckdb.DuckDBPyConnection) -> Optional[List[st
     and the membership is now materialized in ``user_group_members`` with a
     ``source`` discriminator (admin / google_sync / system_seed).
 
-    For a SessionPrincipal the result is always a non-None list (never admin)
-    and audience-filtering is skipped (empty list → no audience filter applied,
-    which is safe because MEMORY_DOMAIN grants gate the actual domain access).
+    For a restricted principal the result is always a non-None list (never
+    admin) and audience-filtering is skipped (empty list → no audience filter
+    applied, which is safe because MEMORY_DOMAIN grants gate the actual domain
+    access).
     """
-    if isinstance(user, SessionPrincipal):
-        # Co-sessions are never admins; use no audience restriction
+    if isinstance(user, PRINCIPAL_TYPES):
+        # Restricted principals are never admins; use no audience restriction
         # (items are already filtered by granted_domains from the intersection).
         return []
     if _is_privileged_viewer(user, conn):
@@ -137,10 +139,10 @@ def _caller_granted_memory_domains(
     empty list when the caller has no grants — the SQL EXISTS-join collapses
     in that case, preserving pre-RBAC behaviour.
 
-    For a SessionPrincipal, returns the intersection's memory_domain set
-    (never None — co-sessions never receive admin god-mode).
+    For a restricted principal, returns the intersection's memory_domain set
+    (never None — no principal receives admin god-mode).
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         from app.resource_types import ResourceType
 
         return list(user.intersection.get(ResourceType.MEMORY_DOMAIN.value, frozenset()))
@@ -1546,7 +1548,7 @@ def _build_per_domain_markdown(slug: str, user: dict, conn: duckdb.DuckDBPyConne
     dom = repo.get_by_slug(slug)
     if not dom:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         allowed = can_access_session(user, "memory_domain", dom["id"])
     else:
         allowed = can_access(user["id"], "memory_domain", dom["id"], conn)
@@ -1637,9 +1639,10 @@ async def get_bundle(
     # items are exempted by the EXISTS subquery's status guard inside
     # ``list_items``; the user's dismissal row for a then-approved item is
     # silently ignored if/when the item is later mandated.
-    # A SessionPrincipal has no dict .get("id"); use None so no user-specific
-    # dismissal is applied (co-sessions don't track per-user dismissals).
-    dismissed_by_user_id = None if isinstance(user, SessionPrincipal) else user["id"]
+    # A Principal has no dict .get("id"); use None so no user-specific
+    # dismissal is applied (neither co-sessions nor agent sessions track
+    # per-user dismissals).
+    dismissed_by_user_id = None if isinstance(user, PRINCIPAL_TYPES) else user["id"]
     # v49: Required tier rides on is_required boolean. Was statuses=['mandatory'].
     mandatory = repo.list_items(
         is_required=True,

@@ -364,27 +364,73 @@ No new runtime. The API is a new ChatManager surface (`"api"` added to the
 `Surface` enum — review the WEB-only stale-session dedupe branch in
 `create_session` and per-surface telemetry when adding it).
 
-**Scope enforcement is NOT a spawn-time materialization** (correcting
-revision 1). What a session can reach is controlled at three live seams, and
-per-agent subsetting threads the agent identity through each:
+> **V1d note (2026-07-25).** V1a–V1c shipped the *computation* of an agent's
+> effective scope (`agents.*_mode` columns + `agent_scope` rows +
+> `compute_effective_scope` + `agent_scope_snapshots` as an audit trail) but
+> — despite this section's original claim — did **not** enforce it: the
+> broker minted every brokered request under the owner's full identity
+> regardless of agent scope, so a `'selected'`-scoped agent's PAT could
+> reach its owner's entire table/plugin/connection surface. This was the
+> HIGH finding from the V1 `/agnes-review`. **V1d** (design:
+> [`2026-07-25-agent-scope-live-enforcement-design.md`](2026-07-25-agent-scope-live-enforcement-design.md))
+> closed it by routing agent-scoped sessions through the same restricted-
+> principal choke point co-sessions already used. The rest of this section
+> is rewritten to describe what V1d actually built — the original
+> (unimplemented) per-seam "sandbox threads `agent_id` through its own JWT"
+> design this section used to describe is gone; see the design doc linked
+> above for that history if needed.
 
-1. **Plugins/skills**: the sandbox installs plugins itself by calling the
-   marketplace channel through the broker under a broker-minted JWT.
-   That JWT gains the session's `agent_id`; marketplace resolution
-   (`resolve_user_marketplace`) applies (owner grants ∩ agent plugin scope)
-   when the agent's `plugins_mode='selected'`.
-2. **Connections (MCP tools)**: server-side MCP tool resolution filters by
-   the same intersection at request time.
-3. **Tables/data**: the broker's in-process replay re-authenticates every
-   request against live RBAC; the minted identity carries `agent_id` and the
-   grant check intersects with agent table scope.
+**Scope enforcement is NOT a spawn-time materialization.** What a session
+can reach is controlled at three live seams, all keyed off a single
+`AgentPrincipal` the broker mints and the resolver rebuilds fresh on every
+request:
 
-Because all three seams re-evaluate on every request, "recompute at each
-message boundary" is pinned to this mechanism (plus the per-message HTTP
-endpoints of the new surface) — not to a connect-time check that goes stale.
-`agent_scope_snapshots` records the effective scope at spawn and appends a row
-whenever a recompute yields a different result, so the audit trail answers
-"what could this run see, when" precisely.
+- `app/api/broker.py::_mint_identity_jwt` mints an `agent_session` JWT
+  (`mint_agent_session_jwt`) for a solo session bound to an agent that
+  actually narrows something (any of its four `*_mode` columns is
+  `'selected'`). Like the co-session JWT, it carries **no baked-in
+  grants** — a synthetic `sub=f"agent-session:{session_id}"`, nothing else
+  identity-bearing. A session bound to the default all-`'all'` agent (or no
+  agent at all) keeps today's plain owner-identity JWT — the two paths are
+  authority-identical, so this is purely a fast path, not a security
+  exception.
+- `app/auth/pat_resolver.py` resolves `typ="agent_session"` by looking up
+  the session → its `agent_id` → the agent row → the owner, then returns an
+  `AgentPrincipal(intersection=compute_agent_intersection(owner_id,
+  agent_row))` (`src/agent_scope_intersection.py`) — **recomputed live, per
+  request**, from current grants and current scope rows. Revoking a grant or
+  narrowing the agent takes effect on the very next request; there is no
+  stale-replay window because nothing authorization-relevant was ever baked
+  into the token.
+- The three seams each branch on `isinstance(user, PRINCIPAL_TYPES)`
+  (`SessionPrincipal | AgentPrincipal`) and substitute the intersection for
+  the owner's full grant set:
+  1. **Tables/data** — `src/rbac.py::get_accessible_tables` /
+     `can_access_table` return the intersection's `TABLE` set (plus internal
+     tables); every `/api/query`, catalog, and data-read caller inherits
+     this for free.
+  2. **Plugins/skills** — `src/marketplace_filter.py::resolve_user_marketplace`
+     filters admin-curated grants to `intersection[MARKETPLACE_PLUGIN]`; a
+     user's personal Store installs live outside `resource_grants` entirely
+     (`user_store_installs`), so they are filtered separately via
+     `agent_scope_filter(item_type='plugin')` when `plugins_mode` narrows.
+  3. **Connections (MCP tools)** — server-side MCP tool resolution keeps
+     only tools whose source id is in the agent's `connection` scope rows
+     when `connections_mode='selected'` (`agent_scope_filter`); this axis
+     has no `ResourceType`, so it is filtered at its own seam rather than
+     through the intersection map.
+- **`require_admin` hard-denies any `AgentPrincipal` before any
+  `is_user_admin` lookup** — an agent never inherits its owner's admin
+  authority, even when the owner is an admin. This is the single most
+  important line in the whole change.
+
+Because all three seams re-evaluate on every request against a freshly
+rebuilt intersection, "recompute at each message boundary" holds for the
+per-message HTTP endpoints of this surface too — not just spawn.
+`agent_scope_snapshots` still records the effective scope at spawn time (and
+appends a row whenever a recompute yields a different result); as of V1d
+that snapshot describes what is actually enforced, not merely what was
+computed.
 
 Spawn-time materialization still covers what it covers today: persona
 CLAUDE.md + agent-memory notebook + corporate-memory bundle (domain-filtered).
@@ -409,7 +455,10 @@ Latency:
 
 - **Agent ⊆ owner** enforced live at the three seams of §4 plus at every
   broker LLM call; a grant revoked mid-session stops applying at the next
-  request the session makes anywhere.
+  request the session makes anywhere. Shipped by V1d (see the note in §4) —
+  never confers admin authority: an `AgentPrincipal` is hard-denied by
+  `require_admin` before any `is_user_admin` lookup, even when its owner is
+  an admin.
 - **Agent-PAT hygiene**: JWT `typ="agent_pat"` + `agent_id` claim, secret
   shown once, `expires_at` / `last_used_at`, hard-rejected on management
   endpoints and every non-agent-API surface (including git smart-HTTP and
@@ -458,6 +507,20 @@ structured output + usage endpoint + CLI/MCP parity.
 **V1c — memory + terminal**: `agent_memories` (propose/auto/off) + builder
 memory UI + `agnes chat` terminal thin client over the public API (no
 privileged backchannel).
+
+**V1d — live scope enforcement** (added 2026-07-25, unplanned in the
+original phasing above): V1a–V1c shipped the *computation* of agent scope
+(the `*_mode` columns, `agent_scope` rows, and the `agent_scope_snapshots`
+audit trail) but not its *enforcement* — every brokered request still ran
+under the owner's full identity regardless of agent scope, the HIGH finding
+from the V1 `/agnes-review`. V1d added `AgentPrincipal` (a restricted
+principal sibling of the co-session `SessionPrincipal`),
+`compute_agent_intersection` (fail-closed owner-grants ∩ agent-scope), the
+broker's `agent_session` JWT branch, and widened the tables/marketplace/MCP
+seams (plus `require_admin`) to honor it — see the design doc linked in the
+§4 note; the end-to-end proof that a scoped agent is actually denied (and
+its owner isn't) lives in `tests/test_agent_scope_e2e.py`. This is the
+deliverable that makes the "Agent ⊆ owner" invariant in §5 actually true.
 
 **V1.1**: SSE resume (`Last-Event-ID`), usage dashboards polish.
 

@@ -11,7 +11,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
-from src.audit_helpers import client_kind_from_user
+from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.identifier_validation import _SAFE_QUOTED_IDENTIFIER
 from src.rbac import can_access_table
 
@@ -87,7 +87,7 @@ async def check_access(
     if not _SAFE_QUOTED_IDENTIFIER.match(table_id):
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="data.access_check",
                 resource=resource,
                 params={"granted": False,
@@ -102,7 +102,7 @@ async def check_access(
     granted = can_access_table(user, table_id, conn)
     try:
         audit_repo().log(
-            user_id=user.get("id"),
+            user_id=identity_for_audit(user)[0],
             action="data.access_check",
             resource=resource,
             params={
@@ -187,7 +187,7 @@ async def download_table(
         audit_params["part"] = part
     try:
         audit_repo().log(
-            user_id=user.get("id"),
+            user_id=identity_for_audit(user)[0],
             action="data.download",
             resource=f"table:{table_id}"[:256],
             params=audit_params,
