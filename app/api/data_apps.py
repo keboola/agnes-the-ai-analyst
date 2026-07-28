@@ -483,9 +483,13 @@ _PREVIEW_COOKIE_NAME = "adp_preview"
 _PREVIEW_TOKEN_TTL_S = 1800
 
 
-def _mint_preview_token(row: dict, *, ttl_s: int = _PREVIEW_TOKEN_TTL_S) -> tuple[str, str]:
-    """Mint a short-TTL `data-app-preview:<slug>` scoped token for this app's
-    owner and return `(jwt, set_cookie_header)`.
+def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOKEN_TTL_S) -> tuple[str, str]:
+    """Mint a short-TTL `data-app-preview:<slug>` scoped token for the
+    ``requester`` (the RBAC-approved caller who asked for the grant — owner,
+    Admin, or a granted viewer, NOT necessarily the app owner) and return
+    `(jwt, set_cookie_header)`. Minting under the caller — not the app owner —
+    is what lets the SessionEnd revoke (keyed on the chat session's user) find
+    and tear down the grant, and keeps proxy-side attribution honest.
 
     Migration-free by design (Q4): reuses the existing `access_tokens` table
     (`scopes`/`expires_at` already exist) rather than adding TTL state to the
@@ -504,16 +508,13 @@ def _mint_preview_token(row: dict, *, ttl_s: int = _PREVIEW_TOKEN_TTL_S) -> tupl
     the iframe navigation that sends it is a plain top-level-adjacent GET,
     not a cross-site POST.
     """
-    owner = users_repo().get_by_id(row["owner_user_id"])
-    if not owner:
-        raise OwnerNotFoundError(row["owner_user_id"])
     slug = row["slug"]
     token_id = str(uuid.uuid4())
     ttl = timedelta(seconds=ttl_s)
     expires_at = datetime.now(timezone.utc) + ttl
     jwt_token = create_access_token(
-        user_id=owner["id"],
-        email=owner["email"],
+        user_id=requester["id"],
+        email=requester["email"],
         token_id=token_id,
         typ="pat",
         expires_delta=ttl,
@@ -521,7 +522,7 @@ def _mint_preview_token(row: dict, *, ttl_s: int = _PREVIEW_TOKEN_TTL_S) -> tupl
     )
     access_token_repo().create(
         id=token_id,
-        user_id=owner["id"],
+        user_id=requester["id"],
         name=f"{DATA_APP_PREVIEW_SCOPE_PREFIX}{slug}",
         token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
         prefix=token_id.replace("-", "")[:8],
@@ -935,10 +936,7 @@ async def create_preview_grant(
     row = _get_row_or_404(slug)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
-    try:
-        _token, cookie = _mint_preview_token(row)
-    except OwnerNotFoundError:
-        raise HTTPException(status_code=500, detail="owner_not_found")
+    _token, cookie = _mint_preview_token(row, user)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
     _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
     return {"preview_cookie": cookie, "expires_at": expires_at.isoformat()}
