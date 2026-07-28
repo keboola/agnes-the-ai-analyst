@@ -60,9 +60,19 @@ def _require_source_grant(source_id: str, user: dict) -> None:
     user can only read or manage their own credential for a source they're
     actually entitled to use — an ungranted caller can't probe an arbitrary
     source's existence / scope / connection timestamp, nor store a token
-    against it."""
-    from app.api.mcp_passthrough import _visible_passthrough_tools
+    against it.
 
+    Admins short-circuit unconditionally — NOT via ``_visible_passthrough_tools``,
+    whose admin path lists sources through their registered passthrough tools.
+    A freshly registered source has no tools until the first introspect, and the
+    register→connect-your-token→introspect flow needs the connect step to work
+    exactly then (the admin connect probes run under the admin's own credential
+    for per_user sources)."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+    from app.api.mcp_policy import caller_authority
+
+    if caller_authority(user).is_admin:
+        return
     granted_source_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
     if source_id not in granted_source_ids:
         raise HTTPException(status_code=403, detail="not_granted")
