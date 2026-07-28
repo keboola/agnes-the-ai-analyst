@@ -53,6 +53,8 @@
 
 /* Card primitive — hairline border, no shadow, soft radius */
 .aic-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; padding: 24px; }
+/* Section divider inside a card (hairline between numbered steps) */
+.aic-card-divider { height: 1px; background: var(--ds-border); margin: 24px 0; }
 
 /* ── Connector URL ───────────────────────────────────────────────── */
 .aic-url-box { display: flex; align-items: center; gap: 16px; background: var(--ds-surface-sunken, var(--ds-surface-dim)); border: 1px solid var(--ds-border); border-radius: 12px; padding: 15px 16px; }
@@ -70,6 +72,50 @@
 .aic-tab img { width: 17px; height: 17px; }
 .aic-panel { display: none; }
 .aic-panel.is-active { display: block; }
+
+/* ── Tabbed surface — MCP vs CLI (tabs are the card header) ──────── */
+.aic-modecard { border: 1px solid var(--ds-border); border-radius: 14px; background: var(--ds-surface); overflow: hidden; }
+.aic-mode-tabs { display: flex; border-bottom: 1px solid var(--ds-border); background: var(--ds-surface-dim); }
+.aic-mode-tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 13px 16px; border: 0; background: transparent; cursor: pointer; color: var(--ds-text-secondary); transition: background var(--ds-motion-fast, .12s) var(--ds-ease-standard, ease), color var(--ds-motion-fast, .12s) var(--ds-ease-standard, ease); }
+.aic-mode-tab + .aic-mode-tab { border-left: 1px solid var(--ds-border); }
+.aic-mode-tab-label { font-size: 14.5px; font-weight: 600; }
+.aic-mode-tab-sub { font-size: 12px; font-weight: 500; color: var(--ds-text-muted); }
+.aic-mode-tab:hover { color: var(--ds-text-primary); background: var(--ds-surface); }
+.aic-mode-tab.is-active, .aic-mode-tab.is-active:hover { background: var(--ds-primary); color: #fff; }
+.aic-mode-tab.is-active .aic-mode-tab-label { color: #fff; }
+.aic-mode-tab.is-active .aic-mode-tab-sub { color: rgba(255,255,255,.82); }
+.aic-mode-tab:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: -2px; }
+.aic-mode-panel { display: none; flex-direction: column; gap: 24px; padding: 24px; }
+.aic-mode-panel.is-active { display: flex; }
+/* Inside the tabbed card the card owns the border, so inner sections sit flat;
+   the beginner tutorial keeps its own border as a distinct nested block. */
+.aic-mode-panel > .aic-card:not(.aic-tut) { border: 0; border-radius: 0; padding: 0; background: transparent; }
+
+/* ── Beginner tutorial (collapsed) — install Claude Code first ────── */
+.aic-tut > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 34px 1fr 20px; gap: 13px; align-items: center; }
+.aic-tut > summary::-webkit-details-marker { display: none; }
+.aic-tut > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 3px; border-radius: 8px; }
+.aic-tut-sum-icon { width: 34px; height: 34px; border-radius: 9px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); display: flex; align-items: center; justify-content: center; color: var(--ds-primary); }
+.aic-tut-body { margin-top: 20px; }
+/* OS toggle — one segmented control; choice applies to every step via [data-os] */
+.aic-tut-os { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--ds-border); border-radius: 10px; background: var(--ds-surface-dim); margin-bottom: 16px; }
+.aic-tut-os-btn { border: 0; border-radius: 7px; background: transparent; cursor: pointer; padding: 6px 12px; font-size: 12.5px; font-weight: 500; color: var(--ds-text-secondary); }
+.aic-tut-os-btn:hover { color: var(--ds-text-primary); }
+.aic-tut-os-btn.is-active { background: var(--ds-surface); color: var(--ds-primary); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.aic-tut-os-btn:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+/* CSS-driven OS switch: hide the command block that doesn't match the toggle */
+.aic-tut[data-os="unix"] .aic-term[data-os="windows"],
+.aic-tut[data-os="windows"] .aic-term[data-os="unix"] { display: none; }
+/* Step tabs */
+.aic-step-tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--ds-border); border-radius: 11px; background: var(--ds-surface-dim); margin-bottom: 20px; overflow-x: auto; }
+.aic-step-tab { display: flex; align-items: center; gap: 8px; padding: 8px 13px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--ds-text-secondary); white-space: nowrap; }
+.aic-step-tab:hover { color: var(--ds-text-primary); }
+.aic-step-tab-num { display: flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: var(--ds-surface); border: 1px solid var(--ds-border); font-size: 11px; font-weight: 700; color: var(--ds-text-muted); }
+.aic-step-tab.is-active { background: var(--ds-surface); color: var(--ds-primary); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.aic-step-tab.is-active .aic-step-tab-num { background: var(--ds-primary); border-color: var(--ds-primary); color: #fff; }
+.aic-step-tab:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+.aic-step-panel { display: none; }
+.aic-step-panel.is-active { display: block; }
 
 /* Sub-section — decorative icon gutter + content; tight, grouped rhythm */
 .aic-sub { display: grid; grid-template-columns: 34px 1fr; gap: 14px; }
@@ -109,6 +155,39 @@
 
 .aic-code { font-family: var(--ds-font-mono, monospace); font-size: 12.5px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: 6px; padding: 1px 6px; }
 .aic-prompt { margin-top: 10px; font-family: var(--ds-font-mono, monospace); font-size: 13px; color: var(--ds-text-primary); background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: 8px; padding: 10px 12px; }
+
+/* ── CLI quick-install — one-click token → clipboard ─────────────── */
+.aic-oneclick { display: inline-flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 14px; font-weight: 600; color: #fff; background: var(--ds-primary); border: 0; border-radius: 9px; padding: 11px 20px; cursor: pointer; transition: background var(--ds-motion-fast, .15s) var(--ds-ease-standard, ease), transform var(--ds-motion-fast, .15s) var(--ds-ease-standard, ease); }
+.aic-oneclick .ui-ico { color: currentColor; }
+.aic-oneclick:hover { background: var(--ds-primary-dark, var(--ds-primary)); transform: translateY(-1px); }
+.aic-oneclick[disabled] { opacity: .7; cursor: wait; transform: none; }
+.aic-oneclick.copied { background: var(--ds-primary-dark, var(--ds-primary)); }
+.aic-oneclick:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; }
+.aic-oneclick-note { font-size: 12.5px; color: var(--ds-text-muted); margin: 8px 0 0; }
+.aic-oneclick-error { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--ds-accent-warn-line, var(--ds-border)); border-left-width: 3px; border-radius: 8px; background: var(--ds-accent-warn-bg, var(--ds-surface-dim)); color: var(--ds-accent-warn-ink, var(--ds-text-primary)); font-size: 13px; }
+
+/* Collapsible preview / manual aside — shared summary affordance */
+.aic-preview { margin-top: 14px; }
+.aic-preview > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ds-text-secondary); user-select: none; }
+.aic-preview > summary::-webkit-details-marker { display: none; }
+.aic-preview > summary:hover { color: var(--ds-text-primary); }
+.aic-preview > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; border-radius: 6px; }
+.aic-preview-sub { font-size: 12.5px; color: var(--ds-text-muted); margin: 10px 0; line-height: 1.5; }
+
+/* Read-only setup-script preview — markup emitted by _claude_setup_instructions.jinja */
+.setup-preview-pre { margin: 10px 0 0; padding: 14px 16px; border-radius: 10px; max-height: 360px; overflow: auto; background: var(--ds-hero-bg, #14181f); color: var(--ds-hero-ink, #e6e9ee); font-family: var(--ds-font-mono, monospace); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.setup-preview-code { font-family: inherit; font-size: inherit; }
+.setup-preview-pre .placeholder-token { background: rgba(249, 226, 175, .14); color: #f9e2af; padding: 0 4px; border-radius: 3px; font-style: italic; }
+
+/* Clipboard-blocked fallback modal — built in JS */
+.setup-fallback-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); }
+.setup-fallback-modal { display: flex; flex-direction: column; gap: 12px; width: calc(100% - 32px); max-width: 720px; max-height: calc(100vh - 64px); padding: 20px; border-radius: 14px; background: var(--ds-surface); box-shadow: 0 20px 48px rgba(0,0,0,.3); }
+.setup-fallback-modal h4 { margin: 0; font-size: 15px; color: var(--ds-text-primary); }
+.setup-fallback-modal p { margin: 0; font-size: 13px; color: var(--ds-text-secondary); }
+.setup-fallback-modal textarea { flex: 1; min-height: 260px; padding: 10px; border: 1px solid var(--ds-border); border-radius: 8px; background: var(--ds-surface-dim); color: var(--ds-text-primary); font-family: var(--ds-font-mono, monospace); font-size: 12px; resize: vertical; }
+.setup-fallback-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.setup-fallback-actions button { padding: 8px 16px; border: 1px solid var(--ds-border); border-radius: 8px; background: var(--ds-surface); color: var(--ds-text-primary); font-size: 13px; font-weight: 500; cursor: pointer; }
+.setup-fallback-actions button.primary { background: var(--ds-primary); border-color: var(--ds-primary); color: #fff; }
 
 /* Shared collapsible chevron (rotates on open) */
 .aic-chev { flex-shrink: 0; color: var(--ds-text-muted); transition: transform var(--ds-motion-fast, .15s) var(--ds-ease-standard, ease); }
@@ -185,6 +264,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
 }
 @media (max-width: 640px) {
   .aic-card { padding: 18px; }
+  .aic-mode-panel { padding: 18px; }
 }
 </style>
 {% endblock %}
@@ -224,6 +304,22 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
       </div>
     </section>
 
+    {# ── Tabbed surface — MCP connector vs CLI (tabs = card header) ─ #}
+    <div class="aic-modecard">
+    <div class="aic-mode-tabs" role="tablist" aria-label="Choose how to connect">
+      <button type="button" class="aic-mode-tab is-active" id="aic-mode-mcp" role="tab" aria-selected="true" aria-controls="aic-mode-panel-mcp" data-mode="mcp">
+        <span class="aic-mode-tab-label">MCP</span>
+        <span class="aic-mode-tab-sub">Claude, Cursor, VS Code, ChatGPT…</span>
+      </button>
+      <button type="button" class="aic-mode-tab" id="aic-mode-cli" role="tab" aria-selected="false" aria-controls="aic-mode-panel-cli" data-mode="cli">
+        <span class="aic-mode-tab-label">CLI</span>
+        <span class="aic-mode-tab-sub">Terminal &amp; data agent</span>
+      </button>
+    </div>
+
+    {# ── MCP mode — connector URL + per-tool configuration ───────── #}
+    <div class="aic-mode-panel is-active" id="aic-mode-panel-mcp" role="tabpanel" aria-labelledby="aic-mode-mcp" data-mode-panel="mcp">
+
     {# ── Connector URL ───────────────────────────────────────────── #}
     <section class="aic-card" aria-label="Connector URL">
       <div class="aic-sec-head">
@@ -235,10 +331,9 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         <button type="button" class="btn btn-secondary btn-sm" id="aic-connector-copy">{{ ico.icon('doc', 14) }} Copy</button>
       </div>
       <p class="aic-url-note">{{ ico.icon('lock', 15) }} Keep this URL private. Anyone with it can connect to your {{ instance_brand }} workspace.</p>
-    </section>
 
-    {# ── Configure — one vertical flow per tool ──────────────────── #}
-    <section class="aic-card" aria-label="Configure your AI tool">
+      {# ── Configure — one vertical flow per tool (same card) ──────── #}
+      <div class="aic-card-divider"></div>
       <div class="aic-sec-head">
         <h2 class="aic-sec-title"><span class="aic-sec-num">2.</span>Configure your AI tool</h2>
         <p class="aic-sec-desc">Choose your tool to see setup instructions. Paste the connector URL above when prompted.</p>
@@ -251,7 +346,6 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="cursor"><img src="{{ static_url('img/tools/cursor.ico') }}" alt="" width="18" height="18"> Cursor</button>
         <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="vscode"><img src="{{ static_url('img/tools/vscode.ico') }}" alt="" width="18" height="18"> VS Code</button>
         <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="chatgpt">ChatGPT</button>
-        <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="cli">CLI</button>
       </div>
 
       {# ---------- Claude Code ---------- #}
@@ -487,14 +581,39 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         </div>
       </div>
 
-      {# ---------- CLI / Terminal ---------- #}
-      <div class="aic-panel" data-panel="cli" role="tabpanel">
+    </section>
+    </div>{# /.aic-mode-panel[mcp] #}
+
+    {# ── CLI mode — install the agnes CLI from a terminal ────────── #}
+    <div class="aic-mode-panel" id="aic-mode-panel-cli" role="tabpanel" aria-labelledby="aic-mode-cli" data-mode-panel="cli">
+      <section class="aic-card" aria-label="Set up the Agnes CLI">
+        <div class="aic-sec-head">
+          <h2 class="aic-sec-title"><span class="aic-sec-num">1.</span>Install the {{ instance_brand }} CLI on this machine</h2>
+          <p class="aic-sec-desc">Connect your terminal and Claude Code to {{ instance_brand }}. One click mints a 90-day token and copies a complete setup script to your clipboard — paste it into Claude Code to finish.</p>
+        </div>
         <div class="aic-sub">
           <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
           <div>
-            <h3 class="aic-sub-title">Install the CLI</h3>
+            <h3 class="aic-sub-title">Quick install</h3>
             <p class="aic-sub-desc">The <span class="aic-code">agnes</span> CLI runs {{ instance_brand }} from your terminal — query data with <span class="aic-code">agnes query</span>, sync parquets with <span class="aic-code">agnes pull</span>, and drive the local Claude Code data agent.</p>
-            <div class="aic-callout">{{ ico.icon('link', 16) }}<span><a href="/setup">Open the install page</a> — one click generates a personal access token and assembles the complete command (install · save token · verify). Copy it once and paste into your terminal.</span></div>
+            <button type="button" id="setupClaudeBtn" class="aic-oneclick" onclick="setupNewClaude(this)">{{ ico.icon('doc', 16) }} Set up a new Claude Code</button>
+            <p class="aic-oneclick-note">Valid 90 days · token stays in your clipboard only.</p>
+            <div id="setupClaudeError" class="aic-oneclick-error" role="alert" style="display:none;"></div>
+
+            <details class="aic-preview" aria-label="Preview of the clipboard payload">
+              <summary><span class="aic-chev">{{ ico.icon('chevron', 16) }}</span> What Claude Code will receive</summary>
+              <p class="aic-preview-sub">Read-only preview. The real token is generated when you click the button above and placed directly in your clipboard — it is never rendered on this page.</p>
+              {% with preview_mode=True %}{% include "_claude_setup_instructions.jinja" %}{% endwith %}
+            </details>
+
+            <details class="aic-preview" aria-label="Manual install for restricted environments">
+              <summary><span class="aic-chev">{{ ico.icon('chevron', 16) }}</span> Or run manually on a restricted environment</summary>
+              <div class="aic-term">
+                <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#cli-manual">{{ ico.icon('doc', 13) }} Copy</button></div>
+                <pre class="aic-term-body" id="cli-manual">curl -fsSL {{ server_url }}/cli/install.sh | bash</pre>
+              </div>
+              <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span>If <span class="aic-code">agnes</span> isn't found in a new shell, add <span class="aic-code">~/.local/bin</span> to your <span class="aic-code">PATH</span>.</span></div>
+            </details>
           </div>
         </div>
         <div class="aic-sub">
@@ -509,8 +628,81 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
             <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If your tables list, the CLI is connected to {{ instance_brand }}. One setup also covers the Claude Code app — they share config.</span></div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
+
+      {# ── Beginner tutorial — install Claude Code first (collapsed) ── #}
+      <details class="aic-card aic-tut" data-os="unix" aria-label="New to Claude Code? Set it up first">
+        <summary>
+          <span class="aic-tut-sum-icon">{{ ico.icon('sparkle', 18) }}</span>
+          <div>
+            <h2 class="aic-sec-title">Don't have Claude Code yet? Set it up first</h2>
+            <p class="aic-sec-desc" style="margin-top:6px;">A 3-step walkthrough for total beginners — install Claude Code, make a folder, open a terminal. Then use the button above.</p>
+          </div>
+          <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+        </summary>
+
+        <div class="aic-tut-body">
+          {# OS toggle — one choice applies across every step (CSS-driven) #}
+          <div class="aic-tut-os" role="tablist" aria-label="Operating system">
+            <button type="button" class="aic-tut-os-btn is-active" data-os="unix" aria-selected="true">macOS / Linux</button>
+            <button type="button" class="aic-tut-os-btn" data-os="windows" aria-selected="false">Windows (PowerShell)</button>
+          </div>
+
+          {# Step tabs #}
+          <div class="aic-step-tabs" role="tablist" aria-label="Setup steps">
+            <button type="button" class="aic-step-tab is-active" role="tab" aria-selected="true" data-step="1"><span class="aic-step-tab-num">1</span> Install Claude Code</button>
+            <button type="button" class="aic-step-tab" role="tab" aria-selected="false" data-step="2"><span class="aic-step-tab-num">2</span> Pick a folder</button>
+            <button type="button" class="aic-step-tab" role="tab" aria-selected="false" data-step="3"><span class="aic-step-tab-num">3</span> Open a terminal</button>
+          </div>
+
+          {# Step 1 — install Claude Code #}
+          <div class="aic-step-panel is-active" role="tabpanel" data-step="1">
+            <p class="aic-sub-desc">Claude Code is the CLI tool that runs Claude on your machine. {{ instance_brand_short }} plugs into it. <strong>~3&nbsp;min.</strong></p>
+            <div class="aic-term" data-os="unix">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#tut-claude-unix">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-claude-unix">curl -fsSL https://claude.ai/install.sh | bash</pre>
+            </div>
+            <div class="aic-term" data-os="windows">
+              <div class="aic-term-head"><span class="aic-term-file">PowerShell</span><button type="button" class="aic-term-copy" data-copy="#tut-claude-win">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-claude-win">irm https://claude.ai/install.ps1 | iex</pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span><strong>No terminal open yet?</strong> On macOS press <span class="aic-code">⌘ Space</span>, type <em>Terminal</em>, hit Enter. On Windows press <span class="aic-code">⊞</span>, type <em>PowerShell</em>, hit Enter.</span></div>
+            <p class="aic-sub-desc" style="margin-top:12px;">Once it finishes, verify with <span class="aic-code">claude --version</span>, then sign in with <span class="aic-code">claude</span> (one-time OAuth in your browser). No Claude license yet? <a href="/setup-advanced#claude-plan">Here's how to get one</a> (Pro / Max 5× / Max 20× / Enterprise).</p>
+          </div>
+
+          {# Step 2 — pick a folder #}
+          <div class="aic-step-panel" role="tabpanel" data-step="2">
+            <p class="aic-sub-desc">This is where {{ instance_brand_short }} — and all your AI projects — will live. <strong>~1&nbsp;min.</strong></p>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span><strong>Tip: put it on your Desktop.</strong> Easy to find in Finder/Explorer (<span class="aic-code">~/Desktop/{{ workspace_dir }}</span> on macOS, <span class="aic-code">%USERPROFILE%\Desktop\{{ workspace_dir }}</span> on Windows). Your home folder works too — the install runs anywhere.</span></div>
+            <div class="aic-term" data-os="unix">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#tut-mkdir-unix">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-mkdir-unix">mkdir -p ~/Desktop/{{ workspace_dir }} &amp;&amp; cd ~/Desktop/{{ workspace_dir }}</pre>
+            </div>
+            <div class="aic-term" data-os="windows">
+              <div class="aic-term-head"><span class="aic-term-file">PowerShell</span><button type="button" class="aic-term-copy" data-copy="#tut-mkdir-win">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-mkdir-win">New-Item -ItemType Directory -Force -Path "$HOME\Desktop\{{ workspace_dir }}" | Out-Null; Set-Location "$HOME\Desktop\{{ workspace_dir }}"</pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span><strong>What does <span class="aic-code">mkdir -p</span> do?</strong> It creates a folder (the <span class="aic-code">-p</span> means "don't complain if it already exists"). You'll now have an empty <span class="aic-code">{{ workspace_dir }}</span> folder on your Desktop.</span></div>
+          </div>
+
+          {# Step 3 — open a terminal in the folder #}
+          <div class="aic-step-panel" role="tabpanel" data-step="3">
+            <p class="aic-sub-desc">You need to "be in" the <span class="aic-code">{{ workspace_dir }}</span> folder before you launch Claude. The <span class="aic-code">cd</span> in step 2 already put you there — this is how to get back if you closed the terminal. <strong>~1&nbsp;min.</strong></p>
+            <div class="aic-term" data-os="unix">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#tut-cd-unix">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-cd-unix">cd ~/Desktop/{{ workspace_dir }}</pre>
+            </div>
+            <div class="aic-term" data-os="windows">
+              <div class="aic-term-head"><span class="aic-term-file">PowerShell</span><button type="button" class="aic-term-copy" data-copy="#tut-cd-win">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-cd-win">Set-Location "$HOME\Desktop\{{ workspace_dir }}"</pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span><strong>Prefer drag-and-drop?</strong> Type <span class="aic-code">cd</span> and a space, then drag the <span class="aic-code">{{ workspace_dir }}</span> folder onto the terminal window — it pastes the path. Hit Enter.</span></div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>You're set up. Now use <strong>Set up a new Claude Code</strong> at the top of this tab — paste the copied script into Claude and hit Enter.</span></div>
+          </div>
+        </div>
+      </details>
+    </div>{# /.aic-mode-panel[cli] #}
+    </div>{# /.aic-modecard #}
 
     {# ── Having trouble — collapsible support card, per-issue cards ─ #}
     <details class="aic-card aic-help" open aria-label="Troubleshooting">
@@ -696,6 +888,50 @@ Thanks!</pre>
     if (target) wireCopy(btn, function () { return target.textContent; });
   });
 
+  // ── Mode tabs — top-level MCP vs CLI switch ──────────────────────
+  var modeTabs = document.querySelectorAll('.aic-mode-tab');
+  var modePanels = document.querySelectorAll('.aic-mode-panel');
+  modeTabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var key = tab.getAttribute('data-mode');
+      modeTabs.forEach(function (t) {
+        var on = t === tab;
+        t.classList.toggle('is-active', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      modePanels.forEach(function (p) { p.classList.toggle('is-active', p.getAttribute('data-mode-panel') === key); });
+    });
+  });
+
+  // ── Beginner tutorial — step tabs + a shared OS toggle ───────────
+  document.querySelectorAll('.aic-tut').forEach(function (tut) {
+    var stepTabs = tut.querySelectorAll('.aic-step-tab');
+    var stepPanels = tut.querySelectorAll('.aic-step-panel');
+    stepTabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var step = tab.getAttribute('data-step');
+        stepTabs.forEach(function (t) {
+          var on = t === tab;
+          t.classList.toggle('is-active', on);
+          t.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        stepPanels.forEach(function (p) { p.classList.toggle('is-active', p.getAttribute('data-step') === step); });
+      });
+    });
+    var osBtns = tut.querySelectorAll('.aic-tut-os-btn');
+    osBtns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var os = btn.getAttribute('data-os');
+        tut.setAttribute('data-os', os);   // CSS shows the matching command blocks
+        osBtns.forEach(function (b) {
+          var on = b === btn;
+          b.classList.toggle('is-active', on);
+          b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+      });
+    });
+  });
+
   // ── Tool tabs — swap content only; not a progress state ──────────
   var tabs = document.querySelectorAll('.aic-tab');
   var panels = document.querySelectorAll('.aic-panel');
@@ -724,7 +960,7 @@ Thanks!</pre>
           if (plugins.length) pkgBadge.classList.add('badge--info');
         }
         if (!plugins.length) {
-          coworkList.innerHTML = '<p class="cowork-plugin-empty">No packages available for your account yet. Browse the <a href="/marketplace">marketplace</a> to add some.</p>';
+          coworkList.innerHTML = '<p class="cowork-plugin-empty">No packages available for your account yet. Enable some in <a href="/workspace">My Workspace</a>.</p>';
           return;
         }
         var rows = plugins.map(function (p) {
@@ -744,9 +980,102 @@ Thanks!</pre>
         rows.forEach(function (a) { coworkList.appendChild(a); });
       })
       .catch(function () {
-        coworkList.innerHTML = '<p class="cowork-plugin-empty">Couldn\'t load your packages. Try the <a href="/marketplace">marketplace</a>.</p>';
+        coworkList.innerHTML = '<p class="cowork-plugin-empty">Couldn\'t load your packages. Try <a href="/workspace">My Workspace</a>.</p>';
       });
   }
+
+  // ── CLI quick-install: one-click "Set up a new Claude Code" ──────
+  // Mints a 90-day PAT via /auth/tokens, renders the shared setup script
+  // (same template as /setup and /dashboard), and copies it to the
+  // clipboard. The token is never written into the DOM.
+  function copyBig(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    return new Promise(function (resolve, reject) {
+      try { document.execCommand('copy') ? resolve() : reject(); }
+      finally { document.body.removeChild(ta); }
+    });
+  }
+
+  // Template + renderer shared with /setup and /dashboard so the clipboard
+  // payload stays identical across surfaces.
+  {% include "_claude_setup_instructions.jinja" %}
+
+  function defaultTokenName() {
+    var stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    return 'Claude Code — ' + stamp;
+  }
+
+  function showSetupFallback(instructions) {
+    var overlay = document.createElement('div');
+    overlay.className = 'setup-fallback-overlay';
+    overlay.innerHTML =
+      '<div class="setup-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="setupFallbackTitle">' +
+        '<h4 id="setupFallbackTitle">Copy these setup instructions</h4>' +
+        '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into Claude Code.</p>' +
+        '<textarea readonly></textarea>' +
+        '<div class="setup-fallback-actions">' +
+          '<button type="button" data-action="close">Close</button>' +
+          '<button type="button" class="primary" data-action="select">Select all</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    var ta = overlay.querySelector('textarea');
+    ta.value = instructions; ta.focus(); ta.select();
+    overlay.addEventListener('click', function (ev) { if (ev.target === overlay) document.body.removeChild(overlay); });
+    overlay.querySelector('[data-action="close"]').addEventListener('click', function () { document.body.removeChild(overlay); });
+    overlay.querySelector('[data-action="select"]').addEventListener('click', function () { ta.focus(); ta.select(); });
+  }
+
+  window.setupNewClaude = async function setupNewClaude(btn) {
+    var errEl = document.getElementById('setupClaudeError');
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    var origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = 'Generating token…';
+    try {
+      var resp = await fetch('/auth/tokens', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: defaultTokenName(), expires_in_days: 90 }),
+      });
+      if (resp.status === 401) {
+        window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+        return;
+      }
+      if (!resp.ok) {
+        var detail = 'HTTP ' + resp.status;
+        try { var body = await resp.json(); if (body && body.detail) detail = body.detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      var data = await resp.json();
+      if (!data || !data.token) throw new Error('Server did not return a token.');
+      var instructions = renderSetupInstructions(window.location.origin, data.token);
+      try {
+        await copyBig(instructions);
+        btn.textContent = 'Copied! Paste into Claude Code';
+        btn.classList.add('copied');
+        setTimeout(function () { btn.innerHTML = origHTML; btn.classList.remove('copied'); btn.disabled = false; }, 3000);
+      } catch (clipErr) {
+        btn.innerHTML = origHTML; btn.disabled = false;
+        showSetupFallback(instructions);
+      }
+    } catch (err) {
+      btn.innerHTML = origHTML; btn.disabled = false;
+      if (errEl) {
+        errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
+        errEl.style.display = 'block';
+      }
+    }
+  };
 })();
 </script>
 {% endblock %}

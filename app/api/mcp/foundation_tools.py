@@ -105,6 +105,15 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
+    # "Add artefacts to My Stack" — triple-surface with
+    # /api/stack/artefacts* + `agnes stack artefacts list/add/remove`. Adds
+    # Stack MEMBERSHIP data only (see the module note on stack_subscribe) —
+    # NOT a retrieval gate: knowledge_search/collections_search below still
+    # fan out over every RBAC-accessible collection regardless of Stack
+    # membership (see their docstrings for the deferred-gating note).
+    "stack_artefacts_candidates",
+    "stack_artefact_add",
+    "stack_artefact_remove",
 )
 
 
@@ -204,6 +213,14 @@ def register_foundation_tools(
         ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
         mode when the server has no embedding model installed.
 
+        NOTE (deferred follow-up, "Add artefacts to My Stack" spec): this
+        fans out over every RBAC-accessible collection — it does NOT gate by
+        the caller's Stack membership (``user_stack_subscriptions``,
+        ``stack_artefacts_candidates``/``stack_artefact_add``). Wiring that
+        gate here (and in ``knowledge_search``) is an intentionally separate,
+        higher-risk change since other features (e.g. the /agents knowledge
+        picker) share this endpoint.
+
         Args:
             query: Natural-language or keyword query.
             k: Max results (default 10).
@@ -234,6 +251,10 @@ def register_foundation_tools(
         The response's ``retrieval`` field labels the chunk engine's mode:
         ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
         mode when the server has no embedding model installed.
+
+        NOTE (deferred follow-up, "Add artefacts to My Stack" spec): the
+        Collections leg of this fan-out is not gated by Stack membership
+        either — see ``collections_search``'s note.
 
         Args:
             query: Natural-language or keyword query.
@@ -497,6 +518,71 @@ def register_foundation_tools(
             )
             r.raise_for_status()
         return {"unsubscribed": True}
+
+    @mcp.tool()
+    async def stack_artefacts_candidates() -> dict:
+        """List artefacts (file Collections) you could add to your Stack.
+
+        Candidates are accessible to you (owned, shared with you/your team,
+        or workspace-published) and NOT already in your Stack. Adding one to
+        your Stack (``stack_artefact_add``) is what makes the default agent
+        able to use it — being accessible to you is not the same as being in
+        your Stack.
+
+        Returns ``{"items": [{"id", "title", "type_label", "description",
+        "owner_label", "mine", "visibility", "visibility_label",
+        "updated_iso", "href"}], "total_accessible": int}``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/stack/artefacts/candidates",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def stack_artefact_add(corpus_id: str) -> dict:
+        """Add an artefact (file Collection) to your Stack.
+
+        Makes the default agent able to use it. 404 if the artefact doesn't
+        exist; 403 if you don't have access to it (not owned, not shared
+        with you/your team, not workspace-published). Idempotent.
+
+        Args:
+            corpus_id: The artefact id, from ``stack_artefacts_candidates``.
+
+        Returns ``{"added": true, "card": {...}}``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/stack/artefacts/{corpus_id}",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def stack_artefact_remove(corpus_id: str) -> dict:
+        """Remove an artefact from your Stack — drops the default agent's
+        access only. The artefact itself, its files, ownership, and sharing
+        are unaffected.
+
+        Args:
+            corpus_id: The artefact id to remove from your Stack.
+
+        Returns ``{"removed": true}`` on success.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.delete(
+                f"{base_url}/api/stack/artefacts/{corpus_id}",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+        return {"removed": True}
 
     @mcp.tool()
     async def store_rate(entity_id: str, vote: int) -> dict:

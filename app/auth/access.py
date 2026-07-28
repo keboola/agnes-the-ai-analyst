@@ -235,6 +235,42 @@ def _allowed_ids_for_user(
     return frozenset(r["resource_id"] for r in rows)
 
 
+def required_store_entity_ids(
+    user_id: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> frozenset[str]:
+    """Store entities the user's groups hold at ``requirement='required'``.
+
+    Backs the two halves of the Required ("In stack, locked") tier for authored
+    items: refusing an uninstall, and topping up a user who joined the group
+    after the grant was written.
+
+    Deliberately NOT admin-short-circuited: Required is about what a person must
+    carry, not about what they may see, so an admin is subject to exactly the
+    same locks as everyone else in the group. Same backend-split rule as
+    :func:`_allowed_ids_for_user` — reads go through the repository factory.
+    """
+    group_ids = _user_group_ids(user_id, conn=conn)
+    if not group_ids:
+        return frozenset()
+    from app.resource_types import ResourceType
+    from src.repositories import resource_grants_repo, use_pg
+
+    if conn is not None and not use_pg():
+        from src.repositories.resource_grants import ResourceGrantsRepository
+
+        rows = ResourceGrantsRepository(conn).list_for_groups(
+            list(group_ids),
+            ResourceType.STORE_ENTITY.value,
+        )
+    else:
+        rows = resource_grants_repo().list_for_groups(
+            list(group_ids),
+            ResourceType.STORE_ENTITY.value,
+        )
+    return frozenset(r["resource_id"] for r in rows if (r.get("requirement") or "available") == "required")
+
+
 def has_explicit_grant(
     user_id: str,
     resource_type: str,
@@ -424,9 +460,7 @@ def accessible_collection_ids(user, conn=None):
         return granted
     from src.repositories import file_corpora_repo
 
-    owned = frozenset(
-        r["id"] for r in file_corpora_repo().list() if r.get("created_by") == user_id
-    )
+    owned = frozenset(r["id"] for r in file_corpora_repo().list() if r.get("created_by") == user_id)
     return frozenset(granted) | owned
 
 
@@ -448,7 +482,9 @@ def require_collection_access(path_template: str):
         except KeyError as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(f"require_collection_access: path_template {path_template!r} references missing path_param {e}"),
+                detail=(
+                    f"require_collection_access: path_template {path_template!r} references missing path_param {e}"
+                ),
             )
         if isinstance(user, SessionPrincipal):
             allowed = can_access_session(user, ResourceType.COLLECTION.value, resource_id)

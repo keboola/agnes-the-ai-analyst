@@ -265,15 +265,20 @@ body {
 
 /* Index / resource-list page layout (#896 prototype) — used via
    base_index.html by My Stack, Catalog, and similar list pages. The
-   header zone (title + description + actions + search + tabs) stays on
-   the app's light --ds-bg; a full-width white band begins just below
-   the tabs and runs to the foot of the page, carrying the card grid.
-   Shared here so pages carry no per-page background/border styling.
-   Structure/spacing/backgrounds only. */
+   header zone (title + description + actions + search + tabs) and the
+   full-width band below it that carries the card grid are one unbroken
+   surface, running to the foot of the page. Shared here so pages carry
+   no per-page background/border styling. Structure/spacing/backgrounds
+   only. */
 .idx {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    /* The header zone reads as part of the page surface, not as a grey
+       band above it: paint the whole shell --ds-surface so the app
+       background never shows behind the title/description/actions row
+       (full-width, so no grey gutters beside the centred header either). */
+    background: var(--ds-surface);
 }
 .idx-head {
     width: 100%;
@@ -282,12 +287,14 @@ body {
     padding: 32px 32px 0;
 }
 /* The tab strip is the last row of the header; drop its bottom margin
-   so the white band sits flush beneath it. */
+   so the content band sits flush beneath it. */
 .idx-head > :last-child { margin-bottom: 0; }
+/* No divider above the band: header and body share one surface, so a
+   hairline between them drew a line across the middle of a single page.
+   Spacing alone separates the two zones. */
 .idx-band {
     flex: 1 0 auto;
     background: var(--ds-surface);
-    border-top: 1px solid var(--ds-border);
 }
 .idx-band-inner {
     width: 100%;
@@ -326,6 +333,16 @@ html[data-ui-layout="rail"] body.detail-page footer {
     border: none;
     border-radius: 16px;
     text-align: left;
+}
+/* --ds-agnes-soft is a LIGHT-ONLY tint (it has no dark-theme override), so
+   under `data-theme="dark"` the banner kept its near-white #ecfdf5 fill while
+   --ds-text-primary flipped to near-white too — the title landed at ~1:1
+   contrast and disappeared. Tint the current surface with the Agnes green
+   instead, the same idiom `.ag-pv-bubble` (agents.html) already uses for this
+   exact reason, so the fill follows the theme and the text tokens stay legible
+   on it. Dark-scoped: the light + paper themes keep the flat -soft fill. */
+:root[data-theme="dark"] .cbn {
+    background: color-mix(in srgb, var(--ds-agnes) 18%, var(--ds-surface));
 }
 .cbn-title { color: var(--ds-text-primary); font-weight: 750; letter-spacing: -0.02em; }
 .cbn-copy { color: var(--ds-text-secondary); }

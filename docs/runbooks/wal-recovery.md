@@ -96,7 +96,7 @@ docker logs agnes-app-1 2>&1 | grep "WAL replay failed"
 docker exec agnes-app-1 /usr/local/bin/python3 -c \
   "from src.db import get_system_db, get_schema_version; \
    conn = get_system_db(); print('schema_version:', get_schema_version(conn))"
-# Expected: schema_version: 101
+# Expected: schema_version: 103
 ```
 
 Verify row counts are reasonable (see §6).
@@ -212,7 +212,7 @@ cp "${STATE_DIR}/system.duckdb.pre-migrate" "${STATE_DIR}/system.duckdb"
 ```
 
 The app will re-run the migration ladder on the next start (idempotent) and
-land at `SCHEMA_VERSION=101`.
+land at `SCHEMA_VERSION=103`.
 
 #### Option C — restore from a VM or volume snapshot
 

@@ -37,7 +37,7 @@ def test_chat_document_persists_as_artefact(seeded_app):
     assert any(i["slug"] == slug for i in items), "artefact not listed in /api/collections"
 
     # …and on the Artefacts page, presented AS the file (filename shown).
-    art = seeded_app["client"].get("/artefacts", headers=_auth(seeded_app["admin_token"])).text
+    art = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
     assert "brief.txt" in art
 
 

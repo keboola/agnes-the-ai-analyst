@@ -311,6 +311,193 @@
         "title": "AdminTokenItem",
         "type": "object"
       },
+      "AgentCreate": {
+        "properties": {
+          "greeting": {
+            "default": "",
+            "title": "Greeting",
+            "type": "string"
+          },
+          "instructions": {
+            "default": "",
+            "title": "Instructions",
+            "type": "string"
+          },
+          "knowledge": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Knowledge",
+            "type": "array"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "plugins": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Plugins",
+            "type": "array"
+          },
+          "role": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "default": "draft",
+            "maxLength": 30,
+            "title": "Status",
+            "type": "string"
+          },
+          "surfaces": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surfaces"
+          },
+          "tone": {
+            "default": "concise",
+            "maxLength": 50,
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "title": "AgentCreate",
+        "type": "object"
+      },
+      "AgentUpdate": {
+        "description": "All fields optional \u2014 a PATCH sends only what changed.",
+        "properties": {
+          "greeting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeting"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "knowledge": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knowledge"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "plugins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugins"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "surfaces": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surfaces"
+          },
+          "tone": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tone"
+          }
+        },
+        "title": "AgentUpdate",
+        "type": "object"
+      },
       "AnalystInitialWorkspaceResponse": {
         "description": "PAT-authed analyst view; what ``agnes init`` consumes.",
         "properties": {
@@ -1015,6 +1202,20 @@
             },
             "title": "Files",
             "type": "array"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paths"
           }
         },
         "required": [
@@ -1229,6 +1430,17 @@
       },
       "ChatUploadResponse": {
         "properties": {
+          "artefact_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artefact Slug"
+          },
           "filename": {
             "title": "Filename",
             "type": "string"
@@ -1959,6 +2171,15 @@
       "CreateFromMarkdownBody": {
         "description": "JSON contract for markdown-first publishing (studio Skill Builder /\nAgent Builder).",
         "properties": {
+          "access": {
+            "default": "everyone",
+            "enum": [
+              "private",
+              "everyone"
+            ],
+            "title": "Access",
+            "type": "string"
+          },
           "category": {
             "anyOf": [
               {
@@ -4920,6 +5141,20 @@
         "title": "MigrateRequest",
         "type": "object"
       },
+      "MoveFileBody": {
+        "properties": {
+          "target_collection_id": {
+            "minLength": 1,
+            "title": "Target Collection Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_collection_id"
+        ],
+        "title": "MoveFileBody",
+        "type": "object"
+      },
       "MySecretBody": {
         "properties": {
           "value": {
@@ -6623,6 +6858,20 @@
         "title": "SetPasswordRequest",
         "type": "object"
       },
+      "SetSharesRequest": {
+        "properties": {
+          "group_ids": {
+            "description": "Desired end state: the groups this item should be shared with. Empty = private.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Group Ids",
+            "type": "array"
+          }
+        },
+        "title": "SetSharesRequest",
+        "type": "object"
+      },
       "SetupTokenItem": {
         "properties": {
           "created_at": {
@@ -6644,6 +6893,60 @@
           "expires_at"
         ],
         "title": "SetupTokenItem",
+        "type": "object"
+      },
+      "ShareStateResponse": {
+        "properties": {
+          "group_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Group Ids",
+            "type": "array"
+          },
+          "resource_id": {
+            "title": "Resource Id",
+            "type": "string"
+          },
+          "resource_type": {
+            "title": "Resource Type",
+            "type": "string"
+          },
+          "visibility": {
+            "description": "private | shared | workspace",
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource_type",
+          "resource_id",
+          "visibility"
+        ],
+        "title": "ShareStateResponse",
+        "type": "object"
+      },
+      "ShareTargetResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_everyone": {
+            "title": "Is Everyone",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_everyone"
+        ],
+        "title": "ShareTargetResponse",
         "type": "object"
       },
       "SkillEntry": {
@@ -9250,7 +9553,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.76.15"
+    "version": "0.76.28"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10191,6 +10494,56 @@
           }
         },
         "summary": "Corporate Memory Admin",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/admin/data-packages": {
+      "get": {
+        "description": "Admin audit view \u2014 every Data Package + Memory Domain, regardless of\ngrant.\n\nThe Catalog reshape (follow-up to auto-membership) removed\n``browse_admin`` god-mode from the user-facing /catalog and\n/corporate-memory pages \u2014 both now show the same grant-scoped,\naddable-only view for every visitor. This page is where the old\n\"see everything\" audit affordance moved to: admins still need a full\ninventory (which packages/domains exist, how many tables they bundle,\nwhether an empty package needs table assignment) independent of their\nown group grants.",
+        "operationId": "admin_data_packages_admin_data_packages_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Data Packages",
         "tags": [
           "web"
         ]
@@ -11934,6 +12287,56 @@
           }
         },
         "summary": "Admin Workspace Prompt Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/agents": {
+      "get": {
+        "description": "Agents \u2014 build a focused assistant out of the caller's own stack.\n\nWork-in-progress surface (rail item carries a WIP badge). The builder's\ningredient lists are REAL and RBAC-scoped: knowledge sources are the data\npackages + memory domains resolved from the caller's stack (same\n``StackResolver`` reads as /stack), and capabilities hydrate client-side\nfrom ``/api/marketplace/items?tab=my`` (the caller's subscribed plugins).\nAgent definitions themselves persist in the browser for now \u2014 a server\nregistry is the next iteration, so the page states that plainly rather\nthan pretending drafts are shared.",
+        "operationId": "agents_page_agents_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agents Page",
         "tags": [
           "web"
         ]
@@ -15188,7 +15591,7 @@
         ]
       },
       "put": {
-        "description": "Update the ``requirement`` enum on an existing grant.\n\nv49 \u2014 Section 4.5 of the unified-stack design (soft downgrade): when\ntransitioning ``required \u2192 available`` we eagerly materialize a\n``user_stack_subscriptions`` row for every user currently in the\ngranted group, so the resource stays in their stack instead of\nsilently disappearing on the next refresh. ``marketplace_plugin``\ngrants fan out into ``user_plugin_optouts`` instead \u2014 that is the\nsubscription table ``resolve_user_marketplace`` reads.\n\nBoth writes route through the ``src.repositories`` factory so they hit\nthe active backend (Postgres when configured) \u2014 the old raw\n``INSERT ... SELECT`` on a DuckDB ``_get_db`` connection wrote the\nfrozen DuckDB system file on PG instances (#518), so the subscriptions\nnever materialized and the \"single transaction\" guarantee was already\nvoid across backends.\n\nGoing the other direction (``available \u2192 required``) is a no-op for\nsubscriptions \u2014 required is the always-in-stack tier and the\nStackResolver treats required ids as in_stack regardless of any\nsubscription row.",
+        "description": "Update the ``requirement`` enum on an existing grant.\n\nAuto-membership stack model: ``data_package``/``memory_domain`` grants no\nlonger need a soft-downgrade fan-out. Both ``required`` and ``available``\nare automatically in every granted user's stack (``StackResolver.stack``),\nso flipping ``required \u2192 available`` never drops the resource from\nanyone's stack \u2014 it only lifts the \"always downloaded locally\" guarantee\ndown to \"downloaded once the user subscribes\". No ``user_stack_\nsubscriptions`` row needs to be eagerly written to preserve visibility.\n\n``marketplace_plugin`` grants are the one remaining exception: plugin\nvisibility is resolved by ``resolve_user_marketplace`` off\n``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism\noutside the StackResolver's auto-membership \u2014 so a ``required \u2192\navailable`` downgrade there still fans out eagerly to keep every group\nmember's served set from silently shrinking.",
         "operationId": "update_grant_requirement_api_admin_grants__grant_id__put",
         "parameters": [
           {
@@ -25876,6 +26279,312 @@
         ]
       }
     },
+    "/api/agents": {
+      "get": {
+        "description": "The caller's agents plus any shared into a group they belong to.\n\nDeliberately NOT admin god-mode: an admin sees their own agent list here,\nnot every agent in the instance (that audit view is /admin/access).",
+        "operationId": "list_agents_api_agents_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agents",
+        "tags": [
+          "agents"
+        ]
+      },
+      "post": {
+        "description": "Create an agent owned by (and private to) the caller.\n\nAn unnamed agent is legal \u2014 the builder creates the row first and the user\nnames it as they go, so a blank name must not 422 the whole flow.",
+        "operationId": "create_agent_api_agents_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}": {
+      "delete": {
+        "description": "Soft-delete an agent the caller owns, and drop its grants.\n\nGrants are removed too, so a later agent can never inherit a dangling\ngrant through id reuse and /admin/access shows no orphan rows.",
+        "operationId": "delete_agent_api_agents__agent_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent",
+        "tags": [
+          "agents"
+        ]
+      },
+      "get": {
+        "description": "One agent \u2014 owner, grantee, or admin.",
+        "operationId": "get_agent_api_agents__agent_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent",
+        "tags": [
+          "agents"
+        ]
+      },
+      "patch": {
+        "description": "Patch an agent the caller owns. Only supplied fields change.",
+        "operationId": "update_agent_api_agents__agent_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
     "/api/auth/exchange-setup-token": {
       "post": {
         "description": "Exchange a one-time setup token for a regular PAT.\n\nThis endpoint requires **no prior authentication** \u2014 the setup token\nembedded in the bundle IS the authentication credential.\n\nSecurity properties:\n- Token is matched by SHA-256 hash, never stored or logged in plaintext.\n- Single-use: atomically marked used on first consumption.\n- Short-lived: 24 h TTL enforced server-side regardless of client clock.\n- On success, the setup token is consumed and cannot be replayed.",
@@ -27533,7 +28242,7 @@
         ]
       },
       "post": {
-        "description": "Upload one or more files into a collection.\n\nEach file passes through the extension allowlist:\n\n* **tier1** (txt, pdf, docx, \u2026) \u2192 content-addressed write +\n  ``processing_status='pending'``.\n* **tier2** (png, jpg, tiff, \u2026) \u2192 same write + ``'pending'``\n  (vision/OCR ingestion deferred to Slice 5).\n* **bundle** (zip) \u2192 same write + ``'pending'``; the background task\n  unpacks it and ingests every supported member as its own child row\n  (``parent_file_id`` \u2192 the archive row).\n* **unsupported** (.dwg, .exe, \u2026) \u2192 stored raw +\n  ``processing_status='rejected'`` with ``processing_detail`` describing\n  the reason. The *whole response* returns **422** when any file is\n  rejected (all results are still returned so the caller sees which\n  files succeeded and which were rejected).\n\nReturns a list of ``{file_id, filename, processing_status, \u2026}`` for every\nuploaded file (in upload order).",
+        "description": "Upload one or more files into a collection.\n\nEach file passes through the extension allowlist:\n\n* **tier1** (txt, pdf, docx, \u2026) \u2192 content-addressed write +\n  ``processing_status='pending'``.\n* **tier2** (png, jpg, tiff, \u2026) \u2192 same write + ``'pending'``\n  (vision/OCR ingestion deferred to Slice 5).\n* **bundle** (zip) \u2192 same write + ``'pending'``; the background task\n  unpacks it and ingests every supported member as its own child row\n  (``parent_file_id`` \u2192 the archive row).\n* **unsupported** (.dwg, .exe, \u2026) \u2192 stored raw +\n  ``processing_status='rejected'`` with ``processing_detail`` describing\n  the reason. The *whole response* returns **422** when any file is\n  rejected (all results are still returned so the caller sees which\n  files succeeded and which were rejected).\n\n**Upsert:** an optional ``paths`` form field (repeated, paired positionally\nwith ``files``) gives each file a caller-supplied logical identity. When a\nfile with the same ``(collection_id, path)`` already exists, it is REPLACED\n(old blob/chunks/derived tables purged) instead of inserting a duplicate \u2014\nso a doc-sync client can re-upload idempotently. Files without a ``path``\nkeep the legacy plain-insert behavior. The purge runs only after the\nreplacement is safely stored, so a failed re-upload never destroys the\nexisting file. When ``paths`` is supplied it MUST have exactly one entry\nper file (positional pairing), else the request is rejected with **400** \u2014\na short/misaligned list would silently assign paths to the wrong files.\nThe ``(corpus_id, path)`` invariant is also enforced by a unique index.\n\nReturns a list of ``{file_id, filename, path, processing_status, \u2026}`` for\nevery uploaded file (in upload order).",
         "operationId": "upload_files_api_collections__collection_id__files_post",
         "parameters": [
           {
@@ -27666,6 +28375,88 @@
           }
         },
         "summary": "Delete File",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
+    "/api/collections/{collection_id}/files/{file_id}/move": {
+      "post": {
+        "description": "Move a file into another collection \u2014 the Library's drag-and-drop.\n\nGated on BOTH ends: the path dependency proves access to the source, and\nthe target is re-checked here (otherwise a caller could push a file into\nsomeone else's collection).\n\nWhen the source collection is left empty it is soft-deleted: a single-file\nartefact IS its file in the Library, so dragging that file into a folder\nmust not strand an empty husk in the listing.",
+        "operationId": "move_file_api_collections__collection_id__files__file_id__move_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveFileBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move File",
         "tags": [
           "collections"
         ]
@@ -36116,6 +36907,222 @@
         ]
       }
     },
+    "/api/sharing/groups": {
+      "get": {
+        "description": "Groups the caller may share into \u2014 their own memberships + Everyone.\n\nDrives the Library's Share dialog. An admin sees every group.",
+        "operationId": "list_share_targets_api_sharing_groups_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ShareTargetResponse"
+                  },
+                  "title": "Response List Share Targets Api Sharing Groups Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Share Targets",
+        "tags": [
+          "sharing"
+        ]
+      }
+    },
+    "/api/sharing/{resource_type}/{resource_id}": {
+      "get": {
+        "description": "Current sharing state of one Library item.",
+        "operationId": "get_share_state_api_sharing__resource_type___resource_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource_type",
+            "required": true,
+            "schema": {
+              "title": "Resource Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "title": "Resource Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Share State",
+        "tags": [
+          "sharing"
+        ]
+      },
+      "put": {
+        "description": "Set which groups a Library item is shared with (idempotent).\n\n``group_ids: []`` makes the item private again. Grants to groups outside\nthe caller's shareable set are preserved \u2014 see ``set_shares``.",
+        "operationId": "put_share_state_api_sharing__resource_type___resource_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource_type",
+            "required": true,
+            "schema": {
+              "title": "Resource Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "title": "Resource Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSharesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Share State",
+        "tags": [
+          "sharing"
+        ]
+      }
+    },
     "/api/slack/bind": {
       "post": {
         "operationId": "bind_slack_api_slack_bind_post",
@@ -36256,7 +37263,7 @@
     },
     "/api/stack": {
       "get": {
-        "description": "Return the user's effective stack for the given resource type.\n\nEffective stack = required \u222a (subscribed \u2229 available). Required entries\nalways count as in_stack; available entries only if the user has a\nsubscription row.",
+        "description": "Return the user's effective stack for the given resource type.\n\nAuto-membership: effective stack = required \u222a available \u2014 every grant on\nthe caller's groups, no subscription needed. Every item is\n``in_stack: true``; ``materialized`` additionally flags whether it's ALSO\nkept as a local copy (`agnes pull` downloads it) \u2014 always true for\nrequired, true for available only once subscribed.",
         "operationId": "list_stack_api_stack_get",
         "parameters": [
           {
@@ -36317,9 +37324,182 @@
         ]
       }
     },
+    "/api/stack/artefacts/candidates": {
+      "get": {
+        "description": "List every artefact eligible for the \"Add artefacts to Stack\" picker:\ncollections accessible to the caller (owned, or shared with them/their\nteam, or workspace-published) that are NOT already in their Stack.\n\n``total_accessible`` counts every accessible artefact regardless of\nStack membership, distinguishing \"no artefacts exist at all\" from \"all\naccessible artefacts are already in your Stack\" for the picker's empty\nstates. Small dataset per caller in practice (mirrors /artefacts, which\nalso fetches everything server-side) \u2014 the caller's search/visibility\nfilter runs client-side over this list, no server-side ``q`` param.",
+        "operationId": "stack_artefact_candidates_api_stack_artefacts_candidates_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stack Artefact Candidates",
+        "tags": [
+          "stack"
+        ]
+      }
+    },
+    "/api/stack/artefacts/{corpus_id}": {
+      "delete": {
+        "description": "Remove an artefact from the caller's Stack \u2014 drops agent access only.\n\nThe artefact itself, its files, ownership and sharing are untouched;\nthis only deletes the ``user_stack_subscriptions`` membership row. No\n\"required\" concept exists for artefacts, so there is no 400 case (unlike\nthe data_package/memory_domain unsubscribe endpoint) \u2014 always 204.",
+        "operationId": "remove_artefact_from_stack_api_stack_artefacts__corpus_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Artefact From Stack",
+        "tags": [
+          "stack"
+        ]
+      },
+      "post": {
+        "description": "Add an artefact (a ``file_corpora`` collection) to the caller's Stack\nso the default agent can use it. 404 if the collection doesn't exist\n(or is soft-deleted); 403 if the caller cannot access it (not owned, not\nshared with one of their groups, not workspace-published). Idempotent \u2014\nadding an already-in-stack artefact just re-confirms membership.\n\nReturns the same catalog-card shape My Stack renders (``card``), so the\npicker/Artefacts-page JS can insert the new row live without a reload.",
+        "operationId": "add_artefact_to_stack_api_stack_artefacts__corpus_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Artefact To Stack",
+        "tags": [
+          "stack"
+        ]
+      }
+    },
     "/api/stack/browse": {
       "get": {
-        "description": "List every resource of ``type`` the caller could add to their stack.\n\nUnlike ``GET /api/stack`` (effective stack only), this returns the full\nRBAC-granted candidate set \u2014 required + available \u2014 each annotated with\nan ``in_stack`` flag so an analyst's Claude can tell what is already\nsubscribed and what is still available to add. This is the\n\"what could I add\" discovery surface (issue #621).\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
+        "description": "List every resource of ``type`` the caller could see (RBAC-granted).\n\nAuto-membership means this is now equivalent in scope to ``GET\n/api/stack`` (required + available, no separate opt-in tier) \u2014 it's kept\nas a discovery surface so callers who want the full candidate set (issue\n#621) don't have to reason about the difference. Each item carries\n``in_stack: true`` and a ``materialized`` flag so an analyst's Claude can\ntell what is already downloaded locally vs. only server-side queryable.\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
         "operationId": "browse_stack_api_stack_browse_get",
         "parameters": [
           {
@@ -36382,7 +37562,7 @@
     },
     "/api/stack/subscribe": {
       "post": {
-        "description": "Opt in to an ``available`` grant. Refuses to subscribe if the resource\nis required (it's already in the stack \u2014 clients shouldn't bother).",
+        "description": "Download a local copy of an ``available`` resource already in the\nstack. Refuses to subscribe if the resource is required (it's always\ndownloaded automatically \u2014 clients shouldn't bother).",
         "operationId": "subscribe_api_stack_subscribe_post",
         "parameters": [
           {
@@ -36446,7 +37626,7 @@
     },
     "/api/stack/subscription/{resource_type}/{resource_id}": {
       "delete": {
-        "description": "Opt out of an ``available`` grant. Returns 400 ``cannot_remove_required``\nwhen the resource is required for any of the user's groups.\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test. Callers should treat 204 as\n\"removed\", 400 + ``cannot_remove_required`` as \"still subscribed\nbecause Required tier blocks opt-out\".",
+        "description": "Remove the local copy of an ``available`` resource \u2014 the resource\nstays in the stack (still queryable server-side), only the download is\ndropped. Returns 400 ``cannot_remove_required`` when the resource is\nrequired for any of the user's groups (required is always downloaded,\nno opt-out).\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test. Callers should treat 204 as\n\"local copy removed\", 400 + ``cannot_remove_required`` as \"still\ndownloaded because Required tier blocks opt-out\".",
         "operationId": "unsubscribe_api_stack_subscription__resource_type___resource_id__delete",
         "parameters": [
           {
@@ -40680,7 +41860,7 @@
     },
     "/auth/bootstrap": {
       "post": {
-        "description": "Bootstrap the first admin account.\n\nAllowed when no user has a password_hash yet. This covers:\n(a) No users exist at all.\n(b) Only seed users (created by SEED_ADMIN_EMAIL at startup) exist, which\n    have no password and cannot log in \u2014 bootstrap lets the operator\n    activate them with a password.\n\nIf a user with the given email already exists (e.g. as a seed), this\nendpoint sets its password_hash (or clears it, if no password was supplied \u2014\nuseful for OAuth-only flows) and promotes it to admin.\n\nDeactivates as soon as any user has a password_hash.",
+        "description": "Bootstrap the first admin account.\n\nAllowed when no user has a password_hash yet. This covers:\n(a) No users exist at all.\n(b) Only seed users (created by SEED_ADMIN_EMAIL at startup) exist, which\n    have no password and cannot log in \u2014 bootstrap lets the operator\n    activate them with a password.\n\nIf a user with the given email already exists (e.g. as a seed), this\nendpoint sets its password_hash (or clears it, if no password was supplied \u2014\nuseful for OAuth-only flows) and promotes it to admin.\n\nLocked once the instance has an admin (or any password-holding user), unless\nthe caller presents a valid ``X-Bootstrap-Token`` header matching the\noperator-set ``AGNES_BOOTSTRAP_TOKEN`` \u2014 the escape hatch for\ndestroy-recreate runbooks.",
         "operationId": "bootstrap_auth_bootstrap_post",
         "requestBody": {
           "content": {
@@ -42533,8 +43713,8 @@
     },
     "/library": {
       "get": {
-        "description": "Library \u2014 the caller's accessible file Collections (bring-your-files).\n\nAccessible = admin (all), plus collections owned by the caller\n(private uploads) or granted to one of their groups (shared).",
-        "operationId": "library_library_get",
+        "description": "Library \u2014 everything the caller has: artefacts, skills, and agents.\n\nThis is the renamed and widened former ``/artefacts`` surface. It answers\n\"what do I have?\" across every kind Agnes governs \u2014 the caller's own things\nplus everything shared with them:\n\n  - **Artefacts** \u2014 ``file_corpora`` uploads: images, documents, data\n    files, and multi-file collections, whether *uploaded* by a person or\n    *generated* by an agent (the Source facet).\n  - **Skills** \u2014 the caller's own store entities of type ``skill``, i.e.\n    what the Skill builder (/skills) publishes.\n  - **Granted resources** \u2014 governed **data packages**, **memory\n    domains**, **recipes** and curated **marketplace plugins** granted to\n    one of the caller's groups, plus the community-store items they have\n    **installed**. These are not the caller's to re-share, so they carry no\n    Share action; the grant belongs to an admin.\n\nAgents are deliberately NOT here \u2014 they have their own home at ``/agents``\n(they are still real server-side rows in the v103 ``agents`` registry, and\n``/api/agents`` reads honour agent grants; the Library just isn't their\nlisting surface).\n\nScope is grant-aware: items you OWN plus anything shared into a group you\nbelong to, tagged ``mine`` / ``shared_with_me`` / ``shared_by_me`` so the\ntoolbar can slice by ownership. Deliberately NOT admin god-mode \u2014 an admin\nstill sees their own Library, not every item in the instance (the audit\nview is /admin/access).\n\nEvery row carries its real visibility (Private / Shared / Workspace) and,\nfor the grant-backed kinds, a Share action writing through\n``PUT /api/sharing/{resource_type}/{resource_id}``. Skills are the\nexception: an approved store entity is already readable by every\nauthenticated user, so the row reports that state rather than offering a\ngroup grant nothing would read.\n\nRendering is server-side; the toolbar (search, ownership segments, Type +\nSource facets, sort, and the table \u21c4 grid switch) is client-side over\nthose rows.",
+        "operationId": "library_page_library_get",
         "parameters": [
           {
             "in": "header",
@@ -42575,7 +43755,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Library",
+        "summary": "Library Page",
         "tags": [
           "web"
         ]
@@ -42635,6 +43815,74 @@
           }
         },
         "summary": "Library Detail",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/library/{slug}/f/{file_id}": {
+      "get": {
+        "description": "One file inside a collection \u2014 its own detail page.\n\nA single-file artefact IS its collection, so it keeps using\n``/library/{slug}``; this route serves the files *inside* a folder, which\npreviously had no page of their own. Reachable by anyone who can reach the\nparent collection OR who holds a grant on the file itself (per-file\nsharing), so a file shared out of a folder is actually openable.\n\n404 for missing AND for no-access, matching the collection contract, so the\nURL space can't be probed.",
+        "operationId": "library_file_detail_library__slug__f__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Library File Detail",
         "tags": [
           "web"
         ]
@@ -43162,6 +44410,22 @@
             "schema": {
               "title": "Entity Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
             }
           },
           {
@@ -44334,6 +45598,56 @@
           }
         },
         "summary": "Setup Advanced Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/skills": {
+      "get": {
+        "description": "Skills \u2014 the caller's authored skills, plus a builder to create more.\n\nThe index counterpart to the Skill Builder: a self-contained surface with\ntwo in-page views (mirrors ``/agents``). The LIST view fetches the caller's\nown skills client-side from ``GET /api/store/entities?type=skill&owner=\u2026``\n(which returns their whole catalogue, including entries still in review),\nand the BUILDER view is a section-based authoring form that publishes to\n``POST /api/store/entities/from-markdown`` \u2014 the same endpoint the studio\nSkill Builder uses, so quota, guardrails, and the store review pipeline all\napply identically. Category options come from the shared store taxonomy.",
+        "operationId": "skills_page_skills_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Skills Page",
         "tags": [
           "web"
         ]

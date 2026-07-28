@@ -1,0 +1,685 @@
+/* filter_toolbar.js — reusable client-side filter/sort engine for the shared
+   .fbar toolbar. One instance drives a table/grid entirely in the browser
+   (no round-trips): a search box, an optional single-select segmented control
+   (scope), any number of multi-select facet menus (Filter button → grouped
+   popover → removable chips on a second row), and a sort <select>. Facet
+   values are read off each row's data-* attributes.
+
+   Design intent (see filter_toolbar.css): ownership/scope segments and Sort
+   stay inline; only optional refinements live behind the Filter menu, and each
+   applied CATEGORY shows as one chip ("Source: Generated, Uploaded") so the
+   resting bar stays a single clean row however many values are selected. A chip
+   is the edit affordance for its category — clicking it reopens that category's
+   popover, its × clears the category, and it disappears when the category
+   empties. Chips are updated in place, never rebuilt per value.
+
+   Usage:
+     FilterToolbar.init({
+       rows: '#af-tbody tr',
+       search:  { el: '#af-search', attr: 'data-search' },
+       segments:{ container: '#af-own', attr: 'data-ownership',
+                  expand: { mine: ['mine', 'shared_by_me'] } },
+       facets:  [ { key: 'type', attr: 'data-type', label: 'Type' },
+                  { key: 'origin', attr: 'data-origin', label: 'Source' },
+                  // A binary condition, not a category: on = keep only rows
+                  // whose `attr` equals the facet's value, off = keep
+                  // everything. Rendered either as one checkbox sitting
+                  // directly in the menu (no submenu), or — with `control` —
+                  // as a button in the toolbar itself (see below).
+                  { key: 'stack', attr: 'data-stack', label: 'In stack only',
+                    toggle: true, control: '#lib-stack-toggle' } ],
+       filterBtn: '#af-filter-btn', menu: '#af-filter-menu',
+       chips: '#af-chips',
+       sort:    { el: '#af-sort',
+                  keys: { added: 'data-added', name: 'data-name', files: 'data-files' },
+                  pinFirst: 'data-folder' },   // optional: rows carrying this
+                                               // attribute sort above the rest,
+                                               // whatever the chosen order
+       count:   { el: '#af-upload-count', noun: 'artefact' },
+       noResults: '#af-noresults',
+       view:    { buttons: '.fbar-view__btn', tableWrap: '#lib-tablewrap',
+                  grid: '#lib-grid', storageKey: 'lib-view',
+                  card: (row) => HTMLElement },
+     });
+
+   A facet may name a `control` — a selector for a pressed-state BUTTON living
+   in the toolbar rather than inside the Filter menu. Use it for the one or two
+   conditions worth surfacing at rest (the Library's "In stack only"): the
+   control shows its own state, so such a facet is deliberately left out of the
+   Filter button's badge count and grows no chip — both would be a second
+   readout of a switch already visible on the bar. It is still cleared by
+   "Clear all" and by reset, which sync the button back. The facet's value comes
+   from the control's `data-facet-value`, mirroring how an in-menu checkbox
+   carries it in `value`.
+
+   The optional `view` config adds a table ⇄ grid switch: cards are projected
+   from the (filtered, sorted) rows by the caller's `card(row)` builder, so the
+   table stays the single source of truth and grid view inherits filtering,
+   sorting and the no-results state for free. The choice persists in
+   localStorage under `storageKey`.
+*/
+(function (global) {
+  'use strict';
+
+  function qs(sel, root) { return (root || document).querySelector(sel); }
+  function qsa(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+
+  function init(cfg) {
+    var rows = qsa(cfg.rows);
+    if (!rows.length && !cfg.always) { /* still wire controls so empty page is inert-safe */ }
+    var total = rows.length;
+
+    var searchEl = cfg.search ? qs(cfg.search.el) : null;
+    var searchAttr = cfg.search ? cfg.search.attr : null;
+    var sortEl = cfg.sort ? qs(cfg.sort.el) : null;
+    var sortKeys = (cfg.sort && cfg.sort.keys) || {};
+    var countEl = cfg.count ? qs(cfg.count.el) : null;
+    var noun = (cfg.count && cfg.count.noun) || 'item';
+    var noResultsEl = cfg.noResults ? qs(cfg.noResults) : null;
+    var chipsEl = cfg.chips ? qs(cfg.chips) : null;
+    var filterBtn = cfg.filterBtn ? qs(cfg.filterBtn) : null;
+    var menuEl = cfg.menu ? qs(cfg.menu) : null;
+    var facets = cfg.facets || [];
+
+    // ── state ──
+    var segValue = 'all';
+    var segExpand = (cfg.segments && cfg.segments.expand) || {};
+    var facetState = {};                 // key -> Set(values)
+    facets.forEach(function (f) { facetState[f.key] = new Set(); });
+
+    // ── matching ──
+    function segMatch(row) {
+      if (segValue === 'all') return true;
+      var v = row.getAttribute(cfg.segments.attr);
+      var allowed = segExpand[segValue] || [segValue];
+      return allowed.indexOf(v) !== -1;
+    }
+    function facetMatch(row) {
+      // AND across facets, OR within a facet's selected values.
+      for (var i = 0; i < facets.length; i++) {
+        var f = facets[i];
+        var sel = facetState[f.key];
+        if (sel.size === 0) continue;
+        var raw = row.getAttribute(f.attr) || '';
+        if (f.multi) {
+          // Multi-valued attribute (e.g. data-tags="a|b"): match if ANY of the
+          // row's values is selected.
+          var vals = raw.split('|');
+          var hit = false;
+          for (var v = 0; v < vals.length; v++) {
+            if (vals[v] && sel.has(vals[v])) { hit = true; break; }
+          }
+          if (!hit) return false;
+        } else if (!sel.has(raw)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    function searchMatch(row) {
+      if (!searchEl) return true;
+      var q = (searchEl.value || '').trim().toLowerCase();
+      if (!q) return true;
+      return (row.getAttribute(searchAttr) || '').indexOf(q) !== -1;
+    }
+
+    // ── Facets whose control sits OUTSIDE the Filter menu ───────────────────
+    //    A facet with `control` is driven by a button on the toolbar itself, so
+    //    it is visible at rest and needs no second readout: it counts toward
+    //    neither the Filter button's badge (that badge stands for what is hidden
+    //    behind the button) nor the chip row (a chip would restate a switch the
+    //    user can already see). It stays a normal facet in every other respect —
+    //    same state, same matching, same clearing.
+    function externalEl(f) { return f.control ? qs(f.control) : null; }
+    function externalValue(f) {
+      var el = externalEl(f);
+      return (el && el.getAttribute('data-facet-value')) || f.value || 'on';
+    }
+    //: Push facet state back onto the external controls, so every path that can
+    //: change it (the control itself, Clear all, a chip's ×, reset) leaves the
+    //: button showing the truth. Driven from apply(), the one funnel they share.
+    function syncExternalControls() {
+      facets.forEach(function (f) {
+        var el = externalEl(f);
+        if (!el) return;
+        var on = facetState[f.key].has(externalValue(f));
+        el.setAttribute('aria-pressed', on ? 'true' : 'false');
+        el.classList.toggle('is-active', on);
+      });
+    }
+
+    function activeFacetCount() {
+      return facets.reduce(function (n, f) {
+        return f.control ? n : n + facetState[f.key].size;
+      }, 0);
+    }
+
+    // ── chips (row 2) ──
+    function labelFor(facet, value) {
+      // Prefer the menu option's own text so labels never drift from the DOM.
+      if (menuEl) {
+        var input = qs('input[data-facet="' + facet.key + '"][value="' + value + '"]', menuEl);
+        if (input) {
+          var opt = input.closest('.fbar-menu__opt');
+          if (opt) {
+            var txt = (opt.querySelector('.fbar-menu__opt-text') || opt).textContent || '';
+            return txt.replace(/\s+\d+\s*$/, '').trim() || value;
+          }
+        }
+      }
+      return value;
+    }
+    // ONE chip per facet CATEGORY, not one per selected value: a chip reads
+    //   "Source: Generated, Uploaded"
+    // and is the edit affordance for that whole category — clicking it reopens
+    // the category's options popover, its × clears the category, and it vanishes
+    // when nothing is left selected there. Chips persist across renders and are
+    // UPDATED in place (keyed by facet), so picking a second value grows the
+    // existing chip instead of spawning another, and the element the user just
+    // clicked is still under the popover that opens over it.
+    var chipEls = {};          // facet key -> chip element
+    var chipClearEl = null;    // the trailing "Clear all"
+    //: Values past this collapse into "+N"; the chip's CSS ellipsis is the final
+    //: guard. Either way `title` carries the complete selection.
+    var CHIP_MAX_VALUES = 3;
+
+    function buildChip(f) {
+      var chip = document.createElement('span');
+      chip.className = 'fbar-chip';
+      chip.setAttribute('data-chip', f.key);
+      var edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'fbar-chip__edit';
+      var lab = document.createElement('span');
+      lab.className = 'fbar-chip__label';
+      // A toggle is one condition, so its chip STATES the condition ("In stack
+      // only") instead of naming a category and listing values after a colon.
+      lab.textContent = f.toggle ? (f.label || f.key) : (f.label || f.key) + ':';
+      var vals = null;
+      edit.appendChild(lab);
+      if (!f.toggle) {
+        vals = document.createElement('span');
+        vals.className = 'fbar-chip__vals';
+        edit.appendChild(vals);
+      }
+      // stopPropagation: the document-level "click outside closes the menu"
+      // listener would otherwise fire on this same event and shut the popover
+      // being opened (the chip row sits outside the menu).
+      edit.addEventListener('click', function (e) { e.stopPropagation(); openCategory(f.key); });
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'fbar-chip__x';
+      x.textContent = '×';
+      x.addEventListener('click', function (e) { e.stopPropagation(); clearFacet(f.key); });
+      chip.appendChild(edit);
+      chip.appendChild(x);
+      chip._edit = edit; chip._vals = vals; chip._x = x;
+      return chip;
+    }
+
+    function updateChip(chip, f, labels) {
+      if (f.toggle) {
+        // Nothing to summarise — the chip's presence IS the state.
+        var only = f.label || f.key;
+        chip._edit.title = only;
+        chip._edit.setAttribute('aria-label', 'Edit filter — ' + only);
+        chip._x.setAttribute('aria-label', 'Clear ' + only + ' filter');
+        return;
+      }
+      var full = labels.join(', ');
+      var shown = labels.length > CHIP_MAX_VALUES
+        ? labels.slice(0, CHIP_MAX_VALUES).join(', ') + ' +' + (labels.length - CHIP_MAX_VALUES)
+        : full;
+      if (chip._vals.textContent !== shown) chip._vals.textContent = shown;
+      var name = (f.label || f.key) + ': ' + full;
+      chip._edit.title = name;
+      chip._edit.setAttribute('aria-label', 'Edit filter — ' + name);
+      chip._x.setAttribute('aria-label', 'Clear ' + (f.label || f.key) + ' filter');
+    }
+
+    // ── Category submenu placement ──────────────────────────────────────────
+    //    ONE placer for every category, present and future (it is driven off the
+    //    `.fbar-cat` query, so a new facet inherits it with no extra code): the
+    //    submenu opens to the RIGHT of the menu with a small consistent gap,
+    //    flips to the left when the viewport has no room there, and is nudged
+    //    vertically so the whole popover stays visible. Every coordinate is
+    //    measured from live rects — none is hardcoded, in CSS or here.
+    //
+    //    The popover is `position: fixed` (see filter_toolbar.css) for two
+    //    reasons: it escapes every ancestor's clipping box, so a scrolling menu
+    //    can't swallow it, and collision detection becomes plain viewport
+    //    arithmetic instead of offset-parent bookkeeping.
+    var SUBMENU_GAP = 6;     //: the gap between menu and submenu, both sides
+    var SUBMENU_EDGE = 8;    //: keep this clear of the viewport edges
+
+    function placeSubmenu(cat) {
+      var pop = qs('.fbar-cat__pop', cat);
+      if (!pop || pop.hidden) return;
+      // On a phone the options stack underneath the row instead (the popover is
+      // `position: static` there), so there is nothing to place.
+      if (global.getComputedStyle(pop).position !== 'fixed') {
+        pop.style.top = '';
+        pop.style.left = '';
+        return;
+      }
+      var host = (menuEl || cat).getBoundingClientRect();   // beside the MENU panel
+      var row = cat.getBoundingClientRect();
+      var w = pop.offsetWidth;
+      var h = pop.offsetHeight;
+      var vw = global.innerWidth;
+      var vh = global.innerHeight;
+
+      // Horizontal: right by default, flipped left on collision. If neither side
+      // can hold it (a very narrow window), clamp to the nearest edge rather than
+      // leaving it half off-screen.
+      var left = host.right + SUBMENU_GAP;
+      if (left + w > vw - SUBMENU_EDGE) {
+        var flipped = host.left - SUBMENU_GAP - w;
+        left = flipped >= SUBMENU_EDGE
+          ? flipped
+          : Math.max(SUBMENU_EDGE, vw - SUBMENU_EDGE - w);
+      }
+      // Vertical: aligned with its own row, then pulled back inside the viewport
+      // so a category near the bottom still shows all of its options.
+      var top = row.top - 6;
+      if (top + h > vh - SUBMENU_EDGE) top = vh - SUBMENU_EDGE - h;
+      if (top < SUBMENU_EDGE) top = SUBMENU_EDGE;
+
+      pop.style.left = Math.round(left) + 'px';
+      pop.style.top = Math.round(top) + 'px';
+    }
+
+    // The one way to open or close a category, so the placer runs however the
+    // submenu was reached — hover, click, keyboard focus, or a chip.
+    function setCatOpen(cat, open) {
+      var pop = qs('.fbar-cat__pop', cat);
+      var btn = qs('.fbar-cat__btn', cat);
+      if (pop) pop.hidden = !open;
+      if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      cat.classList.toggle('is-open', open);
+      if (open) placeSubmenu(cat);
+    }
+
+    // `position: fixed` does not follow the anchor, so re-place the open submenu
+    // when the page moves or resizes under it. Capture phase, to catch scrolling
+    // inside an ancestor as well as the window.
+    function replaceOpenSubmenu() {
+      if (!menuEl) return;
+      var open = qs('.fbar-cat.is-open', menuEl);
+      if (open) placeSubmenu(open);
+    }
+    global.addEventListener('resize', replaceOpenSubmenu);
+    global.addEventListener('scroll', replaceOpenSubmenu, true);
+
+    // Open the Filter menu with ONE category's options showing — what a chip
+    // click does, so a filter is edited where it was applied. A TOGGLE facet has
+    // no category row and no submenu: it sits in the menu itself, so opening the
+    // menu and focusing its checkbox is the whole affordance.
+    function openCategory(key) {
+      if (!menuEl) return;
+      openMenu(true);
+      var cat = qs('.fbar-cat[data-cat="' + key + '"]', menuEl);
+      qsa('.fbar-cat', menuEl).forEach(function (c) { setCatOpen(c, c === cat); });
+      var first = qs('input[data-facet="' + key + '"]', cat || menuEl);
+      if (first) first.focus();
+    }
+
+    function renderChips() {
+      if (!chipsEl) return;
+      var order = [];
+      facets.forEach(function (f) {
+        // Its own toolbar button is the readout — see externalEl().
+        if (f.control) return;
+        var labels = [];
+        facetState[f.key].forEach(function (val) { labels.push(labelFor(f, val)); });
+        var chip = chipEls[f.key];
+        if (!labels.length) {
+          // Nothing selected in this category any more — the chip goes.
+          if (chip) { chip.remove(); delete chipEls[f.key]; }
+          return;
+        }
+        if (!chip) { chip = chipEls[f.key] = buildChip(f); }
+        updateChip(chip, f, labels);
+        order.push(chip);
+      });
+      if (order.length && !chipClearEl) {
+        chipClearEl = document.createElement('button');
+        chipClearEl.type = 'button';
+        chipClearEl.className = 'fbar-chips__clear';
+        chipClearEl.textContent = 'Clear all';
+        chipClearEl.addEventListener('click', function () { clearFacets(); });
+      }
+      if (chipClearEl) order.push(chipClearEl);
+      // Move only the nodes actually out of place, so an untouched chip is never
+      // detached and re-inserted (which would drop focus and hover mid-edit).
+      order.forEach(function (el, i) {
+        if (chipsEl.children[i] !== el) chipsEl.insertBefore(el, chipsEl.children[i] || null);
+      });
+      while (chipsEl.children.length > order.length) chipsEl.removeChild(chipsEl.lastChild);
+      chipsEl.hidden = order.length === 0;
+    }
+
+    // ── mutations ──
+    function setFacet(key, value, on) {
+      var sel = facetState[key];
+      if (on) sel.add(value); else sel.delete(value);
+      if (menuEl) {
+        var input = qs('input[data-facet="' + key + '"][value="' + value + '"]', menuEl);
+        if (input) input.checked = on;
+      }
+      apply();
+    }
+    // Clear ONE category — what a chip's × does, now that a chip stands for the
+    // whole category rather than a single value.
+    function clearFacet(key) {
+      if (!facetState[key]) return;
+      facetState[key].clear();
+      if (menuEl) {
+        qsa('input[data-facet="' + key + '"]', menuEl).forEach(function (i) { i.checked = false; });
+      }
+      apply();
+    }
+    function clearFacets() {
+      facets.forEach(function (f) { facetState[f.key].clear(); });
+      if (menuEl) qsa('input[data-facet]', menuEl).forEach(function (i) { i.checked = false; });
+      apply();
+    }
+    function resetAll() {
+      if (searchEl) searchEl.value = '';
+      setSegment('all');
+      clearFacets();  // also applies
+    }
+
+    // ── table ⇄ grid view ──
+    // Cards are rebuilt from the visible rows on every apply()/sort while grid
+    // view is active, so filtering + sorting need no grid-specific code.
+    var lastVisible = rows.length;
+
+    // ── Grouped sections (one collapsible block per type) ──
+    // Each section owns its rows; a section whose rows are all filtered out
+    // hides entirely rather than leaving an empty heading behind.
+    var sectionsSel = cfg.sections || null;
+    function refreshSections() {
+      if (!sectionsSel) return;
+      qsa(sectionsSel).forEach(function (sec) {
+        // Counted off the engine's OWN row set, not a fresh `[data-item-id]`
+        // query: the caller's selector already excludes a folder's child rows
+        // (they don't earn a section badge, nor keep an empty section alive),
+        // and in grid view that query would also match the projected CARDS —
+        // which are rebuilt after this runs, so their stale copy inflated every
+        // badge (a filtered section read "11" over two visible rows).
+        var vis = 0;
+        rows.forEach(function (r) { if (!r.hidden && sec.contains(r)) vis++; });
+        var badge = qs('[data-sec-count]', sec);
+        if (badge) badge.textContent = String(vis);
+        sec.hidden = vis === 0;
+      });
+    }
+
+    var viewCfg = cfg.view || null;
+    var viewBtns = viewCfg ? qsa(viewCfg.buttons) : [];
+    var currentView = 'table';
+
+    function renderGrid() {
+      if (!viewCfg.card) return;
+      // Sectioned pages have one grid per section, so project each section's
+      // own visible rows into its own grid; flat pages have a single pair.
+      qsa(viewCfg.grid).forEach(function (g) {
+        g.innerHTML = '';
+        var scope = sectionsSel ? g.closest(sectionsSel) : document;
+        var scopeRows = scope ? qsa('[data-item-id]:not([data-parent-id])', scope) : rows;
+        scopeRows.forEach(function (row) {
+          if (row.hidden) return;
+          var card = viewCfg.card(row);
+          if (card) g.appendChild(card);
+        });
+      });
+    }
+    function applyView() {
+      if (!viewCfg) return;
+      var grid = currentView === 'grid';
+      // With nothing left after filtering, hide BOTH containers so the
+      // no-results panel stands alone (an empty table head reads as a bug).
+      var empty = lastVisible === 0;
+      qsa(viewCfg.tableWrap).forEach(function (el) { el.hidden = grid || empty; });
+      qsa(viewCfg.grid).forEach(function (el) { el.hidden = !grid || empty; });
+      viewBtns.forEach(function (b) {
+        var on = b.getAttribute('data-view') === currentView;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      if (grid) renderGrid();
+    }
+    function setView(value) {
+      currentView = value === 'grid' ? 'grid' : 'table';
+      if (viewCfg && viewCfg.storageKey) {
+        try { localStorage.setItem(viewCfg.storageKey, currentView); } catch (e) { /* private mode */ }
+      }
+      applyView();
+    }
+
+    // ── apply (visibility + count + chrome) ──
+    function apply() {
+      var visible = 0;
+      rows.forEach(function (row) {
+        var show = searchMatch(row) && segMatch(row) && facetMatch(row);
+        row.hidden = !show;
+        if (show) visible++;
+      });
+      if (countEl) {
+        countEl.textContent = (visible === total)
+          ? total + ' ' + noun + (total === 1 ? '' : 's')
+          : visible + ' of ' + total + ' ' + noun + (total === 1 ? '' : 's');
+      }
+      lastVisible = visible;
+      refreshSections();
+      if (noResultsEl) noResultsEl.hidden = visible !== 0 || total === 0;
+      var n = activeFacetCount();
+      if (filterBtn) {
+        var badge = filterBtn.querySelector('.fbar-filter__n');
+        filterBtn.classList.toggle('is-active', n > 0);
+        if (badge) { badge.textContent = n; badge.hidden = n === 0; }
+      }
+      renderChips();
+      syncExternalControls();
+      applyView();  // re-project the grid from the new visible set
+      if (cfg.onApply) {
+        try { cfg.onApply(); } catch (e) { /* a page hook must never break filtering */ }
+      }
+    }
+
+    // ── sort ──
+    function applySort() {
+      if (!sortEl || !rows.length) return;
+      var mode = sortEl.value;
+      var addedK = sortKeys.added, nameK = sortKeys.name, filesK = sortKeys.files;
+      // Optional structural grouping that OUTRANKS the chosen order: rows
+      // carrying `sort.pinFirst` stay above the rest (e.g. the Library's
+      // collections above its loose files). The group is part of the table's
+      // shape, not one sort order among several.
+      var pinK = (cfg.sort && cfg.sort.pinFirst) || null;
+      function pinned(row) { return pinK && row.getAttribute(pinK) ? 0 : 1; }
+      var sorted = rows.slice().sort(function (a, b) {
+        if (pinK) {
+          var pd = pinned(a) - pinned(b);
+          if (pd !== 0) return pd;
+        }
+        switch (mode) {
+          case 'added_asc':  return (a.getAttribute(addedK) || '').localeCompare(b.getAttribute(addedK) || '');
+          case 'name_asc':   return (a.getAttribute(nameK) || '').localeCompare(b.getAttribute(nameK) || '');
+          case 'name_desc':  return (b.getAttribute(nameK) || '').localeCompare(a.getAttribute(nameK) || '');
+          case 'files_desc': return (parseInt(b.getAttribute(filesK), 10) || 0) - (parseInt(a.getAttribute(filesK), 10) || 0);
+          case 'added_desc':
+          default:           return (b.getAttribute(addedK) || '').localeCompare(a.getAttribute(addedK) || '');
+        }
+      });
+      // Re-attach each row to ITS OWN parent, not to rows[0]'s: on a sectioned
+      // page the rows span one tbody per section, and appending them all to the
+      // first one would empty every other section into it. A row's child rows
+      // (`data-parent-id`, e.g. the files inside a collection) follow it, so
+      // sorting can't separate a container from its contents.
+      sorted.forEach(function (row) {
+        var parent = row.parentNode;
+        if (!parent) return;
+        parent.appendChild(row);
+        var id = row.getAttribute('data-item-id');
+        if (!id) return;
+        var ref = row;
+        qsa('[data-parent-id="' + id + '"]', parent).forEach(function (kid) {
+          parent.insertBefore(kid, ref.nextSibling);
+          ref = kid;
+        });
+      });
+      // `rows` is the engine's own ordered list — keep it in sync so grid
+      // projection reflects the new order (it iterates `rows`, not the DOM).
+      rows = sorted;
+      applyView();
+      // Sorting rearranged the rows, so any page chrome derived from row ORDER
+      // (the Library's collections/files divider) has to be recomputed — the
+      // same hook `apply()` calls for the same reason.
+      if (cfg.onApply) {
+        try { cfg.onApply(); } catch (e) { /* a page hook must never break sorting */ }
+      }
+    }
+
+    // ── segmented control ──
+    function setSegment(value) {
+      segValue = value;
+      if (cfg.segments) {
+        qsa('.fbar-seg__btn', qs(cfg.segments.container)).forEach(function (btn) {
+          var on = btn.getAttribute('data-' + (cfg.segments.name || 'own')) === value
+                || btn.getAttribute('data-own') === value;
+          btn.classList.toggle('is-active', on);
+          btn.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+      }
+      apply();
+    }
+
+    // ── menu open/close ──
+    function openMenu(open) {
+      if (!menuEl || !filterBtn) return;
+      menuEl.hidden = !open;
+      filterBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    // ── wiring ──
+    if (searchEl) searchEl.addEventListener('input', apply);
+    if (sortEl) sortEl.addEventListener('change', applySort);
+    if (cfg.segments) {
+      qsa('.fbar-seg__btn', qs(cfg.segments.container)).forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          setSegment(btn.getAttribute('data-' + (cfg.segments.name || 'own')) || btn.getAttribute('data-own'));
+        });
+      });
+    }
+    // ── Filter categories: each menu item reveals its options in a secondary
+    //    popover on hover OR keyboard focus (hover alone would be unusable on
+    //    touch and by keyboard). Only one category is open at a time. ──
+    if (menuEl) {
+      var cats = qsa('.fbar-cat', menuEl);
+      // The submenu now sits a gap away from the menu, so the pointer travelling
+      // to it leaves the category for a frame. A short grace period — cancelled
+      // by entering the submenu — is what keeps hover usable across that gap.
+      var closeTimer = null;
+      function cancelClose() {
+        if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+      }
+      function scheduleClose(cat) {
+        cancelClose();
+        closeTimer = setTimeout(function () { setCatOpen(cat, false); }, 140);
+      }
+      function openOnly(cat) {
+        cancelClose();
+        cats.forEach(function (c) { if (c !== cat) setCatOpen(c, false); });
+        setCatOpen(cat, true);
+      }
+      cats.forEach(function (cat) {
+        cat.addEventListener('mouseenter', function () { openOnly(cat); });
+        cat.addEventListener('mouseleave', function () { scheduleClose(cat); });
+        var pop = qs('.fbar-cat__pop', cat);
+        if (pop) {
+          pop.addEventListener('mouseenter', cancelClose);
+          pop.addEventListener('mouseleave', function () { scheduleClose(cat); });
+        }
+        var btn = qs('.fbar-cat__btn', cat);
+        if (btn) {
+          // Click/Enter toggles — the keyboard and touch path.
+          btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var willOpen = pop ? pop.hidden : true;
+            cancelClose();
+            cats.forEach(function (c) { setCatOpen(c, false); });
+            setCatOpen(cat, willOpen);
+          });
+          btn.addEventListener('focus', function () { openOnly(cat); });
+        }
+      });
+    }
+
+    // Toolbar-level facet buttons (facet.control). aria-pressed is the state, so
+    // read the NEXT state off it rather than keeping a parallel flag.
+    facets.forEach(function (f) {
+      var el = externalEl(f);
+      if (!el) return;
+      el.addEventListener('click', function () {
+        setFacet(f.key, externalValue(f), el.getAttribute('aria-pressed') !== 'true');
+      });
+    });
+
+    if (menuEl) {
+      qsa('input[data-facet]', menuEl).forEach(function (input) {
+        input.addEventListener('change', function () {
+          setFacet(input.getAttribute('data-facet'), input.value, input.checked);
+        });
+      });
+      var clearBtn = qs('[data-fbar-clear]', menuEl);
+      if (clearBtn) clearBtn.addEventListener('click', clearFacets);
+      var doneBtn = qs('[data-fbar-done]', menuEl);
+      if (doneBtn) doneBtn.addEventListener('click', function () { openMenu(false); });
+    }
+    if (filterBtn) {
+      filterBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openMenu(menuEl && menuEl.hidden);
+      });
+      document.addEventListener('click', function (e) {
+        if (menuEl && !menuEl.hidden && !menuEl.contains(e.target) && e.target !== filterBtn && !filterBtn.contains(e.target)) {
+          openMenu(false);
+        }
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && menuEl && !menuEl.hidden) openMenu(false);
+      });
+    }
+    qsa('[data-fbar-reset]').forEach(function (btn) {
+      btn.addEventListener('click', resetAll);
+    });
+    viewBtns.forEach(function (btn) {
+      btn.addEventListener('click', function () { setView(btn.getAttribute('data-view')); });
+    });
+
+    // Restore the persisted view BEFORE the first apply so the page never
+    // flashes the table on its way to the grid.
+    if (viewCfg && viewCfg.storageKey) {
+      try {
+        if (localStorage.getItem(viewCfg.storageKey) === 'grid') currentView = 'grid';
+      } catch (e) { /* private mode — table default */ }
+    }
+
+    // Re-read the row set from the DOM, then re-apply. A page that MUTATES its
+    // rows (the Library moves a file between collections in place) changes which
+    // rows are top-level, and `rows` was captured at init — without this the
+    // engine would keep counting a row that is no longer part of the set.
+    function refresh() {
+      rows = qsa(cfg.rows);
+      total = rows.length;
+      apply();
+    }
+
+    apply();
+    return { apply: apply, refresh: refresh, reset: resetAll, setView: setView, renderGrid: renderGrid };
+  }
+
+  global.FilterToolbar = { init: init };
+})(window);

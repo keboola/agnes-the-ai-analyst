@@ -107,6 +107,13 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/data-apps/{slug}": ("app show", "data_app_get"),
     "/api/data-apps/{slug}/deploy": ("app deploy", "data_app_deploy"),
     "/api/data-apps/{slug}/logs": ("app logs", "data_app_logs"),
+    # "Add artefacts to My Stack" — Stack membership for personal file
+    # Collections (permission = ownership/sharing, not admin-RBAC grants).
+    # POST (add) → stack_artefact_add; DELETE (remove) → stack_artefact_remove
+    # — one cohort row per path, mirrors the /api/store/entities/{entity_id}
+    # PUT/DELETE row above.
+    "/api/stack/artefacts/candidates": ("stack artefacts list", "stack_artefacts_candidates"),
+    "/api/stack/artefacts/{corpus_id}": ("stack artefacts add", "stack_artefact_add"),
 }
 
 
@@ -212,6 +219,20 @@ _STORE_DRYRUN_REASON = (
     "grandfathered /api/store/entities/preview wizard step); the real "
     "create endpoint carries the triple-surface contract."
 )
+_TRUST_LINE_REASON = (
+    "Publisher + verification (v104) — human judgment made while READING the "
+    "item on its detail page, not a programmable query. An admin decides to "
+    "publish something as the organization, or to verify it, having just looked "
+    "at what it does; a bare `agnes admin verify <id>` would invite exactly the "
+    "rubber-stamping this design removes (a badge nobody audited is what the "
+    "old permanent 'In review' queue amounted to). The verification axis is "
+    "also opt-in per instance (`store.verification_enabled`, default false), so "
+    "on most instances the verbs would not exist at all. The READ side IS "
+    "surfaced everywhere: publisher_kind / verification_state ride the store "
+    "entity and marketplace item payloads that `marketplace_search` / "
+    "`marketplace_detail` already expose, and the ?publisher / ?verification "
+    "facets narrow the same listings."
+)
 _COLLECTIONS_FILES_REASON = (
     "Collections file endpoints (Slice 2) — multipart upload has no MCP/JSON "
     "analogue (binary body), reachable via `agnes collections upload`; file "
@@ -285,7 +306,35 @@ _DATA_APPS_READINESS_REASON = (
     "analyst action; `agnes app show`/`agnes app open` (Task 10) cover the "
     "human-facing state check. No CLI/MCP analogue planned."
 )
+_LIBRARY_MOVE_REASON = (
+    "Backs the Library's drag-and-drop: moving a file between collections is a "
+    "direct-manipulation gesture on the /library table, not a command an analyst "
+    "would type. The CLI/MCP equivalent of reorganising files is re-uploading "
+    "into the intended collection, which already has surfaces."
+)
+
+_AGENTS_REGISTRY_REASON = (
+    "Web Agent-builder CRUD (v103 `agents` registry). The builder at /agents is "
+    "the only producer and the Library the only consumer; an agent cannot yet be "
+    "RUN on any surface, so there is no analyst CLI/MCP workflow to mirror. "
+    "Revisit when agents become runnable — then `agnes agent …` + an MCP tool "
+    "become the triple-surface obligation."
+)
+
+_LIBRARY_SHARING_REASON = (
+    "Owner-initiated sharing of Library items — a web affordance on /library "
+    "(share dialog). The equivalent grant writing already has analyst-facing "
+    "surfaces on the ADMIN side (`agnes admin grant …`); this endpoint only "
+    "narrows those same `resource_grants` writes to what an item's owner may do, "
+    "so a second CLI/MCP vocabulary for it would duplicate the admin one."
+)
+
 _EXEMPT: dict[str, str] = {
+    "/api/collections/{collection_id}/files/{file_id}/move": _LIBRARY_MOVE_REASON,
+    "/api/agents": _AGENTS_REGISTRY_REASON,
+    "/api/agents/{agent_id}": _AGENTS_REGISTRY_REASON,
+    "/api/sharing/groups": _LIBRARY_SHARING_REASON,
+    "/api/sharing/{resource_type}/{resource_id}": _LIBRARY_SHARING_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "
@@ -302,6 +351,9 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/authoring-suggestions/{sid}/reject": _AUTHORING_SUGGESTIONS_REASON,
     "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
     "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
+    "/api/store/entities/{entity_id}/publisher": _TRUST_LINE_REASON,
+    "/api/store/entities/{entity_id}/verification": _TRUST_LINE_REASON,
+    "/api/store/entities/{entity_id}/verification/request": _TRUST_LINE_REASON,
     "/api/admin/prompts/{kind}": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/source": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/bind-git": _PROMPTS_REASON,

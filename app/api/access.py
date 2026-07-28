@@ -692,6 +692,8 @@ async def create_grant(
             status_code=422,
             detail="requirement must be 'available' or 'required'",
         )
+    if payload.requirement == "required":
+        _reject_required_on_user_published(rt, payload.resource_id)
     try:
         grant_id = grants.create(
             group_id=payload.group_id,
@@ -705,6 +707,8 @@ async def create_grant(
             status_code=409,
             detail="Grant already exists for this group/resource_type/resource_id",
         )
+    if payload.requirement == "required":
+        _fanout_required_store_entity(rt, payload.group_id, payload.resource_id)
     _audit(
         conn,
         user["id"],
@@ -722,6 +726,50 @@ async def create_grant(
     if not fresh:
         raise HTTPException(status_code=500, detail="Grant created but lookup failed")
     return _grant_to_response(fresh)
+
+
+def _fanout_required_store_entity(rt: ResourceType, group_id: str, resource_id: str) -> None:
+    """Materialize installs for a newly-Required store entity.
+
+    Curated plugins inherit "always in the stack" from ``user_plugin_optouts``
+    presence semantics, but a store entity is served per-person out of
+    ``user_store_installs`` — without this the lock would render on a card the
+    user does not actually have. Members who join the group later are picked up
+    by the resolve-time top-up (see ``required_store_entity_ids``).
+    """
+    if rt is not ResourceType.STORE_ENTITY:
+        return
+    from src.repositories import user_store_installs_repo
+
+    user_store_installs_repo().install_for_group_members(group_id, resource_id)
+
+
+def _reject_required_on_user_published(rt: ResourceType, resource_id: str) -> None:
+    """ "In stack, locked" is admissible only on organization-published items.
+
+    Requiring something means every member of the group must carry it and
+    cannot remove it. That is an institutional commitment, so the organization
+    has to be the publisher standing behind it — an admin cannot conscript a
+    colleague's personal upload into everyone's stack.
+
+    Other resource types are unaffected: curated ``marketplace_plugin`` rows are
+    organization-published by construction (an admin registered the marketplace),
+    and the data types have no publisher axis at all.
+    """
+    if rt is not ResourceType.STORE_ENTITY:
+        return
+    from src.repositories import store_entities_repo
+
+    entity = store_entities_repo().get(resource_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Store entity not found")
+    if (entity.get("publisher_kind") or "user") != "organization":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "requirement 'required' needs an organization-published item — publish it as the organization first"
+            ),
+        )
 
 
 class UpdateGrantRequirementRequest(BaseModel):
@@ -761,8 +809,19 @@ async def update_grant_requirement(
     existing = grants.get(grant_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Grant not found")
+    if payload.requirement == "required":
+        _reject_required_on_user_published(
+            _validate_resource_type(existing["resource_type"]),
+            existing["resource_id"],
+        )
 
     prior = grants.update_requirement(grant_id, payload.requirement)
+    if payload.requirement == "required":
+        _fanout_required_store_entity(
+            _validate_resource_type(existing["resource_type"]),
+            existing["group_id"],
+            existing["resource_id"],
+        )
     # marketplace_plugin soft-downgrade: required → available still needs the
     # eager opt-out fan-out (see docstring) — data_package/memory_domain do
     # not, since auto-membership already keeps them in every granted user's

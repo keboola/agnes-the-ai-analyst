@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import (
     accessible_collection_ids,
+    can_access_collection,
     is_user_admin,
     require_collection_access,
 )
@@ -686,6 +687,72 @@ async def list_files(
         raise HTTPException(status_code=404, detail="collection_not_found")
     files = corpus_files_repo().list_for_corpus(collection_id)
     return {"files": [_file_out(f) for f in files]}
+
+
+class MoveFileBody(BaseModel):
+    target_collection_id: str = Field(min_length=1)
+
+
+@router.post("/{collection_id}/files/{file_id}/move")
+async def move_file(
+    collection_id: str,
+    file_id: str,
+    payload: MoveFileBody,
+    user=Depends(require_collection_access("{collection_id}")),
+):
+    """Move a file into another collection — the Library's drag-and-drop.
+
+    Gated on BOTH ends: the path dependency proves access to the source, and
+    the target is re-checked here (otherwise a caller could push a file into
+    someone else's collection).
+
+    When the source collection is left empty it is soft-deleted: a single-file
+    artefact IS its file in the Library, so dragging that file into a folder
+    must not strand an empty husk in the listing.
+    """
+    target_id = payload.target_collection_id
+    if target_id == collection_id:
+        raise HTTPException(status_code=400, detail="same_collection")
+
+    cf_repo = corpus_files_repo()
+    fc_repo = file_corpora_repo()
+    row = cf_repo.get(file_id)
+    if not row or row.get("corpus_id") != collection_id:
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    target = fc_repo.get(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="target_not_found")
+    if not is_user_admin(user["id"]) and not can_access_collection(user["id"], target_id):
+        # 404, not 403 — same reason as everywhere else here: never confirm the
+        # existence of a collection the caller can't reach.
+        raise HTTPException(status_code=404, detail="target_not_found")
+
+    if not cf_repo.move_to_corpus(file_id, target_id):
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    source_emptied = False
+    try:
+        if not cf_repo.list_for_corpus(collection_id):
+            fc_repo.soft_delete(collection_id)
+            source_emptied = True
+    except Exception as e:
+        logger.warning("move_file: could not tidy empty source %s: %s", collection_id, e)
+
+    logger.info(
+        "corpus_file moved file_id=%s from=%s to=%s by=%s (source_emptied=%s)",
+        file_id,
+        collection_id,
+        target_id,
+        user.get("email"),
+        source_emptied,
+    )
+    return {
+        "file_id": file_id,
+        "collection_id": target_id,
+        "source_collection_id": collection_id,
+        "source_emptied": source_emptied,
+    }
 
 
 @router.delete("/{collection_id}/files/{file_id}", status_code=204)

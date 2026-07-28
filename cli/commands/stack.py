@@ -246,3 +246,66 @@ def stack_remove(
             raise typer.Exit(1)
         _fail(resp)
     typer.echo(f"Removed the local copy of {rt}/{resource_id} — it stays in your stack, still queryable server-side.")
+
+
+# ---------------------------------------------------------------------------
+# `agnes stack artefacts …` — add "Artefacts to My Stack" (see the product
+# spec's Architecture decisions: artefacts are NOT routed through the
+# data_package/memory_domain surface above — no admin-RBAC "required" tier,
+# permission is ownership/sharing).
+# ---------------------------------------------------------------------------
+
+artefacts_app = typer.Typer(help="Add/remove artefacts (file collections) in your Stack")
+stack_app.add_typer(artefacts_app, name="artefacts")
+
+
+@artefacts_app.command("list")
+def artefacts_candidates(as_json: bool = typer.Option(False, "--json")):
+    """List artefacts eligible to add to your Stack — accessible to you
+    (owned, shared with you/your team, or workspace-published) and not
+    already in your Stack."""
+    resp = api_get("/api/stack/artefacts/candidates")
+    if resp.status_code != 200:
+        _fail(resp)
+    body = resp.json() or {}
+    items = body.get("items", [])
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    if not items:
+        total = body.get("total_accessible", 0)
+        if total == 0:
+            typer.echo("No artefacts exist yet — create one first (`agnes` web UI → /artefacts).")
+        else:
+            typer.echo("All artefacts you can access are already in your Stack.")
+        return
+    name_w = max(len("TITLE"), max((len(i.get("title", "")) for i in items), default=5))
+    header = f"{'TITLE':<{name_w}}  {'TYPE':<10}  {'VISIBILITY':<10}  OWNER"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for it in items:
+        typer.echo(
+            f"{it.get('title', '')[:name_w]:<{name_w}}  "
+            f"{it.get('type_label', ''):<10}  "
+            f"{it.get('visibility_label', ''):<10}  "
+            f"{it.get('owner_label', '')}"
+        )
+
+
+@artefacts_app.command("add")
+def artefacts_add(corpus_id: str = typer.Argument(..., help="Artefact (collection) id")):
+    """Add an artefact to your Stack so the default agent can use it."""
+    resp = api_post(f"/api/stack/artefacts/{corpus_id}")
+    if resp.status_code != 200:
+        _fail(resp)
+    typer.echo(f"Added {corpus_id} to your Stack.")
+
+
+@artefacts_app.command("remove")
+def artefacts_remove(corpus_id: str = typer.Argument(..., help="Artefact (collection) id")):
+    """Remove an artefact from your Stack — drops agent access only; the
+    artefact itself, its files, ownership and sharing are unaffected."""
+    resp = api_delete(f"/api/stack/artefacts/{corpus_id}")
+    if resp.status_code >= 300:
+        _fail(resp)
+    typer.echo(f"Removed {corpus_id} from your Stack.")

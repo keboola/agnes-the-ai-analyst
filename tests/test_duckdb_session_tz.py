@@ -153,6 +153,8 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_ducklake_migrate_prereqs_pg.py",
         # Data Apps registry contract — fixture isolation, intentional bare connect.
         "tests/db_pg/test_data_apps_contract.py",
+        # v103 agent-registry contract — fixture isolation, intentional bare connect.
+        "tests/db_pg/test_agents_contract.py",
     )
 
     pat = re.compile(r"duckdb\.connect\(")

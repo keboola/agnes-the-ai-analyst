@@ -15,6 +15,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 
+# v104: the two trust axes on a store entity. Duplicated verbatim in
+# ``store_entities_pg.py`` (the same convention ``resource_grants`` uses for its
+# ``requirement`` enum) — the cross-engine contract test pins both.
+#
+# 'organization' is written ONLY by the explicit admin "publish as the
+# organization" action, never derived from the owner's current Admin-group
+# membership: group membership is mutable and re-synced from the identity
+# provider, so a derived value would silently reclassify already-published
+# skills when an author moves out of the Admin group.
+PUBLISHER_KINDS = ("organization", "user")
+
+# 'requested' and 'changes_requested' are author-visible workflow states; other
+# users only ever see 'verified'. There is deliberately no "unverified" LABEL —
+# absence of a chip is the neutral default, because on an instance with no
+# reviewer a negative label would print on ~every card.
+VERIFICATION_STATES = ("none", "requested", "verified", "changes_requested")
+
 
 class StoreEntitiesRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
@@ -62,6 +79,7 @@ class StoreEntitiesRepository:
         title: Optional[str] = None,
         tagline: Optional[str] = None,
         synthetic_name: Optional[str] = None,
+        publisher_kind: str = "user",
     ) -> Dict[str, Any]:
         # v49 phase-1: title and synthetic_name fall back to derived values
         # when caller doesn't supply them — keeps the column NOT NULL invariant
@@ -71,6 +89,7 @@ class StoreEntitiesRepository:
         # honored.
         if not title:
             from src.store_naming import humanize_name
+
             title = humanize_name(name) or name or "Untitled"
         if not synthetic_name:
             synthetic_name = f"{name}-by-{owner_username}"
@@ -89,29 +108,49 @@ class StoreEntitiesRepository:
             "created_at": now.isoformat(),
             "created_by": owner_user_id,
         }
+        if publisher_kind not in PUBLISHER_KINDS:
+            raise ValueError(f"invalid publisher_kind: {publisher_kind!r}")
         self.conn.execute(
             """INSERT INTO store_entities
                 (id, owner_user_id, owner_username, type, name, description,
                  category, version, photo_path, video_url, doc_paths,
                  file_size, install_count, visibility_status,
                  version_no, version_history,
-                 title, tagline, synthetic_name,
+                 title, tagline, synthetic_name, publisher_kind,
+                 verification_state,
                  created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, ?,
+                    'none', ?, ?)""",
             [
-                id, owner_user_id, owner_username, type, name, description,
-                category, version, photo_path, video_url,
+                id,
+                owner_user_id,
+                owner_username,
+                type,
+                name,
+                description,
+                category,
+                version,
+                photo_path,
+                video_url,
                 json.dumps(doc_paths or []),
-                int(file_size), visibility_status,
+                int(file_size),
+                visibility_status,
                 json.dumps([v1_entry]),
-                title, tagline, synthetic_name,
-                now, now,
+                title,
+                tagline,
+                synthetic_name,
+                publisher_kind,
+                now,
+                now,
             ],
         )
         return self.get(id)  # type: ignore[return-value]
 
     def update_history_submission_id(
-        self, id: str, version_no: int, submission_id: str,
+        self,
+        id: str,
+        version_no: int,
+        submission_id: str,
     ) -> None:
         """Backfill the ``submission_id`` field on a version_history
         entry once the submission row has been written. Used by the
@@ -171,6 +210,7 @@ class StoreEntitiesRepository:
         # slot was taken by a re-upload, append `-restored-N` so the
         # un-archive doesn't 409.
         from src.store_naming import is_archived_name, strip_archive_suffix
+
         row = self.get(id)
         new_name = row["name"] if row else None
         if row and is_archived_name(row["name"]):
@@ -178,8 +218,7 @@ class StoreEntitiesRepository:
             owner_id = row["owner_user_id"]
             # Probe for collision against active rows (skip self).
             taken = self.conn.execute(
-                "SELECT id FROM store_entities "
-                "WHERE owner_user_id = ? AND name = ? AND id != ?",
+                "SELECT id FROM store_entities WHERE owner_user_id = ? AND name = ? AND id != ?",
                 [owner_id, stripped, id],
             ).fetchone()
             if not taken:
@@ -190,8 +229,7 @@ class StoreEntitiesRepository:
                 while True:
                     candidate = f"{stripped}-restored-{n}"
                     clash = self.conn.execute(
-                        "SELECT id FROM store_entities "
-                        "WHERE owner_user_id = ? AND name = ? AND id != ?",
+                        "SELECT id FROM store_entities WHERE owner_user_id = ? AND name = ? AND id != ?",
                         [owner_id, candidate, id],
                     ).fetchone()
                     if not clash:
@@ -215,12 +253,18 @@ class StoreEntitiesRepository:
     def set_visibility_if_pending(self, id: str, status: str) -> bool:
         """Background-task safe variant of :meth:`set_visibility`.
 
-        Only flips the row when its current ``visibility_status`` is one
-        of {'pending', 'hidden'} — i.e. the row is still in the review
-        window. Returns ``True`` if the update applied, ``False`` if
-        the row was in another state (admin already archived,
-        approved-and-installed, or hard-deleted between the BG task's
-        start and verdict-write).
+        Only flips the row while its ``visibility_status`` is still
+        ``'pending'`` — i.e. genuinely awaiting a verdict. Returns ``True``
+        if the update applied, ``False`` if the row was in another state
+        (already archived, approved-and-installed, hidden, or hard-deleted
+        between the BG task's start and verdict-write).
+
+        ``'hidden'`` is deliberately NOT flippable: it is a deliberate
+        decision by someone (an admin hiding an entity, or an owner saving a
+        skill as Private from the builder), and a review verdict landing
+        afterwards must not silently publish it. This matches the review
+        runner's own comment that "archive / hidden-by-admin paths leave
+        alone" — before this the method contradicted it.
 
         Used by the LLM review runner so a verdict landing late doesn't
         clobber an admin decision (e.g. archive while review was in
@@ -241,7 +285,7 @@ class StoreEntitiesRepository:
         if row is None:
             return False
         current = row[0]
-        if current not in ("pending", "hidden"):
+        if current != "pending":
             return False
         now = datetime.now(timezone.utc)
         # Re-check via WHERE so an admin archive that landed between the
@@ -253,7 +297,7 @@ class StoreEntitiesRepository:
                       archived_by = NULL,
                       updated_at = ?
                 WHERE id = ?
-                  AND visibility_status IN ('pending', 'hidden')""",
+                  AND visibility_status = 'pending'""",
             [status, now, id],
         )
         # Re-read to confirm the flip applied (admin may have raced in).
@@ -284,15 +328,13 @@ class StoreEntitiesRepository:
         existing suffix is preserved; we don't re-rename).
         """
         from src.store_naming import is_archived_name, make_archive_name
+
         row = self.get(id)
         if row is None:
             return {"original_name": "", "new_name": ""}
         # Re-archive: keep the existing suffixed name to avoid churning
         # the on-disk path on every redundant archive call.
-        if (
-            row.get("visibility_status") == "archived"
-            and is_archived_name(row.get("name") or "")
-        ):
+        if row.get("visibility_status") == "archived" and is_archived_name(row.get("name") or ""):
             return {
                 "original_name": row.get("name") or "",
                 "new_name": row.get("name") or "",
@@ -349,15 +391,17 @@ class StoreEntitiesRepository:
         max_n = max((int(e.get("n") or 0) for e in history), default=0)
         new_n = max_n + 1
         now = datetime.now(timezone.utc)
-        history.append({
-            "n": new_n,
-            "hash": version_hash,
-            "sha256": sha256,
-            "size": int(size) if size is not None else None,
-            "submission_id": submission_id,
-            "created_at": now.isoformat(),
-            "created_by": created_by,
-        })
+        history.append(
+            {
+                "n": new_n,
+                "hash": version_hash,
+                "sha256": sha256,
+                "size": int(size) if size is not None else None,
+                "submission_id": submission_id,
+                "created_at": now.isoformat(),
+                "created_by": created_by,
+            }
+        )
         self.conn.execute(
             "UPDATE store_entities SET version_history = ?, updated_at = ? WHERE id = ?",
             [json.dumps(history), now, id],
@@ -381,7 +425,7 @@ class StoreEntitiesRepository:
         if row is None:
             return False
         target = None
-        for entry in (row.get("version_history") or []):
+        for entry in row.get("version_history") or []:
             try:
                 if int(entry.get("n")) == int(version_no):
                     target = entry
@@ -398,9 +442,13 @@ class StoreEntitiesRepository:
                       file_size = ?,
                       updated_at = ?
                 WHERE id = ?""",
-            [int(version_no), target.get("hash"),
-             int(size) if size is not None else row.get("file_size"),
-             datetime.now(timezone.utc), id],
+            [
+                int(version_no),
+                target.get("hash"),
+                int(size) if size is not None else row.get("file_size"),
+                datetime.now(timezone.utc),
+                id,
+            ],
         )
         return True
 
@@ -434,14 +482,16 @@ class StoreEntitiesRepository:
         return n
 
     def get_version(
-        self, id: str, version_no: int,
+        self,
+        id: str,
+        version_no: int,
     ) -> Optional[Dict[str, Any]]:
         """Return the version_history entry for the given version_no, or
         ``None`` if the entity / version is unknown."""
         row = self.get(id)
         if row is None:
             return None
-        for entry in (row.get("version_history") or []):
+        for entry in row.get("version_history") or []:
             try:
                 if int(entry.get("n")) == int(version_no):
                     return entry
@@ -484,31 +534,43 @@ class StoreEntitiesRepository:
         sets: List[str] = []
         params: List[Any] = []
         if name is not None:
-            sets.append("name = ?"); params.append(name)
+            sets.append("name = ?")
+            params.append(name)
         if description is not None:
-            sets.append("description = ?"); params.append(description)
+            sets.append("description = ?")
+            params.append(description)
         if category is not None:
-            sets.append("category = ?"); params.append(category)
+            sets.append("category = ?")
+            params.append(category)
         if version is not None:
-            sets.append("version = ?"); params.append(version)
+            sets.append("version = ?")
+            params.append(version)
         if photo_path is not None:
-            sets.append("photo_path = ?"); params.append(photo_path)
+            sets.append("photo_path = ?")
+            params.append(photo_path)
         if video_url is not None:
-            sets.append("video_url = ?"); params.append(video_url)
+            sets.append("video_url = ?")
+            params.append(video_url)
         if doc_paths is not None:
-            sets.append("doc_paths = ?"); params.append(json.dumps(doc_paths))
+            sets.append("doc_paths = ?")
+            params.append(json.dumps(doc_paths))
         if file_size is not None:
-            sets.append("file_size = ?"); params.append(int(file_size))
+            sets.append("file_size = ?")
+            params.append(int(file_size))
         if title is not None:
-            sets.append("title = ?"); params.append(title)
+            sets.append("title = ?")
+            params.append(title)
         if tagline is not None:
             # empty string clears tagline; sentinel preserved here
-            sets.append("tagline = ?"); params.append(tagline or None)
+            sets.append("tagline = ?")
+            params.append(tagline or None)
         if synthetic_name is not None:
-            sets.append("synthetic_name = ?"); params.append(synthetic_name)
+            sets.append("synthetic_name = ?")
+            params.append(synthetic_name)
         if not sets:
             return self.get(id)
-        sets.append("updated_at = ?"); params.append(datetime.now(timezone.utc))
+        sets.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc))
         params.append(id)
         self.conn.execute(
             f"UPDATE store_entities SET {', '.join(sets)} WHERE id = ?",
@@ -538,16 +600,15 @@ class StoreEntitiesRepository:
         return bool(self.conn.execute(sql, params).fetchone())
 
     def get(self, id: str) -> Optional[Dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM store_entities WHERE id = ?", [id]
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM store_entities WHERE id = ?", [id]).fetchall()
         if not rows:
             return None
         columns = [d[0] for d in self.conn.description]
         return self._row_to_dict(columns, rows[0])
 
     def get_with_version_approvals(
-        self, id: str,
+        self,
+        id: str,
     ) -> Optional[Dict[str, Any]]:
         """Same as :meth:`get` but each ``version_history`` entry gets
         an additional ``submission_status`` field populated from
@@ -565,16 +626,12 @@ class StoreEntitiesRepository:
         history = list(entity.get("version_history") or [])
         if not history:
             return entity
-        sub_ids = [
-            entry.get("submission_id") for entry in history
-            if entry.get("submission_id")
-        ]
+        sub_ids = [entry.get("submission_id") for entry in history if entry.get("submission_id")]
         status_by_id: Dict[str, str] = {}
         if sub_ids:
             placeholders = ",".join("?" for _ in sub_ids)
             rows = self.conn.execute(
-                f"SELECT id, status FROM store_submissions "
-                f"WHERE id IN ({placeholders})",
+                f"SELECT id, status FROM store_submissions WHERE id IN ({placeholders})",
                 sub_ids,
             ).fetchall()
             for sub_id, status in rows:
@@ -588,9 +645,7 @@ class StoreEntitiesRepository:
         for entry in history:
             entry = dict(entry)
             sid = entry.get("submission_id")
-            entry["submission_status"] = (
-                status_by_id.get(sid) if sid else None
-            )
+            entry["submission_status"] = status_by_id.get(sid) if sid else None
             annotated.append(entry)
         entity["version_history"] = annotated
         return entity
@@ -634,6 +689,9 @@ class StoreEntitiesRepository:
         owner_user_id: Optional[str] = None,
         visibility_status: Optional[List[str]] = None,
         include_owner_id: Optional[str] = None,
+        publisher_kind: Optional[str] = None,
+        exclude_owner_user_id: Optional[str] = None,
+        verification_state: Optional[List[str]] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Filtered + paginated listing.
 
@@ -651,25 +709,51 @@ class StoreEntitiesRepository:
         approved-only listing. Used by the marketplace + store browse
         pages so submitters spot their own under-review uploads in the
         grid.
+
+        ``publisher_kind`` / ``exclude_owner_user_id`` / ``verification_state``
+        back the v104 Publisher + Verification facets. None of them is an access
+        control: they narrow an already-authorized listing, and
+        ``verification_state`` in particular must never be used to hide an
+        unverified entity from a caller who is otherwise entitled to see it.
         """
         clauses: List[str] = []
         params: List[Any] = []
         if type:
-            clauses.append("type = ?"); params.append(type)
+            clauses.append("type = ?")
+            params.append(type)
         if category:
             # "Other" is the synthetic bucket for entities with NULL / empty
             # category (matches what /api/marketplace/categories reports for
             # the Flea tab). An explicit category=='Other' string also lands
             # here so a user who picked "Other" at upload time stays grouped.
             if category == "Other":
-                clauses.append(
-                    "(category IS NULL OR TRIM(category) = '' OR category = ?)"
-                )
+                clauses.append("(category IS NULL OR TRIM(category) = '' OR category = ?)")
                 params.append(category)
             else:
-                clauses.append("category = ?"); params.append(category)
+                clauses.append("category = ?")
+                params.append(category)
         if owner_user_id:
-            clauses.append("owner_user_id = ?"); params.append(owner_user_id)
+            clauses.append("owner_user_id = ?")
+            params.append(owner_user_id)
+        # v104 Publisher facet. "Organization" is publisher_kind alone; "Me" is
+        # publisher_kind='user' + owner_user_id (the caller passes both); "Other
+        # users" is publisher_kind='user' + exclude_owner_user_id. The
+        # me/other-users split is derived per request, never stored.
+        if publisher_kind:
+            if publisher_kind not in PUBLISHER_KINDS:
+                raise ValueError(f"invalid publisher_kind: {publisher_kind!r}")
+            clauses.append("publisher_kind = ?")
+            params.append(publisher_kind)
+        if exclude_owner_user_id:
+            clauses.append("owner_user_id != ?")
+            params.append(exclude_owner_user_id)
+        if verification_state:
+            for state in verification_state:
+                if state not in VERIFICATION_STATES:
+                    raise ValueError(f"invalid verification_state: {state!r}")
+            placeholders = ",".join("?" for _ in verification_state)
+            clauses.append(f"verification_state IN ({placeholders})")
+            params.extend(verification_state)
         if search:
             clauses.append("(LOWER(name) LIKE ? OR LOWER(description) LIKE ?)")
             like = f"%{search.lower()}%"
@@ -696,9 +780,11 @@ class StoreEntitiesRepository:
                 params.extend(visibility_status)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
-        total = self.conn.execute(
-            f"SELECT COUNT(*) FROM store_entities {where}", params,
-        ).fetchone()[0]
+        count_row = self.conn.execute(
+            f"SELECT COUNT(*) FROM store_entities {where}",
+            params,
+        ).fetchone()
+        total = int(count_row[0]) if count_row else 0
 
         rows = self.conn.execute(
             f"""SELECT * FROM store_entities {where}
@@ -741,7 +827,8 @@ class StoreEntitiesRepository:
         clauses: List[str] = []
         params: List[Any] = []
         if type:
-            clauses.append("type = ?"); params.append(type)
+            clauses.append("type = ?")
+            params.append(type)
         if visibility_status:
             placeholders = ",".join("?" for _ in visibility_status)
             if owner_id:
@@ -765,14 +852,151 @@ class StoreEntitiesRepository:
         ).fetchall()
         return {str(r[0]): int(r[1]) for r in rows}
 
+    def set_publisher_kind(
+        self,
+        id: str,
+        publisher_kind: str,
+        *,
+        by_user_id: str,
+    ) -> bool:
+        """Flip who stands behind an entity ('organization' | 'user').
+
+        Admin-only at the API layer. Flipping TO 'organization' also clears any
+        verification state: an org-published item carries the stronger claim, so
+        a checkmark on top of it would invent a fourth trust tier (invariant 1 —
+        ``publisher_kind='organization' ⇒ verification_state='none'``).
+
+        Returns ``False`` when the row does not exist.
+        """
+        if publisher_kind not in PUBLISHER_KINDS:
+            raise ValueError(f"invalid publisher_kind: {publisher_kind!r}")
+        if self.get(id) is None:
+            return False
+        now = datetime.now(timezone.utc)
+        if publisher_kind == "organization":
+            self.conn.execute(
+                """UPDATE store_entities
+                      SET publisher_kind = ?,
+                          verification_state = 'none',
+                          verified_at = NULL,
+                          verified_by = ?,
+                          verification_note = NULL,
+                          updated_at = ?
+                    WHERE id = ?""",
+                [publisher_kind, by_user_id, now, id],
+            )
+        else:
+            self.conn.execute(
+                """UPDATE store_entities
+                      SET publisher_kind = ?, updated_at = ?
+                    WHERE id = ?""",
+                [publisher_kind, now, id],
+            )
+        return True
+
+    def set_verification(
+        self,
+        id: str,
+        verification_state: str,
+        *,
+        by_user_id: str,
+        note: Optional[str] = None,
+    ) -> bool:
+        """Set the org's advisory verification verdict on a USER-published item.
+
+        ``verified_at`` / ``verified_by`` are stamped only for the terminal
+        ``'verified'`` state and cleared otherwise, so "when was this verified"
+        can never read stale after a ``changes_requested`` or a removal.
+
+        Refuses (returns ``False``) on an organization-published row, upholding
+        invariant 1 from the other direction. Also returns ``False`` when the
+        row does not exist — the caller distinguishes via :meth:`get`.
+
+        This value NEVER gates a read. It feeds the card chip and the
+        Verification filter only; wiring it into ``_enforce_visibility`` or the
+        listing clause would rebuild the approval queue this design removes.
+        """
+        if verification_state not in VERIFICATION_STATES:
+            raise ValueError(f"invalid verification_state: {verification_state!r}")
+        row = self.get(id)
+        if row is None or row.get("publisher_kind") == "organization":
+            return False
+        now = datetime.now(timezone.utc)
+        verified_at = now if verification_state == "verified" else None
+        self.conn.execute(
+            """UPDATE store_entities
+                  SET verification_state = ?,
+                      verified_at = ?,
+                      verified_by = ?,
+                      verification_note = ?,
+                      updated_at = ?
+                WHERE id = ?""",
+            [verification_state, verified_at, by_user_id, note, now, id],
+        )
+        return True
+
+    def publisher_counts(
+        self,
+        *,
+        type: Optional[str] = None,
+        visibility_status: Optional[List[str]] = None,
+        owner_id: Optional[str] = None,
+        viewer_user_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Counts for the Publisher facet: ``{organization, me, other_users}``.
+
+        The honest replacement for the retired per-tab counts. ``me`` /
+        ``other_users`` are a per-request split of ``publisher_kind='user'``
+        against ``viewer_user_id`` — that split is derived, never stored, so a
+        row needs no rewrite when a different person browses. With no
+        ``viewer_user_id`` (an anonymous/system caller) every user-published row
+        lands in ``other_users``.
+
+        Mirrors :meth:`category_counts`' WHERE so facet counts agree with the
+        grid they annotate.
+        """
+        clauses: List[str] = []
+        params: List[Any] = []
+        if type:
+            clauses.append("type = ?")
+            params.append(type)
+        if visibility_status:
+            placeholders = ",".join("?" for _ in visibility_status)
+            if owner_id:
+                clauses.append(
+                    f"(visibility_status IN ({placeholders}) "
+                    f"OR (owner_user_id = ? AND visibility_status != 'archived'))"
+                )
+                params.extend(visibility_status)
+                params.append(owner_id)
+            else:
+                clauses.append(f"visibility_status IN ({placeholders})")
+                params.extend(visibility_status)
+        elif owner_id:
+            clauses.append("owner_user_id = ?")
+            params.append(owner_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT publisher_kind, owner_user_id, COUNT(*) "
+            f"FROM store_entities {where} GROUP BY publisher_kind, owner_user_id",
+            params,
+        ).fetchall()
+        out = {"organization": 0, "me": 0, "other_users": 0}
+        for kind, owner, n in rows:
+            if kind == "organization":
+                out["organization"] += int(n)
+            elif viewer_user_id and owner == viewer_user_id:
+                out["me"] += int(n)
+            else:
+                out["other_users"] += int(n)
+        return out
+
     def bump_install_count(self, id: str, delta: int) -> None:
         """Adjust install_count by delta (signed). Floors at 0 — concurrent
         uninstall + delete races shouldn't push the number negative.
         """
         self.conn.execute(
-            "UPDATE store_entities "
-            "SET install_count = GREATEST(install_count + ?, 0) "
-            "WHERE id = ?",
+            "UPDATE store_entities SET install_count = GREATEST(install_count + ?, 0) WHERE id = ?",
             [int(delta), id],
         )
 

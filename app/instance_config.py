@@ -1053,6 +1053,22 @@ def get_guardrails_enabled() -> bool:
     return bool(get_value("guardrails", "enabled", default=True))
 
 
+def get_store_verification_enabled() -> bool:
+    """Whether the org-verification axis is offered on this instance.
+
+    Reads ``store.verification_enabled``. **Defaults to False**, deliberately:
+    verification needs a human reviewer, and an instance without one must not
+    show the vocabulary at all. A "Request verification" button with no queue
+    behind it, or an "Unverified" chip on every card, is the same rotting
+    promise as a permanent "In review" badge — the failure mode this axis was
+    designed to avoid.
+
+    Off does NOT mean untrusted: publisher attribution (the byline, and the
+    "Organization" label) carries accountability on its own and is always on.
+    """
+    return bool(get_value("store", "verification_enabled", default=False))
+
+
 def get_guardrails_llm_provider_ready() -> bool:
     """Whether the LLM provider has credentials present in the
     environment.

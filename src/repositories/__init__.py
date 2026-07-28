@@ -132,6 +132,8 @@ __all__ = [
     "file_corpora_repo",
     "corpus_files_repo",
     "corpus_chunks_repo",
+    # Agent registry (v103) — the Library's agent items
+    "agents_repo",
     # Maintained digests (K4, #799)
     "knowledge_digests_repo",
     # Chat sandbox secret broker tickets
@@ -458,6 +460,11 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.corpus_chunks", "CorpusChunksRepository"),
         PG: ("src.repositories.corpus_chunks_pg", "CorpusChunksPgRepository"),
     },
+    # agent registry (v103)
+    "agents": {
+        DUCKDB: ("src.repositories.agents", "AgentsRepository"),
+        PG: ("src.repositories.agents_pg", "AgentsPgRepository"),
+    },
     # Maintained digests (K4, #799)
     "knowledge_digests": {
         DUCKDB: ("src.repositories.knowledge_digests", "KnowledgeDigestsRepository"),
@@ -737,6 +744,11 @@ def file_corpora_repo() -> Any:
 
 def corpus_files_repo() -> Any:
     return _build("corpus_files")
+
+
+def agents_repo() -> Any:
+    """Agent registry (v103) — server-side agent definitions."""
+    return _build("agents")
 
 
 def corpus_chunks_repo() -> Any:

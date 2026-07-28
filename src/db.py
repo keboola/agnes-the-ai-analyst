@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 101
+SCHEMA_VERSION = 104
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -79,6 +79,37 @@ CREATE TABLE IF NOT EXISTS data_apps (
     last_deploy_at  TIMESTAMP,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+"""
+
+# v103: agents registry — assistants the caller composes in the Agent builder
+# (/agents). Replaces the localStorage-only draft store the builder shipped
+# with, so an agent is a real, server-side Library item that can be shared
+# through resource_grants like any other resource type. Extracted as a shared
+# module-level constant so the fresh-install DDL (appended to _SYSTEM_SCHEMA
+# below) and the _v102_to_v103 upgrade step execute the identical CREATE TABLE.
+#
+# The JSON-encoded columns (knowledge, plugins, surfaces) mirror the builder's
+# in-browser shape 1:1 — they are opaque id lists the builder owns, never
+# joined against in SQL, so a TEXT payload is the honest representation rather
+# than three junction tables that nothing would query relationally.
+_AGENTS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS agents (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    role            VARCHAR DEFAULT '',
+    instructions    TEXT DEFAULT '',
+    tone            VARCHAR DEFAULT 'concise',
+    greeting        TEXT DEFAULT '',
+    knowledge       TEXT DEFAULT '[]',
+    plugins         TEXT DEFAULT '[]',
+    surfaces        TEXT DEFAULT '{}',
+    status          VARCHAR NOT NULL DEFAULT 'draft',
+    created_by      VARCHAR NOT NULL,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp,
+    deleted_at      TIMESTAMP
 );
 """
 
@@ -973,6 +1004,39 @@ CREATE TABLE IF NOT EXISTS store_entities (
     title             VARCHAR NOT NULL,
     tagline           VARCHAR,
     synthetic_name    VARCHAR NOT NULL,
+    -- v104: publisher + verification — the card's trust line ("Skill · by
+    -- Anna Nováková" / "Skill · Your organization").
+    --
+    -- `publisher_kind` answers "who stands behind this", and is deliberately
+    -- STORED rather than derived from the owner's current Admin-group
+    -- membership: groups are mutable and re-synced nightly from the identity
+    -- provider, so a derived value would silently reclassify an author's
+    -- published skills the moment they moved out of the Admin group. Only an
+    -- explicit admin "publish as the organization" action writes
+    -- 'organization'. Curated marketplace_plugins rows need no column — the
+    -- admin act of registering the marketplace already makes every plugin in
+    -- it organization-published, so the projection layer hard-codes it.
+    --
+    -- The verification columns are the org's advisory review of a
+    -- USER-published item. Two invariants, both asserted in tests:
+    --   1. publisher_kind='organization' ⇒ verification_state='none'. An org
+    --      item carries the stronger claim; a checkmark on top of it would
+    --      invent a fourth trust tier.
+    --   2. Verification NEVER gates reads. It is a chip and a filter value,
+    --      never a predicate in _enforce_visibility or the listing clause —
+    --      the moment it gates, it is the old approval queue again.
+    -- 'requested' / 'changes_requested' are author-visible workflow states;
+    -- other users see only 'verified' (or nothing at all — there is no
+    -- "Unverified" label, by design, since it would print on ~every card on
+    -- an instance with no reviewer).
+    publisher_kind    VARCHAR NOT NULL DEFAULT 'user'
+                      CHECK (publisher_kind IN ('organization','user')),
+    verification_state VARCHAR NOT NULL DEFAULT 'none'
+                      CHECK (verification_state IN
+                             ('none','requested','verified','changes_requested')),
+    verified_at       TIMESTAMP,
+    verified_by       VARCHAR,
+    verification_note TEXT,
     created_at        TIMESTAMP DEFAULT current_timestamp,
     updated_at        TIMESTAMP DEFAULT current_timestamp,
     UNIQUE (owner_user_id, name)
@@ -1377,6 +1441,7 @@ CREATE TABLE IF NOT EXISTS file_corpora (
     name VARCHAR NOT NULL,
     description VARCHAR,
     created_by VARCHAR NOT NULL,
+    origin VARCHAR NOT NULL DEFAULT 'uploaded',
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP DEFAULT current_timestamp,
     deleted_at TIMESTAMP
@@ -1601,6 +1666,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
 CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
 """
     + _DATA_APPS_CREATE_SQL
+    + _AGENTS_CREATE_SQL
 )
 
 
@@ -5985,6 +6051,7 @@ def _v81_to_v82(conn: duckdb.DuckDBPyConnection) -> None:
             name VARCHAR NOT NULL,
             description VARCHAR,
             created_by VARCHAR NOT NULL,
+            origin VARCHAR NOT NULL DEFAULT 'uploaded',
             created_at TIMESTAMP DEFAULT current_timestamp,
             updated_at TIMESTAMP DEFAULT current_timestamp,
             deleted_at TIMESTAMP
@@ -6574,6 +6641,65 @@ def _v100_to_v101(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 101")
 
 
+def _v101_to_v102(conn: duckdb.DuckDBPyConnection) -> None:
+    """v101→v102: add ``file_corpora.origin`` (``uploaded`` | ``generated``).
+
+    Provenance for the Artefacts toolbar's Source facet. Every existing
+    artefact is user-uploaded, so the column defaults to ``'uploaded'``; the
+    future agent-generated-artefact writer sets ``'generated'``. Idempotent
+    ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a no-op on fresh
+    installs (``_SYSTEM_SCHEMA`` already declares the column).
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'file_corpora'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE file_corpora ADD COLUMN IF NOT EXISTS origin VARCHAR DEFAULT 'uploaded'")
+    conn.execute("UPDATE schema_version SET version = 102")
+
+
+def _v102_to_v103(conn: duckdb.DuckDBPyConnection) -> None:
+    """v102→v103: ``agents`` table — the server-side agent registry.
+
+    The Agent builder (/agents) previously kept agent definitions in
+    localStorage only, so an agent could not be listed on another device,
+    surfaced in the Library, or shared. This creates the registry those need.
+
+    Runs the shared ``_AGENTS_CREATE_SQL`` (``CREATE TABLE IF NOT EXISTS``),
+    so it is idempotent and a no-op on fresh installs where
+    ``_SYSTEM_SCHEMA`` already declares the table.
+    """
+    conn.execute(_AGENTS_CREATE_SQL)
+    conn.execute("UPDATE schema_version SET version = 103")
+
+
+def _v103_to_v104(conn: duckdb.DuckDBPyConnection) -> None:
+    """v103→v104: ``store_entities`` publisher + verification columns.
+
+    Backfill intent: every pre-v104 row is a user upload (the "publish as the
+    organization" action ships with this version), so ``publisher_kind``
+    defaults to ``'user'`` and ``verification_state`` to ``'none'`` — which is
+    also the state that renders NO chip, so the upgrade is visually inert.
+
+    Idempotent ``ADD COLUMN IF NOT EXISTS`` guarded on table existence; a no-op
+    on fresh installs where ``_SYSTEM_SCHEMA`` already declares the columns.
+    DuckDB does not enforce the CHECK constraints declared in
+    ``_SYSTEM_SCHEMA``, and ``ADD COLUMN`` cannot carry them anyway — the
+    repository layer validates both enums on write.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'store_entities'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS publisher_kind VARCHAR DEFAULT 'user'")
+        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_state VARCHAR DEFAULT 'none'")
+        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP")
+        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_by VARCHAR")
+        conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_note TEXT")
+        # A row that predates the columns reads NULL, not the DEFAULT — the
+        # default only applies to inserts. Normalize so every read path can
+        # treat these as non-null enums.
+        conn.execute("UPDATE store_entities SET publisher_kind = 'user' WHERE publisher_kind IS NULL")
+        conn.execute("UPDATE store_entities SET verification_state = 'none' WHERE verification_state IS NULL")
+    conn.execute("UPDATE schema_version SET version = 104")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -6989,6 +7115,17 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # a DB already stamped ≥92 under the old numbering). No-op on fresh
             # installs — the column is already present.
             _v100_to_v101(conn)
+            # v101→v102: add file_corpora.origin (uploaded | generated). No-op
+            # on fresh installs — _SYSTEM_SCHEMA already declares the column.
+            _v101_to_v102(conn)
+            # v102→v103: agents registry (server-side agent definitions, the
+            # Library's third item kind). No-op on fresh installs —
+            # _SYSTEM_SCHEMA already appends _AGENTS_CREATE_SQL.
+            _v102_to_v103(conn)
+            # v103→v104: store_entities publisher_kind + verification_state
+            # (+ verified_at/by/note). No-op on fresh installs —
+            # _SYSTEM_SCHEMA already declares the columns.
+            _v103_to_v104(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7244,6 +7381,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v99_to_v100(conn)
             if current < 101:
                 _v100_to_v101(conn)
+            if current < 102:
+                _v101_to_v102(conn)
+            if current < 103:
+                _v102_to_v103(conn)
+            if current < 104:
+                _v103_to_v104(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

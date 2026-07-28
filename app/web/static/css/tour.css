@@ -179,6 +179,12 @@
   border-top: 1px solid var(--ds-border-light);
 }
 
+/* Single-step coach-mark: no progress dots, so the lone action row would
+   otherwise land at flex-start under space-between. */
+.tour-popover-footer--solo {
+  justify-content: flex-end;
+}
+
 /* Progress dots */
 .tour-dots {
   display: flex;
