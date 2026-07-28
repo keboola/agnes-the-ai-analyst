@@ -200,7 +200,13 @@ class WorkdirManager:
         # claude-agent-sdk resolves .claude/{skills,plugins,agents,commands,hooks}
         # against the per-user workspace.
         ws = self.user_workspace(user_email)
-        entries = [".claude", "CLAUDE.md", "snapshots", "scripts"]
+        # "scaffolds" carries the data-apps starter templates the
+        # agnes-data-apps-extras skill copies from (wave 3C) — without it the
+        # sandbox's /work has no scaffolds/ and the skill's very first
+        # `cp -R scaffolds/...` step fails. Co-sessions deliberately get no
+        # workspace symlinks (see prepare_ephemeral_session_dir), so app
+        # scaffolding is a solo-session capability.
+        entries = [".claude", "CLAUDE.md", "snapshots", "scripts", "scaffolds"]
         if include_personal_override:
             entries.append("CLAUDE.local.md")
         # A profile owns .claude (copied, see below) and CLAUDE.md (persona) —
