@@ -416,6 +416,9 @@ _DATA_APPS_READINESS_REASON = (
     "analyst action; `agnes app show`/`agnes app open` (Task 10) cover the "
     "human-facing state check. No CLI/MCP analogue planned."
 )
+_DATA_APPS_PREVIEW_GRANT_REASON = (
+    "preview-grant mints the in-chat iframe cookie for the web chat surface; chat-only, no CLI/MCP analogue (spec §7)"
+)
 _EXEMPT: dict[str, str] = {
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
     "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
@@ -555,6 +558,11 @@ _EXEMPT: dict[str, str] = {
     # git-credential/drafts got their CLI + MCP surfaces in wave 3B Task 8 —
     # see the /api/data-apps/{slug}/drafts* and /git-credential entries in
     # _COHORT above.
+    # Wave 3C in-chat preview loop (Task 5) — mints the iframe cookie for the
+    # web chat surface; the 4 preview MCP tools (Task 4) are chat-only and
+    # have no REST path of their own (see FOUNDATION_TOOL_NAMES), so this is
+    # the one new REST route the preview loop adds.
+    "/api/data-apps/{slug}/preview-grant": _DATA_APPS_PREVIEW_GRANT_REASON,
     "/api/broker/data-apps": (
         "broker replay surface for the sandboxed authoring agent; not a "
         "user-facing API — internal sandbox->server route confined to the "

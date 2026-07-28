@@ -91,6 +91,17 @@ def _stash_payload(request: Optional[Request], payload: dict) -> None:
 # non-admin (or admin, if the owner is Admin) REST/MCP endpoint.
 DATA_APP_GIT_SCOPE_PREFIX = "data-app-git:"
 
+# Scope prefix minted by `app.api.data_apps._mint_preview_token` for the
+# short-TTL in-chat preview-iframe capability (wave 3C, spec §7 / Q4). Mirrors
+# `DATA_APP_GIT_SCOPE_PREFIX` exactly: a token carrying this scope must never
+# authenticate the JSON control-plane API (or anything else) — only
+# `app/api/data_apps_proxy.py`'s view-only serving path may pass
+# `allow_data_app_preview_scope=True` to accept it, and even there the caller
+# still pins the scope's `<slug>` to the requested app before treating the
+# resolved identity as authorized (a preview token minted for one app must
+# never authorize viewing a different one).
+DATA_APP_PREVIEW_SCOPE_PREFIX = "data-app-preview:"
+
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
     """See app/auth/dependencies._client_ip — same trusted-hop model (F9)."""
@@ -105,6 +116,7 @@ def resolve_token_to_user(
     request: Optional[Request] = None,
     *,
     allow_data_app_git_scope: bool = False,
+    allow_data_app_preview_scope: bool = False,
 ) -> Tuple[Optional[dict], Optional[ResolutionReason]]:
     """Validate a bearer token and return (user_dict, None) on success.
 
@@ -122,6 +134,13 @@ def resolve_token_to_user(
     ``app.api.data_apps._mint_git_credential``) is accepted. Every caller
     defaults to ``False`` (fail closed) except ``app/api/data_apps_git.py``,
     the one surface that credential is meant to authenticate.
+
+    ``allow_data_app_preview_scope`` is the same fail-closed gate for a
+    ``data-app-preview:<slug>`` scope (minted by
+    ``app.api.data_apps._mint_preview_token``) — only
+    ``app/api/data_apps_proxy.py``'s view-only serving path passes
+    ``True``. Both scope checks reject their own prefix independently, so a
+    caller that (mistakenly) allows one never accepts the other.
     """
     if not token:
         return None, "no_token"
@@ -132,6 +151,8 @@ def resolve_token_to_user(
 
     scope = payload.get("scope") or ""
     if scope.startswith(DATA_APP_GIT_SCOPE_PREFIX) and not allow_data_app_git_scope:
+        return None, "pat_scope_forbidden"
+    if scope.startswith(DATA_APP_PREVIEW_SCOPE_PREFIX) and not allow_data_app_preview_scope:
         return None, "pat_scope_forbidden"
 
     if payload.get("typ") == "agent_pat":

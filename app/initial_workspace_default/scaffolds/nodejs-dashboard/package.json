@@ -1,0 +1,30 @@
+{
+  "name": "agnes-nodejs-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Agnes hosted-data-app scaffold: React + Vite + Tailwind SPA served by an Express backend that reads data through the Agnes REST API.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && tsc -p server/tsconfig.json",
+    "start": "node server/dist/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.9",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.3"
+  }
+}

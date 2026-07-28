@@ -273,6 +273,15 @@ class TestToolRegistration:
             "data_app_create_draft",
             "data_app_delete_draft",
             "data_app_git_credential",
+            # Wave 3C in-chat preview loop (Task 4/5) — chat-surface-only
+            # render directives for the split-pane preview iframe (spec
+            # §7/§9): no REST/CLI analogue. `agnes_data_app_preview`'s
+            # live-URL call mints a short-TTL `data-app-preview:<slug>`
+            # scoped grant via POST /api/data-apps/{slug}/preview-grant.
+            "agnes_data_app_preview",
+            "agnes_data_app_refresh",
+            "agnes_data_app_close",
+            "agnes_data_app_credentials",
         }
 
     def test_no_client_only_tools(self):

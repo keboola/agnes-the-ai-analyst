@@ -119,6 +119,18 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "data_app_create_draft",
     "data_app_delete_draft",
     "data_app_git_credential",
+    # Wave 3C in-chat preview loop (Task 4/5) — chat-surface-ONLY render
+    # directives for the split-pane preview iframe (spec §7/§9): no REST/CLI
+    # analogue exists or is planned (the fixed render-directive JSON these
+    # return is the frontend contract, not a general-purpose API response).
+    # `agnes_data_app_preview`'s live-URL call mints a short-TTL
+    # `data-app-preview:<slug>` scoped grant via
+    # POST /api/data-apps/{slug}/preview-grant (_EXEMPT in
+    # tests/test_documentation_api_triple_surface.py).
+    "agnes_data_app_preview",
+    "agnes_data_app_refresh",
+    "agnes_data_app_close",
+    "agnes_data_app_credentials",
 )
 
 
@@ -1554,5 +1566,132 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
+
+    def _data_apps_disabled_payload() -> dict:
+        return {
+            "error": "data_apps_disabled",
+            "message": "Data apps are disabled on this instance.",
+        }
+
+    def _is_data_apps_disabled_response(r: httpx.Response) -> bool:
+        if r.status_code != 404:
+            return False
+        try:
+            return r.json().get("detail") == "data_apps_disabled"
+        except Exception:
+            return False
+
+    @mcp.tool()
+    async def agnes_data_app_preview(slug: str, url: str = "") -> dict:
+        """Open or refresh the in-chat split-pane preview of a hosted data app.
+
+        Chat-surface-only (spec §7/§9) — no REST/CLI analogue; the runner
+        forwards this tool's return value verbatim into a render directive
+        the web chat frontend switches on.
+
+        Call this TWICE per preview cycle: first with an empty ``url`` (the
+        default) the moment a scaffold/dev deploy is kicked off — this opens
+        a placeholder pane immediately (spec §7 mandate), before the app is
+        actually reachable. Once the dev deploy is healthy (poll
+        ``data_app_get`` in short steps), call again with the real ``url``
+        (typically ``/apps/<slug>/``) to swap the pane to the live app —
+        this second call mints a short-TTL scoped preview grant
+        (``POST /api/data-apps/{slug}/preview-grant``) so the iframe loads
+        without a cross-origin login.
+
+        Args:
+            slug: The (draft or prod) app's slug.
+            url:  Empty (default) for the placeholder call; the app's URL
+                  (e.g. ``/apps/<slug>/``) to swap to the live pane.
+
+        Returns ``{"render": "data_app_preview", "slug", "url",
+        "preview_cookie"}`` — ``url``/``preview_cookie`` are ``null`` on the
+        placeholder call. Returns a friendly ``data_apps_disabled`` payload
+        (not an error) if data apps are disabled on this instance.
+        """
+        if not url:
+            return {"render": "data_app_preview", "slug": slug, "url": None, "preview_cookie": None}
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/preview-grant",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            if _is_data_apps_disabled_response(r):
+                return _data_apps_disabled_payload()
+            r.raise_for_status()
+            grant = r.json()
+        return {
+            "render": "data_app_preview",
+            "slug": slug,
+            "url": url,
+            "preview_cookie": grant.get("preview_cookie"),
+        }
+
+    @mcp.tool()
+    async def agnes_data_app_refresh(slug: str) -> dict:
+        """Force-reload the in-chat preview pane for a hosted data app.
+
+        Chat-surface-only (spec §9) — no REST/CLI analogue; a pure render
+        directive with no server round-trip. Call after pushing a fresh
+        commit to a draft's dev deploy so the iframe picks up the change
+        without the user manually reloading.
+
+        Args:
+            slug: The app's slug the currently-open pane is showing.
+
+        Returns ``{"render": "data_app_preview_refresh", "slug"}``.
+        """
+        return {"render": "data_app_preview_refresh", "slug": slug}
+
+    @mcp.tool()
+    async def agnes_data_app_close(slug: str) -> dict:
+        """Tear down the in-chat preview pane for a hosted data app.
+
+        Chat-surface-only (spec §9) — no REST/CLI analogue; a pure render
+        directive with no server round-trip. Call this BEFORE
+        ``data_app_delete_draft`` when abandoning or promoting a draft (the
+        extras skill's ordering rule) — closing the pane first avoids the
+        iframe pointing at a container that's about to disappear.
+
+        Args:
+            slug: The app's slug the currently-open pane is showing.
+
+        Returns ``{"render": "data_app_preview_close", "slug"}``.
+        """
+        return {"render": "data_app_preview_close", "slug": slug}
+
+    @mcp.tool()
+    async def agnes_data_app_credentials(slug: str) -> dict:
+        """Show the shareable URL for a hosted data app — the TERMINAL
+        render of a reply (spec §7): never follow this tool's result with
+        more chat text.
+
+        Chat-surface-only (spec §9) — no REST/CLI analogue.
+
+        Args:
+            slug: The app's slug.
+
+        Returns ``{"render": "data_app_credentials", "slug", "url",
+        "password"}``. ``password`` is always ``null`` today — the
+        control-plane detail endpoint this calls never returns the
+        encrypted secrets blob (by design), so there is no shared
+        basic-auth password to surface yet; the chat reply should hint at
+        granting a group access via ``/admin/access`` instead of sharing a
+        password. Returns a friendly ``data_apps_disabled`` payload (not an
+        error) if data apps are disabled on this instance.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/data-apps/{slug}", headers=headers_fn(), timeout=30)
+            if _is_data_apps_disabled_response(r):
+                return _data_apps_disabled_payload()
+            r.raise_for_status()
+            detail = r.json()
+        return {
+            "render": "data_app_credentials",
+            "slug": slug,
+            "url": detail.get("url"),
+            "password": None,
+        }
 
     return list(FOUNDATION_TOOL_NAMES)

@@ -147,6 +147,25 @@ class TestListBundledSkills:
 
 
 # ---------------------------------------------------------------------------
+# The real bundled template (app/initial_workspace_default) — the extras
+# skill is the FIRST bundled skill to ship, so this also confirms the
+# "missing .claude/skills dir is normal" branch stops firing once content
+# actually lands there.
+# ---------------------------------------------------------------------------
+
+
+def test_extras_skill_bundled():
+    from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_bundled_skills
+
+    entries = list_bundled_skills(BUNDLED_TEMPLATE_DIR)
+    names = {s["name"] for s in entries}
+    assert "agnes-data-apps-extras" in names
+    entry = next(s for s in entries if s["name"] == "agnes-data-apps-extras")
+    assert entry["source"] == "bundled"
+    assert entry["description"]
+
+
+# ---------------------------------------------------------------------------
 # list_marketplace_skills
 # ---------------------------------------------------------------------------
 
