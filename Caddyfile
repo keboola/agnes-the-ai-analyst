@@ -96,6 +96,9 @@
 			header_up X-Forwarded-Host {host}
 			# Security audit F9: overwrite X-Forwarded-For with the real peer.
 			header_up X-Forwarded-For {remote_host}
+			# Immediate flush — see the main reverse_proxy block below for why
+			# SSE (chat LLM proxy, MCP) needs this; keep both app proxies aligned.
+			flush_interval -1
 			lb_try_duration 5s
 			lb_try_interval 1s
 		}
@@ -114,6 +117,18 @@
 		# rate-limit buckets on the auth endpoints. The app additionally
 		# trusts only AGNES_TRUSTED_PROXY_HOPS rightmost hops.
 		header_up X-Forwarded-For {remote_host}
+		# Flush every write straight to the client instead of buffering the
+		# response. The cloud-chat LLM proxy (/api/broker/anthropic) and the
+		# MCP endpoint (/api/mcp) stream Server-Sent Events; Caddy only
+		# auto-flushes when the Content-Type is EXACTLY "text/event-stream",
+		# but Starlette appends "; charset=utf-8", so auto-detection misses it
+		# and the whole completion is buffered — the model's token deltas then
+		# arrive in one end-of-turn burst (verified live: mac→Caddy→app→Anthropic
+		# delivered every delta at a single timestamp; the same request straight
+		# to the app streamed). -1 forces immediate flush regardless of
+		# Content-Type. Harmless for JSON/HTML (single-write) and parquet
+		# (already chunked); required for SSE.
+		flush_interval -1
 		# Absorb brief connection blips (e.g. worker restart) without
 		# surfacing an error. Longer outages (full container restart on
 		# auto-upgrade, ~30–60 s) fall through to handle_errors below.

@@ -1309,6 +1309,8 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 
 `DELETE /api/v1/agents/{agent_id}` cascades: every PAT minted for the agent is revoked, every outbound webhook registration (`/api/v1/agents/{slug}/webhooks`) is removed, and every harvested sandbox artifact row + its object-store blob (`/api/v1/sessions/{id}/artifacts`) is deleted. The object-store blob deletes are best-effort — a single failed delete is logged and skipped rather than blocking the agent delete (an orphaned blob under a deleted agent's `agent-artifacts/` prefix is a cheap, non-sensitive leak).
 
+`PUT /api/v1/agents/{agent_id}/scope` — replace an agent's resource-grant set. Each of `plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode` is `'all'` (no narrowing on that axis — the agent's authority passes through as the owner's set) or `'selected'` (narrowed to the accompanying `agent_scope` rows for that axis, e.g. specific table/plugin/connection/memory-domain ids). **This is live-enforced, not advisory**: a `'selected'`-scoped agent's brokered requests are authorized against `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`, never the owner's full grants — see `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`. An agent PAT is issuable only once every mode is `'selected'` (`403 agent_not_selected_mode` otherwise), so an issuable PAT is always a real restriction of its owner, never a copy of the owner's full authority.
+
 - /api/v1/agents
 - /api/v1/agents/{agent_id}
 - /api/v1/agents/{agent_id}/scope

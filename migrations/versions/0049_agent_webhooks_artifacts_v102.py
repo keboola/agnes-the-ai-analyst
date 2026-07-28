@@ -23,6 +23,13 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+# Deliberately shorter than the filename (drops "agent_"): PG's
+# alembic_version.version_num column caps at 32 chars, and
+# "0049_agent_webhooks_artifacts_v102" (34) doesn't fit while
+# "0049_webhooks_artifacts_v102" (28) does. Cosmetic filename/revision-id
+# mismatch only — do not "fix" by renaming; that would break the chain
+# (down_revision below, and every already-applied Postgres instance's
+# alembic_version row, reference this exact string).
 revision: str = "0049_webhooks_artifacts_v102"
 down_revision: Union[str, None] = "0048_agents_v101"
 branch_labels: Union[str, Sequence[str], None] = None

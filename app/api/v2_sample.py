@@ -9,7 +9,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from src.db import _open_duckdb
-from src.audit_helpers import client_kind_from_user
+from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
@@ -18,6 +18,7 @@ from src.repositories import (
     audit_repo,
     table_registry_repo,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
@@ -68,9 +69,11 @@ def _fetch_bq_sample(bq, dataset: str, table: str, n: int) -> list[dict]:
     # endpoints are downstream of admin REST writes that might bypass that
     # gate. A `source_table` containing a backtick would otherwise break
     # out of the `…` quoted identifier and execute arbitrary BQ SQL.
-    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
-            and validate_quoted_identifier(dataset, "BQ dataset")
-            and validate_quoted_identifier(table, "BQ source_table")):
+    if not (
+        validate_quoted_identifier(bq.projects.data, "BQ project")
+        and validate_quoted_identifier(dataset, "BQ dataset")
+        and validate_quoted_identifier(table, "BQ source_table")
+    ):
         raise ValueError("unsafe BQ identifier in registry — refusing to query")
 
     bq_sql = f"SELECT * FROM `{bq.projects.data}.{dataset}.{table}` LIMIT {int(n)}"
@@ -114,20 +117,23 @@ def build_sample(
     # entirely is the right trade-off.
     if source_type == "internal":
         from connectors.internal.access import (
-            INTERNAL_TABLES_BY_ID, build_filter_clause, sample_internal_rows,
+            INTERNAL_TABLES_BY_ID,
+            build_filter_clause,
+            sample_internal_rows,
         )
         from app.auth.access import is_user_admin as _is_admin
-        from app.auth.session_principal import SessionPrincipal
+        from app.auth.session_principal import PRINCIPAL_TYPES
+
         if table_id not in INTERNAL_TABLES_BY_ID:
             raise FileNotFoundError(table_id)
         internal_def = INTERNAL_TABLES_BY_ID[table_id]
         # is_user_admin takes (user_id, conn) — earlier draft passed the
         # whole user dict and crashed with TypeError on first request
         # (review #278/2). Same fix as app/api/query.py:_run_internal_query.
-        # A SessionPrincipal has no .get("id") — treat co-session as non-admin
+        # A Principal has no .get("id") — treat co-session / agent-session as non-admin
         # for internal row-level filter. build_filter_clause expects a dict
         # so pass a shim when user is a principal.
-        if isinstance(user, SessionPrincipal):
+        if isinstance(user, PRINCIPAL_TYPES):
             is_admin = False
             user_dict_shim = {"id": "", "email": ""}
         else:
@@ -151,6 +157,7 @@ def build_sample(
         # Resolve by source-name-agnostic lookup — the extract directory is not
         # necessarily the source_type (e.g. the bundled `demo` extract).
         from app.utils import resolve_local_parquet
+
         parquet = resolve_local_parquet(table_id, source_type)
         if parquet is None:
             raise FileNotFoundError(table_id)
@@ -186,7 +193,7 @@ def sample(
         result = build_sample(conn, user, table_id, n=n, bq=bq)
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="catalog.sample",
                 resource=resource,
                 params={
@@ -210,11 +217,10 @@ def sample(
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="catalog.sample",
                 resource=resource,
-                params={"duration_ms": int((time.monotonic() - t0) * 1000),
-                        "error": str(exc)[:200]},
+                params={"duration_ms": int((time.monotonic() - t0) * 1000), "error": str(exc)[:200]},
                 result=f"error.{status_code}",
                 client_kind=client_kind_from_user(user),
             )
@@ -224,6 +230,7 @@ def sample(
             raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
         if isinstance(exc, PermissionError):
             from src.rbac import table_not_in_stack_message
+
             raise HTTPException(
                 status_code=403,
                 detail=table_not_in_stack_message(table_id),

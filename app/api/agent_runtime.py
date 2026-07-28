@@ -53,7 +53,7 @@ from pydantic import BaseModel, field_validator
 from app.auth.access import can_access
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.pat_resolver import agent_id_from_request
-from app.auth.session_principal import SessionPrincipal
+from app.auth.session_principal import PRINCIPAL_TYPES
 from app.chat.agent_usage import agent_config_hash, usage_for_session
 from app.chat.headless import run_one_shot
 from app.chat.manager import ConcurrencyCapHit, get_current_chat_manager
@@ -152,11 +152,13 @@ def require_agent_runtime_principal(
 ) -> AgentRuntimePrincipal:
     """Auth dependency for every `/api/v1/agents/{slug}/...` runtime route.
 
-    A co-session (`SessionPrincipal`) credential is hard-denied — this
-    surface is owner-scoped, and a co-session token carries no single
-    owner identity to resolve an agent against.
+    Any restricted principal is hard-denied — this surface is owner-scoped
+    and needs a real owner credential. A `SessionPrincipal` carries no single
+    owner identity to resolve an agent against; an `AgentPrincipal` is the
+    sandbox's own narrowed credential, which must never be able to drive the
+    owner-facing agent API (nor read `user["id"]` off a frozen dataclass).
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(status_code=403, detail={"code": "agent_runtime_requires_owner_credential"})
 
     agent = agents_repo().get_by_slug(user["id"], slug)
@@ -519,7 +521,7 @@ async def get_agent_job(
     that was created against agent B, even though both jobs belong to the
     same owner user.
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(status_code=404, detail={"code": "job_not_found"})
 
     job = jobs_repo().get(job_id)

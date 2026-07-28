@@ -22,7 +22,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.1] - 2026-07-28
+## [0.77.4] - 2026-07-28
 
 ### Added
 
@@ -34,9 +34,92 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
   Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
 
+## [0.77.3] - 2026-07-28
+
+### Added
+
 ### Changed
 
 ### Fixed
+
+- **Broker fails closed on a deleted or misconfigured scoped agent.**
+  `_mint_identity_jwt` previously fell through to the owner's full-access
+  identity JWT when a session's agent had been deleted or carried an
+  unknown mode value — silently restoring the very authority the scope
+  removed. A deleted/missing agent now yields 401 `ticket_agent_not_found`
+  (mirroring the resolver's fail-closed posture), and only an explicit
+  all-`'all'` agent (`agent_is_passthrough`) skips the enforced
+  agent-session path.
+
+- **Agent scope is now enforced at request time, not merely recorded.** A
+  `selected`-scoped agent's brokered requests are authorized against
+  `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`
+  (`app/auth/session_principal.py`), so an agent PAT — or a chat session
+  bound to that agent — can no longer reach tables, plugins, or MCP tools
+  outside the agent's declared scope. Agents never inherit their owner's
+  admin authority, even when the owner is an admin. Previously the scope
+  was computed and audit-snapshotted (`agent_scope_snapshots`) but the
+  brokered request still ran under the owner's full grants — the HIGH
+  finding from the V1 `/agnes-review`. See
+  `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`
+  and the end-to-end proof in `tests/test_agent_scope_e2e.py`.
+- **`/api/query` crashed instead of returning rows for a restricted
+  principal's successful (in-scope) request against a real local table.**
+  A co-session (`SessionPrincipal`) or agent-session (`AgentPrincipal`)
+  request that RBAC correctly *allowed* still 400'd downstream, because the
+  audit-log and BQ-quota-key bookkeeping called `user.get(...)` unconditionally
+  — a frozen-dataclass principal has no `.get`. Denials were unaffected (the
+  crash was swallowed inside an already-caught audit-log failure), which is
+  why this went unnoticed until the agent-scope end-to-end test exercised an
+  actually-successful principal-authenticated query. Fixed via a
+  principal-aware `_identity_for_audit` helper used only for audit/quota
+  bookkeeping, never for an authorization decision.
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.2] - 2026-07-28
+
+### Added
+
+- **Data Apps: durable enablement via the customer-instance Terraform module.** A new `data_apps_enabled` module variable (off by default; `data_apps_runtime_image` sets the runtime image) brings the feature up on VM boot without hand-editing config: the startup script mints/persists an `APPS_RUNNER_TOKEN`, resolves `DOCKER_GID` from the docker socket, writes `AGNES_DATA_APPS_ENABLED=true` (plus the runner token/prefix/gid) into the app `.env`, and enables the `apps` compose profile via a `--profile apps` command-line flag in both the startup script and `agnes-auto-upgrade.sh` (not `COMPOSE_PROFILES` in `.env` — docker compose ignores that env var whenever any `--profile` flag such as `--profile tls` is present). The app honors a Terraform-friendly `AGNES_DATA_APPS_ENABLED` env override (mirrors `AGNES_HOME_ROUTE`/`PUBLIC_URL`) that flips the feature on and backfills the example-config `data_apps:` defaults, so no instance.yaml edit is needed. Disabled instances render byte-identically.
+
+### Changed
+
+### Fixed
+
+- **Data Apps: the apps-runner sidecar can now reach the docker socket.** The sidecar runs as the image's non-root uid 999 but bind-mounts the root:docker-owned socket; with no group membership every container `up`/`stop` failed the daemon handshake with `PermissionError(13)`, surfaced as a 502 `runner_unavailable` (found in a live end-to-end run). `docker-compose.yml` now adds `${DOCKER_GID}` to the sidecar via `group_add` (the customer-instance startup resolves the host gid; a hand-run `--profile apps` must export it), keeping the sidecar uid 999 so the `config.json` it writes stays owner-deletable by the app.
+- **Data Apps: internal-repo containers can now clone their app.** The runtime image only embeds git credentials into HTTPS clone URLs and leaves plain-HTTP URLs untouched, so the container cloning Agnes's internal `http://app:8000/...` git backend prompted for a username in a non-interactive shell and crash-looped (proxy then 502 `container_unreachable`). `build_config_json` now embeds the percent-encoded push token directly in the repository URL (`http://agnes:<token>@app:8000/...`), which the image preserves.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.1] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Cloud-chat answers finally stream token-by-token on TLS-fronted
+  deployments.** The real cause of the "silence, then the whole answer at
+  once" behavior was Caddy, not the app: Caddy only auto-flushes a reverse-
+  proxied response when the Content-Type is EXACTLY `text/event-stream`, but
+  Starlette appends `; charset=utf-8`, so the SSE completion was buffered and
+  every token delta arrived in one end-of-turn burst. Every Caddy
+  `reverse_proxy` that fronts the app now sets `flush_interval -1` (main
+  `Caddyfile` + the m-tier and apps-subdomain variants), forcing an immediate
+  flush. Diagnosed by a live A/B: `mac→Caddy→app→Anthropic` delivered all
+  deltas at a single timestamp, while the identical request straight to the
+  app streamed over seconds. (Supersedes the earlier `/api/broker/anthropic`
+  GZip skip-list attempt, which was a no-op — GZip never buffered the stream;
+  the buffering was entirely in the proxy.)
 
 ### Removed
 
@@ -62,6 +145,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (pins the brokered LLM to one model) and `token_budget_monthly`. Surfaced
   at `/agents` (a minimal builder page: list, create, issue token, delete)
   and via `agnes agent {list,create,show,delete,scope set,token,ask}`.
+  New `agents` / `agent_scope` / `agent_scope_snapshots` / `llm_usage`
+  tables (DuckDB v100 + Alembic `0047`).
 - **Agent personal access tokens (`typ=agent_pat`).** `POST
   /api/v1/agents/{id}/tokens` mints a token bound to one agent — accepted
   only on the agent runtime API (`/api/v1/{agents,jobs}/...`), rejected
@@ -127,7 +212,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   streams the bytes (default, through this endpoint's own auth) or, with
   `?redirect=true`, 307-redirects to a short-TTL (≤120s) presigned
   object-store URL. Same owner/agent-PAT auth as the rest of
-  `/api/v1/sessions/{id}/*`.
+  `/api/v1/sessions/{id}/*`. New `agent_artifacts` table (DuckDB v101 +
+  Alembic `0048`, shared with the webhooks migration below).
 - **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
   token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
   to every upstream credential mode — static key, workload identity, LLM
@@ -166,7 +252,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   IP fresh on every send, closing the DNS-rebinding window a create-time-only
   check would leave open. A webhook auto-disables after
   `agent_api_webhook_max_failures` (default 5) consecutive delivery
-  failures.
+  failures. New `agent_webhooks` table (DuckDB v101 + Alembic `0048`,
+  shared with the artifact-harvest migration above).
 - **Structured JSON output, `response_format: {"type": "json_schema", ...}`**
   (agent-api V1b Task 7). `POST /api/v1/agents/{slug}/responses` accepts an
   optional `response_format`; when present, a schema directive is appended
@@ -226,7 +313,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   whether it actually lands in the next spawn or is shadowed behind newer
   content — the `agnes agent memory list|approve|archive|delete` CLI, and a
   per-agent Memory panel on `/agents` (status badges, in-effect/shadowed
-  marker, Approve/Delete buttons).
+  marker, Approve/Delete buttons). New `agent_memories` table (DuckDB v102
+  + Alembic `0049`).
 - **`agnes chat <slug>`** (agent-api V1c) — an interactive, streaming
   terminal REPL over a composed agent's session API
   (`POST /api/v1/agents/{slug}/sessions` + SSE

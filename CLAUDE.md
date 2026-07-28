@@ -93,7 +93,11 @@ Deeper architecture notes: [`docs/architecture.md`](docs/architecture.md).
 
 Named, scoped agents layered over a user's own stack — CRUD/scope/PAT issuance
 at `/api/v1/agents*` (`agnes agent …` CLI, `/agents` builder page) and a
-one-shot runtime call at `POST /api/v1/agents/{slug}/responses`. The secret
+one-shot runtime call at `POST /api/v1/agents/{slug}/responses`. A
+`'selected'`-scoped agent's effective authority (owner grants ∩ agent scope)
+is enforced live at every brokered request via a restricted `AgentPrincipal`
+— never merely computed/audit-recorded — so an agent (or its PAT) can never
+reach beyond its declared scope or inherit its owner's admin authority. The secret
 broker enforces each agent's pinned model and `token_budget_monthly`
 (`429 budget_exhausted`) before forwarding to the LLM. Each agent also keeps
 a private memory notebook (`memory_write_mode`: `off`/`propose`/`auto`)
