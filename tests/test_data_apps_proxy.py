@@ -664,3 +664,90 @@ def test_subdomain_middleware_survives_none_config(monkeypatch):
 
     asyncio.run(middleware(scope, None, None))
     assert seen_paths == ["/metrics"]  # no-op passthrough, no crash
+
+
+# ---------------------------------------------------------------------------
+# Wave 3C — scoped `data-app-preview:<slug>` token accept on the serving
+# path (Task 5), rejected everywhere else.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def proxy_client(proxy_env):
+    """Unauthenticated raw client — the preview tests send ONLY the
+    preview-token cookie/header, never a normal session PAT."""
+    return proxy_env["client"]
+
+
+class _PreviewToken:
+    def __init__(self, jwt_token: str, cookie: str):
+        self.jwt = jwt_token
+        self.cookie = cookie
+
+
+@pytest.fixture
+def mint_preview(proxy_env):
+    """Mint a `data-app-preview:<slug>` token directly via
+    `_mint_preview_token` (Task 5) — the same helper
+    `POST /{slug}/preview-grant` calls, exercised here without going through
+    the endpoint so the proxy-side accept/reject logic is tested in
+    isolation from the grant endpoint's own RBAC (covered separately in
+    `tests/test_data_apps_preview.py`)."""
+    from app.api.data_apps import _mint_preview_token
+    from src.repositories import data_apps_repo
+
+    def _mint(slug: str, ttl_s: int = 1800) -> _PreviewToken:
+        row = data_apps_repo().get_by_slug(slug)
+        jwt_token, cookie = _mint_preview_token(row, ttl_s=ttl_s)
+        return _PreviewToken(jwt_token, cookie)
+
+    return _mint
+
+
+def test_preview_token_authorizes_iframe(proxy_client, fake_runner, respx_upstream, running_app, mint_preview):
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get("/apps/s/hello", headers={"cookie": tok.cookie})
+    assert r.status_code == 200, r.text
+
+
+def test_expired_preview_token_403(proxy_client, running_app, mint_preview):
+    """A GET returning a raw 401 on a non-API path is redirected to
+    ``/login`` by the app-wide browser-friendly error handler
+    (``app/main.py::_html_auth_redirect_handler`` — existing contract,
+    unrelated to this feature); ``follow_redirects=False`` observes the
+    real status this route raised rather than the login page it redirects
+    to."""
+    tok = mint_preview("s", ttl_s=-1)  # already expired
+    r = proxy_client.get("/apps/s/", headers={"cookie": tok.cookie}, follow_redirects=False)
+    assert r.status_code in (401, 403, 302, 307)
+
+
+def test_preview_token_scoped_to_slug(proxy_client, running_app, mint_preview):
+    _create_app_row(slug="other", state="running")
+    tok = mint_preview("s", ttl_s=1800)  # token minted for slug "s"
+    r = proxy_client.get("/apps/other/", headers={"cookie": tok.cookie}, follow_redirects=False)
+    assert r.status_code in (401, 403, 302, 307)
+
+
+def test_preview_token_rejected_on_control_plane(proxy_client, running_app, mint_preview):
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get("/api/data-apps/s", headers={"Authorization": f"Bearer {tok.jwt}"})
+    assert r.status_code == 401
+
+
+def test_preview_token_via_bearer_also_authorizes(proxy_client, fake_runner, respx_upstream, running_app, mint_preview):
+    """Same accept path via `Authorization: Bearer` instead of the cookie —
+    the spec's cookie delivery is the frontend's choice, not the only shape
+    the proxy accepts."""
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get("/apps/s/hello", headers={"Authorization": f"Bearer {tok.jwt}"})
+    assert r.status_code == 200, r.text
+
+
+def test_stranger_with_no_token_at_all_gets_401(proxy_client, running_app):
+    """A raw 401 on a GET to a non-API path is redirected to `/login` by the
+    app-wide browser-friendly error handler (existing contract, unrelated to
+    this feature) — the 302 IS the 401, just wrapped for a browser nav."""
+    r = proxy_client.get("/apps/s/", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("/login")
