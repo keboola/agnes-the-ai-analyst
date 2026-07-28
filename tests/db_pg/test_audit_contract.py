@@ -460,3 +460,28 @@ def test_facets_honor_filters(audit_repo):
     classes = {c["value"]: c["count"] for c in out["result_classes"]}
     assert classes["success"] == 2  # success + ok
     assert classes["error"] == 1
+
+
+def test_log_autofills_duration_from_request_context(audit_repo):
+    """duration_ms=None auto-fills from the request-timing contextvar in
+    BOTH backends; outside a request scope it stays NULL."""
+    import contextvars
+
+    from src.audit_context import mark_request_start
+
+    repo, _, _ = audit_repo
+
+    def _in_fresh_context(fn):
+        return contextvars.copy_context().run(fn)
+
+    _in_fresh_context(lambda: repo.log(user_id="u1", action="no.scope"))
+
+    def _scoped():
+        mark_request_start()
+        repo.log(user_id="u1", action="in.scope")
+
+    _in_fresh_context(_scoped)
+    rows, _ = repo.query(limit=10)
+    by_action = {r["action"]: r["duration_ms"] for r in rows}
+    assert by_action["no.scope"] is None
+    assert by_action["in.scope"] is not None and by_action["in.scope"] >= 0
