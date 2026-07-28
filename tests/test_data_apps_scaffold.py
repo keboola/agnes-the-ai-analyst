@@ -72,3 +72,12 @@ def test_server_index_is_runtime_valid():
     assert 'from "./agnesQuery"' not in src.replace('from "./agnesQuery.js"', "")
     # Static dir must point at the root-level Vite dist, not server/dist.
     assert '"..", "..", "dist"' in src, "distDir must resolve to the project-root dist/"
+
+
+def test_app_fetches_relative_not_root_anchored():
+    """The SPA is served under /apps/<slug>/ (path-prefix ingress), so a
+    root-anchored `fetch("/api/...")` would hit the Agnes host instead of the
+    app. The fetch must anchor to the served base (document.baseURI)."""
+    src = (ROOT / "src" / "App.tsx").read_text()
+    assert 'fetch("/api' not in src and "fetch('/api" not in src, "fetch must not be root-anchored"
+    assert "document.baseURI" in src

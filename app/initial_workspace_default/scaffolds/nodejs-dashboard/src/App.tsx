@@ -27,7 +27,13 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/data")
+    // Relative (no leading slash) on purpose: Agnes serves the app under
+    // `/apps/<slug>/` in path-prefix mode, so a root-anchored `/api/data` would
+    // hit the Agnes host, not this app. `new URL(..., document.baseURI)` anchors
+    // it to wherever the page was served from — `/apps/<slug>/api/data` in prod
+    // (the ingress proxy strips the prefix back to `/api/data`), and `/api/data`
+    // under `vite dev` (where the page is at the root and the dev proxy forwards).
+    fetch(new URL("api/data", document.baseURI))
       .then((res) => {
         if (!res.ok) throw new Error(`request failed: ${res.status}`);
         return res.json();
