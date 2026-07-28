@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.1] - 2026-07-28
+
+### Added
+
 - **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
   with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
   carrying a bare `*` (implicit `SELECT *`), now prints an advisory stderr
