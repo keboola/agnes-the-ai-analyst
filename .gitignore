@@ -172,3 +172,6 @@ docker-compose.local-port8001.yml
 scripts/_*.py
 tests/e2e/_videos/
 .agnes-e2e.env
+
+# Data-app scaffold ships a server/ dir; the broad `server/` rule above must not eat it
+!app/initial_workspace_default/scaffolds/nodejs-dashboard/server/

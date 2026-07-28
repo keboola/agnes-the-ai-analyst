@@ -1030,6 +1030,7 @@ create/stop/delete/secrets/reap-idle.
 - /api/data-apps/{slug}/drafts/{draft_slug}
 - /api/data-apps/{slug}/git-credential
 - /api/data-apps/{slug}/logs
+- /api/data-apps/{slug}/preview-grant
 - /api/data-apps/{slug}/readiness
 - /api/data-apps/{slug}/secrets
 - /api/data-apps/{slug}/stop
@@ -1061,6 +1062,19 @@ deleting the draft branch on the parent's repo; 400 `not_a_draft` if
 `draft_slug` isn't a draft of `slug`. Deleting a prod app with `DELETE
 /{slug}` cascades: any live drafts are torn down first, so a parent delete
 never leaves orphaned draft rows/branches/containers behind.
+
+`POST /{slug}/preview-grant` (wave 3C in-chat preview loop) mints a
+short-TTL (30 min) `data-app-preview:<slug>` scoped token in the same
+`access_tokens` table (no new schema) and returns it as a `preview_cookie`
+Set-Cookie string scoped `Path=/apps/<slug>/; SameSite=Lax; HttpOnly`. Any
+caller who can already *view* the app (owner, Admin, or a group grant — the
+same predicate as `GET /{slug}`) may request one — unlike `git-credential`,
+this is not owner/Admin-only. The ingress proxy's serving path
+(`/apps/<slug>/...`) accepts a valid, unexpired preview token pinned to that
+exact slug in place of a normal session/PAT; the token is rejected outright
+on this JSON control-plane API. Chat-only MCP tools
+(`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`, no REST/CLI
+analogue) drive the in-chat split-pane preview iframe on top of this grant.
 
 ### `/api/data-packages` — Public data packages
 

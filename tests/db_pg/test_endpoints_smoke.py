@@ -1626,6 +1626,11 @@ KNOWN_UNTESTED = {
     "POST /api/data-apps/{slug}/git-credential",
     "POST /api/data-apps/{slug}/drafts",
     "DELETE /api/data-apps/{slug}/drafts/{draft_slug}",
+    # Wave 3C in-chat preview loop (Task 5) — same "needs a real data_apps
+    # row + owner/Admin/grant RBAC" non-goal. Full coverage lives in
+    # tests/test_data_apps_preview.py (TestPreviewGrantEndpoint) and
+    # tests/test_data_apps_proxy.py (proxy accept/reject).
+    "POST /api/data-apps/{slug}/preview-grant",
     # Data apps web UI (Task 12) — HTML pages, not part of the parameter-free
     # API smoke sweep (same convention as the other `GET /admin/*` / `GET
     # /library*` web routes above). RBAC/rendering/feature-flag/route-collision

@@ -2732,6 +2732,23 @@ class ChatManager:
             ticket_repo().revoke_session(chat_id)
         except Exception:
             logger.warning("broker ticket revocation failed for %s on kill (non-fatal)", chat_id)
+        # Wave 3C Q4 (spec §7): SessionEnd hard cap on any `data-app-preview:*`
+        # grants minted during this chat — best-effort, alongside the ticket
+        # revoke above. The 30-minute `expires_at` on the token itself is the
+        # real backstop (a failure here just means the window stays open a
+        # little longer, never a hang or an error surfaced to the caller).
+        try:
+            session_for_preview = self._repo.get_session(chat_id)
+            if session_for_preview is not None:
+                from src.repositories import users_repo
+
+                from app.api.data_apps import revoke_preview_tokens_for_user
+
+                owner = users_repo().get_by_email(session_for_preview.user_email)
+                if owner:
+                    revoke_preview_tokens_for_user(owner["id"])
+        except Exception:
+            logger.warning("preview-token revocation failed for %s on kill (non-fatal)", chat_id)
         live = self._live.pop(chat_id, None)
         if live is None:
             # Multi-replica gate lift: kill() used to be process-local — a
