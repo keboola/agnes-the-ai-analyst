@@ -12,13 +12,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.14] - 2026-07-28
+
+### Added
+
 - The admin MCP source detail page gains an inline "Your connection" panel
   for `per_user`-scoped sources — connect, test, or disconnect your own
   credential (the one Introspect / Test connection run under) without
   hopping to `/me/connections` first. Uses the same write-only
   `/api/mcp/sources/{id}/my-secret` API as the self-service page.
-
-### Changed
 
 ### Fixed
 
@@ -26,12 +38,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   sources) is now reachable from the user dropdown menu ("My connections").
   It shipped in #919 but was never wired into the header, so users could
   only reach it by typing the URL.
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.77.13] - 2026-07-28
 
