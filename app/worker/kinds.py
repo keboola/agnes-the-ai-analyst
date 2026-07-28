@@ -768,6 +768,14 @@ def _run_agent_response(payload: dict) -> dict:
             "parsed": parsed,
         }
 
+    # A `timed_out: true` result (possibly with an EMPTY `answer`) still
+    # COMPLETES the job — deliberately. The job bounds one WAIT leg, not
+    # the turn: the turn keeps running server-side on `session_id`, and
+    # the caller distinguishes "done" from "still generating" by the
+    # `timed_out` flag, then either re-polls the session or enqueues
+    # another continue leg. Failing the job here would misreport a
+    # healthy long-running turn as an error (and with retries disabled
+    # on this kind, would dead-end it).
     return {
         "answer": run_result["answer"],
         "session_id": run_result["chat_id"],
