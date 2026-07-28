@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 102
+SCHEMA_VERSION = 103
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
     uncompressed_size_bytes BIGINT,
     columns INTEGER,
     hash VARCHAR,
+    parts JSON,
     status VARCHAR DEFAULT 'ok',
     error TEXT
 );
@@ -503,7 +504,7 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     last_used_at TIMESTAMP,
     last_used_ip VARCHAR,
     revoked_at   TIMESTAMP,
-    -- v100: agent-as-API — non-NULL when this PAT was minted for/by an
+    -- v101: agent-as-API — non-NULL when this PAT was minted for/by an
     -- agent (see docs/superpowers/specs/2026-07-21-agent-profiles-and-
     -- agent-api-design.md). Deliberately unindexed.
     agent_id     VARCHAR
@@ -1287,7 +1288,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- (v98, Tier 1 restart-invariant reuse). NULL = unknown/legacy — see
     -- app.chat.types.RELAY_PROTOCOL_VERSION's docstring.
     relay_protocol_version INTEGER,
-    -- v100: agent-as-API — which agent profile (if any) drove this session.
+    -- v101: agent-as-API — which agent profile (if any) drove this session.
     -- Deliberately unindexed: this table already carries idx_chat_sessions_user
     -- and DuckDB's ART-index maintenance is the exact incident class
     -- _v94_to_v95 exists to fix, so no new secondary index goes on this column.
@@ -1592,7 +1593,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
 CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
 
--- v100: agent profiles + agent-as-API foundation (spec
+-- v101: agent profiles + agent-as-API foundation (spec
 -- docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
 -- No secondary indexes anywhere here — see the _v94_to_v95 ART-index
 -- incident note; chat_sessions.agent_id especially must stay unindexed.
@@ -1657,7 +1658,7 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     PRIMARY KEY (key, owner_user_id, agent_id)
 );
 
--- v101: agent webhooks + artifacts (agent-api V1b). No secondary indexes
+-- v102: agent webhooks + artifacts (agent-api V1b). No secondary indexes
 -- (ART-index incident — see _v94_to_v95).
 CREATE TABLE IF NOT EXISTS agent_webhooks (
     id                   VARCHAR PRIMARY KEY,
@@ -1686,7 +1687,7 @@ CREATE TABLE IF NOT EXISTS agent_artifacts (
     created_at    TIMESTAMP DEFAULT current_timestamp
 );
 
--- v102: per-agent private memory notebook (agent-api V1c). No secondary
+-- v103: per-agent private memory notebook (agent-api V1c). No secondary
 -- indexes (ART-index incident — see _v94_to_v95).
 CREATE TABLE IF NOT EXISTS agent_memories (
     id                VARCHAR PRIMARY KEY,
@@ -6669,7 +6670,18 @@ def _v98_to_v99(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _v99_to_v100(conn: duckdb.DuckDBPyConnection) -> None:
-    """v99→v100: agent profiles + agent-as-API foundation (spec
+    """v99→v100: sync_state.parts — per-partition manifest for partitioned
+    tables (partitioned distribution). Holds a JSON list of
+    ``{path, hash, size_bytes}`` per part; NULL means a single-file table
+    (backward compatible — the manifest/pull treat NULL as single-file)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('sync_state')").fetchall()}
+    if "parts" not in cols:
+        conn.execute("ALTER TABLE sync_state ADD COLUMN parts JSON")
+    conn.execute("UPDATE schema_version SET version = 100")
+
+
+def _v100_to_v101(conn: duckdb.DuckDBPyConnection) -> None:
+    """v100→v101: agent profiles + agent-as-API foundation (spec
     docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
     No secondary indexes anywhere here — see the _v94_to_v95 ART-index
     incident note; chat_sessions.agent_id especially must stay unindexed."""
@@ -6741,11 +6753,11 @@ def _v99_to_v100(conn: duckdb.DuckDBPyConnection) -> None:
     """)
     conn.execute("ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS agent_id VARCHAR")
     conn.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS agent_id VARCHAR")
-    conn.execute("UPDATE schema_version SET version = 100")
+    conn.execute("UPDATE schema_version SET version = 101")
 
 
-def _v100_to_v101(conn: duckdb.DuckDBPyConnection) -> None:
-    """v100→v101: agent webhooks + artifacts (agent-api V1b). No secondary
+def _v101_to_v102(conn: duckdb.DuckDBPyConnection) -> None:
+    """v101→v102: agent webhooks + artifacts (agent-api V1b). No secondary
     indexes (ART-index incident — see _v94_to_v95)."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS agent_webhooks (
@@ -6776,11 +6788,11 @@ def _v100_to_v101(conn: duckdb.DuckDBPyConnection) -> None:
             created_at    TIMESTAMP DEFAULT current_timestamp
         )
     """)
-    conn.execute("UPDATE schema_version SET version = 101")
+    conn.execute("UPDATE schema_version SET version = 102")
 
 
-def _v101_to_v102(conn: duckdb.DuckDBPyConnection) -> None:
-    """v101→v102: per-agent private memory notebook (agent-api V1c). No
+def _v102_to_v103(conn: duckdb.DuckDBPyConnection) -> None:
+    """v102→v103: per-agent private memory notebook (agent-api V1c). No
     secondary indexes (ART incident — see _v94_to_v95)."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS agent_memories (
@@ -6795,7 +6807,7 @@ def _v101_to_v102(conn: duckdb.DuckDBPyConnection) -> None:
             archived_at       TIMESTAMP
         )
     """)
-    conn.execute("UPDATE schema_version SET version = 102")
+    conn.execute("UPDATE schema_version SET version = 103")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7202,20 +7214,24 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # draft_branch). _SYSTEM_SCHEMA already declares the columns on
             # fresh installs (no-op ALTER here).
             _v98_to_v99(conn)
-            # v99→v100: agents / agent_scope / llm_usage / agent_scope_snapshots
+            # v99→v100: sync_state.parts (per-partition manifest for
+            # partitioned distribution). _SYSTEM_SCHEMA already declares the
+            # column on fresh installs (no-op ALTER here).
+            _v99_to_v100(conn)
+            # v100→v101: agents / agent_scope / llm_usage / agent_scope_snapshots
             # / idempotency_keys tables + agent_id columns on
             # personal_access_tokens/chat_sessions (agent profiles +
             # agent-as-API foundation). _SYSTEM_SCHEMA already creates/
             # declares all of these on fresh installs (no-op here).
-            _v99_to_v100(conn)
-            # v100→v101: agent_webhooks / agent_artifacts tables (agent-api
+            _v100_to_v101(conn)
+            # v101→v102: agent_webhooks / agent_artifacts tables (agent-api
             # V1b). _SYSTEM_SCHEMA already creates them on fresh installs
             # (no-op CREATE IF NOT EXISTS here).
-            _v100_to_v101(conn)
-            # v101→v102: agent_memories table (agent-api V1c). _SYSTEM_SCHEMA
+            _v101_to_v102(conn)
+            # v102→v103: agent_memories table (agent-api V1c). _SYSTEM_SCHEMA
             # already creates it on fresh installs (no-op CREATE IF NOT
             # EXISTS here).
-            _v101_to_v102(conn)
+            _v102_to_v103(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7473,6 +7489,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v100_to_v101(conn)
             if current < 102:
                 _v101_to_v102(conn)
+            if current < 103:
+                _v102_to_v103(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

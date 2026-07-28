@@ -83,6 +83,7 @@ class SyncState(Base):
     uncompressed_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     columns: Mapped[int | None] = mapped_column(Integer, nullable=True)
     hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    parts: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String, server_default=text("'ok'"), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 

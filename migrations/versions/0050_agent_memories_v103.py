@@ -1,9 +1,9 @@
-"""agent memories (DuckDB v102).
+"""agent memories (DuckDB v103).
 
-Revision ID: 0049_agent_memories_v102
-Revises: 0048_webhooks_artifacts_v101
+Revision ID: 0050_agent_memories_v103
+Revises: 0049_agent_webhooks_artifacts_v102
 
-Mirrors DuckDB's ``_v101_to_v102`` / ``_SYSTEM_SCHEMA`` addition (agent-api
+Mirrors DuckDB's ``_v102_to_v103`` / ``_SYSTEM_SCHEMA`` addition (agent-api
 V1c). Creates the per-agent private memory notebook (``agent_memories``,
 ``status`` lifecycle ``pending -> active -> archived``; ``owner_user_id``
 denormalized for cheap owner-scoped listing).
@@ -20,8 +20,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0049_agent_memories_v102"
-down_revision: Union[str, None] = "0048_webhooks_artifacts_v101"
+revision: str = "0050_agent_memories_v103"
+down_revision: Union[str, None] = "0049_agent_webhooks_artifacts_v102"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -10,9 +10,9 @@ Mirrors:
   - ``agent_artifacts``          (src/db.py, v101)
   - ``agent_memories``           (src/db.py, v102)
 
-and the Alembic migrations ``migrations/versions/0047_agents_v100.py`` /
+and the Alembic migrations ``migrations/versions/0048_agents_v101.py`` /
 ``migrations/versions/0048_agent_webhooks_artifacts_v101.py`` /
-``migrations/versions/0049_agent_memories_v102.py``. This is the schema
+``migrations/versions/0050_agent_memories_v103.py``. This is the schema
 foundation for agent profiles + agent-as-API
 (docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md);
 repos/endpoints land in later tasks of the same wave.

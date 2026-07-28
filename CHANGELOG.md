@@ -16,41 +16,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- **Schema upgrade crashed on any DB between v82 and v96.** The
-  `corpus_files(corpus_id, path)` UNIQUE INDEX was declared inside
-  `_SYSTEM_SCHEMA`, which executes *before* the migration ladder. Because
-  `corpus_files` is created at v82 but its `path` column is only ALTER-added at
-  v97, the `CREATE TABLE IF NOT EXISTS` was a no-op on those DBs and the index
-  statement then raised `BinderException: Table "corpus_files" does not have a
-  column named "path"` — aborting the whole schema pass before the ALTER could
-  run, so the instance never started. The index is now created by
-  `_ensure_corpus_path_index()` after the ladder, guarded on the column
-  existing, which covers fresh installs, incremental upgrades, and the
-  split-brain future-version self-heal path alike.
-
 ### Removed
 
 ### Internal
 
-- **Flaky relay test de-flaked.** `test_relay_non_sse_anthropic_response_stays_buffered`
-  asserted on a single `reader.read()`, which returns only the bytes available
-  at that instant and often yielded just the status line (~40% failure rate in
-  isolation). It now accumulates until the full buffered response arrives — the
-  same read-until-complete idiom the streaming test beside it already used.
-- **`agnes chat --help` test no longer asserts on colourised output.**
-  `test_group_help_shows_repl_usage_and_caveats` matched `agnes chat <slug>`
-  against the raw output; rich-click highlights the metavar, so with colour on
-  (off for a non-tty locally, on in CI) the literal is split by ANSI codes and
-  the assertion failed only in CI. It now strips SGR codes first, the same
-  `_clean()` idiom the other CLI test modules use.
-- **Migration-safety tests no longer pin a literal future schema version.**
-  Both future-version tests derive it from `SCHEMA_VERSION + 1`; the previous
-  hardcoded `99` silently stopped exercising the noop path as the ladder grew,
-  then broke outright once the ladder passed it.
-
 ### Security
 
-## [0.77.0] - 2026-07-24
+## [0.77.0] - 2026-07-28
 
 ### Added
 
@@ -242,6 +214,138 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   cancels the in-flight turn server-side (a bare disconnect does not — only
   `/cancel` stops the run and its budget burn); `/exit` best-effort frees
   the sandbox.
+### Fixed
+
+- **Schema upgrade crashed on any DB between v82 and v96.** The
+  `corpus_files(corpus_id, path)` UNIQUE INDEX was declared inside
+  `_SYSTEM_SCHEMA`, which executes *before* the migration ladder. Because
+  `corpus_files` is created at v82 but its `path` column is only ALTER-added at
+  v97, the `CREATE TABLE IF NOT EXISTS` was a no-op on those DBs and the index
+  statement then raised `BinderException: Table "corpus_files" does not have a
+  column named "path"` — aborting the whole schema pass before the ALTER could
+  run, so the instance never started. The index is now created by
+  `_ensure_corpus_path_index()` after the ladder, guarded on the column
+  existing, which covers fresh installs, incremental upgrades, and the
+  split-brain future-version self-heal path alike.
+
+### Internal
+
+- **DuckDB schema v101/v102/v103 + Alembic `0048`/`0049`/`0050`** — new tables
+  `agents`, `agent_scope`, `agent_scope_snapshots`, `llm_usage`,
+  `idempotency_keys` (v101), `agent_webhooks`, `agent_artifacts` (v102),
+  `agent_memories` (v103), plus `agent_id` columns on
+  `personal_access_tokens`/`chat_sessions` — dual-backend parity (DuckDB +
+  Postgres), no secondary indexes per the ART-index incident rule.
+- **Flaky relay test de-flaked.** `test_relay_non_sse_anthropic_response_stays_buffered`
+  asserted on a single `reader.read()`, which returns only the bytes available
+  at that instant and often yielded just the status line (~40% failure rate in
+  isolation). It now accumulates until the full buffered response arrives — the
+  same read-until-complete idiom the streaming test beside it already used.
+- **`agnes chat --help` test no longer asserts on colourised output.**
+  `test_group_help_shows_repl_usage_and_caveats` matched `agnes chat <slug>`
+  against the raw output; rich-click highlights the metavar, so with colour on
+  (off for a non-tty locally, on in CI) the literal is split by ANSI codes and
+  the assertion failed only in CI. It now strips SGR codes first, the same
+  `_clean()` idiom the other CLI test modules use.
+- **Migration-safety tests no longer pin a literal future schema version.**
+  Both future-version tests derive it from `SCHEMA_VERSION + 1`; the previous
+  hardcoded `99` silently stopped exercising the noop path as the ladder grew,
+  then broke outright once the ladder passed it.
+
+## [0.76.38] - 2026-07-28
+
+### Added
+
+### Changed
+
+- **Cloud-chat sessions get a resend notice on server restart — but only when
+  the turn is actually lost.** A chat whose turn was mid-generation when the
+  server drained (deploy/restart) previously just stopped mid-answer with the
+  composer wedged in the "running" state (it only clears on
+  done/error/cancelled). `ChatManager.shutdown()` now broadcasts a
+  `server_restarting` notice + a `done` frame to an in-flight session on the
+  kill path (`on_detach="kill"`, or a failed pause), so the client can prompt
+  a resend against the replacement process. On the default successful-pause
+  path the notice is deliberately suppressed: the snapshot keeps the turn
+  running and it finishes after resume, so "please resend" there would invite
+  a duplicate turn. Idle sessions drain silently as before.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.37] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Broker SSE stream no longer re-buffered by PostHog/rate-limit middleware.**
+  Follow-up to the GZip skip (0.76.36): `PosthogInjectionMiddleware` and the
+  auth `SlowAPIMiddleware` both subclass Starlette's `BaseHTTPMiddleware`,
+  which buffers the whole response body — so the broker's `text/event-stream`
+  completion was still collapsed into one end-of-turn burst (and risked the
+  Python 3.13 `AssertionError` on a second `http.response.start`) two hops
+  above the broker. Both middlewares now consult a shared
+  `SSE_BYPASS_PREFIXES` tuple (`/api/mcp`, `/api/broker/anthropic`) and fall
+  through to the bare ASGI app for SSE paths; a guard test keeps the gzip
+  skip-list in sync with the tuple.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.36] - 2026-07-27
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Cloud-chat token streaming now actually reaches the browser** — the
+  final missing link after the broker/relay stream-through (#1020). The app
+  wraps responses in `GZipMiddleware`, which buffers a `StreamingResponse`
+  whole to compress it, re-collapsing the model's SSE completion into one
+  end-of-turn burst one hop above the broker. `/api/broker/anthropic` is now
+  gzip-skip-listed alongside the existing `/api/mcp` SSE endpoint, so the
+  streamed deltas pass through uncompressed and arrive incrementally.
+  Diagnosed with an in-sandbox trace: the in-sandbox CLI was receiving all
+  SSE events at a single timestamp (one text delta for a 500-char answer);
+  skip-listing restores true token-by-token delivery.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.35] - 2026-07-27
+
+### Added
+
+- **Partitioned local tables can now be distributed to analyst laptops via `agnes pull`.** Tables stored as a *directory* of parquet parts — Jira (hive `month=*/data.parquet`) and Keboola `sync_strategy=partitioned` (`<key>.parquet`) — were previously undistributable: the manifest/download/pull path assumed exactly one `{table}.parquet` per table, so the orchestrator wrote an empty hash, `/api/data/{id}/download` 404'd, and the client couldn't build a view. Now the whole chain is part-aware: `sync_state` gains a `parts` JSON column (per-part `{path, hash, size_bytes}`; DuckDB + Postgres, schema v100 / alembic `0047`); the orchestrator hashes each part (`_hash_table_parts`) and stores a rollup hash so the whole-table "changed?" compare + object-store mirror keep working; the manifest emits `parts`; `GET /api/data/{id}/download?part=<relpath>` serves a single part (path-traversal-guarded); and `agnes pull` fetches only the changed parts into `server/parquet/{id}/`, swaps them all-or-nothing (a failed part leaves the prior dir intact — never a silently-partial view), prunes server-dropped parts, and builds one hive-partitioned local view per table (`union_by_name=true, hive_partitioning=true`, byte-identical to the server view). Single-file tables are unchanged (`parts` is `NULL`/absent → treated as single-file). Incremental by design: an analyst re-pulls only the month(s) that changed.
+
+### Changed
+
+### Fixed
+
+- **Caddy `@download` `forward_auth` no longer deletes the client's credential.** The block used `copy_headers Authorization Cookie`, which copies headers *from* the `check-access` response back onto the request; since `check-access` returns `204` with no such headers, on Caddy ≥ v2.11.2 (GHSA-7r4p-vjf4-gxv4) that unconditionally *stripped* the client's Authorization/Cookie. Any download not served by the `file_server` static path (a partitioned-table `?part=` fetch, or any table whose parquet isn't at the hardcoded `try_files` locations) then reached the app reverse-proxy fallback with no credential and returned `401`. Removed the directive — `forward_auth` already forwards the original request headers to `check-access`.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.76.34] - 2026-07-24
 
 ### Added
