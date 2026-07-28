@@ -34,6 +34,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.76.37] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Broker SSE stream no longer re-buffered by PostHog/rate-limit middleware.**
+  Follow-up to the GZip skip (0.76.36): `PosthogInjectionMiddleware` and the
+  auth `SlowAPIMiddleware` both subclass Starlette's `BaseHTTPMiddleware`,
+  which buffers the whole response body — so the broker's `text/event-stream`
+  completion was still collapsed into one end-of-turn burst (and risked the
+  Python 3.13 `AssertionError` on a second `http.response.start`) two hops
+  above the broker. Both middlewares now consult a shared
+  `SSE_BYPASS_PREFIXES` tuple (`/api/mcp`, `/api/broker/anthropic`) and fall
+  through to the bare ASGI app for SSE paths; a guard test keeps the gzip
+  skip-list in sync with the tuple.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.76.36] - 2026-07-27
 
 ### Added
