@@ -64,12 +64,20 @@ sites) delegates to this function — nothing re-derives the truthy-string
 rule or the env-over-yaml order by hand.
 
 One exception, by necessity rather than choice: `app.chat.config.load_chat_config`
-parses a *caller-supplied* `instance.yaml` path (tests pass an isolated
-`tmp_path` fixture), not the process-global merged config `get_value()`
-reads from. Its `chat.enabled` resolution therefore reuses only the shared
-truthy-parsing primitive (`app.instance_config.coerce_flag_value`) rather
-than calling `feature_enabled` directly — the value *source* differs, the
+parses a *caller-supplied* `instance.yaml` path, not the process-global merged
+config `get_value()` reads from. Its `chat.enabled` resolution therefore reuses
+only the shared truthy-parsing primitive (`app.instance_config.coerce_flag_value`)
+rather than calling `feature_enabled` directly — the value *source* differs, the
 resolution *order* and *parsing rule* do not.
+
+This has a production consequence, not just a test one: `app/main.py` boots chat
+from `load_chat_config(DATA_DIR/state/instance.yaml)` — the writable
+server-config **overlay file alone**. A `chat.enabled` set only in the static
+`config/instance.yaml` base is invisible to the chat runtime; enable chat via
+the `/admin/server-config` editor (which writes the overlay) or the
+`AGNES_CHAT_ENABLED` env var. The `/admin/server-config` flag inventory resolves
+its `chat` row from the same overlay-only source the runtime uses, so the panel
+always reflects what the app actually does.
 
 ## The registry
 

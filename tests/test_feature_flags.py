@@ -191,6 +191,38 @@ class TestServerConfigFeatureFlagsInventory:
         assert flags["chat"]["effective"] is False
         assert flags["chat"]["source"] == "default"
 
+    def test_chat_ignores_merged_static_config(self, seeded_app, monkeypatch):
+        # chat's runtime reads ONLY the overlay file (app/main.py loads
+        # load_chat_config(DATA_DIR/state/instance.yaml), never the static
+        # config/instance.yaml base) — so a chat.enabled visible only through
+        # the merged get_value() view must NOT surface as enabled here.
+        from app.api import admin as admin_mod
+
+        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        monkeypatch.setattr(
+            ic,
+            "get_value",
+            lambda *keys, default=None: True if keys == ("chat", "enabled") else default,
+        )
+        inv = {f["name"]: f for f in admin_mod._feature_flags_inventory()}
+        assert inv["chat"]["effective"] is False
+        assert inv["chat"]["source"] == "default"
+
+    def test_chat_reflects_runtime_overlay_file(self, seeded_app, monkeypatch):
+        from app.secrets import _state_dir
+
+        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        overlay = _state_dir() / "instance.yaml"
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text("chat:\n  enabled: true\n")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        flags = {f["name"]: f for f in resp.json()["feature_flags"]}
+        assert flags["chat"]["effective"] is True
+        assert flags["chat"]["source"] == "config"
+
     def test_requires_admin(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
