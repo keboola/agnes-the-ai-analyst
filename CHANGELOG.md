@@ -22,6 +22,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.5] - 2026-07-28
+
+### Changed
+
+- **Infra (customer-instance module): `data_apps_enabled` is now a per-VM field.** It moved from a module-global variable to an `optional(bool, false)` field on the `prod_instance` / `dev_instances[*]` object types (mirroring `dispatcher_enabled`), so an operator can enable hosted data apps on a single dev VM without also flipping every other VM in the instance — including prod. `data_apps_runtime_image` stays instance-wide. Consumed by a new `infra-v1.20.0` module tag.
+
 ## [0.77.4] - 2026-07-28
 
 ### Added
