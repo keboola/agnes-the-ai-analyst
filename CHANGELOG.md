@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.1] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
 - **Cloud-chat answers finally stream token-by-token on TLS-fronted
   deployments.** The real cause of the "silence, then the whole answer at
   once" behavior was Caddy, not the app: Caddy only auto-flushes a reverse-
