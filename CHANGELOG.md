@@ -16,6 +16,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- `POST /api/admin/run-keboola-semantic-layer-refresh` no longer reports success when the sync couldn't run at all (missing Keboola credentials, or a Storage/Metastore API failure) — `sync_semantic_layer()` surfaces those as a returned `{"status": "error"}` value rather than an exception, and the endpoint previously recorded and returned "ok" regardless. The `/admin/data-sources` "Semantic layer" summary card showed a false green "OK" after a failed sync; it now shows the actual failure reason.
+
 ### Removed
 
 ### Internal

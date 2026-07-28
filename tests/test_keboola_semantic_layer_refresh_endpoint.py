@@ -76,6 +76,24 @@ def test_run_refresh_maps_master_token_error_to_400(seeded_app):
     assert "master token" in r.json()["detail"]
 
 
+def test_run_refresh_maps_returned_error_status_to_502(seeded_app):
+    """sync_semantic_layer() reports config/upstream failures (missing
+    credentials, Storage/Metastore API errors) by *returning*
+    {"status": "error"} rather than raising — the endpoint must not treat
+    that as a 200 success (previously: the admin UI showed a false "OK"
+    after a failed sync)."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    fake_result = {"status": "error", "error": "Keboola credentials not configured"}
+    with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
+        r = c.post(
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 502
+    assert r.json()["detail"] == "Keboola credentials not configured"
+
+
 def test_run_refresh_requires_admin(seeded_app):
     c = seeded_app["client"]
     r = c.post("/api/admin/run-keboola-semantic-layer-refresh")
@@ -156,6 +174,27 @@ class TestLastRefreshSummary:
         assert summary["last_status"] == "error"
         assert summary["last_completed_at"]
         assert "master token" in summary["last_result"]
+
+    def test_returned_error_status_records_failure_summary(self, seeded_app):
+        """A returned {"status": "error"} dict (not an exception) must also
+        flip last_status to "error" — this is the case that previously
+        recorded "ok" unconditionally and showed a false-green summary."""
+        from app.api.keboola_semantic_layer_refresh import get_last_refresh_summary
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_result = {"status": "error", "error": "Keboola credentials not configured"}
+        with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
+            r = c.post(
+                "/api/admin/run-keboola-semantic-layer-refresh",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert r.status_code == 502
+
+        summary = get_last_refresh_summary()
+        assert summary["last_status"] == "error"
+        assert summary["last_completed_at"]
+        assert summary["last_result"] == "Keboola credentials not configured"
 
     def test_unexpected_exception_also_records_failure_summary(self, seeded_app):
         """A non-MasterTokenRequiredError failure must still leave a visible
