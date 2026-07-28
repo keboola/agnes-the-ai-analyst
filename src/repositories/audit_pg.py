@@ -16,6 +16,7 @@ Implementation differences vs. DuckDB:
     PG-specific FTS upgrade, see the "future improvements" section in
     docs/migrations.md.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -24,6 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+from src.audit_helpers import AUDIT_SOURCE_CASE_SQL
 
 
 class AuditPgRepository:
@@ -154,7 +157,9 @@ class AuditPgRepository:
             params["cursor_ts"] = ts
             params["cursor_id"] = cid
 
-        sql = "SELECT * FROM audit_log"
+        # `source` is computed server-side (same rule as the DuckDB sibling)
+        # so every consumer classifies rows identically.
+        sql = f"SELECT *, {AUDIT_SOURCE_CASE_SQL} AS source FROM audit_log"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY timestamp DESC, id DESC LIMIT :limit_plus_one"
@@ -190,10 +195,7 @@ class AuditPgRepository:
             k = f"action_{i}"
             in_keys.append(f":{k}")
             params[k] = a
-        sql = (
-            f"SELECT * FROM audit_log WHERE action IN ({','.join(in_keys)}) "
-            f"ORDER BY timestamp DESC LIMIT :limit"
-        )
+        sql = f"SELECT * FROM audit_log WHERE action IN ({','.join(in_keys)}) ORDER BY timestamp DESC LIMIT :limit"
         with self._engine.connect() as conn:
             result = conn.execute(sa.text(sql), params)
             return [dict(r._mapping) for r in result]
@@ -211,10 +213,7 @@ class AuditPgRepository:
             k = f"resource_{i}"
             in_keys.append(f":{k}")
             params[k] = r
-        sql = (
-            f"SELECT * FROM audit_log WHERE resource IN ({','.join(in_keys)}) "
-            f"ORDER BY timestamp DESC LIMIT :limit"
-        )
+        sql = f"SELECT * FROM audit_log WHERE resource IN ({','.join(in_keys)}) ORDER BY timestamp DESC LIMIT :limit"
         with self._engine.connect() as conn:
             result = conn.execute(sa.text(sql), params)
             return [dict(r._mapping) for r in result]
@@ -270,7 +269,6 @@ class AuditPgRepository:
         self,
         *,
         since: datetime,
-        scheduler_actions: list[str],
         limit: int = 50,
     ) -> "dict[str, list[dict]]":
         with self._engine.connect() as conn:
@@ -308,27 +306,20 @@ class AuditPgRepository:
             ).fetchall()
             source_rows = conn.execute(
                 sa.text(
-                    """
-                    SELECT
-                      CASE
-                        WHEN client_kind IS NOT NULL AND client_kind != '' THEN client_kind
-                        WHEN action IN :sched THEN 'scheduler'
-                        WHEN user_id IS NULL THEN 'system'
-                        ELSE 'other'
-                      END AS src,
-                      COUNT(*) AS n
+                    f"""
+                    SELECT {AUDIT_SOURCE_CASE_SQL} AS src, COUNT(*) AS n
                     FROM audit_log WHERE timestamp >= :since
                     GROUP BY src ORDER BY n DESC LIMIT :limit
                     """
-                ).bindparams(sa.bindparam("sched", expanding=True)),
-                {"since": since, "limit": limit, "sched": list(scheduler_actions)},
+                ),
+                {"since": since, "limit": limit},
             ).fetchall()
         return {
-            "users":     [{"id": r[0], "count": r[1]} for r in users],
-            "actions":   [{"value": r[0], "count": r[1]} for r in actions],
-            "results":   [{"value": r[0], "count": r[1]} for r in results],
+            "users": [{"id": r[0], "count": r[1]} for r in users],
+            "actions": [{"value": r[0], "count": r[1]} for r in actions],
+            "results": [{"value": r[0], "count": r[1]} for r in results],
             "resources": [{"value": r[0], "count": r[1]} for r in resources],
-            "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
+            "sources": [{"value": r[0], "count": r[1]} for r in source_rows],
         }
 
     def last_scheduler_tick(self) -> "datetime | None":
@@ -393,4 +384,5 @@ def _json_param(v: Optional[dict]) -> Optional[str]:
     if v is None:
         return None
     import json
+
     return json.dumps(v)
