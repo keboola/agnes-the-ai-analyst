@@ -18,14 +18,21 @@ v96 schema) into the existing spawn-time `ChatProfile` mechanism
    allowed to touch, per its four `*_mode` columns) and persist it as an
    audit row via ``agents_repo().record_scope_snapshot``.
 
-   **V1a scope note (important): this snapshot is audit-only.** It records
-   what the agent's scope *should* resolve to at spawn time so admins can
-   inspect it later (``agents_repo().list_scope_snapshots``); it does NOT
-   itself narrow which plugins/connections/tables/memory the live sandbox
-   can actually reach — nothing in this module (or in `_spawn_live`)
-   subsets the workspace materialization by the computed scope. Live seam
-   enforcement (actually restricting the spawned sandbox to the scoped
-   plugins/connections/tables/memory) is V1b work.
+   **This snapshot is an audit trail, not the enforcement mechanism — but as
+   of V1d it now describes what IS actually enforced.** V1a shipped this
+   module computing + recording the scope with no live seam honoring it
+   (a gap closed in V1d, not V1b as originally planned — see
+   ``docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md``).
+   Live enforcement lives elsewhere: the broker mints an ``agent_session``
+   JWT for a narrowing agent (``app/api/broker.py::_mint_identity_jwt``),
+   the resolver turns it into an ``AgentPrincipal`` whose ``intersection`` is
+   ``compute_agent_intersection(owner grants, agent scope)``
+   (``src/agent_scope_intersection.py``, recomputed live per request), and
+   the tables/marketplace/MCP seams honor that principal directly. This
+   module's snapshot and that live intersection are computed from the same
+   inputs (``agent_row`` + ``agent_scope`` rows) via the same mode→type
+   mapping, so they cannot drift out of agreement — see
+   ``tests/test_agent_scope_e2e.py::test_audit_snapshot_matches_enforced_intersection``.
 
 ``record_snapshot`` must never raise into the spawn path: a scope-snapshot
 write failure is an audit-trail gap, not a reason to fail the chat spawn
@@ -98,8 +105,13 @@ def _context_skill(agent_row: dict) -> str:
     """Render the small read-only SKILL.md describing this agent's identity.
 
     States the agent's name/description and that its capability is scoped
-    by the owner's config — deliberately does not claim any live
-    enforcement (see the module docstring's V1a/V1b split).
+    by the owner's config. This skill body is descriptive text materialized
+    into the sandbox, not the enforcement mechanism (that is the live
+    ``AgentPrincipal`` intersection at the broker/RBAC seams — see the
+    module docstring); it stays deliberately generic rather than
+    enumerating the agent's actual scope, so a stale/forged copy sitting in
+    an already-spawned sandbox can never claim more than the live seams
+    would allow anyway.
 
     Also advertises the "remember" write tool (V1c Task 4,
     `POST /api/v1/sessions/{id}/memories`) — but ONLY when this agent's

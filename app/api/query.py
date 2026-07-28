@@ -294,6 +294,27 @@ def _assert_no_ungranted_catalog_ref(sql_lower_masked: str, conn) -> None:
             )
 
 
+def _identity_for_audit(user) -> tuple:
+    """``(user_id, email)`` for audit-log rows / BQ-quota-key bookkeeping
+    only — NEVER for an authorization decision (see the admin-check note in
+    ``_bq_guardrail_inputs``, which deliberately does not use this helper).
+
+    A restricted principal (co-session / agent-session, V1d) is a frozen
+    dataclass with no ``.get`` and no single caller identity of its own: an
+    ``AgentPrincipal`` reports its owner (the request legitimately runs on
+    the owner's behalf, just intersection-narrowed — same call
+    ``app.marketplace_server.packager._diag_identity`` makes for
+    ``/marketplace/info``); a ``SessionPrincipal`` reports neither, since a
+    co-session has several live participants and naming one would
+    misattribute the others' actions.
+    """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        return getattr(user, "owner_user_id", None), getattr(user, "owner_email", None)
+    return user.get("id"), user.get("email")
+
+
 def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     """Non-admin SQL RBAC deny checks shared by ``/api/query`` (``execute_query``)
     and the snapshot ``run_remote_select_to_arrow`` path — previously duplicated
@@ -742,7 +763,12 @@ def execute_query(
         # vs email for /api/v2/scan — the per-user daily cap was effectively
         # doubled because the two paths tracked under different keys.
         # Devin Review #2 caught this on PR #168.
-        user_id = user.get("email") or user.get("id") or "anon"
+        # A restricted principal (co-session / agent-session) has no
+        # ".get" — resolve via _identity_for_audit (owner identity for an
+        # AgentPrincipal, "anon" for a SessionPrincipal's shared bucket;
+        # this is bookkeeping, not an authorization decision).
+        _audit_uid, _audit_email = _identity_for_audit(user)
+        user_id = _audit_email or _audit_uid or "anon"
         guard = (
             _bq_quota_and_cap_guard(
                 user_id=user_id,
@@ -861,7 +887,7 @@ def execute_query(
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=_identity_for_audit(user)[0],
                 action=_action,
                 resource=_resource,
                 params={
@@ -888,7 +914,7 @@ def execute_query(
         _action_err = "query.remote" if _dry_run_set else "query.local"
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=_identity_for_audit(user)[0],
                 action=_action_err,
                 resource=_resource,
                 params={
@@ -920,7 +946,7 @@ def execute_query(
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=_identity_for_audit(user)[0],
                 action="query.local",
                 resource=_resource,
                 params={
@@ -1134,7 +1160,19 @@ def _bq_guardrail_inputs(
 
     # 2. Direct bq.<ds>.<tbl> pass: every match must point at a registered
     # row. Run BEFORE adding to dry_run so unregistered paths fail-fast.
-    is_admin = is_user_admin(user.get("id") or user.get("email") or "", sys_conn)
+    # A restricted principal (co-session / agent-session) is NEVER admin,
+    # even when its owner is — resolving the owner's id here and calling
+    # is_user_admin would reintroduce exactly the admin-inheritance bug the
+    # AgentPrincipal design forbids (this is the "no admin short-circuit"
+    # invariant, not an audit-identity question — do not route this through
+    # _identity_for_audit). Mirrors the same PRINCIPAL_TYPES guard in
+    # _run_internal_query / v2_sample.py.
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        is_admin = False
+    else:
+        is_admin = is_user_admin(user.get("id") or user.get("email") or "", sys_conn)
     for m in BQ_PATH.finditer(sql):
         bucket_raw = m.group(1).strip('"')
         source_table_raw = m.group(2).strip('"')
@@ -1954,7 +1992,9 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
         if blocked_bq_path is not None:
             raise HTTPException(status_code=403, detail=blocked_bq_path)
 
-        user_id = user.get("email") or user.get("id") or "anon"
+        # See _identity_for_audit — a restricted principal has no ".get".
+        _audit_uid, _audit_email = _identity_for_audit(user)
+        user_id = _audit_email or _audit_uid or "anon"
         quota.check_daily_budget(user=user_id)
         with quota.acquire(user=user_id):
             # Dry-run the rewritten SQL purely to bill the user's daily byte

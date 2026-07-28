@@ -16,6 +16,41 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Agent scope is now enforced at request time, not merely recorded.** A
+  `selected`-scoped agent's brokered requests are authorized against
+  `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`
+  (`app/auth/session_principal.py`), so an agent PAT — or a chat session
+  bound to that agent — can no longer reach tables, plugins, or MCP tools
+  outside the agent's declared scope. Agents never inherit their owner's
+  admin authority, even when the owner is an admin. Previously the scope
+  was computed and audit-snapshotted (`agent_scope_snapshots`) but the
+  brokered request still ran under the owner's full grants — the HIGH
+  finding from the V1 `/agnes-review`. See
+  `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`
+  and the end-to-end proof in `tests/test_agent_scope_e2e.py`.
+- **`/api/query` crashed instead of returning rows for a restricted
+  principal's successful (in-scope) request against a real local table.**
+  A co-session (`SessionPrincipal`) or agent-session (`AgentPrincipal`)
+  request that RBAC correctly *allowed* still 400'd downstream, because the
+  audit-log and BQ-quota-key bookkeeping called `user.get(...)` unconditionally
+  — a frozen-dataclass principal has no `.get`. Denials were unaffected (the
+  crash was swallowed inside an already-caught audit-log failure), which is
+  why this went unnoticed until the agent-scope end-to-end test exercised an
+  actually-successful principal-authenticated query. Fixed via a
+  principal-aware `_identity_for_audit` helper used only for audit/quota
+  bookkeeping, never for an authorization decision.
+- **Schema upgrade crashed on any DB between v82 and v96.** The
+  `corpus_files(corpus_id, path)` UNIQUE INDEX was declared inside
+  `_SYSTEM_SCHEMA`, which executes *before* the migration ladder. Because
+  `corpus_files` is created at v82 but its `path` column is only ALTER-added at
+  v97, the `CREATE TABLE IF NOT EXISTS` was a no-op on those DBs and the index
+  statement then raised `BinderException: Table "corpus_files" does not have a
+  column named "path"` — aborting the whole schema pass before the ALTER could
+  run, so the instance never started. The index is now created by
+  `_ensure_corpus_path_index()` after the ladder, guarded on the column
+  existing, which covers fresh installs, incremental upgrades, and the
+  split-brain future-version self-heal path alike.
+
 ### Removed
 
 ### Internal
@@ -40,6 +75,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (pins the brokered LLM to one model) and `token_budget_monthly`. Surfaced
   at `/agents` (a minimal builder page: list, create, issue token, delete)
   and via `agnes agent {list,create,show,delete,scope set,token,ask}`.
+  New `agents` / `agent_scope` / `agent_scope_snapshots` / `llm_usage`
+  tables (DuckDB v100 + Alembic `0047`).
 - **Agent personal access tokens (`typ=agent_pat`).** `POST
   /api/v1/agents/{id}/tokens` mints a token bound to one agent — accepted
   only on the agent runtime API (`/api/v1/{agents,jobs}/...`), rejected
@@ -105,7 +142,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   streams the bytes (default, through this endpoint's own auth) or, with
   `?redirect=true`, 307-redirects to a short-TTL (≤120s) presigned
   object-store URL. Same owner/agent-PAT auth as the rest of
-  `/api/v1/sessions/{id}/*`.
+  `/api/v1/sessions/{id}/*`. New `agent_artifacts` table (DuckDB v101 +
+  Alembic `0048`, shared with the webhooks migration below).
 - **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
   token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
   to every upstream credential mode — static key, workload identity, LLM
@@ -144,7 +182,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   IP fresh on every send, closing the DNS-rebinding window a create-time-only
   check would leave open. A webhook auto-disables after
   `agent_api_webhook_max_failures` (default 5) consecutive delivery
-  failures.
+  failures. New `agent_webhooks` table (DuckDB v101 + Alembic `0048`,
+  shared with the artifact-harvest migration above).
 - **Structured JSON output, `response_format: {"type": "json_schema", ...}`**
   (agent-api V1b Task 7). `POST /api/v1/agents/{slug}/responses` accepts an
   optional `response_format`; when present, a schema directive is appended
@@ -204,7 +243,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   whether it actually lands in the next spawn or is shadowed behind newer
   content — the `agnes agent memory list|approve|archive|delete` CLI, and a
   per-agent Memory panel on `/agents` (status badges, in-effect/shadowed
-  marker, Approve/Delete buttons).
+  marker, Approve/Delete buttons). New `agent_memories` table (DuckDB v102
+  + Alembic `0049`).
 - **`agnes chat <slug>`** (agent-api V1c) — an interactive, streaming
   terminal REPL over a composed agent's session API
   (`POST /api/v1/agents/{slug}/sessions` + SSE

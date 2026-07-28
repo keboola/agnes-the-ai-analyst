@@ -913,8 +913,9 @@ class ChatManager:
         static ``self._session_profiles`` slug lookup — otherwise (no
         agent_id, agent missing, or empty system_prompt, as with the seeded
         default agent) today's behavior is unchanged bit-for-bit. A scope
-        snapshot (audit-only, see ``app.chat.agent_profile``'s docstring) is
-        recorded once the spawn has actually succeeded.
+        snapshot (audit trail — since V1d it describes what is live-enforced
+        at the broker/RBAC seams, see ``app.chat.agent_profile``'s
+        docstring) is recorded once the spawn has actually succeeded.
         """
         chat_id = session.id
         agent_row = self._load_agent_row(session.agent_id)
