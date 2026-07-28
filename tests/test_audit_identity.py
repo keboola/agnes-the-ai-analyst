@@ -156,3 +156,23 @@ def test_v104_backfill_rewrites_email_user_ids(tmp_path):
     assert rows["e3"] == "u-1"  # already a UUID — untouched
     assert rows["e4"] == "dup@b.c"  # ambiguous (two case-variant accounts)
     conn.close()
+
+
+def test_log_autofills_duration_from_request_context(tmp_path):
+    import duckdb as _duckdb
+
+    from src.audit_context import mark_request_start
+    from src.db import _ensure_schema
+    from src.repositories.audit import AuditRepository
+
+    conn = _duckdb.connect(str(tmp_path / "dur.duckdb"))
+    _ensure_schema(conn)
+    repo = AuditRepository(conn)
+    # outside a request scope → NULL duration (contextvar default)
+    repo.log(user_id="u1", action="no.scope")
+    mark_request_start()
+    repo.log(user_id="u1", action="in.scope")
+    rows = dict(conn.execute("SELECT action, duration_ms FROM audit_log").fetchall())
+    assert rows["no.scope"] is None
+    assert rows["in.scope"] is not None and rows["in.scope"] >= 0
+    conn.close()

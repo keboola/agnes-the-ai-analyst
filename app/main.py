@@ -1935,6 +1935,13 @@ def create_app() -> FastAPI:
     # x-request-id header.
     app.add_middleware(RequestIdMiddleware)
 
+    # Audit-timing contextvar (pure ASGI, zero hot-path overhead) — lets
+    # audit_repo().log() auto-fill duration_ms for every HTTP-triggered
+    # audit write; see src/audit_context.py.
+    from app.middleware.audit_timing import AuditTimingMiddleware
+
+    app.add_middleware(AuditTimingMiddleware)
+
     # HTTP request metrics (three-plane wave 2D, task 1) — registered as an
     # `@app.middleware("http")` function (not add_middleware) so it becomes
     # the true OUTERMOST layer, even later than RequestIdMiddleware above:

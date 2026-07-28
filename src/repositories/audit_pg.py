@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from src.audit_context import auto_duration_ms
 from src.audit_helpers import (
     AUDIT_SOURCE_CASE_SQL,
     RESULT_CLASS_CASE_SQL,
@@ -54,6 +55,8 @@ class AuditPgRepository:
         client_kind: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> str:
+        if duration_ms is None:
+            duration_ms = auto_duration_ms()
         entry_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:

@@ -7,6 +7,7 @@ from typing import Any, Optional, List, Dict
 
 import duckdb
 
+from src.audit_context import auto_duration_ms
 from src.audit_helpers import (
     AUDIT_SOURCE_CASE_SQL,
     RESULT_CLASS_CASE_SQL,
@@ -41,6 +42,8 @@ class AuditRepository:
         """
         entry_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
+        if duration_ms is None:
+            duration_ms = auto_duration_ms()
         self.conn.execute(
             """INSERT INTO audit_log
                (id, timestamp, user_id, action, resource, params, result, duration_ms,
