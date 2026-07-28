@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 100
+SCHEMA_VERSION = 103
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -503,7 +503,11 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     expires_at   TIMESTAMP,
     last_used_at TIMESTAMP,
     last_used_ip VARCHAR,
-    revoked_at   TIMESTAMP
+    revoked_at   TIMESTAMP,
+    -- v101: agent-as-API — non-NULL when this PAT was minted for/by an
+    -- agent (see docs/superpowers/specs/2026-07-21-agent-profiles-and-
+    -- agent-api-design.md). Deliberately unindexed.
+    agent_id     VARCHAR
 );
 
 -- v60: short-lived setup tokens for the Agnes Cowork one-click setup flow.
@@ -1283,7 +1287,12 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- Relay protocol version of the runner sandbox_id/runner_pid point at
     -- (v98, Tier 1 restart-invariant reuse). NULL = unknown/legacy — see
     -- app.chat.types.RELAY_PROTOCOL_VERSION's docstring.
-    relay_protocol_version INTEGER
+    relay_protocol_version INTEGER,
+    -- v101: agent-as-API — which agent profile (if any) drove this session.
+    -- Deliberately unindexed: this table already carries idx_chat_sessions_user
+    -- and DuckDB's ART-index maintenance is the exact incident class
+    -- _v94_to_v95 exists to fix, so no new secondary index goes on this column.
+    agent_id          VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
     ON chat_sessions(user_email, last_message_at);
@@ -1404,12 +1413,14 @@ CREATE TABLE IF NOT EXISTS corpus_files (
     updated_at TIMESTAMP DEFAULT current_timestamp
 );
 
--- Enforce the upsert invariant: at most one row per (corpus_id, path). Plain
--- (not partial) UNIQUE INDEX — DuckDB has no partial indexes, but NULLs are
--- distinct on both DuckDB and Postgres, so path=NULL (plain-insert files,
--- bundle children) is exempt while set paths stay unique.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path
-    ON corpus_files(corpus_id, path);
+-- NOTE: the (corpus_id, path) UNIQUE INDEX that enforces the upsert invariant
+-- is deliberately NOT declared here. _SYSTEM_SCHEMA runs *before* the migration
+-- ladder (and, on split-brain future-version DBs, instead of it), so it must be
+-- safe against every historical table shape. ``corpus_files`` predates ``path``
+-- (table created v82, column added v97): on a legacy DB the CREATE TABLE above
+-- is a no-op and an index over the not-yet-added ``path`` column raises
+-- BinderException, aborting the whole schema pass before the ALTER can run.
+-- _ensure_corpus_path_index() creates it after the ladder instead.
 
 -- corpus_chunks: prose-document chunks + embedding vector.
 -- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
@@ -1581,6 +1592,114 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
 CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
+
+-- v101: agent profiles + agent-as-API foundation (spec
+-- docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
+-- No secondary indexes anywhere here — see the _v94_to_v95 ART-index
+-- incident note; chat_sessions.agent_id especially must stay unindexed.
+CREATE TABLE IF NOT EXISTS agents (
+    id                   VARCHAR PRIMARY KEY,
+    owner_user_id        VARCHAR NOT NULL,
+    name                 VARCHAR NOT NULL,
+    slug                 VARCHAR NOT NULL,
+    description          TEXT,
+    system_prompt        TEXT,
+    model                VARCHAR,
+    token_budget_monthly BIGINT,
+    plugins_mode         VARCHAR NOT NULL DEFAULT 'all',
+    connections_mode     VARCHAR NOT NULL DEFAULT 'all',
+    tables_mode          VARCHAR NOT NULL DEFAULT 'all',
+    memory_mode          VARCHAR NOT NULL DEFAULT 'all',
+    memory_write_mode    VARCHAR NOT NULL DEFAULT 'propose',
+    is_default           BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at           TIMESTAMP DEFAULT current_timestamp,
+    updated_at           TIMESTAMP DEFAULT current_timestamp,
+    deleted_at           TIMESTAMP,
+    UNIQUE (owner_user_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS agent_scope (
+    agent_id  VARCHAR NOT NULL,
+    item_type VARCHAR NOT NULL,
+    item_id   VARCHAR NOT NULL,
+    PRIMARY KEY (agent_id, item_type, item_id)
+);
+
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id                    VARCHAR PRIMARY KEY,
+    agent_id              VARCHAR,
+    user_id               VARCHAR,
+    session_id            VARCHAR,
+    model                 VARCHAR,
+    input_tokens          BIGINT DEFAULT 0,
+    output_tokens         BIGINT DEFAULT 0,
+    cache_read_tokens     BIGINT DEFAULT 0,
+    cache_creation_tokens BIGINT DEFAULT 0,
+    created_at            TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS agent_scope_snapshots (
+    id              VARCHAR PRIMARY KEY,
+    session_id      VARCHAR NOT NULL,
+    agent_id        VARCHAR NOT NULL,
+    effective_scope TEXT NOT NULL,
+    created_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key           VARCHAR NOT NULL,
+    owner_user_id VARCHAR NOT NULL,
+    agent_id      VARCHAR NOT NULL,
+    request_hash  VARCHAR NOT NULL,
+    response_body TEXT,
+    status_code   INTEGER,
+    created_at    TIMESTAMP DEFAULT current_timestamp,
+    expires_at    TIMESTAMP,
+    PRIMARY KEY (key, owner_user_id, agent_id)
+);
+
+-- v102: agent webhooks + artifacts (agent-api V1b). No secondary indexes
+-- (ART-index incident — see _v94_to_v95).
+CREATE TABLE IF NOT EXISTS agent_webhooks (
+    id                   VARCHAR PRIMARY KEY,
+    agent_id             VARCHAR NOT NULL,
+    owner_user_id        VARCHAR NOT NULL,
+    url                  VARCHAR NOT NULL,
+    secret               VARCHAR NOT NULL,
+    events               VARCHAR NOT NULL DEFAULT 'job.completed,job.failed',
+    active               BOOLEAN NOT NULL DEFAULT TRUE,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    disabled_at          TIMESTAMP,
+    created_at           TIMESTAMP DEFAULT current_timestamp,
+    updated_at           TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS agent_artifacts (
+    id            VARCHAR PRIMARY KEY,
+    session_id    VARCHAR NOT NULL,
+    agent_id      VARCHAR,
+    owner_user_id VARCHAR NOT NULL,
+    filename      VARCHAR NOT NULL,
+    object_key    VARCHAR NOT NULL,
+    size_bytes    BIGINT NOT NULL DEFAULT 0,
+    content_type  VARCHAR,
+    md5           VARCHAR,
+    created_at    TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v103: per-agent private memory notebook (agent-api V1c). No secondary
+-- indexes (ART-index incident — see _v94_to_v95).
+CREATE TABLE IF NOT EXISTS agent_memories (
+    id                VARCHAR PRIMARY KEY,
+    agent_id          VARCHAR NOT NULL,
+    owner_user_id     VARCHAR NOT NULL,
+    content           TEXT NOT NULL,
+    source_session_id VARCHAR,
+    status            VARCHAR NOT NULL DEFAULT 'pending',
+    created_at        TIMESTAMP DEFAULT current_timestamp,
+    activated_at      TIMESTAMP,
+    archived_at       TIMESTAMP
+);
 """
     + _DATA_APPS_CREATE_SQL
 )
@@ -6467,6 +6586,33 @@ def _v95_to_v96(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 96")
 
 
+def _ensure_corpus_path_index(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create the ``corpus_files(corpus_id, path)`` UNIQUE INDEX if possible.
+
+    Enforces the upsert invariant: at most one row per ``(corpus_id, path)``.
+    Plain (not partial) UNIQUE INDEX — DuckDB has no partial indexes, but NULLs
+    are distinct on both DuckDB and Postgres, so ``path=NULL`` (plain-insert
+    files, bundle children) is exempt while set paths stay unique.
+
+    Called unconditionally at the end of ``_ensure_schema`` rather than from
+    ``_SYSTEM_SCHEMA``, because ``_SYSTEM_SCHEMA`` runs *before* the migration
+    ladder: ``corpus_files`` exists since v82 but ``path`` is ALTER-added at
+    v97, so an index declared in ``_SYSTEM_SCHEMA`` raises BinderException on
+    every v82..v96 DB and aborts the schema pass before the ALTER can run.
+
+    Guarded on the column actually existing so the split-brain self-heal path
+    (future-version DB, ladder skipped) degrades to a no-op instead of raising.
+    """
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+    except Exception:
+        # Table absent entirely (pre-v82 DB shape) — nothing to index.
+        return
+    if "path" not in cols:
+        return
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_files_corpus_path ON corpus_files(corpus_id, path)")
+
+
 def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
     """v96→v97: ``corpus_files.path`` — logical path for upsert-on-upload.
 
@@ -6532,6 +6678,136 @@ def _v99_to_v100(conn: duckdb.DuckDBPyConnection) -> None:
     if "parts" not in cols:
         conn.execute("ALTER TABLE sync_state ADD COLUMN parts JSON")
     conn.execute("UPDATE schema_version SET version = 100")
+
+
+def _v100_to_v101(conn: duckdb.DuckDBPyConnection) -> None:
+    """v100→v101: agent profiles + agent-as-API foundation (spec
+    docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
+    No secondary indexes anywhere here — see the _v94_to_v95 ART-index
+    incident note; chat_sessions.agent_id especially must stay unindexed."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agents (
+            id                   VARCHAR PRIMARY KEY,
+            owner_user_id        VARCHAR NOT NULL,
+            name                 VARCHAR NOT NULL,
+            slug                 VARCHAR NOT NULL,
+            description          TEXT,
+            system_prompt        TEXT,
+            model                VARCHAR,
+            token_budget_monthly BIGINT,
+            plugins_mode         VARCHAR NOT NULL DEFAULT 'all',
+            connections_mode     VARCHAR NOT NULL DEFAULT 'all',
+            tables_mode          VARCHAR NOT NULL DEFAULT 'all',
+            memory_mode          VARCHAR NOT NULL DEFAULT 'all',
+            memory_write_mode    VARCHAR NOT NULL DEFAULT 'propose',
+            is_default           BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at           TIMESTAMP DEFAULT current_timestamp,
+            updated_at           TIMESTAMP DEFAULT current_timestamp,
+            deleted_at           TIMESTAMP,
+            UNIQUE (owner_user_id, slug)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_scope (
+            agent_id  VARCHAR NOT NULL,
+            item_type VARCHAR NOT NULL,
+            item_id   VARCHAR NOT NULL,
+            PRIMARY KEY (agent_id, item_type, item_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS llm_usage (
+            id                    VARCHAR PRIMARY KEY,
+            agent_id              VARCHAR,
+            user_id               VARCHAR,
+            session_id            VARCHAR,
+            model                 VARCHAR,
+            input_tokens          BIGINT DEFAULT 0,
+            output_tokens         BIGINT DEFAULT 0,
+            cache_read_tokens     BIGINT DEFAULT 0,
+            cache_creation_tokens BIGINT DEFAULT 0,
+            created_at            TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_scope_snapshots (
+            id              VARCHAR PRIMARY KEY,
+            session_id      VARCHAR NOT NULL,
+            agent_id        VARCHAR NOT NULL,
+            effective_scope TEXT NOT NULL,
+            created_at      TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            key           VARCHAR NOT NULL,
+            owner_user_id VARCHAR NOT NULL,
+            agent_id      VARCHAR NOT NULL,
+            request_hash  VARCHAR NOT NULL,
+            response_body TEXT,
+            status_code   INTEGER,
+            created_at    TIMESTAMP DEFAULT current_timestamp,
+            expires_at    TIMESTAMP,
+            PRIMARY KEY (key, owner_user_id, agent_id)
+        )
+    """)
+    conn.execute("ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS agent_id VARCHAR")
+    conn.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS agent_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 101")
+
+
+def _v101_to_v102(conn: duckdb.DuckDBPyConnection) -> None:
+    """v101→v102: agent webhooks + artifacts (agent-api V1b). No secondary
+    indexes (ART-index incident — see _v94_to_v95)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_webhooks (
+            id                   VARCHAR PRIMARY KEY,
+            agent_id             VARCHAR NOT NULL,
+            owner_user_id        VARCHAR NOT NULL,
+            url                  VARCHAR NOT NULL,
+            secret               VARCHAR NOT NULL,
+            events               VARCHAR NOT NULL DEFAULT 'job.completed,job.failed',
+            active               BOOLEAN NOT NULL DEFAULT TRUE,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            disabled_at          TIMESTAMP,
+            created_at           TIMESTAMP DEFAULT current_timestamp,
+            updated_at           TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_artifacts (
+            id            VARCHAR PRIMARY KEY,
+            session_id    VARCHAR NOT NULL,
+            agent_id      VARCHAR,
+            owner_user_id VARCHAR NOT NULL,
+            filename      VARCHAR NOT NULL,
+            object_key    VARCHAR NOT NULL,
+            size_bytes    BIGINT NOT NULL DEFAULT 0,
+            content_type  VARCHAR,
+            md5           VARCHAR,
+            created_at    TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 102")
+
+
+def _v102_to_v103(conn: duckdb.DuckDBPyConnection) -> None:
+    """v102→v103: per-agent private memory notebook (agent-api V1c). No
+    secondary indexes (ART incident — see _v94_to_v95)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_memories (
+            id                VARCHAR PRIMARY KEY,
+            agent_id          VARCHAR NOT NULL,
+            owner_user_id     VARCHAR NOT NULL,
+            content           TEXT NOT NULL,
+            source_session_id VARCHAR,
+            status            VARCHAR NOT NULL DEFAULT 'pending',
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            activated_at      TIMESTAMP,
+            archived_at       TIMESTAMP
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 103")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -6942,6 +7218,20 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # partitioned distribution). _SYSTEM_SCHEMA already declares the
             # column on fresh installs (no-op ALTER here).
             _v99_to_v100(conn)
+            # v100→v101: agents / agent_scope / llm_usage / agent_scope_snapshots
+            # / idempotency_keys tables + agent_id columns on
+            # personal_access_tokens/chat_sessions (agent profiles +
+            # agent-as-API foundation). _SYSTEM_SCHEMA already creates/
+            # declares all of these on fresh installs (no-op here).
+            _v100_to_v101(conn)
+            # v101→v102: agent_webhooks / agent_artifacts tables (agent-api
+            # V1b). _SYSTEM_SCHEMA already creates them on fresh installs
+            # (no-op CREATE IF NOT EXISTS here).
+            _v101_to_v102(conn)
+            # v102→v103: agent_memories table (agent-api V1c). _SYSTEM_SCHEMA
+            # already creates it on fresh installs (no-op CREATE IF NOT
+            # EXISTS here).
+            _v102_to_v103(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7195,6 +7485,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v98_to_v99(conn)
             if current < 100:
                 _v99_to_v100(conn)
+            if current < 101:
+                _v100_to_v101(conn)
+            if current < 102:
+                _v101_to_v102(conn)
+            if current < 103:
+                _v102_to_v103(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
@@ -7231,6 +7527,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     e,
                     _get_state_dir() / "system.duckdb.pre-migrate",
                 )
+
+    # corpus_files(corpus_id, path) UNIQUE INDEX. Deliberately created here,
+    # after the migration ladder, rather than in _SYSTEM_SCHEMA: the column is
+    # ALTER-added at v97 onto a table that exists since v82, and _SYSTEM_SCHEMA
+    # runs before the ladder, so declaring the index there crashes every upgrade
+    # from a v82..v96 DB. Running it here covers all three paths — fresh install,
+    # incremental upgrade, and the split-brain future-version self-heal.
+    _ensure_corpus_path_index(conn)
 
     # Always run the system-groups seed when the DB is on a version this binary
     # understands — per-connect safety net so a manually-deleted Admin/Everyone

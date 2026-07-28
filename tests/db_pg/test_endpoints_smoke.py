@@ -1495,6 +1495,12 @@ class TestReportsSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
+    # Agent-profile builder page (Task 10) — self-contained web page, tested
+    # in tests/test_agents_page.py (chrome/list/auth) rather than duplicated
+    # in this PG smoke harness. The management API it drives
+    # (/api/v1/agents/*) is covered separately in
+    # tests/test_agents_management_api.py.
+    "GET /agents",
     # Chat sandbox secret broker (2026-07-14 incident) — internal
     # sandbox→server routes, ticket-authed, never parameter-free (require a
     # POST body + a valid broker ticket), so they have no place in this
@@ -2172,6 +2178,62 @@ KNOWN_UNTESTED = {
     "POST /webhooks/jira",
     # My-stack curated toggle
     "PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}",
+    # Agent management (v96 agent profiles + agent-as-API, Task 5) — owner-scoped
+    # CRUD + scope + agent PAT issuance. Behaviour (ownership 404/403 matrix,
+    # slug validation/conflict, scope dedupe, PAT-issuance mode gate) covered by
+    # tests/test_agents_management_api.py; not duplicated in this PG smoke sweep.
+    "POST /api/v1/agents",
+    "GET /api/v1/agents",
+    "GET /api/v1/agents/{agent_id}",
+    "PUT /api/v1/agents/{agent_id}",
+    "DELETE /api/v1/agents/{agent_id}",
+    "PUT /api/v1/agents/{agent_id}/scope",
+    "POST /api/v1/agents/{agent_id}/tokens",
+    # Agent-as-API runtime (Task 9) — auth chain, idempotency, sync/background/
+    # timeout-degrade paths covered by tests/test_agent_responses_api.py; not
+    # duplicated in this PG smoke sweep.
+    "POST /api/v1/agents/{slug}/responses",
+    "GET /api/v1/jobs/{job_id}",
+    # Agent-as-API multi-turn sessions (V1b Task 4) — SSE turn streaming,
+    # cancel, history, delete. Auth chain (owner/agent-PAT 404 matrix),
+    # SSE framing (RUN_STARTED once/turn, id: lines), turn-in-flight 409,
+    # and the create/history/cancel/delete lifecycle are covered by
+    # tests/test_agent_sessions_api.py; not duplicated in this PG smoke
+    # sweep (an open SSE response doesn't fit this harness's
+    # parameter-free happy-path-status-code shape).
+    "POST /api/v1/agents/{slug}/sessions",
+    "POST /api/v1/sessions/{session_id}/messages",
+    "GET /api/v1/sessions/{session_id}",
+    "POST /api/v1/sessions/{session_id}/cancel",
+    "DELETE /api/v1/sessions/{session_id}",
+    # Agent usage (V1a Task 9 follow-up) — token-budget usage summary for an
+    # owner-scoped agent. Behaviour covered by tests/test_agent_usage_api.py;
+    # not duplicated in this PG smoke sweep.
+    "GET /api/v1/agents/{slug}/usage",
+    # Agent-as-API outbound webhooks (V1b Task 6) — CRUD for owner-scoped
+    # webhook subscriptions (SSRF-hardened URL validation, HMAC secret
+    # issuance, active-events set). Behaviour covered by
+    # tests/test_agent_webhooks_api.py; not duplicated in this PG smoke sweep.
+    "GET /api/v1/agents/{slug}/webhooks",
+    "POST /api/v1/agents/{slug}/webhooks",
+    "DELETE /api/v1/agents/{slug}/webhooks/{webhook_id}",
+    # Agent memory admin (V1b) — owner-scoped list/approve-or-edit/reject of
+    # an agent's candidate memories. Behaviour covered by
+    # tests/test_agent_memory_admin_api.py; not duplicated in this PG smoke
+    # sweep.
+    "GET /api/v1/agents/{agent_id}/memories",
+    "PATCH /api/v1/agents/{agent_id}/memories/{memory_id}",
+    "DELETE /api/v1/agents/{agent_id}/memories/{memory_id}",
+    # Agent memory write (V1b) — session-scoped "remember" tool write path.
+    # Behaviour covered by tests/test_agent_memory_write_api.py; not
+    # duplicated in this PG smoke sweep.
+    "POST /api/v1/sessions/{session_id}/memories",
+    # Agent session artifacts (V1c) — sandbox-harvested artifact listing/
+    # download for a multi-turn agent session. Behaviour covered by
+    # tests/test_agent_artifacts_api.py; not duplicated in this PG smoke
+    # sweep.
+    "GET /api/v1/sessions/{session_id}/artifacts",
+    "GET /api/v1/sessions/{session_id}/artifacts/{artifact_id}",
     # Data-apps ingress proxy (Task 8) — `GET /apps/{slug}` (redirect to the
     # trailing-slash form) is the only piece of this surface that still
     # appears in the OpenAPI schema: the catch-all proxy/wake/holding-page

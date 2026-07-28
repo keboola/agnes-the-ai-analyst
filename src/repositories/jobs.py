@@ -306,20 +306,61 @@ class JobsRepository:
             ).fetchall()
             return bool(claimed)
 
-    def complete(self, job_id: str, worker_id: str, lease_token: str) -> None:
+    def complete(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Mark a running job done. No-op (raise-free) if the job is not
         currently ``'running'`` under this exact ``lease_token`` — a
         stale slot finishing a job that was already reclaimed (even by
         another slot of the SAME ``worker_id``) must not clobber the new
-        owner's state. ``worker_id`` is accepted for audit/logging only."""
+        owner's state. ``worker_id`` is accepted for audit/logging only.
+
+        ``result`` (Task 9, ``agent_response`` job kind): when given, it is
+        merged into the job's ``payload_json`` under a ``"result"`` key
+        before the row is marked done, so ``GET /api/v1/jobs/{id}`` can
+        surface it. The ``jobs`` table has no dedicated result column — see
+        ``app/worker/kinds.py``'s module docstring for why reusing
+        ``payload_json`` (rather than a schema migration) was the chosen
+        adaptation. Every OTHER job kind's handler returns ``None``, so this
+        stays a no-op for them (back-compat, no payload mutation).
+
+        Returns ``True`` if the row was actually mutated to ``'done'``,
+        ``False`` for the stale-lease no-op above. Callers (``app/worker
+        /runtime.py``) gate terminal-state side effects (the outbound
+        webhook notify) on this — a stale slot's late ``complete()`` must
+        not fire a notification for an outcome another slot already owns.
+        """
         with _JOBS_LOCK:
             now = datetime.now(timezone.utc)
-            self.conn.execute(
-                """UPDATE jobs
-                   SET status = 'done', finished_at = ?, lease_expires_at = NULL
-                   WHERE id = ? AND lease_token = ? AND status = 'running'""",
-                [now, job_id, lease_token],
-            )
+            if result is not None:
+                row = self.conn.execute("SELECT payload_json FROM jobs WHERE id = ?", [job_id]).fetchone()
+                payload = {}
+                if row and row[0]:
+                    try:
+                        payload = json.loads(row[0])
+                    except (TypeError, ValueError):
+                        payload = {}
+                payload["result"] = result
+                mutated = self.conn.execute(
+                    """UPDATE jobs
+                       SET status = 'done', finished_at = ?, lease_expires_at = NULL, payload_json = ?
+                       WHERE id = ? AND lease_token = ? AND status = 'running'
+                       RETURNING id""",
+                    [now, json.dumps(payload), job_id, lease_token],
+                ).fetchall()
+            else:
+                mutated = self.conn.execute(
+                    """UPDATE jobs
+                       SET status = 'done', finished_at = ?, lease_expires_at = NULL
+                       WHERE id = ? AND lease_token = ? AND status = 'running'
+                       RETURNING id""",
+                    [now, job_id, lease_token],
+                ).fetchall()
+            return bool(mutated)
 
     def fail(
         self,
@@ -329,7 +370,7 @@ class JobsRepository:
         error: str,
         *,
         retry_in_seconds: Optional[int] = None,
-    ) -> None:
+    ) -> bool:
         """Record a failure. No-op (raise-free) if the job is not
         currently ``'running'`` under this exact ``lease_token`` (see
         ``complete()``). ``worker_id`` is accepted for audit/logging only.
@@ -339,6 +380,16 @@ class JobsRepository:
         ``run_after=now+retry_in_seconds``, lease + lease_token cleared,
         ``error`` recorded). Otherwise finalizes to ``'failed'`` with
         ``finished_at`` set.
+
+        Returns ``True`` only when this call FINALIZED the job to
+        ``'failed'`` — ``False`` both for the stale-lease no-op above and
+        for a successful requeue (the job isn't terminal yet). Callers
+        (``app/worker/runtime.py``) use this — not the ``kind``'s static
+        ``retry_in_seconds`` config — to decide whether a terminal
+        ``job.failed`` webhook notify should fire: a kind configured to
+        retry still finalizes (and must still notify) once its attempts
+        are actually exhausted, and a stale slot's late call must never
+        notify at all.
         """
         with _JOBS_LOCK:
             now = datetime.now(timezone.utc)
@@ -348,7 +399,7 @@ class JobsRepository:
                 [job_id, lease_token],
             ).fetchone()
             if job is None:
-                return  # stale claim (already reclaimed) — no-op
+                return False  # stale claim (already reclaimed) — no-op
             attempts, max_attempts = job
             if attempts < max_attempts and retry_in_seconds is not None:
                 run_after = now + timedelta(seconds=retry_in_seconds)
@@ -359,15 +410,17 @@ class JobsRepository:
                        WHERE id = ? AND lease_token = ? AND status = 'running'""",
                     [run_after, error, job_id, lease_token],
                 )
-            else:
-                self.conn.execute(
-                    """UPDATE jobs
-                       SET status = 'failed', finished_at = ?, lease_expires_at = NULL, error = ?
-                       WHERE id = ? AND lease_token = ? AND status = 'running'""",
-                    [now, error, job_id, lease_token],
-                )
+                return False  # requeued, not terminal
+            mutated = self.conn.execute(
+                """UPDATE jobs
+                   SET status = 'failed', finished_at = ?, lease_expires_at = NULL, error = ?
+                   WHERE id = ? AND lease_token = ? AND status = 'running'
+                   RETURNING id""",
+                [now, error, job_id, lease_token],
+            ).fetchall()
+            return bool(mutated)
 
-    def reap_exhausted(self, now: Optional[datetime] = None) -> int:
+    def reap_exhausted(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Finalize stuck ``'running'`` jobs whose lease has expired AND
         which have already exhausted their attempts.
 
@@ -385,7 +438,14 @@ class JobsRepository:
         finished_at, lease_expires_at, error) but reached via elapsed-lease
         detection rather than a live worker calling ``fail()`` — no worker
         is holding this job anymore, hence no ``worker_id``/``leased_by``
-        guard on the WHERE clause. Returns the number of jobs reaped.
+        guard on the WHERE clause.
+
+        Returns the list of reaped job rows (id, kind, payload_json, ...) —
+        NOT just a count — so ``app/worker/runtime.py``'s reap sweep can
+        fire the same terminal-state webhook notify a live ``fail()`` call
+        gets: a job reaped here reached ``'failed'`` without ever going
+        through ``fail()``, so without this it would have no notify path
+        at all (its owning worker crashed before it could call anything).
         """
         with _JOBS_LOCK:
             now = now or datetime.now(timezone.utc)
@@ -398,7 +458,7 @@ class JobsRepository:
                    WHERE status = 'running'
                      AND lease_expires_at < ?
                      AND attempts >= max_attempts
-                   RETURNING id""",
+                   RETURNING *""",
                 [now, now],
             ).fetchall()
-            return len(rows)
+            return self._rows_to_dicts(rows)

@@ -341,22 +341,64 @@ class JobsPgRepository:
             )
         return row is not None
 
-    def complete(self, job_id: str, worker_id: str, lease_token: str) -> None:
+    def complete(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_token: str,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Mark a running job done. No-op (raise-free) if the job is not
         currently ``'running'`` under this exact ``lease_token`` — a
         stale slot finishing a job that was already reclaimed (even by
         another slot of the SAME ``worker_id``) must not clobber the new
-        owner's state. ``worker_id`` is accepted for audit/logging only."""
+        owner's state. ``worker_id`` is accepted for audit/logging only.
+
+        ``result``: see ``JobsRepository.complete``'s docstring — merged
+        into ``payload_json["result"]`` in the same transaction as the
+        ``'done'`` transition, both guarded by the SELECT/UPDATE running
+        under one ``self._engine.begin()`` block.
+
+        Returns ``True`` if the row was actually mutated to ``'done'``,
+        ``False`` for the stale-lease no-op above — see
+        ``JobsRepository.complete`` for why callers gate the webhook
+        notify on this.
+        """
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
-            conn.execute(
-                sa.text(
-                    """UPDATE jobs
-                       SET status = 'done', finished_at = :now, lease_expires_at = NULL
-                       WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
-                ),
-                {"now": now, "id": job_id, "lease_token": lease_token},
-            )
+            if result is not None:
+                row = conn.execute(sa.text("SELECT payload_json FROM jobs WHERE id = :id"), {"id": job_id}).first()
+                payload: Dict[str, Any] = {}
+                if row and row[0]:
+                    raw = row[0]
+                    payload = raw if isinstance(raw, dict) else json.loads(raw)
+                payload["result"] = result
+                mutated = conn.execute(
+                    sa.text(
+                        """UPDATE jobs
+                           SET status = 'done', finished_at = :now, lease_expires_at = NULL,
+                               payload_json = :payload_json
+                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'
+                           RETURNING id"""
+                    ),
+                    {
+                        "now": now,
+                        "id": job_id,
+                        "lease_token": lease_token,
+                        "payload_json": json.dumps(payload),
+                    },
+                ).first()
+            else:
+                mutated = conn.execute(
+                    sa.text(
+                        """UPDATE jobs
+                           SET status = 'done', finished_at = :now, lease_expires_at = NULL
+                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'
+                           RETURNING id"""
+                    ),
+                    {"now": now, "id": job_id, "lease_token": lease_token},
+                ).first()
+        return mutated is not None
 
     def fail(
         self,
@@ -366,7 +408,7 @@ class JobsPgRepository:
         error: str,
         *,
         retry_in_seconds: Optional[int] = None,
-    ) -> None:
+    ) -> bool:
         """Record a failure. No-op (raise-free) if the job is not
         currently ``'running'`` under this exact ``lease_token`` (see
         ``complete()``). ``worker_id`` is accepted for audit/logging only.
@@ -384,6 +426,12 @@ class JobsPgRepository:
         ``lease_token = :lease_token AND status = 'running'`` anyway — if
         a concurrent reclaim slipped in between, that UPDATE simply
         matches nothing.
+
+        Returns ``True`` only when this call FINALIZED the job to
+        ``'failed'`` — ``False`` for the stale-lease no-op or a
+        successful requeue. See ``JobsRepository.fail`` for why callers
+        gate the terminal webhook notify on this return value rather than
+        the ``kind``'s static retry configuration.
         """
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -399,7 +447,7 @@ class JobsPgRepository:
                 .first()
             )
             if job is None:
-                return  # stale claim (already reclaimed) — no-op
+                return False  # stale claim (already reclaimed) — no-op
             if job["attempts"] < job["max_attempts"] and retry_in_seconds is not None:
                 run_after = now + timedelta(seconds=retry_in_seconds)
                 conn.execute(
@@ -411,17 +459,19 @@ class JobsPgRepository:
                     ),
                     {"run_after": run_after, "error": error, "id": job_id, "lease_token": lease_token},
                 )
-            else:
-                conn.execute(
-                    sa.text(
-                        """UPDATE jobs
-                           SET status = 'failed', finished_at = :now, lease_expires_at = NULL, error = :error
-                           WHERE id = :id AND lease_token = :lease_token AND status = 'running'"""
-                    ),
-                    {"now": now, "error": error, "id": job_id, "lease_token": lease_token},
-                )
+                return False  # requeued, not terminal
+            mutated = conn.execute(
+                sa.text(
+                    """UPDATE jobs
+                       SET status = 'failed', finished_at = :now, lease_expires_at = NULL, error = :error
+                       WHERE id = :id AND lease_token = :lease_token AND status = 'running'
+                       RETURNING id"""
+                ),
+                {"now": now, "error": error, "id": job_id, "lease_token": lease_token},
+            ).first()
+        return mutated is not None
 
-    def reap_exhausted(self, now: Optional[datetime] = None) -> int:
+    def reap_exhausted(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Finalize stuck ``'running'`` jobs whose lease has expired AND
         which have already exhausted their attempts. Mirrors
         ``JobsRepository.reap_exhausted`` — see that module's docstring for
@@ -433,21 +483,30 @@ class JobsPgRepository:
         condition being applied, so a concurrent claim_next()/heartbeat()
         racing this UPDATE under READ COMMITTED just changes how many rows
         match, not whether the match is correct.
+
+        Returns the list of reaped job rows (id, kind, payload_json, ...)
+        rather than just a count — see ``JobsRepository.reap_exhausted``
+        for why (the worker's reap sweep needs the row to fire the
+        terminal webhook notify a live ``fail()`` call would have).
         """
         now = now or datetime.now(timezone.utc)
         with self._engine.begin() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """UPDATE jobs
-                       SET status = 'failed',
-                           finished_at = :now,
-                           lease_expires_at = NULL,
-                           error = 'lease expired after max attempts'
-                       WHERE status = 'running'
-                         AND lease_expires_at < :now
-                         AND attempts >= max_attempts
-                       RETURNING id"""
-                ),
-                {"now": now},
-            ).fetchall()
-        return len(rows)
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """UPDATE jobs
+                           SET status = 'failed',
+                               finished_at = :now,
+                               lease_expires_at = NULL,
+                               error = 'lease expired after max attempts'
+                           WHERE status = 'running'
+                             AND lease_expires_at < :now
+                             AND attempts >= max_attempts
+                           RETURNING *"""
+                    ),
+                    {"now": now},
+                )
+                .mappings()
+                .all()
+            )
+        return [self._decode(dict(r)) for r in rows]

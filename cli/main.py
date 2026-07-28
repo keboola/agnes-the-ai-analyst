@@ -61,6 +61,7 @@ from cli.commands.collections import collections_app
 from cli.commands.config import config_app
 from cli.commands.data_apps import data_apps_app
 from cli.commands.search import search_app
+from cli.commands.agent import agent_app
 
 
 def _cli_version() -> str:
@@ -326,6 +327,7 @@ app.add_typer(collections_app, name="collections")
 app.add_typer(data_apps_app, name="app")
 app.add_typer(search_app, name="search")
 app.add_typer(config_app, name="config")
+app.add_typer(agent_app, name="agent")
 
 
 def _capture_cli_exception(exc: BaseException, kind: str) -> None:

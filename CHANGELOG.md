@@ -36,6 +36,287 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.0] - 2026-07-28
+
+### Added
+
+- **Agent profiles.** Named, scoped agents layered over a user's own stack
+  (agent-api V1a). `POST/GET /api/v1/agents` (create/list), `GET/PUT/DELETE
+  /api/v1/agents/{id}` (detail/update/delete), and `PUT
+  /api/v1/agents/{id}/scope` (replace an agent's resource-grant set: plugins,
+  connections, tables, memory domains) — every route requires an interactive
+  session token, never a PAT. Every user gets an implicit `default` agent
+  (seeded lazily, `all`-mode scope on every dimension, undeletable); web chat
+  sessions are now attributed to it. A new agent defaults all four scope
+  modes (`plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode`) to
+  `selected` — the owner grants specific resources via `scope set` rather
+  than inheriting the account's full stack. Optional per-agent `model`
+  (pins the brokered LLM to one model) and `token_budget_monthly`. Surfaced
+  at `/agents` (a minimal builder page: list, create, issue token, delete)
+  and via `agnes agent {list,create,show,delete,scope set,token,ask}`.
+- **Agent personal access tokens (`typ=agent_pat`).** `POST
+  /api/v1/agents/{id}/tokens` mints a token bound to one agent — accepted
+  only on the agent runtime API (`/api/v1/{agents,jobs}/...`), rejected
+  everywhere else, and only issuable once all four scope modes are
+  `selected` (`403 agent_not_selected_mode` otherwise — never for an
+  `all`-mode agent, including the default agent). Deleting an agent revokes
+  every PAT minted for it.
+- **`POST /api/v1/agents/{slug}/responses`** — one-shot request/response over
+  an owner's agent (agent-api V1a, Task 9). Runs a headless (no-WebSocket)
+  chat turn and returns `{answer, session_id, response_id, usage,
+  agent_config_hash, request_id}` synchronously, bounded by a clamped
+  `timeout_s` (default 120s, 1..600) — a wait that times out but already
+  collected an answer serves it as a 200 rather than degrading. `background:
+  true`, or a sync call whose wait genuinely times out with no answer yet,
+  degrades to a background job — the run itself is never killed, only the
+  wait — via the new `agent_response` job kind (registered only on a process
+  with a live chat manager, so it runs on gateway-colocated workers);
+  `GET /api/v1/jobs/{job_id}` (owner-scoped, and agent-PAT-bound to the same
+  agent when called with one) reads the result back. Callable with an
+  interactive session token or an agent PAT scoped to the exact agent. A
+  per-user concurrency-cap hit maps to `429 {"code": "concurrency_cap"}`.
+  Supports an `Idempotency-Key` header (scoped to caller+agent, 24h default
+  TTL): the key is reserved before the request runs, closing a
+  double-execution race between concurrent calls under the same key — a
+  losing concurrent call gets `409 idempotency_key_in_flight`; identical-body
+  replay of a completed call returns the original response verbatim; a
+  different body under the same key is `409 idempotency_key_reuse`.
+- **Agent-as-API multi-turn sessions + SSE streaming** (agent-api V1b Task
+  4). `POST /api/v1/agents/{slug}/sessions` creates an API-surface session
+  bound to an agent (`201 {session_id}`); `POST
+  /api/v1/sessions/{id}/messages` streams one turn as Server-Sent Events in
+  the AG-UI event vocabulary (`RUN_STARTED`/`TEXT_MESSAGE_CONTENT`/
+  `TOOL_CALL_START`/`TOOL_CALL_END`/`RUN_FINISHED`/`RUN_ERROR`, each record
+  carrying a monotonic `id: {session_id}:{seq}` line), rejecting a second
+  concurrent turn on the same session with `409 {"code": "turn_in_flight"}`
+  and force-terminating a turn that never reaches a terminal event with
+  `RUN_ERROR{code: "idle_timeout"}`; `GET /api/v1/sessions/{id}` reads back
+  state + full message history; `POST /api/v1/sessions/{id}/cancel` cancels
+  the in-flight turn (`202`, session preserved); `DELETE
+  /api/v1/sessions/{id}` archives it. Same owner/agent-PAT auth model as
+  `/responses`, collapsed to a uniform `404` on any mismatch (wrong owner,
+  or an agent PAT bound to a different agent) so a non-owner can never
+  distinguish "no such session" from "not yours" — and, after ownership
+  passes, the same `ResourceType.CHAT` grant `/responses` requires is
+  re-checked too (`403 {"code": "chat_access_denied"}`), since a session
+  outlives the grant that let its owner create it. A `send_user_message`
+  failure right after a successful `attach()` now detaches the sink before
+  releasing the turn lock, instead of leaking it in `live.sinks`. Create-session
+  maps a config-level `chat.enabled=false` to `503 {"code": "chat_disabled"}`
+  rather than an unhandled 500.
+- **Agent-as-API sandbox artifact harvest + download** (agent-api V1b Task
+  5). Files an agent writes under `/work/outputs` inside its E2B sandbox are
+  now harvested into the object store + `agent_artifacts` registry when a
+  one-shot `/responses`/`/jobs` turn completes and when `DELETE
+  /api/v1/sessions/{id}` tears the sandbox down — best-effort, never fails
+  the run/delete it piggybacks on. Filenames are agent-chosen input and are
+  sanitized to a flat, CR/LF-free basename before use as the object key
+  (`agent-artifacts/{session_id}/{filename}`) or in a download response's
+  `Content-Disposition` header. Per-session caps (`agent_api_artifact_max_bytes`,
+  25 MiB default; `agent_api_artifact_max_files`, 20 default) bound a single
+  run's harvest. `GET /api/v1/sessions/{id}/artifacts` lists harvested
+  artifacts (cursor envelope); `GET /api/v1/sessions/{id}/artifacts/{id}`
+  streams the bytes (default, through this endpoint's own auth) or, with
+  `?redirect=true`, 307-redirects to a short-TTL (≤120s) presigned
+  object-store URL. Same owner/agent-PAT auth as the rest of
+  `/api/v1/sessions/{id}/*`.
+- **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
+  token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
+  to every upstream credential mode — static key, workload identity, LLM
+  dispatcher) now enforces an agent's pinned `model` before spending a
+  token (`403 model_not_allowed` if the request's `model` is outside
+  `{agent.model} ∪ utility_models`; an agent with `model IS NULL` has no
+  policy at all) and its `token_budget_monthly` (`429 budget_exhausted`,
+  deliberately no `Retry-After` so SDKs don't auto-retry). Every brokered
+  call's token usage (input/output/cache-read/cache-creation, parsed from
+  both JSON and buffered SSE upstream responses) is buffered in-memory by a
+  new `UsageAccumulator` and flushed in bulk to the `llm_usage` ledger on a
+  size/age threshold (20 rows or 30s) rather than one synchronous write per
+  call. Every proxied response carries `x-agnes-budget-limit` /
+  `x-agnes-budget-used` headers; the month-to-date total backing the budget
+  check is cached in the coordination backend (60s TTL) so the hot path
+  doesn't hit the ledger table on every call.
+- **MCP tools `agent_list` / `agent_ask`** (agent-api V1a) — triple-surface
+  with `/api/v1/agents` (`GET`, list your agent profiles) and
+  `/api/v1/agents/{slug}/responses` (`POST`, one-shot ask). `agent_ask` is
+  sync-only: it never sets `background: true` and does not poll
+  `GET /api/v1/jobs/{id}` — waiting out a background degrade has no MCP
+  tool by design (a tool call blocking on a poll loop is a poor fit for a
+  chat turn); use `agnes agent ask` or the REST endpoint directly for that.
+- **Outbound agent webhooks, SSRF-hardened (agent-api V1b Task 6).**
+  `GET/POST /api/v1/agents/{slug}/webhooks` and `DELETE
+  /api/v1/agents/{slug}/webhooks/{id}` register an HTTPS callback URL that
+  gets an HMAC-signed POST (`x-agnes-signature: sha256=...`) whenever a
+  background `agent_response` job reaches `job.completed`/`job.failed`.
+  Owner-only (`require_session_token`, rejects PATs). The notification body
+  is deliberately minimal — `{event, job_id, agent_slug, status, ts}`, never
+  the agent's answer — the receiver fetches the actual result afterward via
+  `GET /api/v1/jobs/{id}`. Registration validates the URL up front
+  (`400 webhook_url_forbidden` for anything resolving to a
+  private/loopback/link-local/reserved/cloud-metadata address); delivery
+  (a new `webhook-deliver` worker job kind) re-resolves and pins the target
+  IP fresh on every send, closing the DNS-rebinding window a create-time-only
+  check would leave open. A webhook auto-disables after
+  `agent_api_webhook_max_failures` (default 5) consecutive delivery
+  failures.
+- **Structured JSON output, `response_format: {"type": "json_schema", ...}`**
+  (agent-api V1b Task 7). `POST /api/v1/agents/{slug}/responses` accepts an
+  optional `response_format`; when present, a schema directive is appended
+  to the prompt (steering, not constrained decoding — there is no
+  provider-level grammar/sampler hook in this runtime) and the collected
+  answer is validated against the schema server-side (`jsonschema`,
+  tolerating a fenced ` ```json ` block) before the response is built. A
+  matching answer gets a `parsed` field alongside the raw `answer` string; a
+  violating or non-JSON answer returns `422 {"code":
+  "schema_validation_failed", "message", "session_id", "usage",
+  "raw_answer"}` instead — the run already spent tokens, so the structured
+  error carries everything needed to recover the paid-for output, and (like
+  any other terminal response) it's stored under the caller's
+  `Idempotency-Key` so a retry replays the same 422 instead of re-running.
+  Background and sync-timeout-degraded runs (the `agent_response` job kind)
+  validate the same way, failing the job with the identical structured
+  error. `POST /api/v1/sessions/{id}/messages` accepts the same field and
+  applies the prompt-steering directive, but does not yet post-validate the
+  streamed answer — see `SendSessionMessageBody.response_format`'s
+  docstring (`app/api/agent_sessions.py`) for why that's a separate,
+  deferred design question (no HTTP status is left to change once an SSE
+  stream has started).
+- **`GET /api/v1/agents/{slug}/usage`** (agent-api V1b Task 8) — per-agent
+  monthly token usage against its budget. `?period=YYYY-MM` (default:
+  current UTC month; `400 invalid_period` for anything else) → `{period,
+  agent_slug, input_tokens, output_tokens, cache_read_tokens,
+  cache_creation_tokens, total_tokens, budget_limit, budget_remaining}` —
+  the usage-shaped fields mirror Anthropic's own usage object.
+  `total_tokens` excludes `cache_read_tokens` (informational only), the
+  same quantity the broker's budget check compares against
+  `token_budget_monthly`, so `budget_remaining` (floored at `0`) lines up
+  with when a call against this agent would actually 429 with
+  `budget_exhausted`. Same owner/agent-PAT auth as `/responses`. Surfaced
+  as `agnes agent usage <slug> [--period YYYY-MM] [--json]` and the
+  `agent_usage` MCP foundation tool.
+- **`agnes agent webhooks list|add|delete`** — CLI surface for the
+  `/api/v1/agents/{slug}/webhooks` registration API (landed REST-only in
+  Task 6). `add` takes `--url` and repeatable `--event`, printing the HMAC
+  signing secret exactly once, like `agnes agent token`.
+- **Per-agent memory** (agent-api V1c). Agents keep a private notebook that
+  persists across runs, materialized pre-spawn into `.claude/agent-memory.md`
+  up to a ~6000-token budget (newest-first; older active memories can be
+  shadowed out — never silently, see below). A sandbox "remember" tool
+  (`POST /api/v1/sessions/{id}/memories`, `{content: str}` → `201 {id,
+  status}`) writes new memories, size-capped (`agent_memory_max_chars`,
+  default 2000 → `413`), rate-limited (`agent_memory_writes_per_hour`,
+  default 20/hr → `429 memory_rate_limited`), and backlog-capped
+  (`agent_memory_max_pending`, default 100 → `429 memory_pending_full`);
+  the write is bound to the CALLING session (never a path `{id}`), closing
+  a same-owner-different-agent memory-poisoning gap. `memory_write_mode`
+  (`off`/`propose`/`auto`, default `propose`) decides whether a write needs
+  owner approval before it re-materializes: `off` rejects with `403
+  memory_writes_disabled`, `propose` lands `pending`, `auto` lands already
+  `active`. Owners inspect/approve/archive/delete via `GET/PATCH/DELETE
+  /api/v1/agents/{id}/memories[/{memory_id}]` — `GET` marks every `active`
+  row `in_budget: bool` so an owner who just approved a memory can tell
+  whether it actually lands in the next spawn or is shadowed behind newer
+  content — the `agnes agent memory list|approve|archive|delete` CLI, and a
+  per-agent Memory panel on `/agents` (status badges, in-effect/shadowed
+  marker, Approve/Delete buttons).
+- **`agnes chat <slug>`** (agent-api V1c) — an interactive, streaming
+  terminal REPL over a composed agent's session API
+  (`POST /api/v1/agents/{slug}/sessions` + SSE
+  `POST /api/v1/sessions/{id}/messages`), plus a scriptable
+  `--once "<prompt>" [--json]` mode. Pure client of the public `/api/v1`
+  surface (session token or agent PAT, no privileged backchannel). Ctrl-C
+  cancels the in-flight turn server-side (a bare disconnect does not — only
+  `/cancel` stops the run and its budget burn); `/exit` best-effort frees
+  the sandbox.
+### Fixed
+
+- **Schema upgrade crashed on any DB between v82 and v96.** The
+  `corpus_files(corpus_id, path)` UNIQUE INDEX was declared inside
+  `_SYSTEM_SCHEMA`, which executes *before* the migration ladder. Because
+  `corpus_files` is created at v82 but its `path` column is only ALTER-added at
+  v97, the `CREATE TABLE IF NOT EXISTS` was a no-op on those DBs and the index
+  statement then raised `BinderException: Table "corpus_files" does not have a
+  column named "path"` — aborting the whole schema pass before the ALTER could
+  run, so the instance never started. The index is now created by
+  `_ensure_corpus_path_index()` after the ladder, guarded on the column
+  existing, which covers fresh installs, incremental upgrades, and the
+  split-brain future-version self-heal path alike.
+
+### Internal
+
+- **DuckDB schema v101/v102/v103 + Alembic `0048`/`0049`/`0050`** — new tables
+  `agents`, `agent_scope`, `agent_scope_snapshots`, `llm_usage`,
+  `idempotency_keys` (v101), `agent_webhooks`, `agent_artifacts` (v102),
+  `agent_memories` (v103), plus `agent_id` columns on
+  `personal_access_tokens`/`chat_sessions` — dual-backend parity (DuckDB +
+  Postgres), no secondary indexes per the ART-index incident rule.
+- **Flaky relay test de-flaked.** `test_relay_non_sse_anthropic_response_stays_buffered`
+  asserted on a single `reader.read()`, which returns only the bytes available
+  at that instant and often yielded just the status line (~40% failure rate in
+  isolation). It now accumulates until the full buffered response arrives — the
+  same read-until-complete idiom the streaming test beside it already used.
+- **`agnes chat --help` test no longer asserts on colourised output.**
+  `test_group_help_shows_repl_usage_and_caveats` matched `agnes chat <slug>`
+  against the raw output; rich-click highlights the metavar, so with colour on
+  (off for a non-tty locally, on in CI) the literal is split by ANSI codes and
+  the assertion failed only in CI. It now strips SGR codes first, the same
+  `_clean()` idiom the other CLI test modules use.
+- **Migration-safety tests no longer pin a literal future schema version.**
+  Both future-version tests derive it from `SCHEMA_VERSION + 1`; the previous
+  hardcoded `99` silently stopped exercising the noop path as the ladder grew,
+  then broke outright once the ladder passed it.
+
+## [0.76.38] - 2026-07-28
+
+### Added
+
+### Changed
+
+- **Cloud-chat sessions get a resend notice on server restart — but only when
+  the turn is actually lost.** A chat whose turn was mid-generation when the
+  server drained (deploy/restart) previously just stopped mid-answer with the
+  composer wedged in the "running" state (it only clears on
+  done/error/cancelled). `ChatManager.shutdown()` now broadcasts a
+  `server_restarting` notice + a `done` frame to an in-flight session on the
+  kill path (`on_detach="kill"`, or a failed pause), so the client can prompt
+  a resend against the replacement process. On the default successful-pause
+  path the notice is deliberately suppressed: the snapshot keeps the turn
+  running and it finishes after resume, so "please resend" there would invite
+  a duplicate turn. Idle sessions drain silently as before.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.37] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Broker SSE stream no longer re-buffered by PostHog/rate-limit middleware.**
+  Follow-up to the GZip skip (0.76.36): `PosthogInjectionMiddleware` and the
+  auth `SlowAPIMiddleware` both subclass Starlette's `BaseHTTPMiddleware`,
+  which buffers the whole response body — so the broker's `text/event-stream`
+  completion was still collapsed into one end-of-turn burst (and risked the
+  Python 3.13 `AssertionError` on a second `http.response.start`) two hops
+  above the broker. Both middlewares now consult a shared
+  `SSE_BYPASS_PREFIXES` tuple (`/api/mcp`, `/api/broker/anthropic`) and fall
+  through to the bare ASGI app for SSE paths; a guard test keeps the gzip
+  skip-list in sync with the tuple.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.76.36] - 2026-07-27
 
 ### Added
@@ -204,6 +485,22 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Fixed
 
+- **`resolve_token_to_user` no longer stashes a JWT payload on
+  `request.state.token_payload` until the token has fully passed
+  validation.** Previously the stash ran right after JWT signature
+  verification, before the revoked/expired/mismatched/wrong-surface/
+  deleted-agent checks — a token that failed one of those later checks
+  still left its claims (including `agent_id`) readable via
+  `agent_id_from_request` for the rest of the request. Task 4 review
+  carry-over.
+- **`DELETE /api/v1/agents/{id}` now cascades to webhooks and artifacts,
+  not just PATs.** Previously deleting an agent revoked its tokens but
+  left every `agent_webhooks` row and every `agent_artifacts` row (plus
+  their object-store blobs) behind, orphaned and unreachable through any
+  API surface. The delete now also removes the agent's webhook
+  registrations and harvested-artifact rows, best-effort deleting each
+  artifact's object-store blob first (a single blob-delete failure is
+  logged and skipped, never blocking the agent delete).
 ### Removed
 
 ### Internal
@@ -275,6 +572,19 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Removed
 
 ### Internal
+
+- `JobsRepository.complete()` / `JobsPgRepository.complete()` gained an
+  optional `result: Optional[dict]` parameter, merged into
+  `payload_json["result"]` when given (the `jobs` table has no dedicated
+  result column) — backs the new `agent_response` job kind's
+  `GET /api/v1/jobs/{id}` result surface. Every other job kind's handler
+  still returns `None`, so this is a no-op for them.
+- `IdempotencyRepository`/`IdempotencyPgRepository` gained `reserve()`/
+  `fulfill()` (atomic `INSERT ... ON CONFLICT ... WHERE <stale> ...
+  RETURNING` — see `src/repositories/idempotency.py`'s module docstring);
+  `LlmUsageRepository`/`LlmUsagePgRepository` gained `list_for_session()`
+  (exact SQL filter, replacing an in-Python filter over the last 1000 rows
+  per agent) — both Task 9 review carry-overs.
 
 ### Security
 
