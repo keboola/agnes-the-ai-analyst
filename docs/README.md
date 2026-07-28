@@ -55,6 +55,7 @@ Working on the Agnes codebase.
 - [`architecture.md`](architecture.md) — detailed architecture reference (module map, extract.duckdb contract, components)
 - [`../CLAUDE.md`](../CLAUDE.md) — project instructions for AI agents working in this repo
 - [`development.md`](development.md) — logging, request correlation, debug toolbar
+- [`feature-flags.md`](feature-flags.md) — canonical feature-flag convention (`feature_enabled`, the `FEATURE_FLAGS` registry, admin inventory)
 - [`local-development.md`](local-development.md) — `LOCAL_DEV_MODE` setup (what's mocked vs. real)
 - [`RELEASING.md`](RELEASING.md) — release process, deploy workflows, CI quirks
 - [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) — pre-merge checks for bootstrap-path changes

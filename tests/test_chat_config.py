@@ -116,3 +116,32 @@ def test_egress_allow_out_defaults_empty(tmp_path: Path):
     y.write_text("chat:\n  enabled: true\n")
     cfg = load_chat_config(y)
     assert cfg.egress_allow_out == []
+
+
+# --- AGNES_CHAT_ENABLED env override (#1022 feature-flag canonicalization) ---
+
+
+def test_env_var_enables_over_yaml_false(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AGNES_CHAT_ENABLED", "1")
+    y = tmp_path / "instance.yaml"
+    y.write_text("chat:\n  enabled: false\n")
+    assert load_chat_config(y).enabled is True
+
+
+def test_env_var_disables_over_yaml_true(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AGNES_CHAT_ENABLED", "0")
+    y = tmp_path / "instance.yaml"
+    y.write_text("chat:\n  enabled: true\n")
+    assert load_chat_config(y).enabled is False
+
+
+def test_env_var_applies_even_without_an_instance_yaml(monkeypatch):
+    monkeypatch.setenv("AGNES_CHAT_ENABLED", "true")
+    assert load_chat_config(Path("/nonexistent")).enabled is True
+
+
+def test_no_env_var_falls_through_to_yaml(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+    y = tmp_path / "instance.yaml"
+    y.write_text("chat:\n  enabled: true\n")
+    assert load_chat_config(y).enabled is True

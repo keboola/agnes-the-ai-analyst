@@ -2,9 +2,10 @@
 
 The customer-instance module flips data apps on by setting this in ``.env``
 (Terraform-friendly, mirrors ``AGNES_HOME_ROUTE`` / ``PUBLIC_URL``) rather than
-editing the instance.yaml overlay. It must: only fire when truthy, backfill the
-example-config defaults so spec-builders never KeyError, and leave instances
-without the var byte-for-byte unchanged.
+editing the instance.yaml overlay. Per the canonical flag resolution (#1022),
+when set the env var wins over instance.yaml in both directions; when truthy it
+also backfills the example-config defaults so spec-builders never KeyError.
+Instances without the var stay byte-for-byte unchanged.
 """
 
 from __future__ import annotations
@@ -53,6 +54,19 @@ def test_runtime_image_pin(no_yaml_data_apps, monkeypatch):
     monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "true")
     monkeypatch.setenv("AGNES_DATA_APPS_RUNTIME_IMAGE", "example.com/custom:9")
     assert ic.get_data_apps_config()["runtime_image"] == "example.com/custom:9"
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off", ""])
+def test_env_falsey_forces_off_even_when_yaml_enables(monkeypatch, raw):
+    # Canonical resolution (#1022): a set env var wins in both directions —
+    # matches the request gates that resolve the same var via feature_enabled.
+    monkeypatch.setattr(
+        ic,
+        "get_value",
+        lambda *keys, default=None: {"enabled": True} if keys == ("data_apps",) else default,
+    )
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", raw)
+    assert ic.get_data_apps_config()["enabled"] is False
 
 
 def test_yaml_block_wins_over_defaults(monkeypatch):
