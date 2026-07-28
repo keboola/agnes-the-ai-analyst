@@ -1,7 +1,7 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.77.7"
-description = "Agnes — self-hosted AI harness for organizations: governed data access, skills marketplace, corporate memory, and agent workspaces"
+version = "0.77.8"
+description = "Agnes — self-hosted AI harness for organizations: governed data access, agents as an API, skills marketplace, corporate memory, hosted data apps, and agent surfaces (web chat, Slack, MCP, CLI)"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
 readme = "README.md"

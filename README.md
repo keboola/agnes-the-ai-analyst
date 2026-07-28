@@ -1,13 +1,17 @@
 # Agnes — AI Harness
 
-Agnes is a source-available, self-hosted AI harness for organizations: one governed home for the data, skills, memory, and workspaces your AI agents work with.
+Agnes is a source-available, self-hosted AI harness for organizations: one governed home for the data, agents, skills, memory, and apps your organization's AI works with. Every surface — web chat, Slack, Telegram, MCP, CLI, and a public agent API — runs through the same RBAC, audit, and credential-brokering spine.
 
-- **Data** — extracts data from configured sources into DuckDB, serves it via a FastAPI backend, and distributes RBAC-filtered Parquet files to analysts who query them locally using Claude Code and DuckDB.
-- **Skills & plugins** — aggregates curated Claude Code marketplaces into one RBAC-filtered feed, with a store for publishing skills and a studio for authoring them.
-- **Corporate memory** — captures and governs organizational knowledge (memory domains, session mining) so agents answer with company context.
-- **Agent surfaces** — web chat with a sandboxed runtime, Slack and Telegram bots, an MCP server, and a headless CLI, all behind the same access control.
+- **Data** — extracts data from configured sources into DuckDB, serves it via a FastAPI backend, and distributes RBAC-filtered Parquet files to analysts who query them locally using Claude Code and DuckDB. A semantic layer (canonical metrics, glossary) keeps agents computing business numbers the same way humans do.
+- **Agents** — named, scoped agent profiles with their own tokens, pinned models, monthly token budgets, and private memory — callable one-shot or as streaming multi-turn sessions over a public REST/SSE API, with webhooks, artifacts, and structured JSON output. Agent scope is enforced at request time; an agent can never exceed its owner's grants.
+- **Skills & plugins** — aggregates curated Claude Code marketplaces into one RBAC-filtered feed, with a store for publishing skills (static + LLM security review) and an in-product Studio for authoring them.
+- **Corporate memory & knowledge** — governed organizational knowledge: memory domains, session mining with consent, document collections with hybrid search, and maintained digests — all searchable from one box and shipped offline to analyst laptops.
+- **Data apps** — hosts user-authored web applications next to the data: push-to-deploy git repos, RBAC-gated ingress, auto-sleep/wake — deployable end-to-end by the chat agent itself.
+- **Agent surfaces** — web chat on sandboxed microVMs (credentials brokered server-side, never inside the sandbox), Slack and Telegram bots, an OAuth 2.1 remote MCP connector, and a headless CLI, all behind the same access control.
 
 The data engine is the platform's core. Each data source produces a self-describing `extract.duckdb` file. The `SyncOrchestrator` attaches all extract databases into a master `analytics.duckdb`, making every table available through a unified view layer without copying data unnecessarily.
+
+Agnes runs as a single container for small teams, or splits into api/gateway/worker roles with Postgres app-state, Redis coordination, and a durable job queue for horizontal scale-out.
 
 ## Architecture: extract.duckdb Contract
 
@@ -37,10 +41,10 @@ The orchestrator scans `/data/extracts/*/extract.duckdb`, attaches each into `an
               SyncOrchestrator.rebuild()
               ATTACH → master views in analytics.duckdb
                          │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-          FastAPI      CLI
-          (serve)    (agnes pull)
+              ┌──────────┴──────────┐
+              ▼                     ▼
+          FastAPI                  CLI
+          (serve)               (agnes pull)
 ```
 
 ## Supported Data Sources
@@ -151,7 +155,8 @@ pytest tests/ -v
 │   ├── orchestrator.py     # SyncOrchestrator — ATTACHes extract.duckdb files
 │   ├── repositories/       # DuckDB-backed CRUD (sync_state, table_registry, users, etc.)
 │   ├── profiler.py         # Data profiling
-│   └── catalog_export.py   # OpenMetadata catalog export
+│   ├── catalog_export.py   # OpenMetadata catalog export
+│   └── data_apps/          # Hosted data-apps registry: config.json + container spec builders
 ├── app/                    # FastAPI application
 │   ├── main.py             # App setup, router registration
 │   ├── api/                # REST API (sync, data, catalog, admin, auth)
@@ -162,11 +167,11 @@ pytest tests/ -v
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
 ├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
-├── services/               # Standalone services (scheduler, telegram_bot, etc.)
+├── services/               # Standalone services (scheduler, telegram_bot, apps_runner sidecar, etc.)
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)
 ├── docs/                   # Documentation + metric YAML definitions
-└── tests/                  # Test suite (633 tests)
+└── tests/                  # Test suite
 ```
 
 ## Configuration

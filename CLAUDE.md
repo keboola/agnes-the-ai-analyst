@@ -1,6 +1,6 @@
 # Agnes — AI Harness
 
-Source-available, self-hosted AI harness for organizations — governed data access, skills marketplace, corporate memory, and agent surfaces (web chat, Slack, Telegram, MCP, CLI). The data engine extracts data from sources into DuckDB, serves via FastAPI, and distributes parquets to analysts who use Claude Code for local analysis.
+Source-available, self-hosted AI harness for organizations — governed data access, agent profiles with a public agent API, skills marketplace, corporate memory, hosted data apps, and agent surfaces (web chat, Slack, Telegram, MCP, CLI). The data engine extracts data from sources into DuckDB, serves via FastAPI, and distributes parquets to analysts who use Claude Code for local analysis; app-state runs on DuckDB or Postgres, single-process or role-split (api/gateway/worker).
 
 Full documentation index: [`docs/README.md`](docs/README.md).
 
