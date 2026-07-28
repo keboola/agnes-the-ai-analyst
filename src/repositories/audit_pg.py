@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from src.audit_helpers import AUDIT_SOURCE_CASE_SQL
+from src.audit_helpers import AUDIT_SOURCE_CASE_SQL, SCHEDULER_ACTION_SQL
 
 
 class AuditPgRepository:
@@ -327,7 +327,7 @@ class AuditPgRepository:
         with self._engine.connect() as conn:
             row = conn.execute(
                 sa.text(
-                    "SELECT MAX(timestamp) FROM audit_log WHERE action LIKE 'run_%' OR action='marketplace.sync_all'"
+                    f"SELECT MAX(timestamp) FROM audit_log WHERE {SCHEDULER_ACTION_SQL}"
                 )
             ).first()
         return row[0] if row else None
