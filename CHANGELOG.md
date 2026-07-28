@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.5] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
 - **BigQuery jobs from a restricted principal keep their cost-attribution
   labels.** `_user_id_label` reached for `user.get("email")` on a frozen
   `SessionPrincipal` / `AgentPrincipal`; the `AttributeError` hit
