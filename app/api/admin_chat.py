@@ -157,7 +157,7 @@ async def set_chat_secrets(
             action="chat.secrets.update",
             resource="chat",
             params={"changed": changed},  # names only — never the values
-            result="ok",
+            result="success",
         )
     except Exception:
         logger.exception("failed to audit chat.secrets.update")
