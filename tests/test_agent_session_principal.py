@@ -354,3 +354,41 @@ def test_get_current_user_stashes_chat_session_id_for_principal(e2e_env):
 
     assert isinstance(user, PRINCIPAL_TYPES)
     assert getattr(req.state, "chat_session_id", None) == session_id
+
+
+def test_broker_deleted_agent_fails_closed(e2e_env):
+    """A session attributed to a deleted agent must NOT fall through to the
+    owner's full-authority identity JWT — 401 instead (fail closed,
+    mirroring pat_resolver)."""
+    import pytest
+    from fastapi import HTTPException
+
+    from app.api.broker import _mint_identity_jwt
+    from src.repositories import agents_repo
+
+    owner_id, owner_email = _make_user()
+    agent_id = _make_agent(owner_id, tables_mode="selected")
+    session_id = _make_session(owner_email, agent_id=agent_id)
+    agents_repo().soft_delete(agent_id)
+
+    with pytest.raises(HTTPException) as exc:
+        _mint_identity_jwt(session_id)
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "ticket_agent_not_found"
+
+
+def test_broker_misconfigured_agent_mode_takes_enforced_path(e2e_env):
+    """An unknown mode value is NOT a passthrough — it must mint the
+    enforced agent-session JWT, never the owner's plain identity."""
+    from app.api.broker import _mint_identity_jwt
+    from src.repositories import agents_repo
+
+    owner_id, owner_email = _make_user()
+    agent_id = _make_agent(owner_id)
+    conn_agent = agents_repo().get_by_id(agent_id)
+    assert conn_agent is not None
+    agents_repo().update(agent_id, tables_mode="restricted")
+    session_id = _make_session(owner_email, agent_id=agent_id)
+
+    payload = verify_token(_mint_identity_jwt(session_id))
+    assert payload["typ"] == "agent_session"

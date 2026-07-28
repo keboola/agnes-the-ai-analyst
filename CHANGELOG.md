@@ -30,6 +30,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Broker fails closed on a deleted or misconfigured scoped agent.**
+  `_mint_identity_jwt` previously fell through to the owner's full-access
+  identity JWT when a session's agent had been deleted or carried an
+  unknown mode value — silently restoring the very authority the scope
+  removed. A deleted/missing agent now yields 401 `ticket_agent_not_found`
+  (mirroring the resolver's fail-closed posture), and only an explicit
+  all-`'all'` agent (`agent_is_passthrough`) skips the enforced
+  agent-session path.
+
 - **Agent scope is now enforced at request time, not merely recorded.** A
   `selected`-scoped agent's brokered requests are authorized against
   `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`

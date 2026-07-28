@@ -45,7 +45,7 @@ from app.api.broker_agent_policy import (
 )
 from app.auth.access import mint_agent_session_jwt, mint_co_session_jwt, require_admin
 from app.auth.jwt import create_access_token
-from src.agent_scope_intersection import agent_narrows
+from src.agent_scope_intersection import agent_is_passthrough
 from src.repositories import agents_repo, audit_repo, chat_session_repo, ticket_repo, users_repo
 
 logger = logging.getLogger(__name__)
@@ -236,17 +236,18 @@ def _mint_identity_jwt(session_id: str) -> str:
       with ``left_at IS NULL``). Resolving a co-session to its single stored
       owner (the previous behaviour) both over-authorized guests and went
       stale when the owner left — see §11.
-    - **Solo session with a narrowing agent** (V1d): when the session's
-      ``agent_id`` resolves to a live (non-deleted) agent whose scope
-      actually restricts something (``agent_narrows`` — any of its four
-      ``*_mode`` columns is ``'selected'``), mint an ``agent_session`` JWT
+    - **Solo session with an agent** (V1d): a deleted/missing agent fails
+      CLOSED (401 ``ticket_agent_not_found`` — it must not regain the
+      owner's full authority via the fall-through). A live agent that is
+      not explicitly all-``'all'`` (``agent_is_passthrough``) — including a
+      misconfigured/unknown mode value — mints an ``agent_session`` JWT
       (``mint_agent_session_jwt``). Same no-baked-in-authority contract as
       the co-session branch: the resolver rebuilds owner-grants ∩
-      agent-scope live, per request. An all-``'all'`` agent (every user's
-      lazily-seeded default) does NOT narrow anything — it falls through to
-      the plain owner-identity branch below so web chat's JWT shape is
-      unchanged (identical authority either way; this is an optimization,
-      not a security exception).
+      agent-scope live, per request. Only an explicit all-``'all'`` agent
+      (every user's lazily-seeded default) falls through to the plain
+      owner-identity branch below so web chat's JWT shape is unchanged
+      (identical authority either way; an optimization, not a security
+      exception).
     - **Solo session, no narrowing agent**: resolve the owner via the
       dual-backend chat-session + users lookup and mint an ordinary
       identity JWT (unchanged legacy/no-agent path).
@@ -262,7 +263,16 @@ def _mint_identity_jwt(session_id: str) -> str:
     agent_id = getattr(session, "agent_id", None)
     if agent_id:
         agent = agents_repo().get_by_id(agent_id)
-        if agent is not None and agent.get("deleted_at") is None and agent_narrows(agent):
+        if agent is None or agent.get("deleted_at") is not None:
+            # Fail CLOSED, mirroring pat_resolver: a session attributed to a
+            # deleted/missing agent must not silently regain the owner's
+            # full authority via the plain-identity fall-through below.
+            raise HTTPException(status_code=401, detail="ticket_agent_not_found")
+        if not agent_is_passthrough(agent):
+            # Anything that is not an explicit all-'all' agent — including a
+            # misconfigured/unknown mode value — takes the enforced
+            # agent-session path; the resolver rebuilds the intersection
+            # live and fails closed on bad rows.
             return mint_agent_session_jwt(session_id)
     user = users_repo().get_by_email(session.user_email)
     if user is None:

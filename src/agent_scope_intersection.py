@@ -142,6 +142,19 @@ def agent_narrows(agent_row: dict) -> bool:
     return False
 
 
+def agent_is_passthrough(agent_row: dict) -> bool:
+    """True only when EVERY mode column is explicitly ``'all'`` — the sole
+    shape allowed to skip the intersection and ride the owner's plain
+    identity. Deliberately stricter than ``not agent_narrows(...)``: an
+    unknown/misconfigured mode value must take the enforced agent-session
+    path (fail closed), not silently widen to full owner authority
+    (security review on the live-enforcement PR)."""
+    return all(
+        agent_row.get(mode_field) == "all"
+        for mode_field in ("tables_mode", "plugins_mode", "connections_mode", "memory_mode")
+    )
+
+
 def compute_agent_intersection(
     owner_user_id: str,
     agent_row: Optional[dict],
