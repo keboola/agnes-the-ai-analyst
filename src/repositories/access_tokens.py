@@ -27,12 +27,13 @@ class AccessTokenRepository:
         scopes: Optional[str] = None,
         *,
         agent_id: Optional[str] = None,
+        surface: str = "all",
     ) -> None:
         self.conn.execute(
             """INSERT INTO personal_access_tokens
-            (id, user_id, name, token_hash, prefix, scopes, created_at, expires_at, agent_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [id, user_id, name, token_hash, prefix, scopes, datetime.now(timezone.utc), expires_at, agent_id],
+            (id, user_id, name, token_hash, prefix, scopes, created_at, expires_at, agent_id, surface)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [id, user_id, name, token_hash, prefix, scopes, datetime.now(timezone.utc), expires_at, agent_id, surface],
         )
 
     def get_by_id(self, token_id: str) -> Optional[Dict[str, Any]]:

@@ -26,9 +26,21 @@ def create(
     name: str = typer.Option(..., "--name", help="Human label for the token"),
     ttl: str = typer.Option("90d", "--ttl", help="Lifetime (e.g. 30d, 90d, 365d, never)"),
     raw: bool = typer.Option(False, "--raw", help="Print only the raw token (for CI)"),
+    surface: str = typer.Option(
+        "all",
+        "--surface",
+        help=(
+            "Data-read surface: 'all' (default — full catalog for admins, "
+            "unchanged automation behavior) or 'stack' (catalog/query follow "
+            "your stack even as admin; inert for non-admins)."
+        ),
+    ),
 ):
     """Create a new personal access token."""
-    body = {"name": name, "expires_in_days": _parse_ttl(ttl)}
+    if surface not in ("all", "stack"):
+        typer.echo("error: --surface must be 'all' or 'stack'", err=True)
+        raise typer.Exit(1)
+    body = {"name": name, "expires_in_days": _parse_ttl(ttl), "surface": surface}
     resp = api_post("/auth/tokens", json=body)
     if resp.status_code != 201:
         typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)

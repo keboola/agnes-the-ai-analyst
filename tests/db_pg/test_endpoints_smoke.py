@@ -92,6 +92,67 @@ class TestAuthSmoke:
         assert "access_token" in r.json()
 
 
+class TestCliAuthRescopeSmoke:
+    """v106 — the `agnes init --as-admin` opt-up endpoint."""
+
+    COVERED_ROUTES = {
+        "POST /cli/auth/rescope-surface",
+    }
+
+    @staticmethod
+    def _mint_pat(user_id: str, email: str, *, surface: str = "stack") -> str:
+        import hashlib
+        import uuid
+
+        from app.auth.jwt import create_access_token
+        from src.repositories import access_token_repo
+
+        tid = str(uuid.uuid4())
+        jwt = create_access_token(user_id=user_id, email=email, token_id=tid, typ="pat", omit_exp=True)
+        access_token_repo().create(
+            id=tid,
+            user_id=user_id,
+            name="smoke-rescope",
+            token_hash=hashlib.sha256(jwt.encode()).hexdigest(),
+            prefix=tid[:8],
+            surface=surface,
+        )
+        return jwt
+
+    def test_admin_pat_rescopes_to_full_surface(self, seeded_app_both):
+        pat = self._mint_pat("admin1", "admin@test.com", surface="stack")
+        r = seeded_app_both["client"].post(
+            "/cli/auth/rescope-surface",
+            headers={"Authorization": f"Bearer {pat}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["surface"] == "all"
+        assert body["token"]
+        # The minted row must be surface='all' (auditable in /auth/tokens).
+        from app.auth.jwt import verify_token
+        from src.repositories import access_token_repo
+
+        jti = (verify_token(body["token"]) or {}).get("jti")
+        assert access_token_repo().get_by_id(jti)["surface"] == "all"
+
+    def test_analyst_pat_denied(self, seeded_app_both):
+        pat = self._mint_pat("analyst1", "analyst@test.com", surface="stack")
+        r = seeded_app_both["client"].post(
+            "/cli/auth/rescope-surface",
+            headers={"Authorization": f"Bearer {pat}"},
+        )
+        assert r.status_code == 403, r.text
+
+    def test_session_token_denied(self, seeded_app_both):
+        # Admin SESSION credential must be refused — rescope is PAT-only.
+        r = seeded_app_both["client"].post(
+            "/cli/auth/rescope-surface",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 403, r.text
+
+
 # ---------------------------------------------------------------------------
 # Health / Version
 # ---------------------------------------------------------------------------

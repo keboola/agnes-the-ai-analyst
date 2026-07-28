@@ -314,6 +314,17 @@ def resolve_token_to_user(
     except Exception:
         pass
 
+    # v106: credential data-read surface. Stashed on the user dict so the
+    # RBAC primitives (src/rbac.py get_accessible_tables/can_access_table)
+    # can narrow an ADMIN's read surface to their stack when the token was
+    # minted with surface='stack'. The rule is "non-PAT credential ⇒ all":
+    # session JWTs, the scheduler shared-secret, and local-dev bypass never
+    # reach this branch and therefore never carry the key — and a missing
+    # key reads as 'all' at every consumer, so their behavior is unchanged.
+    # Legacy PATs are backfilled to 'all' by the v106 migration; the
+    # `or "all"` below is belt-and-braces for a NULL that slipped through.
+    user["credential_surface"] = record.get("surface") or "all"
+
     _stash_payload(request, payload)
     return user, None
 
