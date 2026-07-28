@@ -12,6 +12,7 @@ Postgres. Add a new repo by:
   2. Write contract tests parametrised across [duckdb_impl, pg_impl].
   3. Build the PG impl until contract tests pass.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -92,10 +93,13 @@ class AuditRepositoryProtocol(Protocol):
         self,
         *,
         since: datetime,
-        scheduler_actions: List[str],
         limit: int = 50,
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Distinct facet buckets (users/actions/results/resources/sources)."""
+        """Distinct facet buckets (users/actions/results/resources/sources).
+
+        Source classification is rule-based (``AUDIT_SOURCE_CASE_SQL``) —
+        no caller-supplied scheduler action list.
+        """
         ...
 
     def kpis(
