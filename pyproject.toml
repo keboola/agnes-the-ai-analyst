@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.77.6"
+version = "0.77.7"
 description = "Agnes — self-hosted AI harness for organizations: governed data access, skills marketplace, corporate memory, and agent workspaces"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -341,6 +341,9 @@ target-version = "py313"
 # authoring_suggestions.py imports the repo factory after its router/env
 # setup block — pre-existing ordering, same pattern as router.py.
 "app/api/authoring_suggestions.py" = ["E402"]
+# admin_sessions.py has a deliberate mid-file `import re as _re` next to the
+# username-allowlist regex it powers — pre-existing ordering.
+"app/api/admin_sessions.py" = ["E402"]
 # Fixture-style spec builder from the apps-runner test brief — a lambda
 # reads better than a def for a one-line dict factory used only in this file.
 "tests/test_apps_runner.py" = ["E731"]
