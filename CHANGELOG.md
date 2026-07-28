@@ -12,7 +12,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- `usage_session_summary.uploaded_at` (schema v105): sessions record when
+  they ARRIVED, not just when they started. The health pulse gains a
+  `session_ingest` field reconciling `session.upload` audit rows against
+  ingested summaries (joined on the file name — resumed/forked sessions
+  carry a different content-derived session id); the browser hints the file
+  id when it differs.
+
 ### Changed
+
+- **The sessions browser windows on arrival by default** (`anchor=uploaded`;
+  `anchor=started` and `agnes admin sessions list --anchor started` restore
+  the old view). Previously a session uploaded late (queue catch-up) never
+  appeared in any recent window and read as data loss — on a production
+  dataset, 34 of 157 uploads in 30 days were invisible this way. Adoption
+  charts stay anchored on `started_at` (usage-over-time semantics).
 
 ### Fixed
 
