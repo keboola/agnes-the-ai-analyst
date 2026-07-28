@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 
 def _read_pyproject() -> dict:
     """Load pyproject.toml from the repo root."""
@@ -34,18 +32,14 @@ def test_anthropic_is_a_core_dependency():
     """
     cfg = _read_pyproject()
     core = cfg["project"]["dependencies"]
-    assert any(dep.startswith("anthropic") for dep in core), (
-        "anthropic must be in [project].dependencies — see #176"
-    )
+    assert any(dep.startswith("anthropic") for dep in core), "anthropic must be in [project].dependencies — see #176"
 
 
 def test_openai_is_a_core_dependency():
     """openai must live in [project].dependencies, not [dev]."""
     cfg = _read_pyproject()
     core = cfg["project"]["dependencies"]
-    assert any(dep.startswith("openai") for dep in core), (
-        "openai must be in [project].dependencies — see #176"
-    )
+    assert any(dep.startswith("openai") for dep in core), "openai must be in [project].dependencies — see #176"
 
 
 def test_anthropic_not_in_optional_dev_extras():
@@ -81,3 +75,39 @@ def test_llm_provider_modules_import_cleanly():
         "connectors.llm.factory",
     ):
         importlib.import_module(mod)
+
+
+def test_jsonschema_is_a_core_dependency():
+    """jsonschema must live in [project].dependencies, not [dev].
+
+    app/chat/structured_output.py imports jsonschema unconditionally at
+    module scope, and is itself imported unconditionally by
+    app/api/agent_runtime.py and app/api/agent_sessions.py, which app/main.py
+    imports at module scope. Demoting jsonschema back to dev-only reproduces
+    the #176 boot-loop bug class for this dependency.
+    """
+    cfg = _read_pyproject()
+    core = cfg["project"]["dependencies"]
+    assert any(dep.startswith("jsonschema") for dep in core), (
+        "jsonschema must be in [project].dependencies — production import in app/chat/structured_output.py"
+    )
+
+
+def test_jsonschema_not_in_optional_dev_extras():
+    """Belt-and-suspenders: dev extras should not double-list jsonschema."""
+    cfg = _read_pyproject()
+    dev = cfg["project"].get("optional-dependencies", {}).get("dev", [])
+    assert not any(dep.startswith("jsonschema") for dep in dev), (
+        "jsonschema should not be duplicated in [dev] — keep it core-only"
+    )
+
+
+def test_structured_output_module_imports_cleanly():
+    """A fresh interpreter with only core deps installed must import
+    app.chat.structured_output without ImportError — the concrete failure
+    mode when jsonschema is dev-only is a ModuleNotFoundError at app boot
+    (app/main.py -> app/api/agent_runtime.py -> this module).
+    """
+    import importlib
+
+    importlib.import_module("app.chat.structured_output")

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.chat import inbound, routing
+from app.chat import agent_profile, inbound, routing
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.frame_seq import stamp_frame
@@ -29,6 +29,51 @@ from app.coordination.leases import default_holder_id
 from src.repositories import ticket_repo, usage_repo, users_repo
 
 logger = logging.getLogger(__name__)
+
+# Process-wide handle to the live ChatManager (Task 9). ``app/main.py``'s
+# lifespan calls `set_current_chat_manager(app.state.chat_manager)` once
+# CHAT-INIT settles (whatever it settled to — a real manager, or None when
+# chat is disabled/degraded) — the SAME value it stores on
+# ``app.state.chat_manager``. Request handlers already read the manager off
+# ``request.app.state`` (see ``app/api/chat.py::_get_manager``); this
+# singleton exists ONLY for callers with no ``Request`` to hand them one —
+# namely the ``agent_response`` job-worker handler (``app/worker/kinds.py``),
+# which runs a plain ``Callable[[dict], None]`` with no app object in scope.
+#
+# ``_current_loop`` is captured alongside it (the running loop at the
+# moment ``set_current_chat_manager`` is called from ``app/main.py``'s
+# async lifespan — i.e. the SAME loop uvicorn serves requests on, and the
+# one every ``ChatManager`` lock/task/sink was created against). The job
+# worker runs handlers synchronously in a thread (``asyncio.to_thread`` —
+# see ``app/worker/runtime.py``), so calling back into ``ChatManager``'s
+# async methods from there needs ``asyncio.run_coroutine_threadsafe(coro,
+# get_current_chat_loop())``, never a fresh ``asyncio.run()`` in that
+# thread — a new loop would break the manager's existing locks/tasks/sinks,
+# which are asyncio primitives bound to the loop that created them.
+_current_manager: Optional["ChatManager"] = None
+_current_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_current_chat_manager(manager: Optional["ChatManager"]) -> None:
+    global _current_manager, _current_loop
+    _current_manager = manager
+    try:
+        _current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called from outside a running loop (e.g. a test that never awaits
+        # anything first) — leave the loop unset rather than raise; a
+        # worker-thread caller that needs it will simply see None and fail
+        # closed (RuntimeError from the job handler, not a crash here).
+        _current_loop = None
+
+
+def get_current_chat_manager() -> Optional["ChatManager"]:
+    return _current_manager
+
+
+def get_current_chat_loop() -> Optional[asyncio.AbstractEventLoop]:
+    return _current_loop
+
 
 # Sonnet pricing constants (USD per million tokens)
 _PRICE_IN_PER_MTOK = 3.0
@@ -497,6 +542,7 @@ class ChatManager:
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
         profile: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> ChatSession:
         if not self._config.enabled:
             raise RuntimeError("chat.enabled is false")
@@ -521,6 +567,7 @@ class ChatManager:
             slack_channel_id=slack_channel_id,
             slack_thread_ts=slack_thread_ts,
             title=title,
+            agent_id=agent_id,
         )
         if profile is not None:
             self._session_profiles[created.id] = profile
@@ -838,13 +885,39 @@ class ChatManager:
         # needs its own stamp (wave-2F task 2).
         await ws.send_json(stamp_frame(live.chat_id, {"type": "ready"}))
 
+    def _load_agent_row(self, agent_id: Optional[str]) -> Optional[dict]:
+        """Best-effort load of an `agents` row for spawn-time profile
+        resolution (Task 7). Returns ``None`` on a missing id, a missing
+        row, or any repo error — a lookup failure must never block a chat
+        spawn; it just means the session falls back to today's static
+        profile behavior and no scope snapshot is recorded."""
+        if not agent_id:
+            return None
+        try:
+            from src.repositories import agents_repo
+
+            return agents_repo().get_by_id(agent_id)
+        except Exception:
+            logger.exception("agent row lookup failed for agent_id=%s — spawn continues without it", agent_id)
+            return None
+
     async def _spawn_live(self, session: "ChatSession") -> "LiveSession":
         """Spawn a fresh sandbox, register refs, start pump/wait tasks.
 
         Returns the new LiveSession registered in self._live. Does NOT await
         the pump/wait tasks — they run independently (Task 8 contract).
+
+        Task 7: when ``session.agent_id`` resolves to an `agents` row with a
+        non-empty ``system_prompt``, that row's DB-sourced ``ChatProfile``
+        (``app.chat.agent_profile.build_profile``) takes precedence over the
+        static ``self._session_profiles`` slug lookup — otherwise (no
+        agent_id, agent missing, or empty system_prompt, as with the seeded
+        default agent) today's behavior is unchanged bit-for-bit. A scope
+        snapshot (audit-only, see ``app.chat.agent_profile``'s docstring) is
+        recorded once the spawn has actually succeeded.
         """
         chat_id = session.id
+        agent_row = self._load_agent_row(session.agent_id)
         if session.is_co_session:
             parts = self._repo.get_session_participants(chat_id)
             emails = [p.user_email for p in parts if p.left_at is None]
@@ -857,7 +930,27 @@ class ChatManager:
             self._workdir_mgr.ensure_user_workdir(session.user_email)
             prof_slug = self._session_profiles.get(session.id)
             prof = get_profile(prof_slug) if prof_slug else None
+            dynamic_prof = None
+            if agent_row:
+                try:
+                    dynamic_prof = agent_profile.build_profile(agent_row)
+                except Exception:
+                    logger.exception(
+                        "agent profile build failed for agent_id=%s — falling back to static/default profile",
+                        session.agent_id,
+                    )
+                    dynamic_prof = None
+            prof = dynamic_prof or prof
             session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id, profile=prof)
+
+        # V1c Task 3: materialize this agent's active memories into the
+        # workdir BEFORE spawn — the same host-dir-then-uploaded seam
+        # build_profile's persona took above. session_dir is a host path;
+        # _spawn_runner (next line) is what actually uploads it into the
+        # remote sandbox, so this must run first or the agent never sees
+        # its memories. Never raises — see agent_profile.materialize_memories.
+        if agent_row is not None:
+            agent_profile.materialize_memories(agent_row, session_dir)
 
         handle = await self._spawn_runner(session, session_dir)
         import time as _t
@@ -899,6 +992,8 @@ class ChatManager:
             # for the LiveSession object's whole lifetime — see LiveSession.
             # inbound_task's docstring for why this is NOT part of `tasks`.
             live.inbound_task = asyncio.create_task(self._inbound_consumer_loop(live))
+            if agent_row is not None:
+                agent_profile.record_snapshot(chat_id, agent_row)
             return live
         except Exception:
             self._live.pop(chat_id, None)

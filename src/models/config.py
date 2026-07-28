@@ -126,6 +126,9 @@ class PersonalAccessToken(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # v96: agent-as-API — non-NULL when this PAT was minted for/by an agent.
+    # Deliberately unindexed (see src/db.py's _v94_to_v95 ART-index note).
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         Index("ix_personal_access_tokens_user_id", "user_id"),

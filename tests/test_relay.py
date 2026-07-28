@@ -340,7 +340,16 @@ def test_relay_non_sse_anthropic_response_stays_buffered():
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             writer.write(b"POST /anthropic/v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}")
             await writer.drain()
-            data = await asyncio.wait_for(reader.read(4096), timeout=5)
+            # Accumulate until the whole buffered response has arrived — a
+            # single read() returns whatever bytes happen to be available and
+            # frequently yields only the status line, which made this test
+            # flaky. Same read-until-complete idiom as the streaming test above.
+            data = b""
+            while b'{"error":{"message":"nope"}}' not in data:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=5)
+                if not chunk:  # EOF — fall through to the assertions below
+                    break
+                data += chunk
             assert b"HTTP/1.1 400" in data
             assert b"Content-Length: 28" in data
             assert b'{"error":{"message":"nope"}}' in data

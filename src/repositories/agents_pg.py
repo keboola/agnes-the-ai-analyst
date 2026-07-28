@@ -1,0 +1,248 @@
+"""Postgres-backed repository for ``agents`` + ``agent_scope`` +
+``agent_scope_snapshots`` (v96).
+
+Mirrors ``src/repositories/agents.py`` (the DuckDB impl) on the
+``AgentsRepository`` public surface. Cross-engine parity is covered by
+``tests/db_pg/test_agents_contract.py``.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
+
+import sqlalchemy as sa
+from sqlalchemy.engine import Engine
+
+_UPDATABLE = frozenset(
+    {
+        "name",
+        "description",
+        "system_prompt",
+        "model",
+        "token_budget_monthly",
+        "plugins_mode",
+        "connections_mode",
+        "tables_mode",
+        "memory_mode",
+        "memory_write_mode",
+    }
+)
+
+
+class AgentsPgRepository:
+    """Postgres twin of ``AgentsRepository``."""
+
+    def __init__(self, engine: Engine):
+        self._engine = engine
+
+    def create(
+        self,
+        id: str,
+        owner_user_id: str,
+        name: str,
+        slug: str,
+        description: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        token_budget_monthly: Optional[int] = None,
+        plugins_mode: str = "all",
+        connections_mode: str = "all",
+        tables_mode: str = "all",
+        memory_mode: str = "all",
+        memory_write_mode: str = "propose",
+        is_default: bool = False,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO agents
+                      (id, owner_user_id, name, slug, description, system_prompt, model,
+                       token_budget_monthly, plugins_mode, connections_mode, tables_mode,
+                       memory_mode, memory_write_mode, is_default, created_at, updated_at)
+                    VALUES
+                      (:id, :owner_user_id, :name, :slug, :description, :system_prompt, :model,
+                       :token_budget_monthly, :plugins_mode, :connections_mode, :tables_mode,
+                       :memory_mode, :memory_write_mode, :is_default, :created_at, :updated_at)
+                    """
+                ),
+                {
+                    "id": id,
+                    "owner_user_id": owner_user_id,
+                    "name": name,
+                    "slug": slug,
+                    "description": description,
+                    "system_prompt": system_prompt,
+                    "model": model,
+                    "token_budget_monthly": token_budget_monthly,
+                    "plugins_mode": plugins_mode,
+                    "connections_mode": connections_mode,
+                    "tables_mode": tables_mode,
+                    "memory_mode": memory_mode,
+                    "memory_write_mode": memory_write_mode,
+                    "is_default": is_default,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+
+    def get_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Includes soft-deleted rows so slug tombstoning is inspectable."""
+        with self._engine.connect() as conn:
+            row = conn.execute(sa.text("SELECT * FROM agents WHERE id = :id"), {"id": agent_id}).mappings().first()
+        return dict(row) if row else None
+
+    def get_by_slug(self, owner_user_id: str, slug: str) -> Optional[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM agents "
+                        "WHERE owner_user_id = :owner_user_id AND slug = :slug AND deleted_at IS NULL"
+                    ),
+                    {"owner_user_id": owner_user_id, "slug": slug},
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row else None
+
+    def list_for_user(self, owner_user_id: str) -> List[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """
+                    SELECT * FROM agents
+                    WHERE owner_user_id = :owner_user_id AND deleted_at IS NULL
+                    ORDER BY is_default DESC, name
+                    """
+                    ),
+                    {"owner_user_id": owner_user_id},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
+    def update(self, agent_id: str, **fields: Any) -> None:
+        bad = set(fields) - _UPDATABLE
+        if bad:
+            raise ValueError(f"cannot update non-whitelisted field(s): {sorted(bad)}")
+        if not fields:
+            return
+        set_clauses = [f"{col} = :{col}" for col in fields]
+        params: Dict[str, Any] = dict(fields)
+        set_clauses.append("updated_at = :updated_at")
+        params["updated_at"] = datetime.now(timezone.utc)
+        params["agent_id"] = agent_id
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(f"UPDATE agents SET {', '.join(set_clauses)} WHERE id = :agent_id"),
+                params,
+            )
+
+    def soft_delete(self, agent_id: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE agents SET deleted_at = :deleted_at WHERE id = :id"),
+                {"deleted_at": datetime.now(timezone.utc), "id": agent_id},
+            )
+
+    def get_or_create_default(self, owner_user_id: str) -> Dict[str, Any]:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM agents "
+                        "WHERE owner_user_id = :owner_user_id AND is_default AND deleted_at IS NULL"
+                    ),
+                    {"owner_user_id": owner_user_id},
+                )
+                .mappings()
+                .first()
+            )
+        if row:
+            return dict(row)
+
+        agent_id = str(uuid4())
+        self.create(
+            id=agent_id,
+            owner_user_id=owner_user_id,
+            name="Default",
+            slug="default",
+            plugins_mode="all",
+            connections_mode="all",
+            tables_mode="all",
+            memory_mode="all",
+            memory_write_mode="propose",
+            is_default=True,
+        )
+        result = self.get_by_id(agent_id)
+        assert result is not None
+        return result
+
+    def set_scope(self, agent_id: str, items: List[Tuple[str, str]]) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("DELETE FROM agent_scope WHERE agent_id = :agent_id"),
+                {"agent_id": agent_id},
+            )
+            for item_type, item_id in items:
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO agent_scope (agent_id, item_type, item_id) "
+                        "VALUES (:agent_id, :item_type, :item_id)"
+                    ),
+                    {"agent_id": agent_id, "item_type": item_type, "item_id": item_id},
+                )
+
+    def get_scope(self, agent_id: str) -> List[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT item_type, item_id FROM agent_scope "
+                        "WHERE agent_id = :agent_id ORDER BY item_type, item_id"
+                    ),
+                    {"agent_id": agent_id},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
+    def record_scope_snapshot(self, id: str, session_id: str, agent_id: str, effective_scope: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO agent_scope_snapshots
+                      (id, session_id, agent_id, effective_scope, created_at)
+                    VALUES
+                      (:id, :session_id, :agent_id, :effective_scope, :created_at)
+                    """
+                ),
+                {
+                    "id": id,
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "effective_scope": effective_scope,
+                    "created_at": datetime.now(timezone.utc),
+                },
+            )
+
+    def list_scope_snapshots(self, session_id: str) -> List[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM agent_scope_snapshots WHERE session_id = :session_id ORDER BY created_at"),
+                    {"session_id": session_id},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]

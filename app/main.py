@@ -279,6 +279,11 @@ from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
 from app.api.cli_auth import router as cli_auth_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
+from app.api.agents_admin import router as agents_admin_router
+from app.api.agent_runtime import router as agent_runtime_router  # noqa: E402
+from app.api.agent_sessions import router as agent_sessions_router  # noqa: E402
+from app.api.agent_webhooks import router as agent_webhooks_router  # noqa: E402
+from app.api.agent_memory import router as agent_memory_router  # noqa: E402
 from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
@@ -357,6 +362,7 @@ from app.api.data_apps import router as data_apps_router
 from app.api.data_apps_git import router as data_apps_git_router
 from app.api.data_apps_proxy import router as data_apps_proxy_router
 from app.web.router import router as web_router
+from app.web.agents_page import router as agents_page_router
 from app.web.router import apps_web_router as data_apps_web_router
 from app.api.chat import router as chat_router
 from app.api.chat_copresence import router as chat_copresence_router
@@ -1417,6 +1423,13 @@ async def lifespan(app):
     except Exception:
         logger.exception("CHAT-INIT failed (non-fatal); chat features will be unavailable")
         app.state.chat_manager = None
+    # Mirror whatever CHAT-INIT settled on (a real manager, or None) onto the
+    # process-wide singleton the `agent_response` job-worker handler reads —
+    # it has no `Request`/`app` in scope to read `app.state.chat_manager`
+    # from directly (see app.chat.manager.get_current_chat_manager).
+    from app.chat.manager import set_current_chat_manager
+
+    set_current_chat_manager(app.state.chat_manager)
     # --- end CHAT-INIT -------------------------------------------------------
 
     # --- SLACK-INIT: resolve bot user id once (mention loop-guard / strip) ---
@@ -1549,6 +1562,16 @@ async def lifespan(app):
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
+    # Flush any buffered llm_usage rows (broker Task 8 — batched ledger
+    # writes) BEFORE the system DB closes, so a graceful shutdown doesn't
+    # drop the tail of usage the accumulator hadn't hit a size/age
+    # threshold for yet.
+    try:
+        from app.api.broker_agent_policy import usage_accumulator
+
+        usage_accumulator.flush()
+    except Exception:
+        logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
     from src.db import close_analytics_db, close_operational_db, close_system_db
 
     close_system_db()
@@ -2138,6 +2161,11 @@ def create_app() -> FastAPI:
     app.include_router(cli_auth_router)
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
+    app.include_router(agents_admin_router)
+    app.include_router(agent_runtime_router)
+    app.include_router(agent_sessions_router)
+    app.include_router(agent_webhooks_router)
+    app.include_router(agent_memory_router)
     app.include_router(v2_catalog_router)
     app.include_router(v2_schema_router)
     app.include_router(v2_sample_router)
@@ -2321,6 +2349,11 @@ def create_app() -> FastAPI:
 
     for _plugin_router in _load_plugin_routers(_get_value("plugins", "admin_routers", default=[]) or []):
         app.include_router(_plugin_router)
+
+    # /agents — minimal builder page (Task 10). Own module (like
+    # app/api/agents_admin.py), so must be mounted before web_router's
+    # catch-all route below, same as the plugin/docs routers above.
+    app.include_router(agents_page_router)
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)

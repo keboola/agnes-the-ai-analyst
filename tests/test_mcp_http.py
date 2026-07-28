@@ -247,6 +247,16 @@ class TestToolRegistration:
             # verifies their own stored token. Triple-surface with POST
             # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`.
             "my_secret_test",
+            # Agent profiles (agent-api V1a, Task 12) — list your own agent
+            # profiles and one-shot ask an agent without leaving the chat.
+            # Triple-surface with GET /api/v1/agents + POST
+            # /api/v1/agents/{slug}/responses + `agnes agent list`/`ask`.
+            "agent_list",
+            "agent_ask",
+            # Agent-as-API monthly usage (agent-api V1b, Task 8). Triple-
+            # surface with GET /api/v1/agents/{slug}/usage +
+            # `agnes agent usage`.
+            "agent_usage",
             # Hosted data apps (data-apps platform plan, Task 11) — list/get
             # for any authenticated user with view access, deploy/logs for
             # app owner or Admin. Triple-surface with /api/data-apps* +

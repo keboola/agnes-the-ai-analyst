@@ -60,12 +60,21 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def clean_job_kinds_registry():
-    """The registry is a process-wide module dict — isolate each test."""
+    """The registry is a process-wide module dict — isolate each test.
+
+    Also resets the process-wide chat-manager singleton to ``None`` (see
+    ``tests/test_worker_kinds.py``'s identical fixture for why) — this
+    file's ``register_all_kinds()`` calls only assert
+    ``ducklake-maintenance``'s presence/coexistence, not ``agent_response``'s
+    (which is now conditional on a live chat manager)."""
+    from app.chat.manager import set_current_chat_manager
     from app.worker.registry import JOB_KINDS
 
     JOB_KINDS.clear()
+    set_current_chat_manager(None)
     yield
     JOB_KINDS.clear()
+    set_current_chat_manager(None)
 
 
 @pytest.fixture
@@ -110,8 +119,16 @@ class TestRegistration:
         """Regression guard for the wave-2B `register_all_kinds` test
         (`tests/test_worker_kinds.py`), which asserts the exact registered
         set — this proves `ducklake-maintenance` (and wave-2G Task 6's
-        `analytics-migrate`, and wave-2H Task WF-3's `distribution-mirror`)
-        coexist without disturbing the others."""
+        `analytics-migrate`, wave-2H Task WF-3's `distribution-mirror`, and
+        V1b Task 6's `webhook-deliver`) coexist without disturbing the
+        others.
+
+        `agent_response` is deliberately excluded from this set — this
+        fixture's `clean_job_kinds_registry` resets the chat-manager
+        singleton to `None`, so (role-split review carry-over, Task 9)
+        `register_all_kinds()` does not register it here; see
+        `tests/test_worker_kinds.py::TestAgentResponseRoleSplitRegistration`
+        for that behavior's dedicated coverage."""
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
 
@@ -126,6 +143,7 @@ class TestRegistration:
             "ducklake-maintenance",
             "analytics-migrate",
             "distribution-mirror",
+            "webhook-deliver",
             "analytics-rebuild",
             "collections-purge",
         }

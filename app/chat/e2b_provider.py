@@ -168,6 +168,17 @@ class E2BSandboxHandle:
     _sandbox: Any  # e2b.AsyncSandbox
     _cmd_handle: Any  # e2b.AsyncCommandHandle
 
+    @property
+    def files(self) -> Any:
+        """Accessor for the underlying sandbox's file API
+        (``.list(path)`` / ``.read(path, format=...)`` / ``.write(path, data)``).
+
+        Exists so callers outside this module (e.g.
+        ``app.chat.artifact_harvest``, which reads harvested output files
+        back out of the sandbox after a run) don't need to reach into the
+        private ``_sandbox`` attribute directly."""
+        return self._sandbox.files
+
     async def wait(self) -> int:
         try:
             result = await self._cmd_handle.wait()

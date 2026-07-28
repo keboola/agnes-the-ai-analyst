@@ -41,6 +41,8 @@ _AUTH_DETAIL_BY_REASON = {
     "pat_scope_forbidden": "git_scope_token_not_allowed",
     "invalid_token": "Invalid or expired token",
     "no_token": "Invalid or expired token",
+    "agent_pat_wrong_surface": "Agent token not valid on this surface",
+    "agent_pat_agent_deleted": "Agent deleted",
 }
 
 
@@ -328,8 +330,13 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
 
     Two non-interactive paths exist today:
 
-    1. **PAT** — JWT with ``typ="pat"``. Detected by decoding the JWT and
-       inspecting the claim.
+    1. **PAT / agent PAT** — JWT with ``typ`` in ``pat_resolver._PAT_LIKE_TYPES``
+       (``"pat"`` or ``"agent_pat"``). Detected by decoding the JWT and
+       inspecting the claim. Agent PATs are already surface-allowlisted to
+       ``/api/v1/{agents,sessions,jobs}/`` in ``pat_resolver``, but that
+       allowlist is enforced in ``resolve_token_to_user`` — this dependency
+       runs independently (via ``get_current_user``), so it must reject them
+       here too, the same as a plain PAT.
     2. **Scheduler shared secret** — opaque string equal to
        ``SCHEDULER_API_TOKEN``. Not a JWT, so ``verify_token`` returns None
        and the PAT-claim check would silently pass — meaning a caller
@@ -356,9 +363,10 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
                 detail="This endpoint requires an interactive session, not a service token",
             )
         from app.auth.jwt import verify_token
+        from app.auth.pat_resolver import _PAT_LIKE_TYPES
 
         payload = verify_token(token) or {}
-        if payload.get("typ") == "pat":
+        if payload.get("typ") in _PAT_LIKE_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This endpoint requires an interactive session, not a PAT",
