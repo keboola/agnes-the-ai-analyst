@@ -32,8 +32,8 @@ changes the shape of the project. Most rails do not want a loop:
 |---|---|---|---|
 | Remote scan cost | **guard-in-tool** — server 5 GiB cap → `remote_scan_too_large` (`app/api/query.py`) | — | keep |
 | Choose right tool (`query_mode`) | **guard-in-tool** — `--scope auto` fallback | — | keep |
-| Remote table without `--where` | advisory (`--where` optional, `cli/commands/snapshot.py`) | yes, fully | **promote to guard-in-tool** |
-| No implicit `SELECT *` | advisory | yes, fully | **promote to guard-in-tool** |
+| Remote table without `--where` | advisory (`--where` optional, `cli/commands/snapshot.py`) | yes, fully | **promote to tool WARN** |
+| No implicit `SELECT *` | advisory | yes, fully | **promote to tool WARN** |
 | Never invent a metric calc | prose only | **half** — session shows whether `catalog --metrics --show` ran, not whether the number used it | weak `Stop`-hook WARN |
 | Discovery first (schema before query) | prose only | half — false-positive if discovery happened in a prior session | `Stop`-hook WARN, low priority |
 | BigQuery SQL flavor in `--where` | prose only | no | keep as prose — BQ rejects a wrong flavor itself |
@@ -57,33 +57,40 @@ loop — it is a tool guard, and it is the most reliable rail we have.
   came from the canonical metric SQL is not decidable from tool calls; only an
   LLM judge could attempt it, and that is a per-answer cost on every session. Out
   of scope — do not turn a linter into a reviewer.
-- **Blocking analysts.** The guards refuse a *fetch shape*, never a question.
+- **Blocking analysts.** Phase 1 warns on a wasteful *fetch shape*; it never
+  refuses the fetch and never touches the question.
 
 ## Phase 1 — help the analyst (client-side)
 
 Ordered cheapest-first, same discipline as the code loop.
 
-### 1a. `agnes snapshot create` refuses an unbounded remote fetch
+Both guards are **WARN-only** — advisory lines on stderr, never a blocked fetch.
+The decision (over a blanket BLOCKING, or a cost-threshold BLOCKING) is
+deliberate: `agnes snapshot create` is a shipping command with existing callers
+and analyst muscle memory, and a fetch the analyst genuinely wants should never
+be refused outright. The warning is what the agent reads and course-corrects on
+before the wasteful fetch becomes a habit; a purely additive stderr line cannot
+break an existing script. If real usage shows a rail being ignored, a
+cost-threshold BLOCKING tier can be added later — but it starts advisory.
 
-On a `query_mode='remote'` table, require either `--where` or `--limit`. This is
-the "ALWAYS include a `--where` for remote tables" rail made mechanical, at the
-one place the fetch is actually issued.
+### 1a. `agnes snapshot create` warns on an unbounded remote fetch
 
-- **Severity by cost, not blanket-BLOCKING.** If the pre-fetch estimate is
-  available and under a threshold (proposed 1 GiB scan), a missing predicate is a
-  WARN — a legitimate small fetch is not worth an error. At or above the
-  threshold, or when no estimate is available, it is BLOCKING with the standard
-  next-step hint (`cli/query_hints.py`): add a `--where`, or pass `--limit`.
-- Deterministic, unit-testable exactly like the sync-map detectors.
+On a `query_mode='remote'` table with neither `--where` nor `--limit`, print a
+WARN with the standard next-step hint (`cli/query_hints.py`): add a `--where`, or
+pass `--limit`. This is the "ALWAYS include a `--where` for remote tables" rail
+made mechanical, at the one place the fetch is issued. No cost threshold — the
+warning fires regardless of estimate size (it is cheap and unblocking either
+way). Deterministic, unit-testable exactly like the sync-map detectors.
 
-### 1b. `agnes snapshot create` rejects implicit `SELECT *` on remote
+### 1b. `agnes snapshot create` warns on implicit `SELECT *` on remote
 
-Require an explicit `--select` column list on remote tables; reject `*` or an
-absent list. This is "ALWAYS list specific columns" made mechanical. BLOCKING —
-there is no cheap-fetch exception for `SELECT *` at 225M-row scale.
+On a remote table with no `--select`, or a `--select` containing a bare `*`,
+print a WARN: list specific columns. This is "ALWAYS list specific columns" made
+mechanical.
 
-Both 1a and 1b are guards *in the tool*, not a loop: the analyst's agent cannot
-issue the wasteful fetch, so there is nothing to detect after the fact.
+The `--from-query` path is exempt from both — it carries its own projection, and
+it is the path the internal `agnes query --remote --auto-snapshot` caller uses,
+so exempting it also keeps that machine-generated fetch quiet.
 
 ### 1c. (optional) A `Stop`-hook metric-usage WARN
 
