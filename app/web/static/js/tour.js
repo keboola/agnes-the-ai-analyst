@@ -215,10 +215,13 @@ function _startTour(id, steps, index, skipped) {
   // are built from the steps that actually render, so the count stays honest
   // instead of promising a "Step 4 of 5" that never appears. It can only grow
   // as the tour walks forward — a step on a page not yet visited is assumed
-  // renderable until proven otherwise.
+  // renderable until proven otherwise. `liftedAncestor` tracks a stacking-
+  // context ancestor (e.g. the rail) temporarily promoted above the scrim so
+  // a spotlighted descendant is reachable — see _findStackingContextAncestor.
   _active = {
     id, steps, index: null, overlay, popover: null, spotlight: null,
     skipped: new Set(skipped || []),
+    liftedAncestor: null,
   };
   _showStep(index);
 }
@@ -234,6 +237,10 @@ function _showStep(index) {
   if (_active.spotlight) {
     _active.spotlight.classList.remove('tour-spotlight');
     _active.spotlight = null;
+  }
+  if (_active.liftedAncestor) {
+    _active.liftedAncestor.classList.remove('tour-lifts-ancestor');
+    _active.liftedAncestor = null;
   }
 
   _active.index = index;
@@ -253,11 +260,24 @@ function _showStep(index) {
       return;
     }
     // Scroll target into view — horizontally only "nearest" so a target near
-    // the viewport edge never induces horizontal scroll of the page itself
-    // (see the rail-overflow note on _positionPopover's horizontal clamp).
+    // the viewport edge (e.g. a nav item in the rail's mobile top-bar layout)
+    // never induces horizontal scroll of the page itself (see the
+    // rail-overflow note on _positionPopover's horizontal clamp).
     anchor.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
     anchor.classList.add('tour-spotlight');
     _active.spotlight = anchor;
+
+    // If the anchor sits inside a positioned ancestor that has its own
+    // z-index (a stacking context — e.g. the rail: `position: fixed;
+    // z-index: 40`), `.tour-spotlight`'s z-index resolves INSIDE that
+    // context and can never outrank the scrim, which paints at the root.
+    // Lift the ancestor above the scrim for the step's duration so the
+    // spotlighted target is actually reachable through it.
+    const stackingAncestor = _findStackingContextAncestor(anchor);
+    if (stackingAncestor) {
+      stackingAncestor.classList.add('tour-lifts-ancestor');
+      _active.liftedAncestor = stackingAncestor;
+    }
   }
 
   // Keep the resume record in sync with the step actually on screen (not just
@@ -500,10 +520,31 @@ function _endTour(markSeenNow) {
   if (_active.spotlight) {
     _active.spotlight.classList.remove('tour-spotlight');
   }
+  if (_active.liftedAncestor) {
+    _active.liftedAncestor.classList.remove('tour-lifts-ancestor');
+  }
   if (_active.popover) _active.popover.remove();
   if (_active.overlay) _active.overlay.remove();
   _active = null;
   _removeListeners();
+}
+
+// Walk up from `el` to find the nearest ancestor that establishes its own
+// stacking context via a positioned + z-indexed box (the pattern behind the
+// bug this exists to work around: the rail is `position: fixed; z-index:
+// 40`). A z-index set on a descendant of such an ancestor is scoped to that
+// ancestor's context and can never out-rank an element painted at the root,
+// like the tour scrim — regardless of how large the descendant's own
+// z-index is. Stops at <body> since promoting the whole document is never
+// useful here.
+function _findStackingContextAncestor(el) {
+  let node = el.parentElement;
+  while (node && node !== document.body) {
+    const cs = getComputedStyle(node);
+    if (cs.position !== 'static' && cs.zIndex !== 'auto') return node;
+    node = node.parentElement;
+  }
+  return null;
 }
 
 // ── Positioning ─────────────────────────────────────────────────────────────
