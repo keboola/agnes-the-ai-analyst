@@ -235,3 +235,66 @@ The invariant deserves adversarial tests, not just happy paths:
 This lands on the same PR as V1a–V1c (#1034), because merging that PR without
 it would ship the false claim. The CHANGELOG bullet for agent scope must not
 describe enforcement until this is in.
+
+## Known remaining gaps (recorded at Task 6, not closed by this wave)
+
+The "Agent ⊆ owner" invariant holds for everything this design models, but
+Tasks 4–5's own self-reviews surfaced four gaps deliberately left open —
+recorded here so they aren't lost between waves:
+
+- **Bundled workspace-template skills are a `∪` outside the intersection.**
+  The skills baked into the spawned workspace template (not the curated
+  marketplace) are not gated by `plugins_mode`/`agent_scope` at all — every
+  agent, however narrowly scoped, gets the same template baseline. Only the
+  curated-marketplace and Store-install plugin surfaces are intersected.
+- **Internal-table names/schemas remain visible even when content is
+  blocked.** `get_accessible_tables` always includes `INTERNAL_TABLES` for a
+  principal (by design — row-level RBAC applies at query time, per
+  `src/rbac.py::can_access_table`'s docstring), so an `AgentPrincipal` can
+  see that `agnes_sessions`/`agnes_usage`/`agnes_audit` exist and their
+  schemas, even when its own row-level view yields zero rows. Metadata
+  visibility, not data leakage — but worth naming explicitly.
+- **Data packages pass through as the owner's grants, not a subscribed
+  stack.** `ResourceType.DATA_PACKAGE` has no `agents.*_mode` column
+  (§2's mode table), so `compute_agent_intersection` passes it through
+  verbatim as the owner's set (the "resource type the agent does not model"
+  branch) — an agent inherits its owner's *entire* data-package stack
+  (required ∪ subscribed), not some agent-specific subset. Table-level
+  narrowing still applies on top via the `TABLE` intersection, so this is
+  bounded, but it means `tables_mode='selected'` is the only real table-axis
+  lever today.
+- **The Store-install filter is correct but barely exercised on the live
+  path.** `agent_scope_filter`'s Store-install half
+  (`plugins_mode`/`'plugin'`) is unit-tested (`tests/test_agent_scope_mcp.py`,
+  `tests/test_agent_scope_seams.py`) but sees little real traffic today:
+  `bootstrap_marketplace` (the flag that seeds a sandbox's marketplace
+  registration) is off by default, and even when on, a spawned sandbox
+  generally cannot reach `/marketplace.git/*` directly (network egress is
+  broker-mediated). Correctness is proven at the unit level; end-to-end
+  live-path coverage for this specific axis is a follow-up, not a blocker —
+  the seam that matters most (tables, via `/api/query`) has the full E2E
+  proof in `tests/test_agent_scope_e2e.py`.
+
+**Bug found and fixed while building the Task 6 E2E proof (not a scope
+gap, a pre-existing crash):** `app/api/query.py`'s non-internal query path
+called `user.get(...)` unconditionally in several audit-log / BQ-quota-key
+/ BQ-path-admin-check spots, and `src/audit_helpers.py::client_kind_from_user`
+did the same. Neither had ever been exercised by a *successful* (200,
+non-internal-table) request under a restricted principal (`SessionPrincipal`
+or `AgentPrincipal`) before this suite — co-session tests only covered the
+`/api/data/*/check-access` and denied-request paths, and no agent-session
+request existed until V1d. The result: a properly-scoped agent (or a
+co-session) could reach an in-scope local table and still get a crash
+(`400 Query error: 'AgentPrincipal' object has no attribute 'get'`) instead
+of its rows. Fixed via a principal-aware `_identity_for_audit` helper in
+`app/api/query.py` (used only for audit/bookkeeping identity, never for an
+authorization decision) plus a `PRINCIPAL_TYPES` guard on the one
+authorization-relevant call site (`_bq_guardrail_inputs`'s `is_admin` check,
+which must stay `False` for any principal — resolving it via the owner's id
+would have reintroduced admin inheritance). The identical `user.get(...)`
+pattern still exists, unfixed, in `app/api/v2_scan.py`, `v2_sample.py`,
+`v2_schema.py`, and `app/api/data.py`'s audit-log calls — same latent crash
+class for a co-session/agent-session hitting those endpoints on a real
+table, out of scope for this PR (touches four more files, no security
+impact — denies still deny correctly, only successful-request audit
+logging crashes). Worth a follow-up sweep.
