@@ -1704,6 +1704,8 @@ function _renderPreviewToolError(result) {
   p.className = "cloud-chat-preview-error";
   p.textContent = _previewErrorMessage(result);
   (bodyEl || article).appendChild(p);
+  $("chat-messages").appendChild(article);
+  maybeScrollToBottom();
 }
 
 /** Replace the placeholder spinner with an error message when a preview tool
