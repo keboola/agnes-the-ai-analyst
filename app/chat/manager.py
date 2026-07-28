@@ -635,6 +635,20 @@ class ChatManager:
         When on_detach='pause', ACTIVE sessions are paused so they survive the
         restart (sandboxes preserve memory + running processes). When
         on_detach='kill' (or pause fails), the session is killed as before.
+
+        Drain notice (robustness parity): a session whose turn is IN FLIGHT
+        when the server goes down and is about to be KILLED would otherwise
+        show the answer simply stop mid-generation with no explanation — the
+        frontend keeps the composer wedged in the "running" state (it only
+        clears on done/error/cancelled). Such sessions get a user-facing
+        notice frame plus a ``done`` so the client can prompt a resend
+        against the replacement process. The notice is deliberately NOT sent
+        on the successful-pause path: pause snapshots the sandbox with the
+        turn still running, so on reconnect ``_resume_live`` restarts the
+        pump tasks and the in-flight turn finishes and delivers its frames —
+        telling the user to resend there would be wrong and invite a
+        duplicate turn. Best-effort and per-session isolated; a broadcast
+        failure never blocks the rest of the drain.
         """
         chat_ids = list(self._live.keys())
         for chat_id in chat_ids:
@@ -647,6 +661,19 @@ class ChatManager:
                     continue
                 except Exception:
                     logger.exception("shutdown pause failed for %s — killing instead", chat_id)
+            if live.turn_in_flight:
+                try:
+                    await self._broadcast(
+                        live,
+                        {
+                            "type": "error",
+                            "kind": "server_restarting",
+                            "message": "The chat server is restarting — please resend your last message.",
+                        },
+                    )
+                    await self._broadcast(live, {"type": "done"})
+                except Exception:
+                    logger.exception("shutdown drain notice failed for %s", chat_id)
             try:
                 await self.kill(chat_id, reason="server_shutdown")
             except Exception:
