@@ -1190,3 +1190,77 @@ def test_anthropic_sse_upstream_closed_even_when_stream_breaks(broker_app, monke
     asyncio.run(_run())
     assert calls.get("resp_closed") is True, "upstream response must close when the stream breaks"
     assert calls.get("client_closed") is True, "per-request client must close when the stream breaks"
+
+
+def test_anthropic_sse_stream_records_agent_usage(broker_app, broker_agent_session, monkeypatch):
+    """Streaming counterpart of the buffered happy-path usage test: a 2xx
+    ``text/event-stream`` completion for an agent-attributed session must
+    land in the llm_usage ledger once the stream drains — the buffered
+    recording branch never runs for SSE, so the passthrough iterator's
+    finally-block mirror does the recording (Devin review: budgets never
+    fired for ordinary streamed turns)."""
+    import app.api.broker as broker_mod
+    from app.api.broker_agent_policy import usage_accumulator
+    from src.repositories import llm_usage_repo
+
+    ctx = broker_agent_session(model="claude-opus-4-7", token_budget_monthly=100_000)
+
+    real_cls = httpx.AsyncClient
+
+    class _SSEUsageClient(_StreamShimMixin):
+        def __init__(self, *a, **k):
+            self._real = real_cls(*a, **k) if "transport" in k else None
+
+        async def __aenter__(self):
+            return await self._real.__aenter__() if self._real else self
+
+        async def __aexit__(self, *a):
+            return await self._real.__aexit__(*a) if self._real else False
+
+        async def send(self, req, stream=False):
+            class _R:
+                status_code = 200
+                headers = {"content-type": "text/event-stream"}
+
+                async def aiter_bytes(self):
+                    yield (
+                        b'event: message_start\n'
+                        b'data: {"type":"message_start","message":{"model":"claude-opus-4-7",'
+                        b'"usage":{"input_tokens":11,"output_tokens":0}}}\n\n'
+                    )
+                    yield b'event: content_block_delta\ndata: {"type":"content_block_delta"}\n\n'
+                    yield (
+                        b'event: message_delta\n'
+                        b'data: {"type":"message_delta","usage":{"output_tokens":7}}\n\n'
+                    )
+
+                async def aclose(self):
+                    pass
+
+            return _R()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _SSEUsageClient)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {ctx['tok']}"},
+                json={"model": "claude-opus-4-7", "messages": [], "stream": True},
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert b"message_delta" in r.content
+
+    usage_accumulator.flush()
+    rows = llm_usage_repo().list_for_agent(ctx["agent_id"])
+    assert len(rows) == 1
+    assert rows[0]["input_tokens"] == 11
+    assert rows[0]["output_tokens"] == 7

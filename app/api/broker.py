@@ -49,6 +49,11 @@ from src.repositories import agents_repo, audit_repo, chat_session_repo, ticket_
 
 logger = logging.getLogger(__name__)
 
+#: Cap on the SSE bytes mirrored for streaming usage recording — a
+#: completion body far past this is pathological; usage recording is then
+#: skipped (logged) rather than holding unbounded memory per request.
+_SSE_USAGE_COLLECT_MAX_BYTES = 8 * 1024 * 1024
+
 router = APIRouter(prefix="/api/broker", tags=["broker"])
 
 # Admin mutations are never brokered — the broker replays only the
@@ -638,13 +643,57 @@ async def anthropic_proxy(request: Request, row: Dict[str, Any] = Depends(requir
         # (routine for completions running tens of seconds) would leak the
         # upstream response + per-request client — the finalized/abandoned
         # generator still runs its ``finally`` (RBAC review on #1020).
+        #
+        # Usage recording (streaming path): the buffered recording below
+        # never runs for a 2xx SSE stream, so a mirror of it lives in the
+        # iterator's ``finally`` — the passthrough bytes are collected
+        # (capped, skip-on-overflow) and parsed once the stream ends.
+        # Without this, ordinary streamed turns never reach the llm_usage
+        # ledger and per-agent monthly budgets never fire. Running in
+        # ``finally`` also catches a client disconnect mid-stream: the
+        # partial body still carries ``message_start``'s input tokens.
+        collect_usage = agent_row is not None and resp.status_code == 200
+        collected = bytearray()
+        state = {"overflow": False}
+
         async def _passthrough():
             try:
                 async for chunk in resp.aiter_bytes():
+                    if collect_usage and not state["overflow"]:
+                        if len(collected) + len(chunk) <= _SSE_USAGE_COLLECT_MAX_BYTES:
+                            collected.extend(chunk)
+                        else:
+                            state["overflow"] = True
                     yield chunk
             finally:
                 await resp.aclose()
                 await client.aclose()
+                if collect_usage:
+                    try:
+                        if state["overflow"]:
+                            logger.warning(
+                                "SSE usage recording skipped for agent %s: stream exceeded %d bytes",
+                                agent_row.get("id"),
+                                _SSE_USAGE_COLLECT_MAX_BYTES,
+                            )
+                        else:
+                            usage = parse_usage(bytes(collected), ctype)
+                            if usage:
+                                usage_accumulator.add(
+                                    {
+                                        **usage,
+                                        "id": str(uuid.uuid4()),
+                                        "agent_id": agent_row["id"],
+                                        "user_id": agent_row.get("owner_user_id"),
+                                        "session_id": row.get("session_id"),
+                                    },
+                                    budget_ttl_s=budget_ttl_s,
+                                )
+                    except Exception:
+                        logger.exception(
+                            "llm usage recording failed for agent %s (stream already forwarded)",
+                            agent_row.get("id"),
+                        )
 
         return StreamingResponse(
             _passthrough(),
