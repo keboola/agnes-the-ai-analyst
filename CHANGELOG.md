@@ -14,8 +14,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-- Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
-
 ### Fixed
 
 ### Removed
@@ -24,19 +22,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.4] - 2026-07-28
-
-### Added
-
-- **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
-  with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
-  carrying a bare `*` (implicit `SELECT *`), now prints an advisory stderr
-  warning before proceeding — making the `CLAUDE.md` query rails mechanical at
-  the point the fetch is issued. WARN-only: it never blocks the fetch, and the
-  `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
-  Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
-
-## [0.77.3] - 2026-07-28
+## [0.77.5] - 2026-07-28
 
 ### Added
 
@@ -44,6 +30,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (web/cli/scheduler/system/…) so every consumer classifies rows by one rule.
 
 ### Changed
+
+- Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
 
 ### Fixed
 
@@ -57,11 +45,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   stale hardcoded action list — scheduler traffic no longer floods the
   "other" bucket in the Activity Center source facet.
 
-### Removed
+## [0.77.4] - 2026-07-28
 
-### Internal
+### Added
 
-### Security
+- **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
+  with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
+  carrying a bare `*` (implicit `SELECT *`), now prints an advisory stderr
+  warning before proceeding — making the `CLAUDE.md` query rails mechanical at
+  the point the fetch is issued. WARN-only: it never blocks the fetch, and the
+  `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
+  Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
 
 ## [0.77.3] - 2026-07-28
 
