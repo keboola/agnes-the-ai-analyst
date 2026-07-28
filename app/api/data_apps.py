@@ -28,6 +28,9 @@ Task 7 for the full design rationale):
   - ``PUT    /api/data-apps/{slug}/secrets``  — encrypt + store secrets
   - ``GET    /api/data-apps/{slug}/logs``     — runner logs (owner/Admin)
   - ``GET    /api/data-apps/{slug}/readiness``— any RBAC-passing caller
+  - ``POST   /api/data-apps/{slug}/preview-grant`` — mint a short-TTL
+    ``data-app-preview:<slug>`` cookie for the in-chat preview iframe (wave
+    3C, spec §7); any RBAC-passing caller (view access is enough)
   - ``POST   /api/data-apps/reap-idle``       — admin-only idle sweep
 
 RBAC: owner of the app, Admin (god-mode), or a group holding a
@@ -62,6 +65,7 @@ from sqlalchemy import exc as sa_exc
 from app.auth.access import can_access, is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.jwt import create_access_token
+from app.auth.pat_resolver import DATA_APP_PREVIEW_SCOPE_PREFIX
 from app.instance_config import feature_enabled, get_data_apps_config, get_public_url
 from app.resource_types import ResourceType
 from app.secrets_vault import VaultKeyNotConfiguredError, decrypt_secret, encrypt_secret
@@ -467,6 +471,88 @@ def _mint_git_credential(row: dict) -> str:
     return f"{base.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
 
 
+# Cookie carrying a `data-app-preview:<slug>` token — see `_mint_preview_token`.
+# One name reused across every app: `Path=/apps/<slug>/` (set per-mint) keeps
+# two different apps' cookies from ever colliding in the browser jar, since
+# their paths never overlap.
+_PREVIEW_COOKIE_NAME = "adp_preview"
+
+# Q4 (spec §7/§11): 30-minute default TTL, renewed on every
+# `agnes_data_app_preview` call, hard-capped by SessionEnd's best-effort
+# revoke (`revoke_preview_tokens_for_user`, called from `app/chat/manager.py`).
+_PREVIEW_TOKEN_TTL_S = 1800
+
+
+def _mint_preview_token(row: dict, *, ttl_s: int = _PREVIEW_TOKEN_TTL_S) -> tuple[str, str]:
+    """Mint a short-TTL `data-app-preview:<slug>` scoped token for this app's
+    owner and return `(jwt, set_cookie_header)`.
+
+    Migration-free by design (Q4): reuses the existing `access_tokens` table
+    (`scopes`/`expires_at` already exist) rather than adding TTL state to the
+    durable `resource_grants` model. Mirrors `_mint_git_credential` almost
+    exactly — same mint-then-persist shape, same JWT `exp` / DB `expires_at`
+    pairing so neither outlives the other — except the credential here is a
+    view-only capability accepted ONLY by the ingress proxy's serving path
+    (`app/api/data_apps_proxy.py`), never the JSON control-plane API (see
+    `DATA_APP_PREVIEW_SCOPE_PREFIX`'s fail-closed default in
+    `app.auth.pat_resolver.resolve_token_to_user`).
+
+    The cookie is delivered to the browser, never a URL query parameter (an
+    iframe `src`'s history/referrer would leak it) — `Path=/apps/<slug>/`
+    scopes it to exactly the app it authorizes; `HttpOnly` keeps it out of
+    the hosted app's own (less-trusted) JS; `SameSite=Lax` is enough since
+    the iframe navigation that sends it is a plain top-level-adjacent GET,
+    not a cross-site POST.
+    """
+    owner = users_repo().get_by_id(row["owner_user_id"])
+    if not owner:
+        raise OwnerNotFoundError(row["owner_user_id"])
+    slug = row["slug"]
+    token_id = str(uuid.uuid4())
+    ttl = timedelta(seconds=ttl_s)
+    expires_at = datetime.now(timezone.utc) + ttl
+    jwt_token = create_access_token(
+        user_id=owner["id"],
+        email=owner["email"],
+        token_id=token_id,
+        typ="pat",
+        expires_delta=ttl,
+        extra_claims={"scope": f"{DATA_APP_PREVIEW_SCOPE_PREFIX}{slug}"},
+    )
+    access_token_repo().create(
+        id=token_id,
+        user_id=owner["id"],
+        name=f"{DATA_APP_PREVIEW_SCOPE_PREFIX}{slug}",
+        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+        prefix=token_id.replace("-", "")[:8],
+        expires_at=expires_at,
+    )
+    cookie = f"{_PREVIEW_COOKIE_NAME}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/apps/{slug}/; SameSite=Lax; HttpOnly"
+    return jwt_token, cookie
+
+
+def revoke_preview_tokens_for_user(user_id: str) -> None:
+    """Best-effort revoke of every live `data-app-preview:*` token belonging
+    to ``user_id`` — the SessionEnd hard cap alongside
+    ``ticket_repo().revoke_session`` (Q4). The 30-minute ``expires_at`` is
+    the real backstop (this only tightens the window a chat session's
+    preview grants stay usable after the session ends); a failure here must
+    never block the caller's own teardown, so every exception is swallowed.
+
+    Reuses ``access_token_repo().list_for_user`` + ``.revoke`` — both
+    already dual-backend (DuckDB/Postgres) via the repo factory — so no new
+    repository method is needed for this task.
+    """
+    try:
+        repo = access_token_repo()
+        for tok in repo.list_for_user(user_id, include_revoked=False):
+            if (tok.get("name") or "").startswith(DATA_APP_PREVIEW_SCOPE_PREFIX):
+                with contextlib.suppress(Exception):
+                    repo.revoke(tok["id"])
+    except Exception:
+        logger.warning("revoke_preview_tokens_for_user: best-effort revoke failed for user %s", user_id)
+
+
 def _handle_runner_failure(repo, app_id: str, exc: Exception) -> None:
     detail = getattr(exc, "detail", None) or str(exc)
     repo.set_state(app_id, "error", str(detail))
@@ -825,6 +911,37 @@ async def mint_git_credential(
         raise HTTPException(status_code=500, detail="owner_not_found")
     _audit(conn, user["id"], "data_app.git_credential", f"data_app:{slug}", {})
     return {"git_clone_url": url}
+
+
+@router.post("/{slug}/preview-grant")
+async def create_preview_grant(
+    slug: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Mint a short-TTL `data-app-preview:<slug>` cookie for the in-chat
+    preview iframe (wave 3C, spec §7 / Q4).
+
+    Chat-surface-internal: this is what `agnes_data_app_preview`'s live-URL
+    call hits server-side to hand the iframe a same-origin cookie so it can
+    load `/apps/<slug>/` without a cross-origin login. Any caller who can
+    already *view* the app (owner, Admin, or a group grant — same predicate
+    as `GET /{slug}`) may request one; unlike `git-credential`, this is not
+    owner/Admin-only, since a granted viewer previewing a draft is a normal
+    part of the review loop. No REST/CLI analogue is expected — see
+    `_EXEMPT` in `tests/test_documentation_api_triple_surface.py`.
+    """
+    _feature_gate()
+    row = _get_row_or_404(slug)
+    if not _can_view(user, row):
+        raise HTTPException(status_code=403, detail="forbidden")
+    try:
+        _token, cookie = _mint_preview_token(row)
+    except OwnerNotFoundError:
+        raise HTTPException(status_code=500, detail="owner_not_found")
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
+    _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
+    return {"preview_cookie": cookie, "expires_at": expires_at.isoformat()}
 
 
 @router.post("/{slug}/drafts", status_code=201)
