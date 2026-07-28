@@ -627,7 +627,15 @@ function handleFrame(frame) {
       // suppressed, so renderToolCallEnd has no card to finish. Surface it in
       // the pane instead.
       if (_isPreviewTool(frame.tool)) {
-        _previewPaneError(frame.result);
+        // A pane is open (preview/refresh/close) — surface the error there.
+        // The credentials tool opens no pane, so route its error to an inline
+        // message instead, or the user (whose start card was suppressed) sees
+        // nothing at all.
+        if (previewPaneEl) {
+          _previewPaneError(frame.result);
+        } else {
+          _renderPreviewToolError(frame.result);
+        }
         break;
       }
       renderToolCallEnd(frame);
@@ -1677,6 +1685,27 @@ async function _installPreviewCookie(slug) {
   }
 }
 
+/** Extract a human message from a preview tool's non-directive result (the
+ *  friendly `data_apps_disabled` payload, or a raised error). */
+function _previewErrorMessage(result) {
+  if (result && typeof result === "object") {
+    return result.message || (result.error ? String(result.error) : "Preview unavailable.");
+  }
+  return "Preview unavailable.";
+}
+
+/** Render a preview tool's error inline as a small assistant message — used when
+ *  no preview pane is open (the credentials tool opens none), so a disabled /
+ *  failed result isn't silently dropped after its start card was suppressed. */
+function _renderPreviewToolError(result) {
+  const article = createMessageShell({ role: "assistant" });
+  const bodyEl = article.querySelector(".msg-body");
+  const p = document.createElement("p");
+  p.className = "cloud-chat-preview-error";
+  p.textContent = _previewErrorMessage(result);
+  (bodyEl || article).appendChild(p);
+}
+
 /** Replace the placeholder spinner with an error message when a preview tool
  *  fails or the feature is disabled — so the pane never spins indefinitely.
  *  No-op if no pane is open. */
@@ -1684,14 +1713,10 @@ function _previewPaneError(result) {
   if (!previewPaneEl) return;
   const placeholder = previewPaneEl.querySelector(".cloud-chat-preview-placeholder");
   if (!placeholder) return;
-  let msg = "Preview unavailable.";
-  if (result && typeof result === "object") {
-    msg = result.message || (result.error ? String(result.error) : msg);
-  }
   placeholder.innerHTML = "";
   const p = document.createElement("p");
   p.className = "cloud-chat-preview-error";
-  p.textContent = msg;
+  p.textContent = _previewErrorMessage(result);
   placeholder.appendChild(p);
   placeholder.hidden = false;
   if (previewIframeEl) previewIframeEl.hidden = true;
