@@ -1287,10 +1287,10 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
     resolver = StackResolver(conn)
-    stack_subject = user if isinstance(user, SessionPrincipal) else user["id"]
+    stack_subject = user if isinstance(user, PRINCIPAL_TYPES) else user["id"]
     pkg_entries = resolver.stack(stack_subject, ResourceType.DATA_PACKAGE)
     if not pkg_entries:
         return [], set()
@@ -1441,10 +1441,10 @@ def _build_memory_domains_section(conn, user) -> list:
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
     resolver = StackResolver(conn)
-    stack_subject = user if isinstance(user, SessionPrincipal) else user["id"]
+    stack_subject = user if isinstance(user, PRINCIPAL_TYPES) else user["id"]
     dom_entries = resolver.stack(stack_subject, ResourceType.MEMORY_DOMAIN)
     if not dom_entries:
         return []
@@ -1685,9 +1685,13 @@ def sync_manifest(
     a browser session) also count; cheap and accurate enough for a
     homepage card.
     """
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if not isinstance(user, SessionPrincipal):
+    # ``last_pull_at`` / the audit row belong to a HUMAN pull. A restricted
+    # principal (co-session or agent-session sandbox) has no user row to
+    # stamp — and an agent pulling on its own schedule must not masquerade
+    # as its owner in the /home "last pulled" card.
+    if not isinstance(user, PRINCIPAL_TYPES):
         try:
             users_repo().update(user["id"], last_pull_at=datetime.now(timezone.utc))
             # Also emit an audit_log row so /me/stats Sync activity has a
@@ -2042,9 +2046,9 @@ def update_sync_settings(
     user_sync_settings layer is per-user preference, not authorization —
     the gate stops users from enabling sync on tables they cannot read.
     """
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(403, "co_session cannot mutate user settings")
     from app.auth.access import can_access
     from app.resource_types import ResourceType
@@ -2092,9 +2096,9 @@ def update_table_subscriptions(
     to when the user holds a resource_grants row for it (or is Admin). This
     prevents an authenticated user from subscribing to tables they cannot read.
     """
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(403, "co_session cannot mutate user settings")
     from app.auth.access import can_access
     from app.resource_types import ResourceType

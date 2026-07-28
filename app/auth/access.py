@@ -37,7 +37,7 @@ import duckdb
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.dependencies import _get_db, get_current_user
-from app.auth.session_principal import SessionPrincipal
+from app.auth.session_principal import PRINCIPAL_TYPES, Principal
 from app.resource_types import ResourceType
 from src.db import SYSTEM_ADMIN_GROUP
 
@@ -281,13 +281,16 @@ def has_explicit_grant(
 
 
 def can_access_session(
-    principal: "SessionPrincipal",
+    principal: "Principal",
     resource_type: str,
     resource_id: str,
 ) -> bool:
-    """Co-session access: membership in the live intersection. Must NOT call
-    is_user_admin / can_access (PR checklist item) — the SessionPrincipal's
-    ``intersection`` was already built without the admin short-circuit."""
+    """Restricted-principal access: membership in the live intersection.
+
+    Must NOT call is_user_admin / can_access (PR checklist item) — both a
+    ``SessionPrincipal``'s and an ``AgentPrincipal``'s ``intersection`` were
+    already built without the admin short-circuit, so consulting either here
+    would re-introduce god-mode through the back door."""
     return resource_id in principal.intersection.get(resource_type, frozenset())
 
 
@@ -307,14 +310,18 @@ def require_admin(
     convention as before — endpoints write ``Depends(require_admin)`` (no
     parens) and receive the user dict.
 
-    A ``SessionPrincipal`` (co-session runner token) is HARD-DENIED before
-    any ``is_user_admin`` check — co-sessions never hold admin authority.
+    Any restricted principal (``SessionPrincipal`` co-session runner token,
+    ``AgentPrincipal`` agent-session sandbox token) is HARD-DENIED before any
+    ``is_user_admin`` check. This ordering is load-bearing: an
+    ``AgentPrincipal`` carries its owner's user id, so a lookup that ran
+    first would return True for an admin-owned agent and hand the sandbox
+    god-mode. An agent is a *restriction* of its owner, never an elevation.
 
     Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
     thread pool — the body is a sync ``is_user_admin`` RBAC read that must
     not run on the event loop (Tier 1, PR #188).
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
@@ -367,7 +374,10 @@ def require_resource_access(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=(f"require_resource_access: path_template {path_template!r} references missing path_param {e}"),
             )
-        if isinstance(user, SessionPrincipal):
+        if isinstance(user, PRINCIPAL_TYPES):
+            # Restricted principal (co-session or agent-session): the live
+            # intersection is the sole authority — no admin short-circuit,
+            # no owner-group resolution, and no ``user["id"]`` to subscript.
             allowed = can_access_session(user, resource_type.value, resource_id)
         else:
             allowed = can_access(user["id"], resource_type.value, resource_id, conn)

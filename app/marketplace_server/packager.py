@@ -98,6 +98,23 @@ def _merged_manifest(plugins: List[dict], etag: str) -> Dict[str, Any]:
     }
 
 
+def _diag_identity(user) -> Tuple[Any, Any]:
+    """``(user_id, email)`` for the diagnostic ``.agnes/version.json`` /
+    ``/marketplace/info`` payloads.
+
+    A restricted principal (co-session or agent-session token) is a frozen
+    dataclass with no ``.get`` — and no single user identity to report. An
+    ``AgentPrincipal`` reports its owner (the sandbox legitimately runs on
+    the owner's behalf); a ``SessionPrincipal`` reports neither, since a
+    co-session has several participants and naming one would be misleading.
+    """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        return getattr(user, "owner_user_id", None), getattr(user, "owner_email", None)
+    return user.get("id"), user.get("email")
+
+
 def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
     """Return a JSON-serializable summary for diagnostic / admin endpoints.
 
@@ -119,9 +136,10 @@ def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
             "source": p.get("source", "marketplace"),
         }
 
+    diag_user_id, diag_email = _diag_identity(user)
     return {
-        "user_id": user.get("id"),
-        "email": user.get("email"),
+        "user_id": diag_user_id,
+        "email": diag_email,
         "groups": marketplace_filter.resolve_user_groups(conn, user),
         "marketplace_name": MARKETPLACE_NAME,
         "etag": etag,
@@ -314,9 +332,10 @@ def build_zip(
 
     members = _collect_members(plugins, etag)
 
+    diag_user_id, diag_email = _diag_identity(user)
     version_payload = {
-        "user_id": user.get("id"),
-        "email": user.get("email"),
+        "user_id": diag_user_id,
+        "email": diag_email,
         "groups": marketplace_filter.resolve_user_groups(conn, user),
         "marketplace_name": MARKETPLACE_NAME,
         "etag": etag,
