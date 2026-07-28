@@ -336,15 +336,11 @@
     const d = await get(buildTimelineUrl(append ? nextCursor : null));
     const rows = d.rows || [];
 
-    // Client-side source classification + sort.
-    rows.forEach(r => { r._source = classifySource(r); });
-
-    // result filter: 'error%' or 'success' — already done server-side via
-    // result_pattern, but 'error%' is a LIKE wildcard; trust the server.
-    // source filter is client-side because the API doesn't know about
-    // our union rule yet.
+    // result filter is applied server-side via result_pattern. The source
+    // filter still trims the loaded page client-side; rows carry a
+    // server-computed `source` so the rule matches the facet counts.
     let filtered = rows;
-    if (state.source) filtered = filtered.filter(r => r._source === state.source);
+    if (state.source) filtered = filtered.filter(r => r.source === state.source);
     if (state.action_prefix && fAct.value && !state.action_prefix.endsWith('%')) {
       // exact-match dropdown selection: prefer ==
       filtered = filtered.filter(r => (r.action || '').startsWith(state.action_prefix));
@@ -356,7 +352,7 @@
     const [sortKey, sortDir] = (state.sort || 'timestamp:desc').split(':');
     const keyFor = r => {
       if (sortKey === 'user')   return (r.user_email || r.user_name || r.user_id || '').toLowerCase();
-      if (sortKey === 'source') return (r._source || '').toLowerCase();
+      if (sortKey === 'source') return (r.source || '').toLowerCase();
       const v = r[sortKey];
       return (typeof v === 'string') ? v.toLowerCase() : v;
     };
@@ -384,14 +380,6 @@
     nextCursor = d.next_cursor;
     more.hidden = !nextCursor;
     rowCount.textContent = tbody.children.length + ' rows shown' + (nextCursor ? ' (more available)' : '');
-  }
-
-  function classifySource(r) {
-    if (r.client_kind) return r.client_kind;
-    const SCHED = ['run_session_collector','run_verification_detector','run_corporate_memory','marketplace.sync_all'];
-    if (SCHED.indexOf(r.action) !== -1) return 'scheduler';
-    if (!r.user_id) return 'system';
-    return 'other';
   }
 
   function renderRow(r) {
@@ -422,7 +410,7 @@
     }
     tr.appendChild(td('', userHtml));
 
-    const src = r._source || 'other';
+    const src = r.source || 'other';
     tr.appendChild(td('', '<span class="obs-source-pill is-' + src + '">' + escapeHtml(src) + '</span>'));
 
     tr.appendChild(td('obs-action-cell', escapeHtml(r.action || '')));
@@ -476,7 +464,7 @@
     panelMeta.innerHTML = [
       meta('When',    formatTime(r.timestamp)),
       meta('User',    r.user_id || '—'),
-      meta('Source',  r._source || '—'),
+      meta('Source',  r.source || '—'),
       meta('Resource', r.resource || '—'),
       meta('Duration', r.duration_ms != null ? r.duration_ms + ' ms' : '—'),
       meta('Result',   r.result || '—'),
