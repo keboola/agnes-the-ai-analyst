@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 104
+SCHEMA_VERSION = 105
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1183,6 +1183,10 @@ CREATE TABLE IF NOT EXISTS usage_session_summary (
     primary_model       VARCHAR,
     processor_version   INTEGER NOT NULL,
     extracted_at        TIMESTAMP DEFAULT current_timestamp,
+    -- v105: first-ingest arrival stamp; the sessions browser windows on
+    -- this (anchor=uploaded) so late-uploaded sessions stay visible.
+    -- NO secondary index — see the v95 ART-index incident note above.
+    uploaded_at         TIMESTAMP,
     -- v44: per-session token counters summed from JSONL message.usage.*.
     -- BIGINT because cache tokens routinely exceed INT range over long
     -- sessions. Default 0 so existing rows backfill cleanly; the
@@ -6844,6 +6848,39 @@ def _v103_to_v104(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 104")
 
 
+def _v104_to_v105(conn: duckdb.DuckDBPyConnection) -> None:
+    """v104→v105: ``usage_session_summary.uploaded_at`` — arrival anchor.
+
+    Backfill: newest ``session.upload`` audit row whose params filename
+    matches the summary's ``session_file`` basename (join on the FILE name,
+    never on session_id — resumed/forked sessions carry a different
+    content-derived id). Falls back to ``started_at``. No secondary index
+    (v95 ART incident)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('usage_session_summary')").fetchall()}
+    if "uploaded_at" not in cols:
+        conn.execute("ALTER TABLE usage_session_summary ADD COLUMN uploaded_at TIMESTAMP")
+    audit_cols = {r[1] for r in conn.execute("PRAGMA table_info('audit_log')").fetchall()}
+    if "params" in audit_cols:
+        conn.execute(
+            """
+            UPDATE usage_session_summary SET uploaded_at = (
+                SELECT max(a.timestamp) FROM audit_log a
+                WHERE a.action = 'session.upload'
+                  AND CAST(a.params AS VARCHAR) LIKE
+                      '%' || substr(
+                          usage_session_summary.session_file,
+                          position('/' in usage_session_summary.session_file) + 1
+                      ) || '%'
+            ) WHERE uploaded_at IS NULL
+            """
+        )
+    conn.execute(
+        "UPDATE usage_session_summary SET uploaded_at = "
+        "COALESCE(uploaded_at, started_at, CURRENT_TIMESTAMP)"
+    )
+    conn.execute("UPDATE schema_version SET version = 105")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -7269,6 +7306,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v103→v104: audit_log identity backfill — no-op on a fresh
             # install (empty audit_log), kept for ladder chronology.
             _v103_to_v104(conn)
+            # v104→v105: usage_session_summary.uploaded_at — declared in
+            # _SYSTEM_SCHEMA on fresh installs; backfill is a no-op.
+            _v104_to_v105(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7530,6 +7570,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v102_to_v103(conn)
             if current < 104:
                 _v103_to_v104(conn)
+            if current < 105:
+                _v104_to_v105(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
