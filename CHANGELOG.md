@@ -12,7 +12,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- **Data Apps: durable enablement via the customer-instance Terraform module.** A new `data_apps_enabled` module variable (off by default; `data_apps_runtime_image` sets the runtime image) brings the feature up on VM boot without hand-editing config: the startup script mints/persists an `APPS_RUNNER_TOKEN`, resolves `DOCKER_GID` from the docker socket, and writes `COMPOSE_PROFILES=apps` + `AGNES_DATA_APPS_ENABLED=true` into the app `.env`. The app honors a Terraform-friendly `AGNES_DATA_APPS_ENABLED` env override (mirrors `AGNES_HOME_ROUTE`/`PUBLIC_URL`) that flips the feature on and backfills the example-config `data_apps:` defaults, so no instance.yaml edit is needed. Disabled instances render byte-identically.
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.37] - 2026-07-28
+
+### Added
+
+- **Data Apps: durable enablement via the customer-instance Terraform module.** A new `data_apps_enabled` module variable (off by default; `data_apps_runtime_image` sets the runtime image) brings the feature up on VM boot without hand-editing config: the startup script mints/persists an `APPS_RUNNER_TOKEN`, resolves `DOCKER_GID` from the docker socket, writes `AGNES_DATA_APPS_ENABLED=true` (plus the runner token/prefix/gid) into the app `.env`, and enables the `apps` compose profile via a `--profile apps` command-line flag in both the startup script and `agnes-auto-upgrade.sh` (not `COMPOSE_PROFILES` in `.env` — docker compose ignores that env var whenever any `--profile` flag such as `--profile tls` is present). The app honors a Terraform-friendly `AGNES_DATA_APPS_ENABLED` env override (mirrors `AGNES_HOME_ROUTE`/`PUBLIC_URL`) that flips the feature on and backfills the example-config `data_apps:` defaults, so no instance.yaml edit is needed. Disabled instances render byte-identically.
 
 ### Changed
 
