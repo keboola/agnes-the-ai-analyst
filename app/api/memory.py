@@ -703,17 +703,21 @@ def _get_item_or_404(repo, item_id: str) -> dict:
     return item
 
 
-def _audit_action(conn, admin_email: str, action: str, item_id: str, details: dict = None):
+def _audit_action(conn, admin: dict, action: str, item_id: str, details: dict = None):
     """Write an admin governance audit row.
 
     Action names use the ``corporate_memory.<action>`` namespace as advertised
     in the 0.15.0 CHANGELOG. Pre-#62 the code wrote ``km_<action>`` — the
     audit-tab filter (see ``admin_audit`` below) accepts both prefixes so
     historical rows still surface.
+
+    ``user_id`` records ``users.id`` (email only as a fallback for synthetic
+    callers) so the Activity Center facets don't split one person into an
+    email row and a UUID row.
     """
     audit = audit_repo()
     audit.log(
-        user_id=admin_email,
+        user_id=admin.get("id") or admin.get("email"),
         action=f"corporate_memory.{action}",
         resource=item_id,
         params=details,
@@ -729,7 +733,7 @@ async def admin_approve(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "approved")
-    _audit_action(conn, user["email"], "approve", item_id)
+    _audit_action(conn, user, "approve", item_id)
     return {"id": item_id, "status": "approved"}
 
 
@@ -743,7 +747,7 @@ async def admin_reject(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "rejected")
-    _audit_action(conn, user["email"], "reject", item_id, {"reason": request.reason})
+    _audit_action(conn, user, "reject", item_id, {"reason": request.reason})
     return {"id": item_id, "status": "rejected"}
 
 
@@ -766,7 +770,7 @@ async def admin_mandate(
         repo.update(item_id, audience=request.audience)
     _audit_action(
         conn,
-        user["email"],
+        user,
         "mandate",
         item_id,
         {
@@ -779,7 +783,7 @@ async def admin_mandate(
     # with a boolean payload so audit consumers can stop splitting on path.
     try:
         audit_repo().log(
-            user_id=user["email"],
+            user_id=user["id"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
             params={"new_value": True},
@@ -807,7 +811,7 @@ async def mark_mandatory(
     # committed; an audit hiccup must not surface as a 500.
     try:
         audit_repo().log(
-            user_id=user["email"],
+            user_id=user["id"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
             params={"new_value": True},
@@ -835,7 +839,7 @@ async def mark_unmandatory(
     # Best-effort like the sibling /admin/mandate.
     try:
         audit_repo().log(
-            user_id=user["email"],
+            user_id=user["id"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
             params={"new_value": False},
@@ -855,7 +859,7 @@ async def admin_revoke(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "revoked")
-    _audit_action(conn, user["email"], "revoke", item_id, {"reason": request.reason})
+    _audit_action(conn, user, "revoke", item_id, {"reason": request.reason})
     return {"id": item_id, "status": "revoked"}
 
 
@@ -875,7 +879,7 @@ async def admin_edit(
         updates["content"] = request.content
     if updates:
         repo.update(item_id, **updates)
-    _audit_action(conn, user["email"], "edit", item_id, updates)
+    _audit_action(conn, user, "edit", item_id, updates)
     return {"id": item_id, "updated": list(updates.keys())}
 
 
@@ -915,7 +919,7 @@ async def admin_batch(
             repo.update_status(item_id, status_actions[request.action])
         _audit_action(
             conn,
-            user["email"],
+            user,
             request.action,
             item_id,
             {
@@ -1051,7 +1055,7 @@ async def admin_resolve_contradiction(
     repo.resolve_contradiction(contradiction_id, user["email"], request.resolution)
     _audit_action(
         conn,
-        user["email"],
+        user,
         "resolve_contradiction",
         contradiction_id,
         {
@@ -1149,7 +1153,7 @@ async def admin_resolve_duplicate_candidate(
     a, b = sorted([item_a_id, item_b_id])
     _audit_action(
         conn,
-        user["email"],
+        user,
         "resolve_duplicate",
         f"{a}::{b}",
         {"resolution": request.resolution, "item_a_id": a, "item_b_id": b},
@@ -1260,7 +1264,7 @@ async def admin_patch_item(
         audit_keys.append("domain_ids")
     _audit_action(
         conn,
-        user["email"],
+        user,
         "update_item",
         item_id,
         {"updated_fields": audit_keys},
@@ -1313,7 +1317,7 @@ async def admin_bulk_update(
             updated.append(item_id)
             _audit_action(
                 conn,
-                user["email"],
+                user,
                 "bulk_update",
                 item_id,
                 {"updated_fields": audited_fields, "batch": True},
