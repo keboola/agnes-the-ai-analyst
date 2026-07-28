@@ -1111,3 +1111,32 @@ def test_pg_day_bucketing_is_utc_regardless_of_session_timezone(pg_repo_skewed_t
         )
     telemetry = repo.summary_query_telemetry(cutoff=utc_now - timedelta(days=1))
     assert [f["day"] for f in telemetry["frequency"]] == [utc_day.isoformat()]
+
+
+def test_upsert_summary_uploaded_at_first_arrival_wins(usage_repo):
+    """PR-C contract: uploaded_at stamps at first ingest; re-processing the
+    same session keeps the original arrival stamp (both backends)."""
+    from datetime import datetime, timezone
+
+    repo, _, _ = usage_repo
+    base = {
+        "session_file": "u-9/arr.jsonl",
+        "session_id": "arr",
+        "username": "arr@example.com",
+        "user_id": "u-9",
+        "started_at": datetime.now(timezone.utc),
+    }
+    repo.upsert_summary(dict(base), processor_version=1)
+    rows = repo.sessions_list(
+        {"since": datetime(2000, 1, 1, tzinfo=timezone.utc), "anchor": "uploaded"},
+        sort_col="uploaded_at", direction="desc", limit=10, offset=0,
+    )
+    first = next(r for r in rows if r["session_id"] == "arr")["uploaded_at"]
+    assert first is not None
+    repo.upsert_summary(dict(base), processor_version=2)
+    rows = repo.sessions_list(
+        {"since": datetime(2000, 1, 1, tzinfo=timezone.utc), "anchor": "uploaded"},
+        sort_col="uploaded_at", direction="desc", limit=10, offset=0,
+    )
+    second = next(r for r in rows if r["session_id"] == "arr")["uploaded_at"]
+    assert second == first

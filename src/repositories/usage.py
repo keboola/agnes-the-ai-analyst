@@ -509,7 +509,16 @@ class UsageRepository:
 
     @staticmethod
     def _sessions_where(filters: dict) -> tuple[str, list]:
-        where = ["started_at >= ?"]
+        # anchor: 'started' windows on when the analyst ran the session;
+        # 'uploaded' (browser default) on when it ARRIVED — late queue
+        # catch-ups stay visible in recent windows (spec Phase C).
+        # COALESCE guards rows that predate the v105 backfill.
+        anchor_col = (
+            "COALESCE(uploaded_at, started_at)"
+            if filters.get("anchor") == "uploaded"
+            else "started_at"
+        )
+        where = [f"{anchor_col} >= ?"]
         params: list = [filters["since"]]
         if filters.get("username"):
             where.append("username = ?")
@@ -527,6 +536,7 @@ class UsageRepository:
 
     _SESSION_SORT_KEYS = {
         "started_at": "started_at",
+        "uploaded_at": "uploaded_at",
         "ended_at": "ended_at",
         "tool_calls": "tool_calls",
         "tool_errors": "tool_errors",
@@ -541,6 +551,7 @@ class UsageRepository:
         "username",
         "started_at",
         "ended_at",
+        "uploaded_at",
         "active_seconds",
         "wall_seconds",
         "user_messages",
@@ -1143,8 +1154,8 @@ class UsageRepository:
                  tool_calls, tool_errors, skill_invocations, subagent_dispatches,
                  mcp_calls, slash_commands, distinct_tools, distinct_skills,
                  primary_model, input_tokens, output_tokens, cache_read_tokens,
-                 cache_creation_tokens, processor_version, user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cache_creation_tokens, processor_version, user_id, uploaded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, current_timestamp))
             ON CONFLICT (session_file) DO UPDATE SET
                 session_id = EXCLUDED.session_id,
                 username = EXCLUDED.username,
@@ -1168,6 +1179,9 @@ class UsageRepository:
                 cache_read_tokens = EXCLUDED.cache_read_tokens,
                 cache_creation_tokens = EXCLUDED.cache_creation_tokens,
                 processor_version = EXCLUDED.processor_version,
+                -- first arrival wins: keep the original ingest stamp on
+                -- re-process ticks (anchor semantics, spec Phase C)
+                uploaded_at = COALESCE(usage_session_summary.uploaded_at, EXCLUDED.uploaded_at),
                 user_id = EXCLUDED.user_id
             """,
             [
@@ -1195,6 +1209,7 @@ class UsageRepository:
                 summary.get("cache_creation_tokens", 0),
                 processor_version,
                 summary.get("user_id"),
+                summary.get("uploaded_at"),
             ],
         )
 
