@@ -338,6 +338,9 @@ target-version = "py313"
 # router.py registers Jinja globals and filters between import blocks;
 # the mid-file import json + onboarding import are intentional ordering.
 "app/web/router.py" = ["E402"]
+# authoring_suggestions.py imports the repo factory after its router/env
+# setup block — pre-existing ordering, same pattern as router.py.
+"app/api/authoring_suggestions.py" = ["E402"]
 # Fixture-style spec builder from the apps-runner test brief — a lambda
 # reads better than a def for a one-line dict factory used only in this file.
 "tests/test_apps_runner.py" = ["E731"]
