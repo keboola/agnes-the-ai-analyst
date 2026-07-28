@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.6] - 2026-07-28
+
+### Added
+
 - Activity Center timeline rows carry a server-computed `source`
   (web/cli/scheduler/system/…) so every consumer classifies rows by one rule
   (landed unreleased in #1071; recorded here after a changelog-section
