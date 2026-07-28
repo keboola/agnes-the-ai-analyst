@@ -1,0 +1,230 @@
+"""Canonical feature-flag convention (#1022).
+
+Covers:
+- `feature_enabled()` resolution order: env > get_value() (instance.yaml +
+  admin server-config overlay) > default.
+- Truthy-string parsing shared with the rest of the codebase's boolean
+  config readers ("0"/"false"/"no"/"off"/"" are false; everything else,
+  including unrecognized strings, is true).
+- `FEATURE_FLAGS` registry completeness — every entry resolves cleanly.
+- Behavior preservation for `get_studio_enabled` / `get_guardrails_enabled`
+  after their refactor to delegate to `feature_enabled`.
+- The `feature_flags` inventory block in GET /api/admin/server-config.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+import app.instance_config as ic
+
+# Captured at collection time — tests/conftest.py's autouse
+# `_flea_guardrails_disabled_by_default` fixture monkeypatches
+# `app.instance_config.get_guardrails_enabled` to a `lambda: False` stub for
+# every test (so legacy flea-market tests don't need live LLM credentials).
+# That per-test patch runs *after* this module is imported, so this
+# reference still points at the real implementation regardless of the stub.
+_real_get_guardrails_enabled = ic.get_guardrails_enabled
+
+
+def _auth(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+# --- feature_enabled() resolution order --------------------------------------
+
+
+class TestFeatureEnabledResolutionOrder:
+    def test_default_when_nothing_set(self, monkeypatch):
+        monkeypatch.delenv("AGNES_TEST_FLAG", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=False) is False
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=True) is True
+
+    def test_yaml_wins_over_default(self, monkeypatch):
+        monkeypatch.delenv("AGNES_TEST_FLAG", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: True)
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=False) is True
+
+    def test_env_wins_over_yaml(self, monkeypatch):
+        monkeypatch.setenv("AGNES_TEST_FLAG", "0")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: True)
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=True) is False
+
+    def test_env_wins_over_yaml_the_other_direction(self, monkeypatch):
+        monkeypatch.setenv("AGNES_TEST_FLAG", "1")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=False) is True
+
+    def test_no_env_var_configured_falls_through_to_yaml(self, monkeypatch):
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: True)
+        assert ic.feature_enabled("a", "b", default=False) is True
+
+    @pytest.mark.parametrize("raw", ["0", "false", "False", "no", "off", ""])
+    def test_env_falsy_strings(self, monkeypatch, raw):
+        monkeypatch.setenv("AGNES_TEST_FLAG", raw)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=True) is False
+
+    @pytest.mark.parametrize("raw", ["1", "true", "True", "yes", "on", "anything"])
+    def test_env_truthy_strings(self, monkeypatch, raw):
+        monkeypatch.setenv("AGNES_TEST_FLAG", raw)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=False) is True
+
+    def test_unset_env_var_name_is_ignored(self, monkeypatch):
+        # env_var=None (or omitted) never consults os.environ.
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert ic.feature_enabled("a", "b", default=True) is False
+
+
+# --- FEATURE_FLAGS registry ---------------------------------------------------
+
+
+class TestFeatureFlagsRegistry:
+    def test_registry_covers_expected_flags(self):
+        names = {f.name for f in ic.FEATURE_FLAGS}
+        assert names == {"studio", "guardrails", "chat", "data_apps"}
+
+    def test_every_entry_resolves(self, monkeypatch):
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
+        for flag in ic.FEATURE_FLAGS:
+            monkeypatch.delenv(flag.env_var, raising=False)
+            result = ic.feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
+            assert isinstance(result, bool)
+            assert result == flag.default
+
+    def test_grandfathered_flags_default_on(self):
+        by_name = {f.name: f for f in ic.FEATURE_FLAGS}
+        assert by_name["studio"].default is True
+        assert by_name["guardrails"].default is True
+
+    def test_new_flags_default_off(self):
+        by_name = {f.name: f for f in ic.FEATURE_FLAGS}
+        assert by_name["chat"].default is False
+        assert by_name["data_apps"].default is False
+
+    def test_entries_carry_a_description(self):
+        for flag in ic.FEATURE_FLAGS:
+            assert flag.description
+
+
+# --- Behavior preservation: get_studio_enabled / get_guardrails_enabled ------
+
+
+class TestStudioEnabledBehaviorPreserved:
+    def test_default_true(self, monkeypatch):
+        monkeypatch.delenv("AGNES_STUDIO_ENABLED", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
+        assert ic.get_studio_enabled() is True
+
+    def test_yaml_false(self, monkeypatch):
+        monkeypatch.delenv("AGNES_STUDIO_ENABLED", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert ic.get_studio_enabled() is False
+
+    def test_env_overrides_yaml(self, monkeypatch):
+        monkeypatch.setenv("AGNES_STUDIO_ENABLED", "0")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: True)
+        assert ic.get_studio_enabled() is False
+
+    def test_env_true_string(self, monkeypatch):
+        monkeypatch.setenv("AGNES_STUDIO_ENABLED", "1")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert ic.get_studio_enabled() is True
+
+
+class TestGuardrailsEnabledBehaviorPreserved:
+    def test_default_true(self, monkeypatch):
+        monkeypatch.delenv("AGNES_GUARDRAILS_ENABLED", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
+        assert _real_get_guardrails_enabled() is True
+
+    def test_yaml_false(self, monkeypatch):
+        monkeypatch.delenv("AGNES_GUARDRAILS_ENABLED", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert _real_get_guardrails_enabled() is False
+
+    def test_env_override_is_new_and_additive(self, monkeypatch):
+        monkeypatch.setenv("AGNES_GUARDRAILS_ENABLED", "0")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: True)
+        assert _real_get_guardrails_enabled() is False
+
+
+# --- GET /api/admin/server-config feature_flags block ------------------------
+
+
+class TestServerConfigFeatureFlagsInventory:
+    def test_get_includes_feature_flags_block(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert "feature_flags" in data
+        flags = data["feature_flags"]
+        assert isinstance(flags, list)
+        names = {f["name"] for f in flags}
+        assert names == {"studio", "guardrails", "chat", "data_apps"}
+        for f in flags:
+            assert set(f.keys()) >= {"name", "effective", "source", "default", "env_var", "description"}
+            assert f["source"] in ("env", "config", "default")
+            assert isinstance(f["effective"], bool)
+
+    def test_env_source_reflected(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_STUDIO_ENABLED", "0")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        flags = {f["name"]: f for f in resp.json()["feature_flags"]}
+        assert flags["studio"]["effective"] is False
+        assert flags["studio"]["source"] == "env"
+
+    def test_default_source_when_unset(self, seeded_app, monkeypatch):
+        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        flags = {f["name"]: f for f in resp.json()["feature_flags"]}
+        assert flags["chat"]["effective"] is False
+        assert flags["chat"]["source"] == "default"
+
+    def test_chat_ignores_merged_static_config(self, seeded_app, monkeypatch):
+        # chat's runtime reads ONLY the overlay file (app/main.py loads
+        # load_chat_config(DATA_DIR/state/instance.yaml), never the static
+        # config/instance.yaml base) — so a chat.enabled visible only through
+        # the merged get_value() view must NOT surface as enabled here.
+        from app.api import admin as admin_mod
+
+        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        monkeypatch.setattr(
+            ic,
+            "get_value",
+            lambda *keys, default=None: True if keys == ("chat", "enabled") else default,
+        )
+        inv = {f["name"]: f for f in admin_mod._feature_flags_inventory()}
+        assert inv["chat"]["effective"] is False
+        assert inv["chat"]["source"] == "default"
+
+    def test_chat_reflects_runtime_overlay_file(self, seeded_app, monkeypatch):
+        from app.secrets import _state_dir
+
+        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        overlay = _state_dir() / "instance.yaml"
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text("chat:\n  enabled: true\n")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        flags = {f["name"]: f for f in resp.json()["feature_flags"]}
+        assert flags["chat"]["effective"] is True
+        assert flags["chat"]["source"] == "config"
+
+    def test_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 403

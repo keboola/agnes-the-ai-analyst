@@ -62,7 +62,7 @@ from sqlalchemy import exc as sa_exc
 from app.auth.access import can_access, is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.jwt import create_access_token
-from app.instance_config import get_data_apps_config, get_public_url
+from app.instance_config import feature_enabled, get_data_apps_config, get_public_url
 from app.resource_types import ResourceType
 from app.secrets_vault import VaultKeyNotConfiguredError, decrypt_secret, encrypt_secret
 from src.data_apps.git_repos import fast_forward_live, init_app_repo
@@ -287,7 +287,7 @@ def _audit(
 
 
 def _feature_gate() -> None:
-    if not get_data_apps_config().get("enabled"):
+    if not feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
         raise HTTPException(status_code=404, detail="data_apps_disabled")
 
 

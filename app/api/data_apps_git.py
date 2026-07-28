@@ -37,7 +37,7 @@ from fastapi.responses import StreamingResponse
 from app.auth.access import can_access, is_user_admin
 from app.auth.jwt import verify_token
 from app.auth.pat_resolver import DATA_APP_GIT_SCOPE_PREFIX, resolve_token_to_user
-from app.instance_config import get_data_apps_config
+from app.instance_config import feature_enabled
 from app.marketplace_server.git_router import (
     _build_cgi_env,
     _run_git_http_backend,
@@ -102,7 +102,7 @@ def _is_push_request(request: Request, path: str) -> bool:
 
 
 async def _data_apps_git(slug: str, path: str, request: Request):
-    if not get_data_apps_config().get("enabled"):
+    if not feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
         return _disabled()
 
     token = token_from_basic_auth(request.headers.get("authorization"))

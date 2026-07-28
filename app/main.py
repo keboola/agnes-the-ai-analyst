@@ -1211,7 +1211,14 @@ async def lifespan(app):
         app.state.chat_repo = ChatRepository(_chat_conn)
         app.state.chat_data_dir = _chat_data_dir
 
-        _chat_instance_yaml = _chat_data_dir / "state" / "instance.yaml"
+        # Overlay location must honor STATE_DIR: the admin overlay WRITER
+        # (app/api/admin.py) and load_instance_config both resolve via
+        # app.secrets._state_dir(), so a flat-mount deployment (STATE_DIR
+        # outside DATA_DIR/state) would otherwise toggle chat in a file this
+        # bootstrap never reads (Devin review on #1076).
+        from app.secrets import _state_dir as _chat_state_dir
+
+        _chat_instance_yaml = _chat_state_dir() / "instance.yaml"
         app.state.chat_config = load_chat_config(_chat_instance_yaml)
 
         def _get_marketplace_sha() -> str:

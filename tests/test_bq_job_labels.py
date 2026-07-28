@@ -66,10 +66,22 @@ def test_never_raises_on_bad_user():
     assert labels["workload_type"] == "agnes"
 
 
-def test_returns_empty_dict_when_user_is_not_a_dict():
-    # A non-dict user makes client_kind_from_user / .get() raise internally;
-    # the totality guard must swallow it and return {}.
-    assert build_bq_job_labels(["not", "a", "dict"], "query", "dev") == {}
+def test_non_dict_user_drops_only_the_user_id_label():
+    # A non-dict user used to raise inside client_kind_from_user / .get() and
+    # take the whole label set down with it via the totality guard. Identity
+    # resolution is total now: no user_id, every other label survives.
+    labels = build_bq_job_labels(["not", "a", "dict"], "query", "dev")
+    assert "user_id" not in labels
+    assert labels["workload_type"] == "agnes"
+    assert labels["agent_name"] == "query"
+
+
+def test_totality_guard_still_returns_empty_on_internal_error():
+    class Explodes:
+        def __bool__(self):
+            raise RuntimeError("boom")
+
+    assert build_bq_job_labels(Explodes(), "query", "dev") == {}
 
 
 def test_environment_none_is_omitted():
@@ -94,3 +106,43 @@ def test_job_labels_for_defensive_on_config_error(monkeypatch):
     labels = job_labels_for({"email": "a@b.com"}, "scan")
     assert labels["workload_type"] == "agnes"
     assert "environment" not in labels
+
+
+
+# ---------------------------------------------------------------------------
+# Restricted principals (V1d). A frozen principal has no `.get`; reaching for
+# one inside `_user_id_label` hit `build_bq_job_labels`' totality guard and
+# dropped EVERY label, leaving the job unattributable in the billing export.
+# ---------------------------------------------------------------------------
+
+
+def test_agent_principal_labels_the_owner():
+    """An agent runs on its owner's behalf (intersection-narrowed), so its BQ
+    spend is attributed to the owner — same rule as `identity_for_audit`."""
+    from app.auth.session_principal import AgentPrincipal
+
+    p = AgentPrincipal(
+        session_id="chat_1",
+        agent_id="ag_1",
+        owner_user_id="u1",
+        owner_email="pcernik@example.com",
+        intersection={},
+    )
+    labels = build_bq_job_labels(p, "scan", "dev")
+    assert labels["user_id"] == "pcernik"
+    assert labels["workload_type"] == "agnes"
+    assert labels["agent_name"] == "scan"
+    assert labels["environment"] == "dev"
+
+
+def test_session_principal_keeps_every_label_but_user_id():
+    """A co-session has several live participants, so it reports no single
+    identity — but the job must still carry workload/agent/environment."""
+    from app.auth.session_principal import SessionPrincipal
+
+    p = SessionPrincipal("chat_ab12", ["ua", "ub"], ["a@example.com", "b@example.com"], {})
+    labels = build_bq_job_labels(p, "scan", "dev")
+    assert "user_id" not in labels
+    assert labels["workload_type"] == "agnes"
+    assert labels["agent_name"] == "scan"
+    assert labels["environment"] == "dev"

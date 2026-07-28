@@ -191,6 +191,72 @@ from a stale post-cut commit (we've shipped that race before).
   origin vX.Y.Z` then re-tag against the right SHA. Update the GitHub Release if
   you already created it.
 
+### CHANGELOG merge hazards
+
+Merging `origin/main` into a long-lived feature branch touches `CHANGELOG.md`
+on both sides almost every time — main keeps cutting releases while your
+branch keeps adding `[Unreleased]` bullets. Two distinct failure modes show up
+here; know which one you're looking at before you start editing.
+
+**1. Bullet placement drift (the common one).** After the merge, a bullet you
+added under `[Unreleased]` ends up living under the version section main just
+released instead — because your bullet and main's release-cut both touched
+the same region of the file and the merge resolved textually rather than
+semantically. The fix is mechanical: move the bullet back up into
+`[Unreleased]`. No headers are damaged; only bullet placement is wrong.
+
+**2. Version-number collision (worse — malformed section, not just misplaced
+content).** Symptom: after the merge, `git status` reports no conflict, but
+the resulting `CHANGELOG.md` has a single `## [X.Y.Z]` section containing
+bullets from **two unrelated changes**, frequently with a duplicated
+subsection header (e.g. two `### Fixed` headers stacked back to back under
+the same version).
+
+- **Root cause.** A parallel/twin agent session (or another engineer) working
+  the *same* feature branch independently ran its own release-cut process —
+  bumping `pyproject.toml` and renaming that branch's `## [Unreleased]` to
+  `## [X.Y.Z]` — without knowing `main` had already claimed and shipped that
+  exact version number via a different PR. Both sides of the eventual merge
+  now have a heading line that reads `## [X.Y.Z]`. Git's default merge
+  strategy (`ort`) matches that line as "the same" section on both sides and
+  interleaves the two bodies instead of raising a conflict, so the merge
+  completes cleanly and silently produces a malformed changelog.
+- **How to detect.**
+  - `grep -n "^## \[" CHANGELOG.md` — every version header must appear
+    exactly once. A version header that repeats, or shows up more than once
+    in the output for the same `X.Y.Z`, is the signature of this bug.
+  - Within the suspect version's block, count subsection headers, e.g.
+    `grep -c "^### Fixed"` restricted to that block — more than one means two
+    sections got interleaved under a single version header.
+  - `grep -c "<distinctive phrase from your branch's own bullet>"` and the
+    same for a distinctive phrase from main's real release bullet — each
+    should be exactly 1. Zero means a bullet got dropped; both present under
+    one duplicated-header block confirms the collision.
+- **Fix pattern.**
+  1. `git show origin/main:CHANGELOG.md` to pull the ground-truth content for
+     the colliding version section.
+  2. Diff that ground truth against the same section in your branch's
+     `CHANGELOG.md` to see exactly which lines are your branch's own and
+     which are main's.
+  3. Move your branch's own new bullets **out** of the released version
+     section and **into** `## [Unreleased]` (create it above the released
+     section if the merge removed it).
+  4. Restore the released version's section to match `origin/main` verbatim
+     — same bullets, same subsection headers, duplicate header removed.
+  5. Drop any local `pyproject.toml` version bump your branch made for that
+     version — main already owns the release for that number; your branch
+     shouldn't carry a redundant bump for a version it didn't actually cut.
+  6. Re-run the detection greps above: each version header count is 1, no
+     duplicated subsection headers, and your branch's own bullets are back
+     under `[Unreleased]`.
+- **Prevention.** Treat "I just cut a release-cut commit on this
+  long-lived branch" as a signal to immediately fetch and check whether
+  `main` claimed that exact version number in the meantime — *before*
+  merging main into the branch. If it did, drop your local release-cut
+  (bump + rename) and let the branch go back to accumulating under
+  `[Unreleased]`; the real release-cut for your branch's own changes happens
+  later, against whatever version number is actually next.
+
 ## Deploy workflows
 
 Two separate release.yml-style workflows produce GHCR images. Pick the one that
