@@ -1,0 +1,1271 @@
+{% extends "base_ds.html" %}
+{% from "macros/_stack_card.html" import card %}
+
+{% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
+
+{% block content %}
+{# Design-system component macros — admin "+ New Recipe" / "+ New Data
+   Package" buttons + 4 modal action buttons (Create/Edit recipe) render
+   via `ds.button`. Bespoke `.stack-hero__search-btn`, `.stack-tabs`
+   (SVG icons + count badges), `.pill` filter chips, JS-generated
+   `.stack-card` install buttons stay page-local (ds auto-imported by base_ds). #}
+{# ── Hero content — set here so operators can override without touching markup. #}
+{% set catalog_hero_eyebrow     = "Data" %}
+{% set catalog_hero_title       = "What data are you looking for?" %}
+{% set catalog_hero_subtitle    = "Browse curated data packages your team has approved. Add the ones you need to your stack — required packages are added automatically." %}
+{% set catalog_hero_placeholder = "Search Data Packages by name or description…" %}
+{# Hero — gradient banner mirroring marketplace.html .mp-hero so /catalog
+   and /marketplace read as one product. Eyebrow + h1 + sub layered on
+   the same blue gradient, plus an embedded search row identical to the
+   one on /marketplace. The hero search is wired to the same JS that
+   drives the per-card filter below, so typing here also narrows the grid. #}
+<div class="stack-hero">
+  <div class="eyebrow">{{ catalog_hero_eyebrow }}</div>
+  <h1>{{ catalog_hero_title }}</h1>
+  <p class="sub">{{ catalog_hero_subtitle }}</p>
+
+  <div class="stack-hero__search-row">
+    <div class="stack-hero__search-wrap">
+      <svg class="stack-hero__search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      <input id="catalog-hero-search" type="search"
+             placeholder="{{ catalog_hero_placeholder }}">
+    </div>
+    <button class="stack-hero__search-btn" id="catalog-search-btn" type="button">Search</button>
+  </div>
+
+  {# v51 lifecycle status filter — show / hide cards by per-package
+     ``data-status``. Default opt-in: Prod + POC checked (the analyst-
+     ready buckets). Coming-soon stays unchecked so the catalog isn't
+     polluted with placeholders. Empty selection = no filter (show all). #}
+  <div class="stack-hero__status-row" id="catalog-status-filter">
+    <span class="stack-hero__status-label">Show:</span>
+    <label><input type="checkbox" value="prod" checked> Prod-ready</label>
+    <label><input type="checkbox" value="poc" checked> POC</label>
+    <label><input type="checkbox" value="coming-soon"> Coming soon</label>
+    {% if user.is_admin %}
+    <label title="Visible only to admins — analysts won't see this filter."><input type="checkbox" value="draft"> Draft <span class="admin-only-hint" title="Visible only to admins — analysts won't see this filter.">admin-only</span></label>
+    {% endif %}
+  </div>
+</div>
+
+<div class="stack-page" id="catalog-page"
+     data-resource-type="data_package"
+     data-stack-endpoint="/api/stack"
+     data-subscribe-endpoint="/api/stack/subscribe">
+
+  {# Tab strip + right-of-tabs actions row (marketplace .mp-tabs-row
+     parity). Section order locked to match /marketplace exactly:
+     hero → tabs-row (+ admin actions) → curator-block → filter pills →
+     grid → empty state. The pre-v50 ordering (curator-block before
+     tabs) read as a content banner squatting above the navigation;
+     marketplace's order makes the curator block feel like a trust
+     stamp on the active tab, not a header.
+     Icons mirror marketplace's tab icons: layout-grid for Browse;
+     rectangle-stack for My Stack. #}
+  <div class="stack-tabs-row">
+    <div class="stack-tabs" role="tablist">
+      <button class="is-active" data-tab="browse" role="tab" aria-selected="true">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7" rx="1"/>
+          <rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/>
+          <rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
+        Browse <span class="count" data-count="browse">{{ entries|length }}</span>
+      </button>
+      <button data-tab="my" role="tab" aria-selected="false">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3"/>
+        </svg>
+        My Stack <span class="count" data-count="my">{{ stack_entries|length }}</span>
+      </button>
+      {# v53 Recipes tab — query templates analysts copy + adapt.
+         Sibling concept to Data Packages but not stack-subscribable.
+         Count hydrates on first visit; starts empty (--) until then. #}
+      <button data-tab="recipes" role="tab" aria-selected="false">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7h12M3 12h12M3 17h7"/><circle cx="18" cy="17" r="3"/>
+        </svg>
+        Recipes <span class="count" data-count="recipes">—</span>
+      </button>
+    </div>
+    {% if user.is_admin %}
+    <div class="stack-tabs-row__actions" style="display:flex; gap:8px;">
+      {% call ds.button(variant='secondary', type='button',
+                        attrs='onclick="openCreateRecipeModal()" title="Visible only to admins — analysts won\'t see this button."') %}
+        + New Recipe <span class="admin-only-hint">admin-only</span>
+      {% endcall %}
+      {% call ds.button(variant='secondary',
+                        href='/admin/tables?new_package=1',
+                        attrs='title="Visible only to admins — analysts won\'t see this button."') %}
+        + New Data Package <span class="admin-only-hint">admin-only</span>
+      {% endcall %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# Entry point into the read-only semantic-layer browser (metrics +
+     glossary, issue #853 + #920) — a nav link, not a redesign of this
+     page. Always visible (analyst-facing, same tier as this page). #}
+  <div class="catalog-semantics-cta" style="margin: -4px 0 12px; font-size: 12px;">
+    <a href="/catalog/semantics" style="color: var(--ds-primary); font-weight: 600; text-decoration: none;">
+      Browse the semantic layer — metrics &amp; glossary →
+    </a>
+  </div>
+
+  {# Curator-style info block — mirrors marketplace .mp-curator-block.
+     Sits BELOW the tab strip per the unified section order — same
+     position marketplace.html uses (marketplace.html:497). #}
+  {# Filter chips — All / Required / Available / In stack + per-source-type chips. #}
+  <div class="stack-filter-row" id="catalog-filters">
+    <button class="pill is-active" data-filter="all">All</button>
+    <button class="pill" data-filter="required">Required</button>
+    <button class="pill" data-filter="available">Available</button>
+    <button class="pill" data-filter="in_stack">In stack</button>
+    {% if source_type_chips %}
+    <span style="margin-left: 12px; color: var(--text-secondary); font-size: 12px;">Source:</span>
+    {% for st in source_type_chips %}
+    <button class="pill" data-filter-source="{{ st }}">{{ st }}</button>
+    {% endfor %}
+    {% endif %}
+  </div>
+
+  {# Browse view — every package the user has any grant on. #}
+  <div data-view="browse">
+    <div class="stack-curator-block">
+      <div class="stack-curator-block__title">Each Data Package is curated by your admin.</div>
+      <div class="stack-curator-block__body">
+        Packages bundle related tables on a single topic (Sales, Finance, …) so
+        analysts can pull a coherent dataset with one click. Required packages
+        are added to your stack automatically.
+      </div>
+    </div>
+    {% if entries %}
+    <div class="stack-grid" id="catalog-grid-browse">
+      {% for entry in entries %}
+        {{ card(entry) }}
+      {% endfor %}
+    </div>
+    {% else %}
+    {# Empty state — friendly + actionable. Admins get a concrete CTA
+       (open /admin/tables with the N-registered-tables hint so they
+       know there IS data to package). Non-admins get a different copy
+       because the admin path is gated. #}
+    <div class="stack-empty">
+      <span class="icon">📦</span>
+      <h3>No Data Packages yet</h3>
+      {% if user.is_admin %}
+        {% if total_registered_tables and total_registered_tables > 0 %}
+        <p>You have <strong>{{ total_registered_tables }}</strong>
+           table{{ 's' if total_registered_tables != 1 else '' }} registered
+           in <code>/admin/tables</code> but no Data Packages grouping them.</p>
+        <p>Create your first package by editing any table and assigning it
+           to a new package — analysts opt-in to the package as a whole.</p>
+        {% else %}
+        <p>No tables registered yet either. Register your first source
+           table, then bundle related tables into a Data Package so analysts
+           can opt-in to them as a group.</p>
+        {% endif %}
+      <div class="cta">
+        <a href="/admin/tables">Open /admin/tables →</a>
+      </div>
+      {% else %}
+      <p>Ask your admin to create a Data Package or grant your group
+         access to an existing one, then refresh this page.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# My Stack view — required + subscribed. Grid + empty-state are
+     both rendered so the optimistic add/remove JS can swap visibility
+     without having to inject DOM that wasn't in the initial render. #}
+  <div data-view="my" hidden>
+    <div class="stack-grid" id="catalog-grid-my"{% if not stack_entries %} hidden{% endif %}>
+      {% for entry in stack_entries %}
+        {{ card(entry) }}
+      {% endfor %}
+    </div>
+    <div class="stack-empty"{% if stack_entries %} hidden{% endif %}>
+      <span class="icon">🗂️</span>
+      <h3>Your stack is empty</h3>
+      <p>Browse available packages and click <strong>+ Add to stack</strong>.
+         Required packages will appear here automatically.</p>
+      <div class="cta">
+        <a href="/catalog">Browse all →</a>
+      </div>
+    </div>
+  </div>
+
+  {# v53 Recipes view — populated client-side on first tab open from
+     /api/recipes so the page render isn't blocked by a second DB query
+     when most users land on Browse. Card-grid uses the same .stack-grid
+     class for visual parity, but recipe cards are simpler (no
+     Add-to-stack, no Required/in-stack badges — recipes aren't
+     subscribable). #}
+  <div data-view="recipes" hidden>
+    <div class="stack-curator-block">
+      <div class="stack-curator-block__title">Recipes — admin-curated query templates.</div>
+      <div class="stack-curator-block__body">
+        A Recipe is a ready-to-run SQL query that answers a typical
+        question (e.g. "top customers by revenue last 30 days"). Open
+        one to copy the SQL, then adapt the date range / filters and
+        run it via <code>agnes query</code>. Recipes aren't subscribed
+        to like Data Packages — they're a shared library you can
+        always browse.
+      </div>
+    </div>
+    <div class="stack-grid" id="catalog-grid-recipes">
+      <div class="stack-empty" id="catalog-recipes-loading">
+        <span class="icon">📑</span>
+        <h3>Loading recipes…</h3>
+      </div>
+    </div>
+  </div>
+
+  {% if user.is_admin %}
+  {# v53 Create Recipe modal — opened from the "+ New Recipe" admin
+     button in the tab strip. Single-step (no inline RBAC matrix yet —
+     recipes are visible to any authenticated user). #}
+  <div id="createRecipeModal"
+       style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+    <div style="background:var(--surface); max-width:560px; margin:60px auto;
+                padding:20px 24px; border-radius:12px; border:1px solid var(--border);
+                max-height:85vh; overflow-y:auto;">
+      <h3 style="margin:0 0 12px;">New Recipe</h3>
+      <p style="margin:0 0 16px; color:var(--text-secondary); font-size:13px;">
+        Recipes are query templates analysts copy + adapt. Link the
+        tables they touch so analysts can drill into each.
+      </p>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Title</span>
+          <input id="rcp-title" type="text" placeholder="Top revenue by region (last 30 days)"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+          <input id="rcp-slug" type="text" placeholder="top-revenue-by-region"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            URL-safe; auto-derived from title if left blank.
+          </span>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Description</span>
+          <textarea id="rcp-desc" rows="2"
+                    placeholder="What question this recipe answers; key caveats."
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">SQL template</span>
+          <textarea id="rcp-sql" rows="7"
+                    placeholder="SELECT region, SUM(revenue) AS rev&#10;FROM orders&#10;WHERE event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)&#10;GROUP BY 1 ORDER BY 2 DESC"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:var(--font-mono); font-size:12px; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Related table ids</span>
+          <input id="rcp-related" type="text"
+                 placeholder="Comma-separated table_registry ids — e.g. tbl_orders,tbl_users"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            Drives the "Touches tables" links on the drilldown.
+          </span>
+        </label>
+        <div style="display:flex; gap:12px;">
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Color</span>
+            <div class="cf-palette-row" data-target="rcp-color"></div>
+            <input id="rcp-color" type="color" value="var(--ds-primary)"
+                   style="padding:2px; border:1px solid var(--border); border-radius:6px;
+                          height:32px; cursor:pointer;">
+          </label>
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="rcp-status"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
+              <option value="prod" selected>Prod</option>
+              <option value="poc">POC</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft (admin-only)</option>
+            </select>
+          </label>
+        </div>
+        {# v55 Recipes RBAC matrix on Create — same inline pattern as
+           Create Memory Domain. Optional; with no rows ticked, the new
+           recipe is admin-only (default-closed). Admins can grant later
+           via Edit Recipe or /admin/access. #}
+        <details id="rcp-rbac-details"
+                 style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+          <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
+            Group access
+            <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">(optional)</span>
+          </summary>
+          <p style="margin:8px 0; color:var(--text-secondary); font-size:12px;">
+            Grant per-group access tiers — <em>available</em> surfaces
+            the recipe on the group's Recipes tab; <em>required</em>
+            pins it. Leave blank to manage later from
+            <a href="/admin/access">Resource access</a>.
+          </p>
+          <div id="rcp-rbac-rows"
+               style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
+            <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
+              Click to load groups…
+            </div>
+          </div>
+        </details>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+        {{ ds.button('Cancel', variant='secondary', type='button',
+                     attrs='onclick="closeCreateRecipeModal()"') }}
+        {{ ds.button('Create', variant='primary', type='button',
+                     id='rcp-submit-btn',
+                     attrs='onclick="submitCreateRecipe()"') }}
+      </div>
+    </div>
+  </div>
+
+  {# v53 Edit Recipe modal — pre-fills from GET /api/admin/recipes/{id}.
+     Slug is locked (it's the stable URL identifier referenced by
+     /catalog/r/<slug> + any pinned links). Delete lives on the card
+     footer, not in the modal, so admins can drop a recipe without
+     opening the editor. #}
+  <div id="editRecipeModal"
+       style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2050;">
+    <div style="background:var(--surface); max-width:560px; margin:60px auto;
+                padding:20px 24px; border-radius:12px; border:1px solid var(--border);
+                max-height:85vh; overflow-y:auto;">
+      <h3 style="margin:0 0 12px;">Edit Recipe</h3>
+      <input type="hidden" id="ercp-id">
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Title</span>
+          <input id="ercp-title" type="text"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Slug</span>
+          <input id="ercp-slug" type="text" disabled
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                        opacity:0.6;">
+          <span style="font-size:11px; color:var(--text-secondary);">
+            Slug is permanent — used in /catalog/r/&lt;slug&gt; URLs.
+          </span>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Description</span>
+          <textarea id="ercp-desc" rows="2"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">SQL template</span>
+          <textarea id="ercp-sql" rows="7"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:var(--font-mono); font-size:12px; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Related table ids</span>
+          <input id="ercp-related" type="text"
+                 placeholder="Comma-separated table_registry ids"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <div style="display:flex; gap:12px;">
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Color</span>
+            <div class="cf-palette-row" data-target="ercp-color"></div>
+            <input id="ercp-color" type="color"
+                   style="padding:2px; border:1px solid var(--border); border-radius:6px;
+                          height:32px; cursor:pointer;">
+          </label>
+          <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
+            <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            <select id="ercp-status"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
+              <option value="prod">Prod</option>
+              <option value="poc">POC</option>
+              <option value="coming-soon">Coming soon</option>
+              <option value="draft">Draft (admin-only)</option>
+            </select>
+          </label>
+        </div>
+        {# v55 Recipes RBAC matrix — same lazy-hydrate + diff-on-save pattern
+           as Edit Memory Domain. Hidden until the admin expands it; loads
+           groups + grants on first toggle, diffs against the original on
+           submit, and POSTs/DELETEs only the deltas. #}
+        <details id="ercp-rbac-details"
+                 style="border:1px solid var(--border); border-radius:8px; padding:8px 12px; margin-top:4px;">
+          <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
+            Group access
+            <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">— mark required / available per group</span>
+          </summary>
+          <p style="margin:8px 0; color:var(--text-secondary); font-size:12px;">
+            <em>required</em> pins the recipe to the group's stack;
+            <em>available</em> surfaces it on their Recipes tab;
+            <em>(no grant)</em> hides it entirely. Changes apply when you
+            click <strong>Save</strong>.
+          </p>
+          <div id="ercp-rbac-rows"
+               style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
+            <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
+              Click to load groups…
+            </div>
+          </div>
+        </details>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+        {{ ds.button('Cancel', variant='secondary', type='button',
+                     attrs='onclick="closeEditRecipeModal()"') }}
+        {{ ds.button('Save', variant='primary', type='button',
+                     id='ercp-submit-btn',
+                     attrs='onclick="submitEditRecipe()"') }}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# Toast for ephemeral feedback (Add/Remove success/failure). #}
+  <div id="stack-toast" role="status" aria-live="polite" hidden
+       style="position:fixed; bottom:24px; right:24px; padding:12px 18px;
+              background:#202124; color:#fff; border-radius:8px;
+              box-shadow:0 6px 20px rgba(0,0,0,.2); font-size:13px; z-index:1000;"></div>
+</div>
+
+<script>
+'use strict';
+
+// v53: server-injected admin flag — read by _renderRecipeCard to decide
+// whether to show inline Edit / Delete buttons on each card. Sub-second
+// branching only; the actual privilege check still happens server-side
+// on every PUT/DELETE.
+window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
+
+// Card subscribe/unsubscribe wiring + tab + filter state.
+// Vanilla, no framework — runs on /catalog and /memory (the only divergence
+// is data-resource-type which the macro doesn't care about).
+(function() {
+  const root = document.getElementById('catalog-page');
+  if (!root) return;
+
+  const resourceType = root.dataset.resourceType;
+  const subscribeUrl = root.dataset.subscribeEndpoint;
+  // CSRF token lives in cookie or page if needed by middleware; FastAPI here
+  // gates by session JWT cookie — no body CSRF token required.
+
+  // ── Toast helper ────────────────────────────────────────────────────────
+  // FIFO queue (max 3) — the previous overwrite-on-second-call behaviour
+  // wiped the first toast as soon as the second fired, which lost
+  // useful feedback when admins added several packages in quick
+  // succession or when a network failure followed a success.
+  const toast = document.getElementById('stack-toast');
+  const _toastQueue = [];
+  let _toastShowing = false;
+  function _showNextToast() {
+    if (_toastShowing) return;
+    const next = _toastQueue.shift();
+    if (!next) return;
+    _toastShowing = true;
+    toast.textContent = next.msg;
+    toast.hidden = false;
+    toast.style.background = next.isError ? '#b91c1c' : '#10b77f';
+    const dwell = next.isError ? 4000 : 2500;
+    setTimeout(() => {
+      toast.hidden = true;
+      _toastShowing = false;
+      _showNextToast();
+    }, dwell);
+  }
+  function showToast(msg, isError) {
+    if (_toastQueue.length >= 3) _toastQueue.shift();
+    _toastQueue.push({ msg, isError });
+    _showNextToast();
+  }
+
+  // ── Drill-down navigation on card body click ────────────────────────────
+  // Buttons (data-action) handle their own click + stopPropagation below.
+  // v54 mod-click + middle-click open the drilldown in a new tab so the
+  // card-wide click handler stops fighting browser-native shortcuts
+  // (Cmd/Ctrl + click and middle-click both used to silently swallow).
+  document.querySelectorAll('.stack-card').forEach(card => {
+    const drilldown = card.querySelector('.stack-card__drilldown');
+    if (!drilldown) return;
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (e.target === drilldown) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+        e.preventDefault();
+        window.open(drilldown.href, '_blank', 'noopener');
+        return;
+      }
+      window.location.href = drilldown.href;
+    });
+    // ``auxclick`` fires on middle-button release; the regular click
+    // listener also sees it via e.button === 1, but Firefox routes
+    // middle-button exclusively to auxclick on some versions — wire
+    // both so the behavior is consistent.
+    card.addEventListener('auxclick', (e) => {
+      if (e.button !== 1) return;
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      window.open(drilldown.href, '_blank', 'noopener');
+    });
+  });
+
+  // ── Subscribe / Unsubscribe ─────────────────────────────────────────────
+  async function doSubscribe(id) {
+    const resp = await fetch(subscribeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ resource_type: resourceType, resource_id: id }),
+    });
+    return resp;
+  }
+
+  async function doUnsubscribe(id) {
+    const url = '/api/stack/subscription/' + encodeURIComponent(resourceType) +
+                '/' + encodeURIComponent(id);
+    const resp = await fetch(url, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    });
+    return resp;
+  }
+
+  // Update in-place: flip the card's data-in-stack, swap the button's
+  // data-action + label, update both tab badge counts. Avoids the
+  // page-reload roundtrip that flashed the layout and lost scroll
+  // position when admins added several packages in a row.
+  function _applyStackChange(card, becameInStack) {
+    if (!card) return;
+    card.dataset.inStack = becameInStack ? '1' : '0';
+    // The card may render under both Browse and My Stack grids when the
+    // server-side render duplicates it; query by id to update all
+    // matching instances on the page.
+    const id = card.dataset.id;
+    if (!id) return;
+    document.querySelectorAll('.stack-card[data-id="' + CSS.escape(id) + '"]')
+      .forEach(c => {
+        c.dataset.inStack = becameInStack ? '1' : '0';
+        // Toggle the ``is-in-stack`` class so the border + visual state
+        // match what the server-side macro would render. Without this
+        // the button label flipped but the card chrome stayed the same
+        // — the user-reported "fajfka se zobrazí, ale celé se to
+        // nezmění" bug.
+        c.classList.toggle('is-in-stack', becameInStack);
+
+        // Top-right "In stack" badge mirrors the macro's elif-in_stack
+        // branch (see _stack_card.html). Skip when requirement is
+        // 'required' — that slot is owned by the Required badge which
+        // the server-rendered DOM keeps in place.
+        const isRequired = c.dataset.requirement === 'required';
+        let inStackBadge = c.querySelector('.stack-card__req-badge--instack');
+        if (becameInStack && !isRequired) {
+          if (!inStackBadge) {
+            inStackBadge = document.createElement('div');
+            inStackBadge.className = 'stack-card__req-badge stack-card__req-badge--instack';
+            inStackBadge.title = 'In your stack';
+            inStackBadge.textContent = 'In stack';
+            c.insertBefore(inStackBadge, c.firstChild);
+          }
+        } else if (inStackBadge && !isRequired) {
+          inStackBadge.remove();
+        }
+
+        const actionBtn = c.querySelector('[data-action]');
+        if (actionBtn) {
+          actionBtn.dataset.action = becameInStack ? 'remove' : 'add';
+          // Mirror the macro's footer text — "Remove" / "+ Add to stack".
+          actionBtn.textContent = becameInStack ? 'Remove' : '+ Add to stack';
+          actionBtn.classList.toggle('stack-card__btn--add', !becameInStack);
+          actionBtn.classList.toggle('stack-card__btn--remove', becameInStack);
+          actionBtn.disabled = false;
+        }
+      });
+
+    // Keep both grids in sync with their state. The server-side render
+    // mirrors any in-stack card into both Browse and My Stack grids; an
+    // Add from Browse needs to clone the Browse card into My Stack, a
+    // Remove needs to drop the My Stack copy. Without this the My Stack
+    // grid was stale until full page reload (regression noted in the
+    // mockup audit).
+    const myGrid = document.getElementById('catalog-grid-my');
+    const browseGrid = document.getElementById('catalog-grid-browse');
+    if (myGrid) {
+      const existingInMy = myGrid.querySelector(
+        '.stack-card[data-id="' + CSS.escape(id) + '"]'
+      );
+      if (becameInStack && !existingInMy) {
+        const sourceCard = browseGrid
+          ? browseGrid.querySelector('.stack-card[data-id="' + CSS.escape(id) + '"]')
+          : card;
+        if (sourceCard) {
+          const clone = sourceCard.cloneNode(true);
+          clone.dataset.inStack = '1';
+          clone.classList.add('is-in-stack');
+          const cloneBtn = clone.querySelector('[data-action]');
+          if (cloneBtn) {
+            cloneBtn.dataset.action = 'remove';
+            cloneBtn.textContent = 'Remove';
+            cloneBtn.classList.remove('stack-card__btn--add');
+            cloneBtn.classList.add('stack-card__btn--remove');
+            cloneBtn.disabled = false;
+          }
+          myGrid.appendChild(clone);
+          // Mirror the Remove-empties-the-tab path: if we previously
+          // hid the grid + showed the empty-state placeholder, un-hide
+          // the grid now that it has children again.
+          myGrid.hidden = false;
+        }
+        // Empty-state placeholder hides as soon as the grid has a child.
+        const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+        if (emptyEl) emptyEl.hidden = true;
+      } else if (!becameInStack && existingInMy) {
+        existingInMy.remove();
+        if (!myGrid.children.length) {
+          // Both the grid and the empty-state are server-rendered;
+          // swap their visibility instead of injecting DOM that wasn't
+          // in the initial render. Previously the empty-state was only
+          // emitted when stack_entries was empty at render time, so
+          // removing the last card left the tab blank — users read
+          // that as "Remove didn't work" and reached for refresh.
+          myGrid.hidden = true;
+          const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+          if (emptyEl) emptyEl.hidden = false;
+        }
+      }
+    }
+
+    // Update tab counts. My Stack ticks up on add / down on remove;
+    // Browse stays as the catalogue total — it doesn't shrink.
+    const myEl = document.querySelector('.stack-tabs .count[data-count="my"]');
+    if (myEl) {
+      const cur = parseInt(myEl.textContent, 10) || 0;
+      myEl.textContent = String(cur + (becameInStack ? 1 : -1));
+    }
+  }
+
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn || !root.contains(btn)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    const card = btn.closest('.stack-card');
+    btn.disabled = true;
+    try {
+      let resp;
+      if (action === 'add')    resp = await doSubscribe(id);
+      else if (action === 'remove') resp = await doUnsubscribe(id);
+      else return;
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => ({}));
+        showToast('Failed: ' + (detail.detail || resp.statusText), true);
+        btn.disabled = false;
+        return;
+      }
+      showToast(action === 'add' ? 'Added to stack' : 'Removed from stack');
+      _applyStackChange(card, action === 'add');
+    } catch (err) {
+      showToast('Network error: ' + err.message, true);
+      btn.disabled = false;
+    }
+  });
+
+  // ── Tab switching ──────────────────────────────────────────────────────
+  document.querySelectorAll('.stack-tabs button').forEach(b => {
+    b.addEventListener('click', () => {
+      const tab = b.dataset.tab;
+      document.querySelectorAll('.stack-tabs button').forEach(x => {
+        x.classList.toggle('is-active', x === b);
+        x.setAttribute('aria-selected', x === b ? 'true' : 'false');
+      });
+      document.querySelectorAll('[data-view]').forEach(v => {
+        v.hidden = v.dataset.view !== tab;
+      });
+      if (tab === 'recipes') loadRecipesTab();
+    });
+  });
+
+  // v53 Recipes tab — fetch on first open then cache for the page
+  // lifetime. Renders compact cards (no Add-to-stack) so users can
+  // browse query templates the same way they browse packages.
+  let _recipesLoaded = false;
+  async function loadRecipesTab(force) {
+    if (_recipesLoaded && !force) return;
+    const grid = document.getElementById('catalog-grid-recipes');
+    if (!grid) return;
+    grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span><h3>Loading recipes…</h3></div>';
+    try {
+      const r = await fetch('/api/recipes', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const body = await r.json();
+      const items = (body && body.items) || [];
+      const badge = document.querySelector('.stack-tabs .count[data-count="recipes"]');
+      if (badge) badge.textContent = String(items.length);
+      if (!items.length) {
+        grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span>'
+          + '<h3>No recipes yet</h3>'
+          + '<p>Recipes are admin-curated query templates — copy + adapt.</p></div>';
+        _recipesLoaded = true;
+        return;
+      }
+      grid.innerHTML = items.map(_renderRecipeCard).join('');
+      _recipesLoaded = true;
+    } catch (e) {
+      grid.innerHTML = '<div class="stack-empty" style="color:var(--error);">Failed to load recipes: ' + e.message + '</div>';
+    }
+  }
+  function _renderRecipeCard(r) {
+    const esc = (s) => String(s == null ? '' : s).replace(/[<>&"']/g, (c) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+    const color = r.color || 'var(--ds-primary)';
+    const title = esc(r.title);
+    const desc = esc(r.description);
+    const parts = (r.title || '?').split(/\s+/);
+    const initials = (parts.length >= 2
+      ? parts[0][0] + parts[1][0]
+      : (r.title || '?').slice(0, 2)).toUpperCase();
+    const nTables = (r.related_table_ids || []).length;
+    // Admin actions sit on a footer row inside the card. Use <div> wrapper
+    // (not <a>) when admin so the per-button onclicks don't fight the
+    // card-wide anchor for the click. Non-admin keeps the cleaner <a>
+    // because there's no overlay.
+    const cardOpen = window.IS_ADMIN
+      ? '<div class="stack-card" data-recipe-id="' + esc(r.id) + '" style="cursor:default;">'
+      : '<a class="stack-card" href="/catalog/r/' + encodeURIComponent(r.slug) + '" '
+        + 'style="text-decoration:none; color:inherit;">';
+    const cardClose = window.IS_ADMIN ? '</div>' : '</a>';
+    // For admin, the photo + body get their own anchor so the click
+    // still drills into the recipe — only the footer Edit/Delete buttons
+    // are non-navigating.
+    const adminBodyHref = window.IS_ADMIN
+      ? '<a href="/catalog/r/' + encodeURIComponent(r.slug) + '" '
+        + 'style="text-decoration:none; color:inherit; display:block;">'
+      : '';
+    const adminBodyClose = window.IS_ADMIN ? '</a>' : '';
+    const adminFooter = window.IS_ADMIN
+      ? '<div style="display:flex; gap:6px; justify-content:flex-end; '
+        + 'padding:6px 12px; border-top:1px solid var(--border-light, #f0f0f0);">'
+        + '<button class="btn btn-secondary" type="button" '
+        + 'style="font-size:11px; padding:3px 10px;" '
+        + 'onclick="event.stopPropagation(); openEditRecipeModal(&#39;' + esc(r.id) + '&#39;)">Edit</button>'
+        + '<button class="btn" type="button" '
+        + 'style="font-size:11px; padding:3px 10px; color:#b91c1c; border-color:#fca5a5;" '
+        + 'onclick="event.stopPropagation(); deleteRecipe(&#39;' + esc(r.id) + '&#39;, &#39;' + esc(r.title) + '&#39;)">Delete</button>'
+        + '</div>'
+      : '';
+    return cardOpen
+      + adminBodyHref
+      + '<div class="stack-card__photo" style="background:' + color + '; color:#fff; '
+      +   'font-weight:700; font-size:22px; letter-spacing:1px;">' + initials + '</div>'
+      + '<div class="stack-card__body">'
+      + '<h3 class="stack-card__title">' + title + '</h3>'
+      + (nTables
+          ? '<div class="stack-card__meta">' + nTables + ' table' + (nTables === 1 ? '' : 's') + '</div>'
+          : '')
+      + (desc ? '<div class="stack-card__desc">' + desc + '</div>' : '')
+      + '</div>'
+      + adminBodyClose
+      + adminFooter
+      + cardClose;
+  }
+
+  // ── Filter chips ───────────────────────────────────────────────────────
+  let activeFilter = 'all';
+  let activeSourceFilter = null;
+  // v51 — set of currently-checked status values (multi-select). Empty
+  // set means no status filter (= show all).
+  function _activeStatuses() {
+    const out = new Set();
+    document.querySelectorAll('#catalog-status-filter input[type="checkbox"]:checked')
+      .forEach((el) => out.add(el.value));
+    return out;
+  }
+  function applyFilters() {
+    // Single source of truth — the hero search input. No hidden mirror
+    // input to fall out of sync.
+    const heroEl = document.getElementById('catalog-hero-search');
+    const q = (heroEl && heroEl.value || '').toLowerCase();
+    const statuses = _activeStatuses();
+    document.querySelectorAll('.stack-card').forEach(card => {
+      const req = card.dataset.requirement;
+      const inStack = card.dataset.inStack === '1';
+      const status = card.dataset.status || 'prod';
+      const title = (card.querySelector('.stack-card__title')?.textContent || '').toLowerCase();
+      const desc  = (card.querySelector('.stack-card__desc')?.textContent || '').toLowerCase();
+      let show = true;
+      if (activeFilter === 'required' && req !== 'required') show = false;
+      if (activeFilter === 'available' && req !== 'available') show = false;
+      if (activeFilter === 'in_stack' && !inStack) show = false;
+      // Status filter — empty selection = pass-through (show all).
+      if (statuses.size && !statuses.has(status)) show = false;
+      if (activeSourceFilter) {
+        const tags = card.querySelectorAll('.stack-card__tag');
+        let hit = false;
+        tags.forEach(t => { if (t.textContent.trim() === activeSourceFilter) hit = true; });
+        if (!hit) show = false;
+      }
+      if (q && !title.includes(q) && !desc.includes(q)) show = false;
+      card.hidden = !show;
+    });
+  }
+  // Hook the v51 status checkboxes into the same applyFilters pipeline.
+  document.querySelectorAll('#catalog-status-filter input[type="checkbox"]').forEach((el) => {
+    el.addEventListener('change', applyFilters);
+  });
+  document.querySelectorAll('[data-filter]').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('is-active', x === b));
+      activeFilter = b.dataset.filter;
+      applyFilters();
+    });
+  });
+  document.querySelectorAll('[data-filter-source]').forEach(b => {
+    b.addEventListener('click', () => {
+      const wasActive = b.classList.contains('is-active');
+      document.querySelectorAll('[data-filter-source]').forEach(x => x.classList.remove('is-active'));
+      if (!wasActive) {
+        b.classList.add('is-active');
+        activeSourceFilter = b.dataset.filterSource;
+      } else {
+        activeSourceFilter = null;
+      }
+      applyFilters();
+    });
+  });
+  // Single hero search input drives the filter pipeline directly.
+  var heroSearch = document.getElementById('catalog-hero-search');
+  if (heroSearch) {
+    heroSearch.addEventListener('input', applyFilters);
+  }
+  // Explicit Search button — visual parity with /marketplace. The
+  // input already filters live; the button just re-applies and
+  // returns focus to the input.
+  var heroSearchBtn = document.getElementById('catalog-search-btn');
+  if (heroSearchBtn && heroSearch) {
+    heroSearchBtn.addEventListener('click', function () {
+      applyFilters();
+      heroSearch.focus();
+    });
+  }
+
+  // ── v53 Create Recipe modal (admin-only) ──────────────────────────
+  // Exposed on window so the inline button onclicks reach it (we're
+  // inside an IIFE). Close/cancel reset the form so the next open
+  // starts clean. After create: close, reload Recipes tab.
+  function _slugifyTitle(s) {
+    return (s || '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+  window.openCreateRecipeModal = function () {
+    const el = document.getElementById('createRecipeModal');
+    if (!el) return;
+    ['rcp-title','rcp-slug','rcp-desc','rcp-sql','rcp-related'].forEach(id => {
+      const i = document.getElementById(id);
+      if (i) i.value = '';
+    });
+    const status = document.getElementById('rcp-status');
+    if (status) status.value = 'prod';
+    const color = document.getElementById('rcp-color');
+    if (color) color.value = 'var(--ds-primary)';
+    // Collapse + reset the RBAC matrix so reopen doesn't show last
+    // recipe's group selections.
+    const det = document.getElementById('rcp-rbac-details');
+    if (det) det.open = false;
+    _rcpRbacLoaded = false;
+    const rowsEl = document.getElementById('rcp-rbac-rows');
+    if (rowsEl) rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Click to load groups…</div>';
+    el.style.display = 'block';
+  };
+  window.closeCreateRecipeModal = function () {
+    const el = document.getElementById('createRecipeModal');
+    if (el) el.style.display = 'none';
+    const det = document.getElementById('rcp-rbac-details');
+    if (det) det.open = false;
+    _rcpRbacLoaded = false;
+  };
+
+  // ── Create Recipe RBAC matrix (lazy hydrate + write-only on save) ──
+  // Mirror of admin_corporate_memory.html's _cmdHydrateRbacMatrix /
+  // _submitCmdGrantsInline. Create flow only POSTs grants — there is
+  // no original to diff against because the recipe doesn't exist yet.
+  let _rcpRbacLoaded = false;
+  async function _rcpHydrateRbacMatrix() {
+    if (_rcpRbacLoaded) return;
+    const rowsEl = document.getElementById('rcp-rbac-rows');
+    rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups…</div>';
+    try {
+      const r = await fetch('/api/admin/groups', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const body = await r.json();
+      const groups = Array.isArray(body) ? body : (body.groups || []);
+      if (!groups.length) {
+        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+        return;
+      }
+      const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      rowsEl.innerHTML = groups.map(g => {
+        const gid = String(g.id || g.name || '');
+        const gname = String(g.name || gid);
+        return (
+          '<div data-group-id="' + esc(gid) + '" '
+          + 'style="display:flex; gap:8px; align-items:center; '
+          +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
+          + '<span style="flex:1;">' + esc(gname) + '</span>'
+          + '<select class="rcp-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
+          +   '<option value="" selected>(no grant)</option>'
+          +   '<option value="available">available</option>'
+          +   '<option value="required">required</option>'
+          + '</select>'
+          + '</div>'
+        );
+      }).join('');
+      _rcpRbacLoaded = true;
+    } catch (e) {
+      rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load: '
+        + (e.message ? e.message.replace(/[<>&]/g, '') : 'unknown') + '</div>';
+    }
+  }
+  document.addEventListener('toggle', (e) => {
+    if (e.target && e.target.id === 'rcp-rbac-details' && e.target.open) {
+      _rcpHydrateRbacMatrix();
+    }
+  }, true);
+
+  async function _rcpSubmitGrantsInline(recipeId) {
+    if (!_rcpRbacLoaded) return 0;
+    const rows = document.querySelectorAll('#rcp-rbac-rows [data-group-id]');
+    const calls = [];
+    rows.forEach(row => {
+      const gid = row.getAttribute('data-group-id');
+      const sel = row.querySelector('.rcp-rbac-req');
+      const req = sel && sel.value;
+      if (!req) return;
+      calls.push(fetch('/api/admin/grants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          group_id: gid,
+          resource_type: 'recipe',
+          resource_id: recipeId,
+          requirement: req,
+        }),
+      }));
+    });
+    if (!calls.length) return 0;
+    const results = await Promise.allSettled(calls);
+    return results.filter(
+      r => r.status === 'rejected' || (r.value && !r.value.ok)
+    ).length;
+  }
+  window.openEditRecipeModal = async function (recipeId) {
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(recipeId),
+                            { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const rec = await r.json();
+      document.getElementById('ercp-id').value = rec.id;
+      document.getElementById('ercp-title').value = rec.title || '';
+      document.getElementById('ercp-slug').value = rec.slug || '';
+      document.getElementById('ercp-desc').value = rec.description || '';
+      document.getElementById('ercp-sql').value = rec.sql_template || '';
+      document.getElementById('ercp-related').value =
+        (rec.related_table_ids || []).join(',');
+      document.getElementById('ercp-color').value = rec.color || 'var(--ds-primary)';
+      document.getElementById('ercp-status').value = rec.status || 'prod';
+      // Reset the RBAC matrix; lazy-rehydrates next time the admin
+      // expands the <details>, so the panel always reflects the recipe
+      // the modal is currently editing.
+      const det = document.getElementById('ercp-rbac-details');
+      if (det) det.open = false;
+      _ercpRbacLoaded = false;
+      _ercpRbacOriginal = {};
+      document.getElementById('editRecipeModal').style.display = 'block';
+    } catch (e) {
+      await alertModal('Failed to load recipe: ' + e.message);
+    }
+  };
+  window.closeEditRecipeModal = function () {
+    const el = document.getElementById('editRecipeModal');
+    if (el) el.style.display = 'none';
+    const det = document.getElementById('ercp-rbac-details');
+    if (det) det.open = false;
+    _ercpRbacLoaded = false;
+    _ercpRbacOriginal = {};
+  };
+
+  // ── Edit Recipe RBAC matrix (lazy hydrate + diff on save) ──
+  // Mirror of admin_corporate_memory.html's _emdHydrateRbacMatrix /
+  // _emdDiffApplyGrants. resource_type is 'recipe' — wire shape is
+  // identical (groups + grants list, requirement enum, POST/DELETE
+  // delta against /api/admin/grants).
+  let _ercpRbacLoaded = false;
+  let _ercpRbacOriginal = {};
+  async function _ercpHydrateRbacMatrix() {
+    if (_ercpRbacLoaded) return;
+    const recipeId = document.getElementById('ercp-id').value;
+    const rowsEl = document.getElementById('ercp-rbac-rows');
+    rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups + grants…</div>';
+    try {
+      const [gResp, grResp] = await Promise.all([
+        fetch('/api/admin/groups', { credentials: 'same-origin' }),
+        fetch('/api/admin/grants?resource_type=recipe',
+              { credentials: 'same-origin' }),
+      ]);
+      if (!gResp.ok) throw new Error('groups HTTP ' + gResp.status);
+      if (!grResp.ok) throw new Error('grants HTTP ' + grResp.status);
+      const gBody = await gResp.json();
+      const groups = Array.isArray(gBody) ? gBody : (gBody.groups || []);
+      const grants = await grResp.json();
+      const current = {};
+      (grants || []).forEach(g => {
+        if (g.resource_id !== recipeId) return;
+        current[g.group_id] = g.requirement;
+      });
+      _ercpRbacOriginal = Object.assign({}, current);
+
+      if (!groups.length) {
+        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+        return;
+      }
+      const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      rowsEl.innerHTML = groups.map(g => {
+        const gid = String(g.id || g.name || '');
+        const gname = String(g.name || gid);
+        const cur = current[gid] || '';
+        const opt = (v, label) =>
+          '<option value="' + esc(v) + '"' + (cur === v ? ' selected' : '') + '>' + esc(label) + '</option>';
+        return (
+          '<div data-group-id="' + esc(gid) + '" '
+          + 'style="display:flex; gap:8px; align-items:center; '
+          +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
+          + '<span style="flex:1;">' + esc(gname) + '</span>'
+          + '<select class="ercp-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
+          +   opt('', '(no grant)')
+          +   opt('available', 'available')
+          +   opt('required', 'required')
+          + '</select>'
+          + '</div>'
+        );
+      }).join('');
+      _ercpRbacLoaded = true;
+    } catch (e) {
+      rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load: '
+        + (e.message ? e.message.replace(/[<>&]/g, '') : 'unknown') + '</div>';
+    }
+  }
+  document.addEventListener('toggle', (e) => {
+    if (e.target && e.target.id === 'ercp-rbac-details' && e.target.open) {
+      _ercpHydrateRbacMatrix();
+    }
+  }, true);
+
+  async function _ercpDiffApplyGrants(recipeId) {
+    if (!_ercpRbacLoaded) return 0;
+    const rows = document.querySelectorAll('#ercp-rbac-rows [data-group-id]');
+    const wantDelete = [];
+    const wantWrite = [];
+    rows.forEach(row => {
+      const gid = row.getAttribute('data-group-id');
+      const sel = row.querySelector('.ercp-rbac-req');
+      const cur = (sel && sel.value) || '';
+      const orig = _ercpRbacOriginal[gid] || '';
+      if (cur === orig) return;
+      if (!cur) wantDelete.push(gid);
+      else {
+        if (orig) wantDelete.push(gid);
+        wantWrite.push({ group_id: gid, requirement: cur });
+      }
+    });
+    if (!wantDelete.length && !wantWrite.length) return 0;
+
+    let grantIdByGroup = {};
+    if (wantDelete.length) {
+      const lr = await fetch('/api/admin/grants?resource_type=recipe',
+                             { credentials: 'same-origin' });
+      if (lr.ok) {
+        const arr = await lr.json();
+        arr.forEach(g => {
+          if (g.resource_id !== recipeId) return;
+          grantIdByGroup[g.group_id] = g.id;
+        });
+      }
+    }
+    // Sequential DELETE → POST to avoid the UNIQUE-constraint race on
+    // (group_id, resource_type, resource_id). See the matching note in
+    // admin_tables.html _edpDiffApplyGrants.
+    const deleteResults = await Promise.allSettled(
+      wantDelete
+        .map(gid => grantIdByGroup[gid])
+        .filter(Boolean)
+        .map(gid => fetch('/api/admin/grants/' + encodeURIComponent(gid),
+                          { method: 'DELETE', credentials: 'same-origin' }))
+    );
+    const writeResults = await Promise.allSettled(
+      wantWrite.map(w => fetch('/api/admin/grants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          group_id: w.group_id,
+          resource_type: 'recipe',
+          resource_id: recipeId,
+          requirement: w.requirement,
+        }),
+      }))
+    );
+    const results = deleteResults.concat(writeResults);
+    return results.filter(
+      r => r.status === 'rejected' || (r.value && !r.value.ok)
+    ).length;
+  }
+  window.submitEditRecipe = async function () {
+    const btn = document.getElementById('ercp-submit-btn');
+    const id = document.getElementById('ercp-id').value;
+    const title = document.getElementById('ercp-title').value.trim();
+    if (!id || !title) { await alertModal('Title is required.'); return; }
+    const related = document.getElementById('ercp-related').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const body = {
+      title: title,
+      description: document.getElementById('ercp-desc').value.trim() || null,
+      sql_template: document.getElementById('ercp-sql').value || null,
+      related_table_ids: related,
+      color: document.getElementById('ercp-color').value || null,
+      status: document.getElementById('ercp-status').value || 'prod',
+    };
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        let msg = d.detail || r.statusText;
+        if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
+        await alertModal('Save failed: ' + msg);
+        return;
+      }
+      // Apply any RBAC matrix deltas after the metadata PUT — the
+      // grants endpoint is independent of the recipes PUT, so a partial
+      // failure here gets surfaced as a toast without blocking the save.
+      const rbacFails = await _ercpDiffApplyGrants(id);
+      if (rbacFails > 0 && typeof showToast === 'function') {
+        showToast(rbacFails + ' group access change(s) failed', 'error');
+      }
+      window.closeEditRecipeModal();
+      if (typeof showToast === 'function') {
+        showToast('Recipe "' + title + '" saved');
+      }
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+    } catch (e) {
+      await alertModal('Network error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  window.deleteRecipe = async function (recipeId, title) {
+    // v54: soft delete + undo toast. No confirm() — the Undo button on
+    // the toast is the recovery affordance; a confirm + undo together
+    // is friction without payoff.
+    try {
+      const r = await fetch('/api/admin/recipes/' + encodeURIComponent(recipeId),
+                            { method: 'DELETE', credentials: 'same-origin' });
+      if (!r.ok && r.status !== 204) {
+        const d = await r.json().catch(() => ({}));
+        await alertModal('Delete failed: ' + (d.detail || r.statusText));
+        return;
+      }
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+      if (typeof window.showUndoToast === 'function') {
+        window.showUndoToast(
+          'Recipe "' + title + '" deleted.',
+          '/api/admin/recipes/' + encodeURIComponent(recipeId) + '/restore',
+          () => { _recipesLoaded = false; loadRecipesTab(true); },
+        );
+      }
+    } catch (e) {
+      await alertModal('Network error: ' + e.message);
+    }
+  };
+
+  window.submitCreateRecipe = async function () {
+    const btn = document.getElementById('rcp-submit-btn');
+    const title = document.getElementById('rcp-title').value.trim();
+    if (!title) { await alertModal('Title is required.'); return; }
+    let slug = document.getElementById('rcp-slug').value.trim();
+    if (!slug) slug = _slugifyTitle(title);
+    const related = document.getElementById('rcp-related').value
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const body = {
+      slug: slug,
+      title: title,
+      description: document.getElementById('rcp-desc').value.trim() || null,
+      sql_template: document.getElementById('rcp-sql').value || null,
+      related_table_ids: related,
+      color: document.getElementById('rcp-color').value || null,
+      status: document.getElementById('rcp-status').value || 'prod',
+    };
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/admin/recipes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        let msg = d.detail || r.statusText;
+        if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
+        await alertModal('Create failed: ' + msg);
+        return;
+      }
+      const respBody = await r.json().catch(() => ({}));
+      const newRecipeId = respBody.id;
+      // Apply optional inline RBAC matrix on success — same write-only
+      // pattern as Create Memory Domain. Failures bubble up as a toast
+      // without rolling back the recipe.
+      let grantFails = 0;
+      if (newRecipeId) {
+        grantFails = await _rcpSubmitGrantsInline(newRecipeId);
+      }
+      window.closeCreateRecipeModal();
+      if (typeof showToast === 'function') {
+        const base = 'Recipe "' + title + '" created';
+        if (grantFails > 0) {
+          showToast(base + ' — ' + grantFails + ' grant(s) failed', 'error');
+        } else {
+          showToast(base);
+        }
+      }
+      // Force-refresh the Recipes tab so the new row shows.
+      _recipesLoaded = false;
+      loadRecipesTab(true);
+    } catch (e) {
+      await alertModal('Network error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+})();
+</script>
+{% endblock %}

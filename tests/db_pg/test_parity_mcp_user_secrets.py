@@ -1,0 +1,248 @@
+"""Parity tests for the per-user MCP secret endpoints.
+
+Exercises GET/PUT/DELETE ``/api/mcp/sources/{source_id}/my-secret`` against
+BOTH backends via ``seeded_app_both`` — the same assertions run once on
+DuckDB and once on Postgres.
+
+Before the fix these handlers constructed ``MCPSourceRepository(conn)`` and
+``PerUserSecretsRepository(conn)`` off the raw DuckDB ``_get_db`` connection,
+so on a Postgres instance they hit the wrong backend. The fix routes both
+through the repo factory (``mcp_sources_repo`` / ``per_user_secrets_repo``).
+
+Seed the source through the factory (``mcp_sources_repo().upsert(...)``),
+then drive the endpoints with the analyst token and assert the round-trip.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _vault_key(monkeypatch):
+    """Storing a secret requires a configured vault key (AGNES_VAULT_KEY) since
+    the admin-vault hardening; provide a valid Fernet key for the store path."""
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode("ascii"))
+
+
+def _seed_source(
+    scope: str = "per_user", grant_to: str | None = "analyst1", source_id: str = "notion"
+) -> str:
+    """Create an MCP source through the factory and return its id.
+
+    Also seeds one passthrough tool granted to ``grant_to`` — the my-secret
+    endpoints require a grant on the source, so a non-admin caller must be
+    entitled to it. Set ``grant_to=None`` to leave the source ungranted."""
+    from src.repositories import (
+        mcp_sources_repo,
+        tool_registry_repo,
+        user_group_members_repo,
+        user_groups_repo,
+    )
+
+    mcp_sources_repo().upsert(
+        id=source_id,
+        name="Notion",
+        transport="http",
+        url="https://mcp.notion.example/v1",
+        scope=scope,
+    )
+    if grant_to is not None:
+        tools = tool_registry_repo()
+        tools.upsert(
+            tool_id=f"{source_id}.lookup",
+            source_id=source_id,
+            original_name="lookup",
+            exposed_name="lookup",
+            mode="passthrough",
+            description="grant target",
+        )
+        grp = user_groups_repo().create(name=f"grant-{source_id}", description=None)
+        tools.add_grant(f"{source_id}.lookup", grp["id"])
+        user_group_members_repo().add_member(grant_to, grp["id"], source="system_seed")
+    return source_id
+
+
+def test_my_secret_requires_grant_on_both_backends(seeded_app_both):
+    """An authenticated caller with no grant on the source gets 403 on GET/PUT/
+    DELETE — they can't probe or manage a credential for a source they aren't
+    entitled to. Runs on both backends."""
+    client = seeded_app_both["client"]
+    token = seeded_app_both["analyst_token"]
+    source_id = _seed_source(scope="per_user", grant_to=None, source_id="ungranted_src")
+    for method, kwargs in (
+        ("get", {}),
+        ("put", {"json": {"value": "x"}}),
+        ("delete", {}),
+    ):
+        r = getattr(client, method)(
+            f"/api/mcp/sources/{source_id}/my-secret",
+            headers={"Authorization": f"Bearer {token}"},
+            **kwargs,
+        )
+        assert r.status_code == 403, f"{method}: {r.status_code} {r.text}"
+
+
+def test_get_status_no_secret_yet(seeded_app_both):
+    """GET reports has_secret=False + the source scope before any PUT."""
+    client = seeded_app_both["client"]
+    token = seeded_app_both["analyst_token"]
+    source_id = _seed_source(scope="per_user")
+
+    r = client.get(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["has_secret"] is False
+    assert body["source_scope"] == "per_user"
+
+
+def test_put_then_get_round_trip(seeded_app_both):
+    """PUT stores the caller's secret; GET then reports has_secret=True."""
+    client = seeded_app_both["client"]
+    token = seeded_app_both["analyst_token"]
+    source_id = _seed_source(scope="per_user")
+
+    r = client.put(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        json={"value": "secret-token-abc"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 204, r.text
+
+    r = client.get(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["has_secret"] is True
+
+    # The stored value must decrypt back to cleartext through the factory.
+    from src.repositories import per_user_secrets_repo
+
+    assert per_user_secrets_repo().get(source_id, "analyst1") == "secret-token-abc"
+
+
+def test_updated_at_null_before_and_set_after_put(seeded_app_both):
+    """GET reports updated_at=None before any PUT and an ISO-8601 timestamp
+    after, on both backends. Never leaks the secret value."""
+    client = seeded_app_both["client"]
+    token = seeded_app_both["analyst_token"]
+    source_id = _seed_source(scope="per_user")
+
+    r = client.get(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["updated_at"] is None
+
+    client.put(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        json={"value": "tok"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    r = client.get(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated_at"] is not None
+    assert "tok" not in str(body)  # timestamp only, never the secret
+
+
+def test_put_is_per_user_scoped(seeded_app_both):
+    """A secret stored by the analyst is not visible to the admin caller."""
+    client = seeded_app_both["client"]
+    analyst_token = seeded_app_both["analyst_token"]
+    admin_token = seeded_app_both["admin_token"]
+    source_id = _seed_source(scope="per_user")
+
+    r = client.put(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        json={"value": "analyst-only"},
+        headers={"Authorization": f"Bearer {analyst_token}"},
+    )
+    assert r.status_code == 204, r.text
+
+    # Admin has not stored their own → has_secret False for them.
+    r = client.get(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["has_secret"] is False
+
+
+def test_delete_drops_secret(seeded_app_both):
+    """DELETE removes the caller's secret; GET then reports has_secret=False."""
+    client = seeded_app_both["client"]
+    token = seeded_app_both["analyst_token"]
+    source_id = _seed_source(scope="per_user")
+
+    client.put(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        json={"value": "to-be-deleted"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    r = client.delete(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 204, r.text
+
+    r = client.get(
+        f"/api/mcp/sources/{source_id}/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["has_secret"] is False
+
+
+def test_unknown_source_404(seeded_app_both):
+    """All three endpoints 404 for an unregistered source id."""
+    client = seeded_app_both["client"]
+    token = seeded_app_both["analyst_token"]
+
+    r = client.get(
+        "/api/mcp/sources/does-not-exist/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 404, r.text
+
+    r = client.put(
+        "/api/mcp/sources/does-not-exist/my-secret",
+        json={"value": "x"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 404, r.text
+
+    r = client.delete(
+        "/api/mcp/sources/does-not-exist/my-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_per_user_no_row_fails_closed_both_backends(seeded_app_both):
+    """Cross-engine: on a per_user source, an identified caller with NO
+    per-user row resolves to None (never the shared credential); the
+    caller-less materialize path (caller_user_id=None) still gets shared."""
+    from connectors.mcp.client import _lookup_secret_for_source
+    from src.repositories import shared_secrets_repo
+
+    source_id = _seed_source(scope="per_user")
+    shared_secrets_repo().upsert(source_id, "shared-service-token")
+
+    src = {"id": source_id, "scope": "per_user"}
+    # Identified caller, no per-user row → fail closed, shared NOT borrowed.
+    assert _lookup_secret_for_source(src, caller_user_id="analyst1") is None
+    # Materialize path (no caller) → shared fallback preserved.
+    assert _lookup_secret_for_source(src, caller_user_id=None) == "shared-service-token"

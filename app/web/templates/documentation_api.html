@@ -1,0 +1,13 @@
+{% extends "base_ds.html" %}
+{% block title %}API Documentation — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+{# Reuses the .format-guide document chrome (typography, dark <pre>, tables)
+   from style-custom.css — same rendered-markdown page shape as
+   /marketplace/format-guide, so no new CSS is needed. #}
+<div class="format-guide">
+  <p><strong>Running version:</strong> {{ app_version }} ·
+     Interactive reference: <a href="/docs">Swagger UI</a> · <a href="/redoc">ReDoc</a></p>
+  {{ rendered_html | safe }}
+</div>
+{% endblock %}

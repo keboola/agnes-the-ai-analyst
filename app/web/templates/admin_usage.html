@@ -1,0 +1,579 @@
+{% extends "base_page.html" %}
+{% block title %}Telemetry — Admin{% endblock %}
+
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Telemetry" %}
+{% set page_hero_subtitle = "Claude Code tool / skill / agent / slash-command invocations across users." %}
+
+{% block head_extra %}
+{# The /admin/activity page already ships the .obs-* styles via
+   activity_center.html. We re-include them here so /admin/usage renders
+   identically without depending on the user having visited /admin/activity
+   first (browser CSS cache miss is the common case for admins clicking the
+   nav link cold). #}
+<style>
+.obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
+.obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+  padding: 12px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 16px; }
+.obs-topbar-left { flex: 1; min-width: 0; }
+.obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; max-width: 720px; }
+.obs-subtitle a { color: #2563eb; text-decoration: none; border-bottom: 1px dashed currentColor; }
+.obs-subtitle a:hover { border-bottom-style: solid; }
+.obs-narrative { font-size: 16px; line-height: 1.45; }
+.obs-narrative b { font-weight: 600; }
+.obs-topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.obs-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); display: block; margin-bottom: 2px; }
+.obs-window select { padding: 6px 8px; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+  background: var(--surface, #fff); font: inherit; }
+/* `.obs-btn` rules deleted — buttons render via `ds.button(variant=
+   'secondary', size='sm')` carrying canonical .btn family. */
+.obs-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.obs-kpi { text-align: left; padding: 14px 16px; border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px; background: var(--surface, #fff); cursor: pointer;
+  transition: border-color 0.15s, background 0.15s; display: flex; flex-direction: column; gap: 4px; }
+.obs-kpi:hover { border-color: #2563eb; background: var(--border-light, #f3f4f6); }
+.obs-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); }
+.obs-kpi-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.obs-kpi-sub { font-size: 12px; color: var(--text-secondary, #6b7280); font-variant-numeric: tabular-nums; }
+.obs-filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  padding: 12px 14px; background: var(--border-light, #f3f4f6); border-radius: 8px; margin-bottom: 12px; }
+.obs-filter { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.obs-filter-grow { flex: 1; min-width: 200px; }
+.obs-filter label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); }
+.obs-select, .obs-filter input { padding: 6px 8px; border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px; background: var(--surface, #fff); font: inherit; }
+.obs-filter input { min-width: 200px; }
+.obs-filter-actions { display: flex; align-items: flex-end; }
+.obs-table-wrap { border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+  overflow: hidden; background: var(--surface, #fff); }
+.obs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.obs-table thead th { text-align: left; padding: 10px 12px; background: var(--border-light, #f3f4f6);
+  border-bottom: 1px solid var(--border, #e5e7eb); font-weight: 600;
+  color: var(--text-secondary, #6b7280); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+.obs-table thead th button { background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  text-transform: inherit; letter-spacing: inherit; }
+.obs-table thead th[aria-sort="ascending"] .obs-sort-arrow::before { content: "▲"; }
+.obs-table thead th[aria-sort="descending"] .obs-sort-arrow::before { content: "▼"; }
+.obs-sort-arrow { font-size: 9px; color: var(--text-secondary, #6b7280); }
+.obs-table tbody td { padding: 8px 12px; border-bottom: 1px solid var(--border-light, #f3f4f6); vertical-align: top; }
+.obs-table tbody tr:last-child td { border-bottom: none; }
+.obs-table tbody tr:hover { background: var(--border-light, #f3f4f6); }
+.obs-num { text-align: right; font-variant-numeric: tabular-nums; }
+.obs-empty { padding: 40px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
+.obs-table-footer { display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-top: 1px solid var(--border, #e5e7eb); background: var(--border-light, #f3f4f6); }
+.obs-row-count { color: var(--text-secondary, #6b7280); font-size: 12px; }
+.obs-source-pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px;
+  text-transform: lowercase; background: var(--border-light, #f3f4f6); color: var(--text-secondary, #6b7280); }
+.obs-source-pill.is-curated { background: #ede9fe; color: #5b21b6; }
+.obs-source-pill.is-flea    { background: #fef3c7; color: #92400e; }
+.obs-source-pill.is-builtin { background: #dcfce7; color: #166534; }
+.obs-bar-fill { display: inline-block; height: 8px; background: #2563eb; border-radius: 2px;
+  vertical-align: middle; margin-left: 6px; min-width: 2px; }
+</style>
+{% endblock %}
+
+{% block page %}
+{# Design-system component macros — Reset + Prev/Next paginator render
+   via `ds.button` (auto-imported by base_ds). .obs-kpi cards + .obs-table
+   page-local enhancements stay as-is per system.md. #}
+<div class="obs-page">
+
+
+  <header class="obs-topbar">
+    <div class="obs-topbar-left">
+      <p class="obs-subtitle">Tool and skill invocations from Claude Code. Also available locally for analysis. For server-side admin / API audit events, see <a href="/admin/activity">Audit log</a>.</p>
+      <div class="obs-narrative" id="usage-narrative">Loading…</div>
+    </div>
+    <div class="obs-topbar-right">
+      <label class="obs-window">
+        <span class="obs-label">Time range</span>
+        <select id="u-window">
+          <option value="1440">Last 24h</option>
+          <option value="10080" selected>Last 7d</option>
+          <option value="43200">Last 30d</option>
+          <option value="129600">Last 90d</option>
+          <option value="525600">Last 365d</option>
+        </select>
+      </label>
+      <label class="obs-window">
+        <span class="obs-label">Group by</span>
+        <select id="u-groupby">
+          <option value="">None (raw events)</option>
+          <option value="day" selected>Day</option>
+          <option value="username">User</option>
+          <option value="tool_name">Tool</option>
+          <option value="source">Source</option>
+          <option value="ref_id">Plugin (source/ref_id)</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <section class="obs-kpis" aria-label="Key usage metrics">
+    <button class="obs-kpi" data-quick="" type="button">
+      <span class="obs-kpi-label">Events</span>
+      <span class="obs-kpi-value" id="ukpi-events">—</span>
+    </button>
+    <button class="obs-kpi" data-quick="users" type="button">
+      <span class="obs-kpi-label">Distinct users</span>
+      <span class="obs-kpi-value" id="ukpi-users">—</span>
+    </button>
+    <button class="obs-kpi" data-quick="tools" type="button">
+      <span class="obs-kpi-label">Distinct tools</span>
+      <span class="obs-kpi-value" id="ukpi-tools">—</span>
+    </button>
+    <button class="obs-kpi" data-quick="errors" type="button">
+      <span class="obs-kpi-label">Error rate</span>
+      <span class="obs-kpi-value" id="ukpi-errors">—</span>
+      <span class="obs-kpi-sub" id="ukpi-errors-sub">—</span>
+    </button>
+  </section>
+
+  <section class="obs-filters" aria-label="Filter usage">
+    <div class="obs-filter">
+      <label for="u-user">User</label>
+      <select id="u-user" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter">
+      <label for="u-tool">Tool</label>
+      <select id="u-tool" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter">
+      <label for="u-source">Source</label>
+      <select id="u-source" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter">
+      <label for="u-event-type">Event type</label>
+      <select id="u-event-type" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter obs-filter-grow">
+      <label for="u-q">Search (tool / skill / subagent / command)</label>
+      <input id="u-q" type="search" placeholder="grep, shadcn, sub-agents…" />
+    </div>
+    <div class="obs-filter-actions">
+      {{ ds.button('Reset', variant='secondary', size='sm',
+                   type='button', id='u-reset') }}
+    </div>
+  </section>
+
+  <section class="obs-table-wrap">
+    <table class="obs-table" id="usage-table">
+      <thead id="usage-thead"></thead>
+      <tbody id="usage-rows">
+        <tr><td colspan="6" class="obs-empty">Loading…</td></tr>
+      </tbody>
+    </table>
+    <div class="obs-table-footer">
+      <span id="u-row-count" class="obs-row-count">—</span>
+      <div>
+        {{ ds.button('← Prev', variant='secondary', size='sm',
+                     type='button', id='u-prev', attrs='hidden') }}
+        {{ ds.button('Next →', variant='secondary', size='sm',
+                     type='button', id='u-next', attrs='hidden') }}
+      </div>
+    </div>
+  </section>
+
+  {# Query telemetry (#410): top tables / scan bytes / remote-vs-local split,
+     aggregated on-demand from the query.* audit rows via /summary. #}
+  <section class="obs-table-wrap" id="qt-section" style="margin-top:20px;" aria-label="Query telemetry">
+    <div style="padding:12px 14px; border-bottom:1px solid var(--border, #e5e7eb);
+                background:var(--border-light, #f3f4f6); display:flex;
+                justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap;">
+      <strong>Query telemetry — top tables</strong>
+      <span id="qt-totals" class="obs-row-count">—</span>
+    </div>
+    <table class="obs-table">
+      <thead>
+        <tr>
+          <th>Table</th>
+          <th class="obs-num">Queries</th>
+          <th class="obs-num">Remote</th>
+          <th class="obs-num">Local</th>
+          <th class="obs-num">Scan bytes</th>
+        </tr>
+      </thead>
+      <tbody id="qt-rows">
+        <tr><td colspan="5" class="obs-empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</div>
+
+<script>
+(function() {
+  const state = readUrl();
+  function readUrl() {
+    const p = new URLSearchParams(location.search);
+    return {
+      window:    parseInt(p.get('window'), 10) || 10080,
+      group_by:  p.get('group_by') == null ? 'day' : p.get('group_by'),
+      username:  p.get('username') || '',
+      tool_name: p.get('tool_name') || '',
+      source:    p.get('source') || '',
+      event_type:p.get('event_type') || '',
+      only_errors: p.get('only_errors') === '1',
+      q:         p.get('q') || '',
+      sort:      p.get('sort') || 'invocations:desc',
+      offset:    parseInt(p.get('offset'), 10) || 0,
+    };
+  }
+  function writeUrl() {
+    const p = new URLSearchParams();
+    if (state.window !== 10080) p.set('window', state.window);
+    if (state.group_by !== 'day') p.set('group_by', state.group_by);
+    if (state.username) p.set('username', state.username);
+    if (state.tool_name) p.set('tool_name', state.tool_name);
+    if (state.source) p.set('source', state.source);
+    if (state.event_type) p.set('event_type', state.event_type);
+    if (state.only_errors) p.set('only_errors', '1');
+    if (state.q) p.set('q', state.q);
+    if (state.sort && state.sort !== 'invocations:desc') p.set('sort', state.sort);
+    if (state.offset) p.set('offset', state.offset);
+    const qs = p.toString();
+    history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+  }
+
+  const $ = id => document.getElementById(id);
+  const winSel = $('u-window'), groupSel = $('u-groupby');
+  const fUser = $('u-user'), fTool = $('u-tool'), fSrc = $('u-source'), fEv = $('u-event-type');
+  const fQ = $('u-q'), fReset = $('u-reset');
+  const thead = $('usage-thead'), tbody = $('usage-rows');
+  const rowCount = $('u-row-count');
+  const prevBtn = $('u-prev'), nextBtn = $('u-next');
+  const narrative = $('usage-narrative');
+
+  // Apply state -> controls
+  winSel.value = String(state.window);
+  groupSel.value = state.group_by || '';
+  fQ.value = state.q;
+
+  function buildBaseQS() {
+    const p = new URLSearchParams();
+    p.set('since_minutes', state.window);
+    if (state.username) p.set('username', state.username);
+    if (state.tool_name) p.set('tool_name', state.tool_name);
+    if (state.source) p.set('source', state.source);
+    if (state.event_type) p.set('event_type', state.event_type);
+    if (state.only_errors) p.set('only_errors', 'true');
+    if (state.q) p.set('q', state.q);
+    return p;
+  }
+  async function get(url) {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+    return r.json();
+  }
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmtN(n) { return (n == null ? '—' : Number(n).toLocaleString()); }
+  function winLabel(m) {
+    if (m <= 1440) return 'last 24h';
+    if (m <= 10080) return 'last 7d';
+    if (m <= 43200) return 'last 30d';
+    if (m <= 129600) return 'last 90d';
+    return 'last 365d';
+  }
+
+  // --- Facets -------------------------------------------------------------
+  async function loadFacets() {
+    const d = await get('/api/admin/telemetry/facets?since_minutes=' + state.window);
+    fillSelect(fUser, d.users || [], state.username);
+    fillSelect(fTool, d.tools || [], state.tool_name);
+    fillSelect(fSrc,  d.sources || [], state.source);
+    fillSelect(fEv,   d.event_types || [], state.event_type);
+  }
+  function fillSelect(sel, items, current) {
+    while (sel.options.length > 1) sel.remove(1);
+    items.forEach(it => {
+      const o = document.createElement('option');
+      o.value = it.value;
+      o.textContent = it.value + ' (' + it.count + ')';
+      sel.appendChild(o);
+    });
+    if (current) sel.value = current;
+  }
+
+  // --- KPIs ---------------------------------------------------------------
+  async function loadKpis() {
+    const p = buildBaseQS();
+    const d = await get('/api/admin/telemetry/kpis?' + p.toString());
+    $('ukpi-events').textContent = fmtN(d.events_total);
+    $('ukpi-users').textContent  = fmtN(d.distinct_users);
+    $('ukpi-tools').textContent  = fmtN(d.distinct_tools);
+    $('ukpi-errors').textContent = (d.error_rate * 100).toFixed(2) + '%';
+    $('ukpi-errors-sub').textContent = fmtN(d.errors) + ' errors';
+    renderNarrative(d);
+  }
+  function renderNarrative(d) {
+    const win = winLabel(state.window);
+    const bits = [];
+    if (state.username)  bits.push('user: ' + escapeHtml(state.username));
+    if (state.tool_name) bits.push('tool: ' + escapeHtml(state.tool_name));
+    if (state.source)    bits.push('source: ' + escapeHtml(state.source));
+    if (state.event_type)bits.push('type: ' + escapeHtml(state.event_type));
+    if (state.only_errors) bits.push('errors only');
+    if (state.q)         bits.push('search: "' + escapeHtml(state.q) + '"');
+    const f = bits.length ? ' · filters: ' + bits.join(', ') : '';
+    if (d.events_total === 0) {
+      narrative.innerHTML = '<b>No usage</b> in ' + win + f
+        + '. Lower the time window or clear filters.';
+      return;
+    }
+    narrative.innerHTML =
+      '<b>' + fmtN(d.events_total) + '</b> events in ' + win +
+      ' · <b>' + fmtN(d.distinct_users) + '</b> users' +
+      ' · <b>' + fmtN(d.distinct_tools) + '</b> distinct tools' +
+      ' · <b>' + (d.error_rate * 100).toFixed(2) + '%</b> errors' + f + '.';
+  }
+
+  // --- Query telemetry (#410) ---------------------------------------------
+  function summaryWindow(m) {
+    // /summary takes 7d|30d|all; map the minute-granular selector to it.
+    if (m <= 10080) return '7d';
+    if (m <= 43200) return '30d';
+    return 'all';
+  }
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    const u = ['KB', 'MB', 'GB', 'TB', 'PB'];
+    let i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return n.toFixed(1) + ' ' + u[i];
+  }
+  async function loadQueryTelemetry() {
+    const qtRows = $('qt-rows'), qtTotals = $('qt-totals');
+    if (!qtRows) return;
+    let d;
+    try {
+      d = await get('/api/admin/telemetry/summary?window=' + summaryWindow(state.window));
+    } catch (e) {
+      qtRows.innerHTML = '<tr><td colspan="5" class="obs-empty">Failed to load query telemetry.</td></tr>';
+      return;
+    }
+    const qt = d.query_telemetry || {};
+    qtTotals.textContent =
+      fmtBytes(qt.total_scan_bytes) + ' scanned · ' +
+      fmtN(qt.remote_queries) + ' remote · ' +
+      fmtN(qt.local_queries) + ' local · ' +
+      fmtN(qt.snapshot_creates) + ' snapshots';
+    const rows = qt.top_tables || [];
+    if (!rows.length) {
+      qtRows.innerHTML = '<tr><td colspan="5" class="obs-empty">No query activity in this window.</td></tr>';
+      return;
+    }
+    qtRows.innerHTML = '';
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>' + escapeHtml(r.table_id == null ? '—' : r.table_id) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.queries) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.remote) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.local) + '</td>' +
+        '<td class="obs-num">' + fmtBytes(r.scan_bytes) + '</td>';
+      qtRows.appendChild(tr);
+    });
+  }
+
+  // --- Query / table ------------------------------------------------------
+  async function loadTable() {
+    tbody.innerHTML = '<tr><td colspan="6" class="obs-empty">Loading…</td></tr>';
+    const p = buildBaseQS();
+    if (state.group_by) p.set('group_by', state.group_by);
+    p.set('sort',   state.sort);
+    p.set('limit',  '100');
+    p.set('offset', state.offset);
+    const d = await get('/api/admin/telemetry/query?' + p.toString());
+    renderTable(d);
+  }
+  function renderTable(d) {
+    if (state.group_by) renderGrouped(d);
+    else renderRaw(d);
+
+    rowCount.textContent =
+      'Showing ' + (d.rows.length ? state.offset + 1 : 0) + '–' +
+      (state.offset + d.rows.length) + ' of ' + fmtN(d.total);
+    prevBtn.hidden = state.offset === 0;
+    nextBtn.hidden = d.next_offset == null;
+  }
+
+  function renderGrouped(d) {
+    const alias = d.group_alias || state.group_by;
+    const aliasLabel = ({ day: 'Day', username: 'User', tool_name: 'Tool',
+      source: 'Source', ref_id: 'Plugin' })[state.group_by] || alias;
+    thead.innerHTML =
+      '<tr>' +
+      '<th data-sort="bucket"><button type="button">' + escapeHtml(aliasLabel) +
+        ' <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="invocations" class="obs-num"><button type="button">Invocations <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="distinct_users" class="obs-num"><button type="button">Users <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="distinct_sessions" class="obs-num"><button type="button">Sessions <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="errors" class="obs-num"><button type="button">Errors <span class="obs-sort-arrow"></span></button></th>' +
+      '<th></th>' +
+      '</tr>';
+    wireSort();
+
+    if (!d.rows.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="obs-empty">No usage data for these filters.</td></tr>';
+      return;
+    }
+    const maxN = Math.max(...d.rows.map(r => r.invocations || 0), 1);
+    tbody.innerHTML = '';
+    d.rows.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.style.cursor = 'pointer';
+      tr.title = 'Click to add as a filter';
+      const bar = '<span class="obs-bar-fill" style="width:' +
+        (Math.max(2, Math.round(100 * (r.invocations || 0) / maxN))) + 'px"></span>';
+      tr.innerHTML =
+        '<td>' + escapeHtml(r.bucket == null ? '—' : r.bucket) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.invocations) + bar + '</td>' +
+        '<td class="obs-num">' + fmtN(r.distinct_users) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.distinct_sessions) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.errors) + '</td>' +
+        '<td></td>';
+      tr.addEventListener('click', () => applyBucketAsFilter(r.bucket));
+      tbody.appendChild(tr);
+    });
+  }
+  function applyBucketAsFilter(bucket) {
+    // Mapping group_by → state filter field.
+    const map = { username: 'username', tool_name: 'tool_name', source: 'source' };
+    const key = map[state.group_by];
+    if (!key || bucket == null) return;
+    state[key] = String(bucket);
+    if (key === 'username') fUser.value = state.username;
+    if (key === 'tool_name') fTool.value = state.tool_name;
+    if (key === 'source') fSrc.value = state.source;
+    state.offset = 0;
+    writeUrl(); refreshOnFilter();
+  }
+
+  function renderRaw(d) {
+    thead.innerHTML =
+      '<tr>' +
+      '<th data-sort="occurred_at"><button type="button">When <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="username"><button type="button">User <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="source"><button type="button">Source <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="event_type"><button type="button">Event <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="what"><button type="button">Tool / Skill / Subagent <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="is_error"><button type="button">Err? <span class="obs-sort-arrow"></span></button></th>' +
+      '</tr>';
+    wireSort();
+    if (!d.rows.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="obs-empty">No usage events match these filters.</td></tr>';
+      return;
+    }
+    // Client-side sort over the loaded page. Server orders by occurred_at;
+    // other keys are sorted in JS for the rows currently visible.
+    const [sortKey, sortDir] = (state.sort || 'occurred_at:desc').split(':');
+    const keyFor = r => {
+      if (sortKey === 'what')
+        return (r.tool_name || r.skill_name || r.subagent_type || r.command_name || '').toLowerCase();
+      const v = r[sortKey];
+      return (typeof v === 'string') ? v.toLowerCase() : (v ?? '');
+    };
+    const sorted = [...d.rows].sort((a, b) => {
+      const av = keyFor(a), bv = keyFor(b);
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ?  1 : -1;
+      return 0;
+    });
+    tbody.innerHTML = '';
+    sorted.forEach(r => {
+      const tr = document.createElement('tr');
+      const what = r.tool_name || r.skill_name || r.subagent_type || r.command_name || '';
+      const src = r.source || 'other';
+      const srcPill = '<span class="obs-source-pill is-' + escapeHtml(src) + '">' + escapeHtml(src) + '</span>';
+      tr.innerHTML =
+        '<td>' + escapeHtml(r.occurred_at || '') + '</td>' +
+        '<td>' + escapeHtml(r.username || '—') + '</td>' +
+        '<td>' + srcPill + '</td>' +
+        '<td>' + escapeHtml(r.event_type || '') + '</td>' +
+        '<td>' + escapeHtml(what) + '</td>' +
+        '<td>' + (r.is_error ? '⚠' : '') + '</td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  // --- Sort wiring (re-attached after each thead render) ------------------
+  function wireSort() {
+    document.querySelectorAll('#usage-thead th[data-sort]').forEach(th => {
+      const key = th.dataset.sort;
+      const [curKey, curDir] = (state.sort || 'invocations:desc').split(':');
+      th.setAttribute('aria-sort', key === curKey ? (curDir === 'asc' ? 'ascending' : 'descending') : 'none');
+      th.addEventListener('click', () => {
+        const [k, d] = (state.sort || 'invocations:desc').split(':');
+        state.sort = key + ':' + (k === key && d === 'desc' ? 'asc' : 'desc');
+        state.offset = 0;
+        writeUrl(); loadTable().catch(()=>{});
+      });
+    });
+  }
+
+  // --- KPI quick filters --------------------------------------------------
+  document.querySelectorAll('.obs-kpi').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.quick;
+      if (k === 'errors') {
+        state.only_errors = true;
+      } else if (k === 'users') {
+        state.group_by = 'username';
+        groupSel.value = 'username';
+      } else if (k === 'tools') {
+        state.group_by = 'tool_name';
+        groupSel.value = 'tool_name';
+      } else {
+        Object.assign(state, { username: '', tool_name: '', source: '', event_type: '', only_errors: false, q: '' });
+        fUser.value=''; fTool.value=''; fSrc.value=''; fEv.value=''; fQ.value='';
+      }
+      state.offset = 0;
+      writeUrl(); refreshAll();
+    });
+  });
+
+  // --- Wiring -------------------------------------------------------------
+  winSel.addEventListener('change', () => { state.window = parseInt(winSel.value, 10); state.offset = 0; writeUrl(); refreshAll(); });
+  groupSel.addEventListener('change', () => {
+    state.group_by = groupSel.value || '';
+    state.sort = state.group_by ? 'invocations:desc' : 'occurred_at:desc';
+    state.offset = 0;
+    writeUrl(); refreshOnFilter();
+  });
+  fUser.addEventListener('change', () => { state.username = fUser.value; state.offset = 0; writeUrl(); refreshOnFilter(); });
+  fTool.addEventListener('change', () => { state.tool_name = fTool.value; state.offset = 0; writeUrl(); refreshOnFilter(); });
+  fSrc.addEventListener('change',  () => { state.source = fSrc.value; state.offset = 0; writeUrl(); refreshOnFilter(); });
+  fEv.addEventListener('change',   () => { state.event_type = fEv.value; state.offset = 0; writeUrl(); refreshOnFilter(); });
+  let qDebounce;
+  fQ.addEventListener('input', () => {
+    clearTimeout(qDebounce);
+    qDebounce = setTimeout(() => { state.q = fQ.value; state.offset = 0; writeUrl(); refreshOnFilter(); }, 250);
+  });
+  fReset.addEventListener('click', () => {
+    Object.assign(state, { username: '', tool_name: '', source: '', event_type: '', only_errors: false, q: '', offset: 0 });
+    fUser.value=''; fTool.value=''; fSrc.value=''; fEv.value=''; fQ.value='';
+    writeUrl(); refreshAll();
+  });
+  prevBtn.addEventListener('click', () => {
+    state.offset = Math.max(0, state.offset - 100); writeUrl(); loadTable().catch(()=>{});
+  });
+  nextBtn.addEventListener('click', () => {
+    state.offset = state.offset + 100; writeUrl(); loadTable().catch(()=>{});
+  });
+
+  function refreshOnFilter() { loadKpis().catch(()=>{}); loadTable().catch(()=>{}); }
+  function refreshAll()      { loadKpis().catch(()=>{}); loadFacets().catch(()=>{}); loadTable().catch(()=>{}); loadQueryTelemetry().catch(()=>{}); }
+  refreshAll();
+})();
+</script>
+{% endblock %}

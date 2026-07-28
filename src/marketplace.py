@@ -1,0 +1,725 @@
+"""Nightly sync of marketplace git repos onto the data volume.
+
+Each row in the `marketplace_registry` DuckDB table is cloned (first run)
+or fast-forwarded (subsequent runs) into ${DATA_DIR}/marketplaces/<slug>/.
+FastAPI reads the working copies via the filesystem — this module has no
+HTTP surface.
+
+Callable from:
+  - the scheduler (in-process, daily 03:00 UTC) via sync_marketplaces()
+  - the admin API (POST /api/marketplaces/{id}/sync) via sync_one()
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse, urlunparse
+
+from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
+
+logger = logging.getLogger(__name__)
+
+GIT_TIMEOUT_SEC = 300
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_lock = threading.Lock()
+
+PLUGIN_MANIFEST_REL = Path(".claude-plugin") / "marketplace.json"
+
+# A pinned `ref` is either a tag name or a full 40-char commit SHA. The tag
+# charset is deliberately conservative (vs. full git-check-ref-format rules)
+# so a malformed value can never be mistaken for a git CLI flag when passed
+# as a positional arg to `git fetch`/`git clone --branch` — must start with
+# an alnum (no leading `-`), no `..`, no trailing `.lock`/`.`.
+_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+class MarketplaceNotFound(Exception):
+    """Raised when a marketplace id is not present in the registry."""
+
+
+def is_valid_slug(slug: str) -> bool:
+    return bool(_SLUG_RE.match(slug or ""))
+
+
+def is_full_sha(ref: str) -> bool:
+    """True when `ref` is a full 40-character (hex) commit SHA."""
+    return bool(_SHA_RE.match(ref or ""))
+
+
+def is_valid_ref(ref: str) -> bool:
+    """True when `ref` is a syntactically valid tag name or commit SHA.
+
+    Used both by the admin API (400 on a malformed pin at registration time)
+    and defensively by ``_sync_spec`` (a row edited directly in the DB, or
+    seeded by an older Agnes version, must not reach `git` with an
+    attacker-controlled or flag-like value).
+    """
+    if not ref:
+        return False
+    if is_full_sha(ref):
+        return True
+    if ".." in ref or ref.endswith(".lock") or ref.endswith("."):
+        return False
+    return bool(_REF_RE.match(ref))
+
+
+def _authenticated_url(repo_url: str, token: str) -> str:
+    """Inject a PAT into an HTTPS URL as the x-access-token user.
+
+    Non-HTTPS URLs (file://, ssh://, http://) and empty tokens pass through
+    unchanged. Result is only ever used as a git remote — never logged.
+    """
+    if not token:
+        return repo_url
+    parts = urlparse(repo_url)
+    if parts.scheme != "https" or not parts.hostname:
+        return repo_url
+    netloc = f"x-access-token:{token}@{parts.hostname}"
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunparse((parts.scheme, netloc, parts.path, parts.params, parts.query, parts.fragment))
+
+
+def _redact(s: str, token: str) -> str:
+    return s.replace(token, "***") if token and s else s
+
+
+def _run_git(args: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_SEC,
+        check=True,
+    )
+
+
+def _checkout_pinned_sha(target: Path, sha: str) -> None:
+    """Resolve a full-length commit-SHA pin into `target`'s working tree.
+
+    Tries a direct shallow fetch of the SHA first (`git fetch --depth 1
+    origin <sha>`) — works when the git server enables
+    `uploadpack.allowReachableSHA1InWant` / `allowAnySHA1InWant` (GitHub,
+    GitLab, and most modern hosts do). Falls back to a full (unshallow)
+    fetch of the default branch history when the server rejects direct-SHA
+    fetches, then checks the SHA out of that history directly.
+
+    Raises `subprocess.CalledProcessError` (propagated to `_sync_spec`'s
+    handler, which turns it into a token-redacted `RuntimeError`) if the SHA
+    still isn't reachable after the fallback — a mismatched/nonexistent pin
+    fails the sync loudly. Neither the initial `fetch` nor a failed
+    `checkout` touch the working tree, so a previously-synced checkout is
+    left exactly as it was when this raises.
+    """
+    try:
+        _run_git(["fetch", "--depth", "1", "origin", sha], cwd=target)
+        _run_git(["checkout", "--detach", "FETCH_HEAD"], cwd=target)
+        return
+    except subprocess.CalledProcessError:
+        pass  # server doesn't support direct-SHA fetch; fall back below
+
+    is_shallow = (target / ".git" / "shallow").exists()
+    fetch_args = ["fetch", "origin"]
+    if is_shallow:
+        fetch_args.insert(1, "--unshallow")
+    _run_git(fetch_args, cwd=target)
+    _run_git(["checkout", "--detach", sha], cwd=target)
+
+
+def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Perform the clone/update for a single marketplace spec.
+
+    Raises RuntimeError on git failure (with token-redacted message).
+    Raises ValueError on invalid slug/ref.
+
+    `ref` (tag name or full 40-char commit SHA) pins the marketplace to a
+    fixed point in history — nightly/manual syncs keep resolving that same
+    ref even when upstream's default branch moves. Mutually exclusive with
+    `branch` (enforced at registration by the admin API's 400; re-checked
+    here as defense-in-depth against a row edited directly in the DB).
+    A tag pin reuses the exact same `git fetch <ref>` + `reset --hard
+    FETCH_HEAD` path as a branch pin — tags and branches are both valid
+    refspecs there. A SHA pin needs the special handling in
+    `_checkout_pinned_sha` because `git clone --branch` doesn't accept an
+    arbitrary commit SHA.
+    """
+    slug = (spec.get("id") or "").strip()
+    name = spec.get("name") or slug
+    url = (spec.get("url") or "").strip()
+    branch = (spec.get("branch") or "").strip() or None
+    ref = (spec.get("ref") or "").strip() or None
+    token_env = (spec.get("token_env") or "").strip()
+    token = os.environ.get(token_env, "") if token_env else ""
+
+    if not is_valid_slug(slug):
+        raise ValueError(f"marketplace id {slug!r} invalid (must match [a-z0-9][a-z0-9_-]{{0,63}})")
+    if not url:
+        raise ValueError(f"marketplace {slug!r}: url is required")
+    if branch and ref:
+        raise ValueError(f"marketplace {slug!r}: branch and ref are mutually exclusive")
+    if ref and not is_valid_ref(ref):
+        raise ValueError(f"marketplace {slug!r}: ref {ref!r} is not a valid tag name or 40-character commit SHA")
+
+    pinned_sha = ref if ref and is_full_sha(ref) else None
+    pinned_tag = ref if ref and not pinned_sha else None
+    # Tags and branches resolve identically via `git fetch origin <name>` +
+    # `reset --hard FETCH_HEAD` (and via `clone --branch <name>` on first
+    # clone) — this is the single "checkout target" for that shared path.
+    checkout_ref = pinned_tag or branch
+
+    target = get_marketplaces_dir() / slug
+    auth_url = _authenticated_url(url, token)
+    is_git = (target / ".git").is_dir()
+    action = "update" if is_git else "clone"
+
+    try:
+        if not is_git:
+            if target.exists():
+                shutil.rmtree(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if pinned_sha:
+                # A commit SHA isn't a valid `--branch` name for git clone —
+                # shallow-clone the default branch first, then resolve the
+                # pin below (shared with the update path).
+                _run_git(["clone", "--depth", "1", auth_url, str(target)])
+                _checkout_pinned_sha(target, pinned_sha)
+            else:
+                clone_args = ["clone", "--depth", "1"]
+                if checkout_ref:
+                    clone_args += ["--branch", checkout_ref]
+                clone_args += [auth_url, str(target)]
+                _run_git(clone_args)
+        else:
+            _run_git(["remote", "set-url", "origin", auth_url], cwd=target)
+            if pinned_sha:
+                _checkout_pinned_sha(target, pinned_sha)
+            else:
+                fetch_ref = checkout_ref or "HEAD"
+                _run_git(["fetch", "--depth", "1", "origin", fetch_ref], cwd=target)
+                _run_git(["reset", "--hard", "FETCH_HEAD"], cwd=target)
+        sha = _run_git(["rev-parse", "HEAD"], cwd=target).stdout.strip()
+    except subprocess.CalledProcessError as e:
+        stderr = _redact(e.stderr or "", token).strip()
+        raise RuntimeError(f"git {action} failed: {stderr}") from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"git {action} timed out after {GIT_TIMEOUT_SEC}s") from None
+
+    logger.info("marketplace %s %s -> %s", slug, action, sha)
+    return {"id": slug, "name": name, "action": action, "commit": sha, "path": str(target)}
+
+
+def read_plugins(slug: str) -> List[Dict[str, Any]]:
+    """Read the plugin list from a cloned marketplace's manifest.
+
+    Returns the `plugins` array from `.claude-plugin/marketplace.json` at
+    the root of the working copy. Returns an empty list if the manifest
+    is missing, unreadable, or has no plugins. Malformed JSON is logged
+    and treated as empty — a broken manifest must not take the sync
+    operation down.
+    """
+    if not is_valid_slug(slug):
+        raise ValueError(f"invalid slug: {slug!r}")
+    manifest = get_marketplaces_dir() / slug / PLUGIN_MANIFEST_REL
+    if not manifest.is_file():
+        return []
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning("marketplace %s: unreadable manifest %s: %s", slug, manifest, e)
+        return []
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, list):
+        return []
+    return [p for p in plugins if isinstance(p, dict) and p.get("name")]
+
+
+def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
+    """Reload plugins from disk into marketplace_plugins. Returns plugin count.
+
+    Failures here are logged but never re-raised: the primary sync result
+    (git commit) has already succeeded at this point and must still be
+    reported.
+
+    Two-channel read:
+
+    * ``.claude-plugin/marketplace.json`` (the Claude Code spec) is the
+      authoritative source for plugin existence, source spec, and the bare
+      Claude Code-shaped metadata.
+    * ``.claude-plugin/marketplace-metadata.json`` (Agnes-only) supplies cover
+      photo, video URL, doc links, and category overrides per plugin. Missing
+      file → no enrichment, plugins still cached at the bare shape.
+
+    External URLs referenced from marketplace-metadata are fed through the asset
+    mirror (`src.marketplace_asset_mirror.sync_assets`) before the DB write
+    so the persisted ``cover_photo_url`` / ``doc_links`` already point at the
+    final served URL. Mirror failures degrade gracefully — failed external
+    URLs surface as plain external links in the served data, never as 404s.
+    """
+    from src.marketplace_asset_mirror import sync_assets
+    from src.marketplace_metadata import (
+        collect_all_external_urls,
+        read_marketplace_metadata,
+        resolve_plugin_metadata,
+    )
+    from src.marketplace_urls import (
+        internal_asset_url,
+        internal_doc_url,
+        mirrored_url,
+    )
+    from src.repositories import marketplace_plugins_repo
+
+    # Cache-busting fingerprint baked into every served cover-photo URL.
+    # 8 hex chars from the cloned repo's git HEAD — same upstream state →
+    # same version → browser keeps cached bytes; git fetch landing a new
+    # commit → new version → browser refetches. See
+    # ``src/marketplace_urls.py:_with_version`` for the URL shape.
+    asset_version = (commit_sha or "")[:8] or None
+
+    try:
+        plugins = read_plugins(slug)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("marketplace %s: plugin read failed: %s", slug, e)
+        return 0
+
+    repo_root = get_marketplaces_dir() / slug
+    metadata = read_marketplace_metadata(repo_root)
+
+    # Resolve per-plugin enrichment + collect every external URL the mirror
+    # needs to fetch this round. Internal references skip the mirror.
+    resolved_per_plugin: Dict[str, Dict[str, Any]] = {}
+    fetch_requests: List[tuple] = []
+    for p in plugins:
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        resolved = resolve_plugin_metadata(metadata, name)
+        resolved_per_plugin[name] = resolved
+        # collect_all_external_urls walks plugin + skills + agents so the
+        # mirror caches every external URL, not just plugin-level. Inner-
+        # level skill/agent detail enrichment then looks up entries in the
+        # same manifest at request time.
+        for kind, url in collect_all_external_urls(metadata, name):
+            fetch_requests.append((name, kind, url))
+
+    # Mirror external URLs (best-effort — see _refresh_asset_mirror docstring
+    # for the failure-mode contract). Keyed by ``(plugin_name, url)`` so two
+    # plugins referencing the same external URL each get their own served
+    # path under their own plugin subdir — RBAC-safe (a user with grant on
+    # plugin B never receives a URL pointing under plugin A's tree).
+    served_url_for: Dict[Tuple[str, str], Optional[str]] = {}
+    mirror_status: Dict[Tuple[str, str], str] = {}
+    if fetch_requests:
+        cache_dir = get_marketplace_cache_dir() / slug
+        try:
+            report = sync_assets(cache_dir=cache_dir, requests=fetch_requests)
+            for (plugin_name, url), entry in report.entries.items():
+                mirror_status[(plugin_name, url)] = entry.status
+                if entry.status == "ok" and entry.local:
+                    # /mirrored/{key} where key encodes plugin + kind + filename.
+                    # The local relpath is already in the right shape.
+                    served_url_for[(plugin_name, url)] = (
+                        mirrored_url(
+                            slug,
+                            entry.plugin_name,
+                            entry.local.split("/", 1)[1],
+                            version=asset_version,
+                        )
+                        if "/" in entry.local
+                        else mirrored_url(
+                            slug,
+                            entry.plugin_name,
+                            entry.local,
+                            version=asset_version,
+                        )
+                    )
+                else:
+                    # Failed / rejected → fall back to the original URL so the
+                    # frontend can still link out (b1).
+                    served_url_for[(plugin_name, url)] = url
+            logger.info(
+                "marketplace %s: mirror summary fetched=%d not_modified=%d failed=%d rejected=%d removed=%d",
+                slug,
+                report.fetched,
+                report.not_modified,
+                report.failed,
+                report.rejected,
+                report.removed,
+            )
+        except Exception as e:  # noqa: BLE001 — never abort the sync
+            logger.warning("marketplace %s: asset mirror crashed: %s", slug, e)
+            # On total mirror crash, every (plugin, url) pair falls back to
+            # the original URL so the strict-drop logic downstream marks it
+            # as un-served and removes it from the rendered metadata.
+            for plugin_name, _, url in fetch_requests:
+                served_url_for.setdefault((plugin_name, url), url)
+                mirror_status.setdefault((plugin_name, url), "failed_recent")
+
+    # Compose the enriched plugin dicts and write to DB.
+    enriched: List[Dict[str, Any]] = []
+    for p in plugins:
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        merged = dict(p)
+        resolved = resolved_per_plugin.get(name) or {}
+
+        # Direct serialization to avoid mutating the frozen DocLinkRef.
+        # External docs that mirroring rejected (e.g. HTML page, oversized,
+        # SSRF-blocked) or failed to fetch (404, timeout, never seen before)
+        # are DROPPED from the served list entirely. Internal links whose
+        # path doesn't exist on disk at sync time are dropped too. This
+        # matches the operator contract: any doc_link Agnes can't deliver
+        # as a real downloadable PDF / Markdown / plain text is treated as
+        # if it weren't in marketplace-metadata.json at all.
+        serialized_links: List[Dict[str, str]] = []
+        for link in resolved.get("doc_links") or []:
+            if not hasattr(link, "kind"):
+                continue
+            if link.kind == "internal":
+                local_path = repo_root / link.path
+                if not local_path.is_file():
+                    logger.info(
+                        "marketplace %s plugin=%s: dropping internal doc_link %r (file not found in working tree)",
+                        slug,
+                        name,
+                        link.path,
+                    )
+                    continue
+                serialized_links.append(
+                    {
+                        "name": link.name,
+                        "url": internal_doc_url(slug, name, link.path),
+                    }
+                )
+                continue
+            # external — keep ONLY when the mirror succeeded for THIS plugin.
+            status = mirror_status.get((name, link.url), "")
+            served = served_url_for.get((name, link.url))
+            if status != "ok" or not served or served == link.url:
+                logger.info(
+                    "marketplace %s plugin=%s: dropping external doc_link %r (mirror status=%s)",
+                    slug,
+                    name,
+                    link.url,
+                    status or "no_attempt",
+                )
+                continue
+            serialized_links.append(
+                {
+                    "name": link.name,
+                    "url": served,
+                }
+            )
+
+        # Build the column-shape payload inline — strict-drop semantics
+        # need access to mirror status + on-disk existence per reference,
+        # which is decided here rather than in a generic translator.
+        # Internal covers are dropped when the file doesn't exist on disk;
+        # external covers are dropped when mirroring rejected/failed (no
+        # successful mirror means the served URL is the original external
+        # URL, which we don't trust to render — better to fall through to
+        # the gradient placeholder).
+        if isinstance(resolved.get("cover_photo_ref"), tuple):
+            kind, target = resolved["cover_photo_ref"]
+            if kind == "internal":
+                local_path = repo_root / target
+                if local_path.is_file():
+                    merged["cover_photo_url"] = internal_asset_url(
+                        slug,
+                        name,
+                        target,
+                        version=asset_version,
+                    )
+                else:
+                    logger.info(
+                        "marketplace %s plugin=%s: dropping internal cover_photo %r (file not found in working tree)",
+                        slug,
+                        name,
+                        target,
+                    )
+            elif kind == "external":
+                status = mirror_status.get((name, target), "")
+                served = served_url_for.get((name, target))
+                if status == "ok" and served and served != target:
+                    merged["cover_photo_url"] = served
+                else:
+                    logger.info(
+                        "marketplace %s plugin=%s: dropping external cover_photo %r (mirror status=%s)",
+                        slug,
+                        name,
+                        target,
+                        status or "no_attempt",
+                    )
+        if "video_url" in resolved:
+            merged["video_url"] = resolved["video_url"]
+        if "category" in resolved:
+            # Override marketplace.json category when marketplace-metadata supplies one.
+            merged["category"] = resolved["category"]
+        if serialized_links:
+            merged["doc_links"] = serialized_links
+
+        enriched.append(merged)
+
+    # Backend-aware write — on a Postgres-backed instance the rows must land
+    # in Postgres, where the marketplace_plugins_repo() readers (UI + RBAC
+    # fanout) look. A raw DuckDB write here is invisible to them → empty
+    # marketplace on PG.
+    try:
+        count = marketplace_plugins_repo().replace_for_marketplace(slug, enriched)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("marketplace %s: plugin cache write failed: %s", slug, e)
+        return 0
+
+    # v46: attribution tables removed. `MarketplaceItemLookup` resolves
+    # skill/agent/command identifiers at usage-event write time by
+    # prefix-splitting on `:` and matching the prefix against this same
+    # `marketplace_plugins` table — no separate mapping pass needed here.
+    return count
+
+
+def sync_one(marketplace_id: str) -> Dict[str, Any]:
+    """Sync a single marketplace by id. Updates registry row with result.
+
+    Raises:
+        MarketplaceNotFound: if the id isn't registered.
+        RuntimeError: if the git operation failed (token-redacted).
+    """
+    from src.repositories import marketplace_registry_repo
+
+    # Backend-aware: registry rows live in Postgres on a PG instance. A raw
+    # DuckDB read here returns an empty registry → "not found" / silent no-sync.
+    repo = marketplace_registry_repo()
+    spec = repo.get(marketplace_id)
+    if not spec:
+        raise MarketplaceNotFound(marketplace_id)
+
+    with _lock:
+        try:
+            result = _sync_spec(spec)
+            repo.update_sync_status(
+                marketplace_id,
+                commit_sha=result["commit"],
+                synced_at=datetime.now(timezone.utc),
+            )
+            result["plugin_count"] = _refresh_plugin_cache(
+                marketplace_id,
+                commit_sha=result["commit"],
+            )
+            return result
+        except (RuntimeError, ValueError) as e:
+            repo.update_sync_status(
+                marketplace_id,
+                synced_at=datetime.now(timezone.utc),
+                error=str(e),
+            )
+            raise
+
+
+def sync_marketplaces() -> Dict[str, Any]:
+    """Sync every registered marketplace. Empty registry = no-op.
+
+    Built-in rows (is_builtin=TRUE) are always skipped — they have no remote
+    URL to clone; their content is bundled in the wheel and re-baked on boot
+    by ``seed_builtin_marketplace()``.
+
+    One failure does not abort the rest; errors are collected per entry.
+    """
+    from src.repositories import marketplace_registry_repo
+
+    # Backend-aware: on a PG instance the registry lives in Postgres. Reading it
+    # through a raw DuckDB conn returned an empty list → "nothing to sync" → the
+    # nightly sync silently never ran on Postgres-backed instances.
+    # list_non_builtin() already filters out is_builtin=TRUE rows.
+    repo = marketplace_registry_repo()
+    specs = repo.list_non_builtin()
+
+    if not specs:
+        logger.info("No marketplaces registered; nothing to sync.")
+        return {"synced": [], "errors": []}
+
+    synced: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+
+    with _lock:
+        for spec in specs:
+            slug = spec.get("id", "")
+            try:
+                result = _sync_spec(spec)
+                repo.update_sync_status(
+                    slug,
+                    commit_sha=result["commit"],
+                    synced_at=datetime.now(timezone.utc),
+                )
+                result["plugin_count"] = _refresh_plugin_cache(
+                    slug,
+                    commit_sha=result["commit"],
+                )
+                synced.append(result)
+            except (RuntimeError, ValueError) as e:
+                err = {"id": slug, "error": str(e)}
+                errors.append(err)
+                logger.error("marketplace %s sync failed: %s", slug, e)
+                repo.update_sync_status(
+                    slug,
+                    synced_at=datetime.now(timezone.utc),
+                    error=str(e),
+                )
+
+    # Drop cached etags so the next /marketplace.zip request re-hashes against
+    # the freshly-synced content rather than waiting for TTL expiry. Late
+    # import: keeps src.marketplace decoupled from the FastAPI app surface.
+    if synced:
+        try:
+            from app.marketplace_server import packager as _packager
+
+            _packager.invalidate_etag_cache()
+            from app.marketplace_server import cowork_packager as _cowork
+
+            _cowork.invalidate_cache()
+        except ImportError:
+            pass
+
+    return {"synced": synced, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# Built-in marketplace seeding
+# ---------------------------------------------------------------------------
+
+#: Slug reserved for the built-in marketplace. Matches the registry row
+#: seeded by seed_builtin_marketplace() and is therefore excluded from the
+#: nightly git-sync path.
+BUILTIN_MARKETPLACE_SLUG = "agnes-builtin"
+
+#: Path to the bundled content tree inside the wheel.
+_BUILTIN_CONTENT_DIR = Path(__file__).parent / "_builtin_marketplace"
+
+#: Sentinel URL stored in the registry for the built-in row. Never used for
+#: git operations; exists only to satisfy the NOT NULL constraint on `url`.
+_BUILTIN_SENTINEL_URL = "builtin://agnes-builtin"
+
+#: RBAC seed: (group_name, plugin_name) pairs that must always exist.
+_BUILTIN_RBAC_SEEDS = [
+    ("Everyone", "agnes-analyst"),
+    ("Admin", "agnes-operator"),
+]
+
+
+def seed_builtin_marketplace() -> None:
+    """Idempotently seed the built-in marketplace on boot or upgrade.
+
+    1. Upserts a ``marketplace_registry`` row with ``is_builtin=TRUE``
+       whose ``url`` is the sentinel (never git-cloned).
+    2. Copies the bundled ``_builtin_marketplace/`` tree into the
+       marketplaces data directory so the regular plugin-cache reader
+       (``_refresh_plugin_cache`` / ``read_plugins``) can find it.
+    3. Refreshes the ``marketplace_plugins`` cache from the bundled content.
+    4. Seeds ``resource_grants``: Everyone → agnes-analyst, Admin → agnes-operator.
+
+    Safe to call on every startup — all writes are idempotent.
+    """
+    from src.repositories import (
+        marketplace_registry_repo,
+        resource_grants_repo,
+        user_groups_repo,
+    )
+
+    slug = BUILTIN_MARKETPLACE_SLUG
+    reg_repo = marketplace_registry_repo()
+
+    # 1. Upsert registry row. curator_name gives the marketplace a visible
+    # owner in the admin/browse UI — "Agnes" attributes the built-in content to
+    # the platform itself (vendor-neutral), distinct from admin-registered
+    # marketplaces which carry their curator's name.
+    reg_repo.register(
+        id=slug,
+        name="Agnes Built-in",
+        url=_BUILTIN_SENTINEL_URL,
+        description=(
+            "First-party guidance that ships with every Agnes instance: how to "
+            "use Agnes as an analyst and how to configure it as an operator. "
+            "Maintained by Agnes, served to all users (RBAC-scoped per plugin)."
+        ),
+        registered_by="system:seed",
+        curator_name="Agnes",
+        is_builtin=True,
+    )
+    logger.info("built-in marketplace: registry row seeded (slug=%s)", slug)
+
+    # 2. Copy bundled content to the data directory so read_plugins() finds it.
+    if _BUILTIN_CONTENT_DIR.is_dir():
+        target = get_marketplaces_dir() / slug
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(_BUILTIN_CONTENT_DIR, target)
+        logger.info("built-in marketplace: content baked to %s", target)
+    else:
+        logger.warning(
+            "built-in marketplace: content directory not found at %s; plugin cache will be empty",
+            _BUILTIN_CONTENT_DIR,
+        )
+
+    # 3. Refresh plugin cache from the bundled copy (no git SHA available).
+    count = _refresh_plugin_cache(slug)
+    logger.info("built-in marketplace: %d plugin(s) cached", count)
+
+    # 4. Seed RBAC grants.
+    groups_repo = user_groups_repo()
+    grants_repo = resource_grants_repo()
+    for group_name, plugin_name in _BUILTIN_RBAC_SEEDS:
+        group = groups_repo.get_by_name(group_name)
+        if not group:
+            logger.warning(
+                "built-in marketplace: group %r not found; skipping grant for %r",
+                group_name,
+                plugin_name,
+            )
+            continue
+        resource_id = f"{slug}/{plugin_name}"
+        grants_repo.ensure_grant(
+            group_id=group["id"],
+            resource_type="marketplace_plugin",
+            resource_id=resource_id,
+        )
+        logger.info(
+            "built-in marketplace: RBAC grant seeded: %s -> %s",
+            group_name,
+            resource_id,
+        )
+
+
+def delete_marketplace_dir(slug: str) -> bool:
+    """Remove on-disk working copy + asset-mirror cache for a marketplace.
+
+    Two directories are scoped per marketplace slug:
+    * ``${DATA_DIR}/marketplaces/<slug>/``       — git working copy
+    * ``${DATA_DIR}/marketplace-cache/<slug>/``  — external-asset mirror
+
+    Removed together so a re-registered slug starts from a clean cache.
+    Returns True iff at least one of the directories existed and was removed.
+    """
+    if not is_valid_slug(slug):
+        raise ValueError(f"invalid slug: {slug!r}")
+    removed = False
+    work_path = get_marketplaces_dir() / slug
+    if work_path.exists():
+        shutil.rmtree(work_path)
+        removed = True
+    cache_path = get_marketplace_cache_dir() / slug
+    if cache_path.exists():
+        shutil.rmtree(cache_path, ignore_errors=True)
+        removed = True
+    return removed

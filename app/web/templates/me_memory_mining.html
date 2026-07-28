@@ -1,0 +1,47 @@
+{% extends "base_ds.html" %}
+
+{% block title %}Memory mining — Agnes{% endblock %}
+
+{% block head_extra %}
+<style>
+  .mm-card {
+    max-width: 640px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+  }
+  .mm-status { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-4) 0; }
+  .mm-badge {
+    font-size: var(--text-xs); font-weight: var(--font-semibold);
+    padding: 2px 10px; border-radius: var(--radius-full);
+  }
+  .mm-on { background: var(--ds-primary-light); color: var(--ds-primary-dark); }
+  .mm-off { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+  .mm-note { color: var(--ds-text-secondary); font-size: var(--text-sm); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <h1>Memory mining</h1>
+  <div class="mm-card">
+    <p class="mm-note">
+      When you opt in, an admin may distill reusable knowledge from your past
+      session transcripts into <strong>shared corporate memory</strong> that other
+      analysts can see. Every distilled item is PII-scanned, carries provenance
+      back to you, and is reviewed by an admin before it goes live. This is
+      <strong>off by default</strong> and you can change it any time.
+    </p>
+    <div class="mm-status">
+      <span>Status:</span>
+      <span class="mm-badge mm-off" id="mm-badge">checking…</span>
+    </div>
+    <button class="btn btn-primary" id="mm-toggle" type="button" disabled>…</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="/static/js/me_memory_mining.js"></script>
+{% endblock %}

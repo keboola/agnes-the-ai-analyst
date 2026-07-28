@@ -1,0 +1,41 @@
+# Scrape config for the m-tier local/dev harness (docker-compose.mtier.yml,
+# `prometheus` service, profile `mtier`). Targets are Compose DNS service
+# names, not host ports — this file only ever runs inside the compose
+# network. Every Agnes role exposes its own unauthenticated `GET /metrics`
+# (app/observability/metrics.py) — see docs/observability.md and
+# docs/DEPLOYMENT.md ("Metrics (Prometheus)") for the series exported and
+# the sum-vs-max aggregation guidance across replicas.
+#
+# Job names are prefixed `agnes-` so `up{job=~"agnes.*"}` (used by
+# scripts/dev/mtier-smoke.sh) picks out exactly the four role targets and
+# not `cadvisor`.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: agnes-api1
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api1:8000"]
+
+  - job_name: agnes-api2
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api2:8000"]
+
+  - job_name: agnes-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gateway:8000"]
+
+  - job_name: agnes-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:8000"]
+
+  # Container resource metrics (cpu/mem/network) — see the `cadvisor`
+  # service comment in docker-compose.mtier.yml for the macOS Docker
+  # Desktop caveat.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]

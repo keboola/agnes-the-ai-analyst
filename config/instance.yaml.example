@@ -1,0 +1,826 @@
+# Agnes AI Harness - Instance Configuration
+# ==========================================
+# This is the main configuration file for your instance.
+# Copy to instance.yaml and fill in your values.
+#
+# SECRET VALUES use ${ENV_VAR} syntax - actual values go in .env file.
+# Non-secret values are set directly here.
+
+# --- Config version ---
+# Incremented when the config schema changes. Must match SUPPORTED_CONFIG_VERSIONS
+# in config/loader.py. Currently only version 1 is supported.
+config_version: 1
+
+# --- Instance branding ---
+instance:
+  name: "AI Harness"
+  subtitle: "Your Organization"
+  copyright: "Your Organization"
+  # brand: "Agnes"                   # Product-name brand string used in analyst-facing UI copy
+                                     # (/home hero, /setup, /login messages, clipboard setup
+                                     # script). Default "Agnes". Set to e.g. "Foundry AI" to
+                                     # rebrand without forking. Distinct from `name` above:
+                                     # `name` is the deploying organization, `brand` is the
+                                     # product. Env override: AGNES_INSTANCE_BRAND.
+  # brand_short: "Agnes"             # Short form of `brand` used mid-sentence in /home body
+                                     # copy (e.g. brand "Acme Data Analyst" -> short "Acme").
+                                     # When it differs from `brand`, the /home hero appends
+                                     # "Call me <brand_short>." after the title. Defaults to
+                                     # `brand`. Env override: AGNES_INSTANCE_BRAND_SHORT.
+  # workspace_dir: "FoundryAI"       # Filesystem-safe folder name for the analyst's local
+                                     # workspace (~/<workspace_dir>). When unset, derived from
+                                     # `brand` by stripping non-alphanumerics ("Foundry AI" ->
+                                     # "FoundryAI"). Set explicitly only if you want a folder
+                                     # name that differs from the auto-derivation. Env override:
+                                     # AGNES_WORKSPACE_DIR_NAME.
+  # logo_svg: |                      # Inline <svg> element rendered into the header brand slot
+  #   <svg width="120" height="30" viewBox="0 0 100 30" xmlns="http://www.w3.org/2000/svg">
+  #     <text y="22" font-size="24" fill="#333">Logo</text>     # and above the Sign In card on /login.
+  #   </svg>
+  #                                  # When set, the SVG replaces the text brand in the header.
+  #                                  # `name` above still drives browser <title> text and page
+  #                                  # headings — keep it populated. Env override:
+  #                                  # AGNES_INSTANCE_LOGO_SVG.
+  # overview: |                      # Operator-authored Overview body rendered inside the
+  #   <p>Free-form HTML — paragraphs, links, lists.</p>
+  #                                  # welcome hero on /home (hairline-separated footnotes
+  #                                  # below the four-pillar row). Use for product framing,
+  #                                  # privacy posture, what-data-flows summary —
+  #                                  # operator-specific copy stays out of the OSS this way.
+  #                                  # HTML in, HTML out (same `| safe` filter as news_intro).
+  #                                  # Empty/unset = block hidden.
+  #                                  # Env override: AGNES_INSTANCE_OVERVIEW.
+  # support: |                       # Operator-authored Support body rendered in a
+  #   <p><strong>Need help?</strong> Drop into our <a href="...">Support</a> chat space.</p>
+  #                                  # mint-accent panel inside the welcome hero on /home
+  #                                  # (below the Overview footnotes). Use to point analysts
+  #                                  # at a chat space, mailing list, or runbook so they know
+  #                                  # where to ask for help. HTML in, HTML out (same `| safe`
+  #                                  # filter as overview). Empty/unset = block hidden.
+  #                                  # Env override: AGNES_INSTANCE_SUPPORT.
+  # hide_login_features: [mcp]       # Feature-cards to hide on the /login left panel.
+  #                                  # Accepts a YAML list ([mcp, memory]) or a comma-
+  #                                  # separated string ("mcp,memory"). Valid keys:
+  #                                  # data, marketplace, mcp, memory, anywhere. Empty/
+  #                                  # unset hides nothing (default). Env override:
+  #                                  # AGNES_INSTANCE_HIDE_LOGIN_FEATURES.
+  # custom_preamble: |               # Plain-text block injected at the TOP of the `agnes init`
+  #   Trust note: {instance_brand} is operated internally.
+  #                                  # install prompt (above "Set up the … CLI"). {instance_brand}
+  #                                  # etc. are substituted; do NOT use {server_url}/{token}.
+  #                                  # Empty/unset = default prompt unchanged. Env override:
+  #                                  # AGNES_INSTANCE_CUSTOM_PREAMBLE.
+  # sync_interval: "1 hour"          # Cadence shown in analyst CLAUDE.md (e.g., "1 hour", "30 minutes", "daily")
+  # admin_email: "ops@acme.com"      # Operator contact shown on /home GWS connector tile as
+                                     # an "Email admin" mailto button (analysts whose operator
+                                     # hasn't pre-provisioned a shared OAuth app can request
+                                     # one without leaving the workspace). Empty/unset hides
+                                     # the button. Env override: AGNES_INSTANCE_ADMIN_EMAIL.
+  # home:                            # Per-instance toggles for /home content blocks.
+  #   show_automode: true            # Render Step-3 auto-accept-mode block. Default true.
+  #                                  # Env: AGNES_HOME_SHOW_AUTOMODE.
+  #   show_status_frame: true        # Render the 5-card status frame (Last sync, Sessions,
+  #                                  # Prompts, Tokens, Projects). Visible only to onboarded
+  #                                  # users regardless of this flag. Default true. Env:
+  #                                  # AGNES_HOME_SHOW_STATUS_FRAME.
+  # custom_scripts:                  # Operator-injected HTML/JS blocks rendered into every
+  #                                  # page that extends base.html. Use for feedback widgets
+  #                                  # (Marker.io), analytics (GTM, PostHog), error capture
+  #                                  # (Sentry), etc. Each entry needs name + enabled +
+  #                                  # placement + html. Admin-only; rendered with `| safe`.
+  #                                  # Review the widget's privacy posture before enabling —
+  #                                  # most third-party widgets capture screenshots, console
+  #                                  # logs, or user actions on submit. Resolved by
+  #                                  # `app/instance_config.py::get_custom_scripts()`. No
+  #                                  # env override (structure doesn't fit env vars cleanly).
+  #   - name: "marker-io"            # Example: Marker.io feedback widget.
+  #     enabled: true                # Kill switch — set false to disable without deleting.
+  #     placement: "head_end"        # head_start | head_end | body_end
+  #     html: |
+  #       <script>
+  #         window.markerConfig = {
+  #           project: 'YOUR_MARKER_IO_PROJECT_ID',
+  #           source: 'snippet'
+  #         };
+  #         !function(e,r,a){if(!e.__Marker){e.__Marker={};var t=[],n={__cs:t};["show","hide","isVisible","capture","cancelCapture","unload","reload","isExtensionInstalled","setReporter","clearReporter","setCustomData","on","off"].forEach(function(e){n[e]=function(){var r=Array.prototype.slice.call(arguments);r.unshift(e),t.push(r)}}),e.Marker=n;var s=r.createElement("script");s.async=1,s.src="https://edge.marker.io/latest/shim.js";var i=r.getElementsByTagName("script")[0];i.parentNode.insertBefore(s,i)}}(window,document);
+  #       </script>
+
+# --- Server ---
+server:
+  hostname: ""                    # DNS name (e.g., "data.acme.com")
+  host: ""                        # IP address
+  app_dir: "/opt/data-analyst"    # Installation directory
+  # public_url: ""                # Absolute base URL, e.g. "https://data.acme.com".
+                                  # Used to build absolute links from request-less
+                                  # surfaces — notably the Slack bot's /slack/bind
+                                  # magic links. The PUBLIC_URL env var overrides this.
+  # --- Client setup (shown in "Get Started" on dashboard) ---
+  # ssh_alias: "data-analyst"     # SSH config Host alias for analysts (default: "data-analyst")
+  # ssh_key: "~/.ssh/data_analyst_server"  # SSH key path for analysts (default: "~/.ssh/data_analyst_server")
+  # project_dir: "data-analyst"   # Local project folder name (default: "data-analyst")
+
+# --- Admin users ---
+# Manage the server, own data files, get unlimited resource limits.
+# SSH keys are used by server/setup.sh during provisioning.
+admins:
+  - username: "admin"
+    ssh_public_key: "ssh-ed25519 AAAA..."
+
+# --- Deployment ---
+deployment:
+  method: "manual"                # manual | github_actions
+  repo_url: ""                    # e.g., "git@github.com:acme/ai-data-analyst.git"
+  branch: "main"
+  # role: "all"                    # api | gateway | worker | all, comma-separable (e.g. "api,gateway").
+                                   # AGNES_ROLE env var overrides this. Default "all" keeps the
+                                   # single-process, zero-ops S-tier behavior. Splitting into
+                                   # api/gateway/worker replicas requires coordination.backend=redis
+                                   # and (for a shared analytics.backend=ducklake catalog) a Postgres
+                                   # ducklake.catalog_dsn — see app/roles.py + app/startup_guards.py.
+
+# --- Coordination backend (multi-process deployments only) ---
+# In-process memory (default) is zero-config and correct for a single "all"-role
+# process. Running api/gateway/worker as separate replicas needs a shared
+# backend for WS auth tickets, session-routing leases, rate limiting, etc.
+# coordination:
+#   backend: "memory"              # memory | redis. AGNES_COORDINATION_BACKEND env var overrides this.
+#
+# redis:
+#   url: "redis://localhost:6379/0"  # Only consulted when coordination.backend is "redis".
+                                      # AGNES_REDIS_URL env var overrides this.
+
+# --- Analytics backend (server-side query engine) ---
+# "legacy" (default) is today's rebuilt-and-swapped analytics.duckdb file — no
+# extra config needed. "ducklake" moves the query surface to a DuckLake catalog
+# (storage/compute separation, scales by adding stateless reader replicas) — see
+# docs/DEPLOYMENT.md's DuckLake section and
+# docs/superpowers/specs/2026-07-16-three-plane-scalable-architecture.md §3.4.
+# analytics:
+#   backend: "legacy"              # legacy | ducklake. AGNES_ANALYTICS_BACKEND env var overrides this.
+#
+# ducklake:
+#   # catalog_dsn: ""              # Postgres DSN (postgresql://...), REQUIRED for any multi-process
+                                    # topology (a DuckDB-file catalog only works single-process — see
+                                    # app.startup_guards.validate_deployment). Left unset, defaults to
+                                    # a DuckDB-file catalog at {DATA_DIR}/analytics/catalog.ducklake.
+                                    # AGNES_DUCKLAKE_CATALOG_DSN env var overrides this (recommended —
+                                    # keeps the DSN's credentials out of this file).
+#   # data_path: ""                # Directory where DuckLake stores its own data files. Defaults to
+                                    # {DATA_DIR}/analytics/lake/. AGNES_DUCKLAKE_DATA_PATH env var
+                                    # overrides this.
+#   # snapshot_retention_days: 7   # Days of DuckLake snapshot history the daily ducklake-maintenance
+                                    # job keeps before expiry/cleanup. AGNES_DUCKLAKE_SNAPSHOT_RETENTION_DAYS
+                                    # env var overrides this.
+
+# --- Authentication ---
+# At minimum, set allowed_domain and webapp_secret_key.
+# Email magic link auth works out of the box (no external service needed).
+# Google OAuth is optional - add credentials to enable it.
+auth:
+  allowed_domain: ""              # Email domain(s) for login, comma-separated (e.g., "acme.com" or "acme.com, partner.org")
+  webapp_secret_key: "${WEBAPP_SECRET_KEY}"
+  # Optional: Google OAuth (if not set, only email magic link is available)
+  google_client_id: "${GOOGLE_CLIENT_ID}"
+  google_client_secret: "${GOOGLE_CLIENT_SECRET}"
+
+  # --- Webapp username shaping ---
+  #
+  # By default, a user's OS account is derived from their full email:
+  #   e.psimecek@acme.com  ->  e_psimecek_acme_com
+  #
+  # Two options let you control this:
+  #
+  # username_strip_domain: true
+  #   Use only the local part of the email (before @).
+  #   Safe when allowed_domain ensures all users share a single domain.
+  #   e.psimecek@acme.com  ->  e_psimecek
+  #   Keeps usernames short and readable.
+  #
+  # username_prefix: "myapp_"
+  #   Prepend a fixed string to every webapp-created account name.
+  #   Necessary when an external identity system (GCP OS Login, LDAP, SAML)
+  #   already creates OS accounts in /home/ using the same naming scheme.
+  #   Without a prefix, the webapp sees those existing OS accounts and refuses
+  #   to register new analyst accounts ("already in use by a system account").
+  #   With prefix "myapp_" and strip_domain true:
+  #     e.psimecek@acme.com  ->  myapp_e_psimecek
+  #   Linux enforces a 32-character username limit. Keep the prefix short.
+  #   Changing or removing either option later will invalidate all existing
+  #   analyst accounts. Use username_mapping (top-level) to bridge legacy accounts.
+  #
+  # username_strip_domain: false
+  # username_prefix: ""
+  # disabled_providers:            # Hide auth methods from login page
+  #   - "email"                    # Disable email magic link (use when Google OAuth is configured)
+
+# --- Security (optional) ---
+# security:
+#   # Hostnames exempt from the private/reserved-network SSRF guard on admin-
+#   # configured URLs. The check lives in the shared validator, so a listed host
+#   # is exempt on EVERY admin URL that routes through it — the marketplace +
+#   # initial-workspace clone URLs (git-cloned server-side), the Keboola
+#   # stack_url, and URL-bearing server-config fields (data_source.keboola.
+#   # stack_url, marketplace.curators_url) — not just clone URLs. By default any
+#   # host resolving to a private/reserved/loopback/link-local address is
+#   # rejected; list an internal host here (e.g. an on-prem GitHub Enterprise on
+#   # a private network) to allow it. Accepts a YAML list ([git.internal,
+#   # ghe.corp]) or a comma-separated string ("git.internal,ghe.corp").
+#   # Empty/unset (default) keeps the guard fail-closed. Env override:
+#   # AGNES_SSRF_ALLOWED_HOSTS.
+#   ssrf_allowed_hosts: []
+
+# --- Theme (optional) ---
+# Customize colors, fonts, and shape to match your brand.
+# All values are optional - defaults provide a clean blue theme.
+# See docs/theme-reference.html for a visual guide.
+theme:
+  # primary: "#0073D1"              # Main brand color (buttons, links, accents)
+  # primary_dark: "#005BA3"         # Hover/active state of primary
+  # primary_light: "rgba(0, 115, 209, 0.1)"  # Light tint backgrounds
+  # text_primary: "#1A253C"         # Main text color
+  # text_secondary: "#6B7280"       # Muted/secondary text
+  # background: "#F5F7FA"           # Page background
+  # surface: "#FFFFFF"              # Card/panel background
+  # border: "#E5E7EB"              # Borders and dividers
+  # font_primary: "'Inter', system-ui, sans-serif"
+  # font_url: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+  # radius: "6px"                   # Border radius (cards, buttons, inputs)
+  # success: "#10B77F"
+  # warning: "#F59F0A"
+  # error: "#EA580C"
+
+# --- Data source ---
+data_source:
+  type: "keboola"                 # keboola | bigquery | local
+  keboola:
+    storage_token: "${KEBOOLA_STORAGE_TOKEN}"
+    stack_url: ""                 # e.g., "https://connection.keboola.com"
+    project_id: ""
+  bigquery:
+    project: "${BIGQUERY_PROJECT}"       # GCP project hosting the data (used in FROM clause)
+    location: "${BIGQUERY_LOCATION}"     # BigQuery location (e.g., "us-central1", "US")
+    # Uses ADC (Application Default Credentials) - VM service account on GCP
+    # Data can live in a different project -- use fully-qualified table IDs in data_description.md
+    # billing_project: "prj-billing"     # GCP project to bill BQ jobs to / submit jobs from.
+    #                                    # Defaults to `project`. Set when the SA has bigquery.data.* on
+    #                                    # the data project but lacks serviceusage.services.use there.
+    #                                    # Mismatch -> every BQ call 403 USER_PROJECT_DENIED.
+    #                                    # `da diagnose` warns when this falls back to `project`.
+    #                                    # Configurable via /admin/server-config UI.
+    # max_bytes_per_materialize: 10737418240
+    #                                    # Cost guardrail (bytes) for query_mode='materialized' BQ scans.
+    #                                    # Dry-run check before running; exceeding -> registration / sync
+    #                                    # rejected. Default 10 GiB (10737418240). Set 0 to disable.
+    #                                    # null falls through to default. Configurable via /admin/server-config UI.
+    # materialize_fetch_timeout_seconds: 900
+    #                                    # Watchdog (seconds) on the COPY's client-side result download
+    #                                    # during materialize — the phase the extension's query timeout
+    #                                    # does not cover. On expiry the connection is interrupted and the
+    #                                    # COPY retried once on a fresh session. Default 900. Set 0 to disable.
+    # query_timeout_ms: 600000
+    #                                    # DuckDB BigQuery extension query timeout (milliseconds).
+    #                                    # Applied via `SET bq_query_timeout_ms` after every LOAD bigquery
+    #                                    # on every BQ-touching DuckDB session. Extension default is
+    #                                    # 90 000 ms = 90 s, which is too tight for analyst queries against
+    #                                    # view-backed datasets -- bumped to 600 000 ms = 10 min by default.
+    #                                    # Set 0 to fall through to the extension default. Configurable via
+    #                                    # /admin/server-config UI.
+    # session_pool_size: 4
+    #                                    # Number of pre-warmed DuckDB+bigquery-extension sessions kept
+    #                                    # in a process-local pool. Each acquire amortizes the
+    #                                    # ~0.5 s INSTALL/LOAD/CREATE-SECRET cost across requests; a fresh
+    #                                    # build only happens when the pool is empty. Default 4. Set 0
+    #                                    # to disable pooling (every acquire builds + closes a fresh
+    #                                    # session; matches pre-pool behavior).
+
+# --- OpenMetadata catalog (optional) ---
+# Enriches table and column metadata from OpenMetadata REST API.
+# If not configured, app works normally without catalog enrichment.
+# All openmetadata.* fields configurable via /admin/server-config UI.
+# openmetadata:
+#   url: "https://your-catalog.example.com"
+#   token: "${OPENMETADATA_TOKEN}"        # JWT bearer token
+#   cache_ttl_seconds: 3600               # Cache TTL in seconds
+#   verify_ssl: true                       # set to false ONLY for internal
+#                                          # CAs / self-signed certs; defaults
+#                                          # to true. Setting false ships the
+#                                          # JWT over an unverified channel.
+
+# --- Email delivery (optional, for magic link auth) ---
+# Without SMTP, magic links are shown directly in browser (development mode).
+# For production, configure any SMTP relay (Gmail, Mailgun, SendGrid SMTP, etc.)
+email:
+  from_address: "noreply@example.com"
+  from_name: "AI Harness"
+  smtp_host: "${SMTP_HOST}"          # e.g., "smtp.gmail.com"
+  smtp_port: 587                     # 587 for STARTTLS, 465 for SSL
+  smtp_user: "${SMTP_USER}"
+  smtp_password: "${SMTP_PASSWORD}"
+
+# --- Desktop app (optional) ---
+# All desktop.* fields configurable via /admin/server-config UI (rarely changed once set).
+desktop:
+  jwt_issuer: "data-analyst"
+  jwt_secret: "${DESKTOP_JWT_SECRET}"
+  url_scheme: "data-analyst"
+
+# --- Telegram notifications (optional) ---
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  bot_username: ""
+  domain_suffix: ""
+
+# --- Operator alerting (optional) ---
+# When a SCHEDULED sync fails, Agnes POSTs a concise {"text": ...} payload to
+# this webhook so operators hear about it without watching the dashboard. The
+# payload shape is the lowest common denominator across Slack, Google Chat,
+# Mattermost and Discord incoming webhooks — point `alert_webhook_url` at
+# whichever channel you already run. Best-effort: a webhook outage never blocks
+# the sync. Leave empty (the default) to disable. Env override:
+# AGNES_ALERT_WEBHOOK_URL.
+notifications:
+  alert_webhook_url: ""
+
+# --- Jira integration (optional) ---
+jira:
+  domain: ""
+  email: ""
+  api_token: "${JIRA_API_TOKEN}"
+  webhook_secret: "${JIRA_WEBHOOK_SECRET}"
+  # Custom fields to refresh onto tickets (generic; no defaults). field_id or
+  # field_id:column, comma-separated. Discover with:
+  #   python -m connectors.jira.scripts.verify_sla_access --list-fields
+  refresh_fields: "${JIRA_REFRESH_FIELDS}"
+  cloud_id: ""  # set only for a scoped API token (gateway URL)
+
+# --- Corporate Memory AI (optional) ---
+# Extracts shared knowledge from team members' CLAUDE.local.md files.
+# Provider: "anthropic" (direct API) or "openai_compat" (LiteLLM, OpenRouter, Azure, etc.)
+ai:
+  provider: "anthropic"                    # or "openai_compat"
+  api_key: "${ANTHROPIC_API_KEY}"          # or "${LLM_API_KEY}" for proxy
+  # base_url: "https://litellm.example.com"  # Required for provider='openai_compat' (LiteLLM,
+                                              # OpenRouter, vLLM). Ignored when provider='anthropic'.
+                                              # Configurable via /admin/server-config UI.
+  model: "claude-haiku-4-5-20251001"       # any model available on your provider
+  # --- Structured output quality control ---
+  # AI models can return JSON in three ways, each with different reliability:
+  #
+  # Layer 1 - "json_schema" (best):
+  #   The provider enforces an exact schema. Every field, type, and structure
+  #   is guaranteed. Available on: Anthropic, OpenAI, Claude via LiteLLM.
+  #
+  # Layer 2 - "json_object" (good):
+  #   The provider guarantees valid JSON, but does not enforce a specific schema.
+  #   Fields may be missing or have wrong types. Available on most providers.
+  #
+  # Layer 3 - "prompt" (acceptable):
+  #   The AI is asked to respond in JSON via instructions in the prompt.
+  #   No technical enforcement -- the model may still return invalid JSON.
+  #   Works everywhere, but least reliable.
+  #
+  # "strict" = only Layer 1. Fail if provider doesn't support json_schema.
+  #            Use when data quality is non-negotiable.
+  # "json"   = Layer 1, fall back to Layer 2. No prompt-based fallback.
+  #            Good balance of quality and compatibility.
+  # "auto"   = All three layers as progressive fallback. Maximum compatibility.
+  #            Use when you'd rather get imperfect data than no data.
+  structured_output: "auto"
+
+# Legacy format (still supported, equivalent to provider: "anthropic"):
+# ai:
+#   anthropic_api_key: "${ANTHROPIC_API_KEY}"
+
+# Examples:
+# --- LiteLLM proxy ---
+# ai:
+#   provider: "openai_compat"
+#   base_url: "https://litellm.example.com"
+#   api_key: "${LLM_API_KEY}"
+#   model: "claude-haiku-4-5-20251001"
+#   structured_output: "strict"
+#
+# --- OpenRouter ---
+# ai:
+#   provider: "openai_compat"
+#   base_url: "https://openrouter.ai/api/v1"
+#   api_key: "${OPENROUTER_API_KEY}"
+#   model: "anthropic/claude-3-haiku"
+#   structured_output: "auto"
+
+# --- Maintained digests (optional, K4) ---
+# Admin-defined digest documents (title + standing instructions + source
+# Collections) the scheduler regenerates via LLM only when the sources'
+# content fingerprint changes (or the digest definition itself was edited).
+# Provider/API key/model ride the ai: block above — this section only tunes
+# the per-pass LLM budget. All three knobs default sanely if omitted; 0
+# disables the corresponding budget/timeout gate.
+#
+# digests:
+#   llm:
+#     max_tokens: 4000                  # response cap per generation
+#     max_generations_per_pass: 3       # LLM-call cap per scheduler pass (0 = unlimited)
+#     timeout_seconds: 300              # wall-clock deadline per pass (0 = unlimited)
+
+# --- Flea-market upload guardrails (optional) ---
+# Controls the pre-publish check pipeline for skill/agent/plugin uploads
+# to /store. See docs/STORE_GUARDRAILS.md for the full check catalogue.
+#
+# guardrails:
+#   # Master kill-switch. When false, inline manifest/security/quality
+#   # checks still run (they're free) but the LLM step is skipped and new
+#   # uploads are auto-approved. Useful for local dev without an LLM key.
+#   enabled: true
+#
+#   # Anthropic model tier for the LLM security review.
+#   # haiku  — ~$0.001/review, default, good enough for routine uploads
+#   # sonnet — ~$0.015/review, deeper reasoning, fewer false negatives
+#   # opus   — ~$0.075/review, only for high-stakes deployments
+#   # You can also pin a concrete model ID (e.g. "claude-haiku-4-5-20251001").
+#   review_model: "haiku"
+#
+#   # Per-submitter daily cap on inline-blocked uploads. Bounds disk +
+#   # admin-queue spam. Set to 0 to disable. Default 50.
+#   blocked_quota_per_day: 50
+#
+#   # How many days to keep blocked bundle bytes on disk before the
+#   # daily TTL job purges them. Submission row + sha256 + size always
+#   # survive — only the bundle bytes go. Set to 0 to retain forever
+#   # (rely on admin Delete). Default 30.
+#   blocked_bundle_ttl_days: 30
+#
+#   # --- Skill linter configuration (optional) ---
+#   # Controls thresholds for the skill-linter advisory system.
+#   # See docs/skill-guidelines.md for the rule catalogue.
+#
+#   # SL002: Maximum body character length before bloat warning. Default 8000.
+#   lint_max_body_chars: 8000
+#
+#   # Duplicate shortlist size — top N candidate skills fed to SL010's LLM
+#   # confirmation (and the SL012 degraded fallback). Default 5.
+#   lint_duplicate_top_n: 5
+#
+#   # Minimum hours between full-corpus lint audits (the audit self-guard).
+#   # Default 144 (6 days).
+#   lint_audit_min_interval_hours: 144
+
+# --- Corporate Memory governance (optional) ---
+# Controls how AI-extracted knowledge is reviewed and distributed.
+# If not present, system operates in legacy mode (democratic wiki, no admin review).
+#
+# The corporate_memory.* schema is editable via /admin/server-config UI; you can
+# also continue to manage it via this YAML file. The UI surfaces every leaf with
+# a hint, so use it to discover the schema if this comment block has aged.
+#
+# corporate_memory:
+#   # How knowledge reaches users:
+#   # "mandatory_only" — admin controls everything, no user voting
+#   # "admin_curated" — admin controls, users vote as feedback signal
+#   # "hybrid" — mandatory from admin + optional from user voting (default)
+#   distribution_mode: "hybrid"
+#
+#   # How new AI-extracted items enter the system:
+#   # "review_queue" — nothing published without admin approval (default)
+#   # "auto_publish" — items go live immediately, admin intervenes retroactively
+#   # "threshold" — high-confidence auto-publish, low-confidence to review queue
+#   approval_mode: "review_queue"
+#
+#   # Default review period for approved/mandatory items (months)
+#   review_period_months: 6
+#
+#   # Notify km_admins about new pending items
+#   notify_on_new_items: true
+#
+#   # --- V1 Context Engineering ---
+#
+#   sources:
+#     claude_local_md:
+#       enabled: true
+#       confidence_base: 0.50
+#     session_transcripts:
+#       enabled: true
+#       confidence_base: 0.60
+#       max_turns_per_session: 100
+#       detection_types:
+#         - correction
+#         - confirmation
+#         - unprompted_definition
+#
+#   extraction:
+#     model: "claude-haiku-4-5-20251001"
+#     sensitivity_check: true
+#     contradiction_check: true
+#
+#   confidence:
+#     # Base score per extraction source. Key format: "source_type" or "source_type.detection_type"
+#     base:
+#       user_verification.correction: 0.90
+#       user_verification.unprompted_definition: 0.90
+#       user_verification.confirmation: 0.60
+#       admin_mandate: 1.00
+#       claude_local_md: 0.50
+#       session_transcript: 0.50
+#     # Per-key modifier step sizes applied to base when optional signals are present.
+#     modifiers:
+#       user_verification.correction:
+#         additional_verifiers: 0.05    # per extra unique verifier
+#       user_verification.unprompted_definition:
+#         additional_verifiers: 0.05
+#       user_verification.confirmation:
+#         admin_confirmed: 0.20
+#       session_transcript:
+#         user_confirmed_in_session: 0.20
+#     # Confidence decay applied to items as they age.
+#     decay:
+#       mode: exponential               # linear | exponential
+#       half_life_months: 12            # used when mode=exponential
+#       decay_rate_monthly: 0.02        # used when mode=linear
+#       floor:
+#         admin_mandate: 0.50           # admin policies don't silently decay to zero
+#         user_verification: 0.40       # user-verified facts never fall below 0.40
+#         default: 0.0
+#
+#   contradiction_detection:
+#     enabled: true
+#     max_candidates: 10
+#
+#   entity_resolution:
+#     enabled: true
+#     entities:
+#       metrics: ["churn", "MRR", "ARR", "NPS", "CAC", "LTV"]
+#       products: ["Platform", "API", "Dashboard"]
+#
+#   domain_owners:
+#     finance: ["cfo@company.com"]
+#     engineering: ["cto@company.com"]
+#     product: ["pm@company.com"]
+#
+#   domains:
+#     - finance
+#     - engineering
+#     - product
+#     - data
+#     - operations
+#     - infrastructure
+
+# --- User groups for audience targeting (optional) ---
+# Used with Corporate Memory governance to target mandatory knowledge to specific groups.
+#
+# groups:
+#   finance:
+#     label: "Finance & Analytics"
+#     members: ["analyst1@company.com", "analyst2@company.com"]
+#   engineering:
+#     label: "Engineering"
+#     members: ["dev1@company.com", "dev2@company.com"]
+
+# --- User display and permissions ---
+# Corporate Memory avatars + optional km_admin flag for governance.
+# users:
+#   admin@company.com:
+#     display_name: "Admin User"
+#     km_admin: true              # Corporate Memory admin (approve/mandate knowledge)
+#   analyst@company.com:
+#     display_name: "Analyst User"
+users: {}
+
+# --- Username mapping (webapp email -> server username, only if different) ---
+username_mapping: {}
+
+# --- Optional datasets (sync settings UI) ---
+datasets: {}
+
+# --- Data catalog ---
+catalog:
+  categories: {}
+  order: []
+
+# --- Data profiler (optional) ---
+# profiler:
+#   sample_size: 500000              # If table > this, sample this many rows; otherwise use all
+#   max_categorical_distinct: 50     # Treat as categorical if unique <= this
+#   top_values_limit: 10             # Top values per categorical column
+#   histogram_bins: 15               # Bins in histogram visualizations
+#   sample_rows_limit: 5             # Sample rows to show in UI "Sample" tab
+#   alert_high_missing_pct: 30.0     # Alert threshold for high missing %
+#   alert_missing_pct: 5.0           # Alert threshold for missing %
+#   alert_imbalance_pct: 60.0        # Alert threshold for imbalance %
+#   alert_high_cardinality: 50       # Alert threshold for high cardinality columns
+
+# --- Remote query (optional) ---
+# Settings for remote BigQuery queries via `python -m src.remote_query`.
+# Used when tables have query_mode: "remote" in data_description.md.
+# remote_query:
+#   timeout_seconds: 300              # BQ + DuckDB query timeout
+#   max_result_rows: 100000           # Max rows in final output
+#   max_bq_registration_rows: 500000  # Max rows per --register-bq sub-query
+#   default_format: "table"           # Default output format
+#   output_dir: "/tmp/remote_query"   # Directory for Parquet/CSV exports
+
+# --- v2 API knobs (optional) ---
+# Controls for the /api/v2/{catalog,schema,sample,scan,scan/estimate} endpoints.
+# All values are optional — the defaults shown below are applied if keys are absent.
+#
+# api:
+#   # --- Scan / fetch limits ---
+#   scan:
+#     max_limit: 10000000             # Hard row cap per /api/v2/scan request (default: 10 M)
+#     max_result_bytes: 2147483648    # Hard byte cap on Arrow stream response: 2 GB (default)
+#                                     # If exceeded, partial result returned with X-Agnes-Truncated header.
+#     max_concurrent_per_user: 5      # In-flight /api/v2/scan requests allowed per user (default: 5)
+#                                     # Note: quota is process-local; N replicas → effective N× cap.
+#     max_daily_bytes_per_user: 53687091200  # Per-user daily byte quota: 50 GB (default). Resets at UTC midnight.
+#     bq_cost_per_tb_usd: 5.00        # Cost rate shown in /api/v2/scan/estimate response (default: $5/TB)
+#     request_timeout_seconds: 300    # Server-side timeout for a single scan request (default: 300 s)
+#   # --- Discovery cache TTLs ---
+#   catalog_cache_ttl_seconds: 300    # /api/v2/catalog response cache lifetime (default: 5 min)
+#   schema_cache_ttl_seconds: 3600    # /api/v2/schema/{table_id} cache lifetime (default: 1 h)
+#   sample_cache_ttl_seconds: 3600    # /api/v2/sample/{table_id} cache lifetime (default: 1 h)
+#                                     # Admins can force-refresh via POST /api/v2/sample/{id}?refresh=true
+
+# --- Materialize concurrency safety (optional) ---
+# Concurrency safety net for the materialize path (BQ + Keboola). When
+# two materialize attempts race for the same table_id, the second one
+# raises MaterializeInFlightError and skips. The lock is held in a
+# .parquet.lock sibling file; if a holder process is hard-killed before
+# kernel-level flock release, the next attempt reclaims the lock once
+# the file's mtime is older than this TTL.
+#
+# Default 86400 (24h) is generous on purpose — anything shorter risks
+# a long-running COPY being interrupted by its own scheduler successor.
+# Lower it only if you know your materialize never exceeds the new
+# value AND your host has a habit of hard-killing processes.
+# Min 60 (1 minute), max 604800 (7 days). Configurable via /admin/server-config UI.
+materialize:
+  lock_ttl_seconds: 86400
+
+# --- Cloud-hosted Claude Code (optional) ---
+# Cloud-hosted Claude Code (web /chat + Slack adapter). Off by default;
+# turn on per-instance once you've built the E2B sandbox template and
+# set ANTHROPIC_API_KEY + E2B_API_KEY in the Agnes server env. See
+# docs/cloud-chat.md for the operator walkthrough.
+chat:
+  enabled: false
+  # Only 'e2b' is accepted in production (per Q7 owner decision —
+  # the MockE2BProvider variant was dropped).
+  provider: e2b
+  # E2B template id returned by `e2b template build` inside
+  # app/initial_workspace_default/e2b-template/. Required when
+  # provider=e2b and enabled=true; startup gate refuses otherwise.
+  # e2b_template_id: "agnes-chat"
+  # Per-spawn workspace push cap. Files past this cap → user-facing
+  # workspace_too_large error. 100 MB default keeps spawn latency in
+  # the 3-5 s range.
+  e2b_workspace_max_bytes: 104857600
+  # Kill the sandbox the moment the WS disconnects rather than
+  # waiting for the idle reaper. Cuts billable sandbox-minutes on
+  # UI close.
+  e2b_kill_on_ws_disconnect: true
+  concurrency_per_user: 3
+  idle_ttl_seconds: 1800              # 30 min
+  per_tool_call_seconds: 90
+  per_session_bq_scan_bytes: 21474836480   # 20 GiB
+  daily_anthropic_spend_usd: 20.0
+  max_session_seconds: 14400
+  max_session_tokens: 200000
+  rate_messages_per_hour: 100
+  tool_calls_per_turn_budget: 50
+  marketplace_sha_debounce_seconds: 300
+  # How the chat broker authenticates to Anthropic:
+  #   api_key           (default) — use the static ANTHROPIC_API_KEY.
+  #   workload_identity           — keyless: mint a short-lived token from the
+  #                                 workload's own OIDC identity via Anthropic
+  #                                 Workload Identity Federation. No long-lived
+  #                                 key anywhere. Requires the federation env to
+  #                                 be set (ANTHROPIC_FEDERATION_RULE_ID,
+  #                                 ANTHROPIC_ORGANIZATION_ID,
+  #                                 ANTHROPIC_SERVICE_ACCOUNT_ID, and
+  #                                 ANTHROPIC_IDENTITY_TOKEN or
+  #                                 ANTHROPIC_IDENTITY_TOKEN_FILE) and that
+  #                                 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN be
+  #                                 unset. See docs/superpowers/specs/2026-07-15-
+  #                                 keyless-llm-auth-design.md.
+  # llm:
+  #   auth: api_key
+
+# --- Hosted Data Apps (optional) ---
+# Hosted data apps (user web applications run next to the data)
+data_apps:
+  enabled: false
+  runtime_image: "keboolapublic.azurecr.io/data-app-python-js:1.6.2_python-3.13_node-24"
+  subdomain_base: ""            # e.g. "apps.example.com"; "" = path-prefix only
+  default_idle_timeout_s: 1800
+  default_sleep_mode: recreate  # recreate | pause
+  default_mem_limit: 1g
+  default_cpus: 1.0
+  max_apps_per_user: 3
+
+
+# Authoring Studio (chat-assisted builders at /admin/studio for skills,
+# agents, data packages, connections, and corporate memory). On by default.
+# Set to false — or export AGNES_STUDIO_ENABLED=0 (the infra/Terraform .env
+# override) — to hide the Studio nav entry and redirect /admin/studio* to home.
+studio:
+  enabled: true
+
+
+# --- Initial Workspace Template (optional) ---
+#
+# When configured, Agnes serves the contents of <repo>/workspace/ to analysts
+# during `agnes init` (replacing the built-in workspace bootstrap). The
+# install-prompt template + connector skills also flow from this seed if
+# present — see `docs/seed-repo-contract.md` for the full contract.
+#
+# Configure via the admin UI: /admin/server-config → "Initial Workspace
+# Template". PAT (when the repo is private) lives in
+# ${DATA_DIR}/state/.env_overlay, NOT in this file. The block below is
+# managed by the API endpoint at /api/admin/initial-workspace — manual
+# edits here are honored, but the admin UI is the canonical writer.
+#
+# initial_workspace:
+#   url: https://github.com/keboola/agnes-the-ai-analyst-workspace-seed
+#   branch: main
+#   token_env: AGNES_INITIAL_WORKSPACE_TOKEN  # optional; PAT name in shell env
+#   sync_schedule: "daily 03:30"              # optional; nightly auto-sync cadence.
+#                                             # Grammar: src/scheduler.py (daily HH:MM
+#                                             # UTC / every Nm / every Nh). Empty = manual
+#                                             # sync only. Takes effect on next scheduler
+#                                             # restart. Env override:
+#                                             # SCHEDULER_INITIAL_WORKSPACE_SCHEDULE
+#   last_synced_at: ...                       # written by API after sync
+#   last_commit_sha: ...                      # written by API after sync
+#   last_error: ...                           # written by API on failure
+
+
+# --- Connector per-tenant runtime params (optional) ---
+#
+# Operator-provisioned values that flow into `<workspace>/.claude/agnes/.env`
+# via `agnes init`. Seed-resident connector skills read these at install
+# time so the user isn't asked for org-specific values that the operator
+# already knows.
+#
+# **Never put secret VALUES here.** Use the `*_ENV` convention to name the
+# shell env var that holds the secret on the Agnes server (and on the
+# user's machine for any per-user secrets). The .env.agnes file carries
+# the env-var NAMES; the actual secret lives in the shell env.
+#
+# Resolution order: `globals` (instance-wide) beats per-connector keys on
+# name collision. Empty `connectors:` block → empty .env.agnes (the API
+# endpoint /api/connectors/params returns {}), seed skills fall back to
+# interactive prompts.
+#
+# GWS exception: when the shared Google Workspace OAuth client is
+# provisioned outside this overlay (server env vars AGNES_GWS_CLIENT_ID /
+# AGNES_GWS_CLIENT_SECRET, the admin vault, or `instance.gws.*` above),
+# /api/connectors/params merges the equivalent `connector-gws` keys into
+# its response automatically — no need to repeat them here. Keys set here
+# win over the server-resolved values.
+#
+# This section is also editable at runtime via /admin/server-config
+# (persisted to the DATA_DIR/state/instance.yaml overlay).
+#
+# connectors:
+#   globals:
+#     AGNES_INSTANCE_BRAND: Acme Analytics
+#   connector-atlassian:
+#     ATLASSIAN_BASE_URL: https://acme.atlassian.net
+#   connector-gws:
+#     AGNES_GWS_CLIENT_ID: 1234-abcd.apps.googleusercontent.com
+#     AGNES_GWS_CLIENT_SECRET_ENV: AGNES_GWS_CLIENT_SECRET  # secret VALUE lives in shell env
+#     # AGNES_GWS_PROJECT_ID is legacy — the bundled connector-gws skill
+#     # ignores it (a non-empty project_id in client_secret.json makes the
+#     # gws CLI send x-goog-user-project, which requires every analyst to
+#     # hold roles/serviceusage.serviceUsageConsumer on the OAuth project).
+#     # Only set it if your custom seed template still consumes it.
+
+# --- Signed-URL distribution (optional, off by default) ---
+#
+# When configured, the worker mirrors distribution parquets to an
+# S3-compatible bucket after each sync, and `agnes pull` downloads
+# directly from it via short-TTL presigned URLs instead of always
+# streaming through the app server — an L-tier bandwidth-offload option.
+# With no `object_store.bucket` set, nothing changes: the app-served
+# `/api/data/{id}/download` path stays the only download path. Requires
+# the `distribution` extra (`pip install "agnes[distribution]"`) for the
+# `boto3` S3 client. Full reference: docs/DEPLOYMENT.md → "Signed-URL
+# distribution (object store)".
+#
+# distribution:
+#   signed_urls: auto              # auto (on when object_store is configured) | on | off
+#                                   # Env override: AGNES_DISTRIBUTION_SIGNED_URLS
+#   object_store:
+#     bucket: my-agnes-distribution-bucket
+#     endpoint_url: https://s3.example.com   # unset for real AWS S3; or GCS's S3-interop
+#                                             # endpoint / SeaweedFS / any other S3-compatible
+#                                             # managed bucket. Not bundled — bring your own.
+#     region: us-east-1
+#     prefix: agnes/distribution             # default shown; key layout is {prefix}/<table_id>.parquet
+#     # Credentials are NEVER stored here — these two fields name OTHER
+#     # environment variables that hold the actual access key / secret key
+#     # (same *_env indirection used elsewhere in this file), resolved on
+#     # the Agnes server at runtime.
+#     access_key_env: AGNES_DISTRIBUTION_OBJECT_STORE_ACCESS_KEY
+#     secret_key_env: AGNES_DISTRIBUTION_OBJECT_STORE_SECRET_KEY
+#   # Per-field env overrides (win over the yaml values above):
+#   # AGNES_DISTRIBUTION_OBJECT_STORE_BUCKET, _ENDPOINT_URL, _REGION, _PREFIX,
+#   # _ACCESS_KEY_ENV, _SECRET_KEY_ENV

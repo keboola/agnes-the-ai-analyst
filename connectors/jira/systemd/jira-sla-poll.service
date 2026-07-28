@@ -1,0 +1,20 @@
+[Unit]
+Description=Jira SLA Polling - Refresh SLA data for open tickets
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=data-ops
+WorkingDirectory=/opt/data-analyst/repo
+ExecStart=/opt/data-analyst/.venv/bin/python -m connectors.jira.scripts.poll_sla
+EnvironmentFile=/opt/data-analyst/.env
+EnvironmentFile=/opt/data-analyst/repo/.env
+ProtectSystem=strict
+ReadWritePaths=/data/src_data
+PrivateTmp=true
+TimeoutSec=600
+
+[Install]
+WantedBy=multi-user.target

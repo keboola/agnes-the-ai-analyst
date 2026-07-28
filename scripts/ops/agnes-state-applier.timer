@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Agnes DB backend state applier every 30s
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=agnes-state-applier.service
+
+[Install]
+WantedBy=timers.target

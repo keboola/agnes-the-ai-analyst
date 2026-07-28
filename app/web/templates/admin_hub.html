@@ -1,0 +1,137 @@
+{% extends "base_ds.html" %}
+{% block title %}Admin — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* Admin hub — a settings-style index of every /admin surface, grouped by
+     domain. Tokens only so it themes in light/dark for free. */
+  .admin-hub-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-5);
+    margin-top: var(--space-6);
+  }
+  .admin-hub-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: var(--space-5);
+  }
+  .admin-hub-card__title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary, #6b7280);
+    margin: 0 0 var(--space-3);
+  }
+  .admin-hub-links { display: flex; flex-direction: column; gap: 2px; }
+  .admin-hub-link {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--text-primary, #111827);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .admin-hub-link:hover { background: var(--border-light, #f3f4f6); }
+  .admin-hub-link__desc {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-secondary, #6b7280);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="page-header page-header--hero" aria-labelledby="admin-hub-title">
+  <div class="page-header__main">
+    <div class="page-header__eyebrow">Administration</div>
+    <h1 class="page-header__title" id="admin-hub-title">Admin</h1>
+    <p class="page-header__subtitle">
+      Everything that governs this instance — data, access, agent experience,
+      and server configuration. Jump to any area below, or reach the same
+      surfaces from the Admin menu in the header.
+    </p>
+  </div>
+</section>
+
+<div class="admin-hub-grid">
+  <div class="admin-hub-card">
+    <h2 class="admin-hub-card__title">Activity Center</h2>
+    <div class="admin-hub-links">
+      <a class="admin-hub-link" href="/admin/adoption">Adoption</a>
+      <a class="admin-hub-link" href="/admin/activity">Audit log</a>
+      <a class="admin-hub-link" href="/admin/telemetry">Telemetry</a>
+      <a class="admin-hub-link" href="/admin/sessions">Analyst sessions</a>
+      <a class="admin-hub-link" href="/admin/chat">Chat sessions</a>
+    </div>
+  </div>
+
+  <div class="admin-hub-card">
+    <h2 class="admin-hub-card__title">Users &amp; Access</h2>
+    <div class="admin-hub-links">
+      <a class="admin-hub-link" href="/admin/users">Users</a>
+      <a class="admin-hub-link" href="/admin/groups">Groups</a>
+      <a class="admin-hub-link" href="/admin/access">Resource access</a>
+      <a class="admin-hub-link" href="/admin/tokens">Tokens</a>
+    </div>
+  </div>
+
+  <div class="admin-hub-card">
+    <h2 class="admin-hub-card__title">Data Packages</h2>
+    <div class="admin-hub-links">
+      <a class="admin-hub-link" href="/admin/tables">Tables</a>
+      <a class="admin-hub-link" href="/admin/sync">Sync</a>
+    </div>
+  </div>
+
+  <div class="admin-hub-card">
+    <h2 class="admin-hub-card__title">Sources</h2>
+    <div class="admin-hub-links">
+      <a class="admin-hub-link" href="/admin/data-sources">Data sources
+        <span class="admin-hub-link__desc">Keboola/BigQuery projects Agnes pulls tables from</span>
+      </a>
+      <a class="admin-hub-link" href="/admin/mcp-sources">MCP sources
+        <span class="admin-hub-link__desc">MCP servers whose tools Agnes calls at runtime</span>
+      </a>
+      <a class="admin-hub-link" href="/admin/datasource-credentials">Instance secrets
+        <span class="admin-hub-link__desc">Vault-backed BigQuery / Google Workspace credentials</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="admin-hub-card">
+    <h2 class="admin-hub-card__title">Agent Experience</h2>
+    <div class="admin-hub-links">
+      <a class="admin-hub-link" href="/admin/marketplaces">Curated Marketplaces</a>
+      <a class="admin-hub-link" href="/admin/initial-workspace">Initial Workspace</a>
+      <a class="admin-hub-link" href="/admin/news">News</a>
+      <a class="admin-hub-link" href="/admin/corporate-memory">Curated memory reviews</a>
+      <a class="admin-hub-link" href="/admin/knowledge-digests">Maintained digests</a>
+      <a class="admin-hub-link" href="/admin/store/submissions">Flea Submissions</a>
+      <a class="admin-hub-link" href="/admin/prompts">Prompts</a>
+    </div>
+  </div>
+
+  <div class="admin-hub-card">
+    <h2 class="admin-hub-card__title">Server</h2>
+    <div class="admin-hub-links">
+      <a class="admin-hub-link" href="/admin/server-config">Instance settings</a>
+      <a class="admin-hub-link" href="/admin/database">Database backend</a>
+    </div>
+  </div>
+
+  <div class="admin-hub-card">
+    <h2 class="admin-hub-card__title">Documentation</h2>
+    <div class="admin-hub-links">
+      <a class="admin-hub-link" href="/documentation/api">API Guide</a>
+      <a class="admin-hub-link" href="/docs">Interactive API (Swagger)</a>
+      <a class="admin-hub-link" href="/redoc">API Reference (ReDoc)</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

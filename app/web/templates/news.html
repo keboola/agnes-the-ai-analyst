@@ -1,0 +1,38 @@
+{% extends "base_ds.html" %}
+
+{% block title %}News — {{ instance_name or "AI Harness" }}{% endblock %}
+
+{% block head_extra %}
+<script>
+// Tag the body so the chrome rules above apply only on /news. The
+// author-content rules in style-custom.css are global by design.
+document.addEventListener('DOMContentLoaded', function () {
+    document.body.classList.add('news-page');
+});
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="news-card">
+    {% if news %}
+    <div class="news-meta">
+        {# `published_at` is intentionally rendered date-only (no time component), so it is NOT wrapped in <time> — the global hydrateTimes() helper in datetime.js always swaps the body for formatDateTime() (date + clock time), which would add unwanted time precision here. Local-tz conversion isn't meaningful for a date with no time. #}
+        Version {{ news.version }} · published {% if news.published_at %}{{ news.published_at.strftime('%Y-%m-%d') }}{% endif %}
+        {% if news.published_by %} by {{ news.published_by }}{% endif %}
+    </div>
+    {% if news.intro %}
+    <div class="news-intro">{{ news.intro | safe }}</div>
+    {% endif %}
+    <div class="news-content">{{ news.content | safe }}</div>
+    {% else %}
+    <div class="news-empty">
+        <h2>No news yet</h2>
+        {% if user.is_admin %}
+        <p>An admin hasn't published a news update on this instance yet. Head to <a href="/admin/news">/admin/news</a> to write the first one.</p>
+        {% else %}
+        <p>An admin hasn't published a news update on this instance yet. Check back soon.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

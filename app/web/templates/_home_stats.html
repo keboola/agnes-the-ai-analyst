@@ -1,0 +1,205 @@
+{# Homepage status frame — five counters with a 24h/7d window toggle.
+
+   Initial paint is server-rendered from `home_stats` in ctx (no
+   spinner, no FOUC). The toggle JS calls GET /api/me/home-stats?window=
+   and rewrites the card values in place. #}
+
+<style>
+.hp-stats {
+    margin: 0 0 24px 0;
+    padding: 16px 20px;
+    border: 1px solid var(--hp-border-light, rgba(0,0,0,0.08));
+    border-radius: 12px;
+    background: var(--hp-card-bg, #fff);
+}
+.hp-stats-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+.hp-stats-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--hp-text-muted, #555);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.hp-stats-toggle {
+    display: inline-flex;
+    border: 1px solid var(--hp-border-light, rgba(0,0,0,0.12));
+    border-radius: 999px;
+    overflow: hidden;
+}
+.hp-stats-toggle button {
+    border: 0;
+    padding: 4px 12px;
+    font: inherit;
+    font-size: 12px;
+    background: transparent;
+    color: var(--hp-text-muted, #555);
+    cursor: pointer;
+}
+.hp-stats-toggle button.is-active {
+    background: var(--hp-accent, #2563eb);
+    color: #fff;
+}
+.hp-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+}
+@media (max-width: 720px) {
+    .hp-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.hp-stat {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--hp-stat-bg, rgba(0,0,0,0.025));
+}
+.hp-stat .lbl {
+    font-size: 11px;
+    color: var(--hp-text-muted, #6b7280);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+}
+.hp-stat .val {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--hp-text, #111);
+    font-variant-numeric: tabular-nums;
+}
+.hp-stat .sub {
+    font-size: 11px;
+    color: var(--hp-text-muted, #6b7280);
+    margin-top: 2px;
+}
+</style>
+
+<section class="hp-stats" id="hpStats"
+         data-initial-window="{{ home_stats.window }}">
+    <div class="hp-stats-head">
+        <div class="hp-stats-title">Status</div>
+        <div class="hp-stats-toggle" role="tablist" aria-label="Time window">
+            <button type="button" role="tab"
+                    class="hp-stats-window {% if home_stats.window == '24h' %}is-active{% endif %}"
+                    data-window="24h"
+                    aria-selected="{{ 'true' if home_stats.window == '24h' else 'false' }}">24h</button>
+            <button type="button" role="tab"
+                    class="hp-stats-window {% if home_stats.window == '7d' %}is-active{% endif %}"
+                    data-window="7d"
+                    aria-selected="{{ 'true' if home_stats.window == '7d' else 'false' }}">7d</button>
+        </div>
+    </div>
+
+    <div class="hp-stats-grid">
+        <div class="hp-stat">
+            <div class="lbl">Last sync</div>
+            <div class="val" data-stat="last_pull"
+                 data-iso="{{ home_stats.last_pull_at or '' }}">
+                {% if home_stats.last_pull_at %}—{% else %}never{% endif %}
+            </div>
+            <div class="sub">your last <code>agnes pull</code></div>
+        </div>
+        <div class="hp-stat">
+            <div class="lbl">Sessions</div>
+            <div class="val" data-stat="sessions">{{ home_stats.sessions }}</div>
+            <div class="sub" data-stat="sessions-sub">
+                last {{ home_stats.window }}
+            </div>
+        </div>
+        <div class="hp-stat">
+            <div class="lbl">Prompts</div>
+            <div class="val" data-stat="prompts">{{ home_stats.prompts }}</div>
+            <div class="sub">user messages</div>
+        </div>
+        <div class="hp-stat">
+            <div class="lbl">Tokens</div>
+            <div class="val" data-stat="tokens">{{ home_stats.tokens.total }}</div>
+            <div class="sub" data-stat="tokens-sub">in + out + cache</div>
+        </div>
+        <div class="hp-stat">
+            <div class="lbl">Projects</div>
+            <div class="val" data-stat="projects">{{ home_stats.projects }}</div>
+            <div class="sub">distinct cwd</div>
+        </div>
+    </div>
+</section>
+
+<script>
+(function () {
+    const root = document.getElementById('hpStats');
+    if (!root) return;
+
+    function formatNumber(n) {
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+        if (n >= 10_000)    return (n / 1_000).toFixed(0) + 'k';
+        if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'k';
+        return String(n);
+    }
+
+    function formatRelative(iso) {
+        if (!iso) return 'never';
+        const then = new Date(iso);
+        const sec = Math.max(0, (Date.now() - then.getTime()) / 1000);
+        if (sec < 60)        return Math.floor(sec) + 's ago';
+        if (sec < 3600)      return Math.floor(sec / 60) + 'm ago';
+        if (sec < 86400)     return Math.floor(sec / 3600) + 'h ago';
+        return Math.floor(sec / 86400) + 'd ago';
+    }
+
+    function renderLastPull() {
+        const el = root.querySelector('[data-stat="last_pull"]');
+        const iso = el.getAttribute('data-iso') || '';
+        el.textContent = formatRelative(iso);
+    }
+
+    function apply(stats) {
+        root.querySelector('[data-stat="last_pull"]')
+            .setAttribute('data-iso', stats.last_pull_at || '');
+        renderLastPull();
+        root.querySelector('[data-stat="sessions"]').textContent =
+            formatNumber(stats.sessions);
+        root.querySelector('[data-stat="prompts"]').textContent =
+            formatNumber(stats.prompts);
+        root.querySelector('[data-stat="tokens"]').textContent =
+            formatNumber(stats.tokens.total);
+        root.querySelector('[data-stat="projects"]').textContent =
+            formatNumber(stats.projects);
+        root.querySelector('[data-stat="sessions-sub"]').textContent =
+            'last ' + stats.window;
+    }
+
+    async function fetchAndApply(win) {
+        try {
+            const r = await fetch('/api/me/home-stats?window=' + encodeURIComponent(win), {
+                credentials: 'same-origin',
+            });
+            if (!r.ok) return;
+            apply(await r.json());
+        } catch (e) {
+            // Silent — leave the SSR values up rather than flashing a
+            // half-broken state at the user.
+        }
+    }
+
+    root.querySelectorAll('.hp-stats-window').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const win = btn.getAttribute('data-window');
+            root.querySelectorAll('.hp-stats-window').forEach((b) => {
+                const on = b === btn;
+                b.classList.toggle('is-active', on);
+                b.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            fetchAndApply(win);
+        });
+    });
+
+    // Convert the SSR ISO timestamp to a relative-time string on load,
+    // then keep it ticking once a minute so the card doesn't stale-out
+    // on long-lived tabs.
+    renderLastPull();
+    setInterval(renderLastPull, 60_000);
+})();
+</script>

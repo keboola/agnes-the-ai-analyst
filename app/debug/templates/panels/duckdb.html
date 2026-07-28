@@ -1,0 +1,26 @@
+<h4>DuckDB queries — {{ queries|length }} ({{ "%.1f"|format(total_ms) }} ms total)</h4>
+{% if by_db %}
+<p>By DB:
+  {% for db, ms in by_db.items() %}<code>{{ db }}</code>: {{ "%.1f"|format(ms) }} ms{% if not loop.last %} · {% endif %}{% endfor %}
+</p>
+{% endif %}
+<table class="djdt-table">
+  <thead>
+    <tr><th>#</th><th>DB</th><th>ms</th><th>rows</th><th>SQL</th><th>params</th></tr>
+  </thead>
+  <tbody>
+  {% for q in queries %}
+    <tr class="{{ 'djdt-error' if q.error else '' }}">
+      <td>{{ loop.index }}</td>
+      <td>{{ q.db }}</td>
+      <td>{{ "%.2f"|format(q.ms) }}</td>
+      <td>{{ q.rows if q.rows is not none else '—' }}</td>
+      <td>
+        <pre>{{ q.sql }}</pre>
+        {% if q.error %}<div class="djdt-error">{{ q.error }}</div>{% endif %}
+      </td>
+      <td><code>{{ q.params }}</code></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>

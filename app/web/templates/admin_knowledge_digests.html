@@ -1,0 +1,443 @@
+{% extends "base_ds.html" %}
+{% block title %}Maintained Digests — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+{# Design-system component macros — toolbar "+ New digest" + modal buttons
+   render via `ds.button`. Table/modal/toast CSS mirrors admin_mcp_sources.html. #}
+<style>
+  .kd-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .kd-search {
+    padding: 8px 12px 8px 32px; min-width: 280px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    font-size: 13px;
+    background: var(--ds-surface) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
+  }
+
+  .kd-pointer {
+    font-size: 13px; color: var(--text-secondary, #6b7280); margin: 0 0 16px;
+  }
+  .kd-pointer a { color: var(--ds-primary); text-decoration: none; }
+  .kd-pointer a:hover { text-decoration: underline; }
+
+  .kd-title { font-weight: 500; color: var(--text-primary, #111827); }
+  .kd-slug {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px; color: var(--text-secondary, #6b7280);
+  }
+
+  .status-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.4px; cursor: default;
+  }
+  .status-fresh   { background: #dcfce7; color: #166534; }
+  .status-stale   { background: #fef3c7; color: #92400e; }
+  .status-pending { background: #f3f4f6; color: #6b7280; }
+
+  .kd-sources-count {
+    display: inline-block; min-width: 22px; padding: 2px 8px;
+    border-radius: 999px; background: #ede9fe; color: #5b21b6;
+    font-size: 11px; font-weight: 600; text-align: center;
+  }
+
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer;
+    color: var(--text-secondary, #6b7280); transition: all 0.15s;
+    text-decoration: none; line-height: 1.4; white-space: nowrap;
+  }
+  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
+  .icon-btn.primary { color: var(--ds-primary); border-color: #c7d2fe; }
+  .icon-btn.primary:hover { background: #eef2ff; }
+  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
+
+  .kd-empty, .kd-loading {
+    text-align: center; padding: 48px 16px;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+  .kd-empty .big { font-size: 15px; color: var(--text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
+
+  /* Modal — identical to admin_mcp_sources.html */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 560px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+  .modal-card .help { font-size: 11px; color: var(--text-secondary, #9ca3af); margin-top: 4px; }
+  .modal-card input[type="text"], .modal-card select, .modal-card textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    font-family: inherit;
+  }
+  .modal-card textarea { min-height: 110px; resize: vertical; }
+  .modal-card select[multiple] { min-height: 120px; }
+  .modal-card input:focus, .modal-card textarea:focus, .modal-card select:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+  /* Toast — same vocabulary as the other admin pages */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="knowledge-digests-page">
+  {% set page_hero_eyebrow = "Agent Experience" %}
+  {% set page_hero_title = "Maintained digests" %}
+  {% set page_hero_subtitle = "Admin-defined digest documents the scheduler regenerates with an LLM whenever their source collections change. Delivered to analysts as .claude/rules/ka_<slug>.md on agnes pull." %}
+  {% include "_page_hero.html" %}
+
+  <p class="kd-pointer">
+    Access to a digest's content is granted like any other resource — grants are managed on the
+    <a href="/admin/access">Resource access</a> page (Maintained digests block).
+  </p>
+
+  <div class="kd-toolbar">
+    <input id="kd-search" type="search" class="kd-search" placeholder="Filter by slug or title…" autocomplete="off">
+    {{ ds.button('+ New digest', variant='primary', id='open-create-btn') }}
+  </div>
+
+  <div class="data-table-wrap">
+    <table class="data-table" id="kd-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Slug</th>
+          <th title="Number of source collections feeding this digest">Sources</th>
+          <th>Status</th>
+          <th>Generated</th>
+          <th>Model</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="kd-tbody"></tbody>
+    </table>
+    <div id="kd-loading" class="kd-loading">Loading digests…</div>
+    <div id="kd-empty" class="kd-empty" style="display:none;">
+      <div class="big">No maintained digests yet</div>
+      <div>Click <strong>New digest</strong> to define your first one.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Create / edit modal -->
+<div class="modal-backdrop" id="edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
+  <div class="modal-card">
+    <h3 id="edit-modal-title">New digest</h3>
+    <p class="sub" id="edit-modal-sub">Define a digest — standing instructions plus the source collections it draws from. The scheduler regenerates it whenever a source changes.</p>
+
+    <label for="kd-title">Title</label>
+    <input id="kd-title" type="text" placeholder="e.g. Architecture overview" required autocomplete="off">
+
+    <label for="kd-slug">Slug</label>
+    <input id="kd-slug" type="text" placeholder="e.g. architecture-overview" autocomplete="off">
+    <div class="help">Lowercase letters, digits, <code>-</code>/<code>_</code>. Becomes <code>.claude/rules/ka_&lt;slug&gt;.md</code> on every analyst laptop — immutable after creation.</div>
+
+    <label for="kd-instructions">Standing instructions</label>
+    <textarea id="kd-instructions" placeholder="What should this digest maintain and how?" autocomplete="off"></textarea>
+
+    <label for="kd-sources">Source collections</label>
+    <select id="kd-sources" multiple></select>
+    <div class="help">Hold Cmd/Ctrl to select multiple. The digest regenerates when any selected collection's content changes.</div>
+
+    <div class="modal-actions">
+      {{ ds.button('Cancel', variant='secondary', attrs='data-close-modal="edit-modal"') }}
+      {{ ds.button('Save', variant='primary', id='confirm-save-btn') }}
+    </div>
+  </div>
+</div>
+
+<!-- Confirm delete modal -->
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <h3 id="confirm-title">Delete digest?</h3>
+    <p class="sub" id="confirm-text"></p>
+    <div class="modal-actions">
+      {{ ds.button('Cancel', variant='secondary', attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Delete', variant='danger', id='confirm-ok-btn') }}
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const API = "/api/admin/knowledge-digests";
+const COLLECTIONS_API = "/api/collections";
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+function openModal(id) {
+  document.getElementById(id).classList.add("is-open");
+  const focusable = document.querySelector(`#${id} input, #${id} button.btn-primary`);
+  focusable && focusable.focus();
+}
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// State
+let allDigests = [];
+let allCollections = [];
+let filterText = "";
+let pendingDeleteId = null;
+let editingId = null; // null = create, set = edit (slug field locked)
+
+function statusBadge(d) {
+  const status = d.status || "pending";
+  const cls = "status-" + esc(status);
+  const reason = d.status_reason ? ` title="${esc(d.status_reason)}"` : "";
+  const label = status.charAt(0).toUpperCase() + status.slice(1);
+  return `<span class="status-pill ${cls}"${reason}>${esc(label)}</span>`;
+}
+
+function renderDigests() {
+  const tbody = document.getElementById("kd-tbody");
+  const loading = document.getElementById("kd-loading");
+  const empty = document.getElementById("kd-empty");
+  loading.style.display = "none";
+
+  const ft = filterText.trim().toLowerCase();
+  const filtered = ft
+    ? allDigests.filter(d => (d.slug || "").toLowerCase().includes(ft)
+                          || (d.title || "").toLowerCase().includes(ft))
+    : allDigests;
+
+  if (allDigests.length === 0) {
+    empty.style.display = "block";
+    tbody.innerHTML = "";
+    return;
+  }
+  empty.style.display = "none";
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="kd-loading">No matches for "${esc(filterText)}"</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  for (const d of filtered) {
+    const tr = document.createElement("tr");
+    const sourceCount = (d.source_corpus_ids || []).length;
+    const generated = d.generated_at ? esc(d.generated_at) : "<span style='color:#9ca3af'>never</span>";
+    const model = d.model ? esc(d.model) : "<span style='color:#9ca3af'>—</span>";
+    tr.innerHTML = `
+      <td><span class="kd-title">${esc(d.title)}</span></td>
+      <td><span class="kd-slug">${esc(d.slug)}</span></td>
+      <td>${sourceCount > 0 ? `<span class="kd-sources-count">${sourceCount}</span>` : `<span style="color:#9ca3af">0</span>`}</td>
+      <td>${statusBadge(d)}</td>
+      <td>${generated}</td>
+      <td>${model}</td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn primary" data-act="edit" data-id="${esc(d.id)}">Edit</button>
+          <button class="icon-btn danger" data-act="delete" data-id="${esc(d.id)}" data-title="${esc(d.title)}">Delete</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById("kd-search").addEventListener("input", (e) => {
+  filterText = e.target.value;
+  renderDigests();
+});
+
+function populateSourceSelect(selectedIds) {
+  const sel = document.getElementById("kd-sources");
+  sel.innerHTML = "";
+  const selected = new Set(selectedIds || []);
+  for (const c of allCollections) {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = c.name || c.slug || c.id;
+    if (selected.has(c.id)) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+document.getElementById("open-create-btn").addEventListener("click", () => {
+  editingId = null;
+  document.getElementById("edit-modal-title").textContent = "New digest";
+  document.getElementById("edit-modal-sub").textContent =
+    "Define a digest — standing instructions plus the source collections it draws from. The scheduler regenerates it whenever a source changes.";
+  document.getElementById("kd-title").value = "";
+  document.getElementById("kd-slug").value = "";
+  document.getElementById("kd-slug").disabled = false;
+  document.getElementById("kd-instructions").value = "";
+  populateSourceSelect([]);
+  openModal("edit-modal");
+});
+
+document.getElementById("kd-tbody").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const id = btn.dataset.id;
+  if (act === "delete") {
+    pendingDeleteId = id;
+    document.getElementById("confirm-text").textContent =
+      `Remove "${btn.dataset.title}"? Any resource grants for it will also be removed.`;
+    openModal("confirm-modal");
+    return;
+  }
+  if (act === "edit") {
+    const d = allDigests.find(x => x.id === id);
+    if (!d) return;
+    editingId = id;
+    document.getElementById("edit-modal-title").textContent = "Edit digest";
+    document.getElementById("edit-modal-sub").textContent =
+      "Slug is immutable — it's already the filename on every analyst laptop.";
+    document.getElementById("kd-title").value = d.title || "";
+    document.getElementById("kd-slug").value = d.slug || "";
+    document.getElementById("kd-slug").disabled = true;
+    document.getElementById("kd-instructions").value = d.instructions || "";
+    populateSourceSelect(d.source_corpus_ids || []);
+    openModal("edit-modal");
+  }
+});
+
+document.getElementById("confirm-save-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("confirm-save-btn");
+  const title = document.getElementById("kd-title").value.trim();
+  const instructions = document.getElementById("kd-instructions").value.trim();
+  const sourceSel = document.getElementById("kd-sources");
+  const source_corpus_ids = Array.from(sourceSel.selectedOptions).map(o => o.value);
+  if (!title) { toast("Title is required", "error"); return; }
+  if (!instructions) { toast("Instructions are required", "error"); return; }
+
+  btn.disabled = true;
+  try {
+    let r;
+    if (editingId) {
+      r = await fetch(`${API}/${encodeURIComponent(editingId)}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, instructions, source_corpus_ids }),
+      });
+    } else {
+      const slug = document.getElementById("kd-slug").value.trim();
+      if (!slug) { toast("Slug is required", "error"); btn.disabled = false; return; }
+      r = await fetch(API, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, title, instructions, source_corpus_ids }),
+      });
+    }
+    if (r.ok) {
+      toast(editingId ? "Digest updated" : "Digest created", "success");
+      closeModal("edit-modal");
+      await loadDigests();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Save failed: " + detail, "error");
+    }
+  } catch (e) {
+    toast("Save failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("confirm-ok-btn").addEventListener("click", async () => {
+  if (!pendingDeleteId) return;
+  const btn = document.getElementById("confirm-ok-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/${encodeURIComponent(pendingDeleteId)}`, {
+      method: "DELETE", credentials: "include",
+    });
+    if (r.ok || r.status === 204) {
+      toast("Digest deleted", "success");
+      closeModal("confirm-modal");
+      pendingDeleteId = null;
+      await loadDigests();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Delete failed: " + detail, "error");
+    }
+  } catch (e) {
+    toast("Delete failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function loadCollections() {
+  try {
+    const r = await fetch(COLLECTIONS_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    allCollections = Array.isArray(data.items) ? data.items : [];
+  } catch (e) {
+    toast("Failed to load collections: " + e.message, "error");
+  }
+}
+
+async function loadDigests() {
+  document.getElementById("kd-loading").style.display = "block";
+  try {
+    const r = await fetch(API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    allDigests = Array.isArray(data.items) ? data.items : [];
+    renderDigests();
+  } catch (e) {
+    document.getElementById("kd-loading").textContent = "Failed to load: " + e.message;
+    toast("Failed to load digests: " + e.message, "error");
+  }
+}
+
+loadCollections();
+loadDigests();
+</script>
+{% endblock %}

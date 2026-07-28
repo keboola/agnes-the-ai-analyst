@@ -1,0 +1,598 @@
+"""Password auth provider for FastAPI."""
+
+import logging
+import os
+import secrets
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel
+import duckdb
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+
+from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
+from app.auth.access import is_user_admin
+from app.auth.dependencies import _get_db, is_local_dev_mode
+from app.auth.token_hash import hash_token
+from app.auth.rate_limit import limiter as _rate_limiter
+
+
+from src.repositories import (
+    audit_repo,
+    users_repo,
+)
+
+
+def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
+    """Display label for the response payload only — `admin` for Admin
+    group members, `user` otherwise. Authorization at runtime checks
+    `is_user_admin` directly; this label is purely cosmetic for the
+    response shape."""
+    return "admin" if is_user_admin(user["id"], conn) else "user"
+
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/auth/password", tags=["auth"])
+
+RESET_TOKEN_TTL = timedelta(hours=24)
+SETUP_TOKEN_TTL = timedelta(days=7)
+MIN_PASSWORD_LEN = 8
+
+
+def _audit(user_id: str, action: str, result: str | None = None) -> None:
+    """Fire-and-forget audit log entry. Swallows all errors."""
+    try:
+        audit_repo().log(
+            user_id=user_id,
+            action=action,
+            resource="auth",
+            result=result,
+        )
+    except Exception:
+        pass  # Audit failure must not block auth
+
+
+class PasswordLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class PasswordSetupRequest(BaseModel):
+    email: str
+    token: str
+    password: str
+
+
+def is_available() -> bool:
+    return True  # Always available
+
+
+def _has_email_transport() -> bool:
+    return bool(os.environ.get("SMTP_HOST") or os.environ.get("SENDGRID_API_KEY"))
+
+
+def _cookie_secure(request: Request | None = None) -> bool:
+    # Set Secure whenever the deployment is served over HTTPS. Delegates to the
+    # shared resolver (previously keyed only on DOMAIN, which left the 30-day
+    # session cookie non-Secure behind a non-Caddy TLS terminator that didn't
+    # set DOMAIN — a cleartext-exposure gap).
+    from app.auth.public_url import cookie_secure
+
+    return cookie_secure(request)
+
+
+def _set_login_cookie(response, user_id: str, email: str, request: Request | None = None) -> None:
+    from app.instance_config import session_cookie_domain
+
+    token = create_access_token(user_id, email)
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+        samesite="lax",
+        secure=_cookie_secure(request),
+        domain=session_cookie_domain(),
+    )
+
+
+def _base_url(request: Request) -> str:
+    explicit = os.environ.get("SERVER_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+def build_reset_url(request: Request, email: str, token: str) -> str:
+    return f"{_base_url(request)}/auth/password/reset?email={quote(email, safe='')}&token={token}"
+
+
+def build_setup_url(request: Request, email: str, token: str) -> str:
+    return f"{_base_url(request)}/auth/password/setup?email={quote(email, safe='')}&token={token}"
+
+
+def _token_is_fresh(created, ttl: timedelta) -> bool:
+    if not created:
+        return False
+    if isinstance(created, str):
+        try:
+            created = datetime.fromisoformat(created)
+        except ValueError:
+            return False
+    # DuckDB returns TIMESTAMP as offset-naive; we stored it as UTC, so assume UTC.
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - created) <= ttl
+
+
+def _render_message(request: Request, title: str, message: str, status_code: int = 200):
+    from app.web.router import templates, _build_context
+
+    ctx = _build_context(request, page_title=title, page_message=message)
+    return templates.TemplateResponse(request, "_message.html", ctx, status_code=status_code)
+
+
+def _render_reset_form(request: Request, email: str, token: str, error: str = ""):
+    from app.web.router import templates, _build_context
+
+    ctx = _build_context(request, email=email, token=token, error=error)
+    return templates.TemplateResponse(request, "password_reset.html", ctx)
+
+
+def _render_setup_form(request: Request, email: str, token: str, name: str = "", error: str = ""):
+    from app.web.router import templates, _build_context
+
+    ctx = _build_context(request, email=email, token=token, name=name, error=error)
+    return templates.TemplateResponse(request, "password_setup.html", ctx)
+
+
+def _send_mail(to_email: str, subject: str, body_text: str) -> bool:
+    """Send a plaintext email via SendGrid or SMTP. Returns True on success."""
+    try:
+        sendgrid_key = os.environ.get("SENDGRID_API_KEY")
+        if sendgrid_key:
+            import sendgrid
+            from sendgrid.helpers.mail import Mail
+
+            sg = sendgrid.SendGridAPIClient(api_key=sendgrid_key)
+            msg = Mail(
+                from_email=os.environ.get("EMAIL_FROM_ADDRESS", "noreply@example.com"),
+                to_emails=to_email,
+                subject=subject,
+                plain_text_content=body_text,
+            )
+            sg.send(msg)
+            return True
+
+        smtp_host = os.environ.get("SMTP_HOST")
+        if smtp_host:
+            import smtplib
+            from email.mime.text import MIMEText
+
+            msg = MIMEText(body_text)
+            msg["Subject"] = subject
+            msg["From"] = os.environ.get("SMTP_FROM", "noreply@example.com")
+            msg["To"] = to_email
+            with smtplib.SMTP(smtp_host, int(os.environ.get("SMTP_PORT", "587"))) as s:
+                if os.environ.get("SMTP_USE_TLS", "true").lower() == "true":
+                    s.starttls()
+                smtp_user = os.environ.get("SMTP_USER")
+                if smtp_user:
+                    s.login(smtp_user, os.environ.get("SMTP_PASSWORD", ""))
+                s.send_message(msg)
+            return True
+    except Exception:
+        logger.exception("Failed to send mail to %s", to_email)
+    return False
+
+
+def send_reset_email(request: Request, email: str, token: str) -> bool:
+    """Deliver a password-reset link. In LOCAL_DEV_MODE logs the link as well."""
+    link = build_reset_url(request, email, token)
+    if is_local_dev_mode():
+        logger.warning("=" * 60)
+        logger.warning("Password reset link for %s (LOCAL_DEV_MODE):", email)
+        logger.warning("    %s", link)
+        logger.warning("=" * 60)
+    if not _has_email_transport():
+        return False
+    return _send_mail(email, "Reset your password", f"Click to reset your password: {link}")
+
+
+def send_setup_email(request: Request, email: str, token: str) -> bool:
+    link = build_setup_url(request, email, token)
+    if is_local_dev_mode():
+        logger.warning("=" * 60)
+        logger.warning("Account setup link for %s (LOCAL_DEV_MODE):", email)
+        logger.warning("    %s", link)
+        logger.warning("=" * 60)
+    if not _has_email_transport():
+        return False
+    return _send_mail(email, "Set up your account", f"Click to set up your password: {link}")
+
+
+# ---- Existing flows ----
+
+
+@router.post("/login")
+@_rate_limiter.limit("10/minute")
+async def password_login(
+    request: Request,
+    body: PasswordLoginRequest,
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Login with email + password."""
+    repo = users_repo()
+    user = repo.get_by_email(body.email)
+    if not user or not user.get("password_hash"):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not bool(user.get("active", True)):
+        raise HTTPException(status_code=401, detail="Account deactivated")
+
+    try:
+        ph = PasswordHasher()
+        ph.verify(user["password_hash"], body.password)
+    except VerifyMismatchError:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    except Exception:
+        logger.exception("Unexpected error during password verification")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    # Forced rotation: the password was set by someone else (seeded admin /
+    # admin-set) and emailed/shared in plaintext. The password is verified
+    # first (so this can't probe which accounts are flagged), then we refuse to
+    # issue a token until the user rotates via the reset flow.
+    if user.get("must_change_password"):
+        raise HTTPException(status_code=403, detail="password_change_required")
+
+    role_label = _role_label(user, conn)
+    token = create_access_token(user["id"], user["email"])
+    return {"access_token": token, "token_type": "bearer", "email": user["email"], "role": role_label}
+
+
+@router.post("/login/web")
+@_rate_limiter.limit("10/minute")
+async def password_login_web(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(""),
+    next: str = Form(""),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Web form login — sets cookie and redirects to `next` (or /dashboard)."""
+    repo = users_repo()
+    user = repo.get_by_email(email)
+    if not user or not user.get("password_hash"):
+        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    if not bool(user.get("active", True)):
+        return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
+
+    try:
+        ph = PasswordHasher()
+        ph.verify(user["password_hash"], password)
+    except VerifyMismatchError:
+        # M9: audit failed form-login attempts (mirrors /auth/token endpoint)
+        _audit(user["id"], "login_failed", result="invalid_password")
+        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    except Exception:
+        logger.exception("Unexpected error during web password verification for %s", email)
+        return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
+
+    if user.get("must_change_password"):
+        # Password set by someone else (seeded / admin-set): refuse a full
+        # session and route the user through the existing reset flow to choose
+        # their own password. Mint a one-time reset token and redirect.
+        reset_tok = secrets.token_urlsafe(32)
+        users_repo().update(
+            id=user["id"],
+            reset_token=hash_token(reset_tok),
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        return RedirectResponse(
+            url=f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}",
+            status_code=303,
+        )
+
+    if next.startswith("/") and not next.startswith("//"):
+        target = next
+    else:
+        from app.instance_config import get_home_route
+
+        target = get_home_route()
+    response = RedirectResponse(url=target, status_code=302)
+    _set_login_cookie(response, user["id"], user["email"], request)
+    return response
+
+
+# ---- JSON programmatic setup (backward compat — used by existing tests) ----
+
+
+@router.post("/setup")
+@_rate_limiter.limit("10/minute")
+async def password_setup(
+    request: Request,
+    request_body: PasswordSetupRequest,
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Set initial password using setup token (JSON API).
+
+    Rate limited 10/min per IP — same throttle as the form sibling
+    ``/setup/confirm``. Without this, the new web-form throttle is
+    bypassable: an attacker brute-forcing the ``setup_token`` just
+    switches to this JSON path and resumes at unbounded RPS.
+    """
+    repo = users_repo()
+    user = repo.get_by_email(request_body.email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.get("setup_token") != hash_token(request_body.token):
+        raise HTTPException(status_code=400, detail="Invalid setup token")
+    if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
+        raise HTTPException(status_code=400, detail="Setup token has expired")
+    if not bool(user.get("active", True)):
+        raise HTTPException(status_code=403, detail="Account deactivated")
+
+    if len(request_body.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {MIN_PASSWORD_LEN} characters")
+
+    ph = PasswordHasher()
+    hashed = ph.hash(request_body.password)
+
+    # The user is choosing their OWN password here, so clear any forced-rotation
+    # flag (consistent with the web setup_confirm sibling). Without this, a user
+    # who was admin-set (must_change_password=True) while still holding a valid
+    # setup token would stay flagged after self-serving a new password.
+    repo.update(
+        id=user["id"],
+        password_hash=hashed,
+        setup_token=None,
+        setup_token_created=None,
+        must_change_password=False,
+    )
+    token = create_access_token(user["id"], user["email"])
+    return {"access_token": token, "token_type": "bearer", "message": "Password set successfully"}
+
+
+# ---- Web flow: password RESET ----
+
+
+@router.get("/reset", response_class=HTMLResponse)
+async def reset_page(
+    request: Request,
+    email: str = "",
+    token: str = "",
+):
+    """Render the 'set new password' form when arriving via reset link."""
+    if not email or not token:
+        return RedirectResponse(url="/login/password", status_code=302)
+    return _render_reset_form(request, email=email, token=token)
+
+
+@router.post("/reset")
+@_rate_limiter.limit("5/minute")
+async def reset_request(
+    request: Request,
+    email: str = Form(""),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Request a password-reset link. Anti-enumeration: same response regardless.
+
+    Rate limited at the same 5/min as ``/auth/email/send-link`` — the
+    attack surface is identical (single IP rotates random recipient
+    addresses, anti-enumeration response shape masks which addresses
+    landed, attacker burns SMTP / SendGrid quota + spams real users).
+    """
+    # Match the rest of the codebase's case-sensitive lookup (password_login,
+    # email magic-link, admin create). Lowercasing here would silently fail
+    # for mixed-case emails the admin stored as-is.
+    email = (email or "").strip()
+    if email:
+        repo = users_repo()
+        user = repo.get_by_email(email)
+        if user and bool(user.get("active", True)):
+            token = secrets.token_urlsafe(32)
+            repo.update(
+                id=user["id"],
+                reset_token=hash_token(token),
+                reset_token_created=datetime.now(timezone.utc),
+            )
+            send_reset_email(request, email, token)
+    return _render_message(
+        request,
+        title="Check your email",
+        message="If an account exists for that email, a password-reset link has been sent. "
+        "The link is valid for 24 hours.",
+    )
+
+
+@router.post("/reset/confirm")
+@_rate_limiter.limit("10/minute")
+async def reset_confirm(
+    request: Request,
+    email: str = Form(...),
+    token: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+):
+    """Submit a new password using a reset token.
+
+    Rate limited 10/min per IP to slow brute-force guessing of the 32-byte
+    URL-safe ``reset_token`` — the token is high-entropy but logs / proxy
+    referer leaks have surfaced partial tokens before, and there's no
+    reason to allow unbounded attempts.
+    """
+    if password != confirm_password:
+        return _render_reset_form(request, email=email, token=token, error="Passwords do not match.")
+    if len(password) < MIN_PASSWORD_LEN:
+        return _render_reset_form(
+            request,
+            email=email,
+            token=token,
+            error=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
+        )
+
+    # Atomic compare-and-swap to consume the reset token. Mirrors the
+    # magic-link CAS in app/auth/providers/email.py::_consume_token (issue
+    # #82/M10) — without it, two concurrent POSTs with the same valid token
+    # could both succeed in setting different new passwords. Lower
+    # severity than the magic-link race (attacker would need the reset
+    # token AND to race the legitimate user) but closes the asymmetry.
+    cutoff = datetime.now(timezone.utc) - RESET_TOKEN_TTL
+    consume_id = f"CONSUMED:{secrets.token_hex(16)}"
+    repo = users_repo()
+    # Atomic compare-and-swap to consume the reset token, via the repo factory so
+    # it hits the ACTIVE backend. (A raw DuckDB `conn.execute` here silently
+    # failed on Postgres deployments — the token was written to PG by the factory
+    # but the CAS read DuckDB, so every reset / forced-rotation login 'expired'.)
+    try:
+        won = repo.consume_reset_token(email=email, token=hash_token(token), cutoff=cutoff, consume_id=consume_id)
+    except Exception as exc:
+        err = str(exc).lower()
+        if "conflict" in err or "transaction" in err:
+            return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+        raise
+    if not won:
+        # Token never matched, expired, account deactivated, or the race was
+        # lost. Single error keeps the UX simple and avoids leaking which.
+        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+
+    # Won the race — fetch the user and apply the password change.
+    user = repo.get_by_email(email)
+    if not user:
+        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+
+    ph = PasswordHasher()
+    repo.update(
+        id=user["id"],
+        password_hash=ph.hash(password),
+        reset_token=None,
+        reset_token_created=None,
+        # Clear the forced-rotation flag: the user has now set their own password.
+        must_change_password=False,
+    )
+
+    response = RedirectResponse(url="/login/password?msg=password_reset", status_code=302)
+    _set_login_cookie(response, user["id"], user["email"], request)
+    return response
+
+
+# ---- Web flow: initial SETUP ----
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def setup_page(
+    request: Request,
+    email: str = "",
+    token: str = "",
+):
+    """Render the initial 'set password + name' form when arriving via invite link.
+
+    Note: we render the form based on URL params only, without a DB lookup, so
+    the response is identical for valid and invalid email/token combinations
+    (anti-enumeration). Token validity is checked at POST /setup/confirm."""
+    if not email or not token:
+        return RedirectResponse(url="/login/password", status_code=302)
+    return _render_setup_form(request, email=email, token=token)
+
+
+@router.post("/setup/request")
+@_rate_limiter.limit("5/minute")
+async def setup_request(
+    request: Request,
+    email: str = Form(""),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Self-service 'Request Access' — emails a setup link if user is pre-approved and unset.
+
+    Same 5/min rate limit as ``/auth/password/reset`` and ``/send-link``
+    — same email-bombing surface (anti-enumeration response, sends mail
+    on each request).
+    """
+    # Match the rest of the codebase's case-sensitive lookup (password_login,
+    # email magic-link, admin create). Lowercasing here would silently fail
+    # for mixed-case emails the admin stored as-is.
+    email = (email or "").strip()
+    if email:
+        repo = users_repo()
+        user = repo.get_by_email(email)
+        # Only issue setup token if user exists, has no password yet, and is active.
+        if user and not user.get("password_hash") and bool(user.get("active", True)):
+            token = secrets.token_urlsafe(32)
+            repo.update(
+                id=user["id"],
+                setup_token=hash_token(token),
+                setup_token_created=datetime.now(timezone.utc),
+            )
+            send_setup_email(request, email, token)
+    return _render_message(
+        request,
+        title="Check your email",
+        message="If your account is pre-approved, a setup link has been sent to your email. "
+        "Ask an administrator if you do not receive it.",
+    )
+
+
+@router.post("/setup/confirm")
+@_rate_limiter.limit("10/minute")
+async def setup_confirm(
+    request: Request,
+    email: str = Form(...),
+    token: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    name: str = Form(""),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Web form: complete initial password setup via setup token.
+
+    Rate limited 10/min per IP — same rationale as ``/reset/confirm``:
+    high-entropy ``setup_token`` should still not be brute-forceable at
+    unbounded RPS in case a partial token leaks via logs / referer.
+    """
+    if password != confirm_password:
+        return _render_setup_form(request, email=email, token=token, name=name, error="Passwords do not match.")
+    if len(password) < MIN_PASSWORD_LEN:
+        return _render_setup_form(
+            request,
+            email=email,
+            token=token,
+            name=name,
+            error=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
+        )
+
+    repo = users_repo()
+    user = repo.get_by_email(email)
+    if not user or user.get("setup_token") != hash_token(token):
+        return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
+    if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
+        return _render_setup_form(
+            request,
+            email=email,
+            token=token,
+            name=name,
+            error="Setup link has expired. Ask an administrator for a new one.",
+        )
+    if not bool(user.get("active", True)):
+        return _render_setup_form(request, email=email, token=token, name=name, error="This account is deactivated.")
+
+    ph = PasswordHasher()
+    updates: dict = dict(
+        password_hash=ph.hash(password),
+        setup_token=None,
+        setup_token_created=None,
+        # Clear the forced-rotation flag: the user has now set their own password.
+        must_change_password=False,
+    )
+    if name.strip():
+        updates["name"] = name.strip()
+    repo.update(id=user["id"], **updates)
+
+    from app.instance_config import get_home_route
+
+    response = RedirectResponse(url=get_home_route(), status_code=302)
+    _set_login_cookie(response, user["id"], user["email"], request)
+    return response

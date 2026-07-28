@@ -1,0 +1,11 @@
+# CI smoke test overlay — minimal config for testing in GitHub Actions.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+services:
+  app:
+    environment:
+      - JWT_SECRET_KEY=smoke-test-ci-key-minimum-32-chars-xx
+      - SESSION_SECRET=smoke-test-session-key-32-chars-min-x
+      - DATA_DIR=/data
+      - TESTING=0
+    ports:
+      - "8000:8000"

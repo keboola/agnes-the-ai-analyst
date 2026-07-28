@@ -1,0 +1,213 @@
+{% extends "base_ds.html" %}
+{% block title %}Database backend — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* /admin/database — DB backend state machine. Mirrors the
+     /admin/tokens hero pattern (gradient header + chip-style summary
+     row) so this page reads as a peer of the other admin landings,
+     not a bolt-on. Card body, transition buttons, and progress
+     panel use ds-card + ds.button for visual consistency. */
+  .db-page {
+    font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
+  }
+  .db-hero {
+    margin-bottom: 20px;
+  }
+  .db-status-row {
+    display: grid;
+    grid-template-columns: minmax(120px, max-content) 1fr;
+    gap: 12px 18px;
+    margin-top: 18px;
+    padding: 14px 16px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 10px;
+    backdrop-filter: saturate(140%) blur(2px);
+    color: #fff;
+    font-size: 13px;
+  }
+  .db-status-row dt {
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+    font-weight: 500;
+    opacity: 0.82;
+    margin: 0;
+  }
+  .db-status-row dd {
+    margin: 0;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    word-break: break-all;
+  }
+  .db-status-row dd.backend-value {
+    font-family: var(--font-primary, 'Inter', system-ui, sans-serif);
+    font-weight: 600;
+    font-size: 16px;
+    letter-spacing: -0.005em;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .db-status-row dd.backend-value::before {
+    content: '';
+    display: inline-block;
+    width: 10px; height: 10px; border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
+  }
+  .db-status-row dd.backend-duckdb::before    { background: #fbbf24; }
+  .db-status-row dd.backend-side_car::before  { background: #38bdf8; }
+  .db-status-row dd.backend-cloud::before     { background: #34d399; }
+  .db-status-row dd.backend-side_car_in_progress::before,
+  .db-status-row dd.backend-cloud_in_progress::before {
+    background: #f97316;
+    animation: db-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes db-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.45; }
+  }
+
+  .db-actions-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 24px 24px 22px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  }
+  .db-actions-card h2 {
+    margin: 0 0 6px;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary, #111827);
+  }
+  .db-actions-card .help {
+    color: var(--text-secondary, #6b7280);
+    font-size: 13px;
+    margin: 0 0 18px;
+    max-width: 720px;
+  }
+  .db-actions-card .actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .db-actions-card .actions .btn {
+    padding: 9px 16px;
+    border-radius: 8px;
+    font-weight: 500;
+    font-size: 13px;
+    border: 1px solid var(--ds-primary);
+    background: var(--ds-primary);
+    color: #fff;
+    cursor: pointer;
+    transition: filter 0.12s ease;
+  }
+  .db-actions-card .actions .btn:hover { filter: brightness(1.05); }
+  .db-actions-card .actions .btn:disabled,
+  .db-actions-card .actions .btn[disabled] {
+    background: var(--surface-muted, #f3f4f6);
+    color: var(--text-muted, #9ca3af);
+    border-color: var(--border, #e5e7eb);
+    cursor: default;
+  }
+  .db-actions-card .no-actions {
+    color: var(--text-muted, #9ca3af);
+    font-style: italic;
+    font-size: 13px;
+  }
+
+  /* In-progress migration banner */
+  #db-migration-progress {
+    margin-top: 16px;
+    padding: 14px 18px;
+    background: #fff7ed;
+    border: 1px solid #fdba74;
+    border-radius: 10px;
+    font-size: 13px;
+    color: #9a3412;
+  }
+  #db-migration-progress .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  #db-migration-progress progress {
+    flex: 1;
+    height: 8px;
+  }
+
+  /* Allowed-transitions matrix — small table at the bottom for
+     reference. Static — explains the rules in plain language. */
+  .db-rules {
+    margin-top: 28px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    padding: 14px 18px;
+    background: var(--surface-muted, #f9fafb);
+    font-size: 13px;
+    color: var(--text-secondary, #4b5563);
+    max-width: 760px;
+  }
+  .db-rules h3 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted, #6b7280);
+  }
+  .db-rules ul { margin: 0; padding-left: 20px; }
+  .db-rules code {
+    background: rgba(0, 0, 0, 0.06);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="db-page container">
+  <section class="page-header page-header--hero db-hero" aria-labelledby="db-title">
+    <div class="page-header__main">
+      <div class="page-header__eyebrow">Administration · Server</div>
+      <h1 class="page-header__title" id="db-title">Database backend</h1>
+      <p class="page-header__subtitle">
+        Application state lives in one of three places: a DuckDB file on the
+        VM, a Postgres container running next to the app, or a managed cloud
+        Postgres. Migrate between them from here.
+        See <a href="/docs/postgres-cutover-runbook" style="color: inherit; text-decoration: underline;">the runbook</a>
+        for operator detail.
+      </p>
+    </div>
+
+    <dl class="db-status-row" id="db-status-row" aria-live="polite">
+      <dt>Backend</dt>
+      <dd class="backend-value backend-loading" id="db-backend-value">loading…</dd>
+      <dt>URL</dt>
+      <dd id="db-url-value">—</dd>
+    </dl>
+  </section>
+
+  <div class="db-actions-card">
+    <h2>Migrate to another backend</h2>
+    <p class="help" id="db-actions-help">Loading available transitions…</p>
+    <div class="actions" id="db-actions"></div>
+    <div id="db-migration-progress" style="display: none;"></div>
+  </div>
+
+  <div class="db-rules">
+    <h3>Allowed transitions</h3>
+    <ul>
+      <li><code>duckdb → side-car</code> &mdash; first cutover to in-container Postgres.</li>
+      <li><code>duckdb → cloud</code> &mdash; first cutover, skipping side-car.</li>
+      <li><code>side-car → cloud</code> &mdash; graduate from container to managed Postgres.</li>
+      <li><code>cloud → side-car</code> &mdash; move back to container (DR, cost, or retiring the managed instance).</li>
+      <li><strong>No path back to DuckDB.</strong> Once on Postgres, the DuckDB file is the recovery backup, not a writable target.</li>
+    </ul>
+  </div>
+</div>
+
+<script src="{{ static_url('js/admin/db_state.js') }}"></script>
+{% endblock %}

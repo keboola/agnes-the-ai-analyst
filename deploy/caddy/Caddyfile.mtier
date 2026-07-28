@@ -1,0 +1,59 @@
+:8080 {
+	# Gateway-role paths (chat HA — see docs/DEPLOYMENT.md -> "Multi-replica
+	# chat HA" -> the LB routing rule). Only Role.GATEWAY processes run a
+	# ChatManager, so the chat WS + session lifecycle REST, the
+	# notifications WS, and — when Slack runs in webhook mode — the Slack
+	# webhooks must reach the gateway upstream. Slack webhooks that land on
+	# an api replica anyway degrade to the thin-producer forward path
+	# (services/slack_bot), so this rule is the reference topology, and the
+	# producer path is the fallback — not the other way around. This
+	# matcher-scoped reverse_proxy is evaluated BEFORE the api catch-all
+	# below (Caddy preserves the order of same-name directives).
+	@gateway path /api/chat/* /api/notifications/ws /api/slack/*
+	reverse_proxy @gateway gateway:8000 {
+		health_uri /readyz
+		health_interval 5s
+		fail_duration 10s
+	}
+
+	# `/metrics` is an internal-scrape-only surface (Prometheus scrapes each
+	# role container directly by Compose DNS — see
+	# deploy/prometheus/prometheus.yml — never through Caddy). Without this
+	# deny the api catch-all below would forward it to the replicas, exposing
+	# the unauthenticated observability payload (queue depth, worker-lane
+	# occupancy, replica hostname:pid, per-route latency histograms) to
+	# anyone who can reach the public :8080 LB port. `/healthz` + `/readyz`
+	# stay reachable — they leak only status and double as LB/uptime probes.
+	@metrics path /metrics
+	respond @metrics 404
+
+	reverse_proxy api1:8000 api2:8000 {
+		health_uri /readyz
+		health_interval 5s
+		fail_duration 10s
+		lb_policy round_robin
+	}
+
+	# Spec §3.7: "the proxy never removes the last healthy upstream ...
+	# falls through to a maintenance page instead of hard-503ing
+	# everything". When every upstream above is down/unhealthy,
+	# reverse_proxy returns a 502/503/504 — surface a small static page
+	# instead of Caddy's bare default error body, so a rolling upgrade or a
+	# transient outage reads as "come back shortly", not a raw HTTP error.
+	handle_errors 502 503 504 {
+		header Content-Type "text/html; charset=utf-8"
+		respond 503 {
+			body <<HTML
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Agnes — temporarily unavailable</title></head>
+<body style="font-family: sans-serif; text-align: center; padding: 4rem;">
+<h1>Agnes is temporarily unavailable</h1>
+<p>All upstreams are currently unreachable — this is usually a rolling
+upgrade or a transient outage. Please retry in a minute.</p>
+</body>
+</html>
+HTML
+		}
+	}
+}

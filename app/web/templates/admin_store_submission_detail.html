@@ -1,0 +1,687 @@
+{% extends "base_ds.html" %}
+{% block title %}Submission {{ sub.id[:8] }} — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* Width + padding come from .page-shell (style-custom.css) — same
+     1280px container as /dashboard, /marketplace, /admin/* peers. */
+  .det-back { font-size: 13px; color: var(--text-secondary, #6b7280); text-decoration: none; }
+  .det-back:hover { color: var(--text, #111827); text-decoration: underline; }
+
+  .det-header {
+    margin-top: 8px; margin-bottom: 20px;
+    padding: 16px 20px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+  }
+  .det-header h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 600; }
+  .det-header .id-line {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .det-meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 24px; margin-top: 12px; font-size: 13px; }
+  .det-meta dt { color: var(--text-secondary, #6b7280); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .det-meta dd { margin: 0 0 8px 0; }
+  .det-meta dd a { color: var(--text, #111827); text-decoration: none; }
+  .det-meta dd a:hover { text-decoration: underline; }
+
+  .det-card {
+    margin-bottom: 16px; padding: 16px 20px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+  }
+  .det-card h2 { margin: 0 0 12px 0; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-secondary, #6b7280); }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .badge.pass, .badge.safe, .badge.low, .badge.approved      { background: #d1fae5; color: #065f46; }
+  .badge.warn, .badge.medium                                  { background: #fef3c7; color: #92400e; }
+  .badge.fail, .badge.high, .badge.critical, .badge.blocked_inline, .badge.blocked_llm, .badge.review_error { background: #fee2e2; color: #991b1b; }
+  .badge.pending_inline, .badge.pending_llm                   { background: #fef3c7; color: #92400e; }
+  .badge.overridden                                           { background: #dbeafe; color: #1e40af; }
+  .badge.archived                                             { background: #e5e7eb; color: #374151; }
+  .badge.deleted                                              { background: #4b5563; color: #f3f4f6; }
+
+  table.data-table code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  ul.issues { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+
+  .det-summary { font-size: 14px; line-height: 1.5; margin: 8px 0 12px 0; }
+  .det-error-box {
+    padding: 10px 12px; border-radius: 6px;
+    background: #fee2e2; color: #991b1b; font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-word;
+  }
+  .det-recommendation {
+    padding: 10px 12px; border-radius: 6px;
+    background: #dbeafe; color: #1e40af; font-size: 13px;
+    margin-top: 8px;
+  }
+
+  .override-block {
+    padding: 10px 12px; border-radius: 6px;
+    background: #dbeafe; color: #1e40af;
+    font-size: 13px;
+  }
+
+  .det-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+  .empty-msg { font-size: 13px; color: var(--text-secondary, #6b7280); font-style: italic; }
+
+  .timeline { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+  .timeline li {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: baseline;
+  }
+  .timeline li:last-child { border-bottom: none; }
+  .timeline .ts {
+    font-variant-numeric: tabular-nums; color: var(--text-secondary, #6b7280);
+    font-size: 12px; white-space: nowrap;
+  }
+  .timeline .action {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  }
+  .timeline .actor { color: var(--text-secondary, #6b7280); font-size: 12px; }
+  .timeline .relative { font-size: 11px; color: var(--text-secondary, #9ca3af); }
+
+  /* Pending banner — surfaces above the header when status is pending_*.
+     Auto-polls and reloads when status flips. */
+  .pending-banner {
+    margin-top: 8px; margin-bottom: 12px;
+    padding: 12px 16px;
+    background: #fef3c7; color: #92400e;
+    border: 1px solid #fde68a; border-radius: 8px;
+    font-size: 13px; display: flex; align-items: center; gap: 10px;
+  }
+  .pending-banner .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid #fcd34d; border-top-color: #92400e;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pending-banner .elapsed { color: #92400e; opacity: 0.7; font-variant-numeric: tabular-nums; margin-left: auto; }
+
+
+</style>
+{% endblock %}
+
+{% block content %}
+{# 5 detail-page action buttons render via `ds.button` (auto-imported by
+   base_ds). Page-local chrome (.det-back, .badge pills, dl/dd grid) stays. #}
+<div class="det-page">
+  <a class="det-back" href="/admin/store/submissions">← Back to all submissions</a>
+
+  {% if sub.status in ['pending_inline','pending_llm'] %}
+  <div class="pending-banner" id="pendingBanner">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>
+      <strong>Review in progress</strong> — checks running against the bundle.
+      Page auto-refreshes when verdict lands.
+    </div>
+    <span class="elapsed" id="pendingElapsed" data-since="{{ sub.updated_at.isoformat() if sub.updated_at else '' }}">0s</span>
+  </div>
+  {% endif %}
+
+  <div class="det-header">
+    <h1>{{ sub.type }} · <strong>{{ sub.name | store_display_name }}</strong> {% if sub.version %}<span style="color: var(--text-secondary, #6b7280); font-weight: normal;">v{{ sub.version }}</span>{% endif %}</h1>
+    <div class="id-line">{{ sub.id }}</div>
+    <dl class="det-meta">
+      <div>
+        <dt>Status (verdict)</dt>
+        <dd><span class="badge {{ sub.status }}">{{ sub.status }}</span></dd>
+      </div>
+      <div>
+        <dt>Entity lifecycle</dt>
+        <dd>
+          {%- if entity_visibility_status -%}
+            <span class="badge {{ entity_visibility_status }}">{{ entity_visibility_status }}</span>
+            {%- if entity_visibility_status != sub.status %}
+            <span style="font-size: 11px; color: var(--text-secondary, #9ca3af); margin-left: 6px;">live state — verdict immutable</span>
+            {%- endif %}
+          {%- else -%}
+            <span class="empty-msg">entity gone</span>
+          {%- endif -%}
+        </dd>
+      </div>
+      <div>
+        <dt>Version</dt>
+        <dd>
+          {%- if submission_version_no -%}
+            <strong>v{{ submission_version_no }}</strong>
+            {%- if entity_version_no and entity_version_no == submission_version_no %}
+            <span class="badge approved" style="margin-left: 6px;">current</span>
+            {%- elif entity_version_no %}
+            <span style="font-size: 11px; color: var(--text-secondary, #9ca3af); margin-left: 6px;">superseded — current is v{{ entity_version_no }}</span>
+            {%- endif %}
+          {%- else -%}
+            <span class="empty-msg">— (legacy or hash not in history)</span>
+          {%- endif -%}
+        </dd>
+      </div>
+      <div>
+        <dt>Bundle hash</dt>
+        <dd>{% if sub.version %}<code style="font-size:12px;">{{ sub.version }}</code>{% else %}<span class="empty-msg">—</span>{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Submitter</dt>
+        <dd><a href="/admin/store/submissions?submitter={{ sub.submitter_id }}">{{ sub.submitter_email or sub.submitter_id }}</a></dd>
+      </div>
+      <div>
+        <dt>Created</dt>
+        <dd>{% if sub.created_at %}<time datetime="{{ sub.created_at.isoformat() }}">{{ sub.created_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Last update</dt>
+        <dd>
+          {%- if sub.updated_at -%}
+          <time datetime="{{ sub.updated_at.isoformat() }}">{{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>
+          <span class="relative" data-rel-since="{{ sub.updated_at.isoformat() }}"
+                style="display:block; font-size:11px; color: var(--text-secondary, #9ca3af);">just now</span>
+          {%- endif -%}
+        </dd>
+      </div>
+      <div>
+        <dt>Reviewed by model</dt>
+        <dd>
+          {%- if sub.reviewed_by_model -%}
+            <code style="font-size: 12px;">{{ sub.reviewed_by_model }}</code>
+          {%- elif sub.status in ['pending_llm', 'pending_inline'] -%}
+            <span class="empty-msg">⟳ in flight</span>
+          {%- elif sub.status == 'blocked_inline' -%}
+            <span class="empty-msg">— (inline-blocked, LLM skipped)</span>
+          {%- elif sub.status == 'approved' -%}
+            <span class="empty-msg">— (guardrails disabled or no API key)</span>
+          {%- else -%}
+            <span class="empty-msg">—</span>
+          {%- endif -%}
+        </dd>
+      </div>
+      <div>
+        <dt>Entity ID</dt>
+        <dd>{% if sub.entity_id %}<code style="font-size:12px;">{{ sub.entity_id }}</code>{% else %}<span class="empty-msg">none — bundle purged or legacy row</span>{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Bundle size</dt>
+        <dd>{% if sub.file_size is not none %}{% if sub.file_size < 1024 %}{{ sub.file_size }} B{% elif sub.file_size < 1048576 %}{{ "%.1f"|format(sub.file_size / 1024) }} KB{% else %}{{ "%.1f"|format(sub.file_size / 1048576) }} MB{% endif %}{% else %}—{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Bundle SHA256</dt>
+        <dd>{% if sub.bundle_sha256 %}<code style="font-size:11px; word-break: break-all;">{{ sub.bundle_sha256 }}</code>{% else %}<span class="empty-msg">—</span>{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Bundle status</dt>
+        <dd>
+          {%- if sub.bundle_purged_at -%}
+            <span class="badge blocked_inline">purged</span>
+            <span style="font-size: 12px; color: var(--text-secondary, #6b7280); margin-left: 6px;">on <time datetime="{{ sub.bundle_purged_at.isoformat() }}">{{ sub.bundle_purged_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time></span>
+          {%- elif sub.entity_id -%}
+            <span class="badge approved">on disk</span>
+          {%- else -%}
+            <span class="empty-msg">no bundle (legacy row)</span>
+          {%- endif -%}
+        </dd>
+      </div>
+    </dl>
+
+    {# Action buttons — same JSON endpoints as the list page. #}
+    <div class="det-actions">
+      {% if sub.status in ['blocked_inline','blocked_llm','review_error'] and sub.entity_id %}
+      {{ ds.button('Override + publish', variant='primary',
+                   attrs='data-action="override" title="Force-publish this entity. Requires reason; recorded in audit_log."') }}
+      {% endif %}
+      {% if sub.entity_id %}
+      {{ ds.button('Rescan', variant='secondary',
+                   attrs='data-action="rescan" title="Re-run all checks (inline + LLM) against the current bundle. Use after check rules change."') }}
+      {% endif %}
+      {% if sub.entity_id and not sub.bundle_purged_at %}
+      {{ ds.button('Download bundle', variant='secondary',
+                   href='/api/admin/store/submissions/' ~ sub.id ~ '/bundle.zip',
+                   attrs='title="Download the on-disk bundle as a ZIP for forensic inspection. Audit-logged."') }}
+      {% endif %}
+      {% if sub.status in ['review_error','blocked_llm'] and sub.entity_id %}
+      {{ ds.button('Retry LLM', variant='secondary',
+                   attrs='data-action="retry" title="Re-queue LLM review only (skips inline checks)."') }}
+      {% endif %}
+      {{ ds.button('Delete', variant='danger', attrs='data-action="delete"') }}
+    </div>
+    {# Help text: explain why override isn't shown on this row, when applicable. #}
+    {% if sub.status == 'approved' %}
+      <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0 0;">
+        Already approved — no override needed. Use <strong>Rescan</strong> to re-evaluate against current rules; it may flip the verdict.
+      </p>
+    {% elif sub.status == 'overridden' %}
+      <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0 0;">
+        Already admin-overridden. Rescan to clear the override and re-evaluate.
+      </p>
+    {% elif sub.status in ['blocked_inline','blocked_llm','review_error'] and not sub.entity_id %}
+      <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 8px 0 0 0;">
+        No override available — inline-blocked submissions are rolled back at upload time, so there's no bundle to publish. Submitter must fix and re-upload.
+      </p>
+    {% endif %}
+  </div>
+
+  {# ── Version switcher ────────────────────────────────────────────────────── #}
+  {# All submissions linked to this entity, newest first. Admin clicks
+     any row to jump to its detail. Surfaces multi-version entities so
+     verdicts across versions can be compared without bouncing back to
+     the queue. #}
+  {% if sibling_submissions and sibling_submissions|length > 1 %}
+  <div class="det-card">
+    <h2>Submissions for this entity ({{ sibling_submissions|length }})</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>v#</th>
+          <th>Status</th>
+          <th>Hash</th>
+          <th>Reviewed by</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sibling_submissions %}
+        <tr {% if s.is_current %}style="background: var(--surface-muted, #f9fafb);"{% endif %}>
+          <td>
+            {% if s.version_no %}
+              <strong>v{{ s.version_no }}</strong>
+            {% else %}
+              <span class="empty-msg">—</span>
+            {% endif %}
+            {% if s.version_no and s.version_no == entity_version_no %}
+              <span class="badge approved" style="margin-left:4px;font-size:9px;">current</span>
+            {% endif %}
+          </td>
+          <td><span class="badge {{ s.status }}">{{ s.status }}</span></td>
+          <td><code>{{ (s.version or '')[:12] }}</code></td>
+          <td style="font-size:11px;color:var(--text-secondary,#6b7280);">{{ s.reviewed_by_model or '—' }}</td>
+          <td style="font-size:11px;color:var(--text-secondary,#6b7280);">
+            {% if s.created_at %}<time datetime="{{ s.created_at.isoformat() }}">{{ s.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</time>{% endif %}
+          </td>
+          <td>
+            {% if s.is_current %}
+              <span class="empty-msg">viewing</span>
+            {% else %}
+              <a href="/admin/store/submissions/{{ s.id }}">Open →</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Override history ────────────────────────────────────────────────────── #}
+  {% if sub.override_by %}
+  <div class="det-card">
+    <h2>Override</h2>
+    <div class="override-block">
+      Overridden by <strong>{{ override_email or sub.override_by }}</strong>{% if sub.updated_at %} on <time datetime="{{ sub.updated_at.isoformat() }}">{{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}.
+      {% if sub.override_reason %}<br><em>Reason:</em> {{ sub.override_reason }}{% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Activity timeline ───────────────────────────────────────────────────── #}
+  {# v37 split: per-submission events surface here. Entity-wide events
+     (archive / install / hard-delete) — which apply to ALL versions of
+     this entity — surface in the separate "Entity activity" card below
+     so admin can tell version-scoped from entity-scoped at a glance. #}
+  {% macro _render_timeline(rows) %}
+    <ul class="timeline">
+      {% for row in rows %}
+      <li>
+        <span class="ts">{% if row.timestamp %}<time datetime="{{ row.timestamp.isoformat() }}">{{ row.timestamp.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</span>
+        <span>
+          <span class="action">{{ row.action }}</span>
+          {# Inline `vN` chip when the audit's params reference a
+             specific version_no — makes it clear in the entity-wide
+             timeline which version each event applied to. #}
+          {% if row.params and row.params is mapping and row.params.version_no %}
+            <span class="badge approved" style="margin-left: 4px; font-size: 9px;">v{{ row.params.version_no }}</span>
+          {% endif %}
+          {% if row.actor_email %}<span class="actor"> · {{ row.actor_email }}</span>{% endif %}
+          {% if row.params and row.params is mapping %}
+            {% if row.params.outcome %}<span class="actor"> · → {{ row.params.outcome }}</span>{% endif %}
+            {% if row.params.risk_level %}<span class="actor"> · risk={{ row.params.risk_level }}</span>{% endif %}
+            {% if row.params.reason %}<span class="actor"> · "{{ row.params.reason[:80] }}"</span>{% endif %}
+            {% if row.params.renamed_to %}<span class="actor"> · → {{ row.params.renamed_to }}</span>{% endif %}
+            {% if row.params.restored_from_version_no %}<span class="actor"> · from v{{ row.params.restored_from_version_no }}</span>{% endif %}
+          {% endif %}
+        </span>
+        <span class="relative" data-rel-since="{{ row.timestamp.isoformat() if row.timestamp else '' }}">just now</span>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endmacro %}
+
+  {% if submission_audit_rows %}
+  <div class="det-card">
+    <h2>Activity timeline{% if submission_version_no %} <span class="badge approved" style="font-size:9px;">v{{ submission_version_no }}</span>{% endif %}</h2>
+    <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 0 0 8px 0;">
+      Recorded actions for THIS submission row only — accept / verdict /
+      rescan / override / retry / bundle download. Use this to confirm a
+      verdict is fresh (timestamp on the latest <code>store.submission.rescan</code>
+      row matches the time you clicked Rescan).
+    </p>
+    {{ _render_timeline(submission_audit_rows) }}
+  </div>
+  {% endif %}
+
+  {% if entity_audit_rows %}
+  <div class="det-card">
+    <h2>Entity activity (all versions)</h2>
+    <p style="font-size: 12px; color: var(--text-secondary, #6b7280); margin: 0 0 8px 0;">
+      Entity-wide events that apply to every version of this entity —
+      creation, archive, install / uninstall, hard delete. Same content
+      shows on every submission for this entity by design.
+    </p>
+    {{ _render_timeline(entity_audit_rows) }}
+  </div>
+  {% endif %}
+
+  {# ── Inline checks ───────────────────────────────────────────────────────── #}
+  {# Each ``det-card`` below renders verdict data scoped to THIS
+     submission row (i.e. one specific version). Section headers get
+     a ``vN`` chip when ``submission_version_no`` is known so admin
+     never confuses one version's verdict for another's. #}
+  {% set ic = sub.inline_checks or {} %}
+  {% macro _vchip() %}{% if submission_version_no %}<span class="badge approved" style="margin-left:6px;font-size:9px;">v{{ submission_version_no }}</span>{% endif %}{% endmacro %}
+
+  <div class="det-card">
+    <h2>Manifest check{{ _vchip() }} {% if ic.manifest %}<span class="badge {{ ic.manifest.status or 'pass' }}">{{ ic.manifest.status or 'pass' }}</span>{% endif %}</h2>
+    {% if ic.manifest and ic.manifest.issues %}
+      <ul class="issues">
+        {% for issue in ic.manifest.issues %}<li><code>{{ issue }}</code></li>{% endfor %}
+      </ul>
+    {% else %}
+      <div class="empty-msg">No manifest issues.</div>
+    {% endif %}
+  </div>
+
+  <div class="det-card">
+    <h2>Static security scan{{ _vchip() }} {% if ic.static_security %}<span class="badge {{ ic.static_security.status or 'pass' }}">{{ ic.static_security.status or 'pass' }}</span>{% endif %}</h2>
+    {% if ic.static_security and ic.static_security.findings %}
+    <table class="data-table">
+      <thead>
+        <tr><th>Severity</th><th>Category</th><th>File:line</th><th>Reason</th><th>Snippet</th></tr>
+      </thead>
+      <tbody>
+        {% for f in ic.static_security.findings %}
+        <tr>
+          <td><span class="badge {{ f.severity }}">{{ f.severity }}</span></td>
+          <td>{{ f.category }}</td>
+          <td><code>{{ f.file }}:{{ f.line }}</code></td>
+          <td>{{ f.reason }}</td>
+          <td><code>{{ f.snippet }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <div class="empty-msg">No security findings.</div>
+    {% endif %}
+  </div>
+
+  <div class="det-card">
+    <h2>Quality + templating{{ _vchip() }} {% if ic.quality %}<span class="badge {{ ic.quality.status or 'pass' }}">{{ ic.quality.status or 'pass' }}</span>{% endif %}</h2>
+    {% if ic.quality %}
+      <div style="font-size: 13px; color: var(--text-secondary, #6b7280); margin-bottom: 8px;">
+        Template placeholders found: <strong>{{ ic.quality.template_placeholders or 0 }}</strong>
+      </div>
+      {% if ic.quality.issues %}
+      <ul class="issues">
+        {% for issue in ic.quality.issues %}<li><code>{{ issue }}</code></li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if ic.quality.template_recommendation %}
+      <div class="det-recommendation">{{ ic.quality.template_recommendation }}</div>
+      {% endif %}
+    {% else %}
+      <div class="empty-msg">No quality data.</div>
+    {% endif %}
+  </div>
+
+  {# ── LLM review ──────────────────────────────────────────────────────────── #}
+  <div class="det-card">
+    <h2>LLM security review{{ _vchip() }}
+      {% if sub.llm_findings and sub.llm_findings.risk_level %}
+      <span class="badge {{ sub.llm_findings.risk_level }}">{{ sub.llm_findings.risk_level }}</span>
+      {% endif %}
+    </h2>
+    {% if sub.llm_findings %}
+      {% if sub.llm_findings.error %}
+        <div class="det-error-box"><strong>Error:</strong> {{ sub.llm_findings.error }}</div>
+      {% else %}
+        {% if sub.llm_findings.summary %}
+          <p class="det-summary">{{ sub.llm_findings.summary }}</p>
+        {% endif %}
+        {% if sub.llm_findings.findings %}
+        <h3 style="margin: 18px 0 6px 0; font-size: 13px; color: var(--text-secondary, #6b7280); text-transform: uppercase; letter-spacing: 0.4px;">Security findings</h3>
+        <table class="data-table">
+          <thead>
+            <tr><th>Severity</th><th>Category</th><th>File</th><th>Explanation</th><th>Fix hint</th></tr>
+          </thead>
+          <tbody>
+            {% for f in sub.llm_findings.findings %}
+            <tr>
+              <td><span class="badge {{ f.severity }}">{{ f.severity }}</span></td>
+              <td>{{ f.category }}</td>
+              <td><code>{{ f.file }}</code></td>
+              <td>{{ f.explanation }}</td>
+              <td>{{ f.fix_hint or "" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+        {# Content-quality issues. Pre-fix the template only rendered
+           the security findings table, so a submission blocked
+           purely on content_quality (e.g. weak description) showed
+           up as 'No findings — model verdict was clean' even though
+           status was blocked_llm. Surfaced live by an admin
+           investigating a blocked re-restore of an already-approved
+           bundle. #}
+        {% set cq = sub.llm_findings.content_quality %}
+        {% if cq and cq.issues %}
+        <h3 style="margin: 18px 0 6px 0; font-size: 13px; color: var(--text-secondary, #6b7280); text-transform: uppercase; letter-spacing: 0.4px;">
+          Content quality issues
+          <span class="badge {{ 'fail' if cq.verdict == 'fail' else 'safe' }}" style="margin-left: 6px;">{{ cq.verdict }}</span>
+        </h3>
+        <table class="data-table">
+          <thead>
+            <tr><th>File</th><th>Field</th><th>Issue</th><th>Suggested rewrite</th></tr>
+          </thead>
+          <tbody>
+            {% for issue in cq.issues %}
+            <tr>
+              <td><code>{{ issue.file }}</code></td>
+              <td><code>{{ issue.field }}</code></td>
+              <td>{{ issue.issue }}</td>
+              <td>{{ issue.hint or "" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+        {% if not sub.llm_findings.findings and not (cq and cq.issues) %}
+          {% if sub.status in ['blocked_llm', 'review_error'] %}
+            <div class="det-error-box">
+              <strong>Blocked but no findings recorded.</strong>
+              This is usually a transient LLM non-determinism: the
+              reviewer returned a fail verdict without enumerating
+              the offending items. Click <em>Rescan</em> to re-run
+              the pipeline, or <em>Override</em> with a written
+              reason if you've verified the bundle offline.
+            </div>
+          {% else %}
+            <div class="empty-msg">No findings — model verdict was clean.</div>
+          {% endif %}
+        {% endif %}
+        {% if sub.llm_findings.reused_from_submission_id %}
+          <div class="empty-msg" style="margin-top: 12px;">
+            ✓ Verdict reused from prior approved submission
+            <a href="/admin/store/submissions/{{ sub.llm_findings.reused_from_submission_id }}">
+              {{ sub.llm_findings.reused_from_submission_id[:8] }}
+            </a>
+            (byte-identical bundle — LLM was not re-called).
+          </div>
+        {% endif %}
+      {% endif %}
+    {% elif sub.status in ['pending_inline', 'pending_llm'] %}
+      <div class="empty-msg">Review still in progress…</div>
+    {% else %}
+      <div class="empty-msg">No LLM verdict (review skipped or not yet run).</div>
+    {% endif %}
+  </div>
+
+  {# ── Other attempts by submitter ─────────────────────────────────────────── #}
+  {% if other_count %}
+  <div class="det-card">
+    <h2>Other attempts</h2>
+    <a href="/admin/store/submissions?submitter={{ sub.submitter_id }}">
+      View {{ other_count }} other submission{{ "" if other_count == 1 else "s" }} by {{ sub.submitter_email or sub.submitter_id }} →
+    </a>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  const subId = {{ sub.id|tojson }};
+  const currentStatus = {{ sub.status|tojson }};
+
+  function toast(msg) { window.appToast({ kind: 'info', msg }); }
+
+  // Tick the "Xs / Xm Ys" elapsed counter on the pending banner.
+  function startElapsedTicker() {
+    const el = document.getElementById('pendingElapsed');
+    if (!el || !el.dataset.since) return;
+    const since = new Date(el.dataset.since);
+    if (isNaN(since.getTime())) return;
+    function tick() {
+      const sec = Math.max(0, Math.floor((Date.now() - since.getTime()) / 1000));
+      el.textContent = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
+    }
+    tick();
+    setInterval(tick, 1000);
+  }
+
+  // Render relative timestamps ("3s ago", "12m ago", "2h ago", "3d ago")
+  // for every element with data-rel-since=ISO. Refreshes every 10s so
+  // an admin staring at the page sees the timer move and knows the
+  // render is live (and not a stale cached page).
+  function renderRelative() {
+    const now = Date.now();
+    document.querySelectorAll('[data-rel-since]').forEach((el) => {
+      const iso = el.dataset.relSince;
+      if (!iso) { el.textContent = ''; return; }
+      const t = new Date(iso).getTime();
+      if (isNaN(t)) return;
+      const sec = Math.max(0, Math.floor((now - t) / 1000));
+      let txt;
+      if (sec < 5) txt = 'just now';
+      else if (sec < 60) txt = `${sec}s ago`;
+      else if (sec < 3600) txt = `${Math.floor(sec / 60)}m ago`;
+      else if (sec < 86400) txt = `${Math.floor(sec / 3600)}h ago`;
+      else txt = `${Math.floor(sec / 86400)}d ago`;
+      el.textContent = txt;
+    });
+  }
+  renderRelative();
+  setInterval(renderRelative, 10000);
+
+  // Poll status; reload when it flips out of pending_*.
+  // ``initialDelayMs`` lets us wait a beat after a fresh action POST so
+  // we don't catch the database mid-write.
+  function startPolling(initialDelayMs) {
+    let attempts = 0;
+    const tick = async () => {
+      attempts++;
+      try {
+        const r = await fetch(`/api/admin/store/submissions/${subId}`, {
+          credentials: 'same-origin',
+        });
+        if (!r.ok) return;
+        const sub = await r.json();
+        if (sub.status !== 'pending_inline' && sub.status !== 'pending_llm') {
+          // Verdict landed — reload to render the new state.
+          window.location.reload();
+          return;
+        }
+      } catch (e) { /* network blip; keep polling */ }
+      // Back off after first 30 attempts (90s) to spare the LLM if it's
+      // running a long Sonnet/Opus review.
+      const next = attempts < 30 ? 3000 : 10000;
+      setTimeout(tick, next);
+    };
+    setTimeout(tick, initialDelayMs || 3000);
+  }
+
+  document.querySelectorAll('button[data-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const action = btn.dataset.action;
+      btn.disabled = true;
+      try {
+        if (action === 'override') {
+          const reason = await promptModal('Override reason (required, ≥ 4 chars):');
+          if (!reason || reason.length < 4) { btn.disabled = false; return; }
+          const r = await fetch(`/api/admin/store/submissions/${subId}/override`, {
+            method: 'POST', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({reason}),
+          });
+          if (!r.ok) { await alertModal('Override failed: ' + await r.text()); btn.disabled = false; return; }
+          window.location.reload();
+        } else if (action === 'retry') {
+          const r = await fetch(`/api/admin/store/submissions/${subId}/retry`, {
+            method: 'POST', credentials: 'same-origin',
+          });
+          if (!r.ok) { await alertModal('Retry failed: ' + await r.text()); btn.disabled = false; return; }
+          // Don't reload — show toast, let the polling pick up the
+          // verdict so the admin sees the in-progress state.
+          toast('LLM review re-queued — polling for verdict…');
+          setTimeout(() => window.location.reload(), 1500);
+        } else if (action === 'rescan') {
+          if (!(await confirmModal({ message: 'Re-run all checks against the current bundle? Verdict may flip.', danger: false }))) {
+            btn.disabled = false; return;
+          }
+          const r = await fetch(`/api/admin/store/submissions/${subId}/rescan`, {
+            method: 'POST', credentials: 'same-origin',
+          });
+          if (!r.ok) { await alertModal('Rescan failed: ' + await r.text()); btn.disabled = false; return; }
+          toast('Rescan queued — polling for verdict…');
+          // Reload after a beat so the page re-renders with the
+          // pending banner; that page will start its own poll loop.
+          setTimeout(() => window.location.reload(), 1500);
+        } else if (action === 'delete') {
+          if (!(await confirmModal('Delete submission and its bundle? This cannot be undone.'))) {
+            btn.disabled = false; return;
+          }
+          const r = await fetch(`/api/admin/store/submissions/${subId}`, {
+            method: 'DELETE', credentials: 'same-origin',
+          });
+          if (!r.ok) { await alertModal('Delete failed: ' + await r.text()); btn.disabled = false; return; }
+          window.location.href = '/admin/store/submissions';
+        }
+      } catch (e) {
+        await alertModal('Action failed: ' + e);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  if (currentStatus === 'pending_inline' || currentStatus === 'pending_llm') {
+    startElapsedTicker();
+    startPolling(3000);
+  }
+})();
+</script>
+{% endblock %}

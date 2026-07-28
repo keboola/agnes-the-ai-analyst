@@ -1,0 +1,13 @@
+{
+  "verifications": [
+    {
+      "detection_type": "unprompted_definition",
+      "title": "CAC excludes organic signups from denominator",
+      "content": "CAC = (total marketing spend + sales team cost) / new customers acquired, excluding organic signups from the denominator.",
+      "user_quote": "Before we start, for reference: our CAC (Customer Acquisition Cost) is calculated as total marketing spend plus sales team cost, divided by new customers acquired in the same period. We exclude organic signups from the denominator.",
+      "domain": "finance",
+      "entities": ["CAC"],
+      "base_confidence": 0.90
+    }
+  ]
+}

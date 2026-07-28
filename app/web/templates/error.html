@@ -1,0 +1,41 @@
+{% extends "base_ds.html" %}
+
+{% block title %}Error {{ code }} — Data Analyst Portal{% endblock %}
+
+{% block content %}
+{# ds.button (Go home / Back) is auto-imported by base_ds. #}
+<div class="error-container">
+    <div class="error-card">
+        <div class="error-code">{{ code }}</div>
+        <h2 class="error-title">{{ title }}</h2>
+        {% if message %}
+        <p class="error-message">{{ message }}</p>
+        {% endif %}
+        {% if path %}
+        <p class="error-path">
+            <span class="error-path-label">Path:</span>
+            <code>{{ path }}</code>
+        </p>
+        {% endif %}
+        {% if traceback %}
+        <details class="error-traceback">
+            <summary>Traceback (DEBUG=1)</summary>
+            <pre>{{ traceback }}</pre>
+        </details>
+        {% endif %}
+        {% if request_id %}
+        <p class="error-request-id">
+            <span class="error-request-id-label">Reference:</span>
+            <code>{{ request_id }}</code>
+        </p>
+        {% endif %}
+        <div class="error-actions">
+            {{ ds.button('Go home', variant='primary',
+                         href=url_for('index')) }}
+            {{ ds.button('Back', variant='secondary',
+                         href='javascript:history.back()') }}
+        </div>
+    </div>
+</div>
+
+{% endblock %}

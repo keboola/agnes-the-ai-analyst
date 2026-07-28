@@ -1,0 +1,393 @@
+{% extends "base.html" %}
+
+{% block title %}{{ table.name }} — Table detail{% endblock %}
+
+{% block head_extra %}
+<style>
+  .td-back {
+    display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-secondary, #5f6368); text-decoration: none;
+    font-size: 13px; margin-bottom: 12px;
+  }
+  .td-back:hover { color: var(--ds-primary); }
+
+  /* ── Hero ─────────────────────────────────────────────────── */
+  .td-hero {
+    display: flex; align-items: flex-start; gap: 16px;
+    padding: 20px 24px; background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 12px;
+    margin-bottom: 16px;
+  }
+  .td-hero__glyph {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0;
+    font-size: 22px; font-weight: 700; color: #fff;
+    background: var(--td-glyph-bg, var(--ds-primary));
+  }
+  .td-hero__body { flex: 1; min-width: 0; }
+  .td-hero__title {
+    margin: 0 0 6px;
+    font-size: 22px; font-weight: 700;
+    letter-spacing: -0.2px;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .td-hero__id {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-secondary);
+    padding: 2px 6px; background: var(--border-light, #f3f4f6);
+    border-radius: 4px;
+  }
+  .td-hero__desc {
+    margin: 6px 0 0;
+    color: var(--text-primary); font-size: 14px; line-height: 1.5;
+  }
+  .td-hero__meta {
+    display: flex; align-items: center; gap: 6px 14px; flex-wrap: wrap;
+    margin-top: 12px;
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .td-hero__meta strong {
+    color: var(--text-primary); font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .td-pill {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 999px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .td-pill--mode-local       { background: #d1fae5; color: #065f46; }
+  .td-pill--mode-remote      { background: #fef3c7; color: #92400e; }
+  .td-pill--mode-materialized{ background: #e0f2fe; color: #075985; }
+  .td-pill--mode-internal    { background: #f3f4f6; color: #4b5563; }
+  .td-pill--source           { background: var(--ds-primary-light, #e0f2fe); color: var(--ds-primary); }
+
+  /* ── Sections ─────────────────────────────────────────────── */
+  .td-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; margin-bottom: 14px;
+  }
+  .td-section__head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 10px;
+  }
+  .td-section__title {
+    margin: 0; font-size: 13px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-secondary);
+  }
+  .td-section__edit-btn {
+    border: 1px solid var(--border); background: transparent;
+    padding: 3px 10px; border-radius: 6px; font-size: 12px;
+    cursor: pointer; color: var(--text-secondary);
+  }
+  .td-section__edit-btn:hover { background: var(--border-light, #f3f4f6); color: var(--text-primary); }
+
+  .td-empty {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0;
+    color: var(--text-secondary); font-size: 13px; font-style: italic;
+  }
+  .td-empty__cta {
+    margin-left: auto; font-style: normal;
+  }
+
+  .td-list { margin: 0; padding-left: 20px; }
+  .td-list li { margin: 4px 0; line-height: 1.5; font-size: 14px; }
+
+  .td-columns { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .td-columns th, .td-columns td {
+    text-align: left; padding: 6px 10px;
+    border-bottom: 1px solid var(--border-light, #f0f0f0);
+  }
+  .td-columns th {
+    color: var(--text-secondary); font-weight: 600;
+    text-transform: uppercase; font-size: 11px;
+    letter-spacing: 0.4px; background: var(--border-light, #f9fafb);
+  }
+  .td-columns code { font-family: var(--font-mono); font-size: 12px; color: var(--ds-primary); }
+  .td-columns td.td-null { color: var(--text-secondary); }
+
+  .td-pairs { display: flex; gap: 8px; flex-wrap: wrap; }
+  .td-pairs a {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 6px 12px; background: var(--border-light, #f3f4f6);
+    border-radius: 6px; text-decoration: none;
+    color: var(--text-primary); font-size: 13px;
+  }
+  .td-pairs a:hover { background: var(--ds-primary-light, #e0f2fe); color: var(--ds-primary); }
+
+  .td-note {
+    white-space: pre-wrap; line-height: 1.5; font-size: 14px;
+    color: var(--text-primary);
+  }
+
+  /* ── Admin inline edit ─────────────────────────────────────── */
+  .td-edit { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+  .td-edit.is-open { display: block; }
+  .td-edit textarea, .td-edit input[type="text"] {
+    width: 100%; padding: 8px 10px;
+    border: 1px solid var(--border); border-radius: 6px;
+    font-family: inherit; font-size: 13px; line-height: 1.5;
+    background: var(--surface); color: var(--text-primary);
+  }
+  .td-edit textarea { resize: vertical; min-height: 100px; font-family: inherit; }
+  .td-edit__hint { color: var(--text-secondary); font-size: 11px; margin-top: 4px; }
+  .td-edit__row { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+
+  /* ── #396 preview modal ────────────────────────────────────── */
+  .td-preview-modal {
+    position: fixed; inset: 0; z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .td-preview-modal[hidden] { display: none !important; }
+  .td-preview-backdrop {
+    position: absolute; inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+  }
+  .td-preview-card {
+    position: relative;
+    background: var(--surface);
+    border-radius: var(--radius-xl);
+    max-width: 920px; width: 100%;
+    max-height: 90vh;
+    display: flex; flex-direction: column;
+    /* Match the existing modal shadow convention used by .modal-card in
+       admin_marketplaces.html etc. — system-wide modal-shadow tokenization
+       would be a separate refactor across all modal surfaces. */
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  }
+  .td-preview-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--border);
+  }
+  .td-preview-header h3 { margin: 0; font-size: 16px; font-weight: 600; }
+  .td-preview-close {
+    background: none; border: none; cursor: pointer;
+    font-size: 22px; line-height: 1;
+    color: var(--text-secondary);
+    padding: 0 4px;
+  }
+  .td-preview-close:hover { color: var(--text-primary); }
+  .td-preview-body {
+    padding: 16px 22px;
+    overflow: auto; flex: 1;
+  }
+  .td-preview-footer {
+    padding: 12px 22px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+  .td-preview-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  .td-preview-table th, .td-preview-table td {
+    padding: 6px 10px; text-align: left;
+    border-bottom: 1px solid var(--border-light);
+    white-space: nowrap;
+    max-width: 360px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .td-preview-table th {
+    font-weight: 600; color: var(--text-secondary);
+    position: sticky; top: 0;
+    background: var(--surface);
+    border-bottom-color: var(--border);
+  }
+  .td-preview-table td { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+  .td-preview-loading, .td-preview-error, .td-preview-empty {
+    text-align: center; padding: 32px;
+    color: var(--text-secondary); font-size: 13px;
+  }
+  .td-preview-error { color: var(--error); }
+</style>
+{% endblock %}
+
+{% block content %}
+{# Back link — prefer the first parent package, fall back to /catalog. #}
+<a class="td-back"
+   href="{% if parent_packages %}/catalog/p/{{ parent_packages[0].slug }}{% else %}/catalog{% endif %}">
+  ← Back to {% if parent_packages %}{{ parent_packages[0].name }}{% else %}catalog{% endif %}
+</a>
+
+{# ── Hero card ─────────────────────────────────────────────── #}
+{% set _qmode = (table.query_mode or 'local')|lower %}
+{% set _glyph_bg = table.color or 'var(--ds-primary)' %}
+{% set _initials =
+    (table.name or table.id or '?').split()|map('first')|join('')|upper
+%}
+<div class="td-hero">
+  <div class="td-hero__glyph" style="--td-glyph-bg: {{ _glyph_bg }};">
+    {% if table.icon %}{{ table.icon }}{% else %}{{ _initials[:2] }}{% endif %}
+  </div>
+  <div class="td-hero__body">
+    <h1 class="td-hero__title">
+      {{ table.name }}
+      <span class="td-hero__id">{{ table.id }}</span>
+    </h1>
+
+    {% if table.description %}
+    <p class="td-hero__desc">{{ table.description }}</p>
+    {% endif %}
+
+    <div class="td-hero__meta">
+      <span class="td-pill td-pill--mode-{{ _qmode }}" title="query mode">{{ _qmode }}</span>
+      {# Skip the source-type pill when it's redundant with the mode
+         pill — internal tables have source_type == query_mode ==
+         'internal' and rendering two identical pills is visual noise. #}
+      {% if table.source_type and table.source_type|lower != _qmode %}
+      <span class="td-pill td-pill--source" title="source type">{{ table.source_type }}</span>
+      {% endif %}
+      {# Qualified-name code chip — only useful for sources that round-trip
+         to an upstream system (Keboola bucket.table, BigQuery dataset.table).
+         Internal tables have no meaningful upstream qualified name. #}
+      {% if table.bucket and table.source_type|lower != 'internal' %}
+      · <code style="font-family:var(--font-mono); font-size:12px;">{{ table.bucket }}{% if table.source_table %}.{{ table.source_table }}{% endif %}</code>
+      {% endif %}
+      {% if rows_display %}
+      · <span><strong>{{ rows_display }}</strong> rows</span>
+      {% endif %}
+      {% if size_display %}
+      · <span><strong>{{ size_display }}</strong></span>
+      {% endif %}
+      {% if last_sync_display %}
+      · Last sync <strong>{{ last_sync_display }}</strong>
+      {% endif %}
+    </div>
+
+    {% if parent_packages %}
+    <div class="td-hero__meta">
+      In package{{ '' if parent_packages|length == 1 else 's' }}:
+      {% for p in parent_packages %}
+      <a href="/catalog/p/{{ p.slug }}"
+         style="color:var(--ds-primary); text-decoration:none; font-weight:600;">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {# #396: data-preview affordance. Hits GET /api/v2/sample/{table.id}
+       which returns the first N rows (default 5, max 100). Permission-
+       gated server-side, so this button is visible to anyone who can
+       view the table detail but the server still enforces access. #}
+    <div class="td-hero__actions" style="margin-top:12px;">
+      <button type="button" class="btn btn-secondary"
+              onclick="openTablePreviewModal()">Preview data</button>
+    </div>
+  </div>
+</div>
+
+{# Preview modal — populated lazily on first open. Hidden by default
+   so the markup doesn't shift the hero layout. Self-contained
+   modal chrome (the page-shared admin modal classes don't reach
+   here). #}
+<div id="tablePreviewModal" class="td-preview-modal" hidden>
+  <div class="td-preview-backdrop" onclick="closeTablePreviewModal()"></div>
+  <div class="td-preview-card" role="dialog" aria-modal="true"
+       aria-labelledby="td-preview-title">
+    <div class="td-preview-header">
+      <h3 id="td-preview-title">Sample data — {{ table.name }}</h3>
+      <button type="button" class="td-preview-close"
+              onclick="closeTablePreviewModal()" aria-label="Close">×</button>
+    </div>
+    <div id="td-preview-body" class="td-preview-body">
+      <div class="td-preview-loading">Loading…</div>
+    </div>
+    <div class="td-preview-footer">
+      <button type="button" class="btn btn-secondary"
+              onclick="closeTablePreviewModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+{# The original layout had four editorial sections — Sample questions,
+   What's inside (columns), Things to know, Pairs well with — that the
+   admin could fill in. Per user feedback they read as noise on a page
+   whose job is "what is this table and where do I find it"; the
+   structural answer is the hero (name + description + parent
+   packages). Dropping the four sections keeps the page focused. The
+   PATCH endpoint + columns query still exist for tools that read
+   them programmatically; this only changes the user-facing render. #}
+
+{# Inline-edit / sync-trigger / docs-PATCH JS was removed alongside the
+   four editorial sections it drove (sample_questions, columns,
+   things_to_know, pairs_well_with). The endpoints (`POST
+   /api/sync/trigger`, `PATCH /api/admin/registry/{id}/docs`) still
+   exist for direct API callers + admin tooling. #}
+
+{# ── #396: data-preview modal JS ──
+   Fires on click of the "Preview data" button in the hero. Hits
+   GET /api/v2/sample/{table_id}?n=10 and renders the rows in a
+   simple <table>. The server already enforces permissions; the UI
+   doesn't second-guess (a 403 lands as a clear inline error). #}
+<script>
+(function () {
+  const TABLE_ID = {{ table.id | tojson }};
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function renderRows(body, rows) {
+    if (!rows.length) {
+      body.innerHTML = '<div class="td-preview-empty">No rows returned.</div>';
+      return;
+    }
+    const cols = Object.keys(rows[0]);
+    const html = ['<table class="td-preview-table"><thead><tr>'];
+    for (const c of cols) html.push('<th>' + escapeHtml(c) + '</th>');
+    html.push('</tr></thead><tbody>');
+    for (const row of rows) {
+      html.push('<tr>');
+      for (const c of cols) {
+        const v = row[c];
+        html.push('<td>' + escapeHtml(v == null ? '' : String(v)) + '</td>');
+      }
+      html.push('</tr>');
+    }
+    html.push('</tbody></table>');
+    body.innerHTML = html.join('');
+  }
+
+  window.openTablePreviewModal = async function () {
+    const modal = document.getElementById('tablePreviewModal');
+    const body = document.getElementById('td-preview-body');
+    body.innerHTML = '<div class="td-preview-loading">Loading…</div>';
+    modal.hidden = false;
+    try {
+      const res = await fetch('/api/v2/sample/' + encodeURIComponent(TABLE_ID) + '?n=10',
+                              { credentials: 'same-origin' });
+      if (!res.ok) {
+        let msg = res.statusText || ('HTTP ' + res.status);
+        try {
+          const err = await res.json();
+          msg = (err && err.detail && (err.detail.message || err.detail)) || msg;
+        } catch (_) { /* body wasn't JSON; fall back to statusText */ }
+        body.innerHTML = '<div class="td-preview-error">' + escapeHtml(String(msg)) + '</div>';
+        return;
+      }
+      const data = await res.json();
+      renderRows(body, data.rows || []);
+    } catch (e) {
+      body.innerHTML = '<div class="td-preview-error">Network error: '
+                       + escapeHtml(e.message || String(e)) + '</div>';
+    }
+  };
+
+  window.closeTablePreviewModal = function () {
+    document.getElementById('tablePreviewModal').hidden = true;
+  };
+
+  // Esc closes (only when the modal is open, so we don't steal Esc from
+  // other handlers).
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    const modal = document.getElementById('tablePreviewModal');
+    if (modal && !modal.hidden) closeTablePreviewModal();
+  });
+})();
+</script>
+{% endblock %}

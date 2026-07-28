@@ -1,0 +1,258 @@
+"""Tests for the PUT/DELETE /api/admin/mcp-sources/{id}/secret endpoints.
+
+Verify admin-only gating + the round trip through the vault, including
+that connectors/mcp/client._lookup_secret_for_source picks up the
+stored value over the legacy env-var.
+"""
+from __future__ import annotations
+
+import pytest
+from cryptography.fernet import Fernet
+
+pytest.importorskip("mcp", reason="mcp SDK not installed")
+
+from app.secrets_vault import SharedSecretsRepository, _reset_ephemeral_key_for_tests
+from src.db import get_system_db
+from src.repositories.mcp_sources import MCPSourceRepository
+
+
+@pytest.fixture(autouse=True)
+def _stable_vault_key(monkeypatch):
+    """Use a stable vault key per test so the ephemeral-on-restart trap
+    can't make a passing test flake when re-run."""
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    _reset_ephemeral_key_for_tests()
+    yield
+    _reset_ephemeral_key_for_tests()
+
+
+def _seed_source(source_id: str = "src_v") -> None:
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id=source_id,
+        name=f"vault-up-{source_id}",
+        transport="http",
+        url="https://upstream.example.com/mcp",
+        auth_method="bearer",
+        auth_secret_env="UPSTREAM_TOKEN_ENV",
+    )
+    conn.close()
+
+
+# ── admin gate ────────────────────────────────────────────────────────────
+
+
+def test_set_secret_requires_admin(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "x"},
+    )
+    assert r.status_code == 403
+
+
+def test_set_secret_404_for_unknown_source(seeded_app):
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_nope/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "x"},
+    )
+    assert r.status_code == 404
+
+
+def test_set_secret_rejects_empty(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": ""},
+    )
+    assert r.status_code == 400
+
+
+# ── round trip + vault precedence ────────────────────────────────────────
+
+
+def test_set_then_get_decrypts_through_repository(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "vault-secret-abc"},
+    )
+    assert r.status_code == 204
+
+    conn = get_system_db()
+    try:
+        stored = SharedSecretsRepository(conn).get("src_v")
+    finally:
+        conn.close()
+    assert stored == "vault-secret-abc"
+
+
+def test_delete_clears_vault(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "x"},
+    )
+    r = client.delete(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+    )
+    assert r.status_code == 204
+
+    conn = get_system_db()
+    try:
+        assert SharedSecretsRepository(conn).get("src_v") is None
+    finally:
+        conn.close()
+
+
+def test_delete_source_also_clears_vault_secret(seeded_app):
+    """Deleting the SOURCE must not leave an orphaned encrypted secret row."""
+    _seed_source()
+    client = seeded_app["client"]
+    hdr = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    client.put("/api/admin/mcp-sources/src_v/secret", headers=hdr, json={"value": "orphan-me"})
+    conn = get_system_db()
+    try:
+        assert SharedSecretsRepository(conn).has("src_v") is True
+    finally:
+        conn.close()
+
+    r = client.delete("/api/admin/mcp-sources/src_v", headers=hdr)
+    assert r.status_code == 204
+
+    conn = get_system_db()
+    try:
+        assert SharedSecretsRepository(conn).has("src_v") is False
+    finally:
+        conn.close()
+
+
+def test_health_reports_vault_key_configured(seeded_app, monkeypatch):
+    from cryptography.fernet import Fernet
+    client = seeded_app["client"]
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    assert client.get("/api/health").json()["vault_key_configured"] is True
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    assert client.get("/api/health").json()["vault_key_configured"] is False
+
+
+def test_set_secret_returns_409_without_vault_key(seeded_app, monkeypatch):
+    _seed_source()
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    _reset_ephemeral_key_for_tests()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "x"},
+    )
+    assert r.status_code == 409
+    assert "vault_key_not_configured" in r.json()["detail"]
+
+
+def test_encrypt_secret_blocked_without_key_in_prod(monkeypatch):
+    import app.secrets_vault as v
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    v._reset_ephemeral_key_for_tests()
+    assert v.vault_key_configured() is False
+    with pytest.raises(v.VaultKeyNotConfiguredError):
+        v.encrypt_secret("s3cr3t")
+
+
+def test_encrypt_secret_allowed_in_local_dev_without_key(monkeypatch):
+    import app.secrets_vault as v
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+    v._reset_ephemeral_key_for_tests()
+    token = v.encrypt_secret("s3cr3t")           # ephemeral OK in local dev
+    assert v.decrypt_secret(token) == "s3cr3t"
+
+
+def test_encrypt_secret_allowed_with_key(monkeypatch):
+    import app.secrets_vault as v
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    v._reset_ephemeral_key_for_tests()
+    assert v.vault_key_configured() is True
+    assert v.decrypt_secret(v.encrypt_secret("s3cr3t")) == "s3cr3t"
+
+
+def test_source_serialization_includes_has_vault_secret(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    # before: no vault secret
+    assert (
+        client.get("/api/admin/mcp-sources/src_v", headers=headers).json()[
+            "has_vault_secret"
+        ]
+        is False
+    )
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers=headers,
+        json={"value": "tok"},
+    )
+    assert (
+        client.get("/api/admin/mcp-sources/src_v", headers=headers).json()[
+            "has_vault_secret"
+        ]
+        is True
+    )
+
+
+def test_list_includes_has_vault_secret(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers=headers,
+        json={"value": "tok"},
+    )
+    rows = client.get("/api/admin/mcp-sources", headers=headers).json()
+    row = next(r for r in rows if r["id"] == "src_v")
+    assert row["has_vault_secret"] is True
+
+
+def test_client_lookup_uses_vault_over_env(seeded_app, monkeypatch):
+    """connectors/mcp/client._lookup_secret_for_source should prefer the
+    vault row over the env-var named in auth_secret_env."""
+    from connectors.mcp.client import _lookup_secret_for_source
+
+    _seed_source()
+    monkeypatch.setenv("UPSTREAM_TOKEN_ENV", "from-env-not-from-vault")
+
+    # No vault row yet → env wins
+    src = {"id": "src_v", "auth_secret_env": "UPSTREAM_TOKEN_ENV"}
+    assert _lookup_secret_for_source(src) == "from-env-not-from-vault"
+
+    # Write vault row → vault wins
+    client = seeded_app["client"]
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "from-vault"},
+    )
+    assert _lookup_secret_for_source(src) == "from-vault"
+
+    # Drop the vault row → env wins again
+    client.delete(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+    )
+    assert _lookup_secret_for_source(src) == "from-env-not-from-vault"

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title|default('Notice', true) }} - {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <div class="login-card">
+        <h2>{{ page_title|default('Notice', true) }}</h2>
+        <p class="login-description">{{ page_message|default('', true) }}</p>
+        <div class="login-links">
+            <a href="/login/password" class="btn btn-link">Back to Login</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

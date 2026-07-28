@@ -1,0 +1,3 @@
+{"role": "user", "content": "Before we start, for reference: our CAC (Customer Acquisition Cost) is calculated as total marketing spend plus sales team cost, divided by new customers acquired in the same period. We exclude organic signups from the denominator."}
+{"role": "assistant", "content": "Thank you for that definition. I'll use CAC = (marketing spend + sales cost) / new paid customers, excluding organic signups."}
+{"role": "user", "content": "Great. Now show me CAC trends for Q1."}

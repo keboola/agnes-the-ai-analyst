@@ -1,0 +1,366 @@
+"""FastAPI auth dependencies — current user resolution.
+
+Authorization helpers (require_admin, require_resource_access) live in
+``app.auth.access`` to avoid a circular import — they need ``get_current_user``
+from this module and ``_get_db``, which both come from here.
+"""
+
+import json
+import logging
+import os
+from typing import Optional
+
+import duckdb
+from fastapi import Depends, HTTPException, Header, Request, status
+
+from app.auth.jwt import verify_token
+from src.db import get_system_db
+
+logger = logging.getLogger(__name__)
+
+# Default dev user used when LOCAL_DEV_MODE=1. Seeded at startup by app/main.py.
+LOCAL_DEV_DEFAULT_EMAIL = "dev@localhost"
+
+# Single-slot cache for the parsed LOCAL_DEV_GROUPS value, keyed by the raw env
+# string. Avoids re-parsing JSON on every authenticated request without the
+# surprise of test isolation issues — when the env changes (typical in tests),
+# the key changes and the cache transparently re-parses.
+_LOCAL_DEV_GROUPS_CACHE: tuple[str, list[dict]] | None = None
+
+# Map pat_resolver.ResolutionReason → HTTP 401 `detail` string. Preserves the
+# specific user-facing messages that existed before the pat_resolver refactor
+# (Account deactivated, Token revoked, ...) so tests and admin UX that grep
+# for these phrases keep working.
+_AUTH_DETAIL_BY_REASON = {
+    "deactivated": "Account deactivated",
+    "user_not_found": "User not found",
+    "pat_unknown": "Token unknown",
+    "pat_revoked": "Token revoked",
+    "pat_expired": "Token expired",
+    "pat_mismatch": "Token mismatch",
+    "pat_scope_forbidden": "git_scope_token_not_allowed",
+    "invalid_token": "Invalid or expired token",
+    "no_token": "Invalid or expired token",
+}
+
+
+def is_local_dev_mode() -> bool:
+    """True when LOCAL_DEV_MODE=1 — unsafe for production, bypasses auth."""
+    return os.environ.get("LOCAL_DEV_MODE", "").lower() in ("1", "true", "yes")
+
+
+def get_local_dev_email() -> str:
+    """Email of the auto-logged-in dev user. Configurable via LOCAL_DEV_USER_EMAIL."""
+    return os.environ.get("LOCAL_DEV_USER_EMAIL", LOCAL_DEV_DEFAULT_EMAIL)
+
+
+def get_local_dev_groups() -> list[dict]:
+    """Mock Google Workspace groups for the dev user when LOCAL_DEV_MODE is on.
+
+    Reads ``LOCAL_DEV_GROUPS`` as a JSON array of objects matching the shape
+    produced by ``_fetch_google_groups`` — ``[{"id": "...", "name": "..."}]``.
+    Items must have a non-empty ``id``; ``name`` defaults to ``id`` when
+    omitted. Extra fields are preserved verbatim so future group attributes
+    (roles, labels, …) can be mocked without touching this parser.
+
+    Returns ``[]`` on missing/empty/malformed input — dev mock must never
+    break the dev flow. Malformed input is logged at WARNING.
+
+    Cached single-slot: re-parses only when the raw env-var value changes.
+    """
+    global _LOCAL_DEV_GROUPS_CACHE
+    raw = os.environ.get("LOCAL_DEV_GROUPS", "").strip()
+    if _LOCAL_DEV_GROUPS_CACHE is not None and _LOCAL_DEV_GROUPS_CACHE[0] == raw:
+        return _LOCAL_DEV_GROUPS_CACHE[1]
+    result = _parse_local_dev_groups(raw)
+    _LOCAL_DEV_GROUPS_CACHE = (raw, result)
+    return result
+
+
+def _parse_local_dev_groups(raw: str) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning("LOCAL_DEV_GROUPS is not valid JSON, ignoring: %s", e)
+        return []
+    if not isinstance(parsed, list):
+        logger.warning(
+            "LOCAL_DEV_GROUPS must be a JSON array, got %s — ignoring",
+            type(parsed).__name__,
+        )
+        return []
+    out: list[dict] = []
+    for item in parsed:
+        if not isinstance(item, dict) or not item.get("id"):
+            logger.warning(
+                "LOCAL_DEV_GROUPS item must be an object with 'id', skipping: %r",
+                item,
+            )
+            continue
+        # Don't mutate the parsed input — keeps the parser pure so the cache
+        # value stays a fresh list on each rebuild.
+        out.append({**item, "name": item.get("name") or item["id"]})
+    return out
+
+
+def _get_db():
+    # On a Postgres instance the system state lives in PG, not the system
+    # DuckDB — opening it here would create a stale ``state/system.duckdb`` file
+    # (and is a hard error once ``get_system_db()`` enforces the invariant).
+    # Yield ``None``: every consumer of this dependency routes its state reads
+    # through the repository factory under ``use_pg()``, so the conn is
+    # vestigial on Postgres.
+    from src.repositories import use_pg
+
+    if use_pg():
+        yield None
+        return
+    conn = get_system_db()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    """Return the request's client IP (security audit F9).
+
+    Delegates to :func:`app.auth.client_ip.trusted_client_ip`, which trusts only
+    the ``AGNES_TRUSTED_PROXY_HOPS`` rightmost X-Forwarded-For hops rather than
+    the fully client-controllable leftmost hop. Value is stored in
+    personal_access_tokens.last_used_ip and audit_log entries — informational
+    only, never authorization.
+    """
+    from app.auth.client_ip import trusted_client_ip
+
+    return trusted_client_ip(request)
+
+
+def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[dict]:
+    """Return the seeded dev user when LOCAL_DEV_MODE is on, else None.
+
+    ``conn`` retained for signature compat; ignored — uses the factory.
+    """
+    from src.repositories import users_repo
+
+    user = users_repo().get_by_email(get_local_dev_email())
+    if not user:
+        logger.error(
+            "LOCAL_DEV_MODE is on but dev user %s is not seeded; expected app startup to seed it",
+            get_local_dev_email(),
+        )
+    return user
+
+
+def _stash_chat_session_id_from_token(request: Optional[Request], token: str) -> None:
+    """Decode ``token`` and, if it carries ``scope=chat`` plus a
+    ``chat_session_id`` claim, stash that claim on ``request.state``.
+
+    Called from ``get_current_user`` after the bearer is validated. The
+    per-session BigQuery scan budget in ``app/api/query.py`` reads
+    ``request.state.chat_session_id`` to charge the right bucket; without
+    this stash, the chat-side budget would silently never accumulate even
+    though ``mint_session_jwt`` already embeds the claim. Non-chat tokens
+    (regular session/PAT) leave ``request.state`` untouched.
+    """
+    if request is None:
+        return
+    try:
+        from app.auth.jwt import verify_token as _verify
+
+        payload = _verify(token) or {}
+    except Exception:
+        return
+    if payload.get("scope") != "chat":
+        return
+    session_id = payload.get("chat_session_id")
+    if not session_id:
+        return
+    try:
+        request.state.chat_session_id = session_id
+    except Exception:
+        pass
+
+
+def _stash_user(request: Optional[Request], user: dict) -> dict:
+    """Park the resolved user on ``request.state.user``.
+
+    Read by response-phase middleware (e.g. the PostHog snippet injector
+    and the 500 handler) so they can identify the actor without re-running
+    the auth dependency. Tolerant of ``None`` requests (background paths
+    that call this helper from non-HTTP contexts).
+    """
+    if request is not None:
+        try:
+            request.state.user = user
+        except Exception:
+            pass
+    return user
+
+
+def get_current_user(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+) -> dict:
+    """Extract and validate JWT from Authorization header or cookie. Returns user dict.
+
+    No role hydration, no session caches — authorization is decided at gate
+    time by ``app.auth.access`` which reads ``user_group_members`` directly.
+
+    Plain ``def`` (not ``async def``) so FastAPI auto-offloads it to the anyio
+    thread pool — the body is a synchronous RBAC/token read (``pat_resolver``,
+    ``users_repo``, ``is_user_admin``) that on a Postgres instance blocks on a
+    sync SQLAlchemy query. Auth runs on nearly every request; under ``async
+    def`` a single slow auth query holds the single uvicorn event loop and
+    freezes the whole process (→ 503 "system unavailable"). See PR #188's Tier
+    1 event-loop unblocking rollout for the convention.
+    """
+    if is_local_dev_mode():
+        user = _get_local_dev_user(conn)
+        if user:
+            _attach_admin_flag(user, conn)
+            return _stash_user(request, user)
+        # Fall through to normal auth if seed missing — surfaces the bug
+        # instead of hiding it.
+
+    token = None
+
+    # Try Authorization header first
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ")
+
+    # Fallback to cookie (for web UI after OAuth redirect)
+    if not token and request:
+        token = request.cookies.get("access_token")
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header",
+        )
+
+    # Shared-secret path for the in-cluster scheduler. Checked before
+    # pat_resolver because the scheduler token is not a JWT — feeding it to
+    # verify_token() would log a spurious decode warning every cron tick.
+    # See app/auth/scheduler_token.py for the threat model.
+    from app.auth.scheduler_token import get_scheduler_user, is_scheduler_token
+
+    if is_scheduler_token(token):
+        scheduler_user = get_scheduler_user(conn)
+        if scheduler_user:
+            _attach_admin_flag(scheduler_user, conn)
+            return _stash_user(request, scheduler_user)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Scheduler user not provisioned",
+        )
+
+    from app.auth.pat_resolver import resolve_token_to_user
+    from app.auth.session_principal import SessionPrincipal
+
+    user, reason = resolve_token_to_user(conn, token, request)
+    if isinstance(user, SessionPrincipal):
+        return user
+    if user:
+        _attach_admin_flag(user, conn)
+        # Propagate token kind so audit helpers can tag client_kind correctly.
+        payload = verify_token(token) or {}
+        if payload.get("typ") == "pat":
+            user["token_type"] = "pat"
+        # Park chat-session claim on request.state so the BQ scan accumulator
+        # in app/api/query.py can charge the per-session budget bucket.
+        _stash_chat_session_id_from_token(request, token)
+        return _stash_user(request, user)
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=_AUTH_DETAIL_BY_REASON.get(reason, "Invalid or expired token"),
+    )
+
+
+def _attach_admin_flag(user: dict, conn: duckdb.DuckDBPyConnection) -> None:
+    """Inject ``user["is_admin"]`` so templates and route handlers can gate
+    admin-only UI without touching the legacy ``users.role`` column.
+
+    v13 nulled out ``users.role`` and moved admin authority onto
+    ``user_group_members`` (Admin system group). The web header used to
+    gate its admin nav on ``session.user.role == 'admin'``, which silently
+    became false for every user — so no admin saw any admin menu items
+    after the v13 migration. Computing the flag once per request here
+    keeps every consumer in sync with ``app.auth.access.is_user_admin``
+    (the same call all server-side admin gates use).
+    """
+    from app.auth.access import is_user_admin
+
+    user_id = user.get("id")
+    if user_id:
+        try:
+            user["is_admin"] = is_user_admin(user_id, conn)
+        except Exception:
+            user["is_admin"] = False
+    else:
+        user["is_admin"] = False
+
+
+def get_optional_user(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+) -> Optional[dict]:
+    """Like get_current_user but returns None instead of 401 if no token.
+
+    Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
+    thread pool — same Tier 1 rationale as ``get_current_user``, which it
+    calls synchronously (a direct call, not via ``Depends``).
+    """
+    try:
+        return get_current_user(request=request, authorization=authorization, conn=conn)
+    except HTTPException:
+        return None
+
+
+def require_session_token(request: Request, user: dict = Depends(get_current_user)) -> dict:
+    """Like get_current_user but rejects every non-interactive token kind —
+    for endpoints that must not be callable via a long-lived service or CI
+    credential (e.g. creating new tokens, changing password).
+
+    Two non-interactive paths exist today:
+
+    1. **PAT** — JWT with ``typ="pat"``. Detected by decoding the JWT and
+       inspecting the claim.
+    2. **Scheduler shared secret** — opaque string equal to
+       ``SCHEDULER_API_TOKEN``. Not a JWT, so ``verify_token`` returns None
+       and the PAT-claim check would silently pass — meaning a caller
+       holding the scheduler secret could mint persistent PATs through
+       ``POST /auth/tokens`` that survive a secret rotation. Explicit
+       check here closes that bypass.
+
+    Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
+    thread pool — the body is sync token inspection + the sync RBAC read in
+    the ``get_current_user`` dependency it depends on (Tier 1, PR #188).
+    """
+    auth = request.headers.get("authorization", "")
+    token = None
+    if auth.startswith("Bearer "):
+        token = auth.removeprefix("Bearer ")
+    if not token and request:
+        token = request.cookies.get("access_token")
+    if token:
+        from app.auth.scheduler_token import is_scheduler_token
+
+        if is_scheduler_token(token):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This endpoint requires an interactive session, not a service token",
+            )
+        from app.auth.jwt import verify_token
+
+        payload = verify_token(token) or {}
+        if payload.get("typ") == "pat":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This endpoint requires an interactive session, not a PAT",
+            )
+    return user

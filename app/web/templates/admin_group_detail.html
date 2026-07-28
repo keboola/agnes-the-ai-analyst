@@ -1,0 +1,431 @@
+{% extends "base_ds.html" %}
+{% block title %}{{ target_group.name }} — Group detail — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  .gd-page { max-width: 1100px; margin: 0 auto; padding: 0; }
+
+  .gd-header {
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 24px;
+  }
+  .gd-back {
+    display: inline-flex; align-items: center; gap: 6px;
+    text-decoration: none; color: var(--text-secondary, #6b7280);
+    font-size: 13px;
+  }
+  .gd-back:hover { color: var(--text-primary, #111827); }
+  .gd-title-block { flex: 1; }
+  .gd-title { font-size: 22px; font-weight: 600; margin: 0; }
+  .gd-title-email {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 12px; font-weight: 400; color: var(--text-secondary, #6b7280);
+    margin-top: 2px;
+  }
+  .gd-subtitle { font-size: 13px; color: var(--text-secondary, #6b7280); margin-top: 2px; }
+  .gd-managed-banner {
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    background: #ecfdf5;
+    border: 1px solid #86efac;
+    color: #166534;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .origin-chip {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    vertical-align: middle; margin-left: 8px;
+  }
+  .origin-system     { background: #fef3c7; color: #92400e; }
+  .origin-custom     { background: #ede9fe; color: #6d28d9; }
+  .origin-google_sync { background: #dcfce7; color: #166534; }
+
+  .gd-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .gd-section-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--border-light, #f9fafb);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .gd-section-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .gd-section-head .sub { font-size: 11px; color: var(--text-secondary, #6b7280); }
+
+  /* Members table */
+
+  .source-meta {
+    font-size: 12px; color: var(--text-secondary, #9ca3af); font-weight: 400;
+  }
+  .source-meta .label { font-style: italic; }
+  .source-meta .added { color: #9ca3af; font-size: 11px; margin-left: 6px; }
+  .user-link { color: var(--text-primary, #111827); font-weight: 500; text-decoration: none; }
+  .user-link:hover { color: var(--ds-primary, #4338ca); text-decoration: underline; }
+
+  .add-row {
+    padding: 12px 18px;
+    background: var(--border-light, #f9fafb);
+    border-top: 1px solid var(--border-light, #f3f4f6);
+    display: flex; gap: 8px; align-items: center;
+  }
+  .add-row input {
+    flex: 1; padding: 7px 10px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    font-size: 13px; background: var(--surface, #fff);
+  }
+
+
+
+
+  .gd-loading, .gd-empty {
+    padding: 24px 18px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+
+  /* Resources summary */
+  .res-summary {
+    padding: 16px 18px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .res-count {
+    font-size: 32px; font-weight: 600; color: var(--text-primary, #111827);
+    line-height: 1; min-width: 60px;
+  }
+  .res-text { flex: 1; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .res-link {
+    padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    background: var(--ds-primary, #6366f1); color: #fff !important;
+    border: 1px solid var(--ds-primary, #6366f1); text-decoration: none;
+  }
+  .res-link:hover { filter: brightness(1.05); }
+
+
+</style>
+{% endblock %}
+
+{% block content %}
+{# Edit/Delete header buttons, Add-member, and Edit-modal Cancel/Save render
+   via `ds.button` (auto-imported by base_ds). Per-row member actions are
+   JS-generated and stay page-local. `.gd-page` keeps the 1100px content
+   width (legit inner width inside the 1280px container). #}
+<div class="gd-page"
+     data-group-id="{{ target_group.id }}"
+     data-group-name="{{ target_group.name }}"
+     data-is-system="{{ 'true' if target_group.is_system else 'false' }}"
+     data-is-google-managed="{{ 'true' if target_group.is_google_managed else 'false' }}"
+     data-mapped-email="{{ target_group.mapped_email or '' }}"
+     data-google-prefix="{{ config.AGNES_GOOGLE_GROUP_PREFIX }}">
+  <div class="gd-header">
+    <a href="/admin/groups" class="gd-back">← Back to groups</a>
+    <div class="gd-title-block">
+      <h1 class="gd-title" id="header-title">
+        {# Big-title logic mirrors the list view:
+           - mapped_email set (Admin/Everyone wired to Workspace) → keep
+             canonical name as the big title and put the Workspace email
+             below as `gd-title-email`.
+           - is_google_managed without mapped_email → derived display name
+             via JS (deriveDisplayName), full email below.
+           - everything else → the row's name. #}
+        {% if target_group.mapped_email %}
+          {{ target_group.name }}
+        {% elif target_group.is_google_managed %}
+          <span id="header-display-name">{{ target_group.name }}</span>
+        {% else %}
+          {{ target_group.name }}
+        {% endif %}
+        <span id="origin-chip" class="origin-chip" style="display:none;"></span>
+      </h1>
+      {% if target_group.mapped_email %}
+        <span class="gd-title-email">{{ target_group.mapped_email }}</span>
+      {% elif target_group.is_google_managed %}
+        <span class="gd-title-email">{{ target_group.name }}</span>
+      {% endif %}
+      <div class="gd-subtitle" id="header-sub">
+        {{ target_group.description or "—" }}
+      </div>
+    </div>
+    {% if not target_group.is_system and not target_group.is_google_managed %}
+    <div style="display:flex; gap:6px;">
+      {{ ds.button('Edit', variant='secondary', size='sm', id='edit-group-btn') }}
+      {{ ds.button('Delete', variant='danger', size='sm', id='delete-group-btn') }}
+    </div>
+    {% endif %}
+  </div>
+
+  {% if target_group.is_google_managed %}
+  <div class="gd-managed-banner">
+    This group is managed by Google Workspace — read-only here.
+    Add or remove members via <a href="https://admin.google.com" target="_blank" rel="noopener">admin.google.com</a>,
+    or sign in again to refresh.
+  </div>
+  {% endif %}
+
+  <!-- Members section -->
+  <section class="gd-section">
+    <div class="gd-section-head">
+      <h2>Members</h2>
+      <span class="sub" id="members-sub">Loading…</span>
+    </div>
+    <div id="members-loading" class="gd-loading">Loading members…</div>
+    <table class="data-table" id="members-table" style="display:none;">
+      <thead><tr>
+        <th>Email</th><th>Name</th><th>Origin</th>
+        <th style="text-align:right">Actions</th>
+      </tr></thead>
+      <tbody id="members-tbody"></tbody>
+    </table>
+    <div class="gd-empty" id="members-empty" style="display:none;">No members yet.</div>
+    {% if not target_group.is_google_managed %}
+    <div class="add-row">
+      <input id="add-email" type="email" autocomplete="off" placeholder="Add user by email…">
+      {{ ds.button('Add member', variant='primary', size='sm',
+                   id='add-btn', disabled=True) }}
+    </div>
+    {% endif %}
+  </section>
+
+  <!-- Resource grants summary -->
+  <section class="gd-section">
+    <div class="gd-section-head">
+      <h2>Resource grants</h2>
+      <span class="sub">Manage on the dedicated page.</span>
+    </div>
+    <div class="res-summary">
+      <div class="res-count" id="res-count">—</div>
+      <div class="res-text" id="res-text">
+        Resources this group has been granted access to. Click through to
+        the matrix view to add or remove grants.
+      </div>
+      <a class="res-link" href="/admin/access?group={{ target_group.id }}">Manage access →</a>
+    </div>
+  </section>
+</div>
+
+<!-- Edit group modal -->
+<div class="modal-backdrop" id="edit-modal" role="dialog" aria-modal="true" style="position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); display: none; align-items: center; justify-content: center; z-index: 1000; padding: 16px;">
+  <div class="modal-card" style="max-width: 480px;">
+    <h3 style="margin:0 0 12px;">Edit group</h3>
+    <label>Name</label>
+    <input id="edit-name" type="text">
+    <label>Description</label>
+    <textarea id="edit-desc" class="form-textarea"></textarea>
+    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+      {{ ds.button('Cancel', variant='secondary', id='edit-cancel-btn') }}
+      {{ ds.button('Save', variant='primary', id='edit-save-btn') }}
+    </div>
+  </div>
+</div>
+
+
+
+<script>
+const root = document.querySelector(".gd-page");
+const GROUP_ID = root.dataset.groupId;
+const IS_SYSTEM = root.dataset.isSystem === "true";
+const IS_GOOGLE_MANAGED = root.dataset.isGoogleManaged === "true";
+const MAPPED_EMAIL = root.dataset.mappedEmail || "";
+const GOOGLE_GROUP_PREFIX = root.dataset.googlePrefix || "";
+const GROUP_API = `/api/admin/groups/${encodeURIComponent(GROUP_ID)}`;
+const MEMBERS_API = `${GROUP_API}/members`;
+
+function deriveDisplayName(fullEmail) {
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// When a system row carries mapped_email, the canonical name (Admin /
+// Everyone) is the right big title — skip the email-strip rewrite. The
+// rewrite only applies to user-created google_sync groups whose `name`
+// is the raw Workspace email.
+if (IS_GOOGLE_MANAGED && !MAPPED_EMAIL) {
+  const dn = document.getElementById("header-display-name");
+  if (dn) dn.textContent = deriveDisplayName(root.dataset.groupName);
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "-") : "-"; }
+function toast(msg, kind = "") { window.appToast({ kind: kind || "info", msg }); }
+
+let groupState = null;
+let members = [];
+
+async function loadGroup() {
+  const r = await fetch(GROUP_API, { credentials: "include" });
+  if (!r.ok) return;
+  groupState = await r.json();
+  const chip = document.getElementById("origin-chip");
+  const origin = groupState.origin || "custom";
+  chip.textContent = origin.replace("_", " ");
+  chip.className = "origin-chip origin-" + origin;
+  chip.style.display = "inline-block";
+  document.getElementById("res-count").textContent = groupState.grant_count || 0;
+  if (!groupState.grant_count) {
+    document.getElementById("res-text").textContent =
+      "No resources granted yet. Open the Grants page to assign access.";
+  }
+}
+
+async function loadMembers() {
+  const r = await fetch(MEMBERS_API, { credentials: "include" });
+  document.getElementById("members-loading").style.display = "none";
+  if (!r.ok) {
+    toast("Failed to load members", "error");
+    return;
+  }
+  members = await r.json();
+  renderMembers();
+}
+
+function renderMembers() {
+  const table = document.getElementById("members-table");
+  const empty = document.getElementById("members-empty");
+  const tbody = document.getElementById("members-tbody");
+  const sub = document.getElementById("members-sub");
+
+  sub.textContent = `${members.length} member${members.length === 1 ? "" : "s"}`;
+
+  if (members.length === 0) {
+    table.style.display = "none";
+    empty.style.display = "block";
+    return;
+  }
+  table.style.display = "table";
+  empty.style.display = "none";
+  tbody.innerHTML = "";
+  for (const m of members) {
+    const tr = document.createElement("tr");
+    const removable = m.source === "admin"
+      ? `<button class="icon-btn danger" data-action="remove" data-user-id="${esc(m.user_id)}">Remove</button>`
+      : `<span style="color:#9ca3af;font-size:11px">managed by ${esc(m.source)}</span>`;
+    const sourceLabel = ({
+      admin: "added by admin",
+      google_sync: "synced from Google",
+      system_seed: "system-managed",
+    })[m.source] || m.source;
+    const addedFragment = m.added_at
+      ? `<span class="added">· ${esc(fmtDate(m.added_at))}</span>` : "";
+    tr.innerHTML = `
+      <td><a class="user-link" href="/admin/users/${encodeURIComponent(m.user_id)}">${esc(m.email)}</a></td>
+      <td>${esc(m.name || "")}</td>
+      <td><span class="source-meta"><span class="label">${esc(sourceLabel)}</span>${addedFragment}</span></td>
+      <td style="text-align:right">${removable}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll('[data-action="remove"]').forEach(btn => {
+    btn.addEventListener("click", () => removeMember(btn.dataset.userId, btn.closest("tr").querySelector(".user-link").textContent));
+  });
+}
+
+async function addMember() {
+  const input = document.getElementById("add-email");
+  const email = input.value.trim();
+  if (!email) return;
+  const r = await fetch(MEMBERS_API, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Add failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  input.value = "";
+  document.getElementById("add-btn").disabled = true;
+  toast("Member added", "success");
+  loadMembers();
+}
+
+// Add-member affordance is hidden server-side on google-managed rows; bind
+// the listeners only when the elements actually exist.
+const addBtnEl = document.getElementById("add-btn");
+const addEmailEl = document.getElementById("add-email");
+if (addBtnEl && addEmailEl) {
+  addBtnEl.addEventListener("click", addMember);
+  addEmailEl.addEventListener("input", e => {
+    addBtnEl.disabled = !e.target.value.trim();
+  });
+  addEmailEl.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); if (e.target.value.trim()) addMember(); }
+  });
+}
+
+async function removeMember(userId, label) {
+  if (!(await confirmModal(`Remove ${label} from this group?`))) return;
+  const r = await fetch(`${MEMBERS_API}/${encodeURIComponent(userId)}`, {
+    method: "DELETE", credentials: "include",
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Remove failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  toast("Member removed", "success");
+  loadMembers();
+}
+
+// Edit group modal (only present for non-system groups)
+const editBtn = document.getElementById("edit-group-btn");
+if (editBtn) {
+  editBtn.addEventListener("click", () => {
+    document.getElementById("edit-name").value = groupState ? groupState.name : root.dataset.groupName;
+    document.getElementById("edit-desc").value = groupState ? (groupState.description || "") : "";
+    document.getElementById("edit-modal").style.display = "flex";
+  });
+  document.getElementById("edit-cancel-btn").addEventListener("click", () => {
+    document.getElementById("edit-modal").style.display = "none";
+  });
+  document.getElementById("edit-save-btn").addEventListener("click", async () => {
+    const name = document.getElementById("edit-name").value.trim();
+    const description = document.getElementById("edit-desc").value.trim();
+    if (!name) { toast("Name required", "error"); return; }
+    const r = await fetch(GROUP_API, {
+      method: "PATCH", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description: description || null }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      toast("Save failed: " + (err.detail || r.status), "error");
+      return;
+    }
+    toast("Group updated", "success");
+    document.getElementById("edit-modal").style.display = "none";
+    setTimeout(() => window.location.reload(), 600);
+  });
+}
+
+const delBtn = document.getElementById("delete-group-btn");
+if (delBtn) {
+  delBtn.addEventListener("click", async () => {
+    if (!(await confirmModal(`Delete group "${root.dataset.groupName}" and all its members + grants?`))) return;
+    const r = await fetch(GROUP_API, { method: "DELETE", credentials: "include" });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      toast("Delete failed: " + (err.detail || r.status), "error");
+      return;
+    }
+    toast("Group deleted", "success");
+    setTimeout(() => { window.location.href = "/admin/groups"; }, 800);
+  });
+}
+
+loadGroup();
+loadMembers();
+</script>
+{% endblock %}

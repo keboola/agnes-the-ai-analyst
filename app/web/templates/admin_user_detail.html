@@ -1,0 +1,864 @@
+{% extends "base_ds.html" %}
+{% block title %}{{ target_user.email }} — User detail — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  .ud-page { max-width: 1100px; margin: 0 auto; padding: 0; }
+
+  .ud-header {
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 24px;
+  }
+  .ud-back {
+    display: inline-flex; align-items: center; gap: 6px;
+    text-decoration: none; color: var(--text-secondary, #6b7280);
+    font-size: 13px;
+  }
+  .ud-back:hover { color: var(--text-primary, #111827); }
+  .ud-title-block { flex: 1; }
+  .ud-status-pill {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .ud-status-pill.active { background: #dcfce7; color: #166534; }
+  .ud-status-pill.inactive { background: #fee2e2; color: #991b1b; }
+
+  .ud-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .ud-section-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--border-light, #f9fafb);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .ud-section-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .ud-section-head .sub { font-size: 11px; color: var(--text-secondary, #6b7280); }
+
+  /* Account actions */
+  .account-grid {
+    padding: 16px 18px;
+    display: grid; grid-template-columns: 1fr auto; gap: 12px;
+    align-items: center;
+  }
+  /* `.account-action-btn` family kept only for the JS-generated
+     Remove button (which builds markup in a template literal we can't
+     reach). The page-rendered action buttons use ds.button instead. */
+  .account-action-btn {
+    padding: 7px 14px; border-radius: 6px; font-size: 12px;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .account-action-btn:hover { background: var(--border-light, #f9fafb); }
+  .account-action-btn.danger { color: #b91c1c; border-color: #fecaca; }
+  .account-action-btn.danger:hover { background: #fef2f2; }
+
+  /* Memberships table */
+  .members-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .members-table thead th {
+    text-align: left; padding: 10px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .members-table tbody td {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .members-table tbody tr:last-child td { border-bottom: none; }
+  .members-table tbody tr:hover { background: var(--border-light, #fafafa); }
+  /* Source as quiet metadata, not a status pill — group name dominates. */
+  .source-meta {
+    font-size: 12px; color: var(--text-secondary, #9ca3af);
+    font-weight: 400;
+  }
+  .source-meta .label { font-style: italic; }
+  .source-meta .added {
+    color: var(--text-secondary, #9ca3af);
+    font-size: 11px; margin-left: 6px;
+  }
+  .group-link {
+    color: var(--text-primary, #111827); font-weight: 500;
+    text-decoration: none;
+  }
+  .group-link:hover { color: var(--ds-primary, #4338ca); text-decoration: underline; }
+
+  /* Chip styling for the group cell — same color vocabulary as
+     /admin/users membership chips. Built as <a> so a click on the
+     chip lands the admin on the group's detail page. */
+  .group-chip {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 500;
+    text-decoration: none;
+    background: #ede9fe; color: #6d28d9;  /* default = custom (purple) */
+  }
+  .group-chip:hover { filter: brightness(0.97); }
+  .group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
+  .group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
+  .group-chip.is-google_sync { background: #dcfce7; color: #166534; }
+  .group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
+
+  .add-member-row {
+    padding: 12px 18px;
+    background: var(--border-light, #f9fafb);
+    border-top: 1px solid var(--border-light, #f3f4f6);
+    display: flex; gap: 8px; align-items: center;
+  }
+  .add-member-row select {
+    flex: 1; padding: 7px 10px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    font-size: 13px; background: var(--surface, #fff);
+  }
+  .add-member-row button {
+    padding: 7px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    background: var(--ds-primary, #6366f1); color: #fff;
+    border: 1px solid var(--ds-primary, #6366f1); cursor: pointer;
+  }
+  .add-member-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .ud-hint {
+    margin: 8px 0 0; font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .ud-hint a { color: var(--accent, #2563eb); }
+  .ud-hint code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    background: var(--border-light, #f3f4f6);
+    padding: 1px 4px; border-radius: 3px;
+  }
+
+  /* Effective access */
+  .ea-empty, .ea-loading {
+    padding: 24px 18px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+  .ea-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ea-table thead th {
+    text-align: left; padding: 10px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .ea-table tbody td {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: top;
+  }
+  .ea-table tbody tr:last-child td { border-bottom: none; }
+  .ea-rid {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
+  }
+  .ea-via {
+    font-size: 11px; color: var(--text-secondary, #6b7280);
+  }
+  .ea-via .via-group {
+    display: inline-block; margin-right: 6px;
+    padding: 1px 6px; border-radius: 4px;
+    background: #e0e7ff; color: #3730a3; font-weight: 500;
+  }
+
+  /* Sessions section */
+  .ud-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ud-table thead th {
+    text-align: left; padding: 10px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .ud-table tbody td {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: middle;
+  }
+  .ud-table tbody tr:last-child td { border-bottom: none; }
+  .ud-table tbody tr:hover { background: var(--border-light, #fafafa); }
+  .ud-empty { padding: 24px 18px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
+  .ud-pagination { padding: 10px 18px; display: flex; gap: 10px; align-items: center; font-size: 13px; }
+  .btn { display: inline-block; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+         border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+         cursor: pointer; text-decoration: none; color: inherit; }
+  .btn:hover { background: var(--border-light, #f9fafb); }
+  .btn-secondary { background: var(--surface, #fff); }
+  .btn-sm { padding: 3px 9px; font-size: 11px; }
+  .unprocessed-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    font-size: 11px; background: #fef9c3; color: #854d0e;
+  }
+
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+{% endblock %}
+
+{% block content %}
+{# Download-all + Sessions/Activity paginators + 3 account-action buttons
+   render via `ds.button` (auto-imported by base_ds). JS-generated per-row
+   buttons stay page-local. The hero stays inside `.ud-page` (1100px content
+   width) — kept as-is, not hoisted to a full-width base_page hero. #}
+<div class="ud-page" data-user-id="{{ target_user.id }}">
+  <div class="ud-header">
+    <a href="/admin/users" class="ud-back">← Back to users</a>
+    <div class="ud-title-block">
+      {% set page_hero_eyebrow = "Users & Access" %}
+      {% set page_hero_title = "User detail" %}
+      {% set page_hero_subtitle = "Account, group memberships, sessions, and activity for one user." %}
+      {% include "_page_hero.html" %}
+    </div>
+  </div>
+
+  <!-- Account actions -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Account</h2>
+    </div>
+    <div class="account-grid">
+      <div id="account-status-text" style="font-size:13px;color:var(--text-secondary,#6b7280);">
+        Loading…
+      </div>
+      <div style="display:flex; gap:8px;">
+        {{ ds.button('Reset password', variant='secondary', size='sm',
+                     id='reset-pw-btn') }}
+        {{ ds.button('Deactivate', variant='secondary', size='sm',
+                     id='toggle-active-btn') }}
+        {{ ds.button('Delete', variant='danger', size='sm',
+                     id='delete-user-btn') }}
+      </div>
+    </div>
+  </section>
+
+  <!-- Group memberships -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Group memberships</h2>
+      <span class="sub">Groups this user belongs to. Add to <strong>Admin</strong> to grant full access.</span>
+    </div>
+    <div id="memberships-loading" class="ea-loading">Loading memberships…</div>
+    <table class="members-table" id="memberships-table" style="display:none;">
+      <thead><tr>
+        <th>Group</th><th>Origin</th>
+        <th style="text-align:right">Actions</th>
+      </tr></thead>
+      <tbody id="memberships-tbody"></tbody>
+    </table>
+    <div class="ea-empty" id="memberships-empty" style="display:none;">
+      User is not in any groups.
+    </div>
+    <div class="add-member-row">
+      <select id="add-group-select">
+        <option value="">— Pick a group —</option>
+      </select>
+      <button id="add-group-btn" disabled>Add to group</button>
+    </div>
+    <p id="add-group-hint" class="ud-hint" style="display:none;"></p>
+  </section>
+
+  <!-- Effective access -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Effective access</h2>
+      <span class="sub">Resources this user can see, derived from group memberships.</span>
+    </div>
+    <div id="effective-loading" class="ea-loading">Loading…</div>
+    <div id="effective-content" style="display:none;"></div>
+  </section>
+
+  <!-- Sessions -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Sessions</h2>
+      {{ ds.button('Download all (.zip)', variant='secondary',
+                   id='ud-download-all', href='#') }}
+    </div>
+
+    <div class="ud-empty" id="ud-sessions-loading">Loading…</div>
+
+    <div class="ud-empty" id="ud-sessions-empty" hidden>
+      No collected sessions for this user yet.
+    </div>
+
+    <table class="ud-table" id="ud-sessions-table" hidden>
+      <thead>
+        <tr>
+          <th>Started</th>
+          <th>Active duration</th>
+          <th>Tool calls</th>
+          <th>Errors</th>
+          <th>Model</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="ud-sessions-tbody"></tbody>
+    </table>
+
+    <div class="ud-pagination" id="ud-sessions-pagination" hidden>
+      {{ ds.button('Prev', variant='secondary', size='sm',
+                   id='ud-sessions-prev') }}
+      <span id="ud-sessions-page-meta"></span>
+      {{ ds.button('Next', variant='secondary', size='sm',
+                   id='ud-sessions-next') }}
+    </div>
+  </section>
+
+  <!-- Activity -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Activity</h2>
+      <span class="sub">All recorded server actions for this user</span>
+    </div>
+
+    <div class="ud-empty" id="ud-activity-loading">Loading…</div>
+
+    <table class="ud-table" id="ud-activity-table" hidden>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Action</th>
+          <th>Resource</th>
+          <th>Result</th>
+          <th>Client</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+      <tbody id="ud-activity-tbody"></tbody>
+    </table>
+
+    <div class="ud-empty" id="ud-activity-empty" hidden>
+      No recorded activity for this user yet.
+    </div>
+
+    <div class="ud-pagination" id="ud-activity-pagination" hidden>
+      {{ ds.button('Prev', variant='secondary', size='sm',
+                   id='ud-activity-prev') }}
+      <span id="ud-activity-page-meta"></span>
+      {{ ds.button('Next', variant='secondary', size='sm',
+                   id='ud-activity-next') }}
+    </div>
+  </section>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const USER_ID = document.querySelector("[data-user-id]").dataset.userId;
+const USER_API = `/api/users/${encodeURIComponent(USER_ID)}`;
+const MEMBERSHIPS_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/memberships`;
+const EFFECTIVE_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/effective-access`;
+// Server-injected env: empty string = no prefix configured. Same shape as
+// /admin/groups + /admin/users — used to shorten google-sync chip text
+// (`grp_acme_legal@workspace.example.com` → `Legal`) so the membership cell
+// stays readable.
+const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
+const GROUPS_API = "/api/admin/groups";
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "-") : "-"; }
+
+// Same logic as /admin/groups + /admin/users: only safe to call on
+// google_sync rows whose `name` is the raw Workspace email; calling it
+// on a custom group name like "data-team" would over-capitalize it.
+function deriveDisplayName(fullEmail) {
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+let userState = null;     // /api/users/{id} response
+let memberships = [];     // [{group_id, group_name, is_system, source, added_at}]
+let allGroups = [];       // for the add-to-group dropdown
+
+async function loadUser() {
+  const r = await fetch(USER_API, { credentials: "include" });
+  if (r.ok) {
+    userState = await r.json();
+    renderHeader();
+    renderAccountStatus();
+  }
+}
+
+function renderHeader() {
+  const pill = document.getElementById("status-pill");
+  if (userState && !userState.active) {
+    pill.textContent = "Deactivated";
+    pill.className = "ud-status-pill inactive";
+    pill.style.display = "inline-block";
+  } else if (userState) {
+    pill.textContent = "Active";
+    pill.className = "ud-status-pill active";
+    pill.style.display = "inline-block";
+  }
+}
+
+function renderAccountStatus() {
+  const node = document.getElementById("account-status-text");
+  const toggleBtn = document.getElementById("toggle-active-btn");
+  // SSO-managed accounts (Google Workspace today) hide password / delete
+  // affordances — those operations are no-ops or get reverted by the next
+  // sync. Deactivate stays so admins can still gate access locally.
+  const resetBtn = document.getElementById("reset-pw-btn");
+  const deleteBtn = document.getElementById("delete-user-btn");
+  const sso = !!(userState && userState.is_sso_user);
+  if (resetBtn) resetBtn.style.display = sso ? "none" : "";
+  if (deleteBtn) deleteBtn.style.display = sso ? "none" : "";
+  if (!userState) { node.textContent = "—"; return; }
+  if (userState.active) {
+    node.innerHTML = `<strong>${esc(userState.email)}</strong> is active.`;
+    toggleBtn.textContent = "Deactivate";
+  } else {
+    node.innerHTML = `<strong>${esc(userState.email)}</strong> is deactivated. They cannot log in.`;
+    toggleBtn.textContent = "Reactivate";
+  }
+}
+
+async function loadMemberships() {
+  const r = await fetch(MEMBERSHIPS_API, { credentials: "include" });
+  document.getElementById("memberships-loading").style.display = "none";
+  if (!r.ok) {
+    toast("Failed to load memberships", "error");
+    return;
+  }
+  memberships = await r.json();
+  renderMemberships();
+  // loadAll() fires loadGroups() and loadMemberships() in parallel; if
+  // groups resolved first, refreshGroupDropdown() saw the initial empty
+  // memberships array and listed groups the user is already in. Re-run
+  // here so the final dropdown reflects both data sets regardless of
+  // which fetch completes first. Cheap (in-memory only) and idempotent.
+  if (allGroups.length > 0) {
+    refreshGroupDropdown();
+  }
+}
+
+function renderMemberships() {
+  const table = document.getElementById("memberships-table");
+  const empty = document.getElementById("memberships-empty");
+  const tbody = document.getElementById("memberships-tbody");
+
+  if (memberships.length === 0) {
+    table.style.display = "none";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  table.style.display = "table";
+  tbody.innerHTML = "";
+  for (const m of memberships) {
+    const tr = document.createElement("tr");
+    const removable = m.source === "admin"
+      ? `<button class="account-action-btn danger" data-action="remove" data-group-id="${esc(m.group_id)}">Remove</button>`
+      : `<span style="color:#9ca3af;font-size:11px">managed by ${esc(m.source)}</span>`;
+    // Map raw source value to a humane phrase. Keep the date inline as
+    // secondary metadata rather than a separate column.
+    const sourceLabel = ({
+      admin: "added by admin",
+      google_sync: "synced from Google",
+      system_seed: "system-managed",
+    })[m.source] || m.source;
+    const addedFragment = m.added_at
+      ? `<span class="added">· ${esc(fmtDate(m.added_at))}</span>` : "";
+    // Same chip color + name-shortening rules as the user list:
+    //   - name match (Admin / Everyone) wins over origin so env-mapped
+    //     system rows keep their canonical color
+    //   - google_sync chip text runs through deriveDisplayName ("Legal"
+    //     instead of "grp_acme_legal@workspace.example.com"), full email in
+    //     the title attribute for hover reveal
+    const cls = m.group_name === "Admin"    ? "is-admin"
+              : m.group_name === "Everyone" ? "is-everyone"
+              : `is-${m.origin || "custom"}`;
+    const display = (m.origin === "google_sync" && m.group_name !== "Admin" && m.group_name !== "Everyone")
+      ? deriveDisplayName(m.group_name) : m.group_name;
+    tr.innerHTML = `
+      <td><a class="group-chip ${cls}" href="/admin/groups/${encodeURIComponent(m.group_id)}" title="${esc(m.group_name)}">${esc(display)}</a></td>
+      <td><span class="source-meta"><span class="label">${esc(sourceLabel)}</span>${addedFragment}</span></td>
+      <td style="text-align:right">${removable}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll('[data-action="remove"]').forEach(btn => {
+    btn.addEventListener("click", () => removeFromGroup(btn.dataset.groupId));
+  });
+}
+
+async function loadGroups() {
+  const r = await fetch(GROUPS_API, { credentials: "include" });
+  if (!r.ok) return;
+  allGroups = await r.json();
+  refreshGroupDropdown();
+}
+
+function refreshGroupDropdown() {
+  const sel = document.getElementById("add-group-select");
+  const hint = document.getElementById("add-group-hint");
+  const memberOf = new Set(memberships.map(m => m.group_id));
+  sel.innerHTML = '<option value="">— Pick a group —</option>';
+  let googleManagedSkipped = 0;
+  let assignableCount = 0;
+  for (const g of allGroups) {
+    if (memberOf.has(g.id)) continue;          // already a member, hide
+    if (g.is_google_managed) {                 // membership owned by Workspace —
+      googleManagedSkipped++;                  // includes mapped Admin / Everyone when
+      continue;                                // AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL is
+                                               // set. The API would 409 on POST
+                                               // anyway; hiding the option keeps the
+                                               // picker honest about what's grantable.
+    }
+    const opt = document.createElement("option");
+    opt.value = g.id;
+    opt.textContent = g.name + (g.is_system ? " (system)" : "");
+    sel.appendChild(opt);
+    assignableCount++;
+  }
+  document.getElementById("add-group-btn").disabled = assignableCount === 0;
+
+  // When the dropdown ends up empty, explain why instead of leaving the
+  // admin staring at a silent "— Pick a group —" placeholder. Three cases:
+  //  (a) user is already in every existing group;
+  //  (b) every remaining group is Google-Workspace-managed (POST would 409);
+  //  (c) no groups exist at all (fresh deploy with the system seeds masked
+  //      via AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL). Cases (b)/(c) point the
+  //      admin at /admin/groups so they can create a custom group whose
+  //      membership flows through Agnes itself.
+  if (assignableCount === 0) {
+    if (allGroups.length === 0) {
+      hint.textContent = "No groups exist on this server.";
+      hint.style.display = "block";
+    } else if (googleManagedSkipped > 0) {
+      hint.innerHTML = (
+        "All assignable groups are managed by Google Workspace — membership flows from " +
+        "<code>admin.google.com</code>. To grant access manually, create a custom Agnes group at " +
+        "<a href=\"/admin/groups\">/admin/groups</a>."
+      );
+      hint.style.display = "block";
+    } else {
+      hint.textContent = "User is already a member of every group.";
+      hint.style.display = "block";
+    }
+  } else {
+    hint.style.display = "none";
+  }
+}
+
+document.getElementById("add-group-select").addEventListener("change", e => {
+  document.getElementById("add-group-btn").disabled = !e.target.value;
+});
+
+document.getElementById("add-group-btn").addEventListener("click", async () => {
+  const sel = document.getElementById("add-group-select");
+  const gid = sel.value;
+  if (!gid) return;
+  const r = await fetch(MEMBERSHIPS_API, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group_id: gid }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Add failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  toast("Added to group", "success");
+  await Promise.all([loadMemberships(), loadEffectiveAccess()]);
+  refreshGroupDropdown();
+});
+
+async function removeFromGroup(group_id) {
+  if (!(await confirmModal("Remove user from this group?"))) return;
+  const r = await fetch(`${MEMBERSHIPS_API}/${encodeURIComponent(group_id)}`, {
+    method: "DELETE", credentials: "include",
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Remove failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  toast("Removed from group", "success");
+  await Promise.all([loadMemberships(), loadEffectiveAccess()]);
+  refreshGroupDropdown();
+}
+
+async function loadEffectiveAccess() {
+  const r = await fetch(EFFECTIVE_API, { credentials: "include" });
+  document.getElementById("effective-loading").style.display = "none";
+  const content = document.getElementById("effective-content");
+  content.style.display = "block";
+
+  if (!r.ok) {
+    content.innerHTML = `<div class="ea-empty">Failed to load.</div>`;
+    return;
+  }
+  const data = await r.json();
+
+  // We deliberately don't short-circuit on `data.is_admin` anymore —
+  // admin users get the same explicit grant breakdown as everyone else
+  // so the operator can audit which Admin-group grants exist (and via
+  // which sibling groups). Authorization at runtime still grants admin
+  // god-mode regardless of this list (see `app.auth.access`).
+  if (!data.items || data.items.length === 0) {
+    content.innerHTML = `<div class="ea-empty">User has no resource access yet. Add them to a group with grants.</div>`;
+    return;
+  }
+
+  let html = `<table class="ea-table">
+    <thead><tr>
+      <th>Type</th><th>Resource</th><th>Granted via</th>
+    </tr></thead><tbody>`;
+  for (const it of data.items) {
+    const viaHtml = it.via_groups
+      .map(g => `<span class="via-group">${esc(g.group_name)}</span>`).join(" ");
+    html += `
+      <tr>
+        <td style="white-space:nowrap">${esc(it.resource_type)}</td>
+        <td class="ea-rid">${esc(it.resource_id)}</td>
+        <td class="ea-via">${viaHtml}</td>
+      </tr>`;
+  }
+  html += `</tbody></table>`;
+  content.innerHTML = html;
+}
+
+// Account actions
+document.getElementById("reset-pw-btn").addEventListener("click", async () => {
+  if (!(await confirmModal({ message: "Send password reset link to " + (userState && userState.email) + "?", danger: false }))) return;
+  const r = await fetch(`${USER_API}/reset-password`, {
+    method: "POST", credentials: "include",
+  });
+  if (!r.ok) {
+    toast("Reset failed: " + r.status, "error");
+    return;
+  }
+  const data = await r.json();
+  toast(data.email_sent ? "Reset link emailed" : "Reset token: " + data.reset_token, "success");
+});
+
+document.getElementById("toggle-active-btn").addEventListener("click", async () => {
+  if (!userState) return;
+  const newActive = !userState.active;
+  const verb = newActive ? "Reactivate" : "Deactivate";
+  if (!(await confirmModal({ message: `${verb} this user?`, danger: false }))) return;
+  const path = newActive ? "/activate" : "/deactivate";
+  const r = await fetch(`${USER_API}${path}`, { method: "POST", credentials: "include" });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast(verb + " failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  toast(verb + "d", "success");
+  loadUser();
+});
+
+document.getElementById("delete-user-btn").addEventListener("click", async () => {
+  if (!userState) return;
+  if (!(await confirmModal(`Delete ${userState.email}? This cannot be undone.`))) return;
+  const r = await fetch(USER_API, { method: "DELETE", credentials: "include" });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Delete failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  toast("User deleted", "success");
+  setTimeout(() => { window.location.href = "/admin/users"; }, 800);
+});
+
+// ---------------------------------------------------------------------------
+// Sessions section
+// ---------------------------------------------------------------------------
+const SESSIONS_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/sessions`;
+const SESSIONS_DL_ALL = `/api/admin/users/${encodeURIComponent(USER_ID)}/sessions/download-all`;
+let _sessionsOffset = 0;
+const _sessionsLimit = 50;
+let _sessionsTotal = 0;
+
+document.getElementById("ud-download-all").href = SESSIONS_DL_ALL;
+
+function fmtDuration(seconds) {
+  if (seconds == null) return "—";
+  const s = Math.round(Number(seconds));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60), rem = s % 60;
+  if (m < 60) return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+  const h = Math.floor(m / 60), rm = m % 60;
+  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+}
+
+async function loadSessions() {
+  const url = `${SESSIONS_API}?limit=${_sessionsLimit}&offset=${_sessionsOffset}`;
+  const r = await fetch(url, { credentials: "include" });
+  const emptyEl = document.getElementById("ud-sessions-empty");
+  document.getElementById("ud-sessions-loading").hidden = true;
+  const tableEl = document.getElementById("ud-sessions-table");
+  const paginEl = document.getElementById("ud-sessions-pagination");
+  const tbody = document.getElementById("ud-sessions-tbody");
+  const pageMeta = document.getElementById("ud-sessions-page-meta");
+
+  if (!r.ok) {
+    emptyEl.textContent = "Failed to load sessions.";
+    emptyEl.hidden = false;
+    tableEl.hidden = true;
+    paginEl.hidden = true;
+    return;
+  }
+  const data = await r.json();
+  _sessionsTotal = data.pagination.total;
+
+  if (data.rows.length === 0 && _sessionsOffset === 0) {
+    emptyEl.hidden = false;
+    tableEl.hidden = true;
+    paginEl.hidden = true;
+    return;
+  }
+
+  emptyEl.hidden = true;
+  tableEl.hidden = false;
+  tbody.innerHTML = "";
+
+  for (const row of data.rows) {
+    const tr = document.createElement("tr");
+    const dlHref = `/api/admin/users/${encodeURIComponent(USER_ID)}/sessions/${encodeURIComponent(row.session_file)}/download`;
+    const modelText = row.primary_model
+      ? esc(row.primary_model).replace(/claude-/i, "").replace(/-\d{8}$/, "")
+      : "—";
+    const unprocessed = !row.processed
+      ? ` <span class="unprocessed-badge">pending</span>` : "";
+    tr.innerHTML = `
+      <td>${esc(fmtDate(row.started_at))}${unprocessed}</td>
+      <td>${fmtDuration(row.active_seconds)}</td>
+      <td>${row.tool_calls != null ? esc(String(row.tool_calls)) : "—"}</td>
+      <td>${row.tool_errors != null && row.tool_errors > 0 ? `<span style="color:#b91c1c">${esc(String(row.tool_errors))}</span>` : (row.tool_errors === 0 ? "0" : "—")}</td>
+      <td style="font-size:11px;color:var(--text-secondary,#6b7280)">${modelText}</td>
+      <td><a class="btn btn-sm" href="${dlHref}">Download .jsonl</a></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // Pagination
+  const from = _sessionsOffset + 1;
+  const to = Math.min(_sessionsOffset + data.rows.length, _sessionsTotal);
+  pageMeta.textContent = `${from}–${to} of ${_sessionsTotal}`;
+  paginEl.hidden = _sessionsTotal <= _sessionsLimit;
+
+  document.getElementById("ud-sessions-prev").disabled = _sessionsOffset === 0;
+  document.getElementById("ud-sessions-next").disabled = (_sessionsOffset + _sessionsLimit) >= _sessionsTotal;
+}
+
+document.getElementById("ud-sessions-prev").addEventListener("click", () => {
+  if (_sessionsOffset > 0) {
+    _sessionsOffset = Math.max(0, _sessionsOffset - _sessionsLimit);
+    loadSessions();
+  }
+});
+document.getElementById("ud-sessions-next").addEventListener("click", () => {
+  if (_sessionsOffset + _sessionsLimit < _sessionsTotal) {
+    _sessionsOffset += _sessionsLimit;
+    loadSessions();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Activity section
+// ---------------------------------------------------------------------------
+const ACTIVITY_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/activity`;
+let _activityOffset = 0;
+const _activityLimit = 50;
+let _activityTotal = 0;
+
+function loadActivity() {
+  const table = document.getElementById('ud-activity-table');
+  const empty = document.getElementById('ud-activity-empty');
+  const tbody = document.getElementById('ud-activity-tbody');
+  const pag = document.getElementById('ud-activity-pagination');
+
+  fetch(`${ACTIVITY_API}?limit=${_activityLimit}&offset=${_activityOffset}`, { credentials: 'include' })
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('ud-activity-loading').hidden = true;
+      if (!data.rows || (data.rows.length === 0 && _activityOffset === 0)) {
+        empty.hidden = false;
+        table.hidden = true;
+        pag.hidden = true;
+        return;
+      }
+      empty.hidden = true;
+      table.hidden = false;
+      _activityTotal = data.pagination.total;
+      tbody.innerHTML = data.rows.map(r => {
+        const isErr = r.result && (r.result.startsWith('error') || r.result === 'failed');
+        const resultCls = isErr ? 'style="color:#b91c1c"' : '';
+        return `<tr>
+          <td><time datetime="${esc(r.timestamp)}">${esc(fmtDate(r.timestamp))}</time></td>
+          <td><code>${esc(r.action)}</code></td>
+          <td style="font-size:12px;color:var(--text-secondary,#6b7280)">${esc(r.resource || '—')}</td>
+          <td ${resultCls}>${esc(r.result || '—')}</td>
+          <td>${esc(r.client_kind || '—')}</td>
+          <td>${r.duration_ms != null ? esc(String(r.duration_ms)) + ' ms' : '—'}</td>
+        </tr>`;
+      }).join('');
+      const from = _activityOffset + 1;
+      const to = Math.min(_activityOffset + data.rows.length, _activityTotal);
+      document.getElementById('ud-activity-page-meta').textContent = `${from}–${to} of ${_activityTotal}`;
+      pag.hidden = _activityTotal <= _activityLimit;
+      document.getElementById('ud-activity-prev').disabled = _activityOffset === 0;
+      document.getElementById('ud-activity-next').disabled = (_activityOffset + _activityLimit) >= _activityTotal;
+    })
+    .catch(() => {
+      document.getElementById('ud-activity-loading').hidden = true;
+      empty.textContent = 'Failed to load activity.';
+      empty.hidden = false;
+      table.hidden = true;
+      pag.hidden = true;
+    });
+}
+
+document.getElementById('ud-activity-prev').addEventListener('click', () => {
+  if (_activityOffset > 0) {
+    _activityOffset = Math.max(0, _activityOffset - _activityLimit);
+    loadActivity();
+  }
+});
+document.getElementById('ud-activity-next').addEventListener('click', () => {
+  if (_activityOffset + _activityLimit < _activityTotal) {
+    _activityOffset += _activityLimit;
+    loadActivity();
+  }
+});
+
+async function loadAll() {
+  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess(), loadSessions(), loadActivity()]);
+}
+
+loadAll();
+</script>
+{% endblock %}

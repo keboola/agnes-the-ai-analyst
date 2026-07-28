@@ -1,0 +1,224 @@
+{% extends "base_page.html" %}
+{% block title %}Session — {{ username }} / {{ session_file }}{% endblock %}
+
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Session transcript" %}
+{% set page_hero_subtitle = "Per-session JSONL viewer." %}
+
+{% block head_extra %}
+<style>
+.obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
+.obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+  padding: 12px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 16px; }
+.obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; }
+.obs-subtitle a { color: #2563eb; text-decoration: none; }
+.obs-subtitle a:hover { text-decoration: underline; }
+/* `.obs-btn` rules deleted — buttons render via `ds.button(variant=
+   'secondary', size='sm')` carrying the canonical .btn family. */
+.td-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px;
+  color: var(--text-secondary, #6b7280); }
+.td-meta b { color: var(--text-primary, #111827); font-weight: 500; }
+
+.td-events { display: flex; flex-direction: column; gap: 8px; }
+.td-event { border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+  background: var(--surface, #fff); overflow: hidden; }
+.td-event-head { display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--border-light, #f9fafb);
+  border-bottom: 1px solid var(--border, #e5e7eb); font-size: 12px;
+  color: var(--text-secondary, #6b7280); }
+.td-role-chip { padding: 1px 8px; border-radius: 12px; font-size: 11px;
+  font-weight: 500; text-transform: lowercase; letter-spacing: 0.2px; }
+.td-role-chip.user      { background: #dbeafe; color: #1e40af; }
+.td-role-chip.assistant { background: #ede9fe; color: #5b21b6; }
+.td-role-chip.tool_use     { background: #fef3c7; color: #92400e; }
+.td-role-chip.tool_result  { background: #d1fae5; color: #065f46; }
+.td-role-chip.tool_result.is-error { background: #fee2e2; color: #991b1b; }
+.td-event.is-error { border-color: #f87171; box-shadow: 0 0 0 2px #fee2e2; }
+.td-ts { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 11px; }
+.td-tool-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; color: var(--text-primary, #111827); font-weight: 500; }
+.td-event-body { padding: 12px 14px; }
+.td-text { white-space: pre-wrap; word-break: break-word; font: 13px/1.5 var(--font-sans, system-ui);
+  margin: 0; max-height: 320px; overflow: auto; }
+.td-event.expanded .td-text { max-height: none; }
+.td-toggle { display: block; margin-top: 6px; color: #2563eb; font-size: 12px;
+  background: none; border: 0; padding: 0; cursor: pointer; }
+.td-toggle:hover { text-decoration: underline; }
+.td-pre { background: var(--border-light, #f3f4f6); border-radius: 6px;
+  padding: 10px 12px; margin: 0; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto; }
+.td-event.expanded .td-pre { max-height: none; }
+.td-section-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); margin: 0 0 4px; }
+.obs-empty { padding: 40px 16px; text-align: center; color: var(--text-secondary, #6b7280); }
+</style>
+{% endblock %}
+
+{% block page %}
+{# Design-system component macros — the 2 header buttons (Next error +
+   Download .jsonl) render via `ds.button` (auto-imported by base_ds).
+   JS-rendered event cards stay page-local. #}
+<div class="obs-page">
+
+  <header class="obs-topbar">
+    <div class="obs-topbar-left">
+      <p class="obs-subtitle">
+        <a href="/admin/sessions">← All sessions</a>
+        &nbsp;·&nbsp; <code>{{ username }}/{{ session_file }}</code>
+      </p>
+      <div class="td-meta" id="td-meta"></div>
+    </div>
+    <div class="obs-topbar-right">
+      {{ ds.button('↡ Next error', variant='secondary', size='sm',
+                   type='button', id='td-prev-err', attrs='hidden') }}
+      {{ ds.button('Download .jsonl', variant='secondary', size='sm',
+                   id='td-download',
+                   href='/api/admin/sessions/' ~ username ~ '/' ~ session_file ~ '/download') }}
+    </div>
+  </header>
+
+  <section class="td-events" id="td-events">
+    <div class="obs-empty" id="td-loading">Loading transcript…</div>
+  </section>
+</div>
+
+<script>
+(function() {
+  const username = {{ username | tojson }};
+  const sessionFile = {{ session_file | tojson }};
+  const eventsRoot = document.getElementById('td-events');
+  const loading = document.getElementById('td-loading');
+  const metaRoot = document.getElementById('td-meta');
+  const nextErrBtn = document.getElementById('td-prev-err');
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmtTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toISOString().slice(11, 19) + 'Z';
+  }
+  function fmtDuration(s) {
+    if (s == null) return '—';
+    if (s < 60) return Math.round(s) + 's';
+    if (s < 3600) return Math.round(s / 60) + 'm';
+    return (s / 3600).toFixed(1) + 'h';
+  }
+  function renderMeta(s) {
+    if (!s || !Object.keys(s).length) {
+      metaRoot.innerHTML = '<i>Summary not extracted yet (UsageProcessor hasn\'t run).</i>';
+      return;
+    }
+    metaRoot.innerHTML =
+      '<div><b>Started:</b> ' + escapeHtml(s.started_at || '—') + '</div>' +
+      '<div><b>Active:</b> ' + escapeHtml(fmtDuration(s.active_seconds)) + '</div>' +
+      '<div><b>Tool calls:</b> ' + escapeHtml(String(s.tool_calls ?? '—')) + '</div>' +
+      '<div><b>Errors:</b> ' + escapeHtml(String(s.tool_errors ?? '—')) + '</div>' +
+      '<div><b>Model:</b> ' + escapeHtml(s.primary_model || '—') + '</div>';
+  }
+
+  function renderEvent(ev, idx) {
+    const el = document.createElement('div');
+    el.className = 'td-event';
+    el.dataset.idx = idx;
+    if (ev.kind === 'tool_result' && ev.is_error) el.classList.add('is-error');
+
+    let chipClass = ev.kind;
+    let chipLabel = ev.kind;
+    if (ev.kind === 'text') {
+      chipClass = ev.role || 'user';
+      chipLabel = ev.role || 'message';
+    }
+    if (ev.kind === 'tool_result' && ev.is_error) chipClass += ' is-error';
+
+    let headRight = '';
+    if (ev.kind === 'tool_use' || ev.kind === 'tool_result') {
+      headRight = '<span class="td-tool-name">' + escapeHtml(ev.tool_name || ev.tool_use_id || '') + '</span>';
+    }
+
+    el.innerHTML =
+      '<div class="td-event-head">' +
+        '<span class="td-role-chip ' + chipClass + '">' + escapeHtml(chipLabel) + '</span>' +
+        headRight +
+        '<span class="td-ts">' + escapeHtml(fmtTime(ev.ts)) + '</span>' +
+      '</div>' +
+      '<div class="td-event-body" id="td-body-' + idx + '"></div>';
+
+    const body = el.querySelector('#td-body-' + idx);
+    if (ev.kind === 'text') {
+      const pre = document.createElement('pre');
+      pre.className = 'td-text';
+      pre.textContent = ev.text || '';
+      body.appendChild(pre);
+    } else if (ev.kind === 'tool_use') {
+      const label = document.createElement('div');
+      label.className = 'td-section-label'; label.textContent = 'Input';
+      body.appendChild(label);
+      const pre = document.createElement('pre');
+      pre.className = 'td-pre';
+      pre.textContent = ev.input == null ? '—' : JSON.stringify(ev.input, null, 2);
+      body.appendChild(pre);
+    } else if (ev.kind === 'tool_result') {
+      const label = document.createElement('div');
+      label.className = 'td-section-label';
+      label.textContent = ev.is_error ? 'Tool output (ERROR)' : 'Tool output';
+      body.appendChild(label);
+      const pre = document.createElement('pre');
+      pre.className = 'td-pre';
+      pre.textContent = ev.text || '—';
+      body.appendChild(pre);
+    }
+
+    const toggle = document.createElement('button');
+    toggle.className = 'td-toggle';
+    toggle.type = 'button';
+    toggle.textContent = 'Expand';
+    toggle.addEventListener('click', () => {
+      el.classList.toggle('expanded');
+      toggle.textContent = el.classList.contains('expanded') ? 'Collapse' : 'Expand';
+    });
+    body.appendChild(toggle);
+
+    return el;
+  }
+
+  fetch('/api/admin/sessions/' + encodeURIComponent(username) + '/' +
+        encodeURIComponent(sessionFile) + '/transcript', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(d => {
+      loading.remove();
+      renderMeta(d.summary);
+      const events = d.events || [];
+      let errorCount = 0;
+      events.forEach((ev, i) => {
+        eventsRoot.appendChild(renderEvent(ev, i));
+        if (ev.kind === 'tool_result' && ev.is_error) errorCount++;
+      });
+      if (errorCount > 0) {
+        nextErrBtn.hidden = false;
+        nextErrBtn.textContent = '↡ Next error (' + errorCount + ')';
+        let cursor = -1;
+        nextErrBtn.addEventListener('click', () => {
+          const errs = [...eventsRoot.querySelectorAll('.td-event.is-error')];
+          if (!errs.length) return;
+          cursor = (cursor + 1) % errs.length;
+          errs[cursor].scrollIntoView({ behavior: 'smooth', block: 'center' });
+          errs[cursor].animate(
+            [{ outline: '3px solid #ef4444' }, { outline: '3px solid transparent' }],
+            { duration: 1500 }
+          );
+        });
+      }
+      if (!events.length) {
+        eventsRoot.innerHTML = '<div class="obs-empty">No conversational events in this JSONL (only system / summary turns).</div>';
+      }
+    })
+    .catch(e => {
+      loading.textContent = 'Failed to load transcript: ' + e.message;
+    });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,85 @@
+# Agnes - Setup Instructions
+#
+# Single source of truth for local environment setup.
+# Webapp reads this, substitutes placeholders, and generates clipboard text.
+#
+# Placeholders (filled from instance.yaml by webapp):
+#   {server_host}  - server IP or hostname
+#   {ssh_alias}    - SSH config alias (instance.yaml: server.ssh_alias)
+#   {ssh_key}      - SSH private key path (instance.yaml: server.ssh_key)
+#   {username}     - analyst username on server
+#   {webapp_url}   - webapp URL
+#   {project_dir}  - local project folder name (instance.yaml: server.project_dir)
+
+header: |
+  Set up my Agnes local environment.
+
+connection:
+  server_host: "{server_host}"
+  webapp_url: "{webapp_url}"
+  username: "{username}"
+  ssh_key: "{ssh_key}"
+
+steps:
+  - name: "SSH config"
+    description: |
+      Check ~/.ssh/config - if a Host entry named "{ssh_alias}" already exists
+      with a DIFFERENT server, ask me what name to use instead.
+      Otherwise add:
+        Host {ssh_alias}
+          HostName {server_host}
+          User {username}
+          IdentityFile {ssh_key}
+          StrictHostKeyChecking accept-new
+      Then test: ssh {ssh_alias} echo ok
+
+  - name: "Create project folders"
+    commands:
+      - "mkdir -p server/docs server/scripts server/parquet server/metadata server/examples"
+      - "mkdir -p user/duckdb user/notifications user/artifacts user/scripts user/parquet user/sessions"
+      - 'printf "ssh_alias={ssh_alias}\nserver_host={server_host}\nwebapp_url={webapp_url}\n" > .sync_connection'
+
+  - name: "Download from server"
+    description: |
+      Use rsync with --no-perms --no-group to avoid macOS permission errors.
+      Skip directories that don't exist on the server (rsync exit code 23 = missing source).
+    commands:
+      - "rsync -avz --no-perms --no-group {ssh_alias}:server/scripts/ ./server/scripts/"
+      - "rsync -avz --no-perms --no-group {ssh_alias}:server/docs/ ./server/docs/"
+      - "rsync -avz --no-perms --no-group {ssh_alias}:server/examples/ ./server/examples/"
+      - "rsync -avz --no-perms --no-group {ssh_alias}:server/metadata/ ./server/metadata/"
+      - "rsync -avz --no-perms --no-group --progress {ssh_alias}:server/parquet/ ./server/parquet/"
+    note: "Some folders may be empty if data sync hasn't run on the server yet. That's OK."
+
+  - name: "Set up Python venv (local and server)"
+    description: |
+      Set up local venv, then create a matching venv on the server via SSH.
+      The server venv is needed for running scripts remotely (notifications, etc.).
+      Install the SAME packages on both sides (do NOT copy pip freeze across platforms).
+    commands:
+      - "python3 -m venv .venv"
+      - "source .venv/bin/activate"
+      - "pip install pandas pyarrow duckdb pyyaml python-dotenv"
+      - "ssh {ssh_alias} 'python3 -m venv ~/.venv && ~/.venv/bin/pip install --quiet pandas pyarrow duckdb pyyaml python-dotenv'"
+
+  - name: "Initialize DuckDB"
+    condition: "only if server/scripts/setup_views.sh exists"
+    commands:
+      - "bash server/scripts/setup_views.sh"
+
+  - name: "Create CLAUDE.md"
+    condition: "if server/docs/setup/claude_md_template.txt exists"
+    description: |
+      Copy the template and replace these placeholders:
+        {username} -> {username}
+        {ssh_alias} -> {ssh_alias}
+        {server_host} -> {server_host}
+        {webapp_url} -> {webapp_url}
+      Also create CLAUDE.local.md for personal notes (never overwritten by sync).
+      Also copy server/docs/setup/claude_settings.json to .claude/settings.json.
+
+existing_project:
+  check: "If .claude/init-complete exists, or CLAUDE.md exists and contains 'AI Data Analyst' (legacy workspaces)"
+  message: |
+    This directory is already set up. Just sync latest data:
+      bash server/scripts/sync_data.sh

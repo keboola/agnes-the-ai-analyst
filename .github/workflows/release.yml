@@ -1,0 +1,419 @@
+name: Release
+
+# Optional Artifact Registry mirror (Cloud Run consumers): set repo vars
+#   AR_LOCATION (e.g. europe-west1), AR_PROJECT, AR_REPO
+# and secret GCP_SA_KEY (SA with artifactregistry.writer). Absent → skipped.
+
+on:
+  push:
+    branches:
+      - main
+      - "**"  # build :dev-<slug> image for any branch push (e.g. feature/x, zs/edit, fix/y)
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
+  # Branch creation. Required because `paths-ignore` on the `push` event
+  # diffs the new ref against the default branch — a branch created from
+  # main with no extra commits has zero diff, so every file matches
+  # paths-ignore and the workflow is skipped. Devs spinning up a personal
+  # branch off main to deploy main's exact state to their dev VM
+  # (`:dev-<user>-latest` floating tag) need an image to be published, so
+  # we trigger explicitly on branch create. Tag creates are filtered out
+  # at the job level so we don't double-build with `keboola-deploy.yml`
+  # (which owns `keboola-deploy-*` tag pushes).
+  create:
+  workflow_dispatch:  # manual trigger for explicit dev-<slug> builds
+
+permissions:
+  contents: write
+  packages: write
+  # issues: write — explicitly granted at workflow scope so the
+  # rollback-on-smoke-fail job (which calls rollback.yml via workflow_call)
+  # can open a tracking issue when an auto-rollback fires. Reusable-
+  # workflow permissions are bounded by the caller's GITHUB_TOKEN scope,
+  # so removing this line would silently 403 rollback.yml's gh issue
+  # create step (the || echo fallback would swallow the failure, leaving
+  # :stable reverted with no operator alert). Keep in sync with the
+  # rollback-on-smoke-fail job-level permissions below.
+  issues: write
+
+# When a developer pushes a brand-new branch with code changes, GitHub fires
+# both a `create` and a `push` event for the same commit. Without
+# concurrency control, both runs would claim distinct CalVer version tags
+# (dev-YYYY.MM.N and dev-YYYY.MM.N+1) and race to push overlapping floating
+# tags (:dev, :dev-<slug>, :dev-<prefix>-latest). Group by ref and cancel
+# in-progress duplicates so only the most recent event survives — the
+# zero-diff case (only `create` fires, no `push`) is unaffected since
+# there's only one run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Tests + lint live in `ci.yml` (the sharded `test-shard` matrix and the
+  # `lint` job). `release.yml` is the image-build pipeline only — it no
+  # longer re-runs the suite, which previously meant the full ~10 min test
+  # job ran twice on every push to main/feature branches.
+  #
+  # Tradeoff: `build-and-push` no longer has `needs: test`, so on a push to
+  # `main` the `:stable` image publishes *concurrently* with `ci.yml`'s
+  # tests on the merge commit — not gated behind them. What still protects
+  # `main`: (1) branch protection requires `ci.yml`'s `test` + `docker-build`
+  # to pass before a PR can merge, so merged code was tested at PR time;
+  # (2) the smoke-test + auto-rollback job below catches a critically broken
+  # `:stable`. A post-merge test failure on the merge commit itself (rare —
+  # flaky test or merge skew) would not block the image; that is the
+  # accepted cost of not running the suite twice. `build-and-push` is gated
+  # only by its own `if:` below.
+  build-and-push:
+    # Publish on:
+    #   - any push (main → :stable-* / non-main → :dev-* + :dev-<slug>);
+    #   - branch creation (a fresh branch off main with no extra commits
+    #     should still produce a `:dev-<slug>` + `:dev-<prefix>-latest`
+    #     image so the developer's VM, which pins to that floating tag,
+    #     can deploy main's exact state without manually changing code);
+    #   - manual workflow_dispatch.
+    # Tag creates are excluded — `keboola-deploy.yml` owns tag pushes.
+    # `*-autopilot` branches are excluded: they are short-lived per-issue PR
+    # branches that no VM pins to, so a `:dev-<slug>` image is pure waste —
+    # and worse, each force-push (rebase / review fix) cancels the prior run
+    # (`cancel-in-progress`), leaving a cancelled check-run that shows as a red
+    # `build-and-push` on the PR. That check is NOT a required status check
+    # (only `test` + `docker-build` are), so the red is cosmetic — but it
+    # makes every autopilot PR look broken. Skipping the dev-image build for
+    # these branches keeps them visually clean without touching main, real
+    # dev branches, or the merge gate.
+    if: |
+      !endsWith(github.ref, '-autopilot') && (
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'create' && github.event.ref_type == 'branch')
+      )
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.versioned_tag }}
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Claim version tag (with retry to avoid race conditions)
+        id: meta
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          YEAR_MONTH=$(date +%Y.%m)
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            CHANNEL="stable"
+          else
+            CHANNEL="dev"
+          fi
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+
+          # Claim a unique version by pushing a git tag BEFORE building.
+          # Retry up to 5 times if another CI run took our N.
+          TAG_CLAIMED=false
+          for ATTEMPT in 1 2 3 4 5; do
+            git fetch --tags --force
+            # Use max(N) not count — safe even if tags are deleted
+            MAX_N=$(git tag -l "*-${YEAR_MONTH}.*" | sed 's/.*\.//' | sort -n | tail -1)
+            N=$(( ${MAX_N:-0} + 1 ))
+            VERSION="${YEAR_MONTH}.${N}"
+            TAG="${CHANNEL}-${VERSION}"
+
+            git tag -a "$TAG" -m "Release $TAG"
+            if git push origin "$TAG" 2>/dev/null; then
+              echo "Claimed tag $TAG (attempt $ATTEMPT)"
+              TAG_CLAIMED=true
+              break
+            else
+              echo "Tag $TAG already exists, retrying... (attempt $ATTEMPT)"
+              git tag -d "$TAG"
+              sleep 2
+            fi
+          done
+
+          if [ "$TAG_CLAIMED" != "true" ]; then
+            echo "::error::Failed to claim a unique version tag after 5 attempts"
+            exit 1
+          fi
+
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "versioned_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Per-branch slug for dev builds (enables branch-aware dev VMs)
+          if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            BRANCH_SLUG=$(echo "$BRANCH_NAME" | sed 's|^feature/||' | sed 's|[^a-zA-Z0-9-]|-|g' | tr '[:upper:]' '[:lower:]' | cut -c1-50)
+            echo "branch_slug=${BRANCH_SLUG}" >> "$GITHUB_OUTPUT"
+            echo "Branch slug: ${BRANCH_SLUG}"
+
+            # User prefix for <prefix>/<whatever> branches — powers the
+            # dev-<prefix>-latest alias tag so each developer's personal VM
+            # can pin to their prefix and auto-pull the latest push. Common
+            # Git Flow prefixes are skipped so `feature/x`, `fix/y` etc.
+            # don't create noisy -latest tags.
+            if [[ "$BRANCH_NAME" == *"/"* ]]; then
+              USER_PREFIX=$(echo "$BRANCH_NAME" | cut -d/ -f1 | sed 's|[^a-zA-Z0-9-]|-|g' | tr '[:upper:]' '[:lower:]')
+              case "$USER_PREFIX" in
+                feature|fix|hotfix|bugfix|docs|chore|test|ci|ops|refactor|perf|style|build)
+                  echo "Branch prefix '$USER_PREFIX' is a Git Flow convention — skipping dev-*-latest alias"
+                  ;;
+                *)
+                  echo "user_prefix=${USER_PREFIX}" >> "$GITHUB_OUTPUT"
+                  echo "User prefix: ${USER_PREFIX} (will push dev-${USER_PREFIX}-latest alias)"
+                  ;;
+              esac
+            fi
+          fi
+
+          echo "Channel: ${CHANNEL}"
+          echo "Version: ${VERSION}"
+          echo "Versioned tag: ${TAG}"
+
+      - name: Extract package version from pyproject.toml
+        id: pkgver
+        run: |
+          # Single source of truth for the product version: the
+          # pyproject.toml [project] table. The CalVer "${YEAR_MONTH}.${N}"
+          # claimed above stays as the git / image tag (release identity),
+          # but AGNES_VERSION — what /api/version, /cli/latest, and `da
+          # --version` all expose — tracks the package version.
+          VERSION=$(grep '^version' pyproject.toml | head -1 | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not extract version from pyproject.toml"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Package version: ${VERSION}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve AR mirror config
+        id: armirror
+        run: |
+          if [ -n "${{ vars.AR_LOCATION }}" ] && [ -n "${{ vars.AR_PROJECT }}" ] && [ -n "${{ vars.AR_REPO }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to Google Cloud (Artifact Registry mirror)
+        id: gcp_auth
+        if: steps.armirror.outputs.enabled == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          token_format: access_token
+
+      - name: Log in to Artifact Registry
+        if: steps.gcp_auth.outcome == 'success'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.AR_LOCATION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.gcp_auth.outputs.access_token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          push: true
+          build-args: |
+            AGNES_VERSION=${{ steps.pkgver.outputs.version }}
+            RELEASE_CHANNEL=${{ steps.meta.outputs.channel }}
+            AGNES_COMMIT_SHA=${{ github.sha }}
+            AGNES_TAG=${{ steps.meta.outputs.versioned_tag }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.channel }}
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.versioned_tag }}
+            ghcr.io/${{ github.repository }}:sha-${{ steps.meta.outputs.short_sha }}
+            ${{ steps.meta.outputs.channel == 'dev' && format('ghcr.io/{0}:dev-{1}', github.repository, steps.meta.outputs.branch_slug) || '' }}
+            ${{ steps.meta.outputs.channel == 'dev' && steps.meta.outputs.user_prefix != '' && format('ghcr.io/{0}:dev-{1}-latest', github.repository, steps.meta.outputs.user_prefix) || '' }}
+            ${{ steps.armirror.outputs.enabled == 'true' && format('{0}-docker.pkg.dev/{1}/{2}/agnes:{3}', vars.AR_LOCATION, vars.AR_PROJECT, vars.AR_REPO, steps.meta.outputs.channel) || '' }}
+            ${{ steps.armirror.outputs.enabled == 'true' && format('{0}-docker.pkg.dev/{1}/{2}/agnes:{3}', vars.AR_LOCATION, vars.AR_PROJECT, vars.AR_REPO, steps.meta.outputs.versioned_tag) || '' }}
+
+  smoke-test:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Required so `Start Agnes from built image` can pull the just-built
+      # private GHCR image. The `build-and-push` job logs in for itself;
+      # this job needs its own login since GitHub Actions tokens are scoped
+      # per-job.
+      #
+      # Retried, because a transient ghcr.io blip here is NOT a broken
+      # `:stable` — but a non-zero exit fails smoke-test → auto-rollback.
+      # Issue #892: `Get "https://ghcr.io/v2/": ... Client.Timeout exceeded`
+      # during this job rolled prod back from stable-2026.07.525 to 520; the
+      # exact same commit passed smoke on re-run. Infra flakes must not roll
+      # back prod.
+      - name: Log in to GHCR (with retry)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin; then
+              exit 0
+            fi
+            [ "$attempt" = 5 ] && { echo "::error::ghcr.io login failed after 5 attempts (transient registry error?)"; exit 1; }
+            echo "login attempt $attempt failed; retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+
+      - name: Start Agnes from built image
+        run: |
+          # Create empty .env (docker-compose.yml requires env_file: .env, gitignored)
+          touch .env
+          # Use prod compose (GHCR images) + CI overlay (test secrets)
+          export AGNES_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          compose="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml"
+          # Pull the app image with retries BEFORE `up` — a transient ghcr.io
+          # pull timeout is an infra flake, not a broken :stable, and must not
+          # trip the auto-rollback (issue #892). `up` below then starts from
+          # the already-pulled local image.
+          for attempt in 1 2 3 4 5; do
+            if $compose pull app; then
+              break
+            fi
+            [ "$attempt" = 5 ] && { echo "::error::failed to pull app image after 5 attempts (transient ghcr.io error?)"; exit 1; }
+            echo "pull attempt $attempt failed; retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          $compose up -d app
+          # Wait for healthy (max 60s)
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/api/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"status\"]!=\"unhealthy\" else 1)"; do sleep 3; done'
+
+      - name: Run smoke tests
+        run: bash scripts/smoke-test.sh http://localhost:8000
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml logs > smoke-test-logs.txt
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-logs
+          path: smoke-test-logs.txt
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml down -v
+
+  rollback-on-smoke-fail:
+    needs: [build-and-push, smoke-test]
+    if: failure() && needs.smoke-test.result == 'failure'
+    uses: ./.github/workflows/rollback.yml
+    with:
+      failed_image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    permissions:
+      contents: read
+      packages: write
+      issues: write
+
+  # Reproduces the deploy shape that broke agnes-development on 2026-04-29:
+  # the production stack uses docker-compose.host-mount.yml to bind-mount /data
+  # from the host PD instead of using a Docker named volume. Docker initializes
+  # a fresh named volume from the image's /data dir (which the Dockerfile
+  # chowns to agnes:agnes BEFORE switching USER), so the existing smoke-test
+  # job above never reproduces the "host /data is root-owned, container is
+  # USER agnes" scenario. This job pre-creates a host dir, applies the same
+  # chown the startup-script does on the GCE VM, and asserts the smoke
+  # passes — locking in the chown contract so removing it from
+  # startup-script.sh.tpl or flipping the Dockerfile uid breaks CI.
+  e2e-bind-mount:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pre-create /data with root-owned subdirs (mimics fresh GCE PD)
+        run: |
+          sudo mkdir -p /tmp/agnes-data/{state,analytics,extracts}
+          sudo chown -R 0:0 /tmp/agnes-data
+          ls -la /tmp/agnes-data
+
+      - name: Negative test — image must fail to write before chown
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}"
+          # USER agnes (uid 999) writing to root-owned dir must fail.
+          if docker run --rm -v /tmp/agnes-data:/data "$IMAGE" \
+               sh -c "touch /data/state/.probe" 2>/dev/null; then
+            echo "REGRESSION: write to root-owned /data unexpectedly succeeded"
+            echo "  Either USER agnes is no longer enforced, or uid pin changed."
+            exit 1
+          fi
+          echo "OK: write correctly fails — operator chown is required"
+
+      - name: Apply startup-script chown (uid:gid 999:999)
+        run: sudo chown -R 999:999 /tmp/agnes-data
+
+      - name: Boot stack with bind-mounted /data + run smoke
+        run: |
+          touch .env
+          export AGNES_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          # Override the `data` volume to bind-mount /tmp/agnes-data, mirroring
+          # the production host-mount.yml overlay shape.
+          cat > docker-compose.bind-test.yml <<'EOF'
+          volumes:
+            data:
+              driver: local
+              driver_opts:
+                type: none
+                o: bind,rbind
+                device: /tmp/agnes-data
+          EOF
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.prod.yml \
+            -f docker-compose.ci.yml \
+            -f docker-compose.bind-test.yml \
+            up -d app
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/api/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"status\"]!=\"unhealthy\" else 1)"; do sleep 3; done'
+          bash scripts/smoke-test.sh http://localhost:8000
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f docker-compose.yml -f docker-compose.prod.yml \
+            -f docker-compose.ci.yml -f docker-compose.bind-test.yml \
+            logs > bind-mount-logs.txt 2>&1 || true
+          ls -la /tmp/agnes-data /tmp/agnes-data/state 2>&1 | tee -a bind-mount-logs.txt
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-bind-mount-logs
+          path: bind-mount-logs.txt
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker compose \
+            -f docker-compose.yml -f docker-compose.prod.yml \
+            -f docker-compose.ci.yml -f docker-compose.bind-test.yml \
+            down -v || true
+          sudo rm -rf /tmp/agnes-data || true

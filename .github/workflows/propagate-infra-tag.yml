@@ -1,0 +1,87 @@
+name: Propagate infra tag to template
+
+# On push of any infra-v* tag, open a PR in keboola/agnes-infra-template
+# that bumps the module ref in terraform/main.tf. Auto-merge rules in the
+# template repo (Renovate + CI validate) land it without manual work.
+#
+# Requires repository secret TEMPLATE_REPO_TOKEN: a fine-grained PAT or
+# GitHub App token with Contents:write + Pull requests:write on
+# keboola/agnes-infra-template.
+#
+# If the secret is missing the job is skipped (fail-soft) so manual
+# tag creation still works; Renovate on the template repo picks up
+# the new tag on its next cycle as a fallback.
+
+on:
+  push:
+    tags:
+      - 'infra-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  propagate:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - name: Guard — tag ref + secret presence
+        id: guard
+        env:
+          SECRET_VALUE: ${{ secrets.TEMPLATE_REPO_TOKEN }}
+        run: |
+          # Belt-and-braces tag-only check (workflow-level filter should handle it,
+          # but GitHub occasionally schedules this workflow on adjacent events with
+          # 0 jobs — explicit guard keeps the report clean).
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/infra-v ]]; then
+            echo "Not an infra-v* tag push (ref=$GITHUB_REF) — nothing to do."
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if [ -z "$SECRET_VALUE" ]; then
+            echo "::warning::TEMPLATE_REPO_TOKEN secret not set — skipping propagation. Renovate on the template repo will pick up the new tag on its next poll as a fallback."
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "name=$TAG" >> $GITHUB_OUTPUT
+          echo "proceed=true" >> $GITHUB_OUTPUT
+          echo "Propagating tag: $TAG"
+
+      - name: Checkout template repo
+        if: steps.guard.outputs.proceed == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: keboola/agnes-infra-template
+          token: ${{ secrets.TEMPLATE_REPO_TOKEN }}
+          path: template
+
+      - name: Bump module ref in template
+        if: steps.guard.outputs.proceed == 'true'
+        working-directory: template
+        env:
+          NEW_TAG: ${{ steps.guard.outputs.name }}
+        run: |
+          file=terraform/main.tf
+          sed -i "s|ref=infra-v[0-9]\+\.[0-9]\+\.[0-9]\+\"|ref=$NEW_TAG\"|g" "$file"
+          echo "--- diff ---"
+          git diff "$file" || true
+
+      - name: Create PR
+        if: steps.guard.outputs.proceed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          path: template
+          token: ${{ secrets.TEMPLATE_REPO_TOKEN }}
+          branch: bump-module-${{ steps.guard.outputs.name }}
+          title: "infra: bump module ref to ${{ steps.guard.outputs.name }}"
+          body: |
+            Automated bump triggered by release of [`${{ steps.guard.outputs.name }}`](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/${{ steps.guard.outputs.name }}) in the upstream `keboola/agnes-the-ai-analyst` repo.
+
+            Auto-merge is enabled for patch/minor bumps (via Renovate config + this repo's `allow_auto_merge`). A `breaking` label on major bumps blocks auto-merge for human review.
+
+            If CI validate fails, fix the module upstream before retrying.
+          commit-message: "infra: bump module ref to ${{ steps.guard.outputs.name }}"
+          labels: renovate
+          delete-branch: true

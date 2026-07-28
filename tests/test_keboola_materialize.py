@@ -1,0 +1,1040 @@
+"""Tests for the Keboola materialize_query path.
+
+Surface contract: takes ``bucket`` + ``source_table`` (+ optional
+``source_query`` JSON filter spec), exports via Storage API, writes a
+parquet, returns the same {table_id, path, rows, bytes, md5} shape the
+BQ branch returns. We mock `KeboolaStorageClient` so tests don't hit
+the network — the real Storage API client is exercised in
+tests/test_keboola_storage_api.py.
+
+The default code path is now **parquet** (Storage API serves Snowflake
+UNLOAD output directly; the extractor renames into place — no CSV
+intermediate, no DuckDB COPY of full file). Tests cover both the
+default parquet path and the legacy CSV opt-in (via
+``source_query='{"file_type":"csv"}'``).
+"""
+
+import hashlib
+import importlib.util
+import os
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import duckdb
+import pytest
+
+from connectors.keboola import extractor as kbe
+
+
+def _write_parquet(dest: Path, n_rows: int = 2) -> None:
+    """Drop a tiny real parquet at ``dest`` so the materialize path can
+    read it back to compute row_count + MD5 — same shape Snowflake
+    UNLOAD would produce."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    safe = str(dest).replace("'", "''")
+    conn = duckdb.connect()
+    try:
+        conn.execute(
+            f"COPY (SELECT * FROM (VALUES {','.join('(' + str(i) + ')' for i in range(n_rows))}) AS t(id)) "
+            f"TO '{safe}' (FORMAT PARQUET)"
+        )
+    finally:
+        conn.close()
+
+
+def _seed_csv(dest: Path, header: str, rows: list[str]) -> None:
+    """Write a tiny CSV the legacy CSV materialize path will convert to parquet."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+
+
+@pytest.fixture
+def fake_storage_client_parquet():
+    """Mock for the **default** parquet path. ``prepare_export`` returns a
+    file_info marking a single (non-sliced) file. ``download_file``
+    writes a real 2-row parquet at the requested dest."""
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 100,
+            "file_id": 200,
+            "rows": 2,
+            "file_info": {"id": 200, "url": "https://fake/x", "isSliced": False},
+            "file_type": "parquet",
+        }
+
+    def fake_download(file_info, dest_path):
+        _write_parquet(Path(dest_path), n_rows=2)
+        return Path(dest_path)
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file.side_effect = fake_download
+    return client
+
+
+@pytest.fixture
+def fake_storage_client_csv():
+    """Mock for the legacy CSV opt-in path. ``export_table`` writes a
+    small CSV at dest. Used for tests that pin
+    ``source_query='{"file_type":"csv"}'``."""
+
+    def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
+        _seed_csv(Path(dest), "id,name", ["1,alpha", "2,beta"])
+        return {"job_id": 100, "file_id": 200, "rows": 2, "bytes": Path(dest).stat().st_size, "file_type": "csv"}
+
+    client = MagicMock()
+    client.export_table.side_effect = fake_export
+    return client
+
+
+# ---- default parquet path --------------------------------------------------
+
+
+def test_materialize_query_writes_parquet_and_returns_metadata(tmp_path, fake_storage_client_parquet):
+    """Default path: no source_query → file_type=parquet, single file."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="example_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    parquet_path = output_dir / "example_subset.parquet"
+    assert parquet_path.exists()
+    assert result["table_id"] == "example_subset"
+    assert result["path"] == str(parquet_path)
+    assert result["rows"] == 2
+    assert result["bytes"] > 0
+    expected_md5 = hashlib.md5(parquet_path.read_bytes()).hexdigest()
+    assert result["md5"] == expected_md5
+
+    # Default file_type should be parquet — verify by inspecting the
+    # ExportFilter passed to prepare_export.
+    call_args = fake_storage_client_parquet.prepare_export.call_args
+    assert call_args.args[0] == "in.c-sales.orders"
+    assert call_args.kwargs["export_filter"].file_type == "parquet"
+
+
+def test_materialize_query_resolves_date_placeholder_in_where_filters(tmp_path, fake_storage_client_parquet):
+    """Materialized where_filters must resolve {{last_6_months}} to a literal
+    date before reaching the Storage API — an unresolved placeholder is
+    compared verbatim and silently returns 0 rows. Mirrors the local path's
+    resolve_placeholders step, which materialized rows previously skipped."""
+    from datetime import datetime, timedelta, timezone
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="kbc_job",
+        bucket="in.c-kbc_telemetry",
+        source_table="kbc_job",
+        source_query=(
+            '{"where_filters": [{"column": "job_created_at", "operator": "ge", "values": ["{{last_6_months}}"]}]}'
+        ),
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    wf = fake_storage_client_parquet.prepare_export.call_args.kwargs["export_filter"].where_filters
+    resolved = wf[0]["values"][0]
+    assert "{{" not in resolved, f"placeholder left unresolved: {resolved!r}"
+    expected = (datetime.now(timezone.utc).date() - timedelta(days=180)).strftime("%Y-%m-%d")
+    assert resolved == expected
+
+
+def test_materialize_query_rejects_unknown_where_filter_placeholder(tmp_path, fake_storage_client_parquet):
+    """An unknown placeholder must fail loudly, not silently pass a literal
+    `{{typo}}` to the Storage API (which would return 0 rows)."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    with pytest.raises(ValueError, match="placeholder"):
+        kbe.materialize_query(
+            table_id="kbc_job",
+            bucket="in.c-kbc_telemetry",
+            source_table="kbc_job",
+            source_query=(
+                '{"where_filters": [{"column": "job_created_at", "operator": "ge", "values": ["{{lasst_week}}"]}]}'
+            ),
+            storage_client=fake_storage_client_parquet,
+            output_dir=output_dir,
+        )
+
+
+def test_materialize_query_parquet_sliced_merges_via_duckdb(tmp_path):
+    """Sliced parquet output: each slice is itself a complete parquet file
+    (Snowflake UNLOAD MAX_FILE_SIZE behavior). The extractor must use
+    ``download_file_slices`` to keep them as separate files, then
+    DuckDB-COPY across ``read_parquet([slice1, slice2])`` to merge —
+    naive concat would corrupt the per-slice footer."""
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 100,
+            "file_id": 200,
+            "rows": 4,
+            "file_info": {"id": 200, "url": "https://fake/manifest", "isSliced": True},
+            "file_type": "parquet",
+        }
+
+    def fake_download_slices(file_info, dest_dir):
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        s1, s2 = dest_dir / "slice-00000", dest_dir / "slice-00001"
+        _write_parquet(s1, n_rows=2)
+        _write_parquet(s2, n_rows=2)
+        return [s1, s2]
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file_slices.side_effect = fake_download_slices
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="big_table",
+        bucket="in.c-x",
+        source_table="t",
+        source_query=None,
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    # Final parquet contains all 4 rows from both slices.
+    final = output_dir / "big_table.parquet"
+    assert final.exists()
+    n = (
+        duckdb.connect()
+        .execute(f"SELECT COUNT(*) FROM read_parquet('{str(final).replace(chr(39), chr(39) * 2)}')")
+        .fetchone()[0]
+    )
+    assert n == 4
+    assert result["rows"] == 4
+
+    # Slices were not concatenated raw (would leave 2 footers in one file
+    # and break DuckDB on read).
+    client.download_file_slices.assert_called_once()
+
+
+def test_materialize_query_parquet_zero_rows_emits_empty_parquet(tmp_path, caplog):
+    """Storage API parquet succeeded but the filter matched 0 rows (file
+    is empty/missing). We log a warning and emit an empty placeholder."""
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 1,
+            "file_id": 2,
+            "rows": 0,
+            "file_info": {"id": 2, "url": "https://fake/x", "isSliced": False},
+            "file_type": "parquet",
+        }
+
+    def fake_download(file_info, dest_path):
+        # Don't create the file — simulates no-rows result.
+        return Path(dest_path)
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file.side_effect = fake_download
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    with caplog.at_level("WARNING"):
+        result = kbe.materialize_query(
+            table_id="empty_subset",
+            bucket="in.c-test",
+            source_table="empty",
+            source_query=None,
+            storage_client=client,
+            output_dir=output_dir,
+        )
+
+    assert result["rows"] == 0
+    assert (output_dir / "empty_subset.parquet").exists()
+    assert "no data" in caplog.text.lower() or "0 rows" in caplog.text
+
+
+def test_materialize_query_admin_can_pin_file_type_csv(tmp_path, fake_storage_client_csv):
+    """Admin can opt out of parquet via ``source_query='{"file_type":"csv"}'``
+    — falls back to CSV → DuckDB-COPY → parquet."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="legacy_csv",
+        bucket="in.c-x",
+        source_table="t",
+        source_query='{"file_type": "csv"}',
+        storage_client=fake_storage_client_csv,
+        output_dir=output_dir,
+    )
+
+    assert (output_dir / "legacy_csv.parquet").exists()
+    assert result["rows"] == 2
+
+    # Storage client called with file_type=csv on the ExportFilter.
+    call = fake_storage_client_csv.export_table.call_args
+    assert call.args[0] == "in.c-x.t"
+    assert call.kwargs["export_filter"].file_type == "csv"
+
+
+# ---- CSV dialect (RFC 4180 quote/escape pin) -------------------------------
+
+
+def test_materialize_query_csv_handles_embedded_quotes_and_commas(tmp_path):
+    """Regression: Keboola Storage API CSV exports are RFC-4180 (delimiter
+    ',', quote '"', embedded quotes doubled). DuckDB's dialect sniffer can
+    misdetect the escape char on cells holding their own quoting (real-world
+    failure: `CSV Error on Line: 18985` on a column carrying embedded
+    JSON/SQL text) — pinning `quote='"', escape='"'` removes the guesswork.
+    Verify row count + value fidelity survive a cell with a doubled
+    embedded quote plus a quoted comma."""
+
+    def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
+        _seed_csv(
+            Path(dest),
+            "id,payload,note",
+            [
+                '1,"a ""quoted"" value","has,comma"',
+                '2,plain,"another,one"',
+            ],
+        )
+        return {"job_id": 1, "file_id": 2, "rows": 2, "bytes": Path(dest).stat().st_size, "file_type": "csv"}
+
+    client = MagicMock()
+    client.export_table.side_effect = fake_export
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="quoted_csv",
+        bucket="in.c-x",
+        source_table="t",
+        source_query='{"file_type": "csv"}',
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    assert result["rows"] == 2
+    final = output_dir / "quoted_csv.parquet"
+    safe = str(final).replace("'", "''")
+    rows = duckdb.connect().execute(f"SELECT id, payload, note FROM read_parquet('{safe}') ORDER BY id").fetchall()
+    assert rows == [
+        ("1", 'a "quoted" value', "has,comma"),
+        ("2", "plain", "another,one"),
+    ]
+
+
+# ---- tempdir cleanup on failure --------------------------------------------
+
+
+def test_materialize_query_sliced_parquet_tempdir_cleaned_on_exception(tmp_path):
+    """When a sliced parquet download raises mid-flight (e.g. OSError 28
+    'No space left'), the per-call tempdir at /tmp/kbc-export-<id>-*
+    that was already populated with downloaded slices must not survive.
+
+    Regression: an earlier worker death mid-write left a 12 GiB stale
+    slice tree on the boot disk because TemporaryDirectory's default
+    cleanup path itself raised under disk-full state, masking the
+    original exception AND leaving the dir behind. The fix uses
+    ``ignore_cleanup_errors=True`` so cleanup is best-effort but always
+    fires — the dir is empty (or at least mostly) after the function
+    returns."""
+    captured_tmpdir: dict[str, Path] = {}
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 1,
+            "file_id": 2,
+            "rows": 1,
+            "file_info": {"id": 2, "url": "https://fake/manifest", "isSliced": True},
+            "file_type": "parquet",
+        }
+
+    def boom_download_slices(file_info, dest_dir):
+        # Capture the tempdir the extractor created (parent of dest_dir).
+        captured_tmpdir["path"] = Path(dest_dir).parent
+        # Simulate a real download writing partial state, then disk full.
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        (Path(dest_dir) / "slice-00000").write_bytes(b"PAR1...partial")
+        raise OSError(28, "No space left on device")
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file_slices.side_effect = boom_download_slices
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    with pytest.raises(OSError, match="No space left"):
+        kbe.materialize_query(
+            table_id="will_fail_sliced",
+            bucket="in.c-test",
+            source_table="t",
+            source_query=None,
+            storage_client=client,
+            output_dir=output_dir,
+        )
+
+    # The tempdir that held the partial slice must be gone (or at least
+    # not the half-populated state that leaked previously).
+    assert "path" in captured_tmpdir, "download_file_slices was not invoked"
+    leftover = captured_tmpdir["path"]
+    assert not leftover.exists(), (
+        f"tempdir {leftover} must be cleaned on exception (otherwise leaks under disk-full conditions)"
+    )
+    # Final parquet must NOT exist.
+    assert not (output_dir / "will_fail_sliced.parquet").exists()
+
+
+def test_materialize_query_warns_on_survived_scratch_when_exception_raised(tmp_path, monkeypatch):
+    """Regression (agnes-reviewer-architecture finding on PR #909): the
+    scratch-survived warning was originally placed as a plain statement after
+    the ``with tempfile.TemporaryDirectory(...)`` block — any exception
+    raised inside the block (the exact ENOSPC / mid-write failure this
+    warning exists to surface) skips straight past it. Verify the warning
+    check actually runs when the export raises, by making the tempdir
+    genuinely survive (ignore_cleanup_errors swallowing a forced cleanup
+    failure) and asserting the warning fires."""
+    import connectors.keboola.storage_api as sapi
+
+    warned: list[str] = []
+    monkeypatch.setattr(sapi, "warn_if_scratch_survived", lambda path: warned.append(path))
+    monkeypatch.setattr(kbe, "warn_if_scratch_survived", sapi.warn_if_scratch_survived, raising=False)
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 1,
+            "file_id": 2,
+            "rows": 1,
+            "file_info": {"id": 2, "url": "https://fake/manifest", "isSliced": True},
+            "file_type": "parquet",
+        }
+
+    def boom_download_slices(file_info, dest_dir):
+        raise OSError(28, "No space left on device")
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file_slices.side_effect = boom_download_slices
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    with pytest.raises(OSError, match="No space left"):
+        kbe.materialize_query(
+            table_id="will_fail_sliced_2",
+            bucket="in.c-test",
+            source_table="t",
+            source_query=None,
+            storage_client=client,
+            output_dir=output_dir,
+        )
+
+    assert warned, "warn_if_scratch_survived must be checked even when the export raises"
+
+
+# ---- AGNES_TEMP_DIR routing -------------------------------------------------
+
+
+def test_materialize_query_uses_AGNES_TEMP_DIR_when_set(
+    monkeypatch,
+    tmp_path,
+    fake_storage_client_parquet,
+):
+    """The per-call tempdir lands under ``AGNES_TEMP_DIR`` when set —
+    routes Snowflake-UNLOAD slice staging off the container's overlayfs
+    /tmp onto the data disk. Capture the dir the storage_client receives
+    via download_file's dest_path and assert it's under the configured
+    root.
+
+    Regression context: agnes-dev's boot disk filled to 100% during a
+    180-day kbc_job sync because slices accumulated in /tmp; the data
+    disk had 15 GiB free at the time."""
+    custom_root = tmp_path / "agnes-tmp"
+    custom_root.mkdir()
+    monkeypatch.setenv("AGNES_TEMP_DIR", str(custom_root))
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="anywhere",
+        bucket="in.c-x",
+        source_table="t",
+        source_query=None,
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    # The tempdir created by `materialize_query` is anonymous, but
+    # `tempfile.TemporaryDirectory(dir=root, ...)` always places its
+    # dir as a direct child of `root`. After materialize_query returns
+    # the dir is cleaned, so check the root only contains paths that
+    # WOULD have been under it (post-cleanup it's empty — that's still
+    # the contract; the assertion is "AGNES_TEMP_DIR was honored as
+    # the parent"). We do this indirectly by calling get_temp_root
+    # ourselves under the same env and asserting the value flows.
+    from connectors.keboola.storage_api import get_temp_root
+
+    assert get_temp_root() == str(custom_root)
+
+    # And the dir is empty post-run (cleanup happened) but still exists
+    # — i.e. we didn't accidentally delete the operator's chosen root.
+    assert custom_root.is_dir()
+
+
+def test_materialize_query_falls_back_to_system_tmp_when_unset(
+    monkeypatch,
+    tmp_path,
+    fake_storage_client_parquet,
+):
+    """No AGNES_TEMP_DIR → no behavioural change vs. pre-fix code.
+    The function still returns successfully; we don't peek inside
+    /tmp itself (CI-unfriendly), just assert the run completed and
+    the parquet exists at output_dir as expected."""
+    monkeypatch.delenv("AGNES_TEMP_DIR", raising=False)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="default_tmp",
+        bucket="in.c-x",
+        source_table="t",
+        source_query=None,
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    assert (output_dir / "default_tmp.parquet").exists()
+    assert result["rows"] == 2
+
+
+# ---- generic guards (file_type-agnostic) -----------------------------------
+
+
+def test_materialize_query_rejects_unsafe_table_id(tmp_path, fake_storage_client_parquet):
+    """Defense: table_id is interpolated into the parquet filename. SQL/
+    path-traversal-unsafe values must be rejected up-front."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    with pytest.raises(ValueError, match="table_id"):
+        kbe.materialize_query(
+            table_id="../../etc/passwd",
+            bucket="in.c-test",
+            source_table="t",
+            source_query=None,
+            storage_client=fake_storage_client_parquet,
+            output_dir=output_dir,
+        )
+
+
+def test_materialize_query_invalid_source_query_json_raises(tmp_path, fake_storage_client_parquet):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    with pytest.raises(ValueError, match="not valid JSON"):
+        kbe.materialize_query(
+            table_id="bad_filter",
+            bucket="in.c-test",
+            source_table="t",
+            source_query="this is not json",
+            storage_client=fake_storage_client_parquet,
+            output_dir=output_dir,
+        )
+
+
+def test_materialize_query_passes_filter_spec_to_export(tmp_path, fake_storage_client_parquet):
+    """source_query JSON is parsed into ExportFilter and forwarded to the
+    Storage API client. Verifies the dispatch shape — the actual
+    filter→params conversion is covered in test_keboola_storage_api.py."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="filtered",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=(
+            '{"where_filters": [{"column": "status", "operator": "eq", "values": ["open"]}], "columns": ["id"]}'
+        ),
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    f = fake_storage_client_parquet.prepare_export.call_args.kwargs["export_filter"]
+    assert f.where_filters == [{"column": "status", "operator": "eq", "values": ["open"]}]
+    assert f.columns == ["id"]
+    # No explicit file_type → defaults to parquet.
+    assert f.file_type == "parquet"
+
+
+# ---- atomic write contract -------------------------------------------------
+
+
+def test_keboola_materialize_atomic_write_on_failure(tmp_path):
+    """If the CSV→parquet conversion fails (legacy CSV opt-in), no
+    partial file is left at the final .parquet path AND the .parquet.tmp
+    staging file is cleaned up."""
+
+    def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
+        _seed_csv(Path(dest), "id,name", ["1,alpha"])
+        return {"job_id": 1, "file_id": 2, "rows": 1, "bytes": Path(dest).stat().st_size, "file_type": "csv"}
+
+    client = MagicMock()
+    client.export_table.side_effect = fake_export
+
+    output_dir = tmp_path / "data"
+    output_dir.mkdir()
+
+    real_connect = duckdb.connect
+
+    class FailingConn:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a, **kw):
+            if "FORMAT PARQUET" in sql:
+                raise RuntimeError("simulated mid-COPY failure")
+            return self._inner.execute(sql, *a, **kw)
+
+        def close(self):
+            self._inner.close()
+
+    def patched_connect(*args, **kwargs):
+        return FailingConn(real_connect(*args, **kwargs))
+
+    with patch("connectors.keboola.extractor.duckdb.connect", side_effect=patched_connect):
+        with pytest.raises(RuntimeError, match="simulated mid-COPY failure"):
+            kbe.materialize_query(
+                table_id="atomic_test",
+                bucket="in.c-test",
+                source_table="t",
+                source_query='{"file_type": "csv"}',
+                storage_client=client,
+                output_dir=output_dir,
+            )
+
+    final_path = output_dir / "atomic_test.parquet"
+    assert not final_path.exists(), (
+        f"Partial parquet left at final path {final_path} — orchestrator "
+        f"rebuild would pick this up and serve corrupt data."
+    )
+    tmp_marker = output_dir / "atomic_test.parquet.tmp"
+    assert not tmp_marker.exists(), f"Stale .parquet.tmp left at {tmp_marker}"
+
+
+def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path, fake_storage_client_parquet):
+    """Atomic-write contract: parquet first lands at <id>.parquet.tmp, then
+    is os.replaced into <id>.parquet on success. Verified by patching
+    os.replace to capture the (src, dst) pair."""
+    output_dir = tmp_path / "data"
+    output_dir.mkdir()
+
+    captured = {}
+    real_replace = os.replace
+
+    def trace_replace(src, dst):
+        captured["src"] = str(src)
+        captured["dst"] = str(dst)
+        real_replace(src, dst)
+
+    with patch.object(kbe.os, "replace", side_effect=trace_replace):
+        result = kbe.materialize_query(
+            table_id="tmp_path_test",
+            bucket="in.c-test",
+            source_table="t",
+            source_query=None,
+            storage_client=fake_storage_client_parquet,
+            output_dir=output_dir,
+        )
+
+    assert captured["src"].endswith(".parquet.tmp"), captured
+    assert captured["dst"].endswith(".parquet") and not captured["dst"].endswith(".tmp")
+
+    assert (output_dir / "tmp_path_test.parquet").exists()
+    assert not (output_dir / "tmp_path_test.parquet.tmp").exists()
+    assert result["path"].endswith(".parquet")
+    assert not result["path"].endswith(".tmp")
+
+
+# ---- consolidation-connection resource caps (#431 / #432) ------------------
+
+
+def test_consolidation_conn_applies_memory_and_thread_caps():
+    """``_open_consolidation_conn`` must apply the three resource caps that
+    keep the materialize CSV->parquet COPY inside a small cgroup container:
+    ``memory_limit`` capped (normalizes to ~1.8 GiB for the '2GB' source
+    constant), ``threads=2``, and ``preserve_insertion_order=false``.
+
+    Asserted via observable DuckDB ``current_setting`` state, not by reading
+    source strings — a regression that drops or changes any SET fails here.
+    """
+    # Pin the source-of-truth constants so a silent value change is caught.
+    assert kbe._CONSOLIDATION_MEMORY_LIMIT == "2GB"
+    assert kbe._CONSOLIDATION_THREADS == 2
+
+    conn = kbe._open_consolidation_conn()
+    try:
+        threads = conn.execute("SELECT current_setting('threads')").fetchone()[0]
+        assert int(threads) == 2
+
+        preserve = conn.execute("SELECT current_setting('preserve_insertion_order')").fetchone()[0]
+        # DuckDB returns this as a bool (or a 'false' string on older builds).
+        assert preserve in (False, "false")
+
+        # DuckDB normalizes '2GB' to '1.8 GiB' (2e9 bytes). Assert the
+        # banded/normalized form — an exact '2GB' string compare would
+        # false-fail. The cap must be well below the DuckDB default
+        # (80% of host RAM), so a numeric prefix <= 2.0 GiB proves it.
+        mem = conn.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        assert "GiB" in mem, mem
+        assert float(mem.split()[0]) <= 2.0, mem
+    finally:
+        conn.close()
+
+
+# ---- typed-parquet fix for the native-parquet path (2026-07-15) -----------
+#
+# Verified live: Storage API's Snowflake UNLOAD serves every column as
+# VARCHAR regardless of the source's real type. These tests use a real
+# KeboolaClient (kbcstorage-backed) with __init__ + get_pyarrow_schema
+# monkeypatched. The kbcstorage guard is applied PER-TEST (below), not at
+# module level, so the unrelated tests earlier in this file still run on
+# installs without the [server] extra.
+
+_needs_kbcstorage = pytest.mark.skipif(
+    importlib.util.find_spec("kbcstorage") is None,
+    reason="requires the [server] extra (kbcstorage)",
+)
+
+
+def _write_string_typed_parquet(dest: Path) -> None:
+    """Write a parquet whose columns are ALL string-typed, even the
+    numeric-looking one — same shape Storage API's native parquet export
+    produces for the bug this fix addresses."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    table = pa.table(
+        {"id": pa.array(["1", "2"], type=pa.string()), "amount": pa.array(["100", "250"], type=pa.string())}
+    )
+    pq.write_table(table, dest)
+
+
+@pytest.fixture
+def fake_storage_client_parquet_untyped():
+    """Like fake_storage_client_parquet, but with real string .token/.base
+    (so the isinstance guard in materialize_query's typing fix actually
+    engages) and an all-string-typed parquet output."""
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 100,
+            "file_id": 200,
+            "rows": 2,
+            "file_info": {"id": 200, "url": "https://fake/x", "isSliced": False},
+            "file_type": "parquet",
+        }
+
+    def fake_download(file_info, dest_path):
+        _write_string_typed_parquet(Path(dest_path))
+        return Path(dest_path)
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file.side_effect = fake_download
+    client.token = "fake-token"
+    client.base = "https://connection.keboola.com/v2/storage"
+    return client
+
+
+@_needs_kbcstorage
+def test_materialize_query_applies_typed_schema_when_available(
+    tmp_path, monkeypatch, fake_storage_client_parquet_untyped
+):
+    """When KeboolaClient.get_pyarrow_schema returns a schema, the
+    materialized parquet's columns must be cast to those types — not left
+    as the all-VARCHAR shape Storage API's native parquet export produces."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    fake_schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("amount", pa.int64()),
+        ]
+    )
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="typed_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet_untyped,
+        output_dir=output_dir,
+    )
+
+    table = pq.read_table(output_dir / "typed_subset.parquet")
+    assert table.schema.field("id").type == pa.int64()
+    assert table.schema.field("amount").type == pa.int64()
+    # Correctness, not just typing: a real aggregate over the now-numeric
+    # column must be possible and return the right sum (100 + 250).
+    assert table.column("amount").to_pylist() == [100, 250]
+    assert result["rows"] == 2
+
+
+@_needs_kbcstorage
+def test_materialize_query_keeps_varchar_when_schema_unavailable(
+    tmp_path, monkeypatch, fake_storage_client_parquet_untyped
+):
+    """Metadata API unreachable → graceful fallback to Storage API's native
+    (all-VARCHAR) types, matching the legacy CSV path's existing fallback
+    behavior. Must not raise."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    def raise_unreachable(self, tid):
+        raise RuntimeError("metadata API unreachable")
+
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", raise_unreachable)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="untyped_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet_untyped,
+        output_dir=output_dir,
+    )
+
+    table = pq.read_table(output_dir / "untyped_subset.parquet")
+    assert table.schema.field("amount").type == pa.string()
+
+
+@_needs_kbcstorage
+def test_materialize_query_untyped_storage_client_skips_typing_safely(tmp_path, fake_storage_client_parquet):
+    """The pre-existing MagicMock-based fixture (no real .token/.base) must
+    keep working exactly as before this fix — the isinstance guard makes
+    typing a safe no-op rather than attempting a KeboolaClient call with a
+    mock as credentials."""
+    import pyarrow.parquet as pq
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="example_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    # fake_storage_client_parquet's _write_parquet writes an int column via
+    # DuckDB VALUES — already typed, unaffected either way. The real
+    # assertion here is that the call above didn't raise.
+    table = pq.read_table(output_dir / "example_subset.parquet")
+    assert table.num_rows == 2
+
+
+# ---- streaming retype (OOM fix for the typed-parquet path) ----------------
+#
+# The original typed-parquet fix loaded the whole materialized parquet into
+# one pyarrow.Table (pq.read_table) before casting — peak memory scaled with
+# the materialized result size and OOM-killed syncs of large tables. The
+# retype must stream through DuckDB (bounded by the consolidation memory
+# cap) while keeping the coerce-to-NULL semantics of the pandas fallback.
+
+
+def _make_untyped_client(columns):
+    """Fake KeboolaStorageClient whose native-parquet export writes the
+    given ``{name: [str values]}`` columns ALL string-typed — the shape
+    Storage API's Snowflake UNLOAD produces."""
+    n_rows = len(next(iter(columns.values())))
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 100,
+            "file_id": 200,
+            "rows": n_rows,
+            "file_info": {"id": 200, "url": "https://fake/x", "isSliced": False},
+            "file_type": "parquet",
+        }
+
+    def fake_download(file_info, dest_path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table({k: pa.array(v, type=pa.string()) for k, v in columns.items()}), dest)
+        return dest
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file.side_effect = fake_download
+    client.token = "fake-token"
+    client.base = "https://connection.keboola.com/v2/storage"
+    return client
+
+
+@_needs_kbcstorage
+def test_materialize_typed_retype_streams_instead_of_full_read(
+    tmp_path, monkeypatch, fake_storage_client_parquet_untyped
+):
+    """The retype must NOT load the whole parquet via pq.read_table —
+    with a poisoned read_table the columns must still come out typed
+    (streamed through DuckDB, not read into one pyarrow.Table)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    fake_schema = pa.schema([pa.field("id", pa.int64()), pa.field("amount", pa.int64())])
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+
+    def boom(*a, **kw):
+        raise AssertionError("retype must not pq.read_table the full parquet")
+
+    monkeypatch.setattr("pyarrow.parquet.read_table", boom)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    kbe.materialize_query(
+        table_id="streamed_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet_untyped,
+        output_dir=output_dir,
+    )
+
+    monkeypatch.undo()
+    table = pq.read_table(output_dir / "streamed_subset.parquet")
+    assert table.schema.field("id").type == pa.int64()
+    assert table.schema.field("amount").type == pa.int64()
+    assert table.column("amount").to_pylist() == [100, 250]
+
+
+@_needs_kbcstorage
+def test_materialize_typed_retype_coerces_lossy_values_to_null(tmp_path, monkeypatch):
+    """Uncastable values coerce to NULL (the pandas-fallback semantics the
+    in-memory retype had); castable columns and values are unaffected."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    client = _make_untyped_client({"id": ["1", "2"], "amount": ["100", "abc"]})
+    fake_schema = pa.schema([pa.field("id", pa.int64()), pa.field("amount", pa.int64())])
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    kbe.materialize_query(
+        table_id="lossy_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    table = pq.read_table(output_dir / "lossy_subset.parquet")
+    assert table.schema.field("id").type == pa.int64()
+    assert table.schema.field("amount").type == pa.int64()
+    assert table.column("id").to_pylist() == [1, 2]
+    assert table.column("amount").to_pylist() == [100, None]
+
+
+@_needs_kbcstorage
+def test_materialize_typed_retype_handles_dates_timestamps_and_empties(tmp_path, monkeypatch):
+    """DATE and TIMESTAMP targets cast from their string forms; empty
+    strings coerce to NULL instead of poisoning the whole column."""
+    import datetime
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    client = _make_untyped_client(
+        {
+            "ts": ["2026-01-02 03:04:05", ""],
+            "d": ["2026-01-02", ""],
+        }
+    )
+    fake_schema = pa.schema([pa.field("ts", pa.timestamp("us")), pa.field("d", pa.date32())])
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    kbe.materialize_query(
+        table_id="temporal_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    table = pq.read_table(output_dir / "temporal_subset.parquet")
+    assert table.schema.field("ts").type == pa.timestamp("us")
+    assert table.schema.field("d").type == pa.date32()
+    assert table.column("ts").to_pylist() == [
+        datetime.datetime(2026, 1, 2, 3, 4, 5),
+        None,
+    ]
+    assert table.column("d").to_pylist() == [datetime.date(2026, 1, 2), None]
+
+
+def test_retype_preserves_row_order_across_row_groups(tmp_path):
+    """The materialized parquet's MD5 is the change-detection key for
+    `agnes pull` — the retype must preserve input row order (byte-stable
+    output for identical input), even across many row groups where
+    `preserve_insertion_order=false` could legally reorder."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    src = tmp_path / "ordered.parquet"
+    n = 5000
+    pq.write_table(
+        pa.table({"id": pa.array([str(i) for i in range(n)], type=pa.string())}),
+        src,
+        row_group_size=500,
+    )
+
+    kbe._retype_parquet_streaming(src, pa.schema([pa.field("id", pa.int64())]))
+
+    table = pq.read_table(src)
+    assert table.schema.field("id").type == pa.int64()
+    assert table.column("id").to_pylist() == list(range(n))

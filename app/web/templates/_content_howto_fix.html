@@ -1,0 +1,39 @@
+{# Static "How to fix" guidance rendered below content-quality findings.
+
+   Shown when either the inline content check or the LLM content-quality
+   verdict reports issues. Holds the pattern cheatsheet and the "what
+   good enough means" copy so the same guidance is visible from both
+   rejection tiers.
+#}
+<div style="margin-top: 14px; padding: 12px 14px; background: rgba(0,0,0,0.04); border-radius: 8px; font-size: 13px;">
+  <div style="font-weight: 600; margin-bottom: 6px;">How to fix — write a strong description</div>
+  <div style="margin-bottom: 8px;">
+    Each component description doubles as the trigger the model reads to
+    decide whether to invoke it. Vague descriptions block routing more
+    often than they block security — that's why this is enforced.
+  </div>
+  <details>
+    <summary style="cursor: pointer; font-weight: 500;">Pattern cheatsheet</summary>
+    <ul style="margin: 6px 0 0 0; padding-left: 22px;">
+      <li><strong>Skills</strong>: <code>Use when &lt;trigger condition&gt; — &lt;what it does&gt;</code>. The description IS the trigger string Claude reads to decide whether to invoke the skill, so name the condition first.</li>
+      <li><strong>Agents</strong>: <code>&lt;What the agent does&gt;. Use for &lt;invocation context&gt;</code>. The routing layer uses this string; describe the dispatch criterion.</li>
+      <li><strong>Plugins</strong>: one-sentence marketplace pitch — <code>&lt;verb&gt; &lt;noun&gt; for &lt;audience&gt;</code>. Treat it like the elevator pitch on the marketplace tile.</li>
+      <li><strong>Commands</strong>: one-verb summary of the action — <em>"Run the test suite and print failures grouped by module."</em></li>
+    </ul>
+  </details>
+  <details style="margin-top: 6px;">
+    <summary style="cursor: pointer; font-weight: 500;">What "good enough" means</summary>
+    <ul style="margin: 6px 0 0 0; padding-left: 22px;">
+      <li>At least 30 characters (20 for commands)</li>
+      <li>At least 4 distinct words</li>
+      <li>Action-oriented; names the trigger condition</li>
+      <li>No <code>TODO</code> / <code>TBD</code> / template placeholders</li>
+      <li>Specific (names the domain, tech, or scenario)</li>
+    </ul>
+  </details>
+  <div style="margin-top: 10px;">
+    <a href="/marketplace/flea/{{ entity.id }}/edit" style="display: inline-block; padding: 5px 12px; border-radius: 6px; background: rgba(0,0,0,0.08); color: inherit; text-decoration: none; font-weight: 500;">Re-upload as new version →</a>
+    <a href="/store/examples" target="_blank" rel="noopener" style="display: inline-block; padding: 5px 12px; border-radius: 6px; color: inherit; text-decoration: none;">See submission examples ↗</a>
+    <a href="/store/new#guidelines" style="display: inline-block; padding: 5px 12px; border-radius: 6px; color: inherit; text-decoration: none;">Read full guidelines</a>
+  </div>
+</div>

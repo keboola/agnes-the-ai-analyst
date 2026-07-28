@@ -1,0 +1,131 @@
+{$DOMAIN:localhost} {
+	# Cert provisioning. Driven by env var CADDY_TLS:
+	#   - unset (default) → cert-file mode for corporate PKI (rotated by
+	#     scripts/ops/agnes-tls-rotate.sh into /data/state/certs/).
+	#   - "tls <email>"   → Let's Encrypt auto-issue, e.g. "tls ops@example.com"
+	#                       (used by public-internet deployments).
+	#   - "tls internal"  → Caddy-managed self-signed cert (lab/dev only,
+	#                       browser warning on every visit).
+	#
+	# The {$VAR:default} substitution lets one Caddyfile serve all three
+	# regimes without per-deployment forks. Caddyfile parses the substituted
+	# string as a directive, so the value MUST start with `tls `.
+	{$CADDY_TLS:tls /certs/fullchain.pem /certs/privkey.pem} {
+		# Modern TLS only. Caddy default already excludes 1.0/1.1 in
+		# most builds, but pin explicitly so a future Caddy default
+		# change can't silently weaken our posture.
+		protocols tls1.2 tls1.3
+	}
+
+	# Security headers
+	header {
+		# HSTS: tell compliant browsers to refuse plain-HTTP for this host
+		# for a year. Skipping `preload` so we keep an escape hatch (preload
+		# submission is hard-bound and blocks rollback). Skipping
+		# `includeSubDomains` because we don't control subdomains.
+		Strict-Transport-Security "max-age=31536000"
+		# Prevent clickjacking — dashboard is not embedded in iframes
+		X-Frame-Options "DENY"
+		# Prevent MIME-type sniffing — browser must honor declared Content-Type
+		X-Content-Type-Options "nosniff"
+		# Limit referrer leakage to origin on same-site navigations only
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Strip Server header to avoid fingerprinting the reverse proxy
+		-Server
+	}
+
+	# Direct file_server for parquet downloads — bypasses uvicorn so a
+	# multi-GB pull from one analyst can't starve the app workers and
+	# block UI / health / API for everyone else. forward_auth calls the
+	# app's lightweight ``/api/data/{id}/check-access`` (RBAC only,
+	# ~1 ms) on every request; on 2xx Caddy serves the file directly
+	# via sendfile/zero-copy from the data volume mounted read-only.
+	#
+	# Path layout matches `app/api/data.py`'s extract.duckdb v2 search:
+	#   /data/extracts/<source_type>/data/<table_id>.parquet
+	# try_files probes known source subdirs in order; first hit wins.
+	# If a deployment adds a new connector and lands parquets at a fresh
+	# subdir, extend the try_files list. Anything that misses falls
+	# through to the app reverse_proxy below — so an unmapped source
+	# degrades to "downloads work, just through uvicorn" — never 404.
+	@download path_regexp tid ^/api/data/([^/]+)/download$
+	handle @download {
+		forward_auth app:8000 {
+			uri /api/data/{re.tid.1}/check-access
+			# NO copy_headers here. forward_auth already forwards the
+			# ORIGINAL request (incl. Authorization / Cookie) to the
+			# check-access upstream, so the bearer PAT / session cookie
+			# authenticate the RBAC probe. copy_headers does the opposite
+			# — it copies headers FROM check-access's response back onto
+			# the request; since /check-access returns 204 with no such
+			# headers, on Caddy >= 2.11.2 (GHSA-7r4p-vjf4-gxv4) that
+			# DELETES the client's Authorization/Cookie from the request,
+			# so any download that falls through to the app reverse_proxy
+			# below (e.g. a partitioned-table `?part=` fetch, or any table
+			# not served by the file_server static path) hits the app with
+			# no credential and 401s. Leave it off.
+		}
+		# Caddy's own /data is occupied by the caddy_data volume, so the
+		# agnes data dir is mounted at /srv (read-only) instead — see the
+		# `data:/srv:ro` line in docker-compose.yml's caddy service. The
+		# root + try_files combo therefore probes /srv/extracts/...
+		#
+		# Devin Review caught: `try_files A B C` rewrites the URI to its
+		# LAST entry when no file matches (per Caddy docs). Without an
+		# explicit "rewrite back to original URI" fallback, a parquet
+		# missing from all three known paths would get rewritten to the
+		# last static candidate (`/jira/data/<id>.parquet`), and the
+		# reverse_proxy below would forward THAT rewritten URI to
+		# app:8000 → app has no such route → 404. To make the documented
+		# "missed → falls through to app handler" promise hold, append
+		# the original `/api/data/<id>/download` path as the final
+		# try_files entry: when no file matches, the URI is rewritten
+		# back to the analyst-facing path and the app's `download_table`
+		# handler picks it up via the reverse_proxy fallback below.
+		root * /srv/extracts
+		try_files /bigquery/data/{re.tid.1}.parquet /keboola/data/{re.tid.1}.parquet /jira/data/{re.tid.1}.parquet /api/data/{re.tid.1}/download
+		@found file
+		handle @found {
+			header Content-Disposition "attachment; filename=\"{re.tid.1}.parquet\""
+			file_server
+		}
+		# Fallback: parquet not at any known static path → defer to app
+		# (handles legacy src_data/parquet layout + future connectors).
+		reverse_proxy app:8000 {
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {host}
+			# Security audit F9: overwrite X-Forwarded-For with the real peer.
+			header_up X-Forwarded-For {remote_host}
+			lb_try_duration 5s
+			lb_try_interval 1s
+		}
+	}
+
+	reverse_proxy app:8000 {
+		# App's uvicorn runs with --proxy-headers, so stamping these
+		# ourselves makes OAuth callback URLs and Set-Cookie Secure
+		# flags resolve to https consistently. X-Forwarded-Host is
+		# also Caddy's default, but pinning it explicitly insures
+		# against future default changes.
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host {host}
+		# Security audit F9: overwrite (not append) X-Forwarded-For with the
+		# real peer IP so a client-supplied XFF header can't rotate per-IP
+		# rate-limit buckets on the auth endpoints. The app additionally
+		# trusts only AGNES_TRUSTED_PROXY_HOPS rightmost hops.
+		header_up X-Forwarded-For {remote_host}
+		# Absorb brief connection blips (e.g. worker restart) without
+		# surfacing an error. Longer outages (full container restart on
+		# auto-upgrade, ~30–60 s) fall through to handle_errors below.
+		lb_try_duration 5s
+		lb_try_interval 1s
+	}
+
+	# Served when the app is restarting (502) or temporarily overloaded
+	# (503). The page auto-refreshes every 12 s so users need not act.
+	handle_errors 502 503 {
+		root * /caddy-static
+		rewrite * /maintenance.html
+		file_server
+	}
+}

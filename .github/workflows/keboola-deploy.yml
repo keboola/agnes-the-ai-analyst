@@ -1,0 +1,144 @@
+name: Keboola Deploy
+
+# Tag-triggered build for Keboola's internal dev instance.
+#
+# Why a separate workflow: the default release.yml builds an image for *every* push
+# to *every* branch, which means a shared dev VM pinned to a floating tag like
+# `:dev` sees whoever pushed last. That convenience for per-developer dev VMs
+# (`dev-<prefix>-latest` aliases) is a footgun for shared instances.
+#
+# This workflow runs ONLY when an operator explicitly creates a `keboola-deploy-*`
+# git tag. The image is published with two tags:
+#   - keboola-deploy-<git-tag-suffix>  (immutable, audit trail in git)
+#   - keboola-deploy-latest             (floating alias the VM tracks)
+#
+# Operator workflow:
+#   git checkout <commit>
+#   git tag keboola-deploy-2026-04-25-groups-test
+#   git push origin keboola-deploy-2026-04-25-groups-test
+#   # → image built, alias updated, agnes-dev cron picks it up within 5 min
+on:
+  push:
+    tags:
+      - "keboola-deploy-*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev,server]"
+
+      - name: Lint with ruff
+        run: |
+          pip install ruff
+          ruff check . || true
+        continue-on-error: true  # Don't block on pre-existing lint issues; can tighten later
+
+      - name: Type check with mypy
+        run: |
+          pip install mypy
+          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
+        continue-on-error: true  # Don't block on mypy initially, can tighten later
+
+      - name: Run tests
+        # `-n auto` parallelises across the runner's cores via pytest-xdist
+        # (matches ci.yml's per-shard invocation). Without it the full
+        # suite serialises into ~25 min — every deploy iteration paid
+        # that toll. `-q` keeps the log readable when 5000+ tests run.
+        run: pytest tests/ -n auto -q --tb=short
+        env:
+          TESTING: "1"
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve tag + version
+        id: meta
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Sanity: tag must start with keboola-deploy- (the `on:` filter already
+          # enforces this, but cheap belt-and-braces against future workflow edits).
+          case "$TAG" in
+            keboola-deploy-*) ;;
+            *) echo "::error::Tag $TAG does not match keboola-deploy-* — refusing to build"; exit 1 ;;
+          esac
+          # Package version: source of truth is pyproject.toml (same convention as
+          # release.yml). The git tag is the *deploy identifier*, package version
+          # is the *product identifier*.
+          PKG_VERSION=$(grep '^version' pyproject.toml | head -1 | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
+          if [ -z "$PKG_VERSION" ]; then
+            echo "::error::Could not extract version from pyproject.toml"; exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building image for git tag: ${TAG} (package version ${PKG_VERSION})"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          push: true
+          build-args: |
+            AGNES_VERSION=${{ steps.meta.outputs.pkg_version }}
+            RELEASE_CHANNEL=keboola-deploy
+            AGNES_COMMIT_SHA=${{ github.sha }}
+            AGNES_TAG=${{ steps.meta.outputs.tag }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.tag }}
+            ghcr.io/${{ github.repository }}:keboola-deploy-latest
+
+  smoke-test:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start Agnes from built image
+        run: |
+          touch .env
+          export AGNES_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml up -d app
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/api/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"status\"]!=\"unhealthy\" else 1)"; do sleep 3; done'
+
+      - name: Run smoke tests
+        run: bash scripts/smoke-test.sh http://localhost:8000
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml logs > smoke-test-logs.txt
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-logs
+          path: smoke-test-logs.txt
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml down -v

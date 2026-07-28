@@ -1,0 +1,235 @@
+services:
+  app:
+    build: .
+    # --proxy-headers + --forwarded-allow-ips make uvicorn honor the
+    # X-Forwarded-Proto / X-Forwarded-Host headers any reverse proxy (Caddy,
+    # nginx, Cloudflare Tunnel) sets. Without it, request.url_for() emits
+    # http://localhost:8000/... even when the user is on https://, which
+    # breaks OAuth callbacks (redirect_uri_mismatch). Belt-and-suspenders —
+    # FORWARDED_ALLOW_IPS=* in .env does the same via env var.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
+    ports:
+      - "8000:8000"
+    volumes:
+      - data:/data
+      - ./config:/app/config:ro
+      # - ./custom-connectors:/app/connectors/custom:ro  # Tier A: AI-generated connectors
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      # Steer per-call tempdirs (Snowflake UNLOAD slice staging,
+      # CSV→parquet intermediates) onto the data volume. The container
+      # default ``/tmp`` lives on overlayfs (boot disk), which fills
+      # under multi-GiB sliced exports — see connectors/keboola/
+      # storage_api.py:get_temp_root. Operators can override per
+      # deployment via .env (or unset to fall back to system /tmp).
+      - AGNES_TEMP_DIR=${AGNES_TEMP_DIR:-/data/tmp}
+      # /home/*/user/sessions/ doesn't exist in the Docker layout — skip
+      # the legacy session-collector to silence per-10-min "0 users, 0 files"
+      # + "Group 'data-ops' not found" log noise. The bare-VM deployment
+      # path leaves this unset and continues to scan + log normally.
+      - AGNES_SKIP_LEGACY_COLLECTOR=1
+      # Pin the CA bundle for the statically linked libcurl inside DuckDB
+      # extensions. Its own CA discovery is fragile under fd pressure and
+      # intermittently fails new TLS handshakes with CURL error 77 while
+      # warm connections keep working; an explicit path removes the
+      # discovery step. Guarded by tests/test_compose_hardening.py.
+      - CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    # The 1024-fd default is too small for a server juggling ~100 remote
+    # tables, marketplace git clones, and parquet handles; fd exhaustion
+    # during bursts makes libcurl's CA-file open fail with the same
+    # CURL error 77 signature as a missing bundle.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    # Container memory cap. Default 4g suits a small / single-VM deploy.
+    # DuckDB enforces memory_limit per-connection and (1.5+) defaults a
+    # fresh connection to ~80% of the cgroup limit, so on a larger host
+    # the right move is to raise BOTH this cap and the app's per-connection
+    # budgets — leaving this at 4g on a 16 GiB VM starves the app while the
+    # host sits idle, and the cgroup OOM-killer SIGKILLs uvicorn mid-WAL-write
+    # (see stop_grace_period note below). Override per deployment via the
+    # env_file, e.g. AGNES_APP_MEM_LIMIT=10g in .env.
+    mem_limit: ${AGNES_APP_MEM_LIMIT:-4g}
+    mem_reservation: 1g
+    # CPU cap. Like mem_limit, override per deployment via the env_file
+    # (e.g. AGNES_APP_CPUS=3.0 in .env on a 4-core host) instead of editing
+    # this file — live edits are lost when the VM is recreated from infra.
+    cpus: ${AGNES_APP_CPUS:-2.0}
+    # Default 10s is too short for graceful uvicorn shutdown — under load,
+    # in-flight requests + DuckDB CHECKPOINT (see lifespan in app/main.py)
+    # need more headroom. SIGKILL mid-WAL-write produces a corrupt
+    # system.duckdb.wal that the next image's DuckDB version cannot replay
+    # ("Failure while replaying WAL ... GetDefaultDatabase with no default
+    # database set"), 500-ing every authed request until WAL is removed.
+    # Hits hardest during a Docker image upgrade window where the new
+    # image's DuckDB version differs from the old container's, since
+    # WAL replay across versions trips on internal assertions.
+    stop_grace_period: 60s
+    # Joins agnes-apps so the app can reach data-app runtime containers
+    # directly (e.g. readiness probes); apps-runner is the only process
+    # that talks to the Docker socket, but the app shares the network.
+    networks: [default, agnes-apps]
+
+  # One-shot: run extractor then rebuild orchestrator views
+  extract:
+    build: .
+    command: >
+      sh -c "python -m connectors.keboola.extractor &&
+             python -c 'from src.orchestrator import SyncOrchestrator; print(SyncOrchestrator().rebuild())'"
+    volumes:
+      - data:/data
+      - ./config:/app/config:ro
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      - AGNES_TEMP_DIR=${AGNES_TEMP_DIR:-/data/tmp}
+    profiles:
+      - extract
+
+  scheduler:
+    build: .
+    command: python -m services.scheduler
+    volumes:
+      - data:/data
+      - ./config:/app/config:ro
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      - AGNES_TEMP_DIR=${AGNES_TEMP_DIR:-/data/tmp}
+      - API_URL=http://app:8000
+      - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL:-}
+      # Mirror the app service: the scheduler calls /api/admin/run-session-collector
+      # over HTTP rather than running the collector in-process, but if anything
+      # ever invokes the collector module from this container directly, we want
+      # the same skip behavior. Bare-VM path leaves this unset.
+      - AGNES_SKIP_LEGACY_COLLECTOR=1
+      # Same CA-bundle pin as the app service — the scheduler is the primary
+      # runner of materialized BQ syncs (DuckDB bigquery extension) where
+      # libcurl CA discovery fails under fd pressure with CURL error 77.
+      - CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    # Same fd headroom as the app service — the scheduler fans out
+    # concurrent HTTP jobs and inherits the same 1024-fd default.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    # Default 2g; override via AGNES_SCHEDULER_MEM_LIMIT in .env. See the
+    # app service's mem_limit note for the cgroup / per-connection rationale.
+    mem_limit: ${AGNES_SCHEDULER_MEM_LIMIT:-2g}
+    cpus: ${AGNES_SCHEDULER_CPUS:-1.0}
+    # Match app service — scheduler holds DuckDB connections too; same
+    # WAL-corruption risk on SIGKILL during recreate.
+    stop_grace_period: 60s
+
+  # The only process holding the Docker socket. Deliberately dumb: no
+  # registry access, no RBAC — the app decides *what* runs, this sidecar
+  # only translates to `docker run`/stop/status calls, token-gated over
+  # the internal compose network. See services/apps_runner/api.py.
+  apps-runner:
+    build: .
+    command: python -m services.apps_runner
+    profiles: ["apps"]
+    volumes:
+      - data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # A hard-required (`:?`) var here breaks EVERY `docker compose up`
+      # invocation that doesn't set it, even for stacks that never select
+      # the `apps` profile — compose validates interpolation for the whole
+      # file before profile filtering (broke smoke-test/e2e-bind-mount,
+      # rolled back #1007). Soft-default instead; `_check_token` in
+      # services/apps_runner/api.py already fails closed (rejects every
+      # request) when this is empty, so an operator who forgets to set it
+      # while actually running --profile apps gets a safe 401, not a
+      # silent auth bypass.
+      - APPS_RUNNER_TOKEN=${APPS_RUNNER_TOKEN:-}
+      - APPS_RUNNER_IMAGE_PREFIX=${APPS_RUNNER_IMAGE_PREFIX:-keboolapublic.azurecr.io/data-app-python-js}
+    networks: [default, agnes-apps]
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
+
+  telegram-bot:
+    build: .
+    command: python -m services.telegram_bot
+    volumes:
+      - data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    depends_on:
+      - app
+    profiles:
+      - full
+    restart: unless-stopped
+
+  # NOTE: corporate-memory + session-collector previously ran here as
+  # tight `restart: unless-stopped` boot loops behind `profiles: [full]`.
+  # As of #176 the scheduler container drives both through admin HTTP
+  # endpoints (/api/admin/run-corporate-memory,
+  # /api/admin/run-session-collector). The verification-detector job
+  # was never in compose; it now ships the same way. The app remains
+  # the sole writer to system.duckdb. Operators previously running
+  # COMPOSE_PROFILES=full need to drop those service stanzas from any
+  # custom Compose overrides.
+
+  # TLS reverse proxy. Corporate-CA certs mounted from /data/state/certs
+  # (managed by scripts/ops/agnes-tls-rotate.sh on the VM). For local
+  # development without certs, run without --profile tls and hit :8000
+  # directly.
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./static:/caddy-static:ro
+      - /data/state/certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      # Read-only mount of the agnes data dir so Caddy's file_server can
+      # serve parquets directly (sendfile/zero-copy) and bypass the app's
+      # uvicorn workers — see Caddyfile's @download handler. Mounted at
+      # /srv (not /data) because /data is already the caddy_data volume.
+      # Note: ./static is separately mounted at /caddy-static (above) so
+      # Caddy's file_server can serve it directly via the static_file matcher.
+      - data:/srv:ro
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      # Passes through whatever the operator set in .env. Caddyfile uses
+      # {$CADDY_TLS:tls /certs/fullchain.pem /certs/privkey.pem} so:
+      # - unset            → cert-file mode (corp PKI rotated by tls-rotate.sh)
+      # - "tls <email>"    → Let's Encrypt auto-issue
+      # - "tls internal"   → Caddy-managed self-signed
+      - CADDY_TLS
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - tls
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  default: {}
+  agnes-apps:
+    name: agnes-apps

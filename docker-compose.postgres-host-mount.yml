@@ -1,0 +1,26 @@
+# Bridge overlay — used ONLY when both `docker-compose.postgres.yml` and
+# `docker-compose.host-mount.yml` are loaded in the same chain
+# (i.e. customer-instance VMs running Postgres side-car). It restates
+# data-migrate's mount as a direct host bind so the migration script
+# reads the actual /data/state/system.duckdb instead of the (empty)
+# named volume the postgres overlay declares.
+#
+# Why a third file: the data-migrate service is defined in
+# docker-compose.postgres.yml; referencing it from host-mount.yml made
+# `docker compose -f base -f prod -f host-mount` (the default baseline
+# without postgres) fail validation with
+#
+#     service "data-migrate" has neither an image nor a build context
+#     specified: invalid compose project
+#
+# Splitting the override into this dedicated bridge file keeps both
+# building blocks (postgres.yml, host-mount.yml) standalone-loadable.
+#
+# Usage on customer-instance VMs (set in /opt/agnes/.env):
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml:docker-compose.postgres-host-mount.yml
+
+services:
+  data-migrate:
+    volumes: !override
+      - /data:/data:ro

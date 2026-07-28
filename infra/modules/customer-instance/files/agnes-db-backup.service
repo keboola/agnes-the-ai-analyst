@@ -1,0 +1,6 @@
+[Unit]
+Description=Agnes daily system.duckdb backup + canary restore-verify
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/agnes-db-backup.sh

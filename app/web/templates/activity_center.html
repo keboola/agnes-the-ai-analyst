@@ -1,0 +1,638 @@
+{% extends "base_page.html" %}
+{% block title %}Activity — Admin{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/activity_center.css') }}">
+{% endblock %}
+
+{# Canonical page hero — full container width, matches every other admin
+   page; the controls (time range, auto-refresh) sit in a separate row
+   below so the hero isn't squeezed into a flex column. #}
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Audit log" %}
+{% set page_hero_subtitle = "Every admin and user-mutating action — RBAC writes, sync triggers, marketplace edits, …" %}
+
+{% block page %}
+{# Design-system component macros — the buttons (Reset, Load more, side-panel
+   close + quick-filter actions) render via `ds.button` (auto-imported by
+   base_ds). The `.obs-kpi` cards, `.obs-table` enhancements, `.obs-panel`
+   slide-out, sort-header buttons, `<select>` filters stay page-local. #}
+<div class="obs-page">
+
+  <header class="obs-topbar">
+    <div class="obs-topbar-left">
+      <div class="obs-narrative" id="obs-narrative">Loading…</div>
+    </div>
+    <div class="obs-topbar-right">
+      <label class="obs-window">
+        <span class="obs-label">Time range</span>
+        <select id="obs-window">
+          <option value="60">Last 1h</option>
+          <option value="360">Last 6h</option>
+          <option value="1440" selected>Last 24h</option>
+          <option value="10080">Last 7d</option>
+          <option value="43200">Last 30d</option>
+        </select>
+      </label>
+      <label class="obs-live" title="Re-fetches KPIs + table every 30s. Independent of the time range — the range still controls what counts as 'recent'.">
+        <input type="checkbox" id="obs-live" />
+        <span>Auto-refresh (30s)</span>
+        <span class="obs-live-dot" id="obs-live-dot" aria-hidden="true"></span>
+      </label>
+    </div>
+  </header>
+
+  <!-- KPI CARDS ------------------------------------------------------- -->
+  <section class="obs-kpis" aria-label="Key metrics">
+    <button class="obs-kpi" data-filter="" type="button" aria-label="All events in window — click to reset filters">
+      <span class="obs-kpi-label">Events</span>
+      <span class="obs-kpi-value" id="kpi-events">—</span>
+    </button>
+    <button class="obs-kpi" data-filter="users" type="button" aria-label="Active users — click to focus user filter">
+      <span class="obs-kpi-label">Active users</span>
+      <span class="obs-kpi-value" id="kpi-users">—</span>
+    </button>
+    <button class="obs-kpi" data-filter="errors" type="button" aria-label="Errors — click to filter to errors only">
+      <span class="obs-kpi-label">Error rate</span>
+      <span class="obs-kpi-value" id="kpi-errors">—</span>
+      <span class="obs-kpi-sub" id="kpi-errors-sub">—</span>
+    </button>
+    <button class="obs-kpi" data-filter="slow" type="button" aria-label="Latency p95 — click to sort table by duration desc">
+      <span class="obs-kpi-label">p95 latency</span>
+      <span class="obs-kpi-value" id="kpi-p95">—</span>
+    </button>
+  </section>
+
+  <!-- FILTER BAR ------------------------------------------------------ -->
+  <section class="obs-filters" aria-label="Filter audit log">
+    <div class="obs-filter">
+      <label for="f-user">User</label>
+      <select id="f-user" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter">
+      <label for="f-action">Action</label>
+      <select id="f-action" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter">
+      <label for="f-result">Result</label>
+      <select id="f-result" class="obs-select">
+        <option value="">Any</option>
+        <option value="success">success only</option>
+        <option value="error%">errors only</option>
+      </select>
+    </div>
+    <div class="obs-filter">
+      <label for="f-source">Source</label>
+      <select id="f-source" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter">
+      <label for="f-resource">Resource</label>
+      <select id="f-resource" class="obs-select" aria-label="Filter by resource type">
+        <option value="">Any</option>
+        <option value="table:">Tables</option>
+        <option value="knowledge_item:">Knowledge items</option>
+        <option value="marketplace:">Marketplaces</option>
+        <option value="store_submission:">Store submissions</option>
+        <option value="store_entity:">Store entities</option>
+        <option value="store_upload:">Store uploads</option>
+        <option value="user:">Users</option>
+        <option value="token:">Tokens</option>
+        <option value="job:">Scheduled jobs</option>
+        <option value="memory_domain_suggestion:">Memory domain suggestions</option>
+      </select>
+    </div>
+    <div class="obs-filter obs-filter-grow">
+      <label for="f-q">Search params</label>
+      <input id="f-q" type="search" placeholder="token, table id, correlation…" />
+    </div>
+    <div class="obs-filter-actions">
+      {{ ds.button('Reset', variant='secondary', size='sm',
+                   type='button', id='f-reset') }}
+    </div>
+  </section>
+
+  <!-- AUDIT TABLE ----------------------------------------------------- -->
+  <section class="obs-table-wrap">
+    <table class="obs-table" id="obs-table">
+      <thead>
+        <tr>
+          {# Sort is page-local: server returns rows ordered by timestamp DESC
+             for keyset pagination; clicking another header re-sorts only the
+             rows currently loaded. Adding a `Load all` step would let the
+             user sort across the full result set but isn't wired yet. #}
+          <th data-sort="timestamp" aria-sort="descending"><button type="button">Time <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="user"><button type="button">User <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="source"><button type="button">Source <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="action"><button type="button">Action <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="resource"><button type="button">Resource <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="duration_ms"><button type="button">Duration <span class="obs-sort-arrow"></span></button></th>
+          <th data-sort="result"><button type="button">Result <span class="obs-sort-arrow"></span></button></th>
+        </tr>
+      </thead>
+      <tbody id="obs-rows">
+        <tr><td colspan="7" class="obs-empty">Loading…</td></tr>
+      </tbody>
+    </table>
+    <div class="obs-table-footer">
+      <span id="obs-row-count" class="obs-row-count">—</span>
+      {{ ds.button('Load more', variant='secondary', size='sm',
+                   type='button', id='obs-loadmore', attrs='hidden') }}
+    </div>
+  </section>
+
+</div>
+
+<!-- DETAIL SIDE PANEL --------------------------------------------------- -->
+<aside class="obs-panel" id="obs-panel" hidden aria-label="Event detail">
+  <header class="obs-panel-head">
+    <h2 id="obs-panel-title">Event</h2>
+    {% call ds.button(variant='ghost', size='sm', icon_only=True,
+                      type='button', id='obs-panel-close',
+                      attrs='aria-label="Close"') %}✕{% endcall %}
+  </header>
+  <dl class="obs-panel-meta" id="obs-panel-meta"></dl>
+  <h3>Params</h3>
+  <pre class="obs-panel-pre" id="obs-panel-params">—</pre>
+  <h3 class="obs-panel-result-h">Result</h3>
+  <pre class="obs-panel-pre" id="obs-panel-result">—</pre>
+  <div class="obs-panel-actions">
+    {{ ds.button('Filter to this user', variant='secondary', size='sm',
+                 type='button', id='obs-panel-filter-user') }}
+    {{ ds.button('Filter to this action', variant='secondary', size='sm',
+                 type='button', id='obs-panel-filter-action') }}
+    {{ ds.button('Filter to this resource type', variant='secondary', size='sm',
+                 type='button', id='obs-panel-filter-resource', attrs='hidden') }}
+  </div>
+</aside>
+
+
+
+
+<script>
+(function() {
+  // ---------------------------------------------------------------------
+  // State + URL sync
+  // ---------------------------------------------------------------------
+  const state = readUrl();
+  let nextCursor = null;
+  let livePollId = null;
+
+  function readUrl() {
+    const p = new URLSearchParams(location.search);
+    return {
+      window:        parseInt(p.get('window'),  10) || 1440,
+      user_id:       p.get('user_id') || '',
+      action_prefix: p.get('action_prefix') || '',
+      result:        p.get('result') || '',
+      source:        p.get('source') || '',
+      resource_prefix: p.get('resource_prefix') || '',
+      q:             p.get('q') || '',
+      sort:          p.get('sort') || 'timestamp:desc',
+      live:          p.get('live') === '1',
+    };
+  }
+  function writeUrl() {
+    const p = new URLSearchParams();
+    if (state.window !== 1440) p.set('window', state.window);
+    if (state.user_id) p.set('user_id', state.user_id);
+    if (state.action_prefix) p.set('action_prefix', state.action_prefix);
+    if (state.result) p.set('result', state.result);
+    if (state.source) p.set('source', state.source);
+    if (state.resource_prefix) p.set('resource_prefix', state.resource_prefix);
+    if (state.q) p.set('q', state.q);
+    if (state.sort && state.sort !== 'timestamp:desc') p.set('sort', state.sort);
+    if (state.live) p.set('live', '1');
+    const qs = p.toString();
+    history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+  }
+
+  // ---------------------------------------------------------------------
+  // DOM refs
+  // ---------------------------------------------------------------------
+  const $ = id => document.getElementById(id);
+  const winSel = $('obs-window');
+  const live   = $('obs-live');
+  const fUser  = $('f-user');
+  const fAct   = $('f-action');
+  const fRes   = $('f-result');
+  const fSrc   = $('f-source');
+  const fResource = $('f-resource');
+  const fQ     = $('f-q');
+  const fReset = $('f-reset');
+  const tbody  = $('obs-rows');
+  const more   = $('obs-loadmore');
+  const rowCount = $('obs-row-count');
+  const narrative = $('obs-narrative');
+
+  // Apply state -> controls
+  winSel.value = String(state.window);
+  live.checked = state.live;
+  fRes.value = state.result;
+  fResource.value = state.resource_prefix;
+  fQ.value = state.q;
+
+  // ---------------------------------------------------------------------
+  // Fetch helpers
+  // ---------------------------------------------------------------------
+  async function get(url) {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+    return r.json();
+  }
+
+  function buildTimelineUrl(cursor) {
+    const p = new URLSearchParams();
+    p.set('since_minutes', state.window);
+    if (state.user_id)       p.set('user_id', state.user_id);
+    if (state.action_prefix) p.set('action_prefix', state.action_prefix);
+    if (state.result) {
+      const v = state.result === 'success' ? 'success' : state.result; // server uses LIKE
+      p.set('result_pattern', v);
+    }
+    if (state.resource_prefix) p.set('resource_prefix', state.resource_prefix);
+    if (state.q) p.set('q', state.q);
+    if (cursor) { p.set('cursor_ts', cursor.ts); p.set('cursor_id', cursor.id); }
+    p.set('limit', '50');
+    return '/api/admin/activity?' + p.toString();
+  }
+
+  // ---------------------------------------------------------------------
+  // Facets — populate dropdowns
+  // ---------------------------------------------------------------------
+  async function loadFacets() {
+    const d = await get('/api/admin/observability/facets?since_minutes=' + state.window);
+
+    fillSelect(fUser, d.users || [], state.user_id, u => ({
+      value: u.id, label: (u.label || u.id) + ' (' + u.count + ')',
+    }));
+    fillSelect(fAct, (d.actions || []).map(a => a.value), state.action_prefix, v => ({
+      value: v, label: v + ' (' + (d.actions.find(a => a.value === v) || {}).count + ')',
+    }));
+    fillSelect(fSrc, (d.sources || []).map(s => s.value), state.source, v => ({
+      value: v, label: v + ' (' + (d.sources.find(s => s.value === v) || {}).count + ')',
+    }));
+  }
+  function fillSelect(sel, items, current, mk) {
+    while (sel.options.length > 1) sel.remove(1);
+    items.forEach(it => {
+      const m = typeof it === 'string' ? mk(it) : mk(it);
+      const o = document.createElement('option');
+      o.value = m.value; o.textContent = m.label;
+      sel.appendChild(o);
+    });
+    if (current) sel.value = current;
+  }
+
+  // ---------------------------------------------------------------------
+  // KPIs
+  // ---------------------------------------------------------------------
+  async function loadKpis() {
+    const d = await get('/api/admin/observability/kpis?since_minutes=' + state.window);
+    $('kpi-events').textContent = d.events_total.toLocaleString();
+    $('kpi-users').textContent  = d.active_users.toLocaleString();
+    $('kpi-errors').textContent = (d.error_rate * 100).toFixed(2) + '%';
+    $('kpi-errors-sub').textContent = d.errors.toLocaleString() + ' errors';
+    $('kpi-p95').textContent = d.p95_duration_ms == null ? '—' : d.p95_duration_ms + ' ms';
+    renderNarrative(d);
+  }
+  function renderNarrative(d) {
+    const win = winLabel(state.window);
+    const filterBits = [];
+    if (state.user_id)       filterBits.push('user filter');
+    if (state.action_prefix) filterBits.push('action: ' + escapeHtml(state.action_prefix));
+    if (state.source)        filterBits.push('source: ' + escapeHtml(state.source));
+    if (state.result)        filterBits.push('result: ' + escapeHtml(state.result));
+    if (state.resource_prefix) filterBits.push('resource: ' + escapeHtml(state.resource_prefix.replace(/:$/, '')));
+    if (state.q)             filterBits.push('search: "' + escapeHtml(state.q) + '"');
+    const filtered = filterBits.length ? ' · filters: ' + filterBits.join(', ') : '';
+    if (d.events_total === 0) {
+      narrative.innerHTML = '<b>No activity</b> in ' + win + filtered + '. Lower the time window or reset filters.';
+      return;
+    }
+    narrative.innerHTML =
+      '<b>' + d.events_total.toLocaleString() + '</b> events in ' + win +
+      ' · <b>' + d.active_users + '</b> users' +
+      ' · <b>' + (d.error_rate * 100).toFixed(2) + '%</b> errors' +
+      (d.p95_duration_ms != null ? ' · p95 <b>' + d.p95_duration_ms + ' ms</b>' : '') +
+      filtered + '.';
+  }
+
+  function winLabel(m) {
+    if (m <= 60)     return 'last 1h';
+    if (m <= 360)    return 'last 6h';
+    if (m <= 1440)   return 'last 24h';
+    if (m <= 10080)  return 'last 7d';
+    return 'last 30d';
+  }
+
+  // ---------------------------------------------------------------------
+  // Table
+  // ---------------------------------------------------------------------
+  async function loadTable(append) {
+    if (!append) {
+      tbody.innerHTML = '<tr><td colspan="7" class="obs-empty">Loading…</td></tr>';
+      nextCursor = null;
+    }
+    const d = await get(buildTimelineUrl(append ? nextCursor : null));
+    const rows = d.rows || [];
+
+    // Client-side source classification + sort.
+    rows.forEach(r => { r._source = classifySource(r); });
+
+    // result filter: 'error%' or 'success' — already done server-side via
+    // result_pattern, but 'error%' is a LIKE wildcard; trust the server.
+    // source filter is client-side because the API doesn't know about
+    // our union rule yet.
+    let filtered = rows;
+    if (state.source) filtered = filtered.filter(r => r._source === state.source);
+    if (state.action_prefix && fAct.value && !state.action_prefix.endsWith('%')) {
+      // exact-match dropdown selection: prefer ==
+      filtered = filtered.filter(r => (r.action || '').startsWith(state.action_prefix));
+    }
+
+    // Sort (client side for the current page; server is already DESC by time).
+    // Sort key 'user' / 'source' map to derived display values; the rest read
+    // straight off the row.
+    const [sortKey, sortDir] = (state.sort || 'timestamp:desc').split(':');
+    const keyFor = r => {
+      if (sortKey === 'user')   return (r.user_email || r.user_name || r.user_id || '').toLowerCase();
+      if (sortKey === 'source') return (r._source || '').toLowerCase();
+      const v = r[sortKey];
+      return (typeof v === 'string') ? v.toLowerCase() : v;
+    };
+    filtered.sort((a, b) => {
+      let av = keyFor(a), bv = keyFor(b);
+      if (av == null) av = '';
+      if (bv == null) bv = '';
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ?  1 : -1;
+      return 0;
+    });
+
+    if (!append) tbody.innerHTML = '';
+    if (filtered.length === 0 && !append) {
+      tbody.innerHTML = '<tr><td colspan="7" class="obs-empty">No events match the current filters.</td></tr>';
+      more.hidden = true;
+      rowCount.textContent = '0 rows';
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    filtered.forEach(r => frag.appendChild(renderRow(r)));
+    tbody.appendChild(frag);
+
+    nextCursor = d.next_cursor;
+    more.hidden = !nextCursor;
+    rowCount.textContent = tbody.children.length + ' rows shown' + (nextCursor ? ' (more available)' : '');
+  }
+
+  function classifySource(r) {
+    if (r.client_kind) return r.client_kind;
+    const SCHED = ['run_session_collector','run_verification_detector','run_corporate_memory','marketplace.sync_all'];
+    if (SCHED.indexOf(r.action) !== -1) return 'scheduler';
+    if (!r.user_id) return 'system';
+    return 'other';
+  }
+
+  function renderRow(r) {
+    const tr = document.createElement('tr');
+    tr.dataset.rowJson = JSON.stringify(r);
+
+    const td = (cls, html) => {
+      const t = document.createElement('td');
+      if (cls) t.className = cls;
+      if (html != null) t.innerHTML = html;
+      return t;
+    };
+    tr.appendChild(td('obs-time', escapeHtml(formatTime(r.timestamp))));
+
+    // User cell: prefer "name (id-prefix)" or "email (id-prefix)" when the
+    // server enriched the row from the users table; fall back to a truncated
+    // id when the user has been deleted or the row belongs to a system actor.
+    let userHtml = '—';
+    if (r.user_id) {
+      const idPrefix = r.user_id.slice(0, 8) + '…';
+      const primary = r.user_name || r.user_email;
+      if (primary) {
+        userHtml = '<span class="obs-user-primary">' + escapeHtml(primary)
+                 + '</span> <span class="obs-user-id">(' + escapeHtml(idPrefix) + ')</span>';
+      } else {
+        userHtml = '<code title="' + escapeHtml(r.user_id) + '">' + escapeHtml(idPrefix) + '</code>';
+      }
+    }
+    tr.appendChild(td('', userHtml));
+
+    const src = r._source || 'other';
+    tr.appendChild(td('', '<span class="obs-source-pill is-' + src + '">' + escapeHtml(src) + '</span>'));
+
+    tr.appendChild(td('obs-action-cell', escapeHtml(r.action || '')));
+    tr.appendChild(td('', escapeHtml(r.resource || '—')));
+    tr.appendChild(td('obs-dur-cell', r.duration_ms != null ? escapeHtml(r.duration_ms + ' ms') : '—'));
+
+    const result = r.result || '';
+    let resultHtml = '—';
+    if (result) {
+      const isErr = result.toLowerCase().startsWith('error');
+      resultHtml = '<span class="' + (isErr ? 'obs-result-err' : 'obs-result-ok') + '">' + escapeHtml(result) + '</span>';
+    }
+    tr.appendChild(td('', resultHtml));
+
+    tr.addEventListener('click', () => openPanel(r));
+    return tr;
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
+    // Compact: HH:MM:SS for today, DD.MM HH:MM otherwise.
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return d.toTimeString().slice(0, 8);
+    }
+    return d.toLocaleString(undefined, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+  function truncMiddle(s, n) {
+    if (!s || s.length <= n) return s;
+    const half = Math.floor((n - 1) / 2);
+    return s.slice(0, half) + '…' + s.slice(-half);
+  }
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---------------------------------------------------------------------
+  // Detail panel
+  // ---------------------------------------------------------------------
+  const panel = $('obs-panel');
+  const panelTitle = $('obs-panel-title');
+  const panelMeta  = $('obs-panel-meta');
+  const panelP     = $('obs-panel-params');
+  const panelR     = $('obs-panel-result');
+
+  function openPanel(r) {
+    panelTitle.textContent = r.action || 'event';
+    panelMeta.innerHTML = [
+      meta('When',    formatTime(r.timestamp)),
+      meta('User',    r.user_id || '—'),
+      meta('Source',  r._source || '—'),
+      meta('Resource', r.resource || '—'),
+      meta('Duration', r.duration_ms != null ? r.duration_ms + ' ms' : '—'),
+      meta('Result',   r.result || '—'),
+      r.client_ip       ? meta('Client IP', r.client_ip) : '',
+      r.correlation_id  ? meta('Correlation', r.correlation_id) : '',
+    ].join('');
+    panelP.textContent = prettyJson(r.params);
+    panelR.textContent = prettyJson(r.result_payload || r.params_before || '—');
+    panel.hidden = false;
+
+    $('obs-panel-filter-user').onclick = () => {
+      state.user_id = r.user_id || '';
+      fUser.value = state.user_id;
+      panel.hidden = true; writeUrl(); refreshAll();
+    };
+    $('obs-panel-filter-action').onclick = () => {
+      state.action_prefix = r.action || '';
+      fAct.value = state.action_prefix;
+      panel.hidden = true; writeUrl(); refreshAll();
+    };
+    // "Filter to this resource type": derives the prefix (everything before
+    // the first ":") and only shows when the row's resource has that shape.
+    // Singleton resources like "manifest" or "auth" don't carry a prefix,
+    // so the button stays hidden — pivoting on them isn't useful.
+    const resourceBtn = $('obs-panel-filter-resource');
+    const colonIdx = (r.resource || '').indexOf(':');
+    if (colonIdx > 0) {
+      const prefix = r.resource.slice(0, colonIdx + 1);
+      const opt = fResource.querySelector('option[value="' + prefix + '"]');
+      if (opt) {
+        resourceBtn.hidden = false;
+        resourceBtn.onclick = () => {
+          state.resource_prefix = prefix;
+          fResource.value = prefix;
+          panel.hidden = true; writeUrl(); refreshAll();
+        };
+      } else {
+        resourceBtn.hidden = true;
+      }
+    } else {
+      resourceBtn.hidden = true;
+    }
+
+    document.querySelectorAll('.obs-table tbody tr.is-selected').forEach(t => t.classList.remove('is-selected'));
+    event.currentTarget.classList.add('is-selected');
+  }
+  function meta(label, value) {
+    return '<dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(value || '—') + '</dd>';
+  }
+  function prettyJson(v) {
+    if (v == null) return '—';
+    if (typeof v === 'string') {
+      try { return JSON.stringify(JSON.parse(v), null, 2); } catch (_) { return v; }
+    }
+    try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); }
+  }
+  $('obs-panel-close').addEventListener('click', () => panel.hidden = true);
+
+  // Saved-views UI was removed on user feedback (the modal pop-open on load
+  // bug was the trigger; the underlying value-add wasn't there). The
+  // /api/admin/observability/views CRUD + DuckDB table remain in case we
+  // bring it back behind an opt-in toggle. See PR thread.
+
+  // ---------------------------------------------------------------------
+  // KPI quick-filter buttons
+  // ---------------------------------------------------------------------
+  document.querySelectorAll('.obs-kpi').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.filter;
+      if (k === 'errors') {
+        state.result = 'error%'; fRes.value = 'error%';
+      } else if (k === 'users') {
+        fUser.focus();
+        return;
+      } else if (k === 'slow') {
+        state.sort = 'duration_ms:desc';
+        updateSortIndicators();
+      } else if (k === '') {
+        Object.assign(state, { user_id:'', action_prefix:'', result:'', source:'', resource_prefix:'', q:'' });
+        fUser.value=''; fAct.value=''; fRes.value=''; fSrc.value=''; fResource.value=''; fQ.value='';
+      }
+      writeUrl(); refreshAll();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Sort
+  // ---------------------------------------------------------------------
+  document.querySelectorAll('.obs-table thead th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const [curKey, curDir] = (state.sort || 'timestamp:desc').split(':');
+      const newDir = (curKey === key && curDir === 'desc') ? 'asc' : 'desc';
+      state.sort = key + ':' + newDir;
+      updateSortIndicators();
+      writeUrl();
+      loadTable(false);
+    });
+  });
+  function updateSortIndicators() {
+    const [k, dir] = (state.sort || 'timestamp:desc').split(':');
+    document.querySelectorAll('.obs-table thead th[data-sort]').forEach(th => {
+      const isActive = th.dataset.sort === k;
+      th.setAttribute('aria-sort', isActive ? (dir === 'asc' ? 'ascending' : 'descending') : 'none');
+    });
+  }
+  updateSortIndicators();
+
+  // ---------------------------------------------------------------------
+  // Wiring
+  // ---------------------------------------------------------------------
+  winSel.addEventListener('change', () => {
+    state.window = parseInt(winSel.value, 10);
+    writeUrl(); refreshAll();
+  });
+  fUser.addEventListener('change', () => { state.user_id = fUser.value; writeUrl(); refreshOnFilter(); });
+  fAct.addEventListener('change',  () => { state.action_prefix = fAct.value; writeUrl(); refreshOnFilter(); });
+  fRes.addEventListener('change',  () => { state.result = fRes.value; writeUrl(); refreshOnFilter(); });
+  fSrc.addEventListener('change',  () => { state.source = fSrc.value; writeUrl(); refreshOnFilter(); });
+  fResource.addEventListener('change', () => { state.resource_prefix = fResource.value; writeUrl(); refreshOnFilter(); });
+  let qDebounce;
+  fQ.addEventListener('input', () => {
+    clearTimeout(qDebounce);
+    qDebounce = setTimeout(() => { state.q = fQ.value; writeUrl(); refreshOnFilter(); }, 250);
+  });
+  fReset.addEventListener('click', () => {
+    Object.assign(state, { user_id:'', action_prefix:'', result:'', source:'', q:'' });
+    fUser.value=''; fAct.value=''; fRes.value=''; fSrc.value=''; fQ.value='';
+    writeUrl(); refreshAll();
+  });
+  more.addEventListener('click', () => loadTable(true));
+
+  live.addEventListener('change', () => {
+    state.live = live.checked; writeUrl();
+    if (state.live) { livePollId = setInterval(refreshLight, 30000); }
+    else { clearInterval(livePollId); livePollId = null; }
+  });
+
+  function refreshLight() {
+    // Only KPIs + table. Facets don't change every 30s usefully.
+    loadKpis().catch(()=>{});
+    loadTable(false).catch(()=>{});
+  }
+  function refreshOnFilter() {
+    loadKpis().catch(()=>{});
+    loadTable(false).catch(()=>{});
+  }
+  function refreshAll() {
+    loadKpis().catch(()=>{});
+    loadFacets().catch(()=>{});
+    loadTable(false).catch(()=>{});
+  }
+
+  // boot
+  refreshAll();
+  if (state.live) { livePollId = setInterval(refreshLight, 30000); }
+})();
+</script>
+{% endblock %}

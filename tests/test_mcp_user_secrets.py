@@ -1,0 +1,297 @@
+"""Tests for the per-user MCP secrets surface (RFC #461 §4 phase B).
+
+Cover:
+
+* ``PerUserSecretsRepository`` round-trip + key isolation.
+* The user-facing PUT / DELETE / GET ``/api/mcp/sources/{id}/my-secret``.
+* ``_lookup_secret_for_source`` precedence — per-user vault wins over
+  shared vault when scope='per_user' AND caller_user_id matches; falls
+  back to shared when the analyst has no row, regardless of scope.
+"""
+
+from __future__ import annotations
+
+import duckdb
+import pytest
+from cryptography.fernet import Fernet
+
+pytest.importorskip("mcp", reason="mcp SDK not installed")
+
+from app.secrets_vault import (
+    PerUserSecretsRepository,
+    _reset_ephemeral_key_for_tests,
+)
+from src.db import get_system_db
+from src.repositories.mcp_sources import MCPSourceRepository
+
+
+@pytest.fixture(autouse=True)
+def _stable_vault_key(monkeypatch):
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    _reset_ephemeral_key_for_tests()
+    yield
+    _reset_ephemeral_key_for_tests()
+
+
+def _per_user_conn():
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        """CREATE TABLE mcp_user_secrets (
+              source_id        VARCHAR NOT NULL,
+              user_id          VARCHAR NOT NULL,
+              secret_value_enc BLOB NOT NULL,
+              created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+              updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+              PRIMARY KEY (source_id, user_id)
+           )"""
+    )
+    return conn
+
+
+# ── PerUserSecretsRepository ───────────────────────────────────────────────
+
+
+def test_repo_upsert_get_round_trip():
+    conn = _per_user_conn()
+    repo = PerUserSecretsRepository(conn)
+    repo.upsert("src_n", "user_a", "alice-token")
+    assert repo.has("src_n", "user_a")
+    assert repo.get("src_n", "user_a") == "alice-token"
+
+
+def test_repo_isolates_users():
+    conn = _per_user_conn()
+    repo = PerUserSecretsRepository(conn)
+    repo.upsert("src_n", "user_a", "alice")
+    repo.upsert("src_n", "user_b", "bob")
+    assert repo.get("src_n", "user_a") == "alice"
+    assert repo.get("src_n", "user_b") == "bob"
+    repo.delete("src_n", "user_a")
+    assert repo.get("src_n", "user_a") is None
+    # user_b row survives
+    assert repo.get("src_n", "user_b") == "bob"
+
+
+def test_repo_list_for_source_returns_user_ids_only():
+    conn = _per_user_conn()
+    repo = PerUserSecretsRepository(conn)
+    repo.upsert("src_n", "user_a", "alice")
+    repo.upsert("src_n", "user_b", "bob")
+    repo.upsert("src_other", "user_a", "x")
+    user_ids = repo.list_for_source("src_n")
+    assert set(user_ids) == {"user_a", "user_b"}
+
+
+# ── REST: PUT / GET / DELETE /my-secret ───────────────────────────────────
+
+
+def _seed_per_user_source(
+    scope: str = "per_user", source_id: str = "src_pu", grant_to: str = "analyst1"
+) -> None:
+    """Seed the source plus one passthrough tool granted to ``grant_to`` — the
+    my-secret endpoints require a grant on the source, so tests acting as a
+    non-admin must be entitled to it."""
+    from src.repositories.tool_registry import PASSTHROUGH, ToolRegistryRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id=source_id,
+        name=f"pu-up-{source_id}",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="bearer",
+        scope=scope,
+    )
+    tools = ToolRegistryRepository(conn)
+    tools.upsert(
+        tool_id=f"{source_id}.lookup",
+        source_id=source_id,
+        original_name="lookup",
+        exposed_name="lookup",
+        mode=PASSTHROUGH,
+        description="grant target",
+    )
+    grp = UserGroupsRepository(conn).create(name=f"grant-{source_id}", description=None)
+    tools.add_grant(f"{source_id}.lookup", grp["id"])
+    UserGroupMembersRepository(conn).add_member(grant_to, grp["id"], source="system_seed")
+    conn.close()
+
+
+def test_my_secret_put_then_status_returns_yes(seeded_app):
+    _seed_per_user_source()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "my-personal-token"},
+    )
+    assert r.status_code == 204
+    r2 = client.get(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["has_secret"] is True
+    assert body["source_scope"] == "per_user"
+
+
+def test_my_secret_returns_409_without_vault_key(seeded_app, monkeypatch):
+    _seed_per_user_source()
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    _reset_ephemeral_key_for_tests()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "x"},
+    )
+    assert r.status_code == 409
+    assert "vault_key_not_configured" in r.json()["detail"]
+
+
+def test_my_secret_requires_grant(seeded_app):
+    """A caller with no grant on the source gets 403 on GET/PUT/DELETE — can't
+    probe or manage a credential for a source they aren't entitled to."""
+    # Unique source id so no sibling test's grant leaks into the shared DB.
+    _seed_per_user_source(source_id="src_nogrant", grant_to="nobody")
+    client = seeded_app["client"]
+    hdr = {"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    assert client.get("/api/mcp/sources/src_nogrant/my-secret", headers=hdr).status_code == 403
+    assert client.put("/api/mcp/sources/src_nogrant/my-secret", headers=hdr, json={"value": "x"}).status_code == 403
+    assert client.delete("/api/mcp/sources/src_nogrant/my-secret", headers=hdr).status_code == 403
+
+
+def test_my_secret_admin_bypasses_grant(seeded_app):
+    """Admin short-circuits the grant check (can manage any source's secret)."""
+    _seed_per_user_source(source_id="src_adminbypass", grant_to="nobody")
+    client = seeded_app["client"]
+    r = client.get(
+        "/api/mcp/sources/src_adminbypass/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_my_secret_404_for_unknown_source(seeded_app):
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/mcp/sources/src_nope/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "x"},
+    )
+    assert r.status_code == 404
+
+
+def test_my_secret_isolates_per_user(seeded_app):
+    """Admin's PUT shouldn't be visible to analyst's GET (different user_id)."""
+    _seed_per_user_source()
+    client = seeded_app["client"]
+    client.put(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "admin-token"},
+    )
+    r = client.get(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.json()["has_secret"] is False
+
+
+def test_my_secret_delete_clears(seeded_app):
+    _seed_per_user_source()
+    client = seeded_app["client"]
+    client.put(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "x"},
+    )
+    r = client.delete(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 204
+    r2 = client.get(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r2.json()["has_secret"] is False
+
+
+# ── client._lookup_secret_for_source precedence ────────────────────────────
+
+
+def test_lookup_per_user_wins_over_shared_when_scope_per_user(seeded_app):
+    """With scope='per_user' and a per-user vault row, the per-user value
+    wins over both shared vault and env-var."""
+    from connectors.mcp.client import _lookup_secret_for_source
+
+    _seed_per_user_source()
+    client = seeded_app["client"]
+    # Seed shared
+    client.put(
+        "/api/admin/mcp-sources/src_pu/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "shared-fallback"},
+    )
+    # Seed per-user for analyst
+    client.put(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "analyst-own"},
+    )
+    src = {"id": "src_pu", "scope": "per_user"}
+    assert _lookup_secret_for_source(src, caller_user_id="analyst1") == "analyst-own"
+    # Fail-closed: an identified caller with no per-user row must NOT borrow
+    # the shared credential on a per_user source.
+    assert _lookup_secret_for_source(src, caller_user_id="admin1") is None
+
+
+def test_lookup_falls_back_to_shared_when_scope_shared(seeded_app):
+    _seed_per_user_source(scope="shared")
+    client = seeded_app["client"]
+    client.put(
+        "/api/admin/mcp-sources/src_pu/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "shared-only"},
+    )
+    # Even with caller_user_id, scope=shared bypasses per-user lookup.
+    from connectors.mcp.client import _lookup_secret_for_source
+
+    src = {"id": "src_pu", "scope": "shared"}
+    assert _lookup_secret_for_source(src, caller_user_id="analyst1") == "shared-only"
+
+
+def test_lookup_per_user_no_row_does_not_leak_shared(seeded_app):
+    """per_user source + identified caller + no per-user row → None, even when
+    a shared vault row exists. The shared credential is not borrowed."""
+    from connectors.mcp.client import _lookup_secret_for_source
+
+    _seed_per_user_source()
+    client = seeded_app["client"]
+    client.put(
+        "/api/admin/mcp-sources/src_pu/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "shared-fallback"},
+    )
+    src = {"id": "src_pu", "scope": "per_user"}
+    assert _lookup_secret_for_source(src, caller_user_id="nobody") is None
+
+
+def test_lookup_per_user_materialize_uses_shared(seeded_app):
+    """per_user source + no caller (materialize job) → shared fallback stays."""
+    from connectors.mcp.client import _lookup_secret_for_source
+
+    _seed_per_user_source()
+    client = seeded_app["client"]
+    client.put(
+        "/api/admin/mcp-sources/src_pu/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "shared-fallback"},
+    )
+    src = {"id": "src_pu", "scope": "per_user"}
+    assert _lookup_secret_for_source(src, caller_user_id=None) == "shared-fallback"

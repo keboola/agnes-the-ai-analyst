@@ -1,0 +1,14 @@
+-- Wave-2G Task 5 (m-tier smoke harness): a dedicated database for the
+-- DuckLake Postgres catalog, separate from the `agnes` app-state database
+-- docker-compose.postgres.yml already creates via POSTGRES_DB. Kept
+-- separate so DuckLake's own `ducklake_*` catalog metadata tables (created
+-- directly in the target database's `public` schema — verified against
+-- DuckDB 1.5.2, see tests/db_pg/test_ducklake_pg_catalog.py) never collide
+-- with the app-state schema Alembic manages in `agnes`.
+--
+-- Mounted into the `postgres` service's /docker-entrypoint-initdb.d/ (see
+-- docker-compose.mtier.yml) — the official postgres image runs every
+-- *.sql/*.sh file there exactly once, only on a brand-new (empty) data
+-- directory. No IF NOT EXISTS guard needed: this only ever runs against a
+-- fresh volume, and plain CREATE DATABASE has no such clause in Postgres.
+CREATE DATABASE agnes_ducklake;

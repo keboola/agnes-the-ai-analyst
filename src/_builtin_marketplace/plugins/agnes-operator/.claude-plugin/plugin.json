@@ -1,0 +1,5 @@
+{
+  "name": "agnes-operator",
+  "description": "Operator guide for configuring this Agnes instance — the init prompt + analyst workspace (Initial Workspace Template), branding / instance.yaml (env > yaml > default resolution and its footgun), and connectors. Reads the live config surface so guidance names this deployment's real pointers instead of hardcoding them.",
+  "version": "1.0.0"
+}

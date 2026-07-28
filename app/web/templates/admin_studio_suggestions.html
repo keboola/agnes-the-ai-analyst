@@ -1,0 +1,62 @@
+{% extends "base_ds.html" %}
+
+{% block title %}Studio Suggestions — Agnes{% endblock %}
+
+{% block head_extra %}
+<style>
+  .sug-toolbar { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); }
+  .sug-tab {
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-full);
+    background: var(--ds-surface);
+    color: var(--ds-text-secondary);
+    cursor: pointer;
+    font-size: var(--text-sm);
+  }
+  .sug-tab[aria-selected="true"] { background: var(--ds-primary); color: #fff; border-color: var(--ds-primary); }
+  .sug-list { display: flex; flex-direction: column; gap: var(--space-3); }
+  .sug-card {
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    background: var(--ds-surface);
+    padding: var(--space-4);
+  }
+  .sug-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
+  .sug-domain {
+    font-size: var(--text-xs); font-weight: var(--font-semibold);
+    background: var(--ds-surface-dim); color: var(--ds-text-secondary);
+    padding: 2px 8px; border-radius: var(--radius-full);
+  }
+  .sug-meta { color: var(--ds-text-muted); font-size: var(--text-xs); margin-left: auto; }
+  .sug-payload {
+    background: var(--ds-bg); border: 1px solid var(--ds-border-light);
+    border-radius: var(--radius-md); padding: var(--space-2) var(--space-3);
+    font-family: var(--ds-font-mono); font-size: var(--text-xs);
+    color: var(--ds-text-secondary); white-space: pre-wrap; margin: var(--space-2) 0;
+  }
+  .sug-actions { display: flex; gap: var(--space-2); }
+  .sug-status { font-size: var(--text-xs); font-weight: var(--font-semibold); }
+  .sug-empty { color: var(--ds-text-muted); padding: var(--space-6); text-align: center; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <h1>Studio Suggestions</h1>
+  <p class="sug-sub" style="color: var(--ds-text-secondary);">Proposals submitted by non-admins from the authoring studio. Approve or reject each.</p>
+
+  <div class="sug-toolbar" role="tablist" aria-label="Filter by status">
+    <button class="sug-tab" role="tab" data-status="pending" aria-selected="true">Pending</button>
+    <button class="sug-tab" role="tab" data-status="approved" aria-selected="false">Approved</button>
+    <button class="sug-tab" role="tab" data-status="rejected" aria-selected="false">Rejected</button>
+    <button class="btn btn-secondary" id="sug-run-mining" type="button" style="margin-left: auto;">Run memory mining</button>
+  </div>
+
+  <div class="sug-list" id="sug-list" aria-live="polite"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="/static/js/studio_suggestions.js"></script>
+{% endblock %}

@@ -1,0 +1,479 @@
+{% extends "base_ds.html" %}
+
+{% block title %}Dashboard - {{ config.INSTANCE_NAME or 'Data Analyst Portal' }}{% endblock %}
+
+{% block head_extra %}
+{% if not config.THEME_FONT_URL %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+{% endif %}
+<link rel="stylesheet" href="{{ static_url('css/dashboard.css') }}">
+{% endblock %}
+
+{% block layout %}
+<div class="dashboard-mock">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-messages">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">
+            {{ message }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    {% if user_info.exists %}
+    {# ── EXISTING USER ── #}
+
+    <main class="main">
+
+        {% if not account_details or not account_details.last_sync_display %}
+        <!-- ═══════════════ ENVIRONMENT SETUP CTA ═══════════════ -->
+        <div class="env-setup-cta">
+            <h3>Set up a new Claude Code</h3>
+            <p class="env-subtitle">Generates a personal access token and copies a ready-to-paste setup script to your clipboard. Paste into Claude Code to finish.</p>
+            <div class="env-setup-row">
+                <button type="button" onclick="setupNewClaude(this)" class="btn-setup" id="setupClaudeBtn">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    Copy install script to clipboard
+                </button>
+                <span class="env-meta">
+                    <span class="env-hint">Valid 90 days · token stays in clipboard only</span>
+                    <a href="/setup" class="env-setup-link">Open the full setup page →</a>
+                </span>
+            </div>
+            <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
+        </div>
+        {% endif %}
+
+        {# ── #392: live sync-status indicator ──
+           Initial state is server-rendered from `data_stats.last_updated`
+           (the MAX `last_sync` across all sync_states, computed by the
+           dashboard route). On page load the JS at the bottom of this
+           template polls `GET /api/sync/status` every 30s; when
+           `locked=true` the dot pulses and the text flips to "Sync
+           running…". The endpoint returns just `{locked: bool}` (it's
+           public/no-auth, designed for the host-side auto-upgrade cron),
+           so pass/fail / last-run timestamp aren't fetched live — a
+           future endpoint extension could enable that. #}
+        <div class="sync-status" id="syncStatus"
+             data-last-sync="{{ data_stats.last_updated or '' }}">
+            <span class="sync-status__dot" aria-hidden="true"></span>
+            <span class="sync-status__text">
+                {% if data_stats.last_updated %}
+                Last sync: {{ data_stats.last_updated }}
+                {% else %}
+                No sync recorded yet
+                {% endif %}
+            </span>
+        </div>
+
+        <!-- ═══════════════ STATS ROW ═══════════════ -->
+        <div class="stats-row">
+            <div class="stat-card">
+                <span class="stat-label">Tables</span>
+                <span class="stat-value">{{ data_stats.tables }}</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Columns</span>
+                <span class="stat-value">{{ data_stats.columns }}</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Rows</span>
+                <span class="stat-value">{{ data_stats.rows_display }}</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Data Size</span>
+                <span class="stat-value">{{ data_stats.size_display }}</span>
+            </div>
+        </div>
+
+        <!-- Credit line -->
+        <div class="credit-line">
+            {{ config.INSTANCE_NAME }}
+        </div>
+
+        <!-- ═══════════════ DASHBOARD GRID ═══════════════ -->
+        <div class="dashboard-grid">
+
+            <!-- ── Left Column ── -->
+            <div class="left-column">
+
+                <div class="bottom-row">
+
+                    <!-- Notifications Card -->
+                    <div class="card">
+                        <div class="card-header" style="padding-bottom: 0;">
+                            <span class="card-title">Notifications</span>
+                            <a class="link-manage" onclick="toggleNotifManage(this)">Manage</a>
+                        </div>
+                        <div class="card-body">
+                            <div class="notif-channels">
+                                <div class="notif-channel">
+                                    <div class="notif-channel-icon telegram">
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M22 2L11 13"/>
+                                            <path d="M22 2L15 22L11 13L2 9L22 2Z"/>
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <div class="notif-channel-name">Telegram</div>
+                                        {% if not telegram_status.linked %}
+                                        <span class="notif-status notif-status--inactive">Not linked</span>
+                                        {% endif %}
+                                    </div>
+                                    {% if telegram_status.linked %}
+                                    <span class="notif-badge active">Active</span>
+                                    <button class="notif-unlink" onclick="unlinkChannel('telegram')">Unlink</button>
+                                    {% else %}
+                                    <button class="notif-link" onclick="showTelegramVerify()">Link</button>
+                                    {% endif %}
+                                </div>
+                                <div class="notif-channel">
+                                    <div class="notif-channel-icon desktop">
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                                            <line x1="8" y1="21" x2="16" y2="21"/>
+                                            <line x1="12" y1="17" x2="12" y2="21"/>
+                                        </svg>
+                                    </div>
+                                    <div style="min-width: 0;">
+                                        <div class="notif-channel-name">macOS App</div>
+                                        <span class="beta-badge" style="margin-left: 0;">private beta</span>
+                                        {% if not desktop_status.linked %}
+                                        <span class="notif-status notif-status--inactive">Not linked</span>
+                                        {% endif %}
+                                    </div>
+                                    {% if desktop_status.linked %}
+                                    <span class="notif-badge active">Active</span>
+                                    <button class="notif-unlink" onclick="unlinkChannel('desktop')">Unlink</button>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div id="telegramVerify" class="telegram-verify">
+                                <ol>
+                                    <li>Message <code>/start</code> to <strong>@{{ config.TELEGRAM_BOT_USERNAME or 'your-bot' }}</strong> on Telegram</li>
+                                    <li>Enter the verification code below</li>
+                                </ol>
+                                <div class="telegram-verify-row">
+                                    <input type="text" id="verifyCode" placeholder="6-digit code" maxlength="6">
+                                    <button onclick="verifyTelegram()" id="verifyBtn">Verify</button>
+                                </div>
+                                <div id="telegramError" class="telegram-verify-error"></div>
+                            </div>
+                        </div>
+                    </div>
+
+
+                </div><!-- /bottom-row -->
+            </div><!-- /left-column -->
+
+        </div><!-- /dashboard-grid -->
+
+        {% if account_details and account_details.last_sync_display %}
+        <div class="setup-link-banner">
+            Need to set up another machine? <a href="/setup">Open the setup page →</a>
+        </div>
+        {% endif %}
+
+    </main>
+
+    {% else %}
+    {# ── NEW USER ── #}
+
+    <main class="main">
+        <div class="new-user-grid">
+            {% if not username_available %}
+            <div class="alert-v2 alert-error-v2" style="margin-bottom: 16px;">
+                <span class="alert-icon">!</span>
+                <div>
+                    <h4>Username Not Available</h4>
+                    <p>{{ username_error }}</p>
+                    <p>Your email generates username <code>{{ username }}</code>, which cannot be used. Contact an administrator.</p>
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="card setup-card">
+                <div class="setup-header">
+                    <h3>Get Started</h3>
+                    <span class="setup-subtitle">Set up your workspace in 4 steps</span>
+                </div>
+
+                {# ── Steps 1-3: Terminal commands ── #}
+                <div class="onboard-section">
+                    <div class="onboard-label">
+                        <span class="step-num">1</span>
+                        <strong>Create folder</strong>
+                        <span class="step-num" style="margin-left: 12px;">2</span>
+                        <strong>Generate SSH key</strong>
+                        <span class="step-num" style="margin-left: 12px;">3</span>
+                        <strong>Copy public key</strong>
+                        <span class="step-hint">Run these in your terminal</span>
+                    </div>
+                    <div class="terminal-block">
+                        <div class="terminal-bar">
+                            <span class="terminal-dot r"></span>
+                            <span class="terminal-dot y"></span>
+                            <span class="terminal-dot g"></span>
+                        </div>
+                        <div class="terminal-lines">
+                            <div class="terminal-line">
+                                <span class="prompt">$</span>
+                                <span class="cmd">mkdir -p {{ project_dir }} && cd {{ project_dir }}</span>
+                                <button onclick="copyTermLine(this, 'mkdir -p {{ project_dir }} && cd {{ project_dir }}')" class="btn-copy-term">copy</button>
+                            </div>
+                            <div class="terminal-line">
+                                <span class="prompt">$</span>
+                                <span class="cmd">ssh-keygen -t ed25519 -f {{ ssh_key }} -N ''</span>
+                                <button onclick="copyTermLine(this, &quot;ssh-keygen -t ed25519 -f {{ ssh_key }} -N ''&quot;)" class="btn-copy-term">copy</button>
+                            </div>
+                            <div class="terminal-line">
+                                <span class="prompt">$</span>
+                                <span class="cmd">cat {{ ssh_key }}.pub</span>
+                                <button onclick="copyTermLine(this, 'cat {{ ssh_key }}.pub')" class="btn-copy-term">copy</button>
+                            </div>
+                            <div class="terminal-line">
+                                <span class="comment"># Copy the output above and paste it below</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {# ── Step 4: Register ── #}
+                {% if username_available %}
+                <div class="onboard-section">
+                    <div class="onboard-label">
+                        <span class="step-num">4</span>
+                        <strong>Create your account</strong>
+                        <span class="step-hint">
+                            Username: <span class="username-tag" style="font-family: var(--font-mono); font-weight: 600; color: var(--ds-primary);">{{ username }}</span>
+                        </span>
+                    </div>
+                    <div class="reg-inline">
+                        <form action="{{ url_for('register') }}" method="post">
+                            <div class="reg-row">
+                                <div class="reg-field">
+                                    <label for="ssh_key">Paste your SSH public key</label>
+                                    <textarea name="ssh_key" id="ssh_key" rows="1"
+                                        placeholder="ssh-ed25519 AAAA... or ssh-rsa AAAA..." required></textarea>
+                                </div>
+                                <button type="submit" class="btn btn-primary">Create Account</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                {% endif %}
+
+                {# Step 5 (Claude Code setup) appears on dashboard after account creation #}
+            </div>
+        </div>
+
+        <div class="support-banner" style="margin-top: 16px;">
+            {{ config.INSTANCE_NAME }} - need help? Contact your platform team.
+        </div>
+    </main>
+    {% endif %}
+
+    <footer class="footer">
+        <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
+        </footer>
+    {# Setup-CTA JS (copyToClipboard, defaultTokenName, showSetupFallback,
+       setupNewClaude) + the SETUP_INSTRUCTIONS_TEMPLATE renderer all live
+       in the shared partial below. Both /dashboard and /home include it
+       so the clipboard payload, error handling, and fallback modal stay
+       in lockstep. The partial exposes copyToClipboard on window so the
+       copyCode / copyTermLine helpers below resolve it via global scope. #}
+    {% include "_claude_setup_cta.jinja" %}
+
+    <script>
+    function copyCode(button, text) {
+        var originalHTML = button.innerHTML;
+        copyToClipboard(text).then(function() {
+            button.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+            button.classList.add('copied');
+            setTimeout(function() {
+                button.innerHTML = originalHTML;
+                button.classList.remove('copied');
+            }, 2000);
+        });
+    }
+
+    function copyTermLine(button, text) {
+        copyToClipboard(text).then(function() {
+            button.textContent = 'done';
+            button.classList.add('copied');
+            setTimeout(function() {
+                button.textContent = 'copy';
+                button.classList.remove('copied');
+            }, 2000);
+        });
+    }
+
+    async function updateSyncSettings() {
+        const jiraToggle = document.getElementById('toggle-jira');
+        const attachmentsToggle = document.getElementById('toggle-jira_attachments');
+
+        // Handle dependency: jira_attachments requires jira
+        if (!jiraToggle.checked) {
+            attachmentsToggle.checked = false;
+            attachmentsToggle.disabled = true;
+        } else {
+            attachmentsToggle.disabled = false;
+        }
+
+        const datasets = {
+            jira: jiraToggle.checked,
+            jira_attachments: attachmentsToggle.checked
+        };
+
+        try {
+            const resp = await fetch('/api/sync-settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({datasets: datasets})
+            });
+            if (resp.ok) {
+                // Reload to reflect real-time section change
+                location.reload();
+            }
+        } catch (e) {
+            console.error('Failed to update settings:', e);
+        }
+    }
+
+    // Load Corporate Memory stats
+    async function loadMemoryStats() {
+        try {
+            const resp = await fetch('/api/memory/stats');
+            if (resp.ok) {
+                const data = await resp.json();
+                document.getElementById('memoryKnowledgeCount').textContent = data.total || 0;
+                const approved = (data.by_status && data.by_status.approved) || 0;
+                const mandatory = (data.by_status && data.by_status.mandatory) || 0;
+                document.getElementById('memoryContributors').textContent = approved + mandatory;
+                document.getElementById('memoryYourRules').textContent = mandatory || 0;
+            }
+        } catch (e) {
+            // Silently fail - widget will show defaults
+            console.log('Could not load memory stats:', e);
+        }
+    }
+
+    // Load memory stats on page load. Memory is admin-only, so non-admin
+    // visitors never see the widget — skip the fetch to avoid pointless
+    // 401s in their console.
+    {% if user_info.exists and session.user.is_admin %}
+    document.addEventListener('DOMContentLoaded', loadMemoryStats);
+    {% endif %}
+
+    // Notification management
+    function toggleNotifManage(link) {
+        const channels = link.closest('.card').querySelector('.notif-channels');
+        const managing = channels.classList.toggle('notif-managing');
+        link.textContent = managing ? 'Done' : 'Manage';
+        link.classList.toggle('active', managing);
+        // Hide verify panel when exiting manage mode
+        if (!managing) {
+            document.getElementById('telegramVerify').classList.remove('visible');
+        }
+    }
+
+    function showTelegramVerify() {
+        document.getElementById('telegramVerify').classList.toggle('visible');
+    }
+
+    async function verifyTelegram() {
+        const code = document.getElementById('verifyCode').value.trim();
+        const errorEl = document.getElementById('telegramError');
+        const btn = document.getElementById('verifyBtn');
+        errorEl.style.display = 'none';
+
+        if (!code || code.length !== 6) {
+            errorEl.textContent = 'Please enter a 6-digit code.';
+            errorEl.style.display = 'block';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Verifying...';
+
+        try {
+            const resp = await fetch('/api/telegram/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({code: code})
+            });
+            const data = await resp.json();
+
+            if (resp.ok) {
+                location.reload();
+            } else {
+                errorEl.textContent = data.error || 'Verification failed.';
+                errorEl.style.display = 'block';
+            }
+        } catch (e) {
+            errorEl.textContent = 'Network error. Please try again.';
+            errorEl.style.display = 'block';
+        }
+
+        btn.disabled = false;
+        btn.textContent = 'Verify';
+    }
+
+    async function unlinkChannel(channel) {
+        const label = channel === 'telegram' ? 'Telegram' : 'macOS App';
+        if (!(await confirmModal(`Unlink ${label}? You will stop receiving notifications.`))) return;
+        try {
+            const resp = await fetch(`/api/${channel}/unlink`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            if (resp.ok) {
+                location.reload();
+            } else {
+                const data = await resp.json();
+                await alertModal(data.error || 'Failed to unlink.');
+            }
+        } catch (e) {
+            console.error('Unlink failed:', e);
+            await alertModal('Failed to unlink. Please try again.');
+        }
+    }
+
+    // ── #392: poll /api/sync/status every 30s to drive the .sync-status pill.
+    //   The endpoint is intentionally tiny — `{locked: bool}` only — so this
+    //   shows the LIVE running indicator, while the static text reflects the
+    //   server-rendered `data_stats.last_updated` from page load. Errors are
+    //   swallowed so a brief network blip doesn't clutter the console.
+    (function setupSyncStatusPoll() {
+        const el = document.getElementById('syncStatus');
+        if (!el) return;
+        const textEl = el.querySelector('.sync-status__text');
+        const lastSyncText = el.dataset.lastSync
+            ? `Last sync: ${el.dataset.lastSync}`
+            : 'No sync recorded yet';
+        async function poll() {
+            try {
+                const res = await fetch('/api/sync/status', { credentials: 'same-origin' });
+                if (!res.ok) return;
+                const { locked } = await res.json();
+                el.classList.toggle('is-running', !!locked);
+                if (textEl) {
+                    textEl.textContent = locked ? 'Sync running…' : lastSyncText;
+                }
+            } catch (_e) { /* network blip — try again next tick */ }
+        }
+        // Poll once now, then every 30s.
+        poll();
+        setInterval(poll, 30000);
+    })();
+    </script>
+</div>{# /.dashboard-mock #}
+{% endblock %}

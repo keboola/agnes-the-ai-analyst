@@ -1,0 +1,17 @@
+# Dockerfile.demo — Agnes image variant with a baked demo dataset.
+# Build:  docker build -f Dockerfile.demo --build-arg BASE=ghcr.io/keboola/agnes-the-ai-analyst:stable -t agnes-demo:local .
+ARG BASE=agnes:latest
+FROM ${BASE}
+
+# Generate the demo extract at build time. The script's __main__ writes to
+# DEMO_EXTRACT_DIR (default /data/extracts/demo); set it explicitly so the
+# path is unambiguous regardless of the base image's defaults.
+# The app default DATA_DIR is ./data (relative to WORKDIR /app); the demo
+# extract is baked at the ABSOLUTE /data, so pin DATA_DIR=/data or the boot
+# rebuild reads the wrong (empty) dir and the demo tables never appear.
+ENV DATA_DIR=/data
+ENV DEMO_EXTRACT_DIR=/data/extracts/demo
+RUN python scripts/build_demo_extract.py
+
+# A baked-data instance has no scheduler — build views at boot.
+ENV AGNES_REBUILD_ON_BOOT=1

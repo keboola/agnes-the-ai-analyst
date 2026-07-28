@@ -1,0 +1,48 @@
+name: feature_adoption
+display_name: Feature Adoption Rate
+category: product_usage
+type: ratio
+unit: percentage
+grain: monthly
+table: user_events
+expression: "COUNT(DISTINCT feature_users) / COUNT(DISTINCT total_users) * 100"
+time_column: event_date
+description: "Feature Adoption Rate — the percentage of active users who used a specific feature in a given month."
+dimensions:
+  - feature
+  - plan_type
+synonyms:
+  - feature_usage_rate
+  - adoption_rate
+notes:
+  - "Denominator is all MAU for the period, numerator is MAU who triggered the feature event"
+  - "Track each feature separately by filtering on feature_name or event_type"
+  - "Adoption >20% within 90 days of launch is a common success threshold"
+sql: |
+  WITH monthly_active AS (
+      SELECT
+          DATE_TRUNC('month', event_date) AS month,
+          COUNT(DISTINCT user_id) AS total_users
+      FROM user_events
+      WHERE event_type != 'internal'
+      GROUP BY 1
+  ),
+  feature_users AS (
+      SELECT
+          DATE_TRUNC('month', event_date) AS month,
+          feature_name,
+          COUNT(DISTINCT user_id) AS users_adopted
+      FROM user_events
+      WHERE event_type = 'feature_used'
+        AND event_type != 'internal'
+      GROUP BY 1, 2
+  )
+  SELECT
+      f.month,
+      f.feature_name,
+      f.users_adopted,
+      m.total_users,
+      ROUND(f.users_adopted * 100.0 / NULLIF(m.total_users, 0), 2) AS adoption_rate_pct
+  FROM feature_users f
+  JOIN monthly_active m ON f.month = m.month
+  ORDER BY f.month, adoption_rate_pct DESC

@@ -1,0 +1,39 @@
+name: mrr
+display_name: Monthly Recurring Revenue
+category: revenue
+type: sum
+unit: USD
+grain: monthly
+table: subscriptions
+expression: "SUM(mrr_amount)"
+time_column: billing_date
+description: "Monthly Recurring Revenue — the predictable monthly revenue from active subscriptions. Core SaaS health metric."
+dimensions:
+  - plan_type
+  - region
+synonyms:
+  - monthly_revenue
+  - recurring_revenue
+  - subscription_revenue
+notes:
+  - "Excludes one-time fees, setup fees, and professional services"
+  - "Churned subscriptions are removed in the month they cancel"
+  - "Upgrades and downgrades are reflected in the month the change takes effect"
+  - "Use billing_date (not payment date) for recognition"
+sql: |
+  SELECT
+      DATE_TRUNC('month', billing_date) AS month,
+      SUM(mrr_amount) AS mrr
+  FROM subscriptions
+  WHERE status = 'active'
+  GROUP BY 1
+  ORDER BY 1
+sql_by_plan: |
+  SELECT
+      DATE_TRUNC('month', billing_date) AS month,
+      plan_type,
+      SUM(mrr_amount) AS mrr
+  FROM subscriptions
+  WHERE status = 'active'
+  GROUP BY 1, 2
+  ORDER BY 1, 3 DESC

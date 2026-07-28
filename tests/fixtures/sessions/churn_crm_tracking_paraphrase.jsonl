@@ -1,0 +1,3 @@
+{"role": "assistant", "content": "Just to confirm — forecasted churn needs to be tracked on orders, capturing the reason a client may leave for internal reporting?"}
+{"role": "user", "content": "Right, forecasted churn needs to be tracked on orders — capture the reason a client may leave so it feeds into internal reporting."}
+{"role": "assistant", "content": "Confirmed — that matches what I have."}

@@ -1,0 +1,42 @@
+# Local-dev overlay — auth bypass + no real email delivery required.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local-dev.yml up
+# or:
+#   scripts/run-local-dev.sh
+#
+# Effect:
+# - LOCAL_DEV_MODE=1 makes every protected route auto-login as dev@localhost (role=admin).
+# - Magic-link emails are logged to stderr and returned in the response (no SMTP needed).
+# - Secrets (JWT, session) auto-generate into /data/state on first boot.
+# - No .env file required; nothing else is mandatory.
+#
+# NEVER deploy this overlay to an environment reachable from the internet.
+services:
+  app:
+    env_file: []  # Drop the project .env requirement — everything dev-relevant is inline below.
+    environment:
+      - DATA_DIR=/data
+      - LOCAL_DEV_MODE=1
+      # Explicit DEBUG=0 keeps the auth bypass but skips the debug toolbar,
+      # whose per-request instrumentation can peg CPU on heavy HTML pages.
+      # Set DEBUG=1 here if you want the toolbar back.
+      - DEBUG=0
+      - LOCAL_DEV_USER_EMAIL=dev@localhost
+      # LOCAL_DEV_GROUPS — JSON array of {id, name} mocking session.google_groups.
+      # Bare passthrough from the shell; scripts/run-local-dev.sh seeds a sensible
+      # default (engineers + admins on example.com). Set/unset in your shell to
+      # override. Same shape as Google's Cloud Identity searchTransitiveGroups
+      # response, so group-aware code paths exercised in dev match production.
+      - LOCAL_DEV_GROUPS
+      - SERVER_URL=http://localhost:8000
+      - LOG_LEVEL=info
+
+  # Scheduler also reads LOCAL_DEV flag so its auto-auth uses the same seed user.
+  scheduler:
+    env_file: []
+    environment:
+      - DATA_DIR=/data
+      - API_URL=http://app:8000
+      - LOCAL_DEV_MODE=1
+      - SEED_ADMIN_EMAIL=dev@localhost

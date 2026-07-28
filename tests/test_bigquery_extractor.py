@@ -1,0 +1,944 @@
+"""Tests for BigQuery extractor (remote-only via DuckDB extension)."""
+
+import re
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import duckdb
+import pytest
+
+from connectors.bigquery.extractor import _detect_table_type
+from tests.helpers.contract import validate_extract_contract
+
+
+@pytest.fixture
+def output_dir(tmp_path):
+    d = tmp_path / "extracts" / "bigquery"
+    d.mkdir(parents=True)
+    return str(d)
+
+
+@pytest.fixture
+def sample_configs():
+    return [
+        {
+            "id": "project.analytics.orders",
+            "name": "orders",
+            "source_type": "bigquery",
+            "bucket": "analytics",
+            "source_table": "orders",
+            "query_mode": "remote",
+            "description": "Order data from BQ",
+        },
+        {
+            "id": "project.analytics.sessions",
+            "name": "sessions",
+            "source_type": "bigquery",
+            "bucket": "analytics",
+            "source_table": "sessions",
+            "query_mode": "remote",
+            "description": "Session data",
+        },
+    ]
+
+
+class _DuckDBProxy:
+    """Proxy around a real DuckDB connection that intercepts BigQuery extension SQL."""
+
+    def __init__(self, real_conn):
+        self._real = real_conn
+
+    def execute(self, sql, *args, **kwargs):
+        sql_upper = sql.strip().upper()
+        if sql_upper.startswith("INSTALL BIGQUERY") or sql_upper.startswith(
+            "LOAD BIGQUERY"
+        ):
+            return MagicMock()
+        if sql_upper.startswith("CREATE SECRET"):
+            return MagicMock()
+        if "ATTACH" in sql_upper and "BIGQUERY" in sql_upper:
+            return MagicMock()
+        if sql_upper.startswith("DETACH BQ"):
+            return MagicMock()
+        # CREATE VIEW referencing bq.* -> create a dummy table instead
+        if "FROM BQ." in sql_upper and "CREATE" in sql_upper:
+            match = re.search(r'VIEW\s+"?(\w+)"?', sql, re.IGNORECASE)
+            if match:
+                view_name = match.group(1)
+                self._real.execute(
+                    f'CREATE OR REPLACE TABLE "{view_name}" (dummy INTEGER)'
+                )
+                return MagicMock()
+        return self._real.execute(sql, *args, **kwargs)
+
+    def close(self):
+        return self._real.close()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class TestBigQueryExtractor:
+    def test_creates_extract_duckdb_with_meta(self, output_dir, sample_configs, monkeypatch):
+        """Test that init_extract creates extract.duckdb with _meta and _remote_attach."""
+        from unittest.mock import patch
+
+        # Mock metadata-token auth + entity type detection so the test runs offline.
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+
+        def proxy_connect(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            return _DuckDBProxy(real_conn)
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect
+            from connectors.bigquery.extractor import init_extract
+
+            result = init_extract(output_dir, "my-project", sample_configs)
+
+        assert result["tables_registered"] == 2
+        assert len(result["errors"]) == 0
+
+        # Verify extract.duckdb has _meta with correct data
+        conn = duckdb.connect(str(Path(output_dir) / "extract.duckdb"))
+        try:
+            meta = conn.execute(
+                "SELECT table_name, query_mode FROM _meta ORDER BY table_name"
+            ).fetchall()
+            assert len(meta) == 2
+            assert meta[0][0] == "orders"
+            assert meta[0][1] == "remote"
+            assert meta[1][0] == "sessions"
+            assert meta[1][1] == "remote"
+
+            # Verify _remote_attach table for orchestrator re-ATTACH
+            ra = conn.execute(
+                "SELECT alias, extension, url, token_env FROM _remote_attach"
+            ).fetchone()
+            assert ra[0] == "bq"
+            assert ra[1] == "bigquery"
+            assert ra[2] == "project=my-project"
+            assert ra[3] == ""  # BQ handles auth via env automatically
+        finally:
+            conn.close()
+
+        validate_extract_contract(str(Path(output_dir) / "extract.duckdb"))
+
+    def test_no_data_directory_created(self, output_dir, sample_configs):
+        """BigQuery is remote-only -- no data/ directory should exist."""
+        assert not (Path(output_dir) / "data").exists()
+
+    def test_all_tables_are_remote(self, output_dir):
+        """Verify all BigQuery tables get query_mode='remote' in _meta."""
+        db_path = Path(output_dir) / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'remote'
+        )""")
+        conn.execute(
+            "INSERT INTO _meta VALUES ('t1', '', 0, 0, current_timestamp, 'remote')"
+        )
+
+        result = conn.execute("SELECT query_mode FROM _meta").fetchone()
+        assert result[0] == "remote"
+        conn.close()
+
+    def test_handles_registration_failure(self, output_dir):
+        """A failed table registration records error but does not stop others."""
+        db_path = Path(output_dir) / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'remote'
+        )""")
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        # Simulate: first succeeds, second fails (not inserted)
+        conn.execute(
+            "INSERT INTO _meta VALUES ('good_table', '', 0, 0, ?, 'remote')", [now]
+        )
+
+        meta = conn.execute("SELECT count(*) FROM _meta").fetchone()
+        assert meta[0] == 1  # Only good_table registered
+        conn.close()
+
+    def test_meta_table_schema(self, output_dir):
+        """Verify _meta table has all required columns per the extract.duckdb contract."""
+        from connectors.bigquery.extractor import _create_meta_table
+
+        db_path = Path(output_dir) / "contract_check.duckdb"
+        conn = duckdb.connect(str(db_path))
+        _create_meta_table(conn)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = '_meta' ORDER BY ordinal_position"
+        ).fetchall()
+        col_names = [c[0] for c in columns]
+        assert col_names == [
+            "table_name",
+            "description",
+            "rows",
+            "size_bytes",
+            "extracted_at",
+            "query_mode",
+        ]
+        conn.close()
+
+
+class TestDetectTableType:
+    """Detect whether a BQ entity is a base table or a view."""
+
+    def test_base_table_returns_table(self):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = ("BASE TABLE",)
+        result = _detect_table_type(conn, "proj", "ds", "tbl")
+        assert result == "BASE TABLE"
+
+    def test_view_returns_view(self):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = ("VIEW",)
+        result = _detect_table_type(conn, "proj", "ds", "tbl")
+        assert result == "VIEW"
+
+    def test_missing_returns_none(self):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = None
+        result = _detect_table_type(conn, "proj", "ds", "tbl")
+        assert result is None
+
+    def test_query_uses_bigquery_query_function(self):
+        """Detection must use bigquery_query() table function (works on views via jobs API)."""
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = ("VIEW",)
+        _detect_table_type(conn, "my-proj", "my_ds", "my_tbl")
+
+        # SQL must use the bigquery_query() table function (not direct ref)
+        sql = conn.execute.call_args[0][0]
+        assert "bigquery_query" in sql.lower()
+
+        # The inner BQ SQL is passed as a parameter, not f-stringed in.
+        # Verify both project and the BQ SQL appear in the bound params.
+        params = conn.execute.call_args[0][1]
+        assert "my-proj" in params, f"expected project in params, got: {params}"
+        # The inner BQ SQL is one of the params; it should reference INFORMATION_SCHEMA.TABLES
+        bq_sql_param = next(
+            (p for p in params if isinstance(p, str) and "INFORMATION_SCHEMA.TABLES" in p),
+            None,
+        )
+        assert bq_sql_param is not None, f"inner BQ SQL not found in params: {params}"
+        assert "my_ds" in bq_sql_param  # dataset is f-stringed into the BQ SQL identifier path
+        # Table name should NOT be inline in the BQ SQL — it goes through the param chain
+        assert "my_tbl" in params, f"table name should be a separate param, got: {params}"
+
+
+class _CapturingProxy:
+    """Wraps a real DuckDB connection, captures all SQL, stubs BQ-specific calls.
+
+    DuckDBPyConnection.execute is a C-level read-only attribute, so we can't
+    patch the method directly on the connection — we have to wrap with a proxy.
+    """
+
+    def __init__(self, real_conn, captured: list):
+        self._real = real_conn
+        self._captured = captured
+
+    def execute(self, sql, *args, **kwargs):
+        self._captured.append(sql)
+        stripped_u = sql.strip().upper()
+        # Stub only commands that would talk to BQ; CREATE TABLE / INSERT etc.
+        # must pass through to the real DuckDB so _meta + _remote_attach persist.
+        if stripped_u.startswith(("INSTALL ", "LOAD ", "CREATE SECRET")):
+            return MagicMock()
+        if stripped_u.startswith("ATTACH ") and "BIGQUERY" in stripped_u:
+            return MagicMock()
+        if stripped_u.startswith("DETACH "):
+            return MagicMock()
+        if 'FROM bq.' in sql or 'FROM bigquery_query' in sql:
+            return MagicMock()
+        return self._real.execute(sql, *args, **kwargs)
+
+    def close(self):
+        return self._real.close()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class TestViewVsTableTemplates:
+    """init_extract must pick the right view template based on entity type."""
+
+    def test_base_table_uses_direct_attach_ref(self, tmp_path, monkeypatch):
+        """For BASE TABLE, generated DuckDB view references bq.dataset.table directly."""
+        from connectors.bigquery.extractor import init_extract
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+
+        captured = []
+        real_connect = duckdb.connect
+
+        def spy_connect(*a, **kw):
+            real_conn = real_connect(*a, **kw)
+            return _CapturingProxy(real_conn, captured)
+
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", spy_connect)
+
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "orders", "bucket": "my_ds", "source_table": "orders", "description": ""}],
+        )
+
+        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper() or 'CREATE VIEW' in s.upper()]
+        assert any('FROM bq."my_ds"."orders"' in s for s in view_sqls), \
+            f"expected direct bq.dataset.table ref for BASE TABLE; got: {view_sqls}"
+        assert not any("bigquery_query(" in s for s in view_sqls), \
+            "BASE TABLE should not use bigquery_query() function"
+
+    def test_view_uses_bigquery_query_function(self, tmp_path, monkeypatch):
+        """For VIEW entity, generated DuckDB master view wraps bigquery_query()
+        (jobs API path). Same SQL form as the prior `legacy_wrap_views=True`
+        branch — now unconditional per #160."""
+        from connectors.bigquery.extractor import init_extract
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "VIEW",
+        )
+
+        captured = []
+        real_connect = duckdb.connect
+
+        def spy_connect(*a, **kw):
+            real_conn = real_connect(*a, **kw)
+            return _CapturingProxy(real_conn, captured)
+
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", spy_connect)
+
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "session_view", "bucket": "my_ds", "source_table": "session_view", "description": ""}],
+        )
+
+        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper() or 'CREATE VIEW' in s.upper()]
+        view_create = next((s for s in view_sqls if '"session_view"' in s), None)
+        assert view_create is not None, f"no CREATE VIEW for session_view; got: {view_sqls}"
+        assert "bigquery_query(" in view_create
+        assert "my-project" in view_create
+        assert "`my-project.my_ds.session_view`" in view_create, \
+            f"expected backtick-quoted full path; got: {view_create}"
+
+
+class TestRemoteAttachForBQ:
+    """For BQ source, _remote_attach must signal metadata-auth (empty token_env)."""
+
+    def test_remote_attach_token_env_is_empty_for_bq(self, tmp_path, monkeypatch):
+        from connectors.bigquery.extractor import init_extract
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+
+        captured = []
+        real_connect = duckdb.connect
+
+        def spy_connect(*a, **kw):
+            real_conn = real_connect(*a, **kw)
+            return _CapturingProxy(real_conn, captured)
+
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", spy_connect)
+
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "t", "bucket": "ds", "source_table": "t", "description": ""}],
+        )
+
+        c = duckdb.connect(str(tmp_path / "extract.duckdb"), read_only=True)
+        rows = c.execute(
+            "SELECT alias, extension, url, token_env FROM _remote_attach"
+        ).fetchall()
+        c.close()
+
+        assert len(rows) == 1
+        alias, extension, url, token_env = rows[0]
+        assert alias == "bq"
+        assert extension == "bigquery"
+        assert url == "project=my-project"
+        assert token_env == "", \
+            "BQ uses metadata auth — token_env must be empty so orchestrator triggers metadata path"
+
+
+class TestInitExtractAuthFailure:
+    """init_extract must abort cleanly if metadata token fetch fails."""
+
+    def test_returns_error_when_metadata_unreachable(self, tmp_path, monkeypatch):
+        from connectors.bigquery.extractor import init_extract
+        from connectors.bigquery.auth import BQMetadataAuthError
+
+        def boom():
+            raise BQMetadataAuthError("metadata server unreachable: simulated")
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            boom,
+        )
+
+        result = init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "t", "bucket": "ds", "source_table": "t", "description": ""}],
+        )
+
+        # No partial extract.duckdb — auth failure aborts before any DB writes
+        assert not (tmp_path / "extract.duckdb").exists(), \
+            "extract.duckdb should not be created when auth fails"
+        assert result["tables_registered"] == 0
+        assert any("metadata" in e.get("error", "").lower() for e in result["errors"])
+
+
+class TestIdentifierValidation:
+    """init_extract must reject unsafe identifiers before any SQL construction."""
+
+    def test_rejects_unsafe_dataset_name(self, tmp_path, monkeypatch):
+        from connectors.bigquery.extractor import init_extract
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+        # Stub all DuckDB BQ-extension calls so the test stays offline
+        captured = []
+        real_connect = duckdb.connect
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        result = init_extract(
+            str(tmp_path),
+            "my-project",
+            [{
+                "name": "t",
+                "bucket": 'evil"; DROP TABLE foo; --',
+                "source_table": "t",
+                "description": "",
+            }],
+        )
+        assert result["tables_registered"] == 0
+        assert any("dataset" in e.get("error", "").lower() for e in result["errors"])
+
+    def test_rejects_unsafe_source_table_name(self, tmp_path, monkeypatch):
+        from connectors.bigquery.extractor import init_extract
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+        captured = []
+        real_connect = duckdb.connect
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        result = init_extract(
+            str(tmp_path),
+            "my-project",
+            [{
+                "name": "t",
+                "bucket": "ds",
+                "source_table": "evil`name",
+                "description": "",
+            }],
+        )
+        assert result["tables_registered"] == 0
+        assert any("source_table" in e.get("error", "").lower() for e in result["errors"])
+
+
+class TestExtractorMainModule:
+    """Standalone `python -m connectors.bigquery.extractor` reads config correctly."""
+
+    def test_main_reads_data_source_bigquery_project(self, tmp_path, monkeypatch):
+        """__main__ must read project from data_source.bigquery.project (matches yaml example).
+
+        Runs the production __main__ block via runpy and captures the project_id
+        passed to init_extract. If __main__ ever regresses to reading
+        config.get("bigquery", {}).get("project_id"), the captured value will
+        be empty and the assertion will fail.
+        """
+        from unittest.mock import MagicMock
+
+        captured: dict = {}
+
+        def fake_init_extract(out, project_id, tables):
+            captured["project"] = project_id
+            captured["tables"] = tables
+            return {"tables_registered": len(tables), "errors": []}
+
+        # Patch every external dependency the __main__ block touches.
+        # Targets are at the module path the __main__ block imports from,
+        # because runpy re-executes the module under __name__ == "__main__".
+        monkeypatch.setattr(
+            "config.loader.load_instance_config",
+            lambda: {
+                "data_source": {
+                    "type": "bigquery",
+                    "bigquery": {"project": "my-test-project", "location": "US"},
+                }
+            },
+        )
+        fake_repo = MagicMock()
+        fake_repo.list_by_source.return_value = [
+            {"name": "t1", "bucket": "ds", "source_table": "t1", "description": ""},
+        ]
+        monkeypatch.setattr(
+            "src.repositories.table_registry.TableRegistryRepository",
+            lambda c: fake_repo,
+        )
+        monkeypatch.setattr(
+            "src.db.get_system_db",
+            lambda: MagicMock(close=lambda: None),
+        )
+        # __main__ looks up init_extract via the cached connectors.bigquery.extractor
+        # module (sys.modules), so patching its attribute survives runpy's reimport.
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.init_extract",
+            fake_init_extract,
+        )
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import runpy
+        runpy.run_module("connectors.bigquery.extractor", run_name="__main__")
+
+        assert captured.get("project") == "my-test-project", \
+            f"expected __main__ to pass project='my-test-project' to init_extract; got {captured!r}"
+        assert captured.get("tables", [{}])[0].get("name") == "t1"
+
+
+    def test_main_exits_when_project_missing(self, tmp_path, monkeypatch):
+        """__main__ must SystemExit(2) when data_source.bigquery.project is empty/missing."""
+        # Reset the app.instance_config cache — `test_main_reads_data_source_bigquery_project`
+        # above populated it with a config that has the project set, and the
+        # cache survives across tests. Without this reset, `_resolve_bq_project_id`
+        # returns the stale cached value instead of the no-project mock below.
+        from app.instance_config import reset_cache
+        reset_cache()
+        monkeypatch.setattr(
+            "config.loader.load_instance_config",
+            lambda: {"data_source": {"type": "bigquery"}},  # no .bigquery.project
+        )
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import runpy
+        with pytest.raises(SystemExit) as exc_info:
+            runpy.run_module("connectors.bigquery.extractor", run_name="__main__")
+        assert exc_info.value.code == 2
+
+
+class TestWrapViewForBQViews:
+    """Issue #160: query_mode='remote' BQ rows whose entity is VIEW or
+    MATERIALIZED_VIEW must get a master view via bigquery_query() — for any
+    other entity type we don't have proven runtime support for, skip both
+    the master view AND the _meta row."""
+
+    def test_view_creates_wrap_view_with_default_config(self, tmp_path, monkeypatch):
+        """VIEW entity must get a bigquery_query() wrap view (the previous
+        opt-in path under `legacy_wrap_views=True`, now unconditional).
+        Closes #160."""
+        from connectors.bigquery.extractor import init_extract
+        import app.instance_config as _ic
+        monkeypatch.setattr(_ic, "_instance_config", None, raising=False)
+        monkeypatch.setattr("connectors.bigquery.extractor.get_metadata_token", lambda: "tok")
+        monkeypatch.setattr("connectors.bigquery.extractor._detect_table_type", lambda *a, **kw: "VIEW")
+
+        real_connect = duckdb.connect
+        captured = []
+
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "ue", "bucket": "finance", "source_table": "ue", "description": ""}],
+        )
+
+        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper() and '"ue"' in s]
+        assert view_sqls != [], \
+            f"VIEW entity must produce a wrap view by default; captured={captured}"
+        assert any("bigquery_query(" in s for s in view_sqls), \
+            f"VIEW wrap view must use bigquery_query(); got: {view_sqls}"
+        assert any("`my-project.finance.ue`" in s for s in view_sqls), \
+            f"wrap view must reference full project.dataset.table path; got: {view_sqls}"
+
+    def test_materialized_view_creates_wrap_view_with_default_config(self, tmp_path, monkeypatch):
+        """MATERIALIZED_VIEW entity must get a bigquery_query() wrap view by default."""
+        from connectors.bigquery.extractor import init_extract
+        import app.instance_config as _ic
+        monkeypatch.setattr(_ic, "_instance_config", None, raising=False)
+        monkeypatch.setattr("connectors.bigquery.extractor.get_metadata_token", lambda: "tok")
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "MATERIALIZED_VIEW",
+        )
+
+        real_connect = duckdb.connect
+        captured = []
+
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "mv", "bucket": "ds", "source_table": "mv", "description": ""}],
+        )
+
+        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper() and '"mv"' in s]
+        assert view_sqls != [], \
+            f"MATERIALIZED_VIEW must produce a wrap view by default; captured={captured}"
+        assert any("bigquery_query(" in s for s in view_sqls)
+
+    def test_unsupported_entity_type_skips_meta_and_view(self, tmp_path, monkeypatch):
+        """For entity_types we don't have proven runtime support for
+        (EXTERNAL, SNAPSHOT, CLONE, future types), skip BOTH the master
+        view AND the _meta row. Today the _meta row is inserted
+        unconditionally → orchestrator sees a `_meta` entry pointing to a
+        non-existent inner view, then skips master-view creation, leaving
+        the operator with a registered-but-unqueryable name."""
+        from connectors.bigquery.extractor import init_extract
+        import app.instance_config as _ic
+        monkeypatch.setattr(_ic, "_instance_config", None, raising=False)
+        monkeypatch.setattr("connectors.bigquery.extractor.get_metadata_token", lambda: "tok")
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "EXTERNAL",
+        )
+
+        real_connect = duckdb.connect
+        captured = []
+
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "ext_tbl", "bucket": "ds", "source_table": "ext_tbl", "description": ""}],
+        )
+
+        # No CREATE VIEW for ext_tbl
+        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper() and '"ext_tbl"' in s]
+        assert view_sqls == [], \
+            f"unsupported entity_type must NOT produce a wrap view; got {view_sqls}"
+
+        # _meta row also skipped — no INSERT INTO _meta for ext_tbl
+        c = duckdb.connect(str(tmp_path / "extract.duckdb"), read_only=True)
+        try:
+            meta = c.execute("SELECT table_name FROM _meta").fetchall()
+            assert ("ext_tbl",) not in meta, \
+                f"unsupported entity_type must NOT insert _meta row; got {meta}"
+        finally:
+            c.close()
+
+
+class TestInitExtractProjectIdValidation:
+    """init_extract must reject unsafe project_id before any auth or DB work."""
+
+    def test_rejects_unsafe_project_id_with_quote(self, tmp_path):
+        """Project IDs containing SQL metacharacters must be rejected before
+        any token fetch or DuckDB work."""
+        from connectors.bigquery.extractor import init_extract
+
+        result = init_extract(
+            str(tmp_path),
+            "evil'; DROP TABLE foo; --",
+            [{"name": "t", "bucket": "ds", "source_table": "t", "description": ""}],
+        )
+        assert result["tables_registered"] == 0
+        assert any("project_id" in e.get("error", "").lower() for e in result["errors"]), \
+            f"expected error mentioning project_id; got: {result['errors']}"
+        # No partial extract.duckdb on rejection
+        assert not (tmp_path / "extract.duckdb").exists()
+
+    def test_rejects_uppercase_project_id(self, tmp_path):
+        """GCP project IDs are lowercase-only."""
+        from connectors.bigquery.extractor import init_extract
+
+        result = init_extract(
+            str(tmp_path),
+            "MY-PROJECT",
+            [{"name": "t", "bucket": "ds", "source_table": "t", "description": ""}],
+        )
+        assert result["tables_registered"] == 0
+        assert any("project_id" in e.get("error", "").lower() for e in result["errors"])
+
+    def test_valid_project_id_passes_validation(self, tmp_path, monkeypatch):
+        """A well-formed project_id must pass validation. We stub the metadata
+        fetch to fail right after, which produces a different error shape — that
+        confirms validation didn't reject the project_id itself."""
+        from connectors.bigquery.extractor import init_extract
+        from connectors.bigquery.auth import BQMetadataAuthError
+
+        def fail_metadata():
+            raise BQMetadataAuthError("simulated — beyond validation")
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            fail_metadata,
+        )
+
+        result = init_extract(
+            str(tmp_path),
+            "my-valid-project",
+            [{"name": "t", "bucket": "ds", "source_table": "t", "description": ""}],
+        )
+        assert result["tables_registered"] == 0
+        errors = result["errors"]
+        assert errors, "expected metadata-stub error"
+        assert all("project_id" not in e.get("error", "").lower() for e in errors), \
+            f"valid project_id should not trip the validator; got: {errors}"
+
+
+class TestBigQueryExtractorFailureModes:
+    """Failure-mode tests for the BigQuery extractor — corrupted DB, partial
+    writes, network timeout, unsafe identifiers, atomic swap."""
+
+    def test_corrupted_extract_duckdb_orchestrator_skips(self, output_dir, monkeypatch):
+        """A corrupted extract.duckdb should be skipped by the orchestrator
+        without crashing."""
+        from src.orchestrator import SyncOrchestrator
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+
+        # Create a corrupted extract.duckdb
+        db_path = Path(output_dir) / "extract.duckdb"
+        db_path.write_bytes(b"this is not a valid duckdb file!!!")
+
+        analytics_db = str(Path(output_dir) / "analytics.duckdb")
+        orch = SyncOrchestrator(analytics_db_path=analytics_db)
+        # The rebuild should complete (possibly with warnings) but not raise
+        result = orch.rebuild()
+        # The corrupted source should not appear in results
+        assert "bigquery" not in result
+
+    def test_partial_data_write_incomplete_extract(self, output_dir, monkeypatch):
+        """When init_extract fails partway through (e.g. one view creation
+        fails), the extract.duckdb is still created atomically and the
+        successful tables are preserved."""
+        from connectors.bigquery.extractor import init_extract
+        from unittest.mock import patch
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+
+        configs = [
+            {
+                "name": "good_table",
+                "bucket": "analytics",
+                "source_table": "good_table",
+                "query_mode": "remote",
+                "description": "OK",
+            },
+            {
+                "name": "bad-table",  # hyphen → unsafe identifier
+                "bucket": "analytics",
+                "source_table": "bad_table",
+                "query_mode": "remote",
+                "description": "Will fail validation",
+            },
+        ]
+
+        def proxy_connect(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            return _DuckDBProxy(real_conn)
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect
+            result = init_extract(output_dir, "my-project", configs)
+
+        # good_table registered, bad-table skipped
+        assert result["tables_registered"] == 1
+        assert len(result["errors"]) == 1
+
+    def test_network_timeout_during_extraction(self, output_dir, monkeypatch):
+        """Network timeout during BQ extension ATTACH should be caught and
+        reported as an error, not crash the process."""
+        from connectors.bigquery.extractor import init_extract
+        from unittest.mock import patch
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+
+        configs = [
+            {
+                "name": "timeout_table",
+                "bucket": "analytics",
+                "source_table": "timeout_table",
+                "query_mode": "remote",
+                "description": "Will timeout",
+            },
+        ]
+
+        def proxy_connect_timeout(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            proxy = _DuckDBProxy(real_conn)
+            # Override execute to raise on ATTACH
+            original_execute = proxy.execute
+            def timeout_execute(sql, *args, **kwargs):
+                sql_upper = sql.strip().upper()
+                if "ATTACH" in sql_upper and "BIGQUERY" in sql_upper:
+                    raise TimeoutError("BigQuery connection timed out")
+                return original_execute(sql, *args, **kwargs)
+            proxy.execute = timeout_execute
+            return proxy
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect_timeout
+            result = init_extract(output_dir, "my-project", configs)
+
+        # The timeout should be caught — no tables registered, error recorded
+        assert result["tables_registered"] == 0
+        assert len(result["errors"]) >= 1
+
+    def test_all_tables_fail_returns_errors(self, output_dir, monkeypatch):
+        """When every table registration fails, the extractor returns all
+        errors without crashing."""
+        from connectors.bigquery.extractor import init_extract
+        from unittest.mock import patch
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+
+        configs = [
+            {"name": "bad-1", "bucket": "ds", "source_table": "t1",
+             "query_mode": "remote", "description": ""},
+            {"name": "bad-2", "bucket": "ds", "source_table": "t2",
+             "query_mode": "remote", "description": ""},
+        ]
+
+        def proxy_connect(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            return _DuckDBProxy(real_conn)
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect
+            result = init_extract(output_dir, "my-project", configs)
+
+        # Both have unsafe identifiers (hyphens)
+        assert result["tables_registered"] == 0
+        assert len(result["errors"]) == 2
+
+    def test_unsafe_identifier_skipped_not_crashed(self, output_dir, monkeypatch):
+        """Tables with unsafe identifiers are skipped with an error in stats,
+        not causing a crash."""
+        from connectors.bigquery.extractor import init_extract
+        from unittest.mock import patch
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+
+        configs = [
+            {"name": "bad-name", "bucket": "dataset", "source_table": "t",
+             "query_mode": "remote", "description": "hyphen not allowed"},
+            {"name": "good_name", "bucket": "dataset", "source_table": "t",
+             "query_mode": "remote", "description": "OK"},
+        ]
+
+        def proxy_connect(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            return _DuckDBProxy(real_conn)
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect
+            result = init_extract(output_dir, "my-project", configs)
+
+        assert result["tables_registered"] == 1
+        assert len(result["errors"]) == 1
+        assert "unsafe" in result["errors"][0]["error"].lower()
+
+    def test_atomic_swap_prevents_corruption_on_crash(self, output_dir):
+        """The extractor writes to a temp file then atomically swaps it into
+        place. If the process crashes mid-write, the old extract.duckdb
+        (if any) is not corrupted."""
+        # Create a valid existing extract.duckdb
+        db_path = Path(output_dir) / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'remote'
+        )""")
+        conn.execute("INSERT INTO _meta VALUES ('existing', '', 0, 0, current_timestamp, 'remote')")
+        conn.close()
+
+        # Simulate a crash: the tmp file exists but is incomplete
+        tmp_path = Path(output_dir) / "extract.duckdb.tmp"
+        tmp_path.write_bytes(b"incomplete garbage")
+
+        # The existing extract.duckdb should still be valid
+        conn2 = duckdb.connect(str(db_path))
+        rows = conn2.execute("SELECT table_name FROM _meta").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "existing"
+        conn2.close()
+
+        # Clean up
+        tmp_path.unlink()

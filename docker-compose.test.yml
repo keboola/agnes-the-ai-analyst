@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
+    ports:
+      - "8000:8000"
+    environment:
+      - DATA_DIR=/data
+      - JWT_SECRET_KEY=test-secret-for-ci-32chars!!!
+      - TESTING=true
+      - SEED_ADMIN_EMAIL=admin@test.com
+    volumes:
+      - test-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://localhost:8000/api/health'); exit(0 if r.status_code==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  test-data:

@@ -1,0 +1,549 @@
+{% extends "base_page.html" %}
+{% block title %}Resource access — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/admin_access.css') }}">
+<style>
+.origin-system     { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+.origin-custom     { background: #ede9fe; color: #6d28d9; }
+.origin-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+</style>
+{% endblock %}
+
+{% set page_hero_eyebrow = "Users & Access" %}
+{% set page_hero_title = "Resource access" %}
+{% set page_hero_subtitle %}Pick a group on the left, check resources on the right to grant access. Manage groups and members on <a href="/admin/groups">Groups</a>.{% endset %}
+
+{% block page %}
+<div class="ax-page">
+
+  <div class="ax-toolbar">
+    <div>
+    </div>
+  </div>
+
+  <div class="ax-layout">
+    <!-- LEFT: Groups (read-only picker — CRUD lives on /admin/groups) -->
+    <div class="ax-card" id="groups-card">
+      <div class="ax-card-head">
+        <h3>User groups</h3>
+        <a class="ax-btn" href="/admin/groups" title="Manage groups">Manage →</a>
+      </div>
+      <ul class="group-list" id="group-list"></ul>
+      <div class="ax-empty" id="group-empty" style="display:none;">
+        No groups yet.<br>
+        Create one on <a href="/admin/groups">Groups</a>.
+      </div>
+    </div>
+
+    <!-- RIGHT: Group detail with tabs -->
+    <div class="ax-card" id="detail-card">
+      <div class="ax-card-head">
+        <div style="display:flex; flex-direction:column; gap:2px; min-width:0; flex:1;">
+          <h3 id="detail-title" style="display:flex; align-items:center;">Select a group</h3>
+          <span id="detail-mapped" class="group-name-sub" style="display:none;"></span>
+        </div>
+        <span id="detail-sub" style="font-size:11px; color: var(--text-secondary, #6b7280); flex-shrink:0;"></span>
+      </div>
+
+      <!-- Resources panel (no tab strip — this page is grants-only) -->
+      <section data-pane="resources" style="display:none;">
+        <div class="ax-hint" id="ax-hint" style="display:none;">
+          No resources have been registered yet. Add a marketplace on the
+          <a href="/admin/marketplaces">Marketplaces</a> page and run a sync.
+        </div>
+        <div class="ax-filter" id="resources-filter-wrap" style="display:none;">
+          <input id="resources-filter" type="search" placeholder="Filter by name, marketplace, category…" autocomplete="off">
+        </div>
+        <div id="resources-body"></div>
+      </section>
+
+      <div class="ax-empty" id="detail-empty">
+        Select a group on the left to assign resource grants.
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const OVERVIEW_API = "/api/admin/access-overview";
+const GROUPS_API = "/api/admin/groups";
+const GRANTS_API = "/api/admin/grants";
+// Server-injected so the sidebar can derive a friendly display name from
+// google-sync groups whose `name` is the raw Workspace email — same trick
+// /admin/groups uses; keeping the surface identical here.
+const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+
+function deriveDisplayName(fullEmail) {
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+function openModal(id) { document.getElementById(id).classList.add("is-open"); }
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// State
+let state = {
+  groups: [],          // [{id, name, description, is_system, member_count, grant_count}]
+  resources: [],       // [{type_key, type_display, blocks: [{id, name, items: [{resource_id, name, ...}]}]}]
+  grants: [],          // [{id, group_id, resource_type, resource_id}]
+  activeGroupId: null,
+  filter: "",
+  editingGroupId: null,
+};
+
+async function loadOverview() {
+  try {
+    const r = await fetch(OVERVIEW_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    state.groups = data.groups;
+    state.resources = data.resources;
+    state.grants = data.grants;
+    if (state.activeGroupId && !state.groups.find(g => g.id === state.activeGroupId)) {
+      state.activeGroupId = null;
+    }
+    renderGroups();
+    renderDetail();
+  } catch (e) {
+    toast("Failed to load: " + e.message, "error");
+  }
+}
+
+async function selectGroup(gid) {
+  state.activeGroupId = gid;
+  // Update URL so the group selection is shareable / deep-linkable.
+  if (gid) {
+    const u = new URL(window.location.href);
+    u.searchParams.set("group", gid);
+    history.replaceState(null, "", u.toString());
+  }
+  renderGroups();
+  renderDetail();
+}
+
+function renderDetail() {
+  const title = document.getElementById("detail-title");
+  const mapped = document.getElementById("detail-mapped");
+  const sub = document.getElementById("detail-sub");
+  const empty = document.getElementById("detail-empty");
+  const resourcesPane = document.querySelector('[data-pane="resources"]');
+
+  if (!state.activeGroupId) {
+    title.textContent = "Select a group";
+    mapped.style.display = "none";
+    mapped.textContent = "";
+    sub.textContent = "";
+    resourcesPane.style.display = "none";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  resourcesPane.style.display = "block";
+
+  const group = state.groups.find(g => g.id === state.activeGroupId);
+  if (group) {
+    // Mirror the sidebar's title rules: mapped_email present → big name
+    // stays canonical, email goes to the subtitle line. Plain google-sync
+    // group → derive a friendly name and put the raw email below.
+    let bigName = group.name;
+    let subtitleText = "";
+    if (group.mapped_email) {
+      subtitleText = group.mapped_email;
+    } else if (group.is_google_managed) {
+      bigName = deriveDisplayName(group.name);
+      subtitleText = group.name;
+    }
+    const origin = group.origin || (group.is_system ? "system" : "custom");
+    title.innerHTML = `<span>${esc(bigName)}</span><span class="origin-chip origin-${esc(origin)}">${esc(origin.replace("_"," "))}</span>`;
+    if (subtitleText) {
+      mapped.textContent = subtitleText;
+      mapped.style.display = "block";
+    } else {
+      mapped.style.display = "none";
+      mapped.textContent = "";
+    }
+  } else {
+    title.textContent = "Group";
+    mapped.style.display = "none";
+    mapped.textContent = "";
+  }
+  const grantedCount = state.grants.filter(g => g.group_id === state.activeGroupId).length;
+  sub.textContent = `${grantedCount} resource${grantedCount === 1 ? "" : "s"} granted`;
+
+  renderResources();
+}
+
+function renderGroups() {
+  const list = document.getElementById("group-list");
+  const empty = document.getElementById("group-empty");
+  if (state.groups.length === 0) {
+    list.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  list.innerHTML = "";
+  for (const g of state.groups) {
+    const li = document.createElement("li");
+    li.className = "group-item"
+      + (state.activeGroupId === g.id ? " is-active" : "");
+    li.dataset.id = g.id;
+    // Origin pill — single chip mirroring /admin/groups treatment. Mapped
+    // Admin/Everyone report origin='google_sync' so the chip color matches
+    // their actual source of truth (Workspace), not the seed mechanism.
+    const origin = g.origin || (g.is_system ? "system" : "custom");
+    const originPill = `<span class="origin-chip origin-${esc(origin)}">${esc(origin.replace("_"," "))}</span>`;
+    // Big-title / subtitle rules — same logic as the /admin/groups list:
+    //   - mapped_email present → big = canonical name, subtitle = mapped_email
+    //   - google_managed user-created group → big = derived friendly name,
+    //     subtitle = full Workspace email stored as `name`
+    //   - everything else → big = name, subtitle = description (or none)
+    let bigName, subtitle;
+    if (g.mapped_email) {
+      bigName = esc(g.name);
+      subtitle = `<span class="group-name-sub">${esc(g.mapped_email)}</span>`;
+    } else if (g.is_google_managed) {
+      bigName = esc(deriveDisplayName(g.name));
+      subtitle = `<span class="group-name-sub">${esc(g.name)}</span>`;
+    } else {
+      bigName = esc(g.name);
+      subtitle = g.description ? `<span class="group-desc">${esc(g.description)}</span>` : "";
+    }
+    // Compute live from state.grants — g.grant_count is a server-side
+    // snapshot from /access-overview that goes stale as soon as the user
+    // toggles a checkbox; reading it here would clobber refreshCounts()
+    // updates whenever the sidebar re-renders (e.g. on selectGroup).
+    const liveCount = state.grants.filter(gr => gr.group_id === g.id).length;
+    li.innerHTML = `
+      <span class="group-dot"></span>
+      <div class="group-meta">
+        <span class="group-name">${bigName}${originPill}</span>
+        ${subtitle}
+      </div>
+      <span class="group-count" title="Resources granted to this group">${liveCount}</span>
+    `;
+    li.addEventListener("click", () => selectGroup(g.id));
+    list.appendChild(li);
+  }
+}
+
+function isGranted(group_id, resource_type, resource_id) {
+  return state.grants.some(g =>
+    g.group_id === group_id &&
+    g.resource_type === resource_type &&
+    g.resource_id === resource_id
+  );
+}
+
+function findGrant(group_id, resource_type, resource_id) {
+  return state.grants.find(g =>
+    g.group_id === group_id &&
+    g.resource_type === resource_type &&
+    g.resource_id === resource_id
+  );
+}
+
+function renderResources() {
+  const body = document.getElementById("resources-body");
+  const hint = document.getElementById("ax-hint");
+  const filterWrap = document.getElementById("resources-filter-wrap");
+
+  if (!state.activeGroupId) {
+    body.innerHTML = "";
+    hint.style.display = "none";
+    filterWrap.style.display = "none";
+    return;
+  }
+
+  const totalItems = state.resources.reduce(
+    (acc, rt) => acc + rt.blocks.reduce((a, b) => a + b.items.length, 0), 0,
+  );
+  if (totalItems === 0) {
+    hint.style.display = "block";
+    filterWrap.style.display = "none";
+    body.innerHTML = "";
+    return;
+  }
+  hint.style.display = "none";
+  filterWrap.style.display = "block";
+
+  const ft = state.filter.trim().toLowerCase();
+  body.innerHTML = "";
+
+  for (const rt of state.resources) {
+    const section = document.createElement("div");
+    section.className = "rt-section";
+    section.innerHTML = `<div class="rt-section-head">${esc(rt.type_display)}</div>`;
+
+    let sectionItemCount = 0;
+
+    for (const block of rt.blocks) {
+      const items = block.items.filter(it => {
+        if (!ft) return true;
+        return (it.name || "").toLowerCase().includes(ft)
+            || (block.name || "").toLowerCase().includes(ft)
+            || (it.category || "").toLowerCase().includes(ft)
+            || (it.description || "").toLowerCase().includes(ft);
+      });
+      if (ft && items.length === 0) continue;
+      sectionItemCount += items.length;
+
+      const grantedHere = items.filter(it =>
+        isGranted(state.activeGroupId, rt.type_key, it.resource_id)).length;
+
+      const blockEl = document.createElement("div");
+      blockEl.className = "mp-block";
+      blockEl.innerHTML = `
+        <div class="mp-block-head" data-toggle="collapse">
+          <svg class="chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <h4>${esc(block.name)}</h4>
+          <span class="count">${grantedHere}/${items.length}</span>
+          <span class="spacer"></span>
+          <button class="bulk-btn" data-bulk="all">Grant all</button>
+          <button class="bulk-btn" data-bulk="none">Revoke all</button>
+        </div>
+        <div class="item-grid"></div>
+      `;
+      const grid = blockEl.querySelector(".item-grid");
+      if (items.length === 0) {
+        grid.innerHTML = `<div class="ax-empty" style="grid-column: 1/-1;">No items.</div>`;
+      } else {
+        for (const it of items) {
+          const granted = isGranted(state.activeGroupId, rt.type_key, it.resource_id);
+          // v39: system plugins are pre-granted to every group by mark_system
+          // and the checkbox is locked here so admins can't revoke it via
+          // the UI. Backend (DELETE /api/admin/grants) also refuses, but the
+          // visual lock prevents the round-trip.
+          const isSystem = !!it.is_system;
+          const cellClasses = "item-cell"
+            + (granted ? " is-granted" : "")
+            + (isSystem ? " is-system" : "");
+          const sysPill = isSystem
+            ? `<span class="ic-system-pill" title="Mandatory plugin — managed via /admin/marketplaces">SYSTEM</span>`
+            : "";
+          const cell = document.createElement("label");
+          cell.className = cellClasses;
+          cell.innerHTML = `
+            <input type="checkbox" ${granted || isSystem ? "checked" : ""} ${isSystem ? "disabled" : ""}
+                   ${isSystem ? `title="System plugin — managed via /admin/marketplaces"` : ""}>
+            <div class="ic-text">
+              <div>
+                <span class="ic-name">${esc(it.name)}</span>
+                ${it.source_type ? `<span class="ic-src">${esc(it.source_type)}</span>` : ""}
+                ${sysPill}
+              </div>
+              ${(it.version || it.category) ? `<div class="ic-meta">
+                ${it.version ? `v${esc(it.version)}` : ""}${it.version && it.category ? " · " : ""}${it.category ? esc(it.category) : ""}
+              </div>` : ""}
+              ${it.description ? `<div class="ic-desc">${esc(it.description)}</div>` : ""}
+            </div>
+          `;
+          const cb = cell.querySelector("input");
+          if (!isSystem) {
+            cb.addEventListener("change", () => toggleGrant(cb, cell, rt.type_key, it.resource_id));
+          }
+          grid.appendChild(cell);
+        }
+      }
+      blockEl.querySelector('[data-toggle="collapse"]').addEventListener("click", e => {
+        if (e.target.closest("[data-bulk]")) return;
+        blockEl.classList.toggle("is-collapsed");
+      });
+      blockEl.querySelector('[data-bulk="all"]').addEventListener("click", () =>
+        bulkSet(rt.type_key, items, true));
+      blockEl.querySelector('[data-bulk="none"]').addEventListener("click", () =>
+        bulkSet(rt.type_key, items, false));
+      section.appendChild(blockEl);
+    }
+
+    if (sectionItemCount > 0 || !ft) {
+      body.appendChild(section);
+    }
+  }
+}
+
+async function toggleGrant(checkbox, cell, resource_type, resource_id) {
+  const grant = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    if (grant) {
+      const r = await fetch(GRANTS_API, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          group_id: state.activeGroupId,
+          resource_type, resource_id,
+        }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        toast("Grant failed: " + (err.detail || r.status), "error");
+        checkbox.checked = false;
+        return;
+      }
+      const created = await r.json();
+      state.grants.push({
+        id: created.id, group_id: state.activeGroupId,
+        resource_type, resource_id,
+      });
+      cell.classList.add("is-granted");
+    } else {
+      const existing = findGrant(state.activeGroupId, resource_type, resource_id);
+      if (!existing) { return; }
+      const r = await fetch(`${GRANTS_API}/${encodeURIComponent(existing.id)}`, {
+        method: "DELETE", credentials: "include",
+      });
+      if (!r.ok) {
+        toast("Revoke failed: " + r.status, "error");
+        checkbox.checked = true;
+        return;
+      }
+      state.grants = state.grants.filter(g => g.id !== existing.id);
+      cell.classList.remove("is-granted");
+    }
+    refreshCounts();
+  } catch (e) {
+    toast("Network error: " + e.message, "error");
+    checkbox.checked = !grant;
+  } finally {
+    checkbox.disabled = false;
+  }
+}
+
+async function bulkSet(resource_type, items, grant) {
+  if (!state.activeGroupId) return;
+  for (const it of items) {
+    // v39: skip system plugins — the API refuses to revoke them and a
+    // bulk grant on a checkbox that was already auto-granted by
+    // mark_system is a noop. Lets "Grant all" / "Revoke all" finish
+    // cleanly without 409s littering the toast log.
+    if (it.is_system) continue;
+    const has = isGranted(state.activeGroupId, resource_type, it.resource_id);
+    if (grant === has) continue;
+    try {
+      if (grant) {
+        const r = await fetch(GRANTS_API, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            group_id: state.activeGroupId,
+            resource_type, resource_id: it.resource_id,
+          }),
+        });
+        if (!r.ok) continue;
+        const created = await r.json();
+        state.grants.push({
+          id: created.id, group_id: state.activeGroupId,
+          resource_type, resource_id: it.resource_id,
+        });
+      } else {
+        const existing = findGrant(state.activeGroupId, resource_type, it.resource_id);
+        if (!existing) continue;
+        const r = await fetch(`${GRANTS_API}/${encodeURIComponent(existing.id)}`, {
+          method: "DELETE", credentials: "include",
+        });
+        if (!r.ok) continue;
+        state.grants = state.grants.filter(g => g.id !== existing.id);
+      }
+    } catch (_e) { /* ignore */ }
+  }
+  toast(`${grant ? "Grant" : "Revoke"} all applied`, "success");
+  renderDetail();
+  refreshCounts();
+}
+
+function refreshCounts() {
+  // Group list badges + detail sub-header.
+  const grantedCount = state.grants.filter(g => g.group_id === state.activeGroupId).length;
+  document.getElementById("detail-sub").textContent =
+    `${grantedCount} resource${grantedCount === 1 ? "" : "s"} granted`;
+  document.querySelectorAll(".group-item").forEach(li => {
+    const gid = li.dataset.id;
+    const badge = li.querySelector(".group-count");
+    if (badge) badge.textContent = state.grants.filter(g => g.group_id === gid).length;
+  });
+  // Per-block counts inside the rendered tree
+  document.querySelectorAll(".rt-section").forEach(section => {
+    const typeDisplay = section.querySelector(".rt-section-head").textContent;
+    const rt = state.resources.find(r => r.type_display === typeDisplay);
+    if (!rt) return;
+    section.querySelectorAll(".mp-block").forEach(blockEl => {
+      const blockName = blockEl.querySelector(".mp-block-head h4").textContent;
+      const block = rt.blocks.find(b => b.name === blockName);
+      if (!block) return;
+      const visibleItems = Array.from(blockEl.querySelectorAll(".item-cell"));
+      const grantedHere = visibleItems.filter(c => c.classList.contains("is-granted")).length;
+      blockEl.querySelector(".mp-block-head .count").textContent =
+        `${grantedHere}/${visibleItems.length}`;
+    });
+  });
+}
+
+// Filter (resources tab)
+document.getElementById("resources-filter").addEventListener("input", e => {
+  state.filter = e.target.value;
+  renderResources();
+});
+
+// Pre-select a group via ?group=<id> deep-link from /admin/groups/{id}.
+// Pre-filter to a table via #table:<id> deep-link from /admin/tables's
+// per-row Manage access button — drops the table_id into the resource
+// filter so the operator sees just that row once they pick a group.
+async function bootstrap() {
+  await loadOverview();
+  const params = new URLSearchParams(window.location.search);
+  const target = params.get("group");
+  if (target && state.groups.some(g => g.id === target)) {
+    selectGroup(target);
+  }
+  // Hash-based deep link, e.g. #table:in.c-sales.orders → pre-fill the
+  // resource filter with the table_id. The filter is name-substring based
+  // and tables come through with the table_id as their `name`, so this
+  // narrows the visible items to just the clicked row across all groups.
+  const hash = window.location.hash || "";
+  if (hash.startsWith("#table:")) {
+    const tableId = decodeURIComponent(hash.slice("#table:".length));
+    if (tableId) {
+      const filterEl = document.getElementById("resources-filter");
+      if (filterEl) {
+        filterEl.value = tableId;
+        state.filter = tableId;
+        renderResources();
+      }
+    }
+  }
+}
+bootstrap();
+</script>
+{% endblock %}

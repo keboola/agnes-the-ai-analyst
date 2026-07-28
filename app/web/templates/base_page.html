@@ -1,0 +1,39 @@
+{#
+  Intermediate content-page layout (#367 Tier 2).
+
+  Sits between `base_ds.html` (the canonical design-system base — CSS load
+  order, `ds.*` macros, production nav, `.container` shell, global JS) and the
+  leaf content pages, so a page gets the standard chrome — hero + toolbar +
+  body — WITHOUT re-implementing it in a per-page `<style>` block or opting out
+  of the canonical container width.
+
+  Usage (leaf template):
+
+      {% extends "base_page.html" %}
+      {% set page_hero_eyebrow  = "Users & Access" %}
+      {% set page_hero_title    = "Users" %}
+      {% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
+
+      {% block toolbar %}
+        <input id="user-search" …>
+        <button class="btn btn-primary">+ Add user</button>
+      {% endblock %}
+
+      {% block page %}
+        <table class="ds-table">…</table>
+      {% endblock %}
+
+  - The hero renders only when `page_hero_title` is set (`_page_hero.html`
+    self-guards), so a page can omit it.
+  - Opt into a wider shell with `{% block container_modifier %}container--wide{% endblock %}`
+    (inherited from base_ds.html) — never a per-page `max-width` override.
+  - Leaf pages should carry NO inline `<style>` and NO `.container:has()` /
+    `.X-page { max-width }` rules; the anti-drift contract test enforces this.
+#}
+{% extends "base_ds.html" %}
+
+{% block content %}
+{% include "_page_hero.html" %}
+{% block toolbar %}{% endblock %}
+{% block page %}{% endblock %}
+{% endblock %}

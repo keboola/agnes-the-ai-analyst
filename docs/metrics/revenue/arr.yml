@@ -1,0 +1,29 @@
+name: arr
+display_name: Annual Recurring Revenue
+category: revenue
+type: sum
+unit: USD
+grain: monthly
+table: subscriptions
+expression: "SUM(mrr_amount) * 12"
+time_column: billing_date
+description: "Annual Recurring Revenue — MRR annualized. Standard SaaS valuation metric used for board reporting and investor communications."
+dimensions:
+  - plan_type
+  - region
+synonyms:
+  - annual_revenue
+  - annualized_revenue
+  - annualized_mrr
+notes:
+  - "ARR = MRR * 12 — snapshot at end of period"
+  - "Not a trailing 12-month sum; it is the current MRR extrapolated to a year"
+  - "Excludes one-time and non-recurring revenue"
+sql: |
+  SELECT
+      DATE_TRUNC('month', billing_date) AS month,
+      SUM(mrr_amount) * 12 AS arr
+  FROM subscriptions
+  WHERE status = 'active'
+  GROUP BY 1
+  ORDER BY 1

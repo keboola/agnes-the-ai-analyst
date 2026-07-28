@@ -1,0 +1,344 @@
+{% extends "base_page.html" %}
+{% block title %}Store submissions — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Agent Experience" %}
+{% set page_hero_title = "Flea Submissions" %}
+{% set page_hero_subtitle = "Plugin / skill / agent submissions awaiting review." %}
+
+{% block head_extra %}
+<style>
+
+  .subs-form {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(140px, 1fr)) auto auto;
+    gap: 8px;
+    margin-bottom: 12px;
+    align-items: end;
+  }
+  .subs-form label { font-size: 11px; color: var(--text-secondary, #6b7280); text-transform: uppercase; letter-spacing: 0.4px; display: block; margin-bottom: 4px; }
+  .subs-form input, .subs-form select {
+    width: 100%; padding: 6px 10px; font-size: 13px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    background: var(--surface, #fff); color: var(--text, #111827);
+  }
+  /* `.submit-btn` / `.reset-btn` rules deleted — form actions render
+     via `ds.button(variant='primary'|'secondary')` carrying canonical
+     .btn family. Visual delta: Apply was custom-black, now canonical
+     green primary. */
+
+  .subs-status-chips { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .subs-status-chips a {
+    text-decoration: none; padding: 6px 12px; border-radius: 6px;
+    border: 1px solid var(--border, #e5e7eb); color: var(--text, #111827);
+    font-size: 12px; font-weight: 500;
+  }
+  .subs-status-chips a.active {
+    background: var(--text, #111827); color: var(--surface, #fff);
+    border-color: var(--text, #111827);
+  }
+
+  .subs-filter-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; margin-bottom: 12px;
+    background: #dbeafe; color: #1e40af; border-radius: 999px;
+    font-size: 12px; font-weight: 500;
+  }
+  .subs-filter-chip a { color: inherit; text-decoration: none; }
+
+  .subs-table-wrap {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow-x: auto;
+  }
+  .subs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .subs-table thead th {
+    text-align: left; padding: 12px 16px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    white-space: nowrap;
+  }
+  .subs-table tbody td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: top;
+  }
+  .subs-table tbody tr { cursor: pointer; }
+  .subs-table tbody tr:last-child td { border-bottom: none; }
+  .subs-table tbody tr:hover { background: var(--border-light, #fafafa); }
+  .subs-table .ts { white-space: nowrap; color: var(--text-secondary, #6b7280); font-variant-numeric: tabular-nums; }
+  .subs-table .submitter a { color: var(--text-secondary, #4b5563); text-decoration: none; font-size: 12px; }
+  .subs-table .submitter a:hover { text-decoration: underline; color: var(--text, #111827); }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .badge.pending_inline,
+  .badge.pending_llm   {
+    background: #fef3c7; color: #92400e;
+    /* Subtle pulse so admins scanning the queue see in-flight reviews. */
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+  }
+  .badge.approved      { background: #d1fae5; color: #065f46; }
+  .badge.overridden    { background: #dbeafe; color: #1e40af; }
+  .badge.blocked_inline,
+  .badge.blocked_llm,
+  .badge.review_error  { background: #fee2e2; color: #991b1b; }
+  .badge.archived      { background: #e5e7eb; color: #374151; }
+  .badge.deleted       { background: #4b5563; color: #f3f4f6; }
+
+  .findings {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+    color: var(--text-secondary, #6b7280); max-width: 540px;
+    word-break: break-word; white-space: pre-wrap;
+  }
+
+  .subs-paging {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 16px; font-size: 12px; color: var(--text-secondary, #6b7280);
+    border-top: 1px solid var(--border-light, #f3f4f6);
+  }
+  .subs-paging a, .subs-paging .disabled {
+    padding: 4px 10px; border-radius: 6px; text-decoration: none;
+    color: var(--text, #111827); border: 1px solid var(--border, #e5e7eb);
+    margin: 0 2px;
+  }
+  .subs-paging .disabled { opacity: 0.4; pointer-events: none; }
+  .subs-paging select {
+    padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff); font-size: 12px;
+  }
+
+  .empty {
+    padding: 40px 16px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+</style>
+{% endblock %}
+
+{% block page %}
+{# Design-system component macros — form Apply/Reset buttons render via
+   `ds.button` (auto-imported by base_ds). Status filter chips, status
+   badges, .subs-table stay page-local. #}
+{% set base_qs %}
+{%- if status_filter %}status={{ status_filter }}&{% endif -%}
+{%- if submitter_filter %}submitter={{ submitter_filter }}&{% endif -%}
+{%- if type_filter %}type={{ type_filter }}&{% endif -%}
+{%- if name_filter %}name={{ name_filter }}&{% endif -%}
+{%- if version_filter %}version={{ version_filter }}&{% endif -%}
+{%- if sort_filter %}sort={{ sort_filter }}&{% endif -%}
+{%- if order_filter %}order={{ order_filter }}&{% endif -%}
+{%- endset %}
+
+{% set base_qs_no_sort %}
+{%- if status_filter %}status={{ status_filter }}&{% endif -%}
+{%- if submitter_filter %}submitter={{ submitter_filter }}&{% endif -%}
+{%- if type_filter %}type={{ type_filter }}&{% endif -%}
+{%- if name_filter %}name={{ name_filter }}&{% endif -%}
+{%- if version_filter %}version={{ version_filter }}&{% endif -%}
+{%- endset %}
+
+{# Sort-link helper: clicking a sortable header toggles asc/desc on
+   that column while preserving every active filter. Default order on
+   first click of any column except created_at is ascending; clicking
+   the active column flips it. #}
+{% macro sort_link(col, label) -%}
+  {% set is_active = (sort_filter == col) %}
+  {% set new_order = "desc" if (is_active and order_filter == "asc") else ("asc" if is_active else ("desc" if col == "created_at" else "asc")) %}
+  <a href="?{{ base_qs_no_sort }}sort={{ col }}&order={{ new_order }}"
+     style="color:inherit; text-decoration:none;">
+    {{ label }}{% if is_active %}{{ " ↓" if order_filter == "desc" else " ↑" }}{% endif %}
+  </a>
+{%- endmacro %}
+
+{# Format bytes to KB for display. Returns "—" when None. #}
+{% macro fmt_size(b) -%}
+  {%- if b is none -%}—{%- elif b < 1024 -%}{{ b }} B{%- elif b < 1048576 -%}{{ "%.1f"|format(b / 1024) }} KB{%- else -%}{{ "%.1f"|format(b / 1048576) }} MB{%- endif -%}
+{%- endmacro %}
+
+<div class="subs-page">
+  <form class="subs-form" method="get" action="/admin/store/submissions">
+    {# Preserve status filter when submitting other filters. #}
+    {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
+    {% if submitter_filter %}<input type="hidden" name="submitter" value="{{ submitter_filter }}">{% endif %}
+    <div>
+      <label for="f-type">Type</label>
+      <select id="f-type" name="type">
+        <option value="" {% if not type_filter %}selected{% endif %}>All</option>
+        <option value="skill"  {% if type_filter == 'skill'  %}selected{% endif %}>Skill</option>
+        <option value="agent"  {% if type_filter == 'agent'  %}selected{% endif %}>Agent</option>
+        <option value="plugin" {% if type_filter == 'plugin' %}selected{% endif %}>Plugin</option>
+      </select>
+    </div>
+    <div>
+      <label for="f-name">Name contains</label>
+      <input id="f-name" name="name" type="text" value="{{ name_filter }}" placeholder="e.g. summarizer">
+    </div>
+    <div>
+      <label for="f-version">Version contains</label>
+      <input id="f-version" name="version" type="text" value="{{ version_filter }}" placeholder="e.g. 1.0">
+    </div>
+    <div>
+      <label for="f-limit">Per page</label>
+      <select id="f-limit" name="limit">
+        {% for n in [25, 50, 100, 200] %}
+        <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {{ ds.button('Apply', variant='primary', type='submit') }}
+    {{ ds.button('Reset', variant='secondary',
+                 href='/admin/store/submissions') }}
+  </form>
+
+  {% if submitter_filter %}
+  <div class="subs-filter-chip">
+    Submitter: <strong>{{ submitter_email or submitter_filter }}</strong>
+    <a href="/admin/store/submissions{% if status_filter or type_filter or name_filter or version_filter %}?{% if status_filter %}status={{ status_filter }}&{% endif %}{% if type_filter %}type={{ type_filter }}&{% endif %}{% if name_filter %}name={{ name_filter }}&{% endif %}{% if version_filter %}version={{ version_filter }}{% endif %}{% endif %}">✕ clear</a>
+  </div>
+  {% endif %}
+
+  <div class="subs-status-chips">
+    {% set _common %}{% if submitter_filter %}submitter={{ submitter_filter }}&{% endif %}{% if type_filter %}type={{ type_filter }}&{% endif %}{% if name_filter %}name={{ name_filter }}&{% endif %}{% if version_filter %}version={{ version_filter }}&{% endif %}{% endset %}
+    {# "All" excludes lifecycle-end states (archived, deleted) by default
+       — admin queue stays focused on actionable rows. The Archived /
+       Deleted chips opt back in. #}
+    <a href="/admin/store/submissions{% if _common %}?{{ _common[:-1] }}{% endif %}" class="{{ 'active' if not status_filter else '' }}">All</a>
+    {% set _pending = "pending_llm,pending_inline" %}
+    <a href="/admin/store/submissions?{{ _common }}status={{ _pending }}" class="{{ 'active' if status_filter == _pending else '' }}">Pending</a>
+    {# Inline failures on the upload path are hard-rejected and create
+       no rows — the only producer of `blocked_inline` post-v30 is the
+       admin Rescan flow, which re-runs inline checks against an
+       already-quarantined bundle. Include it here so an admin who
+       triggers a rescan sees the result in their default queue
+       instead of having to scroll to 'All'. Legacy `blocked_inline`
+       rows from pre-v30 instances also surface here, which is fine —
+       same actionable state. #}
+    {% set _needs = "blocked_inline,blocked_llm,review_error" %}
+    <a href="/admin/store/submissions?{{ _common }}status={{ _needs }}" class="{{ 'active' if status_filter == _needs else '' }}">Needs review</a>
+    <a href="/admin/store/submissions?{{ _common }}status=approved" class="{{ 'active' if status_filter == 'approved' else '' }}">Approved</a>
+    <a href="/admin/store/submissions?{{ _common }}status=overridden" class="{{ 'active' if status_filter == 'overridden' else '' }}">Overridden</a>
+    <a href="/admin/store/submissions?{{ _common }}status=archived" class="{{ 'active' if status_filter == 'archived' else '' }}">Archived</a>
+    <a href="/admin/store/submissions?{{ _common }}status=deleted" class="{{ 'active' if status_filter == 'deleted' else '' }}">Deleted</a>
+  </div>
+
+  <div class="subs-table-wrap">
+    {% if items %}
+    <table class="subs-table">
+      <thead>
+        <tr>
+          <th>{{ sort_link("created_at", "When") }}</th>
+          <th>Submitter</th>
+          <th>Type / {{ sort_link("name", "name") }}</th>
+          <th title="Human version index (v1, v2, …) derived from the entity's version_history. Hash shown below.">v#</th>
+          <th>Hash</th>
+          <th>{{ sort_link("status", "Status") }}</th>
+          <th>{{ sort_link("file_size", "Size") }}</th>
+          <th>Findings</th>
+          <th>Model</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in items %}
+        <tr data-href="/admin/store/submissions/{{ s.id }}">
+          <td class="ts">{% if s.created_at %}<time datetime="{{ s.created_at.isoformat() }}">{{ s.created_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</td>
+          <td class="submitter">
+            {# Filter-by-submitter link. stopPropagation in JS so row click is suppressed when clicking the email. #}
+            <a href="?{{ base_qs }}submitter={{ s.submitter_id }}" data-noprop="1">{{ s.submitter_email or s.submitter_id }}</a>
+          </td>
+          <td>
+            <span style="color: var(--text-secondary, #6b7280); font-size: 11px;">{{ s.type }}</span>
+            <strong>{{ s.name | store_display_name }}</strong>
+          </td>
+          <td style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+            {%- if s.version_no -%}
+              <strong>v{{ s.version_no }}</strong>
+              {%- if s.entity_version_no and s.entity_version_no == s.version_no %}
+              <span style="display:inline-block;padding:1px 5px;margin-left:4px;border-radius:999px;background:#d1fae5;color:#065f46;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;">current</span>
+              {%- endif %}
+            {%- else -%}
+              <span style="color: var(--text-secondary, #9ca3af);">—</span>
+            {%- endif -%}
+          </td>
+          <td><code style="font-size:11px;">{{ s.version[:12] if s.version else "" }}</code></td>
+          <td><span class="badge {{ s.status }}">{{ s.status }}</span></td>
+          <td style="white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-secondary, #6b7280);">{{ fmt_size(s.file_size) }}</td>
+          <td class="findings">
+            {%- if s.inline_checks and s.inline_checks.static_security and s.inline_checks.static_security.findings -%}
+              {%- for f in s.inline_checks.static_security.findings %}
+              [{{ f.severity }}] {{ f.file }}:{{ f.line }} — {{ f.reason }}
+              {%- endfor %}
+            {%- endif -%}
+            {%- if s.inline_checks and s.inline_checks.manifest and s.inline_checks.manifest.issues %}
+            manifest: {{ s.inline_checks.manifest.issues | join(", ") }}
+            {%- endif -%}
+            {%- if s.llm_findings and s.llm_findings.summary %}
+            llm: {{ s.llm_findings.risk_level }} — {{ s.llm_findings.summary }}
+            {%- endif -%}
+            {%- if s.llm_findings and s.llm_findings.error %}
+            error: {{ s.llm_findings.error }}
+            {%- endif -%}
+          </td>
+          <td><span style="font-size: 11px; color: var(--text-secondary, #6b7280);">{{ s.reviewed_by_model or "" }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="subs-paging">
+      <div>
+        {% set first = skip + 1 if total else 0 %}
+        {% set last = skip + items|length %}
+        Showing {{ first }}–{{ last }} of {{ total }}
+      </div>
+      <div>
+        {% set prev_skip = (skip - limit) if (skip - limit) > 0 else 0 %}
+        {% if skip > 0 %}
+          <a href="?{{ base_qs }}limit={{ limit }}&skip={{ prev_skip }}">‹ Prev</a>
+        {% else %}
+          <span class="disabled">‹ Prev</span>
+        {% endif %}
+        page {{ current_page }} of {{ pages }}
+        {% if current_page < pages %}
+          <a href="?{{ base_qs }}limit={{ limit }}&skip={{ skip + limit }}">Next ›</a>
+        {% else %}
+          <span class="disabled">Next ›</span>
+        {% endif %}
+      </div>
+    </div>
+
+    {% else %}
+    <div class="empty">No submissions match the current filter.</div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+(function () {
+  // Row click → detail page; suppress when clicking the submitter-filter link.
+  document.querySelectorAll('.subs-table tbody tr[data-href]').forEach((tr) => {
+    tr.addEventListener('click', (ev) => {
+      if (ev.target.closest('a[data-noprop]')) return;
+      window.location.href = tr.dataset.href;
+    });
+  });
+
+  // If any visible row is pending_*, auto-refresh the list every 5s so
+  // admins watching the queue see verdicts land without a manual reload.
+  // Stops once no pending rows remain.
+  const hasPending = !!document.querySelector(
+    '.badge.pending_inline, .badge.pending_llm'
+  );
+  if (hasPending) {
+    setTimeout(() => window.location.reload(), 5000);
+  }
+})();
+</script>
+{% endblock %}

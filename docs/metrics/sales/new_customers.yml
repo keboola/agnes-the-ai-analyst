@@ -1,0 +1,36 @@
+name: new_customers
+display_name: New Customers
+category: sales
+type: count
+unit: customers
+grain: monthly
+table: orders
+expression: "COUNT(DISTINCT customer_id)"
+time_column: order_date
+description: "New Customers — the count of customers placing their first-ever order in a given month."
+dimensions:
+  - channel
+  - region
+synonyms:
+  - new_logos
+  - first_time_buyers
+  - customer_acquisition
+notes:
+  - "A customer is 'new' only if they have no prior orders in any historical period"
+  - "Exclude internal test accounts and employees from the count"
+  - "Use acquisition channel (UTM/referral) from first order for attribution"
+sql: |
+  WITH first_orders AS (
+      SELECT
+          customer_id,
+          MIN(order_date) AS first_order_date
+      FROM orders
+      WHERE status != 'cancelled'
+      GROUP BY customer_id
+  )
+  SELECT
+      DATE_TRUNC('month', first_order_date) AS month,
+      COUNT(DISTINCT customer_id) AS new_customers
+  FROM first_orders
+  GROUP BY 1
+  ORDER BY 1

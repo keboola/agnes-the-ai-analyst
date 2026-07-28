@@ -1,0 +1,6 @@
+[Unit]
+Description=Agnes watchdog — incident signature checks
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/agnes-watchdog.sh

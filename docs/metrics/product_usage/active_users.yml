@@ -1,0 +1,29 @@
+name: active_users
+display_name: Monthly Active Users
+category: product_usage
+type: count
+unit: users
+grain: monthly
+table: user_events
+expression: "COUNT(DISTINCT user_id)"
+time_column: event_date
+description: "Monthly Active Users (MAU) — the count of unique users who performed at least one event in a given month."
+dimensions:
+  - feature
+  - plan_type
+synonyms:
+  - mau
+  - monthly_actives
+  - active_users_monthly
+notes:
+  - "A user counts as active if they trigger any tracked event within the month"
+  - "Distinguish from logins-only — prefer meaningful engagement events"
+  - "Filter internal/test accounts before aggregating"
+sql: |
+  SELECT
+      DATE_TRUNC('month', event_date) AS month,
+      COUNT(DISTINCT user_id) AS active_users
+  FROM user_events
+  WHERE event_type != 'internal'
+  GROUP BY 1
+  ORDER BY 1

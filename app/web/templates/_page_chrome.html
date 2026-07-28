@@ -1,0 +1,13 @@
+{# Page-background tint for the redesign scopes (/store, /home,
+   /setup-advanced). Canonical `.container` (width + gutters) now
+   lives in style-custom.css and applies to every page — this
+   partial only sets the body background so it visually matches the
+   gradient hero card sitting on top. Other pages keep the default
+   `--background` from :root. #}
+<style>
+body:has(.store-page),
+body:has(.home-mock),
+body:has(.advanced-mock) {
+    background: #F9FAFB;
+}
+</style>

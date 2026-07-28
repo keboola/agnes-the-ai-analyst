@@ -1,0 +1,174 @@
+# Claude Code
+.claude/*
+!.claude/agents/
+!.claude/skills/
+!.claude/commands/
+!.claude/settings.json
+CLAUDE.local.md
+
+# Local dev data (copied from server for testing)
+dev_data/
+session-analysis/
+
+# CLI sync artifacts (local parquets + DuckDB)
+server/
+user/
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env*.local
+
+# Operating System
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+!cli/lib/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+prototypes/*
+scripts/metadata_writer/proposals/*
+
+# Build outputs
+dist/
+build/
+out/
+target/
+
+# SSH keys
+.ssh/
+
+# Instance configuration (contains secrets and instance-specific values)
+config/instance.yaml
+config/data_description.md
+
+# Instance-specific data description (generated per-instance)
+docs/data_description.md
+
+# Project-specific: Data directory
+# Downloaded source data - never commit
+data/
+
+# Metadata tooling - entire folder
+# Tooling for metadata enrichment - not part of main application
+metadata_tooling/
+
+# Internal notes (not for git)
+temp/
+docs/schema.yml
+docs/datasets/*/schema.yml
+
+# Agent-generated reports (not part of codebase)
+.audit/
+docs/AGENT-REPORTS/
+
+# Git worktrees
+.worktrees/
+
+# Internal transcripts and meeting notes
+docs/ZS_PADAK_*
+.github/workflows/ci.yml
+/auth/
+/tmp/
+
+# GCP service account keys — never commit
+*-key.json
+/agnes-deploy-*.json
+
+# Vendor-loaded design mocks pulled into the worktree for plan-phase reference.
+# These contain customer-specific tokens (hostnames, plugin names, brand strings)
+# and cannot ship in OSS commit history per CLAUDE.md vendor-agnostic policy.
+# Sanitize and replace with placeholders before committing any reference content.
+docs/brainstorms/agnes-home-mock-*.html
+
+# Brainstorms + plans authored against this repo. They typically reference
+# customer-specific mocks, plugin names, or org context that has not been
+# generalized for OSS. Keep them local; lift sanitized excerpts into
+# docs/operator/ or docs/decisions/ when ready to ship.
+docs/brainstorms/
+docs/plans/
+docker-compose.local-port8001.yml
+
+# Dev-helper sed scripts used during one-shot mass refactors —
+# these belong on a personal dev branch, not in the production tree.
+scripts/_*.py
+tests/e2e/_videos/
+.agnes-e2e.env
