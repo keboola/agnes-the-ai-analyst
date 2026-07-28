@@ -22,6 +22,45 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.4] - 2026-07-28
+
+### Added
+
+- **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
+  with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
+  carrying a bare `*` (implicit `SELECT *`), now prints an advisory stderr
+  warning before proceeding — making the `CLAUDE.md` query rails mechanical at
+  the point the fetch is issued. WARN-only: it never blocks the fetch, and the
+  `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
+  Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
+
+## [0.77.3] - 2026-07-28
+
+### Added
+
+- Activity Center timeline rows now carry a server-computed `source`
+  (web/cli/scheduler/system/…) so every consumer classifies rows by one rule.
+
+### Changed
+
+### Fixed
+
+- Audit rows record `users.id` in `user_id` everywhere — the chat,
+  corporate-memory governance, authoring-suggestion, and Slack-binding
+  writers previously stored the email, splitting one person into two
+  Activity Center facet entries. Schema v104 backfills historical rows
+  (exact single-account email matches only).
+- Scheduler-tick audit writers (`run_*`) stamp `client_kind`, and source
+  classification uses the shared `action LIKE 'run_%'` rule instead of a
+  stale hardcoded action list — scheduler traffic no longer floods the
+  "other" bucket in the Activity Center source facet.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.77.3] - 2026-07-28
 
 ### Added
