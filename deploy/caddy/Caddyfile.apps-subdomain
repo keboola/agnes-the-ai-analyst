@@ -5,5 +5,8 @@
 	reverse_proxy app:8000 {
 		header_up X-Forwarded-Proto https
 		header_up X-Forwarded-Host {host}
+		# Immediate flush for SSE (see the main Caddyfile for the full
+		# rationale) — keeps streaming responses unbuffered on this vhost too.
+		flush_interval -1
 	}
 }
