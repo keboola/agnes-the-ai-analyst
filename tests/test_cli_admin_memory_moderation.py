@@ -165,3 +165,22 @@ class TestUnrequire:
             result = runner.invoke(app, ["admin", "memory", "unrequire", "item_1", "ghost"])
         assert result.exit_code == 1
         assert "ghost" in result.output
+
+    def test_unrequire_error_still_reports_prior_successes(self):
+        """A mid-loop server error must not swallow already-applied demotions.
+
+        The per-item fan-out has no rollback: items that returned 200 before
+        the failing one are demoted server-side. The command must print them
+        (plus a warning) before exiting non-zero (Devin Review on #1091).
+        """
+        with patch(
+            "cli.commands.memory_admin.api_post",
+            side_effect=[
+                _resp(200, {"id": "item_1", "is_required": False}),
+                _resp(500, {"detail": "boom"}, text="boom"),
+            ],
+        ):
+            result = runner.invoke(app, ["admin", "memory", "unrequire", "item_1", "item_2"])
+        assert result.exit_code == 1
+        assert "unrequire: item_1" in result.output
+        assert "already demoted" in result.output

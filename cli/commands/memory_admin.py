@@ -325,6 +325,18 @@ def unrequire(
         elif resp.status_code == 404:
             results["not_found"].append(item_id)
         else:
+            # The per-item fan-out has no server-side rollback: items that
+            # already returned 200 are demoted for good. Surface them before
+            # aborting so the user isn't misled into thinking nothing changed
+            # (Devin Review on #1091) — mirrors _moderate, which reports
+            # success and not_found together from its atomic batch response.
+            for done_id in results["success"]:
+                typer.echo(f"unrequire: {done_id}")
+            if results["success"]:
+                typer.echo(
+                    "warn: the items above were already demoted before the error — re-running is safe (idempotent).",
+                    err=True,
+                )
             _fail(resp, "unrequire")
     if as_json:
         typer.echo(_json.dumps(results, indent=2))
