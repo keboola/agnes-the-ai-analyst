@@ -374,9 +374,11 @@
     </div>
   </section>
 
-  <!-- Feature flags — read-only inventory (#1022). Toggling still happens
-       per-section above (or via an env var) — this panel is display-only,
-       fed by the `feature_flags` block in GET /api/admin/server-config. -->
+  <!-- Feature flags — read-only inventory (#1022). A flag is editable in
+       the UI only if its config section is registered as editable (currently
+       guardrails and library); all others must be set via their env var or
+       instance.yaml. This panel is display-only, fed by the `feature_flags`
+       block in GET /api/admin/server-config. -->
   <section class="cfg-section" id="feature-flags-section">
     <header>
       <div>
@@ -384,9 +386,10 @@
         <div class="section-help">
           Every flag registered in <code>app.instance_config.FEATURE_FLAGS</code>,
           resolved <strong>env var &gt; instance.yaml &gt; default</strong>
-          (see <code>docs/feature-flags.md</code>). Read-only — flip a flag
-          via its config section above, the admin overlay, or the listed
-          env var.
+          (see <code>docs/feature-flags.md</code>). Read-only summary — a flag
+          is editable in the UI only if its config section appears above
+          (currently <strong>guardrails</strong> and <strong>library</strong>);
+          others must be set via their env var or instance.yaml directly.
         </div>
       </div>
     </header>
