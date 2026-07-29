@@ -330,6 +330,10 @@ _LIBRARY_SHARING_REASON = (
 )
 
 _EXEMPT: dict[str, str] = {
+    "/api/me/display-name": (
+        "self-service display-name edit (issue #1036) — UI-only affordance on "
+        "/profile; a one-field personal profile edit with no CLI/MCP analogue"
+    ),
     "/api/collections/{collection_id}/files/{file_id}/move": _LIBRARY_MOVE_REASON,
     "/api/agents": _AGENTS_REGISTRY_REASON,
     "/api/agents/{agent_id}": _AGENTS_REGISTRY_REASON,
