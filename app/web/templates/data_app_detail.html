@@ -25,24 +25,32 @@
     </div>
     <div class="info-item">
       <span class="label">State</span>
-      <span class="value"><span class="badge {{ app.badge_class }}" id="dda-state-badge">{{ app.state }}</span></span>
+      <span class="value">
+        {% if app.kind == 'linked' %}
+        <span class="badge" id="dda-state-badge">linked</span>
+        {% else %}
+        <span class="badge {{ app.badge_class }}" id="dda-state-badge">{{ app.state }}</span>
+        {% endif %}
+      </span>
     </div>
     <div class="info-item">
-      <span class="label">Owner</span>
-      <span class="value">{{ app.owner_email }}</span>
+      <span class="label">{% if app.kind == 'linked' %}Source{% else %}Owner{% endif %}</span>
+      <span class="value">{% if app.kind == 'linked' %}Keboola{% else %}{{ app.owner_email }}{% endif %}</span>
     </div>
     <div class="info-item">
       <span class="label">Description</span>
-      <span class="value">{{ app.description or "—" }}</span>
+      <span class="value" id="dda-description">{{ app.effective_description or "—" }}</span>
     </div>
+    {% if app.kind != 'linked' %}
     <div class="info-item">
       <span class="label">Deployed SHA</span>
       <span class="value"><code>{{ (app.deployed_sha or "—")[:12] }}</code></span>
     </div>
+    {% endif %}
     <div class="info-item">
       <span class="label">URL</span>
       <span class="value">
-        {% if app.state == 'running' %}
+        {% if app.kind == 'linked' or app.state == 'running' %}
         <a href="{{ app.url }}" target="_blank" rel="noopener">{{ app.url }} ↗</a>
         {% else %}
         <code>{{ app.url }}</code>
@@ -51,7 +59,7 @@
     </div>
   </div>
 
-  {% if can_manage %}
+  {% if can_manage and app.kind == 'hosted' %}
   <div class="dda-actions">
     {{ ds.button('Deploy', variant='primary', id='dda-deploy-btn') }}
     {{ ds.button('Stop', variant='secondary', id='dda-stop-btn') }}
@@ -63,6 +71,17 @@
   </div>
   {% endif %}
 
+  {% if can_manage and app.kind == 'linked' %}
+  <div class="dda-desc-section">
+    <h3>Description override</h3>
+    <p class="dda-grant-note">The ingest sync refreshes this app's description; a value here pins your own and won't be clobbered.</p>
+    <form id="dda-desc-form" class="dda-actions">
+      <input type="text" id="dda-desc-input" value="{{ app.description_override or '' }}" placeholder="Custom description…" style="flex:1;min-width:280px;" />
+      {{ ds.button('Save', variant='primary', id='dda-desc-save', type='submit') }}
+    </form>
+  </div>
+  {% endif %}
+
   <p class="dda-grant-note">
     To give another user or group access to this app, grant them
     <code>data_app:{{ app.slug }}</code> on <a href="/admin/access">/admin/access</a>.
@@ -71,7 +90,37 @@
 {% endblock %}
 
 {% block scripts %}
-{% if can_manage %}
+{% if can_manage and app.kind == 'linked' %}
+<script>
+(function () {
+  const slug = {{ app.slug | tojson }};
+  const form = document.getElementById("dda-desc-form");
+  const input = document.getElementById("dda-desc-input");
+  const descEl = document.getElementById("dda-description");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const r = await fetch(`/api/data-apps/${encodeURIComponent(slug)}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: input.value }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert("Failed: " + (err.detail || r.status));
+        return;
+      }
+      const body = await r.json();
+      descEl.textContent = body.effective_description || "—";
+    } catch (e) {
+      alert("Network error: " + e.message);
+    }
+  });
+})();
+</script>
+{% endif %}
+{% if can_manage and app.kind == 'hosted' %}
 <script>
 (function () {
   const slug = {{ app.slug | tojson }};

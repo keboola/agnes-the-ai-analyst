@@ -312,3 +312,44 @@ def test_apps_detail_anything_hits_web_route_404_not_proxy(web_env):
     resp = c.get("/apps/detail/anything", headers=_auth(web_env["owner_pat"]))
     assert resp.status_code == 404
     assert resp.json()["detail"] == "data_app_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Linked apps (v108)
+# ---------------------------------------------------------------------------
+
+
+def _create_linked_row(slug="kbc-sales", name="Sales", url="https://example.com/apps/sales", desc="synced"):
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        DataAppsRepository(conn).upsert_linked(
+            slug=slug, source_ref=f"conn1:{slug}", name=name, description=desc, external_url=url
+        )
+    finally:
+        conn.close()
+
+
+def test_list_page_shows_linked_row_with_external_open(web_env):
+    c = web_env["client"]
+    _create_linked_row()
+    resp = c.get("/apps", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 200
+    assert "kbc-sales" in resp.text
+    assert "https://example.com/apps/sales" in resp.text  # Open → external URL
+    assert ">linked<" in resp.text  # linked badge
+
+
+def test_detail_linked_hides_deploy_shows_override_form(web_env):
+    c = web_env["client"]
+    _create_linked_row()
+    resp = c.get("/apps/detail/kbc-sales", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 200
+    # linked apps have no deploy lifecycle
+    assert "dda-deploy-btn" not in resp.text
+    # admin gets the description-override affordance
+    assert "dda-desc-form" in resp.text
+    # opens at the external URL
+    assert "https://example.com/apps/sales" in resp.text
