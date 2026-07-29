@@ -62,7 +62,7 @@ Only reached when the DB file itself will not open after the WAL is discarded.
    (chmod `0o600`).
 2. `<STATE_DIR>/system.duckdb.pre-migrate` is inspected read-only via
    `_peek_schema_version` to confirm its `schema_version.version` matches the
-   running binary's `SCHEMA_VERSION` (currently `105`, in `src/db.py`).
+   running binary's `SCHEMA_VERSION` (currently `106`, in `src/db.py`).
 3. If the versions match, the snapshot is copied in as the new
    `system.duckdb` and the migration ladder re-runs (idempotent). App starts.
 4. If the versions do **not** match, auto-recovery is refused with:
@@ -299,7 +299,7 @@ print('ok' if orphan_members == 0 and orphan_grants == 0 else 'MISMATCH — inve
 
 ```bash
 curl -sf http://localhost:5000/api/health | python3 -m json.tool
-# Expected: {"status": "ok", "db_schema": "ok", "current": 105, "expected": 105, ...}
+# Expected: {"status": "ok", "db_schema": "ok", "current": 106, "expected": 106, ...}
 # (db_schema is a status string — "ok" / "mismatch" / "unreachable";
 #  the numeric schema version is in "current".)
 ```
