@@ -140,13 +140,14 @@
                    one Sharing state the caller cannot act on, so it must not
                    wear the primary tint the clickable ones use. #}
                 <span class="lib-vis lib-vis--{{ c.visibility }} lib-vis--readonly" data-vis-chip="{{ c.id }}"
-                      title="Shared with you — only the owner can change who can see this">
+                      data-tip="Shared with you — only the owner can change who can see this"
+                      aria-label="Shared with you — only the owner can change who can see this">
                   {{ _vis_icon }}{{ c.visibility_label }}
                 </span>
                 {% elif c.shareable %}
                 <button type="button" class="lib-vis lib-vis--{{ c.visibility }} lib-vis--editable"
                         data-vis-chip="{{ c.id }}" data-share="{{ c.id }}"
-                        title="{{ c.visibility_label }} — change who can see {{ c.title }}"
+                        data-tip="{{ c.visibility_label }} — change who can see {{ c.title }}"
                         aria-label="Sharing: {{ c.visibility_label }}. Change who can see {{ c.title }}">
                   {{ _vis_icon }}{{ c.visibility_label }}{{ _chevron }}
                 </button>
@@ -156,7 +157,7 @@
                    group grant nothing would read. #}
                 <button type="button" class="lib-vis lib-vis--{{ c.visibility }} lib-vis--editable"
                         data-vis-chip="{{ c.id }}" data-share-info="{{ c.id }}"
-                        title="{{ c.visibility_label }} — how sharing works for {{ c.title }}"
+                        data-tip="{{ c.visibility_label }} — how sharing works for {{ c.title }}"
                         aria-label="Sharing: {{ c.visibility_label }}. How sharing works for {{ c.title }}">
                   {{ _vis_icon }}{{ c.visibility_label }}{{ _chevron }}
                 </button>
@@ -515,6 +516,25 @@
   .lib-vis--editable:hover { border-color: color-mix(in srgb, currentColor 45%, transparent); background: color-mix(in srgb, currentColor 12%, var(--ds-surface)); }
   .lib-vis--editable:hover .lib-vis__caret { opacity: 1; }
   .lib-vis--editable:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+
+  /* Fast tooltip for the Sharing badges' `[data-tip]`. The native `title`
+     tooltip it replaces has an OS-controlled show delay (600ms+) that reads
+     as sluggish for a badge people hover just to understand its state; this
+     shows almost immediately instead. Positioned in fixed coordinates by JS
+     rather than a CSS ::after, because a ::after would be clipped by the
+     table's overflow ancestors (`.lib-table td` is `overflow: hidden`, and
+     `.lib-tablewrap` is `overflow-x: auto`, which computes `overflow-y: auto`
+     too — see the note above `.lib-tablewrap`). */
+  .lib-tip {
+    position: fixed; z-index: 500; max-width: 240px;
+    padding: 6px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4;
+    font-weight: 500; letter-spacing: normal; text-transform: none;
+    background: var(--ds-text-primary); color: var(--ds-text-inverse);
+    box-shadow: var(--ds-shadow-md); pointer-events: none;
+    opacity: 0; transform: translateY(2px);
+    transition: opacity .08s ease, transform .08s ease;
+  }
+  .lib-tip.is-visible { opacity: 1; transform: translateY(0); }
 
   /* ── Actions: one reserved slot ──
      The slot is rendered on EVERY row, empty or not, at a fixed width, so the
@@ -2449,6 +2469,68 @@
       uploadShowErr('Could not upload: ' + (err && err.message ? err.message : err));
     }
   });
+
+  // ── Fast tooltip for [data-tip] (Sharing badges) ──
+  // Replaces the native `title` tooltip, whose OS-controlled show delay
+  // reads as sluggish here. Fixed-position + appended to <body> so it isn't
+  // clipped by the table's overflow ancestors (see the `.lib-tip` CSS note).
+  const libTip = document.createElement('div');
+  libTip.className = 'lib-tip';
+  libTip.setAttribute('role', 'tooltip');
+  document.body.appendChild(libTip);
+  let libTipTimer = null;
+  let libTipTarget = null;
+
+  function positionLibTip(target) {
+    const r = target.getBoundingClientRect();
+    const tipRect = libTip.getBoundingClientRect();
+    let left = r.left + r.width / 2 - tipRect.width / 2;
+    left = Math.max(6, Math.min(left, window.innerWidth - tipRect.width - 6));
+    let top = r.top - tipRect.height - 8;
+    if (top < 4) top = r.bottom + 8;
+    libTip.style.left = left + 'px';
+    libTip.style.top = top + 'px';
+  }
+
+  function showLibTip(target) {
+    const text = target.getAttribute('data-tip');
+    if (!text) return;
+    libTip.textContent = text;
+    libTipTarget = target;
+    positionLibTip(target);
+    requestAnimationFrame(() => { if (libTipTarget === target) libTip.classList.add('is-visible'); });
+  }
+
+  function hideLibTip() {
+    clearTimeout(libTipTimer);
+    libTipTimer = null;
+    libTipTarget = null;
+    libTip.classList.remove('is-visible');
+  }
+
+  document.addEventListener('mouseover', ev => {
+    const target = ev.target.closest('[data-tip]');
+    if (!target || target === libTipTarget) return;
+    clearTimeout(libTipTimer);
+    libTipTimer = setTimeout(() => showLibTip(target), 120);
+  });
+  document.addEventListener('mouseout', ev => {
+    const target = ev.target.closest('[data-tip]');
+    if (!target || (ev.relatedTarget && target.contains(ev.relatedTarget))) return;
+    hideLibTip();
+  });
+  document.addEventListener('focusin', ev => {
+    const target = ev.target.closest('[data-tip]');
+    if (!target) return;
+    clearTimeout(libTipTimer);
+    libTipTimer = setTimeout(() => showLibTip(target), 120);
+  });
+  document.addEventListener('focusout', ev => {
+    if (ev.target.closest('[data-tip]')) hideLibTip();
+  });
+  document.addEventListener('click', hideLibTip);
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') hideLibTip(); });
+  window.addEventListener('scroll', hideLibTip, true);
 })();
 </script>
 {% endblock %}
