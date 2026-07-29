@@ -602,13 +602,20 @@
   .lib-group { --lib-bandh: 40px; }
   .lib-band { position: sticky; top: 0; z-index: 4; }
   .lib-group .fbar-grouptoggle { height: var(--lib-bandh); padding-top: 0; padding-bottom: 0; }
-  /* The column header needs an opaque background of its own: `.data-table thead`
-     paints one, but a sticky row travelling over other rows shows anything
-     translucent, and the seam under it has to survive the row borders scrolling
-     past — hence the inset shadow rather than a collapsed border. */
+  /* The column header carries the SAME surface as the rows under it — white in
+     light mode — so the group reads as one continuous list rather than a tinted
+     strip bolted onto it. The row it heads is told apart by its type and its
+     hairline, not by a fill.
+
+     It still needs a background of its own, and an OPAQUE one: `.data-table
+     thead` paints the shared tint this overrides, and a sticky row travelling
+     over other rows shows anything translucent (the cells themselves are
+     transparent over the table's surface, so inheriting is not an option here).
+     The seam under it has to survive the row borders scrolling past — hence the
+     inset shadow rather than a collapsed border. */
   .lib-table thead th {
     position: sticky; top: var(--lib-bandh); z-index: 3;
-    background: var(--ds-surface-dim);
+    background: var(--ds-surface);
     border-bottom: 0;
     box-shadow: inset 0 -1px 0 var(--ds-border);
   }

@@ -198,12 +198,13 @@
   transition: border-color var(--ds-motion-fast, .14s) ease, box-shadow var(--ds-motion-fast, .14s) ease;
 }
 /* The card IS the link to its detail page, so it must say so before it is
-   clicked: the border warms toward the accent and a shallow shadow lifts it off
-   the page. Deliberately restrained — a grid of cards all shouting on hover
-   would be noisier than the flat resting state it replaced. */
+   clicked — but with elevation alone, not a warmed border: the card lifts off
+   the page and its frame stays put. Same treatment as `.ag-card` on /agents, so
+   a grid of cards hovers identically on both surfaces. A border that changes
+   colour under the pointer also redraws the grid's own lines, which reads as
+   the layout twitching rather than as one card responding. */
 .fbar-card:hover {
-  border-color: color-mix(in srgb, var(--ds-primary) 38%, var(--ds-border));
-  box-shadow: var(--ds-shadow-sm);
+  box-shadow: var(--ds-shadow-md);
 }
 /* Keyboard focus lands on the title link; the whole card shows it, so tabbing
    through a grid is as legible as pointing at it. */

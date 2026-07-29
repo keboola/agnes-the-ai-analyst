@@ -364,14 +364,20 @@
         updateChip(chip, f, labels);
         order.push(chip);
       });
-      if (order.length && !chipClearEl) {
-        chipClearEl = document.createElement('button');
-        chipClearEl.type = 'button';
-        chipClearEl.className = 'fbar-chips__clear';
-        chipClearEl.textContent = 'Clear all';
-        chipClearEl.addEventListener('click', function () { clearFacets(); });
+      // "Clear all" trails the chips, and ONLY while there is a chip to clear.
+      // It is cached across renders (so it keeps its listener), but pushing a
+      // cached one unconditionally kept `order` non-empty forever — the row then
+      // never hid again and a lone "Clear all" sat under an unfiltered list.
+      if (order.length) {
+        if (!chipClearEl) {
+          chipClearEl = document.createElement('button');
+          chipClearEl.type = 'button';
+          chipClearEl.className = 'fbar-chips__clear';
+          chipClearEl.textContent = 'Clear all';
+          chipClearEl.addEventListener('click', function () { clearFacets(); });
+        }
+        order.push(chipClearEl);
       }
-      if (chipClearEl) order.push(chipClearEl);
       // Move only the nodes actually out of place, so an untouched chip is never
       // detached and re-inserted (which would drop focus and hover mid-edit).
       order.forEach(function (el, i) {
