@@ -34,6 +34,31 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 
 
+def exc_summary(exc: BaseException) -> str:
+    """Flatten an exception — including (Base)ExceptionGroup trees — to its
+    leaf causes.
+
+    This client's HTTP transports raise through an anyio TaskGroup, so the
+    real failure (an httpx 401, or an ``McpError`` carrying the upstream's
+    actionable message) arrives wrapped in an ExceptionGroup whose ``str()``
+    is just "unhandled errors in a TaskGroup (1 sub-exception)" — useless to
+    surface. Callers that stringify our exceptions for humans or agents
+    (admin connect probes, the passthrough 502 detail) should route through
+    this instead. First line only, deduplicated.
+    """
+    subs = getattr(exc, "exceptions", None)
+    if subs:
+        leaves: List[str] = []
+        for sub in subs:
+            s = exc_summary(sub)
+            if s not in leaves:
+                leaves.append(s)
+        return "; ".join(leaves)
+    msg = str(exc).strip()
+    first_line = msg.splitlines()[0] if msg else ""
+    return f"{type(exc).__name__}: {first_line}" if first_line else type(exc).__name__
+
+
 @dataclass
 class ToolInfo:
     name: str

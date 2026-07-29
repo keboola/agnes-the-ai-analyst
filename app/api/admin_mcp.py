@@ -48,6 +48,7 @@ from app.secrets_vault import (
 )
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
+from connectors.mcp.client import exc_summary as _exc_summary
 from src.repositories import (
     audit_repo,
     mcp_sources_repo,
@@ -343,29 +344,6 @@ def _merge_tool_patch(existing: Dict[str, Any], patch: UpdateToolRequest) -> Dic
             bool(existing.get("enabled")) if existing.get("enabled") is not None else True,
         ),
     }
-
-
-def _exc_summary(exc: BaseException) -> str:
-    """Flatten an exception — including (Base)ExceptionGroup trees — to its
-    leaf causes.
-
-    The MCP SDK's HTTP transports raise through an anyio TaskGroup, so the
-    real failure (e.g. an httpx 401 from the upstream) arrives wrapped in an
-    ExceptionGroup whose ``str()`` is just "unhandled errors in a TaskGroup
-    (1 sub-exception)" — useless in the admin UI. Surface the leaves instead,
-    first line only, deduplicated.
-    """
-    subs = getattr(exc, "exceptions", None)
-    if subs:
-        leaves: List[str] = []
-        for sub in subs:
-            s = _exc_summary(sub)
-            if s not in leaves:
-                leaves.append(s)
-        return "; ".join(leaves)
-    msg = str(exc).strip()
-    first_line = msg.splitlines()[0] if msg else ""
-    return f"{type(exc).__name__}: {first_line}" if first_line else type(exc).__name__
 
 
 def _probe_caller_user_id(src: Dict[str, Any], user: dict) -> Optional[str]:
