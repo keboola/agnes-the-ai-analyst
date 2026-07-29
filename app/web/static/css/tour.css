@@ -49,6 +49,10 @@
   border-radius: var(--ds-radius-lg, 12px);
   /* Backing plate (white gap) + a clean primary ring, so the target reads
      lifted off the dimmed page regardless of the surface behind it. */
+  /* Opaque light fill so the lifted target never shows the dark scrim through
+     a transparent / background-less zone (e.g. the My Stack search+sort+table
+     band, which otherwise reads dark grey because the scrim bleeds through). */
+  background: var(--ds-surface);
   box-shadow:
     0 0 0 6px var(--ds-surface),
     0 0 0 8px var(--ds-assistant);

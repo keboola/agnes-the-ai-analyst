@@ -816,7 +816,10 @@ html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn {
 html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn::before {
     content: '';
     position: absolute;
-    inset: -12px;
+    /* Full 44px vertical touch target, but horizontal expansion capped at 2px
+       (half the 4px inter-button gap) so adjacent buttons' hit areas can't
+       overlap — otherwise the later-painted × steals the right edge of the ↻. */
+    inset: -12px -2px;
 }
 
 html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn:hover {

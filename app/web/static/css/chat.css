@@ -2373,7 +2373,9 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
 .cloud-chat-journey-iconbtn::before {
   content: '';
   position: absolute;
-  inset: -12px;
+  /* Full 44px vertical touch target; horizontal expansion capped at 2px (half
+     the 4px inter-button gap) so the ↻ and × hit areas never overlap. */
+  inset: -12px -2px;
 }
 .cloud-chat-journey-iconbtn:hover {
   color: var(--ds-text-primary);

@@ -96,7 +96,15 @@
     // a later hover can preview the panel again — `.is-closed` is meant to
     // block the SAME hover session from immediately reopening what was just
     // closed, not to disable hover-to-preview permanently.
-    gsWrap.addEventListener("mouseleave", () => gsWrap.classList.remove("is-closed"));
+    // ...but only once nothing inside the launcher still holds focus. The
+    // toggle keeps DOM focus after a click-to-close, and Escape explicitly
+    // refocuses it, so lifting `.is-closed` while `:focus-within` is still
+    // true would let the CSS reveal reopen the panel the instant the cursor
+    // leaves. Guarding on activeElement keeps hover-to-preview working while
+    // fixing the toggle-click / Escape close paths.
+    gsWrap.addEventListener("mouseleave", () => {
+      if (!gsWrap.contains(document.activeElement)) gsWrap.classList.remove("is-closed");
+    });
   }
 
   // /chat is chat.js's turf for the LIST — bail so we never double-render or
