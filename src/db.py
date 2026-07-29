@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 105
+SCHEMA_VERSION = 106
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -477,6 +477,7 @@ CREATE TABLE IF NOT EXISTS metric_definitions (
     sql_variants    JSON,
     validation      JSON,
     source          VARCHAR DEFAULT 'manual',
+    source_ref      VARCHAR,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
 );
@@ -1541,6 +1542,7 @@ CREATE TABLE IF NOT EXISTS glossary_terms (
     see_also     VARCHAR[],
     model_uuid   VARCHAR,
     source       VARCHAR NOT NULL DEFAULT 'manual',
+    source_ref   VARCHAR,
     created_at   TIMESTAMP DEFAULT current_timestamp,
     updated_at   TIMESTAMP DEFAULT current_timestamp
 );
@@ -3823,6 +3825,7 @@ _V3_TO_V4_MIGRATIONS = [
         sql_variants    JSON,
         validation      JSON,
         source          VARCHAR DEFAULT 'manual',
+        source_ref      VARCHAR,
         created_at      TIMESTAMP DEFAULT current_timestamp,
         updated_at      TIMESTAMP DEFAULT current_timestamp
     )
@@ -6490,6 +6493,7 @@ def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
             see_also     VARCHAR[],
             model_uuid   VARCHAR,
             source       VARCHAR NOT NULL DEFAULT 'manual',
+            source_ref   VARCHAR,
             created_at   TIMESTAMP DEFAULT current_timestamp,
             updated_at   TIMESTAMP DEFAULT current_timestamp
         )
@@ -6814,7 +6818,6 @@ def _v102_to_v103(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 103")
 
 
-
 def _v103_to_v104(conn: duckdb.DuckDBPyConnection) -> None:
     """v103→v104: audit_log identity backfill — user_id values holding an
     email are rewritten to the matching users.id, but only when the email
@@ -6874,11 +6877,20 @@ def _v104_to_v105(conn: duckdb.DuckDBPyConnection) -> None:
             ) WHERE uploaded_at IS NULL
             """
         )
-    conn.execute(
-        "UPDATE usage_session_summary SET uploaded_at = "
-        "COALESCE(uploaded_at, started_at, CURRENT_TIMESTAMP)"
-    )
+    conn.execute("UPDATE usage_session_summary SET uploaded_at = COALESCE(uploaded_at, started_at, CURRENT_TIMESTAMP)")
     conn.execute("UPDATE schema_version SET version = 105")
+
+
+def _v105_to_v106(conn: duckdb.DuckDBPyConnection) -> None:
+    """v105→v106: nullable ``source_ref`` on metric_definitions +
+    glossary_terms — per-connection provenance for the multi-project
+    semantic-layer sync (2026-07-28 spec). No-op on fresh installs
+    (snapshot DDL already declares the column)."""
+    for table in ("metric_definitions", "glossary_terms"):
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        if "source_ref" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN source_ref VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 106")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7309,6 +7321,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v104→v105: usage_session_summary.uploaded_at — declared in
             # _SYSTEM_SCHEMA on fresh installs; backfill is a no-op.
             _v104_to_v105(conn)
+            # v105→v106: metric_definitions/glossary_terms.source_ref —
+            # declared in _SYSTEM_SCHEMA on fresh installs; no-op here.
+            _v105_to_v106(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7572,6 +7587,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v103_to_v104(conn)
             if current < 105:
                 _v104_to_v105(conn)
+            if current < 106:
+                _v105_to_v106(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

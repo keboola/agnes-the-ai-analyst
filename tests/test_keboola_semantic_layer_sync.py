@@ -345,7 +345,8 @@ def _seed_column_metadata(table_id: str, column_names: list[str]):
 
 def _relationship_item(name, from_id, to_id, on, rel_type="left", model_uuid="model-1"):
     return {
-        "type": "semantic-relationship", "id": f"id-{name}",
+        "type": "semantic-relationship",
+        "id": f"id-{name}",
         "attributes": {"name": name, "from": from_id, "to": to_id, "on": on, "type": rel_type, "modelUUID": model_uuid},
     }
 
@@ -650,3 +651,19 @@ class TestSyncSemanticLayerGlossary:
         assert result["glossary_created_or_updated"] == 1
         row = metric_repo().get("keboola/model-1/total_revenue")
         assert row["sql"] == 'SELECT SUM("amount") FROM "crm_orders" AS t'
+
+
+def test_metric_definitions_has_source_ref_column(tmp_path):
+    """v106: metric_definitions + glossary_terms grow a nullable
+    ``source_ref`` column — per-connection provenance for the multi-project
+    semantic-layer sync (2026-07-28 spec)."""
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+
+    conn = _open_duckdb(str(tmp_path / "d.duckdb"))
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('metric_definitions')").fetchall()}
+    gcols = {r[1] for r in conn.execute("PRAGMA table_info('glossary_terms')").fetchall()}
+    conn.close()
+    assert "source_ref" in cols
+    assert "source_ref" in gcols

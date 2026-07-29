@@ -1,0 +1,33 @@
+"""source_ref on metric_definitions + glossary_terms
+
+Mirrors DuckDB ``_v105_to_v106``. Nullable per-connection provenance for the
+multi-project Keboola semantic-layer sync (2026-07-28 spec) — later tasks
+read/write it via repo kwargs.
+
+Revision ID: 0053_semantic_source_ref_v106
+Revises: 0052_sessions_uploaded_v105
+Create Date: 2026-07-28
+
+"""
+
+from __future__ import annotations
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "0053_semantic_source_ref_v106"
+down_revision: Union[str, None] = "0052_sessions_uploaded_v105"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column("metric_definitions", sa.Column("source_ref", sa.String(), nullable=True))
+    op.add_column("glossary_terms", sa.Column("source_ref", sa.String(), nullable=True))
+
+
+def downgrade() -> None:
+    op.drop_column("glossary_terms", "source_ref")
+    op.drop_column("metric_definitions", "source_ref")

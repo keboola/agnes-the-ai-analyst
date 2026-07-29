@@ -42,6 +42,7 @@ class MetricDefinition(Base):
     sql_variants: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     validation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     source: Mapped[str] = mapped_column(String, server_default=text("'manual'"), nullable=False)
+    source_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -76,6 +77,7 @@ class GlossaryTerm(Base):
     see_also: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     model_uuid: Mapped[str | None] = mapped_column(String, nullable=True)
     source: Mapped[str] = mapped_column(String, server_default=text("'manual'"), nullable=False)
+    source_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
