@@ -63,8 +63,9 @@ class TestApprove:
             result = runner.invoke(app, ["admin", "memory", "approve", "a", "ghost"])
         assert result.exit_code == 1
         assert "ghost" in result.output
-        # "Not found" must hint the next step (command-ux playbook).
-        assert "agnes admin memory tree" in result.output
+        # "Not found" must hint the next step (command-ux playbook); approve
+        # acts on the pending queue, so the hint points there.
+        assert "agnes admin memory tree --status pending" in result.output
 
     def test_approve_server_error(self):
         with patch(
@@ -96,6 +97,18 @@ class TestReject:
 
 
 class TestRevoke:
+    def test_revoke_not_found_hint_is_not_pending_scoped(self):
+        # revoke acts on already-approved items — a ``--status pending``
+        # lookup would never surface the id (Devin review, PR #1091).
+        with patch(
+            "cli.commands.memory_admin.api_post",
+            return_value=_resp(200, {"success": [], "not_found": ["ghost"]}),
+        ):
+            result = runner.invoke(app, ["admin", "memory", "revoke", "ghost"])
+        assert result.exit_code == 1
+        assert "agnes admin memory tree" in result.output
+        assert "--status pending" not in result.output
+
     def test_revoke(self):
         with patch(
             "cli.commands.memory_admin.api_post",
