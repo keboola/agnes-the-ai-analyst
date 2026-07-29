@@ -93,20 +93,17 @@ def project_from_extract(
     are skipped. Called right after ``extract_source_async`` in the materialize
     path; ``source_id`` is the connection id used for provenance/scoping.
     """
-    import duckdb
+    from src.duckdb_conn import _open_duckdb
 
     if not extract_duckdb_path or not os.path.exists(str(extract_duckdb_path)):
         return None
-    conn = duckdb.connect(str(extract_duckdb_path), read_only=True)
-    try:
+    with _open_duckdb(str(extract_duckdb_path), read_only=True) as conn:
         tables = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
         if adapter.MATERIALIZED_TABLE not in tables:
             return None
         cur = conn.execute(f"SELECT * FROM {adapter.MATERIALIZED_TABLE}")
         cols = [d[0] for d in cur.description]
         raw_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        conn.close()
 
     records = [adapter.map_row(r) for r in raw_rows]
     linkable = [rec for rec in records if rec.external_app_id and rec.external_url]

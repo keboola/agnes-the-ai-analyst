@@ -1673,6 +1673,7 @@ KNOWN_UNTESTED = {
     "GET /api/data-apps",
     "POST /api/data-apps",
     "GET /api/data-apps/{slug}",
+    "PATCH /api/data-apps/{slug}",
     "POST /api/data-apps/{slug}/deploy",
     "POST /api/data-apps/{slug}/stop",
     "DELETE /api/data-apps/{slug}",
