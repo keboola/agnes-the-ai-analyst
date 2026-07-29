@@ -1125,6 +1125,12 @@
                     <button class="btn btn-secondary" id="batchSetAudienceBtn" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
                 </div>
             </div>
+            <div class="filter-bar">
+                <label for="reviewSearch">Search:</label>
+                <input type="text" id="reviewSearch" placeholder="Search pending items (title, content)…"
+                       oninput="onReviewSearchInput()"
+                       style="flex: 1; max-width: 420px; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); color: var(--text);">
+            </div>
             <div id="reviewList" class="knowledge-list">
                 <div class="loading">Loading pending items...</div>
             </div>
@@ -1133,11 +1139,12 @@
 
         <!-- All Items Tab -->
         <div id="tab-all" class="tab-content">
-            <!-- Bulk-edit batch bar (issue #129) — mirrors Review tab's bar but
-                 scoped to All Items selection state and without the Approve /
-                 Reject actions (those stay in Review). The same JS plumbing
-                 (`getSelectedIds('all')`, `updateSelectionCount('all')`,
-                 `openBulkEditModal(...)` reading `currentTab`) already exists. -->
+            <!-- Batch bar (issue #129) — mirrors Review tab's bar scoped to
+                 All Items selection state. Moderation actions (Approve /
+                 Reject / Revoke / Require) were added alongside the original
+                 bulk-edit set so the searchable All Items tab can serve as a
+                 full find-and-moderate surface; the earlier "status changes
+                 stay in Review" split predated search landing here. -->
             <div class="batch-bar">
                 <label>
                     <input type="checkbox" id="selectAllAll" onchange="toggleSelectAll('all')">
@@ -1145,6 +1152,10 @@
                 </label>
                 <span class="selected-count" id="selectedCountAll"></span>
                 <div class="batch-actions">
+                    <button class="btn btn-secondary" id="batchApproveBtnAll" disabled onclick="batchAction('approve')">Approve</button>
+                    <button class="btn btn-danger" id="batchRejectBtnAll" disabled onclick="batchAction('reject')">Reject</button>
+                    <button class="btn btn-danger" id="batchRevokeBtnAll" disabled onclick="batchAction('revoke')">Revoke</button>
+                    <button class="btn btn-secondary" id="batchRequireBtnAll" disabled onclick="batchAction('mandate')">Mark required</button>
                     <button class="btn btn-secondary" id="batchMoveCategoryBtnAll" disabled onclick="openBulkEditModal('category')">Move to category…</button>
                     <button class="btn btn-secondary" id="batchMoveDomainBtnAll" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
                     <button class="btn btn-secondary" id="batchAddTagBtnAll" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
@@ -1153,6 +1164,10 @@
                 </div>
             </div>
             <div class="filter-bar">
+                <label for="allSearch">Search:</label>
+                <input type="text" id="allSearch" placeholder="Search items (title, content)…"
+                       oninput="onAllSearchInput()"
+                       style="flex: 1; max-width: 320px; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); color: var(--text);">
                 <label for="statusFilter">Status:</label>
                 <select class="filter-select" id="statusFilter" onchange="loadAllItems(1)">
                     <option value="">All</option>
@@ -2580,6 +2595,20 @@
         _treeQueryTimeout = setTimeout(loadBrowseTree, 300);
     }
 
+    // Debounced search inputs for the Review and All Items tabs — same
+    // 300 ms pattern as the Browse tree above; both reset to page 1.
+    let _reviewSearchTimeout = null;
+    function onReviewSearchInput() {
+        clearTimeout(_reviewSearchTimeout);
+        _reviewSearchTimeout = setTimeout(() => loadReviewQueue(1), 300);
+    }
+
+    let _allSearchTimeout = null;
+    function onAllSearchInput() {
+        clearTimeout(_allSearchTimeout);
+        _allSearchTimeout = setTimeout(() => loadAllItems(1), 300);
+    }
+
     async function loadBrowseTree() {
         const tree = document.getElementById('browseTree');
         const axis = document.getElementById('treeAxis').value;
@@ -3077,6 +3106,10 @@
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
+            const reviewSearch = document.getElementById('reviewSearch');
+            if (reviewSearch && reviewSearch.value.trim()) {
+                params.append('search', reviewSearch.value.trim());
+            }
             const resp = await fetch(`/api/memory/admin/pending?${params}`);
             const data = await resp.json();
             renderReviewItems(data, list, pagination);
@@ -3103,7 +3136,11 @@
         }
 
         try {
-            const params = new URLSearchParams({page, _t: Date.now()});
+            // No `_t` cache-buster here — the URL is the _apiMemoryCache key,
+            // and a per-call timestamp made every entry unique, so the 30 s
+            // cache could never be re-hit (Devin review on #1103).
+            // _apiMemoryCached appends `_t` to the network fetch itself.
+            const params = new URLSearchParams({page});
             // v55 design pass: "Required" is a sentinel routed to the
             // orthogonal is_required boolean — see loadBrowseTree for
             // the same translation.
@@ -3118,6 +3155,10 @@
             if (domain) {
                 params.append('domain', domain);
             }
+            const allSearch = document.getElementById('allSearch');
+            if (allSearch && allSearch.value.trim()) {
+                params.append('search', allSearch.value.trim());
+            }
             const url = `/api/memory?${params}`;
             const data = await _apiMemoryCached(url);
             renderAllItems(data, list, pagination);
@@ -3131,23 +3172,26 @@
     // /admin/corporate-memory re-trigger loadAllItems() on every switch;
     // without this, flicking between Review / All / Browse forced a
     // server round-trip each time even when the underlying data hadn't
-    // changed. 30 s window — short enough that admin edits land fast
-    // (most mutations call refreshCurrentTab via the explicit
-    // _apiMemoryInvalidate() hook below).
+    // changed. 30 s window as a backstop; every mutation path funnels
+    // through refreshCurrentTab(), which clears this cache first, so
+    // post-mutation views are always fresh.
     const _apiMemoryCache = new Map();   // url → { data, expiresAt }
     const _API_MEMORY_TTL_MS = 30000;
     async function _apiMemoryCached(url) {
         const now = Date.now();
         const hit = _apiMemoryCache.get(url);
         if (hit && hit.expiresAt > now) return hit.data;
-        const resp = await fetch(url);
+        // Cache key is the clean URL; the `_t` buster rides only on the
+        // network request so intermediary/browser HTTP caches stay defeated
+        // without defeating this map too.
+        const resp = await fetch(`${url}${url.includes('?') ? '&' : '?'}_t=${now}`);
         const data = await resp.json();
         _apiMemoryCache.set(url, { data, expiresAt: now + _API_MEMORY_TTL_MS });
         return data;
     }
-    // Called by edit / approve / reject / bulk-update handlers after
-    // they mutate items, so the next list-fetch picks up the change
-    // instead of serving stale cache.
+    // Cleared centrally by refreshCurrentTab() — the shared post-mutation
+    // refresh path — so the next list-fetch picks up the change instead
+    // of serving stale cache.
     function _apiMemoryInvalidate() { _apiMemoryCache.clear(); }
     window._apiMemoryInvalidate = _apiMemoryInvalidate;
 
@@ -3710,27 +3754,28 @@
     function updateSelectionCount(tab) {
         const ids = getSelectedIds(tab);
         const countEl = document.getElementById(tab === 'review' ? 'selectedCountReview' : 'selectedCountAll');
-        // Approve / Reject buttons exist only in the Review tab — All Items
-        // batch bar (issue #129) deliberately omits them (status changes belong
-        // to per-row buttons or the keyboard workflow in Review).
-        const approveBtn = tab === 'review' ? document.getElementById('batchApproveBtn') : null;
-        const rejectBtn = tab === 'review' ? document.getElementById('batchRejectBtn') : null;
-
         if (countEl) countEl.textContent = ids.length > 0 ? `${ids.length} selected` : '';
-        if (approveBtn) approveBtn.disabled = ids.length === 0;
-        if (rejectBtn) rejectBtn.disabled = ids.length === 0;
-        // Bulk-edit buttons (issue #62 + #129) — Review tab uses bare IDs;
-        // All Items tab adds the "All" suffix. Each tab toggles its own set.
+        // Moderation + bulk-edit buttons — Review tab uses bare IDs; All
+        // Items tab adds the "All" suffix. Each tab toggles its own set.
+        // Review has Approve/Reject; All Items additionally has Revoke and
+        // Mark required (the searchable find-and-moderate surface).
         const suffix = tab === 'review' ? '' : 'All';
-        ['batchMoveCategoryBtn', 'batchMoveDomainBtn', 'batchAddTagBtn', 'batchRemoveTagBtn', 'batchSetAudienceBtn'].forEach(base => {
+        ['batchApproveBtn', 'batchRejectBtn', 'batchRevokeBtn', 'batchRequireBtn',
+         'batchMoveCategoryBtn', 'batchMoveDomainBtn', 'batchAddTagBtn', 'batchRemoveTagBtn', 'batchSetAudienceBtn'].forEach(base => {
             const btn = document.getElementById(base + suffix);
             if (btn) btn.disabled = ids.length === 0;
         });
     }
 
     async function batchAction(action) {
-        const ids = getSelectedIds('review');
+        // Fires from both the Review and All Items batch bars — pull the
+        // selection from whichever tab is active.
+        const ids = getSelectedIds(currentTab === 'all' ? 'all' : 'review');
         if (ids.length === 0) return;
+
+        // Past-tense toast labels; the batch endpoint spells the
+        // required-tier action "mandate".
+        const doneLabel = {approve: 'approved', reject: 'rejected', revoke: 'revoked', mandate: 'marked required'}[action] || `${action}d`;
 
         try {
             const resp = await fetch('/api/memory/admin/batch', {
@@ -3742,8 +3787,8 @@
             const result = await resp.json();
             if (resp.ok) {
                 const successCount = (result.success || []).length;
-                const failCount = (result.failed || []).length;
-                let msg = `${successCount} item${successCount !== 1 ? 's' : ''} ${action}d`;
+                const failCount = (result.failed || []).length + (result.not_found || []).length;
+                let msg = `${successCount} item${successCount !== 1 ? 's' : ''} ${doneLabel}`;
                 if (failCount > 0) msg += `, ${failCount} failed`;
                 showToast(msg, failCount > 0 ? 'error' : 'success');
                 refreshCurrentTab();
@@ -3784,6 +3829,12 @@
     // ─────────────────────────────────────────────────────────────
 
     function refreshCurrentTab() {
+        // Every call site is a post-mutation refresh (edit, per-row and
+        // batch moderation, bulk-update, create) — tab switching goes
+        // straight to the load* functions and keeps its cache hits. Clear
+        // the list cache here so no mutation path can serve a stale All
+        // Items page for the 30 s TTL (Devin review on #1103).
+        _apiMemoryInvalidate();
         if (currentTab === 'review') loadReviewQueue(reviewPage);
         else if (currentTab === 'all') loadAllItems(allPage);
         else if (currentTab === 'audit') loadAuditLog(auditPage);
