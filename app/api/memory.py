@@ -938,16 +938,32 @@ async def admin_batch(
 @router.get("/admin/pending")
 async def admin_pending(
     category: Optional[str] = None,
+    search: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Get pending items queue for admin review."""
+    """Get pending items queue for admin review.
+
+    ``search`` narrows by title/content substring (same ``repo.search``
+    backing the main list endpoint, pinned to ``status='pending'``) so an
+    admin can find specific items inside a large review queue without
+    paging through it.
+    """
     repo = knowledge_repo()
     page = max(page, 1)
     offset = (page - 1) * per_page
-    items = repo.list_items(statuses=["pending"], category=category, limit=per_page, offset=offset)
+    if search:
+        items = repo.search(
+            search,
+            statuses=["pending"],
+            category=category,
+            limit=per_page,
+            offset=offset,
+        )
+    else:
+        items = repo.list_items(statuses=["pending"], category=category, limit=per_page, offset=offset)
     return {"items": items, "count": len(items)}
 
 
