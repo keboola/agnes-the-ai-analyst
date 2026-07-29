@@ -9,7 +9,7 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, Form, Request, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -3302,21 +3302,95 @@ async def admin_data_sources_page(
     ctx = _build_context(request, user=user)
     ctx["vault_key_configured"] = vault_key_configured()
 
-    # Semantic-layer sync summary (#853 + #920 follow-up, #953 status
-    # visibility): metric_definitions / glossary_terms carry no
-    # per-connection column, so the counts are global — scoped to
-    # source='keboola_semantic_layer' so a manual/yaml_import/openmetadata
-    # row doesn't inflate the "synced from Keboola" figure. The card always
-    # renders — never-synced-yet / last-sync-ok / last-attempt-failed are all
-    # visible states, not just "something has successfully synced" (#953).
-    semantic_metric_count = sum(1 for m in metric_repo().list() if m.get("source") == "keboola_semantic_layer")
-    semantic_glossary_count = sum(
-        1 for t in glossary_repo().list(limit=500) if t.get("source") == "keboola_semantic_layer"
-    )
-    ctx["semantic_metric_count"] = semantic_metric_count
-    ctx["semantic_glossary_count"] = semantic_glossary_count
+    # Semantic-layer status — one-line summary only; the per-source counts
+    # and "Sync now" control moved to /admin/semantic-layer (#853 + #920
+    # follow-up, #953 status visibility, task 7 slim-down). Always renders —
+    # never-synced-yet / last-sync-ok / last-attempt-failed are all visible
+    # states, not just "something has successfully synced".
     ctx["semantic_refresh_summary"] = get_last_refresh_summary()
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
+
+
+@router.get("/admin/semantic-layer", response_class=HTMLResponse)
+async def admin_semantic_layer_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Per-source breakdown for the Keboola semantic-layer sync (#853/#920/
+    #953, task 7): one row per connection enumerated by
+    ``_enumerate_master_sources()`` (master-token Keboola projects), each
+    with its own metric/glossary counts and the last sync's per-source
+    result. NULL ``source_ref`` rows (legacy, pre-provenance) fold into the
+    default connection's row since that's the only connection legacy rows
+    can belong to. Rows whose ``source_ref`` no longer matches any
+    enumerated source (connection deleted/rotated away) surface separately
+    as "orphaned" rather than silently vanishing.
+
+    Master tokens are never put into the template context — only
+    name/id/stack_url leave ``_enumerate_master_sources()``.
+    """
+    from app.api.keboola_semantic_layer_refresh import get_last_refresh_summary
+    from connectors.keboola.semantic_layer import _default_keboola_connection, _enumerate_master_sources
+
+    ctx = _build_context(request, user=user)
+
+    metrics = metric_repo().list()
+    terms = glossary_repo().list(limit=100000)
+
+    def _counts(ref: Optional[str]) -> tuple[int, int]:
+        m = sum(1 for x in metrics if x.get("source") == "keboola_semantic_layer" and x.get("source_ref") == ref)
+        g = sum(1 for x in terms if x.get("source") == "keboola_semantic_layer" and x.get("source_ref") == ref)
+        return m, g
+
+    raw_sources = _enumerate_master_sources()  # names/ids/stack_url only — token stripped below
+    default_conn = _default_keboola_connection()
+    default_id = default_conn["id"] if default_conn else None
+
+    summary = get_last_refresh_summary()
+    last_result = summary.get("last_result")
+    last_by_ref: dict[Any, dict] = {}
+    if isinstance(last_result, dict) and isinstance(last_result.get("sources"), list):
+        for entry in last_result["sources"]:
+            last_by_ref[entry.get("connection_id")] = entry
+
+    sources = []
+    for source in raw_sources:
+        connection_id = source["connection_id"]
+        metric_count, glossary_count = _counts(connection_id)
+        if connection_id == default_id:
+            null_metric_count, null_glossary_count = _counts(None)
+            metric_count += null_metric_count
+            glossary_count += null_glossary_count
+        stack_url = source["stack_url"]
+        sources.append(
+            {
+                "type": "keboola",
+                "connection_id": connection_id,
+                "label": source["name"],
+                "detail": urlsplit(stack_url).netloc or stack_url,
+                "metric_count": metric_count,
+                "glossary_count": glossary_count,
+                "last": last_by_ref.get(connection_id),
+            }
+        )
+
+    known_ids = {s["connection_id"] for s in raw_sources}
+    all_refs = {
+        m.get("source_ref") for m in metrics if m.get("source") == "keboola_semantic_layer" and m.get("source_ref")
+    }
+    all_refs |= {
+        t.get("source_ref") for t in terms if t.get("source") == "keboola_semantic_layer" and t.get("source_ref")
+    }
+    orphaned = []
+    for ref in sorted(all_refs - known_ids):
+        metric_count, glossary_count = _counts(ref)
+        orphaned.append({"source_ref": ref, "metric_count": metric_count, "glossary_count": glossary_count})
+
+    ctx["sources"] = sources
+    ctx["orphaned"] = orphaned
+    ctx["default_connection_id"] = default_id
+    ctx["semantic_refresh_summary"] = summary
+    return templates.TemplateResponse(request, "admin_semantic_layer.html", ctx)
 
 
 @router.get("/admin/database", response_class=HTMLResponse)

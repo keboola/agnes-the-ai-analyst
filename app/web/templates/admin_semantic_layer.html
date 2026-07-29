@@ -1,0 +1,216 @@
+{% extends "base_page.html" %}
+{% block title %}Semantic layer — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Sources" %}
+{% set page_hero_title = "Semantic layer" %}
+{% set page_hero_subtitle = "Per-project sync status for Keboola's semantic layer (business metrics + glossary terms). Connect projects at <a href=\"/admin/data-sources\">Data sources</a>." %}
+
+{% block head_extra %}
+<style>
+  .sl-page { font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif); }
+
+  .sl-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: var(--ds-accent-success-bg);
+    border: 1px solid var(--ds-accent-success-line);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: var(--ds-accent-success-ink);
+  }
+  .sl-status.sl-status--pending {
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-border);
+    color: var(--ds-text-secondary);
+  }
+  .sl-status.sl-status--error {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+  }
+  .sl-status a { color: inherit; font-weight: 600; text-decoration: underline; }
+
+  .sl-section-title {
+    font-size: 15px; font-weight: 600; color: var(--ds-text-primary);
+    margin: 20px 0 10px;
+  }
+  .sl-section-desc { font-size: 12px; color: var(--ds-text-secondary); margin: -6px 0 12px; }
+
+  .sl-empty {
+    text-align: center; padding: 28px 20px;
+    font-size: 13px; color: var(--ds-text-secondary);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 10px;
+  }
+  .sl-empty a { color: var(--ds-primary); }
+
+  .sl-source-name { font-weight: 600; color: var(--ds-text-primary); }
+  .sl-source-detail {
+    font-size: 11px; color: var(--ds-text-secondary);
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .sl-badge-default {
+    display: inline-block; margin-left: 6px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 5px;
+    background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink);
+  }
+  .sl-last-ok { color: var(--ds-accent-success-ink); }
+  .sl-last-error { color: var(--ds-accent-danger-ink); }
+  .sl-last-none { color: var(--ds-text-muted); }
+
+  .sl-orphan-ref { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+  .sl-orphan-note {
+    font-size: 12px; color: var(--ds-text-secondary); margin-bottom: 10px;
+  }
+
+  /* Toast */
+  .sl-toast {
+    position: fixed; bottom: 24px; right: 24px;
+    padding: 10px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 360px;
+  }
+  .sl-toast.show { display: flex; }
+  .sl-toast.toast-ok   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border: 1px solid var(--ds-accent-success-line); }
+  .sl-toast.toast-fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border: 1px solid var(--ds-accent-danger-line); }
+</style>
+{% endblock %}
+
+{% block toolbar %}
+<button type="button" class="btn btn-primary" id="sl-refresh-btn">Sync now</button>
+{% endblock %}
+
+{% block page %}
+<div class="sl-page">
+  {% set rs = semantic_refresh_summary or {} %}
+  <div class="sl-status {{ 'sl-status--error' if rs.last_status == 'error' else ('sl-status--pending' if not rs.last_status else '') }}">
+    <span>
+      <strong>Semantic layer:</strong>
+      {% if rs.last_status == 'ok' %}
+        Last sync {{ rs.last_completed_at }} — OK.
+      {% elif rs.last_status == 'error' %}
+        Last sync attempt ({{ rs.last_completed_at }}) failed: {{ rs.last_result }}
+      {% else %}
+        Never synced yet.
+      {% endif %}
+    </span>
+    <span><a href="/catalog/semantics">Browse it →</a></span>
+  </div>
+
+  <div class="sl-section-title">Sources</div>
+  {% if not sources %}
+  <div class="sl-empty">
+    No Keboola projects have a master (owner) token configured yet. Connect one at
+    <a href="/admin/data-sources">Data sources</a> to enable the semantic-layer sync.
+  </div>
+  {% else %}
+  <div class="sl-section-desc">One row per Keboola project with a master token. Legacy rows with no recorded project (synced before per-project tracking) fold into the default project's counts.</div>
+  <table class="ds-table">
+    <thead>
+      <tr>
+        <th>Source</th>
+        <th class="num">Metrics</th>
+        <th class="num">Glossary</th>
+        <th>Last sync</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sources %}
+      <tr>
+        <td>
+          <span class="sl-source-name">{{ s.label }}</span>
+          {% if s.connection_id == default_connection_id %}<span class="sl-badge-default">default</span>{% endif %}
+          <br><span class="sl-source-detail">{{ s.detail }}</span>
+        </td>
+        <td class="num">{{ s.metric_count }}</td>
+        <td class="num">{{ s.glossary_count }}</td>
+        <td>
+          {% if s.last and s.last.status == 'ok' %}
+            <span class="sl-last-ok">✓ {{ s.last.created_or_updated | default(0) }} updated, {{ s.last.pruned | default(0) }} pruned</span>
+          {% elif s.last %}
+            <span class="sl-last-error">✗ {{ s.last.error | default('failed') }}</span>
+          {% else %}
+            <span class="sl-last-none">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if orphaned %}
+  <div class="sl-section-title">Orphaned rows</div>
+  <div class="sl-orphan-note">
+    These rows carry a project reference that no longer matches any connected Keboola project
+    (the connection was deleted or its master token removed). They are left in place — never
+    silently pruned — but won't refresh until the source connection is restored.
+  </div>
+  <table class="ds-table">
+    <thead>
+      <tr>
+        <th>Source ref</th>
+        <th class="num">Metrics</th>
+        <th class="num">Glossary</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for o in orphaned %}
+      <tr>
+        <td><span class="sl-orphan-ref">{{ o.source_ref }}</span></td>
+        <td class="num">{{ o.metric_count }}</td>
+        <td class="num">{{ o.glossary_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div id="sl-toast" class="sl-toast" role="status" aria-live="polite"></div>
+
+<script>
+function showToast(msg, ok) {
+  const el = document.getElementById("sl-toast");
+  el.textContent = msg;
+  el.className = "sl-toast show " + (ok ? "toast-ok" : "toast-fail");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = "sl-toast"; }, 3500);
+}
+
+document.getElementById("sl-refresh-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("sl-refresh-btn");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  try {
+    const r = await fetch("/api/admin/run-keboola-semantic-layer-refresh", { method: "POST", credentials: "include" });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showToast(`Synced: ${body.created_or_updated ?? 0} updated, ${body.pruned ?? 0} pruned`, true);
+      setTimeout(() => window.location.reload(), 1200);
+      return;
+    }
+    if (r.status === 409) {
+      showToast("A sync is already running", false);
+    } else {
+      const detail = typeof body.detail === "string" ? body.detail : (body.detail && body.detail.reason) || r.statusText;
+      showToast("Sync failed: " + detail, false);
+    }
+  } catch (e) {
+    showToast("Sync failed: " + e.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+</script>
+{% endblock %}
