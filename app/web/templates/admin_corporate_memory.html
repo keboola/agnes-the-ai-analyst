@@ -3118,7 +3118,11 @@
         }
 
         try {
-            const params = new URLSearchParams({page, _t: Date.now()});
+            // No `_t` cache-buster here — the URL is the _apiMemoryCache key,
+            // and a per-call timestamp made every entry unique, so the 30 s
+            // cache could never be re-hit (Devin review on #1103).
+            // _apiMemoryCached appends `_t` to the network fetch itself.
+            const params = new URLSearchParams({page});
             // v55 design pass: "Required" is a sentinel routed to the
             // orthogonal is_required boolean — see loadBrowseTree for
             // the same translation.
@@ -3159,7 +3163,10 @@
         const now = Date.now();
         const hit = _apiMemoryCache.get(url);
         if (hit && hit.expiresAt > now) return hit.data;
-        const resp = await fetch(url);
+        // Cache key is the clean URL; the `_t` buster rides only on the
+        // network request so intermediary/browser HTTP caches stay defeated
+        // without defeating this map too.
+        const resp = await fetch(`${url}${url.includes('?') ? '&' : '?'}_t=${now}`);
         const data = await resp.json();
         _apiMemoryCache.set(url, { data, expiresAt: now + _API_MEMORY_TTL_MS });
         return data;
