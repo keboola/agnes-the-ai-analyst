@@ -230,10 +230,10 @@ def _seed_table_registry(conn, *, name: str) -> str:
     return tid
 
 
-def _seed_knowledge_item(conn, *, item_id: str, title: str = "T") -> None:
+def _seed_knowledge_item(conn, *, item_id: str, title: str = "T", status: str = "approved") -> None:
     conn.execute(
-        "INSERT INTO knowledge_items(id, title, status) VALUES (?, ?, 'approved')",
-        [item_id, title],
+        "INSERT INTO knowledge_items(id, title, status) VALUES (?, ?, ?)",
+        [item_id, title, status],
     )
 
 
@@ -290,6 +290,7 @@ def parity_env(seeded_app, monkeypatch):
         modules=[
             "cli.commands.admin_data_package",
             "cli.commands.admin_memory_domain",
+            "cli.commands.memory_admin",
             "cli.commands.stack",
             "cli.commands.admin",
             "cli.commands.admin_jobs",
@@ -901,6 +902,81 @@ class TestMemoryDomainAddRemoveItemParity:
 
         assert api_state == cli_state == []
         assert api_audit == cli_audit
+
+
+# ---------------------------------------------------------------------------
+# Corporate-memory lifecycle moderation (approve / require)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryModerationParity:
+    """CLI ``agnes admin memory approve|require`` vs the governance batch
+    endpoint they wrap (``POST /api/memory/admin/batch``)."""
+
+    def _setup(self, status: str = "pending") -> str:
+        conn = get_system_db()
+        _purge_user_state(conn)
+        _seed_knowledge_item(conn, item_id="parity_mod_1", title="T", status=status)
+        conn.close()
+        return "parity_mod_1"
+
+    def test_approve_parity(self, parity_env):
+        item_id = self._setup(status="pending")
+
+        r = parity_env["client"].post(
+            "/api/memory/admin/batch",
+            json={"item_ids": [item_id], "action": "approve"},
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 200
+        conn = get_system_db()
+        api_status = conn.execute("SELECT status FROM knowledge_items WHERE id = ?", [item_id]).fetchone()[0]
+        api_audit = _snapshot_audit_actions(conn, prefix="corporate_memory.approve")
+        conn.close()
+
+        conn = get_system_db()
+        conn.execute("UPDATE knowledge_items SET status = 'pending' WHERE id = ?", [item_id])
+        _reset_audit_log(conn)
+        conn.close()
+
+        parity_env["run_cli"](["admin", "memory", "approve", item_id])
+        conn = get_system_db()
+        cli_status = conn.execute("SELECT status FROM knowledge_items WHERE id = ?", [item_id]).fetchone()[0]
+        cli_audit = _snapshot_audit_actions(conn, prefix="corporate_memory.approve")
+        conn.close()
+
+        assert api_status == cli_status == "approved"
+        assert api_audit == cli_audit
+        assert len(api_audit) == 1
+
+    def test_require_parity(self, parity_env):
+        item_id = self._setup(status="approved")
+
+        r = parity_env["client"].post(
+            "/api/memory/admin/batch",
+            json={"item_ids": [item_id], "action": "mandate"},
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 200
+        conn = get_system_db()
+        api_required = conn.execute("SELECT is_required FROM knowledge_items WHERE id = ?", [item_id]).fetchone()[0]
+        api_audit = _snapshot_audit_actions(conn, prefix="corporate_memory.mandate")
+        conn.close()
+
+        conn = get_system_db()
+        conn.execute("UPDATE knowledge_items SET is_required = FALSE WHERE id = ?", [item_id])
+        _reset_audit_log(conn)
+        conn.close()
+
+        parity_env["run_cli"](["admin", "memory", "require", item_id])
+        conn = get_system_db()
+        cli_required = conn.execute("SELECT is_required FROM knowledge_items WHERE id = ?", [item_id]).fetchone()[0]
+        cli_audit = _snapshot_audit_actions(conn, prefix="corporate_memory.mandate")
+        conn.close()
+
+        assert bool(api_required) is bool(cli_required) is True
+        assert api_audit == cli_audit
+        assert len(api_audit) == 1
 
 
 # ---------------------------------------------------------------------------
