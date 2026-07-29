@@ -16,7 +16,7 @@ Three defects:
    badge appeared it overflowed, and the panel's `overflow-y: auto` clipped
    the ↻ / × buttons past the edge. They were also 20x20px, under the 44px
    touch-target minimum.
-3. Below 760px the rail becomes a wrapping top bar with no way to collapse
+3. Below 1024px the rail becomes a wrapping top bar with no way to collapse
    it — nav + Chats + Admin stayed permanently on screen.
 """
 
@@ -113,7 +113,7 @@ def test_journey_iconbtn_hit_area_meets_touch_target_minimum():
         assert "inset: -12px" in block  # 20px visual + 12px*2 = 44px hit area
 
 
-# --- Merged #1040: rail cannot collapse below 760px -------------------------
+# --- Merged #1040: rail cannot collapse below 1024px -------------------------
 
 
 def test_rail_has_a_collapse_toggle():
@@ -134,10 +134,10 @@ def test_collapsible_wrapper_spans_nav_history_and_admin_only():
 
 def test_collapse_toggle_is_inert_above_the_breakpoint():
     """Hidden by default (unscoped) so the column layout is unaffected;
-    only shown inside the ≤760px media query."""
+    only shown inside the ≤1024px media query."""
     css = _rail_css()
-    unscoped = css.split("@media (max-width: 760px)", 1)[0]
-    scoped = css.split("@media (max-width: 760px)", 1)[1]
+    unscoped = css.split("@media (max-width: 1024px)", 1)[0]
+    scoped = css.split("@media (max-width: 1024px)", 1)[1]
     base_block = unscoped.split('html[data-ui-layout="rail"] .rail-collapse-toggle {', 1)[1].split("}", 1)[0]
     assert "display: none" in base_block
     assert 'html[data-ui-layout="rail"] .rail-collapse-toggle {' in scoped
@@ -149,7 +149,7 @@ def test_collapsible_wrapper_is_transparent_above_the_breakpoint():
     flex/gap/growth exactly, or spacing and the Chats-list scroll region
     both shift for every existing topnav-unaffected, rail-enabled instance."""
     css = _rail_css()
-    unscoped = css.split("@media (max-width: 760px)", 1)[0]
+    unscoped = css.split("@media (max-width: 1024px)", 1)[0]
     block = unscoped.split('html[data-ui-layout="rail"] .rail-collapsible {', 1)[1].split("}", 1)[0]
     assert "display: flex" in block
     assert "flex-direction: column" in block

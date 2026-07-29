@@ -59,14 +59,14 @@ html[data-ui-layout="rail"] .rail-logo svg {
     width: auto;
 }
 
-/* Collapse toggle for the ≤760px row layout (see the media query below) —
+/* Collapse toggle for the ≤1024px row layout (see the media query below) —
    inert and hidden above it, since the column layout has room for
    everything and nothing to collapse. */
 html[data-ui-layout="rail"] .rail-collapse-toggle {
     display: none;
 }
 
-/* Nav + Chats + Admin are wrapped in this div so the ≤760px layout has a
+/* Nav + Chats + Admin are wrapped in this div so the ≤1024px layout has a
    single thing to collapse. Above that breakpoint it must be a completely
    transparent wrapper — matching .rail's own flex/gap exactly — or nesting
    it introduces new spacing between items that used to be direct flex
@@ -649,7 +649,7 @@ html[data-ui-layout="rail"] .cloud-chat-journey-head {
     /* Was a non-wrapping row: h3 + the "Complete ✓" badge + two icon buttons
        with no flex-wrap and no min-width:0 on the heading. In the completed
        state the badge appears and the row exceeds the panel's width (a fixed
-       280px below 760px, rail.css) — the panel's own `overflow-y: auto`
+       280px below 1024px, rail.css) — the panel's own `overflow-y: auto`
        computes overflow-x to auto too, so the icon buttons were clipped past
        the edge instead of just visible on their own line. */
     flex-wrap: wrap;
@@ -792,9 +792,13 @@ html[data-ui-layout="rail"] .cloud-chat-journey-step.locked:hover {
     background: transparent;
 }
 
-/* Small screens: the fixed column becomes a normal top block so
-   content isn't squeezed — same breakpoint as the prototype. */
-@media (max-width: 760px) {
+/* Small + tablet screens: the fixed column becomes a normal top block so
+   content isn't squeezed. Raised from the prototype's 760px to 1024px so
+   tablet-landscape widths (the ~760–1024px range, where a fixed 240px rail
+   left the content column as little as ~660px) also get the top-bar layout;
+   above this, laptops/desktops keep the side rail with a comfortable ≥784px
+   content column. */
+@media (max-width: 1024px) {
     html[data-ui-layout="rail"] body {
         padding-left: 0;
     }
@@ -900,12 +904,65 @@ html[data-ui-layout="rail"] .cloud-chat-journey-step.locked:hover {
         top: calc(100% + 8px);
     }
 
-    /* Popover opens downward too when the rail is a top bar; widen it since the
-       launcher itself is only as wide as its content in the foot row. */
+    /* Top bar: collapse the "Get started" launcher to a 40×40 icon control so
+       it aligns with the hamburger toggle and the avatar instead of sitting as
+       a shorter, borderless text button between them. The "Get started" label
+       is dropped from the bar (an aria-label keeps the button named, and the
+       label still heads the card inside the popover); the N/5 progress — or the
+       completed check — rides as a small corner badge on the lightbulb icon. */
+    html[data-ui-layout="rail"] .rail-getstarted-btn {
+        position: relative;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        gap: 0;
+        justify-content: center;
+        border: 1px solid var(--ds-border);
+        border-radius: 9px;
+        background: var(--ds-surface);
+    }
+
+    html[data-ui-layout="rail"] .rail-getstarted-txt {
+        display: none;
+    }
+
+    /* Progress pill → corner badge. The negative offsets escape the button box
+       (which stays overflow:visible), and a surface-colored ring lifts the
+       badge off the flag icon behind it. */
+    html[data-ui-layout="rail"] .rail-getstarted-count {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        min-width: 16px;
+        padding: 0 4px;
+        font-size: 10px;
+        line-height: 16px;
+        border: 1px solid var(--ds-surface);
+    }
+
+    /* Completed check → matching corner badge (base rule shows it in place of
+       the count once .is-complete is set). */
+    html[data-ui-layout="rail"] .rail-getstarted.is-complete .rail-getstarted-check {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        width: 16px;
+        height: 16px;
+        padding: 2px;
+        background: var(--ds-accent-success-bg, var(--ds-primary-light));
+        border: 1px solid var(--ds-surface);
+        border-radius: var(--ds-radius-pill, 999px);
+    }
+
+    /* Popover opens downward too when the rail is a top bar, and anchors to the
+       launcher's RIGHT edge (opening leftward) since the compact icon button
+       sits at the right end of the bar — a left-anchored 280px panel would run
+       off the viewport. */
     html[data-ui-layout="rail"] .rail-getstarted-panel {
         bottom: auto;
         top: calc(100% + 8px);
-        right: auto;
+        left: auto;
+        right: 0;
         width: 280px;
     }
 }

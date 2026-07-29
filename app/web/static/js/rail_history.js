@@ -44,8 +44,8 @@
     });
   }
 
-  // ---- Mobile nav collapse (row layout, ≤760px) -----------------------
-  // Below 760px the rail becomes a wrapping top bar with nowhere to collapse
+  // ---- Mobile/tablet nav collapse (row layout, ≤1024px) --------------
+  // Below 1024px the rail becomes a wrapping top bar with nowhere to collapse
   // to — this toggle shows/hides the nav + Chats + Admin group
   // (.rail-collapsible); the compact foot (Get started + user menu) stays
   // reachable regardless of its state. Inert above the breakpoint (the
