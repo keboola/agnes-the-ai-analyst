@@ -172,7 +172,7 @@ git branch -d <branch-name>
 
 `agnes init` writes Claude Code hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → one detached `agnes update --quiet` — the unified convergence: self-upgrade the CLI, apply the workspace template, re-assert the Agnes-owned hooks/statusLine/commands, refresh marketplace plugins, and `agnes pull` fresh parquets. Run in the background (`( nohup … & )`) so it never blocks session start; a freshly-installed CLI binary activates next session.
+- `SessionStart` → one detached `agnes update --quiet` — the unified convergence: self-upgrade the CLI, apply the workspace template, re-assert the Agnes-owned hooks/statusLine/commands, refresh marketplace plugins, `agnes push` whatever the last SessionEnd hook missed, and `agnes pull` fresh parquets. Run in the background (`( nohup … & )`) so it never blocks session start; a freshly-installed CLI binary activates next session.
 - `SessionEnd`   → `agnes push --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
 
 Both trail with `; true` and run detached (`( nohup … & )`) so a server outage or slow sync never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace. `agnes update` is also the recommended manual command to repair a broken install or pick up a new release; it holds a single-instance lock so only one runs at a time.
