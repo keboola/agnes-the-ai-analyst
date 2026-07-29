@@ -1,5 +1,5 @@
 """Smoke tests for web UI pages."""
-import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,8 +14,10 @@ def web_client(tmp_path, monkeypatch):
     (tmp_path / "extracts").mkdir()
     # Reset global DuckDB singleton to pick up new DATA_DIR
     from src.db import close_system_db
+
     close_system_db()
     from app.main import create_app
+
     app = create_app()
     yield TestClient(app)
     close_system_db()
@@ -27,11 +29,14 @@ def admin_cookie(web_client, tmp_path, monkeypatch):
     from src.db import get_system_db
     from src.repositories.users import UserRepository
     from tests.helpers.auth import grant_admin
+
     password = "AdminPass1!"
     password_hash = PasswordHasher().hash(password)
     conn = get_system_db()
     UserRepository(conn).create(
-        id="admin1", email="admin@test.com", name="Admin",
+        id="admin1",
+        email="admin@test.com",
+        name="Admin",
         password_hash=password_hash,
     )
     grant_admin(conn, "admin1")
@@ -47,11 +52,14 @@ def analyst_cookie(web_client, tmp_path, monkeypatch):
     from argon2 import PasswordHasher
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     password = "AnalystPass1!"
     password_hash = PasswordHasher().hash(password)
     conn = get_system_db()
     UserRepository(conn).create(
-        id="analyst1", email="analyst@test.com", name="Analyst",
+        id="analyst1",
+        email="analyst@test.com",
+        name="Analyst",
         password_hash=password_hash,
     )
     conn.close()
@@ -319,12 +327,14 @@ class TestClaudeSetupPreview:
         only as a documentation comment listing what the binary does
         internally, never as an instruction to run by hand)."""
         import re
+
         resp = web_client.get("/setup", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         match = re.search(
             r"var\s+SETUP_INSTRUCTIONS_TEMPLATE\s*=\s*\[(.*?)\]\.join\(",
-            body, re.DOTALL,
+            body,
+            re.DOTALL,
         )
         assert match, "SETUP_INSTRUCTIONS_TEMPLATE array missing"
         clipboard = match.group(1)
@@ -390,6 +400,23 @@ class TestAdminRoleGuards:
         resp = web_client.get("/admin/corporate-memory", cookies=analyst_cookie)
         assert resp.status_code == 403
 
+    def test_corporate_memory_admin_search_and_moderation_controls(self, web_client, admin_cookie):
+        """Review + All Items each carry a search box, and the All Items
+        batch bar carries the moderation actions (find-and-moderate
+        surface — the search/bulk-action split between tabs is closed)."""
+        resp = web_client.get("/admin/corporate-memory", cookies=admin_cookie)
+        assert resp.status_code == 200
+        html = resp.text
+        for element_id in (
+            "reviewSearch",
+            "allSearch",
+            "batchApproveBtnAll",
+            "batchRejectBtnAll",
+            "batchRevokeBtnAll",
+            "batchRequireBtnAll",
+        ):
+            assert f'id="{element_id}"' in html, element_id
+
     def test_admin_prompts_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
         """The unified /admin/prompts page (#622) is gated by require_admin."""
         # Unauthenticated → 302 redirect to login
@@ -443,8 +470,7 @@ class TestAdminRoleGuards:
         # /profile/sessions before sending, so it never reaches the
         # download handler. The %2F-encoded variant exercises the real
         # path-component value that does reach the handler.
-        for bad in ["../etc/passwd", "subdir/file.jsonl", ".env",
-                    "session.jsonl.bak", "..%2Fetc%2Fpasswd"]:
+        for bad in ["../etc/passwd", "subdir/file.jsonl", ".env", "session.jsonl.bak", "..%2Fetc%2Fpasswd"]:
             r = web_client.get(f"/profile/sessions/{bad}", cookies=analyst_cookie, follow_redirects=False)
             assert r.status_code == 404, f"Expected 404 for {bad!r}, got {r.status_code}"
         # Unauthenticated → never the file
@@ -495,10 +521,13 @@ class TestUnauthenticatedHtmlRedirects:
         from argon2 import PasswordHasher
         from src.db import get_system_db
         from src.repositories.users import UserRepository
+
         password = "TestPass1!"
         conn = get_system_db()
         UserRepository(conn).create(
-            id="u1", email="u1@test.com", name="U1",
+            id="u1",
+            email="u1@test.com",
+            name="U1",
             password_hash=PasswordHasher().hash(password),
         )
         conn.close()
@@ -514,10 +543,13 @@ class TestUnauthenticatedHtmlRedirects:
         from argon2 import PasswordHasher
         from src.db import get_system_db
         from src.repositories.users import UserRepository
+
         password = "TestPass1!"
         conn = get_system_db()
         UserRepository(conn).create(
-            id="u2", email="u2@test.com", name="U2",
+            id="u2",
+            email="u2@test.com",
+            name="U2",
             password_hash=PasswordHasher().hash(password),
         )
         conn.close()
@@ -529,23 +561,29 @@ class TestUnauthenticatedHtmlRedirects:
         assert resp.status_code == 302
         assert resp.headers["location"] == "/dashboard"
 
-    @pytest.mark.parametrize("hostile_next,expected_location", [
-        ("javascript:alert(1)", "/dashboard"),
-        ("http://evil.example/", "/dashboard"),
-        ("//evil.example/", "/dashboard"),
-        ("dashboard", "/dashboard"),           # missing leading slash
-        ("/foo?bar=baz", "/foo?bar=baz"),       # valid same-origin with query
-    ])
+    @pytest.mark.parametrize(
+        "hostile_next,expected_location",
+        [
+            ("javascript:alert(1)", "/dashboard"),
+            ("http://evil.example/", "/dashboard"),
+            ("//evil.example/", "/dashboard"),
+            ("dashboard", "/dashboard"),  # missing leading slash
+            ("/foo?bar=baz", "/foo?bar=baz"),  # valid same-origin with query
+        ],
+    )
     def test_password_login_sanitizes_next(self, web_client, tmp_path, hostile_next, expected_location):
         from argon2 import PasswordHasher
         from src.db import get_system_db
         from src.repositories.users import UserRepository
         import uuid
+
         password = "TestPass1!"
         uid = f"u-{uuid.uuid4().hex[:8]}"
         conn = get_system_db()
         UserRepository(conn).create(
-            id=uid, email=f"{uid}@test.com", name=uid,
+            id=uid,
+            email=f"{uid}@test.com",
+            name=uid,
             password_hash=PasswordHasher().hash(password),
         )
         conn.close()
@@ -559,8 +597,7 @@ class TestUnauthenticatedHtmlRedirects:
 
     def test_non_api_post_still_returns_json_401(self, web_client):
         # POST to a JSON auth endpoint that lives outside /api/ — must NOT be redirected.
-        resp = web_client.post("/auth/token", json={"email": "nope@x.com", "password": "wrong"},
-                               follow_redirects=False)
+        resp = web_client.post("/auth/token", json={"email": "nope@x.com", "password": "wrong"}, follow_redirects=False)
         assert resp.status_code == 401
         assert resp.headers["content-type"].startswith("application/json")
 
@@ -576,21 +613,24 @@ class TestUnauthenticatedHtmlRedirects:
         assert resp.status_code == 200
         body = resp.text
         # Password button URL should carry next.
-        assert "/login/password?next=%2Fcatalog" in body, \
+        assert "/login/password?next=%2Fcatalog" in body, (
             f"Expected /login/password?next=%2Fcatalog in login page HTML; got snippet: {body[:500]}"
+        )
 
     def test_login_page_propagates_next_to_google_button(self, web_client, monkeypatch):
         """The Google OAuth button URL must also carry the ?next param so the
         post-login redirect honors the requested destination."""
         # Force Google provider to appear available so the button is rendered.
         monkeypatch.setattr(
-            "app.auth.providers.google.is_available", lambda: True,
+            "app.auth.providers.google.is_available",
+            lambda: True,
         )
         resp = web_client.get("/login?next=/catalog")
         assert resp.status_code == 200
         body = resp.text
-        assert "/auth/google/login?next=%2Fcatalog" in body, \
+        assert "/auth/google/login?next=%2Fcatalog" in body, (
             f"Expected google login URL with ?next in login page; snippet: {body[:800]}"
+        )
 
     def test_login_email_page_extracts_and_renders_next(self, web_client):
         """/login/email (magic link) must extract ?next from the URL and
@@ -599,8 +639,7 @@ class TestUnauthenticatedHtmlRedirects:
         assert resp.status_code == 200
         body = resp.text
         # The template renders <input type="hidden" name="next" value="/catalog">
-        assert 'name="next" value="/catalog"' in body, \
-            f"Expected /catalog in next hidden field; snippet: {body[:800]}"
+        assert 'name="next" value="/catalog"' in body, f"Expected /catalog in next hidden field; snippet: {body[:800]}"
 
     def test_login_email_page_rejects_open_redirect_in_next(self, web_client):
         """Hostile ?next values (e.g. //evil) must be sanitized away before
@@ -618,6 +657,7 @@ class TestUnauthenticatedHtmlRedirects:
         We can't exercise the full OAuth flow without a Google mock, but we
         can verify the helper applies the sanitizer correctly."""
         from app.auth._common import safe_next_path
+
         # Valid same-origin paths pass through.
         assert safe_next_path("/catalog") == "/catalog"
         assert safe_next_path("/foo?bar=baz") == "/foo?bar=baz"
