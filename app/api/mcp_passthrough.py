@@ -229,6 +229,15 @@ async def invoke_passthrough_tool(
         # exc_summary unwraps the SDK's anyio ExceptionGroup so the caller
         # (often a chat agent) sees the upstream's actionable message, not
         # "unhandled errors in a TaskGroup (1 sub-exception)".
+        #
+        # Exposure decision (deliberate): the leaf message can carry the
+        # upstream URL / JSON-RPC error.message, and every RBAC-authorized
+        # caller of this tool sees it — that's the point (an actionable
+        # remedy beats an opaque wrapper). Agnes's own stored credential is
+        # never part of str(exc): auth rides only in the Authorization
+        # header (connectors/mcp/client._build_http_headers), which no
+        # exception type in this chain stringifies. Keep it that way — do
+        # not add query-string or URL-embedded auth to the client.
         raise HTTPException(status_code=502, detail=f"upstream call failed: {exc_summary(exc)}") from exc
 
     redacted_text, redacted_data = redact_response(
