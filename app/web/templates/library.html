@@ -126,7 +126,7 @@
                   {% elif c.verified %}
                     <span class="lib-trust lib-trust--verified" title="Verified by your organization">Verified</span>
                   {% elif c.trust_level == 'unverified' and show_unverified_trust %}
-                    <span class="lib-trust lib-trust--unverified" title="Community-contributed, not yet verified by your organization">Community &#x3F;</span>
+                    <span class="lib-trust lib-trust--unverified" title="Community-contributed, not yet verified by your organization">Community</span>
                   {% endif %}
                 </span>
               </td>
@@ -650,7 +650,7 @@
      "Shared with you" for Sharing), so the common case reads in full and only
      genuinely long content ellipsises. */
   .lib-col-type    { width: 128px; }
-  .lib-col-owner   { width: 136px; }
+  .lib-col-owner   { width: 152px; }
   /* Sharing carries the widest badge plus its chevron. */
   .lib-col-sharing { width: 176px; }
   /* = stack slot (142) + cell padding (2×14). Sharing is no longer in here. */
@@ -720,7 +720,9 @@
   .lib-name-desc { font-size: 12.5px; color: var(--ds-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lib-cell-muted { color: var(--ds-text-secondary); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lib-typechip { display: inline-flex; align-items: center; max-width: 100%; height: 22px; padding: 0 9px; font-size: 11.5px; font-weight: 600; color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .lib-owner { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  /* Wrap so the trust chip drops below the name when both don't fit the fixed
+     column, rather than squeezing a short owner name to an ellipsis. */
+  .lib-owner { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 8px; min-width: 0; }
   .lib-owner-name { font-size: 13px; color: var(--ds-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Trust chip beside the owner. Quiet by design — the Library's primary
      affordances are Sharing and Stack; provenance is context, not an action. */
