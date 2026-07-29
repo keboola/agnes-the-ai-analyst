@@ -96,6 +96,56 @@ def test_update_whitelist(repo):
         repo.update("a1", owner_user_id="u2")  # not whitelisted
 
 
+def test_builder_superset_roundtrip(repo):
+    """v110 paper-theme builder superset — create + update + read the authored
+    fields on the same canonical row that holds main's agent-as-API columns."""
+    repo.create(
+        id="a1",
+        owner_user_id="u1",
+        name="Analyst",
+        slug="analyst",
+        system_prompt="be precise",
+        role="data analyst",
+        tone="warm",
+        greeting="hi there",
+        knowledge='["k1", "k2"]',
+        plugins='["p1"]',
+        surfaces='{"chat": true}',
+        status="ready",
+    )
+    row = repo.get_by_id("a1")
+    assert row["role"] == "data analyst"
+    assert row["tone"] == "warm"
+    assert row["greeting"] == "hi there"
+    assert row["knowledge"] == '["k1", "k2"]'
+    assert row["plugins"] == '["p1"]'
+    assert row["surfaces"] == '{"chat": true}'
+    assert row["status"] == "ready"
+    # The builder maps instructions -> system_prompt on the same table.
+    assert row["system_prompt"] == "be precise"
+
+    # Superset columns are whitelisted for update; the JSON payloads are opaque.
+    repo.update("a1", role="senior analyst", knowledge='["k3"]', status="draft")
+    row = repo.get_by_id("a1")
+    assert row["role"] == "senior analyst"
+    assert row["knowledge"] == '["k3"]'
+    assert row["status"] == "draft"
+
+
+def test_builder_defaults_and_slug_picker(repo):
+    """A create with no builder fields lands the column DEFAULTs, and the slug
+    picker sees tombstones via include_deleted."""
+    repo.create(id="a1", owner_user_id="u1", name="A", slug="x")
+    row = repo.get_by_id("a1")
+    assert row["tone"] == "concise"
+    assert row["knowledge"] == "[]"
+    assert row["surfaces"] == "{}"
+    assert row["status"] == "draft"
+    repo.soft_delete("a1")
+    assert repo.get_by_slug("u1", "x") is None
+    assert repo.get_by_slug("u1", "x", include_deleted=True) is not None
+
+
 def test_scope_snapshot_roundtrip(repo):
     repo.create(id="a1", owner_user_id="u1", name="A", slug="x")
     repo.record_scope_snapshot(id="s1", session_id="c1", agent_id="a1", effective_scope='{"tables": ["t1"]}')
