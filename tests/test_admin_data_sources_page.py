@@ -128,16 +128,15 @@ class TestDataSourcesPageVaultBanner:
 
 
 class TestDataSourcesPageSemanticLayerSummary:
-    """Small summary card: 'Semantic layer: N metrics, M glossary terms
-    synced' — surfaces the Keboola semantic-layer sync (#920) result and
-    links to /catalog/semantics. Counts are global (metric_definitions /
-    glossary_terms carry no per-connection column), scoped to
-    source='keboola_semantic_layer' rows only — manual/yaml_import/
-    openmetadata rows don't count toward "synced from Keboola".
+    """Slim one-line status ('Semantic layer: <status> — manage at
+    /admin/semantic-layer') — task 7 moved the per-source counts, the
+    "Sync now" control and the orphaned-rows view to /admin/semantic-layer.
+    This page keeps just enough to tell an admin whether the last sync
+    succeeded and where to go for detail.
 
-    #953: the card must always show SOME state (never-synced / ok / error),
-    not just after a successful sync with nonzero counts — an admin who
-    hasn't synced yet, or whose last attempt failed, needs to see that too.
+    #953: the line must always show SOME state (never-synced / ok / error),
+    not just after a successful sync — an admin who hasn't synced yet, or
+    whose last attempt failed, needs to see that too.
     """
 
     def test_never_synced_state_shown_when_nothing_synced_yet(self, seeded_app):
@@ -147,9 +146,8 @@ class TestDataSourcesPageSemanticLayerSummary:
         assert resp.status_code == 200
         body = resp.text
         assert "Semantic layer" in body
-        assert "Sync now" in body
-        assert 'id="ds-semantic-sync-btn"' in body
         assert "never" in body.lower()
+        assert "/admin/semantic-layer" in body
 
     def test_error_state_shown_after_failed_sync(self, seeded_app):
         from app.api.keboola_semantic_layer_refresh import _record_completion
@@ -164,10 +162,9 @@ class TestDataSourcesPageSemanticLayerSummary:
         assert "Semantic layer" in body
         assert "failed" in body.lower()
         assert "needs a master token" in body
-        # Still offers a retry.
-        assert 'id="ds-semantic-sync-btn"' in body
+        assert "/admin/semantic-layer" in body
 
-    def test_ok_state_shown_after_successful_sync_even_with_zero_counts(self, seeded_app):
+    def test_ok_state_shown_after_successful_sync(self, seeded_app):
         from app.api.keboola_semantic_layer_refresh import _record_completion
 
         _record_completion("ok", {"status": "ok", "created_or_updated": 0, "pruned": 0})
@@ -178,44 +175,5 @@ class TestDataSourcesPageSemanticLayerSummary:
         assert resp.status_code == 200
         body = resp.text
         assert "Semantic layer" in body
-        assert "0 metrics" in body
-
-    def test_card_shows_counts_and_links_after_sync(self, seeded_app):
-        from src.repositories import glossary_repo, metric_repo
-
-        metric_repo().create(
-            id="revenue/mrr",
-            name="mrr",
-            display_name="MRR",
-            category="revenue",
-            sql="SELECT 1",
-            source="keboola_semantic_layer",
-        )
-        metric_repo().create(
-            id="revenue/arr",
-            name="arr",
-            display_name="ARR",
-            category="revenue",
-            sql="SELECT 1",
-            source="keboola_semantic_layer",
-        )
-        # A manual metric must NOT count toward the "synced from Keboola" total.
-        metric_repo().create(
-            id="manual/x",
-            name="x",
-            display_name="X",
-            category="manual",
-            sql="SELECT 1",
-            source="manual",
-        )
-        glossary_repo().create(id="kb/m/mrr", term="MRR", definition="…", source="keboola_semantic_layer")
-
-        c = seeded_app["client"]
-        token = seeded_app["admin_token"]
-        resp = c.get("/admin/data-sources", headers=_auth(token))
-        assert resp.status_code == 200
-        body = resp.text
-        assert "Semantic layer" in body
-        assert "2 metrics" in body
-        assert "1 glossary term" in body
-        assert "/catalog/semantics" in body
+        assert "OK" in body
+        assert "/admin/semantic-layer" in body
