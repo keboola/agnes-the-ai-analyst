@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.18] - 2026-07-29
+
+### Added
+
 - PAT data-read **surface** (`personal_access_tokens.surface`, v106): `'all'` or `'stack'`. `POST /auth/tokens` accepts `surface` (default `all`) and token listings show it; `agnes auth token create --surface` mirrors it. New `POST /cli/auth/rescope-surface` (admin-only, PAT-authenticated) mints a full-surface token; `agnes init --as-admin` uses it.
 
 ### Changed
