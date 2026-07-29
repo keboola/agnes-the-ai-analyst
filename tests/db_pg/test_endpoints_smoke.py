@@ -1556,12 +1556,27 @@ class TestReportsSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
-    # Agent-profile builder page (Task 10) — self-contained web page, tested
-    # in tests/test_agents_page.py (chrome/list/auth) rather than duplicated
-    # in this PG smoke harness. The management API it drives
-    # (/api/v1/agents/*) is covered separately in
-    # tests/test_agents_management_api.py.
+    # Agent-builder page (paper-theme redesign) — self-contained web page,
+    # covered in tests/test_ui_layout_theme.py (chrome/list/auth/actions)
+    # rather than duplicated in this PG smoke harness. The builder API it
+    # drives (/api/agents/*) rides main's canonical agents table; the
+    # agent-as-API management surface (/api/v1/agents/*) is covered separately
+    # in tests/test_agents_management_api.py.
     "GET /agents",
+    # Self-service display-name edit (#1036) — auth-scoped one-field PATCH on
+    # the caller's own row; the repo method behind it (users.update_display_name)
+    # is contract-tested on both backends in tests/db_pg/test_users_contract.py,
+    # so it isn't duplicated in this parameter-free smoke sweep (it also needs a
+    # request body).
+    "PATCH /api/me/display-name",
+    # Store publisher + verification trust line (paper-theme redesign) — all
+    # parameterized mutations requiring a body, behaviorally covered in
+    # tests/test_store_publisher_verification.py (publisher set, verify /
+    # request-changes, request-verification, RBAC, org-published invariants);
+    # not duplicated in this parameter-free smoke sweep.
+    "PUT /api/store/entities/{entity_id}/publisher",
+    "PUT /api/store/entities/{entity_id}/verification",
+    "POST /api/store/entities/{entity_id}/verification/request",
     # Chat sandbox secret broker (2026-07-14 incident) — internal
     # sandbox→server routes, ticket-authed, never parameter-free (require a
     # POST body + a valid broker ticket), so they have no place in this
