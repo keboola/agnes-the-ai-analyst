@@ -36,7 +36,7 @@ from mcp.server.fastmcp import FastMCP
 from cli.client import api_get
 from cli.config import get_server_url, get_token
 from cli.query_hints import missing_table, remote_table_hint
-from cli.v2_client import V2ClientError, api_get_json, api_post_json
+from cli.v2_client import V2ClientError, api_delete, api_get_json, api_post_json
 from src.duckdb_conn import _open_duckdb
 
 mcp = FastMCP(
@@ -396,6 +396,289 @@ def pull(skip_materialize: bool = False) -> dict:
         # the call took (Devin Review BUG_0001 on #594). Renamed the key
         # to `duration_s` to match `PullResult` + `--json` output.
         "duration_s": round(result.duration_s, 1),
+    }
+
+
+# ── hosted data apps ─────────────────────────────────────────────────────────
+#
+# The in-chat authoring agent connects through THIS stdio server (spawned as
+# `agnes mcp` by app/chat/runner.py), not the HTTP foundation transports, so the
+# whole data-app family — including the chat-surface render directives — must be
+# registered here. The action tools mirror app/api/mcp/foundation_tools.py
+# (same REST endpoints, same return shapes) via the sync CLI HTTP helpers; the
+# render tools return the same fixed directive JSON the web chat frontend
+# switches on. Parity is guarded by tests/test_mcp_tool_parity.py
+# (DATA_APP_TOOL_NAMES ⊆ this server's tools).
+
+
+def _data_apps_disabled_payload() -> dict:
+    return {
+        "error": "data_apps_disabled",
+        "message": "Data apps are disabled on this instance.",
+    }
+
+
+def _is_data_apps_disabled(exc: V2ClientError) -> bool:
+    """True when a V2ClientError is the server's ``data_apps_disabled`` 404."""
+    if exc.status_code != 404:
+        return False
+    body = exc.body
+    return isinstance(body, dict) and body.get("detail") == "data_apps_disabled"
+
+
+@mcp.tool()
+def data_apps_list() -> dict:
+    """List hosted data apps you can see (RBAC-filtered).
+
+    Visible to any authenticated user: apps you own, apps a group you're in has
+    a ``resource_grants`` row for, or (Admin) all apps. Returns a list of app
+    summaries — ``slug``, ``name``, ``state``, ``url``, metadata; secrets are
+    never included. Mirrors ``GET /api/data-apps`` and ``agnes app list``.
+    """
+    try:
+        return api_get_json("/api/data-apps")
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error("data_apps_list", exc)) from exc
+
+
+@mcp.tool()
+def data_app_get(slug: str) -> dict:
+    """Show one hosted data app's detail.
+
+    Any authenticated user with view access (owner, Admin, or a group granted
+    access via ``resource_grants``) may call this. A prod app inlines its
+    ``drafts`` for the owner.
+
+    Args:
+        slug: The app's slug (from ``data_apps_list``).
+
+    Mirrors ``GET /api/data-apps/{slug}`` and ``agnes app show``.
+    """
+    try:
+        return api_get_json(f"/api/data-apps/{slug}")
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_get({slug})", exc)) from exc
+
+
+@mcp.tool()
+def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
+    """Deploy (or redeploy) a hosted data app — app owner or Admin only.
+
+    Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given, else the
+    tracked branch's latest), mints a fresh service token, and hands the build
+    to the runner sidecar. ``mode="dev"`` deploys a draft on its pinned branch
+    instead (a draft has no ``agnes-live`` ref, so ``sha`` is ignored there).
+
+    Args:
+        slug: The app's slug (a prod app's slug, or a draft's own slug when
+              ``mode="dev"``).
+        sha:  Optional commit sha. Empty (default) fast-forwards to the tracked
+              branch's latest. Ignored for draft deploys.
+        mode: ``"dev"`` deploys a draft's branch; empty (default) deploys prod.
+
+    Returns ``{"state": "running", "deployed_sha": "..."}``. Mirrors
+    ``POST /api/data-apps/{slug}/deploy`` and ``agnes app deploy``.
+    """
+    payload: dict = {}
+    if sha:
+        payload["sha"] = sha
+    if mode:
+        payload["mode"] = mode
+    try:
+        return api_post_json(f"/api/data-apps/{slug}/deploy", payload)
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_deploy({slug})", exc)) from exc
+
+
+@mcp.tool()
+def data_app_create_draft(slug: str, branch: str = "init") -> dict:
+    """Create a draft of a prod data app on an iteration branch — owner/Admin only.
+
+    The draft shares the prod app's git repo (no second repo, no copy): a
+    registry sibling row pinned to ``branch`` on the parent's repo, deployable
+    with ``data_app_deploy(draft_slug, mode="dev")``. Drafts are hidden from
+    ``data_apps_list`` — reach them via the parent's ``drafts`` field in
+    ``data_app_get``.
+
+    Args:
+        slug:   The PROD app's slug (must not itself be a draft).
+        branch: Iteration branch name (default ``"init"``).
+
+    Returns ``{"id", "slug", "branch", "git_clone_url"}`` — the draft's slug and
+    a git push credential embedded in the clone URL. Mirrors
+    ``POST /api/data-apps/{slug}/drafts`` and ``agnes app draft create``.
+    """
+    try:
+        return api_post_json(f"/api/data-apps/{slug}/drafts", {"branch": branch})
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_create_draft({slug})", exc)) from exc
+
+
+@mcp.tool()
+def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
+    """Tear down a draft of a prod data app — app owner or Admin only.
+
+    Stops the draft's container, revokes its service token, deletes the
+    iteration branch on the parent's repo, and removes the draft's registry row.
+
+    Args:
+        slug:       The PROD app's slug (the draft's parent).
+        draft_slug: The draft's own slug (from ``data_app_create_draft`` or the
+                    parent's ``drafts`` field).
+
+    Returns ``{"status": "deleted"}``. Mirrors
+    ``DELETE /api/data-apps/{slug}/drafts/{draft_slug}`` and
+    ``agnes app draft delete``.
+    """
+    try:
+        api_delete(f"/api/data-apps/{slug}/drafts/{draft_slug}")
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_delete_draft({slug})", exc)) from exc
+    return {"status": "deleted"}
+
+
+@mcp.tool()
+def data_app_git_credential(slug: str) -> dict:
+    """Mint a fresh git push credential for a data app — app owner or Admin only.
+
+    Args:
+        slug: The app's slug (a prod app; drafts push through the same
+              parent-repo credential).
+
+    Returns ``{"git_clone_url": "..."}`` with an embedded, time-scoped push
+    credential. Mirrors ``POST /api/data-apps/{slug}/git-credential`` and
+    ``agnes app git-credential``.
+    """
+    try:
+        return api_post_json(f"/api/data-apps/{slug}/git-credential", {})
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_git_credential({slug})", exc)) from exc
+
+
+@mcp.tool()
+def data_app_logs(slug: str, tail: int = 200) -> dict:
+    """Show the last N lines of runner logs for a hosted data app — owner/Admin only.
+
+    Args:
+        slug: The app's slug.
+        tail: Number of trailing log lines to return (default 200).
+
+    Returns ``{"logs": "..."}``. Mirrors ``GET /api/data-apps/{slug}/logs`` and
+    ``agnes app logs``.
+    """
+    try:
+        return api_get_json(f"/api/data-apps/{slug}/logs", tail=tail)
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_logs({slug})", exc)) from exc
+
+
+@mcp.tool()
+def agnes_data_app_preview(slug: str, url: str = "") -> dict:
+    """Open or refresh the in-chat split-pane preview of a hosted data app.
+
+    Chat-surface render directive — the chat runner forwards this tool's return
+    value verbatim into a directive the web chat frontend switches on (outside
+    the web chat, e.g. a local terminal, the directive is inert).
+
+    Call this TWICE per preview cycle: first with an empty ``url`` (the default)
+    the moment a scaffold/dev deploy is kicked off — this opens a placeholder
+    pane immediately, before the app is reachable. Once the dev deploy is
+    healthy (poll ``data_app_get`` in short steps), call again with the real
+    ``url`` (typically ``/apps/<slug>/``) to swap the pane to the live app — the
+    second call mints a short-TTL scoped preview grant
+    (``POST /api/data-apps/{slug}/preview-grant``) so the iframe loads without a
+    cross-origin login.
+
+    Args:
+        slug: The (draft or prod) app's slug.
+        url:  Empty (default) for the placeholder call; the app's URL (e.g.
+              ``/apps/<slug>/``) to swap to the live pane.
+
+    Returns ``{"render": "data_app_preview", "slug", "url"}`` — ``url`` is
+    ``null`` on the placeholder call. The live-URL call mints the scoped preview
+    cookie server-side (installed via the grant endpoint's ``Set-Cookie``
+    header; the web chat re-fetches it same-origin), but the token value is
+    deliberately NOT returned — a tool result is archived in the session
+    transcript, and this is a live bearer credential. Returns a friendly
+    ``data_apps_disabled`` payload (not an error) if data apps are disabled on
+    this instance.
+    """
+    if not url:
+        return {"render": "data_app_preview", "slug": slug, "url": None}
+    try:
+        # Validates view access (403 -> raises) and installs the scoped cookie
+        # via the grant endpoint's Set-Cookie header. The cookie value is
+        # intentionally discarded, not surfaced: the render directive the web
+        # chat needs carries only slug + url, and the frontend lands the
+        # HttpOnly cookie itself via a same-origin re-fetch of the endpoint.
+        api_post_json(f"/api/data-apps/{slug}/preview-grant", {})
+    except V2ClientError as exc:
+        if _is_data_apps_disabled(exc):
+            return _data_apps_disabled_payload()
+        raise ValueError(_mcp_error(f"agnes_data_app_preview({slug})", exc)) from exc
+    return {"render": "data_app_preview", "slug": slug, "url": url}
+
+
+@mcp.tool()
+def agnes_data_app_refresh(slug: str) -> dict:
+    """Force-reload the in-chat preview pane for a hosted data app.
+
+    Chat-surface render directive — no server round-trip. Call after pushing a
+    fresh commit to a draft's dev deploy so the iframe picks up the change
+    without the user manually reloading.
+
+    Args:
+        slug: The app's slug the currently-open pane is showing.
+
+    Returns ``{"render": "data_app_preview_refresh", "slug"}``.
+    """
+    return {"render": "data_app_preview_refresh", "slug": slug}
+
+
+@mcp.tool()
+def agnes_data_app_close(slug: str) -> dict:
+    """Tear down the in-chat preview pane for a hosted data app.
+
+    Chat-surface render directive — no server round-trip. Call this BEFORE
+    ``data_app_delete_draft`` when abandoning or promoting a draft — closing the
+    pane first avoids the iframe pointing at a container that's about to
+    disappear.
+
+    Args:
+        slug: The app's slug the currently-open pane is showing.
+
+    Returns ``{"render": "data_app_preview_close", "slug"}``.
+    """
+    return {"render": "data_app_preview_close", "slug": slug}
+
+
+@mcp.tool()
+def agnes_data_app_credentials(slug: str) -> dict:
+    """Show the shareable URL for a hosted data app — a terminal render directive.
+
+    Chat-surface render directive.
+
+    Args:
+        slug: The app's slug.
+
+    Returns ``{"render": "data_app_credentials", "slug", "url", "password"}``.
+    ``password`` is always ``null`` today — the control-plane detail endpoint
+    this calls never returns the encrypted secrets blob (by design), so there is
+    no shared basic-auth password to surface; hint at granting a group access
+    via ``/admin/access`` instead. Returns a friendly ``data_apps_disabled``
+    payload (not an error) if data apps are disabled on this instance.
+    """
+    try:
+        detail = api_get_json(f"/api/data-apps/{slug}")
+    except V2ClientError as exc:
+        if _is_data_apps_disabled(exc):
+            return _data_apps_disabled_payload()
+        raise ValueError(_mcp_error(f"agnes_data_app_credentials({slug})", exc)) from exc
+    return {
+        "render": "data_app_credentials",
+        "slug": slug,
+        "url": detail.get("url"),
+        "password": None,
     }
 
 
