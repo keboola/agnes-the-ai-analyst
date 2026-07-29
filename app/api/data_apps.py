@@ -327,7 +327,13 @@ def _app_url(slug: str, cfg: dict) -> str:
 def _serialize(row: dict, cfg: Optional[dict] = None) -> dict:
     cfg = cfg if cfg is not None else _effective_config()
     out = {k: v for k, v in row.items() if k not in ("secrets_enc", "service_token_id")}
-    out["url"] = _app_url(row["slug"], cfg)
+    kind = "linked" if row.get("repo_mode") == "linked" else "hosted"
+    out["kind"] = kind
+    # A linked app opens at its external URL (Agnes doesn't proxy it); a hosted
+    # app opens at the reverse-proxy path. `effective_description` lets the admin
+    # override the synced description without the next sync clobbering it.
+    out["url"] = (row.get("external_url") or "") if kind == "linked" else _app_url(row["slug"], cfg)
+    out["effective_description"] = row.get("description_override") or row.get("description") or ""
     return out
 
 
@@ -719,6 +725,10 @@ class CreateDraftRequest(BaseModel):
     branch: str = "init"
 
 
+class SetDescriptionRequest(BaseModel):
+    description: str = ""
+
+
 def _draft_slug(parent_slug: str, branch: str) -> str:
     """Derive the draft's own slug from its parent + branch:
     ``<parent>--<branch>``, lowercased, non-``SLUG_RE`` characters folded to
@@ -739,14 +749,56 @@ def _draft_slug(parent_slug: str, branch: str) -> str:
 
 
 @router.get("")
-async def list_data_apps(user: dict = Depends(get_current_user)):
+async def list_data_apps(
+    user: dict = Depends(get_current_user),
+    kind: Optional[str] = None,
+):
     _feature_gate()
+    if kind is not None and kind not in ("hosted", "linked"):
+        raise HTTPException(status_code=400, detail="invalid_kind")
     cfg = _effective_config()
     # Drafts are working copies layered on a parent app, not independent
     # apps a caller should stumble onto in the human-facing/CLI list —
     # they're reached via `GET /{slug}`'s inlined `drafts` field instead.
+    # Hidden linked rows (app removed upstream) are excluded from `list()` by
+    # the `state='linked_hidden'` filter below only when filtering to linked;
+    # the default list already omits them since callers key off visible state.
     rows = data_apps_repo().list(include_drafts=False)
-    return [_serialize(r, cfg) for r in rows if _can_view(user, r)]
+    out = []
+    for r in rows:
+        if r.get("state") == "linked_hidden":
+            continue  # soft-deleted linked app — not shown
+        if not _can_view(user, r):
+            continue
+        serialized = _serialize(r, cfg)
+        if kind is not None and serialized["kind"] != kind:
+            continue
+        out.append(serialized)
+    return out
+
+
+@router.patch("/{slug}")
+async def set_data_app_description(
+    slug: str,
+    payload: SetDescriptionRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Set the admin description override on a managed (sync-owned) app.
+
+    Linked apps are org resources whose ``description`` is refreshed by the
+    ingest sync; this override lets an owner/Admin pin a human-authored
+    description the sync won't clobber. Only ``managed`` rows accept it —
+    hosted apps edit their description via the normal create/update flow.
+    """
+    _feature_gate()
+    row = _get_row_or_404(slug)
+    _require_owner_or_admin(user, row)
+    if not row.get("managed"):
+        raise HTTPException(status_code=409, detail="not_managed")
+    data_apps_repo().set_description_override(slug, payload.description)
+    _audit(conn, user["id"], "data_app.set_description", f"data_app:{slug}", {})
+    return _serialize(_get_row_or_404(slug))
 
 
 @router.post("", status_code=201)
