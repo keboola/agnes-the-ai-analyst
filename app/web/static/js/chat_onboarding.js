@@ -324,7 +324,13 @@ function dismissJourney() {
   const el = document.getElementById("chat-journey");
   const popover = el && el.closest(".rail-getstarted-panel");
   if (popover) {
-    popover.hidden = true;
+    // Deliberately NOT `popover.hidden = true`: the panel's visibility is
+    // fully CSS-driven (revealed by :hover / :focus-within / `.is-open`,
+    // suppressed by `.is-closed`) and it carries no `hidden` attribute in the
+    // template. Sticking `hidden` here was one-way — no reopen path clears
+    // it, and pages that ship a `[hidden] { display: none !important; }`
+    // reset (stack_card.css, marketplace.css) could never show the panel
+    // again until a full reload (Devin Review on #1092).
     const wrap = document.getElementById("railGetStarted");
     if (wrap) {
       wrap.classList.remove("is-open");

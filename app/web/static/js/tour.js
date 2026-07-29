@@ -182,10 +182,16 @@ async function markTourStepsDone() {
 // "Connect my AI tools" button navigates to the AI Connector page.
 async function markUseAnywhereDone() {
   try {
+    // keepalive: the one call site fires this immediately before a full-page
+    // navigation (`window.location.href = '/me/ai-connector'`); without it
+    // the browser cancels the in-flight PUT and the journey step stays
+    // unmarked (Devin Review on #1092). keepalive lets the write survive the
+    // page teardown while keeping the call fire-and-forget.
     await fetch('/api/chat/journey', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ use_anywhere: true }),
+      keepalive: true,
     });
   } catch (_) { /* fire-and-forget — onboarding is soft state */ }
 }

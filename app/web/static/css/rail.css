@@ -812,14 +812,26 @@ html[data-ui-layout="rail"] .cloud-chat-journey-step.locked:hover {
            IS the viewport-height column. In this row layout `.rail` is back in
            normal document flow, so unconstrained overflow drags the whole page
            horizontally (most visibly when the tour scrolls a nav item into
-           view). Cap the bar's own width and let it scroll internally instead. */
+           view). Cap the bar's own width — but keep `.rail` itself
+           `overflow: visible`: making the BAR the scroll box (`overflow-x:
+           auto`) axis-couples `overflow-y` to `auto` per the CSS Overflow
+           spec, clipping the Get-started popover and the account menu that
+           open downward out of the bar (Devin Review on #1092). The scroll
+           containment lives on `.rail-nav` below instead — the popover and
+           user-menu panels are its SIBLINGS, so they escape freely while the
+           nav list (the thing the tour scrolls into view) scrolls
+           internally. */
         max-width: 100%;
-        overflow-x: auto;
     }
 
     html[data-ui-layout="rail"] .rail-nav {
         flex-direction: row;
         flex-wrap: wrap;
+        /* See the `.rail` comment above: this is the scroll box that keeps a
+           tour-driven scrollIntoView from dragging the page sideways, scoped
+           to an element that contains no popovers. */
+        max-width: 100%;
+        overflow-x: auto;
     }
 
     /* `.rail-i` is `width: 100%` for the column layout, where every item
