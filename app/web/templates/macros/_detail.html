@@ -95,17 +95,21 @@
 {% macro hero(kind='data', name='', color=None, cover_image_url=None, icon=None,
               eyebrow=None, badges=None, owner_name=None, owner_team=None,
               description=None, tags=None, meta=None,
-              back_href='/catalog', back_label='Back', panel='', glyph=None) %}
+              back_href='/catalog', back_label='Back', panel='', glyph=None,
+              compact=False) %}
 {# `kind` sets the accent color + data-kind; `glyph` optionally overrides just
    the icon shape (e.g. a one-file artefact keeps the library color but draws
    the single-document glyph). Defaults to kind, so existing callers are
-   unaffected. #}
+   unaffected. `compact=True` drops the dark gradient + deco layers for a light
+   header — use it on utility pages (upload / collection) whose primary content
+   is the sections below, not the hero itself; showcase pages keep the default
+   bold hero. #}
 <div class="detail" data-kind="{{ kind }}"
      style="--kind: var(--ds-kind-{{ kind }}); --kind-soft: var(--ds-kind-{{ kind }}-soft);">
 <a class="detail-back" href="{{ back_href }}">{{ ico('back') }}{{ back_label }}</a>
 
-<div class="detail-hero{% if panel %} detail-hero--paneled{% endif %}">
-  {{ hero_deco() }}
+<div class="detail-hero{% if panel %} detail-hero--paneled{% endif %}{% if compact %} detail-hero--compact{% endif %}">
+  {% if not compact %}{{ hero_deco() }}{% endif %}
   {# The action bar (icon + body + actions) is one horizontal row; an
      optional white content panel stacks beneath it inside the same hero. #}
   <div class="detail-hero__bar">
@@ -383,6 +387,49 @@
   }
   .detail-edit-icon:hover { border-color: rgba(255, 255, 255, 0.7); background: rgba(255, 255, 255, 0.2); }
   .detail-edit-icon svg { width: 16px; height: 16px; }
+
+  /* ── Compact hero (utility pages) ──
+     Upload / collection pages (e.g. a Library item) are utilities whose real
+     job is "upload a file / ask this collection" — the sections below ARE the
+     page. The full dark gradient hero pushes Upload + Files below the fold and
+     reads as a marketing design language next to the calm paper surfaces.
+     `compact=True` drops the gradient + deco and paints a light header that
+     sits on the page surface, so the primary content rises. Showcase detail
+     pages keep the bold dark hero as the default. */
+  .detail-hero--compact {
+    background: none;
+    border: 0;
+    box-shadow: none;
+    color: var(--ds-text-primary);
+    padding: 2px 0 6px;
+  }
+  .detail-hero--compact .detail-hero__icon {
+    width: 46px; height: 46px; border-radius: 12px;
+    background: var(--kind-soft); color: var(--kind);
+    border: 1px solid color-mix(in srgb, var(--kind) 24%, transparent);
+  }
+  .detail-hero--compact .detail-hero__icon svg { width: 24px; height: 24px; }
+  .detail-hero--compact .detail-hero__title-row h1 { color: var(--ds-text-primary); }
+  .detail-hero--compact .detail-hero__owner { color: var(--ds-text-secondary); }
+  .detail-hero--compact .detail-hero__owner strong { color: var(--ds-text-primary); }
+  .detail-hero--compact .detail-hero__desc { color: var(--ds-text-secondary); }
+  .detail-hero--compact .detail-hero__meta { color: var(--ds-text-muted); }
+  /* Buttons no longer ride a dark surface — revert the white-on-dark retints to
+     the standard design-system colours. Ask Agnes keeps its assistant-green
+     fill, which already reads on a light surface. */
+  .detail-hero--compact .detail-hero__actions .btn-primary {
+    background: var(--ds-primary); color: var(--ds-text-inverse); border-color: var(--ds-primary);
+  }
+  .detail-hero--compact .detail-hero__actions .btn-primary:hover {
+    background: var(--ds-primary-dark); color: var(--ds-text-inverse); border-color: var(--ds-primary-dark);
+  }
+  .detail-hero--compact .detail-hero__actions .btn-secondary,
+  .detail-hero--compact .detail-hero__actions .btn-danger {
+    background: var(--ds-surface); color: var(--ds-text-primary); border: 1px solid var(--ds-border);
+  }
+  .detail-hero--compact .detail-edit-icon {
+    background: var(--ds-surface); color: var(--ds-text-secondary); border: 1px solid var(--ds-border);
+  }
 
   /* ── Section cards ── */
   .detail-section { border-radius: 16px; padding: 20px 22px; margin-bottom: 14px; }

@@ -112,7 +112,7 @@
 
 {% call detail.hero(
      kind='library', glyph=_hero_glyph, name=_title,
-     description=_desc,
+     description=_desc, compact=True,
      meta=_meta, back_href=_back, back_label=_back_label) %}
   {{ detail.ask_agnes('Search the ' ~ _title ~ ' ' ~ _noun ~ ' and answer from its files.') }}
 {% endcall %}
