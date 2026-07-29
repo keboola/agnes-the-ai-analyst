@@ -896,7 +896,17 @@ def _reconcile_with_manifest(
     # linger enabled in settings.json.
     _enable_plugins_in_workspace_settings(manifest, events=events)
 
-    if not to_install and not to_update and not to_remove and not events["enabled"]:
+    # `settings_pruned` counts too: an out-of-band uninstall leaves a stale
+    # enabledPlugins key that the cleanup above just dropped — announcing
+    # "up to date" right after "Dropped N stale entries" would misreport a
+    # run that changed settings.json (Devin Review on #1105).
+    if (
+        not to_install
+        and not to_update
+        and not to_remove
+        and not events["enabled"]
+        and not events.get("settings_pruned")
+    ):
         typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
 
 
