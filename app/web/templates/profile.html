@@ -237,6 +237,11 @@ function pfEditName() {
   const editEl = document.getElementById("pf-name-edit");
   editEl.classList.add("visible");
   const inp = document.getElementById("pf-name-input");
+  // Always seed the input from the currently displayed name, so reopening the
+  // editor after a Cancel (or a Save) never shows abandoned/stale text. The
+  // view renders "—" (em dash) as the empty-name placeholder — treat it as "".
+  const cur = document.getElementById("pf-name-text").textContent;
+  inp.value = (cur === "—") ? "" : cur;
   inp.focus();
   inp.select();
 }

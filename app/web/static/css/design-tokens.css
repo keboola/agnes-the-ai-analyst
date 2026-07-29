@@ -184,6 +184,18 @@
     --ds-accent-danger-ink:   #991b1b;
     --ds-accent-danger-line:  #dc2626;
 
+    /* Read-only sharing state — "Shared with you", where the caller can
+       SEE who has access but cannot change it (they can't re-share
+       something that isn't theirs). Deliberately its own hue rather than
+       a tint of --ds-primary: primary marks the sharing badges that ARE
+       controls, and a badge wearing the action colour while doing
+       nothing on click is the worse failure. Violet is unrelated to
+       every primary the themes ship (green by default, sky blue under
+       blue/paper) and stays clear of the neutral "Private" chip. */
+    --ds-readonly-bg:   #f4eefe;
+    --ds-readonly-ink:  #6b21a8;
+    --ds-readonly-line: #a855f7;
+
     /* Canonical focus-ring — one outline + offset reused on every
        interactive element (button, link, tab, table row, input). Per
        system.md: "Focus ring is non-negotiable. No outline: none
@@ -505,6 +517,12 @@
     --ds-accent-danger-bg:  rgba(220, 38, 38, 0.22);
     --ds-accent-danger-ink: #ff9b9b;
     --ds-accent-danger-line: #dc2626;
+
+    /* Read-only sharing — same translucent-tint treatment as the status
+       accents above; the light violet pastel would wash out on dark. */
+    --ds-readonly-bg:   rgba(168, 85, 247, 0.20);
+    --ds-readonly-ink:  #d8b4fe;
+    --ds-readonly-line: #a855f7;
 
     /* Legacy compat shims — these live in style-custom.css and are
        referenced by the app header, footer, and pages that haven't

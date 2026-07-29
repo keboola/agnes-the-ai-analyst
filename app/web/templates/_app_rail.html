@@ -2,12 +2,22 @@
    AGNES_UI_LAYOUT=rail). Renders INSTEAD of _app_header.html via the
    switch in base_ds.html; topnav instances never load this partial.
 
-   IA (issue #896 prototype): three primary destinations — Chat,
-   My Stack, Catalog — with the content surfaces (Data Packages,
-   Plugins/Marketplace, Library, Memory) as subcategories under
-   Catalog. "My Stack" deep-links to the personal-collection tab
-   (/catalog?tab=my). The topnav chrome keeps its flat link row —
-   this IA applies only to the rail layout.
+   IA (issue #896 prototype): the primary destinations are one flat,
+   undivided group — New chat · Library · Agents. The Studio dropdown and the
+   Marketplace entry have both been retired from the rail, and with so few
+   destinations left the group dividers went with them; /catalog and the
+   Skill/Plugin builders remain live routes, reached from in-page surfaces
+   (the Library header's "+ Add" menu, chat suggestions, search) rather than
+   the rail. The topnav chrome keeps its flat link row — this IA applies only
+   to the rail layout.
+
+   TODO(#1088): My Stack is UNLINKED, not resolved. /stack is still a live,
+   fully-featured surface — it is simply not a rail destination any more, and
+   gets no replacement cross-link, because /library already renders every kind
+   it does (data packages and memory domains from the SAME
+   StackResolver.browse() call) and its "In stack only" toggle reproduces the
+   page's purpose over that same list. What is left is to RETIRE /stack
+   (302 → /library), not to restore it here.
 
    Mirrors _app_header.html in behavior contract:
      - same auth gating (session.user), chat grant gating (can_chat),
@@ -29,17 +39,18 @@
 
     {% set _path = request.url.path %}
     {% set _home = home_route or '/dashboard' %}
-    {% set _on_stack = _path == '/stack' %}
-    {% set _on_artefacts = _path == '/artefacts' %}
+    {% set _on_library = _path.startswith('/library') or _path == '/artefacts' %}
     {% set _on_agents = _path == '/agents' %}
-    {% set _in_catalog = _path.startswith('/catalog') or _path.startswith('/marketplace') or _path.startswith('/library') or _path == '/corporate-memory' %}
 
     <div class="rail-nav">
         {# Chat is a surface only when it actually works: enabled + the caller
            holds a chat grant (`can_chat`). The retired /ask hero used to fill
            this slot for non-chat users (#896) — but it just forwarded to /chat
            (a dead end without the grant), so the slot now simply renders
-           nothing when chat is unavailable. Those users land on /stack.
+           nothing when chat is unavailable. Those users land on /library — it
+           used to be /stack, but with My Stack no longer a rail destination
+           (#1088) that would have dropped them on a surface with no nav entry
+           and no active-state highlight.
 
            "New chat" is the single chat entry point AND the rail landing item —
            there is no separate Dashboard nav item, since /dashboard is just
@@ -62,57 +73,27 @@
             New chat
         </a>
         {% endif %}
-        <a class="rail-i {% if _on_stack %}on{% endif %}" href="/stack">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            <span class="rail-i-label">My Stack</span>
-        </a>
-        {# Artefacts — the umbrella for things the caller creates: their private
-           collections of files (moved off My Stack) today and, soon, their data
-           apps. Work-in-progress, so it carries a WIP badge. #}
-        {# id="nav-artefacts" is the tour step-2 anchor (private uploads live here now). #}
-        <a class="rail-i {% if _on_artefacts %}on{% endif %}" href="/artefacts" id="nav-artefacts">
+        {# Library — the umbrella for the things the caller has and creates:
+           their private collections of files (moved off My Stack), skills and
+           agents today and, soon, their data apps. #}
+        {# id="nav-artefacts" is the tour step-2 anchor (private uploads live
+           here now) — the id stays put so tour.js keeps resolving it across
+           the /artefacts → /library rename. #}
+        <a class="rail-i {% if _on_library %}on{% endif %}" href="/library" id="nav-artefacts">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13 3v5h5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            <span class="rail-i-label">Artefacts</span>
-            <span class="rail-badge">WIP</span>
+            <span class="rail-i-label">Library</span>
         </a>
-        {# Studio — the "build with your Stack" workspace. Hover (or keyboard
-           focus) reveals an inline dropdown: Agents (moved here from the rail
-           root) plus two exploratory builders flagged "Maybe?" — concepts, not
-           yet real destinations, so they render as non-interactive labels. A
-           right-side flyout would be clipped by the rail's overflow-y:auto, so
-           the menu expands inline beneath the trigger. #}
-        <div class="rail-studio">
-            <button type="button" class="rail-i rail-studio-trigger {% if _on_agents %}on{% endif %}"
-                    aria-haspopup="true" aria-expanded="false">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.2 14.3 8l5.3.6-3.9 3.6 1 5.2L12 15l-4.7 2.4 1-5.2L4.4 8.6 9.7 8 12 3.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-                <span class="rail-i-label">Studio</span>
-                <svg class="rail-studio-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-            <div class="rail-studio-menu">
-                <div class="rail-studio-menu-inner" role="menu" aria-label="Studio">
-                    <a class="rail-studio-item {% if _on_agents %}on{% endif %}" href="/agents" role="menuitem">
-                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
-                        <span class="rail-studio-item-label">Agents</span>
-                        <span class="rail-badge">WIP</span>
-                    </a>
-                    <span class="rail-studio-item is-maybe" role="menuitem" aria-disabled="true">
-                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4.5a3 3 0 0 0-3 3v.2a2.6 2.6 0 0 0-1.6 4.4A2.6 2.6 0 0 0 8.2 16a2.4 2.4 0 0 0 3.8.9 2.4 2.4 0 0 0 3.8-.9 2.6 2.6 0 0 0 .8-3.9A2.6 2.6 0 0 0 15 7.7v-.2a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 7.5v9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                        <span class="rail-studio-item-label">Corporate Memory builder</span>
-                        <span class="rail-badge rail-badge--maybe">Maybe?</span>
-                    </span>
-                    <span class="rail-studio-item is-maybe" role="menuitem" aria-disabled="true">
-                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4.6a2 2 0 0 1 4 0c0 .5.4 1 1 1h2.4V8c0 .6.4 1 1 1a2 2 0 0 1 0 4c-.6 0-1 .4-1 1v2.4H15c-.6 0-1 .4-1 1a2 2 0 0 1-4 0c0-.6-.4-1-1-1H6.6V14c0-.6-.5-1-1-1a2 2 0 0 1 0-4c.5 0 1-.4 1-1V5.6H9c.6 0 1-.5 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-                        <span class="rail-studio-item-label">Skill builder</span>
-                        <span class="rail-badge rail-badge--maybe">Maybe?</span>
-                    </span>
-                </div>
-            </div>
-        </div>
-        {# Tour step 3 anchors #nav-catalog to point users at where they add
-           more (now labelled Marketplace; href stays /catalog). #}
-        <a class="rail-i {% if _in_catalog %}on{% endif %}" href="/catalog" id="nav-catalog">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 6l1 13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1l1-13M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            <span class="rail-i-label">Marketplace</span>
+        {# Agents — a primary destination in its own right, directly under
+           Library: "what you have" then "what you build from it". It was
+           previously buried one hover deep inside a Studio dropdown, which also
+           held the Skill and Plugin builders and a non-interactive
+           "Corporate Memory builder" concept label. Studio is gone entirely —
+           the two real builders it fronted are reached from the Library
+           header's "+ Add" menu (Build a skill · Build a plugin), which is
+           where the create-a-thing paths now live. #}
+        <a class="rail-i {% if _on_agents %}on{% endif %}" href="/agents">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
+            <span class="rail-i-label">Agents</span>
         </a>
     </div>
 

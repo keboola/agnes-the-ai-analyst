@@ -112,36 +112,149 @@ class TestRailOptIn:
         assert 'data-ui-layout="rail"' in resp.text
 
     def test_rail_keeps_nav_contract(self, web_client, admin_cookie, monkeypatch):
-        """Rail must carry the prototype IA (Chat + My Stack + Catalog as
-        three flat destinations) and the same JS/id contract as the
-        header: user menu, theme toggle. The content surfaces
-        (Plugins/Library/Memory) are reached as kind tabs on the unified
-        /catalog page, not as rail subcategories."""
+        """Rail must carry the prototype IA (Library + Agents as flat
+        destinations) and the same JS/id contract as the header: user menu,
+        theme toggle."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         text = resp.text
         for anchor in (
             'id="userMenu"',
             'id="themeToggle"',
-            # prototype IA: My Stack page + Catalog parent
-            'href="/stack"',
-            'href="/catalog"',
-            # Artefacts — private uploads (moved off My Stack) + future data
-            # apps; flagged work-in-progress with a WIP badge.
-            'href="/artefacts"',
-            # Agents — build an assistant out of the caller's stack;
-            # work-in-progress with a WIP badge.
+            # Library — private uploads (moved off My Stack) + future data apps.
+            'href="/library"',
+            # Agents — build an assistant out of the caller's stack. A primary
+            # destination directly under Library (it used to sit one hover deep
+            # inside the Studio dropdown).
             'href="/agents"',
             # brand lockup: the Agnes orb mark + the Agnes wordmark beside it.
             'class="rail-orb"',
             'class="rail-logo-txt"',
         ):
             assert anchor in text, f"rail chrome is missing {anchor}"
-        # The Artefacts entry carries a WIP badge.
-        assert 'class="rail-badge"' in text
-        assert ">WIP<" in text
+        # Rail nav items carry no WIP badge.
+        assert 'class="rail-badge"' not in text
+        # Nav order, top → bottom: New chat · Library · Agents — one flat group,
+        # no dividers (the rail is down to three destinations, so grouping rules
+        # just add noise). New chat renders only for chat-granted callers, so
+        # it's not pinned here.
+        assert 'class="rail-nav-sep"' not in text
+        positions = [
+            text.index('href="/library"'),
+            text.index('href="/agents"'),
+        ]
+        assert positions == sorted(positions), "rail nav items are out of order"
         # Catalog is a single flat destination — no nested subcategory tree.
         assert 'class="rail-sub"' not in text
+
+    def test_rail_has_no_my_stack_entry(self, web_client, admin_cookie, monkeypatch):
+        """My Stack is demoted out of the rail (#1088) — /stack stays a live
+        route, it is simply not a primary destination any more. Asserted against
+        the rail nav slice, not the whole document: this probes the /stack page
+        itself, whose body legitimately mentions the stack throughout."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        text = web_client.get("/stack", cookies=admin_cookie).text
+        nav = text.split('class="rail-nav"', 1)[1].split("</nav>", 1)[0]
+        assert 'href="/stack"' not in nav
+        assert "My Stack" not in nav
+        # ...and the page it points at is still served, not 404/redirected.
+        assert web_client.get("/stack", cookies=admin_cookie).status_code == 200
+
+    def test_library_answers_the_stack_question_in_its_toolbar(self, web_client, admin_cookie, monkeypatch):
+        """No cross-link to /stack in the Library header — the toolbar's "In
+        stack only" toggle answers "what can the default agent use?" against
+        this same list, so a header link would point at a narrower view of the
+        rows already on screen.
+
+        This toggle is what makes the removal safe, so it is the thing worth
+        pinning: if it stops answering the Stack question, My Stack needs an
+        entry point again (#1088).
+
+        The toggle is deliberately conditional — it renders only when flipping
+        it would change the page (`0 < in_stack < total`), so it is absent when
+        everything is in the Stack or nothing is, both cases where filtering is
+        a no-op. Asserting its presence outright would just pin the fixture's
+        membership mix, so this asserts the equivalence instead."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/library", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        head = text.split('class="lib-actions"', 1)[1].split("</div>", 1)[0]
+        assert 'href="/stack"' not in head
+
+        rows = re.findall(r"<tr[^>]*\bdata-item-id=[^>]*>", text)
+        top_level = [r for r in rows if "data-parent-id=" not in r]
+        in_stack = [r for r in top_level if 'data-stack="in_stack"' in r]
+        rendered = 'id="lib-stack-toggle"' in text
+        assert rendered == (0 < len(in_stack) < len(top_level)), (
+            f"stack toggle rendered={rendered} with {len(in_stack)}/{len(top_level)} rows in stack — "
+            "it must render exactly when flipping it would change the list"
+        )
+        if not rendered:
+            return
+
+        # It is a toolbar button, NOT a row inside the Filter menu: the condition
+        # is consequential enough to be visible at rest.
+        assert "In stack only" in text
+        assert 'data-facet="stack" data-facet-value="in_stack"' in text
+        assert 'aria-pressed="false"' in text
+        menu = text.split('id="lib-filter-menu"', 1)[1].split("</div>", 1)[0]
+        assert "In stack only" not in menu, "the stack toggle must not also sit in the Filter menu"
+        assert "fbar-menu__toggle" not in text, "retired in-menu toggle markup"
+
+        # Order on the bar: Filter · In stack only · Sort. The toggle narrows the
+        # list like Filter does, so it reads before the ordering control.
+        positions = [
+            text.index('id="lib-filter-btn"'),
+            text.index('id="lib-stack-toggle"'),
+            text.index('id="lib-sort"'),
+        ]
+        assert positions == sorted(positions), "stack toggle must sit between Filter and Sort"
+
+    def test_stack_toggle_is_wired_as_an_external_facet(self, web_client, admin_cookie, monkeypatch):
+        """The toolbar button is driven by the shared engine as an ordinary
+        facet with `control`, not by page-local click handlers — so clearing and
+        resetting keep working. Because the button shows its own state, the
+        engine must leave it out of the Filter badge count and the chip row;
+        those two exclusions are the whole reason the move is not a regression
+        in discoverability."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        text = web_client.get("/library", cookies=admin_cookie).text
+        assert "control: '#lib-stack-toggle'" in text
+
+        js = web_client.get("/static/js/filter_toolbar.js").text
+        # Excluded from the Filter button's badge...
+        assert "return f.control ? n : n + facetState[f.key].size;" in js
+        # ...and from the chip row.
+        assert "if (f.control) return;" in js
+        # State is pushed back onto the button from the one funnel every
+        # mutation goes through, so Clear all / reset can't desync it.
+        assert "syncExternalControls" in js
+
+    def test_rail_has_no_studio_or_marketplace_entry(self, web_client, admin_cookie, monkeypatch):
+        """Studio is retired from the rail and Marketplace is no longer a rail
+        entry. Studio was a hover dropdown holding Agents (now its own top-level
+        item), the Skill and Plugin builders (now reached from the Library
+        header's "+ Add" menu) and a non-interactive "Corporate Memory builder"
+        concept label. Both the trigger markup and the dead .rail-studio-*
+        styling must be gone, not merely hidden."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        text = web_client.get("/stack", cookies=admin_cookie).text
+        assert "rail-studio" not in text
+        assert ">Studio<" not in text
+        assert "Corporate Memory builder" not in text
+        assert ">Marketplace<" not in text
+        assert 'id="nav-catalog"' not in text
+        # /catalog and /skills stay live routes — they are simply not rail
+        # entries any more, so nothing in the rail should link to them.
+        assert 'class="rail-i" href="/catalog"' not in text
+        assert 'href="/skills"' not in text
+        # The stylesheet carries no orphaned rules for the retired chrome —
+        # the Studio dropdown, its "Maybe?" badge, or the group dividers.
+        css = web_client.get("/static/css/rail.css").text
+        assert "rail-studio" not in css
+        assert "rail-badge--maybe" not in css
+        assert "rail-nav-sep" not in css
         # The retired /ask hero (#896) is gone: no rail nav item points at it,
         # and the Chat slot renders only when cloud-chat is actually reachable.
         assert 'href="/ask"' not in text
@@ -171,48 +284,80 @@ class TestRailOptIn:
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         assert "My Stack" in resp.text
-        assert 'data-kind="plugins"' in resp.text
-        # Uploads moved OFF My Stack onto /artefacts — the stack is now a
-        # knowledge inventory (data · plugins · memory) only.
+        # Uploads moved OFF My Stack onto /library — the stack is a knowledge
+        # inventory (data · plugins · artefacts · memory) only.
         assert 'data-kind="upload"' not in resp.text
-        # An "All" tab is the default view over the inventory table, so the
-        # page never lands empty.
-        assert 'data-kind="all"' in resp.text
-        assert 'class="uc-kindtab on" data-kind="all"' in resp.text
-        # The manage zone is ONE inventory table (not another card grid),
-        # with no section heading above it.
-        assert 'id="stk-table"' in resp.text
+        # The kind filter is now a Filter dropdown (multi-select "Type" facet)
+        # with an active-chips row — the head tabs and the segmented control
+        # are both retired.
+        assert 'class="uc-kindtabs"' not in resp.text
+        assert 'class="fbar-seg"' not in resp.text
+        assert 'id="stk-filter-btn"' in resp.text
+        assert 'id="stk-filter-menu"' in resp.text
+        assert 'id="stk-chips"' in resp.text
+        # Type facet options for each kind (incl. the plugins option).
+        assert 'data-facet="kind"' in resp.text
+        for kind in ("data", "plugins", "artefacts", "memory"):
+            assert f'value="{kind}"' in resp.text
+        # The manage zone groups resources into Required + Added by you (not a
+        # card grid), with the tour anchor on the search + groups zone.
+        assert 'id="stack-explore-zone"' in resp.text
         assert "Everything in your Stack" not in resp.text
 
-    def test_artefacts_page_hosts_uploads(self, web_client, admin_cookie, monkeypatch):
-        """Collections live on /artefacts (moved off My Stack): the page carries
-        the collections section, the "+ New collection" affordance, and a
-        work-in-progress banner for the not-yet-built data apps."""
+    def test_library_page_hosts_uploads(self, web_client, admin_cookie, monkeypatch):
+        """The caller's things live on /library — the renamed, widened former
+        /artefacts. It carries the item count, the "+ Upload" affordance, the
+        share dialog, and a WIP banner for the not-yet-built data apps."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/artefacts", cookies=admin_cookie)
+        resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
-        assert "Artefacts" in text
-        # Uploads section (no heading — the count stands alone) + the
+        assert "Library" in text
+        # Item count (no section heading — the count stands alone) + the
         # create-upload modal trigger.
         assert ">Uploads<" not in text
-        assert 'id="af-upload-count"' in text
+        assert 'id="lib-item-count"' in text
         assert "data-new-upload" in text
         assert 'id="uploadModal"' in text
-        # Data apps are still in design — a WIP banner stands in for them.
+        # Owner-initiated sharing: every grant-backed row gets a Share action,
+        # and the dialog it opens ships with the page.
+        assert 'id="shareModal"' in text
+        assert 'id="shareGroups"' in text
+        # Every "add something" path sits behind ONE chevron button.
+        assert 'id="lib-new-btn"' in text
+        assert 'id="lib-new-menu"' in text
+        for label in ("Build a skill", "Build a plugin", "Upload a file"):
+            assert f"<span>{label}</span>" in text
+        # Two page-level caveats close the head, both on the shared quiet
+        # `.pnote` notice: the broad "content is still being prepared" one,
+        # then the Data apps stand-in for a kind still in design.
+        assert "Library content is still being prepared" in text
         assert "Data apps" in text
-        assert "af-apps" in text
-        # The shared "same knowledge, everywhere" connect banner rides the page
-        # header, same component + copy as My Stack.
+        assert text.count('class="pnote"') == 2
+        # The loud page-local banner they replaced is gone, class and all.
+        assert "lib-apps" not in text
+        # The "same knowledge, everywhere" connect banner closes the Library
+        # header (it moved here from the My Stack header).
         assert 'class="cbn cbn--bar"' in text
         assert "Connect your AI tools to give them access to the same knowledge." in text
+        # Agents are NOT a Library kind — they live on /agents.
+        assert 'data-kind="agent"' not in text
+        assert "Build an agent" not in text
+
+    def test_artefacts_redirects_to_library(self, web_client, admin_cookie, monkeypatch):
+        """/artefacts was renamed to /library and redirects there, so old links,
+        bookmarks and the onboarding tour keep working."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/artefacts", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/library"
 
     def test_agents_page_renders_builder(self, web_client, admin_cookie, monkeypatch):
         """/agents hosts the agent builder (WIP): list + builder views, the
         server-rendered RBAC-scoped knowledge ingredients, and the
-        capabilities hydration off the caller's subscribed plugins. Agent
-        definitions persist client-side for now — the page must say so
-        rather than pretend drafts are shared."""
+        capabilities hydration off everything available to the caller. Agent
+        definitions persist SERVER-SIDE in the v103 agents registry, so they
+        follow the user across devices and can be shared from the Library."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/agents", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -221,13 +366,96 @@ class TestRailOptIn:
         # Both in-page views + the create affordance.
         assert 'id="ag-list-view"' in text
         assert 'id="ag-builder-view"' in text
-        assert 'id="ag-new-btn"' in text
-        # Real stack ingredients: server-embedded knowledge JSON +
-        # client-side plugins hydration from the caller's stack.
+        # The create affordance moved into the JS-rendered list (the old
+        # server-rendered id="ag-new-btn" header button is gone), so assert on
+        # the delegated hook the list renders instead.
+        assert "data-ag-new" in text
+        # Real ingredients: server-embedded knowledge JSON + client-side
+        # capabilities hydrated from EVERYTHING available to the caller
+        # (curated ∪ community store), not just what's already in their stack.
         assert 'id="ag-knowledge-data"' in text
-        assert "/api/marketplace/items?tab=my" in text
-        # Honest WIP persistence note (localStorage, not shared yet).
-        assert "saved in this browser" in text
+        assert "pull('curated')" in text and "pull('flea')" in text
+        assert "tab=my" not in text  # subscribed-only pool is retired
+        # Knowledge now spans a third kind — the caller's files/artefacts —
+        # alongside governed data + memory.
+        assert "data, memory & files" in text
+        # Available-but-not-yet-added marketplace items are surfaced and the
+        # ones already in the stack are marked (not filtered out).
+        assert "In your stack" in text
+        assert "any plugin or skill available to you" in text.lower()
+        # Persistence note reflects the v103 server-side registry: agents are
+        # saved to the workspace and listed on THIS page (they are not Library
+        # entries and there is no sharing affordance yet), and the remaining
+        # WIP is actually RUNNING them on the surfaces the builder offers.
+        assert "saved to your workspace" in text
+        assert "live on this page" in text
+        assert "saved in this browser" not in text
+        assert "where you can share them" not in text
+        # It reads as the same quiet product notice the Library uses, and it
+        # sits in the page head under the description rather than trailing the
+        # grid. The builder keeps its own copy (the head is hidden there), so
+        # the markup appears twice — once server-rendered, once in the JS.
+        assert 'class="pnote"' in text
+        assert "ag-localnote" not in text
+        assert text.index('class="lede"') < text.index('class="pnote"')
+        assert text.index('class="pnote"') < text.index('id="ag-list-view"')
+
+    def test_agents_page_opens_builder_from_query(self, web_client, admin_cookie, monkeypatch):
+        """The builder is an in-page view, so the Library reaches it through
+        query params: `?new=1` (the "Build an agent" CTA) lands straight in the
+        builder on a fresh agent, and `?open=<id>` (the Library's agent cards)
+        opens that agent. Without this the page always rendered the LIST and
+        both deep links silently dead-ended one click short of the builder."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        assert "routeFromQuery" in text
+        assert "params.get('open')" in text
+        assert "params.get('new')" in text
+        # Boot routes through the query BEFORE falling back to the list.
+        assert "if (!routeFromQuery()) renderList();" in text
+        # One-shot — the param is stripped so a reload can't mint a second agent.
+        assert "params.delete('new')" in text
+        # `?new=1` shares the create path with the "+ New agent" button rather
+        # than rendering an unsaved shell (the server owns the id).
+        assert "createAgent(null)" in text
+
+    def test_agent_builder_has_delete_action(self, web_client, admin_cookie, monkeypatch):
+        """The builder can delete the agent it is configuring — previously the
+        only Delete lived on the list card, so the detail view was a dead end
+        for the one destructive action. It sits LEFT of the status button
+        (Mark ready / Back to draft), reuses the list's `data-ag-del` hook and
+        its DELETE /api/agents/{id} handler, and — unlike the list card —
+        confirms first, because here it is one button away from a primary
+        action on the config the caller is looking at."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        assert 'class="cc-btn ag-del-btn" data-ag-del=' in text
+        # Left of the status button, inside the builder's action group.
+        actions = text.index('<div class="ag-build-actions">')
+        assert actions < text.index('class="cc-btn ag-del-btn"') < text.index("data-ag-status")
+        # Confirms only for the builder button; the list card is unchanged.
+        assert "window.confirm(" in text
+        assert "t.classList.contains('ag-del-btn')" in text
+        # A pending debounced PATCH must not outlive the row it would write to.
+        assert "clearTimeout(saveTimers[id]);" in text
+
+    def test_agents_page_has_no_default_agent_card(self, web_client, admin_cookie, monkeypatch):
+        """/agents lists the caller's OWN agents only — the always-on baseline
+        assistant is not a card here (it is configured from /stack)."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        assert "ag-card--default" not in text
+        assert "Default agent" not in text
+        assert "ag-badge--system" not in text
+        # With no agents yet the grid falls back to the build-your-first empty
+        # state rather than a stack-derived card.
+        assert "No agents yet" in text
 
     def test_agents_page_requires_auth(self, web_client, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
@@ -351,12 +579,15 @@ class TestDashboardLandingRedirect:
         assert resp.status_code == 302
         assert resp.headers["location"] == "/chat"
 
-    def test_rail_dashboard_redirects_to_stack_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
+    def test_rail_dashboard_redirects_to_library_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
+        """The grant-less landing is the Library, not My Stack: /stack is no
+        longer a rail destination (#1088), so landing there would strand the
+        caller on a page the rail neither links to nor highlights."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         # Chat is disabled by default in tests, so can_chat is False.
         resp = web_client.get("/dashboard", cookies=admin_cookie, follow_redirects=False)
         assert resp.status_code == 302
-        assert resp.headers["location"] == "/stack"
+        assert resp.headers["location"] == "/library"
 
     def test_ask_is_retired(self, web_client, admin_cookie, monkeypatch):
         """The /ask hero is retired — it 302s to / rather than rendering."""
@@ -522,39 +753,101 @@ class TestProfileNotifications:
 
 
 class TestStackWorkspace:
-    """My Stack is the manage surface: "Everything in your Stack" — one
-    inventory table across knowledge kinds. The stat strip counts the stack
-    itself (items / plugins / memories), not estate telemetry. Uploads moved
-    off to /artefacts. Growing the stack happens on /catalog, which carries
-    the "Recommended for you" row (see TestCatalogRecommendations)."""
+    """My Stack is the persistent context the Main Agent uses. Every resource
+    shown is already in the stack, so the page never repeats "In stack" or
+    exposes download states; instead it groups resources into Required
+    (admin-granted, locked) and Added by you (optional, removable). Uploads
+    moved off to /library. Growing the stack happens on /catalog."""
 
-    def test_stack_strip_shows_workspace_stats(self, web_client, admin_cookie, monkeypatch):
+    def test_stack_has_no_status_strip_below_table(self, web_client, admin_cookie, monkeypatch):
+        """The workspace stat strip that used to sit below the inventory has
+        been removed — the page ends at the groups."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
-        # The strip's stat labels are exactly the three workspace counters —
-        # the retired capability metrics (Questions this week / Data
-        # sources / Skills / Memory facts) are gone, and Uploads moved to
-        # /artefacts.
-        labels = re.findall(r'class="stk-stat__label">([^<]+)<', resp.text)
-        assert labels == ["Items in your stack", "Plugins", "Memories"]
+        assert 'class="stk-stats"' not in resp.text
+        assert 'class="stk-stat__label"' not in resp.text
 
-    def test_stack_inventory_is_a_table_with_toolbar(self, web_client, admin_cookie, monkeypatch):
-        """The page is one table (search above, sort control, kind tabs) —
-        no card grid anywhere."""
+    def test_stack_groups_required_and_added(self, web_client, admin_cookie, monkeypatch):
+        """The inventory is ONE table (shared .data-table primitive, same as
+        Artefacts) with column headers and two collapsible <tbody> groups —
+        Required, then Added by you — a dominant search field, and a small
+        secondary sort control. No Added/Status columns, no download wording."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
-        assert 'id="stk-table"' in text
+        # One data-table with headers + the two collapsible group bodies.
+        assert 'class="data-table stk-table"' in text
+        assert 'id="stk-required-body"' in text
+        assert 'id="stk-added-body"' in text
+        assert 'data-stk-collapse="required"' in text
+        assert 'data-stk-collapse="added"' in text
+        assert ">Required</span>" in text
+        assert ">Added by you</span>" in text
+        # Column headers present; retired Added/Status columns are gone.
+        for col in ("Name", "Type", "Details", "Source", "Actions"):
+            assert "<th" in text and col in text
+        assert ">Added<" not in text
+        assert ">Status<" not in text
+        # Toolbar is the shared .fbar filter-bar component (same as Artefacts):
+        # search + a Filter dropdown (Type facet) + sort (default Name, never
+        # "Recently added"). Origin (Required/Added) stays the group split, not
+        # a toolbar control.
+        assert 'class="fbar"' in text
         assert 'id="stk-search"' in text
         assert 'id="stk-sort"' in text
-        for col in ("Name", "Type", "Details", "Added", "Shared by", "Status"):
-            assert "<th" in text and col in text
+        assert 'id="stk-filter-btn"' in text
+        assert '<option value="name" selected>' in text
+        assert "Recently added" not in text
+        # No download/technical states leak in.
+        assert "Downloaded" not in text
+        assert "In stack" not in text
+        assert 'data-toggle-kind="download"' not in text
         # No card grid — recommendations moved to /catalog.
         assert 'class="uc-grid"' not in text
         assert "Recommended for you" not in text
         assert "stk-recs" not in text
+
+    def test_required_grant_lands_in_required_group_with_badge(self, web_client, admin_cookie, monkeypatch):
+        """A required-tier grant clusters in the Required group, rendered into
+        the required tbody with the subtle Required badge and NO overflow
+        (remove) affordance — required resources cannot be removed."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        import uuid
+
+        from src.db import get_system_db
+        from src.repositories.data_packages import DataPackagesRepository
+
+        conn = get_system_db()
+        pkg_id = DataPackagesRepository(conn).create(
+            name="Mandatory Revenue Pkg",
+            slug="mandatory-revenue",
+            description="Locked finance data",
+            icon=None,
+            color=None,
+            created_by="test",
+        )
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
+            "requirement, assigned_at, assigned_by) "
+            "VALUES (?, ?, 'data_package', ?, 'required', CURRENT_TIMESTAMP, 'test')",
+            [str(uuid.uuid4()), admin_gid, pkg_id],
+        )
+        conn.close()
+
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        # The required package renders in the required tbody, ahead of the
+        # Added-by-you tbody, with the subtle Required badge.
+        req_body = text.split('id="stk-required-body"', 1)[1].split('id="stk-added-body"', 1)[0]
+        assert "Mandatory Revenue Pkg" in req_body
+        assert 'class="stk-req"' in req_body
+        # ...and carries no remove/overflow affordance.
+        assert "More actions for Mandatory Revenue Pkg" not in text
+        assert "Remove from My Stack" not in req_body
 
 
 class TestCatalogRecommendations:

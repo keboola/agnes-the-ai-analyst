@@ -52,6 +52,24 @@ from src.repositories import (
 )
 
 
+def required_store_entity_keys(conn: duckdb.DuckDBPyConnection | None, user_id: str | None) -> set[str]:
+    """``store_entities.id`` values held at the ``required`` tier by any of the
+    user's groups.
+
+    The authored-item counterpart to :func:`required_plugin_keys`. Kept in this
+    module (rather than imported from ``app.auth.access``) so the serve path
+    stays importable without the FastAPI app — same reason
+    ``resolve_allowed_plugins`` reimplements its group lookup here.
+    """
+    group_ids = _user_group_ids(user_id, conn) if user_id else set()
+    if not group_ids:
+        return set()
+    rows = resource_grants_repo().list_for_groups(list(group_ids), "store_entity")
+    return {
+        r["resource_id"] for r in rows if (r.get("requirement") or "available") == "required" and r.get("resource_id")
+    }
+
+
 def required_plugin_keys(conn: duckdb.DuckDBPyConnection | None, user_id: str | None) -> set[tuple[str, str]]:
     """``(marketplace_id, plugin_name)`` keys held at the ``required`` tier
     by any of the user's groups.
@@ -335,7 +353,17 @@ def resolve_user_marketplace(conn: duckdb.DuckDBPyConnection, user: dict) -> Lis
         p["source"] = "marketplace"
 
     store_root = get_store_dir()
-    installs = user_store_installs_repo().list_for_user(user_id)
+    installs_repo = user_store_installs_repo()
+    # Required-tier store entities are always in the served set. Curated plugins
+    # get this from the `in_stack` union above (presence semantics in
+    # user_plugin_optouts); an authored entity is served per-person out of
+    # user_store_installs, so the union has to be materialized as install rows.
+    # Doing it here — at the serve chokepoint — is what picks up someone who
+    # joined the group after the grant was written.
+    required_entity_ids = required_store_entity_keys(conn, user_id)
+    if required_entity_ids:
+        installs_repo.install_required_for_user(user_id, sorted(required_entity_ids))
+    installs = installs_repo.list_for_user(user_id)
     store_plugin_entries: List[dict] = []
     bundle_rows: List[dict] = []
     for row in installs:

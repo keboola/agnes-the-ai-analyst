@@ -10,6 +10,7 @@ table_registry to add the source_query column.
 """
 
 import duckdb
+import pytest
 
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
@@ -1028,4 +1029,119 @@ def test_v100_to_v101_heals_stranded_mcp_connect_hint(tmp_path):
     assert "connect_hint" in cols, "v100→v101 must heal the missing mcp_sources.connect_hint column"
     row = conn.execute("SELECT id, connect_hint FROM mcp_sources WHERE id = 'mcp_keep'").fetchone()
     assert row == ("mcp_keep", None)
+    conn.close()
+
+
+def test_v104_trust_columns_heal_on_a_db_stamped_without_them(tmp_path):
+    """A DB stamped 104 but missing the v104 columns must self-heal.
+
+    Reproduces the exact stranding: the ladder's tail writes ``SCHEMA_VERSION``
+    unconditionally, so a database opened by a build where the constant was
+    already bumped but ``_v103_to_v104`` did not yet exist gets marked 104
+    **without** the columns — and every ``if current < 104`` gate then skips the
+    step forever. The symptom is a query-time ``Binder Error: Referenced column
+    "publisher_kind" not found``, and only on paths that name the column in a
+    WHERE: a bare ``SELECT *`` keeps working, which is what makes it look
+    intermittent.
+
+    Guards ``_heal_store_entity_trust_columns``, which checks for the columns
+    directly instead of trusting the stamp.
+    """
+    from src.db import _heal_store_entity_trust_columns
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    # Pre-v104 store_entities shape (v49-era columns, no trust columns) plus a
+    # schema_version already stamped past the step that should have added them.
+    conn.execute(
+        """CREATE TABLE store_entities (
+               id VARCHAR PRIMARY KEY,
+               owner_user_id VARCHAR NOT NULL,
+               owner_username VARCHAR NOT NULL,
+               type VARCHAR NOT NULL,
+               name VARCHAR NOT NULL,
+               description TEXT,
+               version VARCHAR NOT NULL,
+               visibility_status VARCHAR DEFAULT 'pending',
+               title VARCHAR,
+               synthetic_name VARCHAR
+           )"""
+    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP)")
+    conn.execute("INSERT INTO schema_version VALUES (104, current_timestamp)")
+    conn.execute(
+        "INSERT INTO store_entities "
+        "(id, owner_user_id, owner_username, type, name, version, title, synthetic_name) "
+        "VALUES ('e1', 'u1', 'anna', 'skill', 'x', 'v1', 'X', 'x-by-anna')"
+    )
+
+    # The exact failure the stranding produces.
+    with pytest.raises(duckdb.BinderException):
+        conn.execute("SELECT 1 FROM store_entities WHERE publisher_kind = 'user'")
+
+    _heal_store_entity_trust_columns(conn)
+
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
+        ).fetchall()
+    }
+    assert {"publisher_kind", "verification_state", "verified_at", "verified_by"} <= cols
+
+    # The filter that used to raise now runs, and the pre-existing row reads as
+    # a non-null enum rather than NULL (ADD COLUMN's DEFAULT applies to inserts
+    # only, so the heal normalizes explicitly).
+    row = conn.execute(
+        "SELECT publisher_kind, verification_state FROM store_entities WHERE publisher_kind = 'user'"
+    ).fetchone()
+    assert row == ("user", "none")
+
+    # The heal must never move the stamp — calling the versioned step directly
+    # would have written 104 and downgraded an instance already past it.
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 104
+
+    _heal_store_entity_trust_columns(conn)  # idempotent
+    conn.close()
+
+
+def test_ensure_schema_heals_a_stranded_db_at_current_version(tmp_path):
+    """``_ensure_schema`` itself must repair the stranding, not just the helper.
+
+    The first cut of this fix put the heal call *inside* the
+    ``if current < SCHEMA_VERSION`` ladder guard — where a DB already stamped at
+    ``SCHEMA_VERSION`` never reaches it, so the repair silently did nothing and
+    the endpoint kept 500ing. This drives the real entry point at the exact
+    version that skips the whole ladder.
+    """
+    from src.db import _ensure_schema as ensure
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """CREATE TABLE store_entities (
+               id VARCHAR PRIMARY KEY,
+               owner_user_id VARCHAR NOT NULL,
+               owner_username VARCHAR NOT NULL,
+               type VARCHAR NOT NULL,
+               name VARCHAR NOT NULL,
+               version VARCHAR NOT NULL,
+               visibility_status VARCHAR DEFAULT 'pending',
+               title VARCHAR,
+               synthetic_name VARCHAR
+           )"""
+    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP)")
+    conn.execute("INSERT INTO schema_version VALUES (?, current_timestamp)", [SCHEMA_VERSION])
+
+    ensure(conn)
+
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
+        ).fetchall()
+    }
+    assert "publisher_kind" in cols, "_ensure_schema must heal a DB stamped at SCHEMA_VERSION"
+    conn.execute("SELECT 1 FROM store_entities WHERE publisher_kind = 'user'")
     conn.close()

@@ -74,6 +74,27 @@ export const TOURS = {
       points: [],
     },
   ],
+
+  // Single-step coach-mark for authors arriving from the Marketplace's
+  // "Submit a skill or plugin" CTA (/skills?spotlight=new-skill). The Skills
+  // grid opens on the caller's existing skills, so the one card that starts
+  // authoring needs pointing at. One step → the popover renders in its solo
+  // form (no dots, no "I'll explore on my own", primary reads "Got it").
+  'skill-builder': [
+    {
+      page: '/skills',
+      // /skills IS the builder now (the separate "your skills" index was
+      // retired when created skills started landing in the Library), so the
+      // coach-mark anchors on the first field instead of a "+ New skill" card.
+      selector: '[data-sk-field="name"]',
+      title: 'Start here',
+      desc: 'This is where a skill begins — a name, a line on when to use it, and the instructions themselves.',
+      points: [
+        'Choose who can use it: just you, or everyone in the organization.',
+        'Save to Library and it appears in your Library, ready to share.',
+      ],
+    },
+  ],
 };
 
 // ── Persistence helpers ─────────────────────────────────────────────────────
@@ -241,6 +262,11 @@ function _showStep(index) {
 // ── Popover builder ─────────────────────────────────────────────────────────
 
 function _buildPopover(step, index, total) {
+  // A one-step tour is a coach-mark, not a walkthrough: progress dots and an
+  // "I'll explore on my own" escape hatch both imply a sequence that isn't
+  // there, so the solo form drops them and reads "Got it" instead of "Next".
+  const solo = total === 1;
+
   const popover = document.createElement('div');
   popover.className = 'tour-popover' + (step.finalChoice ? ' tour-popover--final' : '');
   popover.setAttribute('role', 'dialog');
@@ -358,15 +384,23 @@ function _buildPopover(step, index, total) {
     const nextBtn = document.createElement('button');
     nextBtn.type = 'button';
     nextBtn.className = 'tour-btn tour-btn-next';
-    nextBtn.textContent = isLastNonFinal ? 'Done' : 'Next';
+    nextBtn.textContent = solo ? 'Got it' : (isLastNonFinal ? 'Done' : 'Next');
     nextBtn.addEventListener('click', () => _advanceStep());
 
-    actions.appendChild(endBtn);
-    actions.appendChild(backBtn);
+    if (!solo) {
+      actions.appendChild(endBtn);
+      actions.appendChild(backBtn);
+    }
     actions.appendChild(nextBtn);
   }
 
-  footer.appendChild(dots);
+  if (solo) {
+    // Without the dots the lone action row would sit left under
+    // `justify-content: space-between` — pin it right.
+    footer.classList.add('tour-popover-footer--solo');
+  } else {
+    footer.appendChild(dots);
+  }
   footer.appendChild(actions);
 
   popover.appendChild(header);
@@ -449,14 +483,35 @@ function _positionPopover(popover, anchor, centered) {
   const vh = window.innerHeight;
   const vw = window.innerWidth;
 
-  // Try below the anchor first.
+  // Try below the anchor first, then flip above.
   let top = rect.bottom + POPOVER_GAP;
-  // If it overflows the bottom, flip above.
-  if (top + popH > vh - VIEWPORT_PAD) {
-    top = rect.top - POPOVER_GAP - popH;
+  const fitsBelow = top + popH <= vh - VIEWPORT_PAD;
+  const aboveTop = rect.top - POPOVER_GAP - popH;
+  const fitsAbove = aboveTop >= VIEWPORT_PAD;
+
+  if (!fitsBelow && !fitsAbove) {
+    // Neither band has room — a tall popover against a mid-page anchor. The
+    // old clamp-to-top parked the card on top of the very thing it points at
+    // (the Skills coach-mark landed squarely over the "+ New skill" card), so
+    // go beside the anchor instead, on whichever side has room.
+    const roomRight = vw - rect.right - POPOVER_GAP - VIEWPORT_PAD;
+    const roomLeft = rect.left - POPOVER_GAP - VIEWPORT_PAD;
+    if (Math.max(roomRight, roomLeft) >= popW) {
+      const sideLeft = roomRight >= popW
+        ? rect.right + POPOVER_GAP
+        : rect.left - POPOVER_GAP - popW;
+      // Vertically centre on the anchor, clamped into the viewport.
+      const sideTop = Math.max(
+        VIEWPORT_PAD,
+        Math.min(rect.top + rect.height / 2 - popH / 2, vh - popH - VIEWPORT_PAD),
+      );
+      popover.style.top = `${sideTop}px`;
+      popover.style.left = `${sideLeft}px`;
+      return;
+    }
   }
-  // Never go above viewport.
-  if (top < VIEWPORT_PAD) top = VIEWPORT_PAD;
+
+  if (!fitsBelow) top = fitsAbove ? aboveTop : VIEWPORT_PAD;
 
   // Horizontal: align to anchor left, clamped into viewport.
   let left = rect.left;

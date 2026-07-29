@@ -1,100 +1,164 @@
 {% extends "base_index.html" %}
-{% from "macros/_connect_banner.html" import connect_banner %}
 {% from "macros/_catalog_card.html" import kind_glyph %}
-{% import "macros/_icon.html" as ico %}
-{# Unified My Stack — the personal workspace: "Everything in your Stack",
-   ONE inventory table across knowledge kinds (Data · Plugins · Memory):
-   search + sort + kind tabs over rows, not a card grid. Data + Memory
-   render server-side; Plugins hydrate from /api/marketplace/items?tab=my.
-   Growing the stack happens on /catalog, which carries the "Recommended
-   for you" row.
+{# TODO(#1088): this page is UNLINKED, and probably redundant. It is no longer a
+   rail destination and has no cross-link from the Library either — it is
+   reached only from the chat hero's knowledge/capability counts and the
+   /catalog lede. The route, this template and /api/stack/* are all untouched
+   and fully live.
 
-   Private uploads (and, soon, data apps) are personal artefacts, not stack
-   knowledge — they live on /artefacts (see artefacts.html), reached from the
-   rail's "Artefacts" entry.
+   Do not build anything substantial here. /library already renders every kind
+   this page does — data packages and memory domains included, from the SAME
+   StackResolver.browse() call — and its "In stack only" toggle reproduces this
+   page's whole purpose over that list, with the requirement facet standing in
+   for the Required / Added-by-you split. The remaining work is to retire this
+   page (302 /stack → /library) rather than to keep it alive unlinked. #}
+{# Unified My Stack — the persistent context the Main Agent uses. Every
+   resource on this page is ALREADY in the caller's stack, so the page never
+   repeats "In stack" or exposes technical states ("Downloaded", raw download
+   toggles). It answers two questions:
 
-   The workspace stat strip on top counts what's IN the stack (items /
-   plugins / memories), and the connect banner closes the page with the
-   "use it everywhere" value prop. #}
+     Required        — resources an admin granted. Always available to the
+                       Main Agent; cannot be removed (subtle Required badge,
+                       no destructive action).
+     Added by you    — optional resources the caller added (Marketplace,
+                       other sources). Each carries an overflow menu with a
+                       "Remove from My Stack" action.
+
+   The inventory rides the shared .data-table primitive (same look as the
+   Artefacts table): one table with column headers, and the two groups as
+   collapsible <tbody> sections. Data + Memory render server-side; Plugins
+   hydrate from /api/marketplace/items?tab=my into the right group. Growing
+   the stack happens on /catalog; private uploads live on /artefacts.
+
+   The toolbar rides the shared .fbar component (same pattern as /artefacts):
+   search + a Filter dropdown (multi-select "Type" facet) + sort, with active
+   filters shown as removable chips on a second row. The Type facet filters
+   BOTH groups while preserving the grouping. Sorting happens independently
+   inside each group — Required always stays above Added by you. #}
 {% block title %}My Stack — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block container_modifier %}container--wide{% endblock %}
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
 <style>
-  /* Page chrome only — cards live in catalog_card.css, the table rides the
-     shared .data-table primitive (style-custom.css). */
-  /* This head ends in the kind-tab strip, so base_index's
-     `.idx-head > :last-child { margin-bottom: 0 }` drops the tabs' bottom
-     margin and the white band sits flush beneath them (same as Catalog).
+  /* Page chrome only — the table rides the shared .data-table primitive
+     (style-custom.css) + the soft resource-type icons from catalog_card.css.
      (Page-local: this stylesheet only loads on /stack.) */
-  .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 12px; }
+  /* The header is the trailing element of the grey head (the connect banner
+     lives on /library now), so base_index zeroes its margin-bottom;
+     padding-bottom (not stripped) supplies the gap down to the white band. */
+  .uc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; padding-bottom: 24px; }
   .uc-head h1 { font-size: 24px; margin: 0 0 8px; }
   .uc-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
-  /* ── Workspace stat strip — one flat sunken tray between the head and the
-     page body. Three equal-width metrics counting the stack itself (items /
-     plugins / memories); values update client-side as plugins hydrate and
-     rows are removed. #stk-stat-plugins starts as an em-dash until the
-     marketplace call lands. */
-  .stk-stats { position: relative; display: flex; align-items: center; gap: 24px; flex-wrap: nowrap; margin: 22px 0 20px; padding: 16px 26px; background: var(--ds-surface-sunken); border-radius: 16px; }
-  /* WIP tag straddling the tray's top-right corner (placeholder while real
-     numbers are still being decided). */
-  .stk-stats-wip { position: absolute; top: -10px; right: 16px; display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 500; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill, 999px); padding: 3px 11px; }
-  .stk-stats-wip b { font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
-  .stk-stat { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 16px; }
-  .stk-stat__icon { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--ds-primary-light); color: var(--ds-primary); }
-  .stk-stat__icon .ui-ico { display: block; }
-  .stk-stat__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-left: 16px; border-left: 1px solid var(--ds-border); }
-  .stk-stat__value { font-size: 22px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; color: var(--ds-text-primary); font-variant-numeric: tabular-nums; }
-  .stk-stat__label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ds-text-muted); }
-  @media (max-width: 900px) {
-    .stk-stats { flex-wrap: wrap; gap: 18px 28px; }
-    .stk-stat { flex: 0 1 auto; }
-  }
-  @media (max-width: 640px) {
-    .stk-stats { gap: 16px 24px; padding: 16px 18px; }
-  }
-  /* ── Section scaffolding for the inventory ── */
-  .stk-section { margin: 0 0 34px; }
-  .stk-section:last-of-type { margin-bottom: 0; }
-  .stk-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
-  .stk-section-head h2 { font-size: 17px; font-weight: 600; margin: 0; color: var(--ds-text-primary); }
-  /* ── Inventory toolbar: search stretches, sort hugs the right ── */
-  .stk-toolbar { display: flex; align-items: center; gap: 10px; margin: 0; flex-wrap: wrap; }
-  .stk-search { flex: 1 1 260px; min-width: 200px; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 10px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); }
-  .stk-search:focus { outline: 2px solid var(--ds-primary-light); border-color: var(--ds-primary); }
-  .stk-sort { flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ds-text-secondary); }
-  .stk-sort select { padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: 10px; font: inherit; font-size: 13.5px; background: var(--ds-surface); color: var(--ds-text-primary); cursor: pointer; }
-  .uc-kindtabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--ds-border); margin: 0; }
-  .uc-kindtab { display: flex; align-items: center; gap: 7px; border: none; background: none; cursor: pointer; padding: 9px 14px; font-size: 14px; font-weight: 500; font-family: inherit; color: var(--ds-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  .uc-kindtab:hover { color: var(--ds-text-primary); }
-  .uc-kindtab.on { color: var(--ds-text-primary); font-weight: 600; border-bottom-color: var(--ds-primary); }
-  .uc-count { font-size: 11px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 1px 7px; color: var(--ds-text-muted); }
-  /* ── The inventory table (shared .data-table primitive + row chrome) ── */
-  .stk-tablewrap { margin-top: 14px; overflow-x: auto; }
-  .stk-table { min-width: 720px; }
+
+  /* Toolbar: the shared .fbar filter-bar component (static/css/
+     filter_toolbar.css), same pattern as /artefacts — search + a Filter
+     dropdown + sort, with a second-row chips strip for active filters. Kind
+     (Data/Plugins/Artefacts/Memory) is the one facet ("Type", multi-select):
+     the retired head tabs, now a Filter option so the grammar matches
+     Artefacts and stays extensible. Origin (Required/Added by you) stays the
+     group split, so it's not duplicated here. */
+
+  /* ── The inventory table (shared .data-table primitive) ── */
+  .stk-tablewrap { overflow-x: auto; }
+  .stk-table { min-width: 760px; }
   .stk-table td { vertical-align: middle; }
+
+  /* Name cell — icon + title + one-line description. */
   .stk-name { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; min-width: 220px; }
   .stk-name .cc-icon { flex-shrink: 0; }
   .stk-name-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
   .stk-name-title { font-weight: 600; color: var(--ds-text-primary); font-size: 14px; }
   .stk-name:hover .stk-name-title { color: var(--ds-primary); }
-  .stk-name-desc { font-size: 12.5px; color: var(--ds-text-secondary); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; max-width: 44ch; }
-  .stk-type { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: var(--ds-radius-pill); white-space: nowrap; }
-  .stk-type--data    { background: var(--ds-kind-data-soft);    color: var(--ds-kind-data); }
-  .stk-type--plugins { background: var(--ds-kind-plugin-soft);  color: var(--ds-kind-plugin); }
-  .stk-type--memory  { background: var(--ds-kind-memory-soft);  color: var(--ds-kind-memory); }
-  .stk-type--library { background: var(--ds-kind-library-soft); color: var(--ds-kind-library); }
+  .stk-name-desc { font-size: 12.5px; color: var(--ds-text-secondary); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; max-width: 46ch; }
+  /* Neutral type chip (mirrors the Artefacts table). */
+  .stk-typechip { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; font-size: 11.5px; font-weight: 600; color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); white-space: nowrap; }
   .stk-cell-muted { color: var(--ds-text-secondary); font-size: 13px; white-space: nowrap; }
-  .stk-cell-status { text-align: right; white-space: nowrap; }
-  .stk-cell-status .cc-btn, .stk-cell-status .cc-required { font-size: 12.5px; }
-  .stk-empty-row td { text-align: center; padding: 40px 20px; color: var(--ds-text-secondary); }
-  .stk-empty-row h3 { margin: 0 0 6px; color: var(--ds-text-primary); font-size: 15px; }
-  /* The "same knowledge, everywhere" banner is the shared connect-banner
-     component (macros/_connect_banner.html, `.cbn-*` in style-custom.css).
-     It now leads the grey head — compact margins + a slightly smaller orbit
-     so the head stays tidy. */
-  .stk-connect--head { margin: 6px 0 18px; }
+  .stk-cell-actions { text-align: right; white-space: nowrap; width: 1%; }
+
+  /* ── Collapsible group header row ──
+     The chrome itself is the SHARED `.fbar-group*` component in
+     filter_toolbar.css (this page is where the pattern was designed; the
+     Library's type groups now use the same one, so there is a single
+     definition rather than two that drift). Nothing page-local is left. */
+
+  /* Subtle Required badge — communicates the one property that matters. */
+  .stk-req { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; padding: 4px 10px; border-radius: var(--ds-radius-pill); background: var(--ds-surface-dim); color: var(--ds-text-secondary); border: 1px solid var(--ds-border); }
+  .stk-req svg { width: 12px; height: 12px; }
+
+  /* An artefact still in the caller's Stack, but no longer accessible
+     (requirement 7) — never dropped silently, just flagged. */
+  .stk-unavail { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 2px 7px; border-radius: var(--ds-radius-pill); background: var(--ds-warn-bg); color: var(--ds-warn-ink); border: 1px solid var(--ds-warn-line); vertical-align: middle; }
+
+  /* Overflow menu for "Added by you" rows. */
+  .stk-menu { position: relative; display: inline-flex; }
+  .stk-menu-btn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; border: 1px solid transparent; background: none; color: var(--ds-text-muted); cursor: pointer; }
+  .stk-menu-btn:hover, .stk-menu-btn[aria-expanded="true"] { background: var(--ds-surface-dim); color: var(--ds-text-primary); }
+  .stk-menu-btn svg { width: 18px; height: 18px; }
+  .stk-menu-pop { position: absolute; right: 0; top: calc(100% + 4px); min-width: 200px; background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 10px; box-shadow: var(--ds-shadow-md); padding: 5px; z-index: 30; display: flex; flex-direction: column; }
+  .stk-menu-pop[hidden] { display: none; }
+  .stk-menu-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 7px; font-size: 13.5px; color: var(--ds-text-primary); text-decoration: none; background: none; border: none; cursor: pointer; text-align: left; font-family: inherit; width: 100%; }
+  .stk-menu-item:hover { background: var(--ds-surface-dim); }
+  .stk-menu-sep { height: 1px; background: var(--ds-border); margin: 4px 2px; }
+  .stk-menu-item--danger { color: var(--ds-accent-danger-ink); }
+  .stk-menu-item--danger:hover { background: var(--ds-accent-danger-bg); }
+
+  /* Whole-stack empty state (nothing granted, nothing added). */
+  .stk-empty { text-align: center; padding: 48px 20px; color: var(--ds-text-secondary); border: 1px dashed var(--ds-border); border-radius: 14px; }
+  .stk-empty[hidden] { display: none; }
+  .stk-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); font-size: 15px; }
+  .stk-empty .cc-btn { margin-top: 12px; }
+
+  /* ── "Add artefacts to Stack" picker modal ── */
+  .stk-af-card { width: min(560px, calc(100vw - 32px)); max-height: min(640px, calc(100vh - 64px)); display: flex; flex-direction: column; }
+  .stk-af-toolbar { display: flex; gap: 8px; margin: 12px 0; }
+  .stk-af-toolbar input[type=search] { flex: 1; padding: 8px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; background: var(--ds-surface); color: var(--ds-text-primary); }
+  .stk-af-toolbar select { padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; background: var(--ds-surface); color: var(--ds-text-primary); }
+  .stk-af-list { overflow-y: auto; flex: 1; min-height: 120px; max-height: 360px; border: 1px solid var(--ds-border); border-radius: 10px; }
+  .stk-af-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--ds-border); cursor: pointer; }
+  .stk-af-row:last-child { border-bottom: none; }
+  .stk-af-row:hover { background: var(--ds-surface-dim); }
+  .stk-af-row:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: -2px; }
+  .stk-af-row[aria-selected="true"] { background: var(--ds-primary-light); }
+  .stk-af-check { flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--ds-border); display: flex; align-items: center; justify-content: center; color: var(--ds-surface); }
+  .stk-af-row[aria-selected="true"] .stk-af-check { background: var(--ds-primary); border-color: var(--ds-primary); }
+  .stk-af-check svg { width: 13px; height: 13px; display: none; }
+  .stk-af-row[aria-selected="true"] .stk-af-check svg { display: block; }
+  .stk-af-body { flex: 1; min-width: 0; }
+  .stk-af-title { font-weight: 600; font-size: 13.5px; color: var(--ds-text-primary); }
+  .stk-af-meta { font-size: 12px; color: var(--ds-text-secondary); margin-top: 1px; }
+  .stk-af-badges { display: flex; gap: 6px; flex-shrink: 0; }
+  .stk-af-badge { font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; padding: 2px 7px; border-radius: var(--ds-radius-pill); background: var(--ds-surface-dim); color: var(--ds-text-secondary); border: 1px solid var(--ds-border); white-space: nowrap; }
+  .stk-af-badge--mine { color: var(--ds-primary); background: var(--ds-primary-light); border-color: transparent; }
+  .stk-af-empty { text-align: center; padding: 32px 16px; color: var(--ds-text-secondary); font-size: 13.5px; }
+  .stk-af-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+  .stk-af-selcount { font-size: 12.5px; color: var(--ds-text-muted); }
+
+  /* ── Table ⇄ grid view toggle (toolbar, right of Sort) ── */
+  .stk-view { flex: 0 0 auto; display: inline-flex; border: 1px solid var(--ds-border); border-radius: 9px; overflow: hidden; }
+  .stk-view__btn { display: inline-grid; place-items: center; width: 38px; height: 38px; border: none; background: var(--ds-surface); color: var(--ds-text-muted); cursor: pointer; }
+  .stk-view__btn + .stk-view__btn { border-left: 1px solid var(--ds-border); }
+  .stk-view__btn:hover { color: var(--ds-text-primary); }
+  .stk-view__btn.is-active { background: var(--ds-primary-light); color: var(--ds-primary); }
+  .stk-view__btn svg { width: 17px; height: 17px; }
+
+  /* ── Grid view — the same items as cards, grouped Required / Added by you ── */
+  #stk-gridview[hidden] { display: none; }
+  /* The grid sections ride the shared `.fbar-cardsec` host, which reuses the
+     same group-header chrome as the table so both views read alike. Only this
+     page's own grid class needs the collapse rule. */
+  .fbar-cardsec.is-collapsed .stk-cardgrid { display: none; }
+  .stk-cardgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+  .stk-card { position: relative; display: flex; flex-direction: column; gap: 7px; padding: 14px; border: 1px solid var(--ds-border); border-radius: 12px; background: var(--ds-surface); }
+  .stk-card-main { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; padding-right: 30px; min-width: 0; }
+  .stk-card-main .cc-icon { flex-shrink: 0; }
+  .stk-card-title { font-weight: 600; font-size: 14px; color: var(--ds-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stk-card:hover .stk-card-title { color: var(--ds-primary); }
+  .stk-card-desc { font-size: 12.5px; color: var(--ds-text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .stk-card-meta { font-size: 12px; color: var(--ds-text-muted); margin-top: auto; padding-top: 2px; }
+  .stk-card-actions { position: absolute; top: 10px; right: 10px; }
+  .stk-card-actions .stk-req { padding: 3px 8px; }
 </style>
 {% endblock %}
 
@@ -102,91 +166,151 @@
 <div class="uc-head">
   <div>
     <h1>My Stack</h1>
-    <p class="lede">Your personal knowledge space.</p>
+    <p class="lede">Your personal knowledge space — everything here is the knowledge {{ instance_brand_short or 'Agnes' }}, your default agent, uses.</p>
   </div>
-</div>
-
-{% set stk_base_count = (data_cards|length) + (memory_cards|length) %}
-{# ── "Same knowledge, everywhere" connect banner leads the grey head
-     (shared connect-banner component; the workspace stats moved down to the
-     white content band below). #}
-<div class="stk-connect stk-connect--head">
-  {{ connect_banner('bar', cta_href='/me/ai-connector',
-       copy='Connect your AI tools to give them access to the same knowledge.') }}
-</div>
-
-{# ── Kind tabs — the last row of the grey head, so the white content band
-     sits flush beneath them (same placement as Catalog/Marketplace, which
-     also render their tabs as the trailing element of page_head). The
-     search + sort toolbar lives in the white band below. #}
-<div class="uc-kindtabs" role="tablist" aria-label="Stack kinds">
-  <button class="uc-kindtab on" data-kind="all" role="tab" aria-selected="true">All<span class="uc-count" id="stk-count-all">{{ stk_base_count }}</span></button>
-  <button class="uc-kindtab" data-kind="data" role="tab" aria-selected="false">Data<span class="uc-count" id="stk-count-data">{{ data_cards|length }}</span></button>
-  <button class="uc-kindtab" data-kind="plugins" role="tab" aria-selected="false">Plugins<span class="uc-count" id="stk-count-plugins">—</span></button>
-  <button class="uc-kindtab" data-kind="memory" role="tab" aria-selected="false">Memory<span class="uc-count" id="stk-count-memory">{{ memory_cards|length }}</span></button>
+  {# Contextual — only visible while the Artefacts segment is active (mirrors
+     how "+ Upload" is placed/styled on /artefacts). #}
+  <button type="button" class="cc-btn cc-btn--primary" id="stk-add-artefacts-btn" data-open-artefact-picker hidden style="flex-shrink:0">+ Add artefacts</button>
 </div>
 {% endblock %}
 
 {% block page_surface %}
-{# ── Everything in your Stack — the single inventory over all kinds.
-     Search + kind tabs + sort over table rows; Plugins hydrate into
-     rows client-side. #}
-{# id="stack-explore-zone" is the tour step-1 anchor (the tabs + inventory). #}
-<section class="stk-section" id="stack-explore-zone">
-  <div class="stk-toolbar">
-    <input type="search" class="stk-search" id="stk-search" placeholder="Search in your stack…" autocomplete="off" aria-label="Search in your stack">
-    <label class="stk-sort">Sort:
+{# ── The source segment: a domain/category, or "Shared by <owner>". ── #}
+{% macro stack_source(c) %}
+{%- if c.category -%}{{ c.category }}
+{%- elif c.shared_by and c.shared_by != 'You' -%}Shared by {{ c.shared_by }}
+{%- else -%}—{%- endif -%}
+{% endmacro %}
+
+{% macro stack_row(c, row_kind, section) %}
+<tr data-stack-row data-kind="{{ row_kind }}" data-section="{{ section }}"
+    data-search="{{ [c.title, c.description, c.kind_label, c.category, c.shared_by, c.meta_text] | select | join(' ') | lower }}"
+    data-title="{{ c.title | lower }}"
+    data-added="{{ c.added_iso or '' }}">
+  <td>
+    <a class="stk-name" href="{{ c.href }}">
+      <span class="cc-icon cc-icon--{{ c.kind }}">{{ kind_glyph(c.glyph or c.kind) }}</span>
+      <span class="stk-name-text">
+        <span class="stk-name-title">{{ c.title }}{% if c.unavailable %} <span class="stk-unavail" title="You no longer have access to this artefact.">Unavailable</span>{% endif %}</span>
+        {% if c.description %}<span class="stk-name-desc">{{ c.description }}</span>{% endif %}
+      </span>
+    </a>
+  </td>
+  <td><span class="stk-typechip">{{ c.kind_label }}</span></td>
+  <td class="stk-cell-muted">{{ c.meta_text or '—' }}</td>
+  <td class="stk-cell-muted">{{ stack_source(c) }}</td>
+  <td class="stk-cell-actions">
+    {% if section == 'required' %}
+      <span class="stk-req"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.8"/></svg>Required</span>
+    {% else %}
+      <div class="stk-menu" data-stk-menu>
+        <button type="button" class="stk-menu-btn" aria-haspopup="true" aria-expanded="false" aria-label="More actions for {{ c.title }}">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+        </button>
+        <div class="stk-menu-pop" role="menu" hidden>
+          <a class="stk-menu-item" role="menuitem" href="{{ c.href }}">View details</a>
+          <a class="stk-menu-item" role="menuitem" href="/chat">Use in agent…</a>
+          <div class="stk-menu-sep"></div>
+          <button type="button" class="stk-menu-item stk-menu-item--danger" role="menuitem"
+                  data-stk-remove data-title="{{ c.title }}"
+                  {% if c.action and c.action.remove_url %}data-remove-url="{{ c.action.remove_url }}"{% endif %}>
+            Remove from My Stack
+          </button>
+        </div>
+      </div>
+    {% endif %}
+  </td>
+</tr>
+{% endmacro %}
+
+{# Group-header row: the collapsible toggle for a <tbody> section. #}
+{% macro group_head(section, title, count, hint) %}
+<tr class="fbar-grouprow">
+  <td colspan="5">
+    <button type="button" class="fbar-grouptoggle" data-stk-collapse="{{ section }}" aria-expanded="true">
+      <svg class="fbar-group__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="fbar-group__title">{{ title }}</span>
+      <span class="fbar-group__n" id="stk-count-{{ section }}">{{ count }}</span>
+      <span class="fbar-group__hint">{{ hint }}</span>
+    </button>
+  </td>
+</tr>
+{% endmacro %}
+
+{# Split the server-rendered kinds by requirement: required grants cluster in
+   the Required group, everything else in Added by you. #}
+{% set req_rows = [] %}
+{% set add_rows = [] %}
+{% for c in data_cards %}
+  {% if c.action and c.action.mode == 'required' %}{% set _ = req_rows.append((c, 'data')) %}{% else %}{% set _ = add_rows.append((c, 'data')) %}{% endif %}
+{% endfor %}
+{% for c in memory_cards %}
+  {% if c.action and c.action.mode == 'required' %}{% set _ = req_rows.append((c, 'memory')) %}{% else %}{% set _ = add_rows.append((c, 'memory')) %}{% endif %}
+{% endfor %}
+{# Artefacts have no admin-RBAC "required" tier — they always land in
+   Added by you (a Stack membership row is always something the caller
+   opted into). #}
+{% for c in artefact_cards %}
+  {% set _ = add_rows.append((c, 'artefacts')) %}
+{% endfor %}
+
+{# id="stack-explore-zone" is the tour step-1 anchor (the search + table). #}
+<div id="stack-explore-zone">
+  <div class="fbar" role="search" aria-label="Filter your stack">
+    <div class="fbar__search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+      <input type="search" id="stk-search" placeholder="Search your stack…" autocomplete="off" aria-label="Search your stack">
+    </div>
+
+    {# Kind filter — the retired head tabs, now a Filter dropdown (multi-select
+       "Type" facet). Active selections render as removable chips on the second
+       row (#stk-chips). Option counts are per-kind totals; the Plugins count
+       fills in once plugins hydrate, and a kind with zero items hides its
+       option (no dead filters), matching /artefacts. #}
+    <div class="fbar-filter">
+      <button type="button" class="fbar-filter__btn" id="stk-filter-btn" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M7 12h10M10 19h4"></path></svg>
+        Filter
+        <span class="fbar-filter__n" hidden>0</span>
+      </button>
+      <div class="fbar-menu" id="stk-filter-menu" role="dialog" aria-label="Filter your stack" hidden>
+        <div class="fbar-menu__group">
+          <div class="fbar-menu__title">Type</div>
+          <label class="fbar-menu__opt" data-kind-opt="data"><input type="checkbox" data-facet="kind" value="data"><span class="fbar-menu__opt-text">Data</span><span class="fbar-menu__opt-n" id="stk-optn-data">{{ data_cards|length }}</span></label>
+          <label class="fbar-menu__opt" data-kind-opt="plugins"><input type="checkbox" data-facet="kind" value="plugins"><span class="fbar-menu__opt-text">Plugins</span><span class="fbar-menu__opt-n" id="stk-optn-plugins">—</span></label>
+          <label class="fbar-menu__opt" data-kind-opt="artefacts"><input type="checkbox" data-facet="kind" value="artefacts"><span class="fbar-menu__opt-text">Artefacts</span><span class="fbar-menu__opt-n" id="stk-optn-artefacts">{{ artefact_cards|length }}</span></label>
+          <label class="fbar-menu__opt" data-kind-opt="memory"><input type="checkbox" data-facet="kind" value="memory"><span class="fbar-menu__opt-text">Memory</span><span class="fbar-menu__opt-n" id="stk-optn-memory">{{ memory_cards|length }}</span></label>
+        </div>
+        <div class="fbar-menu__foot">
+          <button type="button" data-stk-filter-clear>Clear</button>
+          <button type="button" data-stk-filter-done>Done</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="fbar-select">
       <select id="stk-sort" aria-label="Sort your stack">
-        <option value="added" selected>Recently added</option>
-        <option value="name">Name A–Z</option>
-        <option value="type">Type</option>
+        <option value="name" selected>Name (A–Z)</option>
+        <option value="recent">Recently used</option>
+        <option value="type">By type</option>
       </select>
-    </label>
+    </div>
+
+    {# Table ⇄ grid view toggle. The default is table; the choice persists in
+       localStorage. Both views show the same items, grouped Required / Added
+       by you. #}
+    <div class="stk-view" role="group" aria-label="View">
+      <button type="button" class="stk-view__btn is-active" data-view="table" aria-label="Table view" aria-pressed="true" title="Table view">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+      </button>
+      <button type="button" class="stk-view__btn" data-view="grid" aria-label="Grid view" aria-pressed="false" title="Grid view">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>
+      </button>
+    </div>
   </div>
 
-  {% macro stack_row(c, row_kind) %}
-  <tr data-stack-row data-kind="{{ row_kind }}"
-      data-search="{{ (c.title ~ ' ' ~ (c.description or '')) | lower }}"
-      data-title="{{ c.title | lower }}"
-      data-added="{{ c.added_iso or '' }}">
-    <td>
-      <a class="stk-name" href="{{ c.href }}">
-        <span class="cc-icon cc-icon--{{ c.kind }}">{{ kind_glyph(c.glyph or c.kind) }}</span>
-        <span class="stk-name-text">
-          <span class="stk-name-title">{{ c.title }}</span>
-          <span class="stk-name-desc">{{ c.description }}</span>
-        </span>
-      </a>
-    </td>
-    <td><span class="stk-type stk-type--{{ c.kind }}">{{ c.kind_label }}</span></td>
-    <td class="stk-cell-muted">{{ c.meta_text or '—' }}</td>
-    <td class="stk-cell-muted">{% if c.added_iso %}<time datetime="{{ c.added_iso }}" data-relative>{{ c.added_iso[:10] }}</time>{% else %}—{% endif %}</td>
-    <td class="stk-cell-muted">{{ c.shared_by or '—' }}</td>
-    <td class="stk-cell-status">
-      {% set a = c.action or {} %}
-      {% if a.mode == 'required' %}
-        <span class="cc-required"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:14px;height:14px"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>Required</span>
-      {% elif a.mode == 'stack' or a.mode == 'download' %}
-        {% set is_dl = a.mode == 'download' %}
-        <button type="button" class="cc-btn {{ 'cc-btn--instack' if a.state == 'in' else 'cc-btn--primary' }}"
-                data-stack-toggle data-state="{{ a.state }}" {% if is_dl %}data-toggle-kind="download"{% endif %}
-                data-add-url="{{ a.add_url }}" data-remove-url="{{ a.remove_url }}"
-                {% if a.rt %}data-rt="{{ a.rt }}" data-rid="{{ a.rid }}"{% endif %}>
-          {% if a.state == 'in' %}
-          <span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> {{ 'Downloaded' if is_dl else 'In stack' }}</span>
-          <span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> {{ 'Remove local copy' if is_dl else 'Remove' }}</span>
-          {% else %}
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> {{ 'Download locally' if is_dl else 'Add to stack' }}
-          {% endif %}
-        </button>
-      {% else %}
-        <a class="cc-btn" href="{{ a.href or c.href }}">{{ a.label or 'Open' }}
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </a>
-      {% endif %}
-    </td>
-  </tr>
-  {% endmacro %}
+  {# Row 2 — active-filter chips (populated by the controller below). #}
+  <div class="fbar-chips" id="stk-chips" hidden></div>
 
   <div class="stk-tablewrap">
     <table class="data-table stk-table" id="stk-table">
@@ -195,56 +319,112 @@
           <th>Name</th>
           <th>Type</th>
           <th>Details</th>
-          <th>Added</th>
-          <th>Shared by</th>
-          <th class="stk-cell-status">Status</th>
+          <th>Source</th>
+          <th class="stk-cell-actions">Actions</th>
         </tr>
       </thead>
-      <tbody id="stk-tbody" data-remove-hides>
-        {% for c in data_cards %}{{ stack_row(c, 'data') }}{% endfor %}
-        {% for c in memory_cards %}{{ stack_row(c, 'memory') }}{% endfor %}
-        <tr class="stk-empty-row" id="stk-empty" hidden>
-          <td colspan="6">
-            <h3>Nothing here yet</h3>
-            <p>Browse the <a href="/catalog">Catalog</a> and click <b>+ Add to stack</b>. Private files live on <a href="/artefacts">Artefacts</a>.</p>
-          </td>
-        </tr>
+
+      {# ── Required — granted by the organization, always available ── #}
+      <tbody class="fbar-group" id="stk-required-body" data-section="required" {% if not req_rows %}hidden{% endif %}>
+        {{ group_head('required', 'Required', req_rows|length, 'Granted by your organization — always available.') }}
+        {% for c, k in req_rows %}{{ stack_row(c, k, 'required') }}{% endfor %}
+        <tr class="fbar-group__empty" id="stk-required-empty" hidden><td colspan="5">No required resources match your filter.</td></tr>
+      </tbody>
+
+      {# ── Added by you — optional resources the caller added; removable ── #}
+      <tbody class="fbar-group" id="stk-added-body" data-section="added" {% if not add_rows %}hidden{% endif %}>
+        {{ group_head('added', 'Added by you', add_rows|length, 'Optional resources you added.') }}
+        {% for c, k in add_rows %}{{ stack_row(c, k, 'added') }}{% endfor %}
+        <tr class="fbar-group__empty" id="stk-added-empty" hidden><td colspan="5">Nothing added matches your filter.</td></tr>
       </tbody>
     </table>
   </div>
-</section>
 
-{# ── Workspace stats — counts of what's in the stack, on the white content
-     band (moved down from the head; the connect banner leads the head now).
-     Items + Plugins update client-side once the marketplace call resolves. #}
-<div class="stk-stats" aria-label="Your stack at a glance">
-  <div class="stk-stat">
-    <span class="stk-stat__icon">{{ ico.icon('package', 20) }}</span>
-    <span class="stk-stat__body">
-      <span class="stk-stat__value" id="stk-stat-items" data-base="{{ stk_base_count }}">{{ stk_base_count }}</span>
-      <span class="stk-stat__label">Items in your stack</span>
-    </span>
+  {# Grid view — cards for the same items, grouped like the table. Populated
+     client-side from the table rows (the table stays the source of truth), so
+     search/filter/sort/remove all flow through one place. #}
+  <div id="stk-gridview" hidden>
+    <section class="fbar-cardsec" data-section="required" {% if not req_rows %}hidden{% endif %}>
+      <div class="fbar-cardsec__head">
+        <button type="button" class="fbar-grouptoggle" data-stk-collapse="required" aria-expanded="true">
+          <svg class="fbar-group__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="fbar-group__title">Required</span>
+          <span class="fbar-group__n" id="stk-gcount-required">{{ req_rows|length }}</span>
+          <span class="fbar-group__hint">Granted by your organization — always available.</span>
+        </button>
+      </div>
+      <div class="stk-cardgrid" id="stk-required-grid"></div>
+      <p class="fbar-group__empty" id="stk-required-gempty" hidden>No required resources match your filter.</p>
+    </section>
+    <section class="fbar-cardsec" data-section="added" {% if not add_rows %}hidden{% endif %}>
+      <div class="fbar-cardsec__head">
+        <button type="button" class="fbar-grouptoggle" data-stk-collapse="added" aria-expanded="true">
+          <svg class="fbar-group__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="fbar-group__title">Added by you</span>
+          <span class="fbar-group__n" id="stk-gcount-added">{{ add_rows|length }}</span>
+          <span class="fbar-group__hint">Optional resources you added.</span>
+        </button>
+      </div>
+      <div class="stk-cardgrid" id="stk-added-grid"></div>
+      <p class="fbar-group__empty" id="stk-added-gempty" hidden>Nothing added matches your filter.</p>
+    </section>
   </div>
-  <div class="stk-stat">
-    <span class="stk-stat__icon">{{ ico.icon('puzzle', 20) }}</span>
-    <span class="stk-stat__body">
-      <span class="stk-stat__value" id="stk-stat-plugins">—</span>
-      <span class="stk-stat__label">Plugins</span>
-    </span>
+
+  <div class="stk-empty" id="stk-empty" hidden>
+    <h3>Nothing here yet</h3>
+    <p>Browse the <a href="/catalog">Catalog</a> and add resources to your stack. Private files live on <a href="/artefacts">Artefacts</a>.</p>
   </div>
-  <div class="stk-stat">
-    <span class="stk-stat__icon">{{ ico.icon('brain', 20) }}</span>
-    <span class="stk-stat__body">
-      <span class="stk-stat__value" id="stk-stat-memory">{{ memory_cards|length }}</span>
-      <span class="stk-stat__label">Memories</span>
-    </span>
+
+  {# Artefacts-tab empty state (requirement 6) — shown only while the
+     Artefacts segment is active AND the caller has zero artefacts in their
+     Stack. Must not imply the caller has zero artefacts overall. #}
+  <div class="stk-empty" id="stk-artefacts-empty" hidden>
+    <h3>No artefacts in your Stack</h3>
+    <p>Add artefacts you want the default agent to access and use.</p>
+    <button type="button" class="cc-btn cc-btn--primary" data-open-artefact-picker>Add artefacts</button>
   </div>
-  <span class="stk-stats-wip"><b>WIP</b> we'll add some useful numbers here</span>
+</div>
+
+{# Lightweight confirmation for "Remove from My Stack". #}
+<div class="modal-backdrop" id="stk-confirm" role="dialog" aria-modal="true" aria-labelledby="stk-confirm-title">
+  <div class="modal-card">
+    <h3 id="stk-confirm-title">Remove from My Stack?</h3>
+    <p class="sub">The Main Agent will no longer use this resource. Custom agents that use it will not be affected.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" data-stk-cancel>Cancel</button>
+      <button type="button" class="btn btn-danger" id="stk-confirm-ok">Remove from My Stack</button>
+    </div>
+  </div>
+</div>
+
+{# "Add artefacts to Stack" picker (requirements 2/3/6/7/10/11). #}
+<div class="modal-backdrop" id="stk-af-picker" role="dialog" aria-modal="true" aria-labelledby="stk-af-picker-title" data-no-esc-close="1">
+  <div class="modal-card stk-af-card">
+    <h3 id="stk-af-picker-title">Add artefacts to Stack</h3>
+    <p class="sub">Select artefacts the default agent should be able to access.</p>
+    <div class="stk-af-toolbar">
+      <input type="search" id="stk-af-search" placeholder="Search artefacts…" autocomplete="off" aria-label="Search artefacts">
+      <select id="stk-af-visibility" aria-label="Filter by visibility">
+        <option value="">All visibility</option>
+        <option value="private">Private</option>
+        <option value="shared">Shared</option>
+        <option value="workspace">Workspace</option>
+      </select>
+    </div>
+    <div class="stk-af-list" id="stk-af-list" role="listbox" aria-multiselectable="true" aria-label="Artefacts"></div>
+    <div class="stk-af-empty" id="stk-af-empty" hidden></div>
+    <div class="stk-af-foot">
+      <span class="stk-af-selcount" id="stk-af-selcount">0 selected</span>
+      <div class="modal-actions" style="margin:0">
+        <button type="button" class="btn btn-secondary" data-af-picker-cancel>Cancel</button>
+        <button type="button" class="btn btn-primary" id="stk-af-confirm" disabled>Add to Stack</button>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ static_url('js/catalog_card.js') }}"></script>
 <script>
 (function () {
   'use strict';
@@ -255,155 +435,484 @@
     return d.innerHTML;
   }
 
-  const tbody = document.getElementById('stk-tbody');
-  const emptyRow = document.getElementById('stk-empty');
+  const reqBody = document.getElementById('stk-required-body');
+  const addBody = document.getElementById('stk-added-body');
+  const groups = {
+    required: {
+      body: reqBody,
+      count: document.getElementById('stk-count-required'),
+      empty: document.getElementById('stk-required-empty'),
+      grid: document.getElementById('stk-required-grid'),
+      gcount: document.getElementById('stk-gcount-required'),
+      gempty: document.getElementById('stk-required-gempty'),
+      sec: document.querySelector('.fbar-cardsec[data-section="required"]'),
+    },
+    added: {
+      body: addBody,
+      count: document.getElementById('stk-count-added'),
+      empty: document.getElementById('stk-added-empty'),
+      grid: document.getElementById('stk-added-grid'),
+      gcount: document.getElementById('stk-gcount-added'),
+      gempty: document.getElementById('stk-added-gempty'),
+      sec: document.querySelector('.fbar-cardsec[data-section="added"]'),
+    },
+  };
+  const globalEmpty = document.getElementById('stk-empty');
+  const stkGridView = document.getElementById('stk-gridview');
+  const viewBtns = document.querySelectorAll('.stk-view__btn');
+  const collapsedSection = { required: false, added: false };
+  let currentView = 'table';
   const searchInput = document.getElementById('stk-search');
   const sortSelect = document.getElementById('stk-sort');
-  const tabs = document.querySelectorAll('.uc-kindtab');
-  let currentKind = 'all';
+  const filterBtn = document.getElementById('stk-filter-btn');
+  const filterMenu = document.getElementById('stk-filter-menu');
+  const filterBadge = filterBtn.querySelector('.fbar-filter__n');
+  const chipsEl = document.getElementById('stk-chips');
+  const kindInputs = filterMenu.querySelectorAll('input[data-facet="kind"]');
+  const KIND_LABEL = { data: 'Data', plugins: 'Plugins', artefacts: 'Artefacts', memory: 'Memory' };
+  const kindFilter = new Set();   // selected kinds; empty Set = all
   let pluginsLoaded = false;
   let pluginCount = null; // null until the marketplace call resolves
 
-  const rows = () => Array.from(tbody.querySelectorAll('[data-stack-row]'));
+  const bodyRows = (b) => Array.from(b.querySelectorAll('[data-stack-row]'));
+  const allRows = () => bodyRows(reqBody).concat(bodyRows(addBody));
 
-  // ── Filtering: active tab × search query. The empty row shows when the
-  //    active view has nothing (including the true empty stack).
-  function applyFilter() {
-    const q = (searchInput.value || '').trim().toLowerCase();
-    let visible = 0;
-    rows().forEach(r => {
-      const show = (currentKind === 'all' || r.dataset.kind === currentKind) &&
-                   (!q || (r.dataset.search || '').includes(q));
-      r.hidden = !show;
-      if (show) visible++;
-    });
-    emptyRow.hidden = visible > 0;
-  }
-
-  // ── Sorting: reorder rows in the tbody (empty row stays last).
+  // ── Sorting: independent inside each group; the group-header row stays
+  //    first and the empty row stays last. Required stays above Added by you
+  //    because the two <tbody> groups are separate. "Recently used" is backed
+  //    by the added-to-stack timestamp (the only recency signal we have);
+  //    Name is the default. ──
   function applySort() {
     const mode = sortSelect.value;
-    const sorted = rows().sort((a, b) => {
-      if (mode === 'name') return (a.dataset.title || '').localeCompare(b.dataset.title || '');
-      if (mode === 'type') return (a.dataset.kind || '').localeCompare(b.dataset.kind || '') ||
-                                  (a.dataset.title || '').localeCompare(b.dataset.title || '');
-      // 'added' — newest first; rows without a date sink to the bottom.
-      return (b.dataset.added || '').localeCompare(a.dataset.added || '');
+    const cmp = (a, b) => {
+      if (mode === 'type') {
+        return (a.dataset.kind || '').localeCompare(b.dataset.kind || '') ||
+               (a.dataset.title || '').localeCompare(b.dataset.title || '');
+      }
+      if (mode === 'recent') return (b.dataset.added || '').localeCompare(a.dataset.added || '');
+      return (a.dataset.title || '').localeCompare(b.dataset.title || ''); // name
+    };
+    Object.values(groups).forEach(g => {
+      bodyRows(g.body).sort(cmp).forEach(r => g.body.insertBefore(r, g.empty));
     });
-    sorted.forEach(r => tbody.insertBefore(r, emptyRow));
   }
 
-  // ── Counts: tab badges + the workspace stats derive from the DOM, so
-  //    plugin hydration and row removal both flow through one place.
-  function recount() {
-    const byKind = { data: 0, plugins: 0, memory: 0 };
-    rows().forEach(r => { byKind[r.dataset.kind] = (byKind[r.dataset.kind] || 0) + 1; });
-    const nonPlugin = byKind.data + byKind.memory;
-    const total = nonPlugin + (pluginCount === null ? 0 : byKind.plugins);
-    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
-    set('stk-count-all', total);
-    set('stk-count-data', byKind.data);
-    set('stk-count-memory', byKind.memory);
-    set('stk-stat-items', total);
-    set('stk-stat-memory', byKind.memory);
-    if (pluginCount !== null) {
-      set('stk-count-plugins', byKind.plugins);
-      set('stk-stat-plugins', byKind.plugins);
+  // ── Filter (active tab × search) + group visibility + counts. ──
+  function refreshView() {
+    const q = (searchInput.value || '').trim().toLowerCase();
+    let totalRows = 0;
+    Object.keys(groups).forEach(section => {
+      const g = groups[section];
+      const rows = bodyRows(g.body);
+      let vis = 0;
+      rows.forEach(r => {
+        const show = (kindFilter.size === 0 || kindFilter.has(r.dataset.kind)) &&
+                     (!q || (r.dataset.search || '').includes(q));
+        r.hidden = !show;
+        if (show) vis++;
+      });
+      totalRows += rows.length;
+      const hasAny = rows.length > 0;
+      const isCollapsed = collapsedSection[section];
+      // Omit an entirely-empty group; a group with rows but no matches shows a
+      // subtle empty message (unless the group is collapsed). Table + grid
+      // headers/counts/empties stay in lock-step.
+      if (g.count) g.count.textContent = String(vis);
+      if (g.gcount) g.gcount.textContent = String(vis);
+      g.body.hidden = !hasAny;
+      if (g.sec) g.sec.hidden = !hasAny;
+      if (g.empty) g.empty.hidden = !hasAny || vis > 0 || isCollapsed;
+      if (g.gempty) g.gempty.hidden = !hasAny || vis > 0 || isCollapsed;
+    });
+    recount();
+    globalEmpty.hidden = totalRows > 0;
+    updateArtefactsEmptyState();
+  }
+
+  // ── Grid view — cards projected from the (filtered, sorted) table rows, so
+  //    the table stays the single source of truth. Rebuilt on every refresh
+  //    while grid view is active. ──
+  function buildCard(row) {
+    const nameLink = row.querySelector('.stk-name');
+    const href = nameLink ? nameLink.getAttribute('href') : '#';
+    const iconEl = row.querySelector('.cc-icon');
+    const titleEl = row.querySelector('.stk-name-title');
+    const title = titleEl ? titleEl.textContent : '';
+    const descEl = row.querySelector('.stk-name-desc');
+    const desc = descEl ? descEl.textContent : '';
+    const typeEl = row.querySelector('.stk-typechip');
+    const typeLabel = typeEl ? typeEl.textContent : '';
+    const tds = row.children;
+    const details = tds[2] ? tds[2].textContent.trim() : '';
+    const source = tds[3] ? tds[3].textContent.trim() : '';
+    const required = !!row.querySelector('.stk-req');
+    const rm = row.querySelector('[data-stk-remove]');
+
+    const card = document.createElement('div');
+    card.className = 'stk-card';
+    card.setAttribute('data-stack-card', '');
+    card._row = row;
+
+    const actions = document.createElement('div');
+    actions.className = 'stk-card-actions';
+    if (required) actions.innerHTML = REQ_BADGE;
+    else if (rm) actions.innerHTML = menuHtml({ title: title, href: href, action: { remove_url: rm.dataset.removeUrl || '' } });
+    card.appendChild(actions);
+
+    const main = document.createElement('a');
+    main.className = 'stk-card-main';
+    main.href = href;
+    if (iconEl) main.appendChild(iconEl.cloneNode(true));
+    const t = document.createElement('span');
+    t.className = 'stk-card-title';
+    t.textContent = title;
+    main.appendChild(t);
+    card.appendChild(main);
+
+    if (desc) {
+      const d = document.createElement('p');
+      d.className = 'stk-card-desc';
+      d.textContent = desc;
+      card.appendChild(d);
     }
+    const metaBits = [typeLabel, details && details !== '—' ? details : '', source && source !== '—' ? source : '']
+      .filter(Boolean).join(' · ');
+    const m = document.createElement('p');
+    m.className = 'stk-card-meta';
+    m.textContent = metaBits;
+    card.appendChild(m);
+    return card;
+  }
+  function renderGrid() {
+    Object.keys(groups).forEach(section => {
+      const g = groups[section];
+      if (!g.grid) return;
+      g.grid.innerHTML = '';
+      bodyRows(g.body).forEach(row => { if (!row.hidden) g.grid.appendChild(buildCard(row)); });
+    });
   }
 
-  function refreshView() { applySort(); applyFilter(); recount(); }
-
-  // Row removal (the delegated stack-toggle in catalog_card.js drops the
-  // <tr> on unsubscribe) → recompute counts + empty state.
-  new MutationObserver(() => { applyFilter(); recount(); }).observe(tbody, { childList: true });
-
-  tabs.forEach(t => t.addEventListener('click', () => {
-    currentKind = t.dataset.kind;
-    tabs.forEach(x => {
-      const on = x === t;
-      x.classList.toggle('on', on);
-      x.setAttribute('aria-selected', on ? 'true' : 'false');
+  // ── Table ⇄ grid view switch (persisted). The artefacts-only empty state
+  //    hides whichever list view is active and shows its CTA instead. ──
+  function applyView() {
+    const grid = currentView === 'grid';
+    const artefactsEmpty = isArtefactsView() && lastByKind.artefacts === 0;
+    if (stkTableWrap) stkTableWrap.style.display = (grid || artefactsEmpty) ? 'none' : '';
+    if (stkGridView) stkGridView.hidden = !grid || artefactsEmpty;
+    viewBtns.forEach(b => {
+      const on = b.dataset.view === currentView;
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
-    const url = new URL(window.location);
-    url.searchParams.set('kind', currentKind);
-    history.replaceState(null, '', url);
-    applyFilter();
-  }));
-  searchInput.addEventListener('input', applyFilter);
-  sortSelect.addEventListener('change', refreshView);
+    if (grid && !artefactsEmpty) renderGrid();
+  }
+  function setView(view) {
+    currentView = view === 'grid' ? 'grid' : 'table';
+    try { localStorage.setItem('stk-view', currentView); } catch (_) { /* private mode */ }
+    applyView();
+  }
+  viewBtns.forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
 
-  // ── Row builder (client-hydrated kinds + recs promotion). MUST mirror
-  //    the server-side stack_row macro above.
-  const ROW_GLYPH = {
+  // ── Filter-menu option counts — total per kind (not filtered), derived from
+  //    the DOM so plugin hydration and row removal both flow through one
+  //    place. A kind with zero items hides its option (no dead filters,
+  //    matching /artefacts); Plugins waits until its count is known. ──
+  let lastByKind = { data: 0, plugins: 0, memory: 0, artefacts: 0 };
+  function recount() {
+    const byKind = { data: 0, plugins: 0, memory: 0, artefacts: 0 };
+    allRows().forEach(r => { byKind[r.dataset.kind] = (byKind[r.dataset.kind] || 0) + 1; });
+    lastByKind = byKind;
+    const setOpt = (kind, n, known) => {
+      const el = document.getElementById('stk-optn-' + kind);
+      if (el) el.textContent = String(n);
+      if (known) {
+        const opt = filterMenu.querySelector('[data-kind-opt="' + kind + '"]');
+        if (opt) opt.hidden = (n === 0);
+      }
+    };
+    setOpt('data', byKind.data, true);
+    setOpt('memory', byKind.memory, true);
+    setOpt('artefacts', byKind.artefacts, true);
+    setOpt('plugins', byKind.plugins, pluginCount !== null);
+  }
+
+  // ── Artefacts-tab empty state (requirement 6) — shown only while the
+  //    Artefacts segment is active AND the caller has zero artefacts in
+  //    their Stack (unfiltered by search). Hides the table underneath so
+  //    the caller doesn't see an empty table + this state at once. ──
+  const artefactsEmptyEl = document.getElementById('stk-artefacts-empty');
+  const stkTableWrap = document.querySelector('.stk-tablewrap');
+  const addArtefactsBtn = document.getElementById('stk-add-artefacts-btn');
+  // "Artefacts view" = artefacts is the ONLY active Type filter — the closest
+  // analog to the old dedicated Artefacts tab. Drives the contextual
+  // "+ Add artefacts" button and the artefacts-only empty state.
+  function isArtefactsView() {
+    return kindFilter.size === 1 && kindFilter.has('artefacts');
+  }
+  function updateArtefactsEmptyState() {
+    if (addArtefactsBtn) addArtefactsBtn.hidden = !isArtefactsView();
+    const show = isArtefactsView() && lastByKind.artefacts === 0;
+    if (artefactsEmptyEl) artefactsEmptyEl.hidden = !show;
+    if (show) globalEmpty.hidden = true;
+    applyView();  // show/hide table vs grid, honoring the artefacts-empty override
+  }
+
+  function rebuild() { applySort(); refreshView(); }
+
+  // Row removal (see remove flow below) → recompute groups + counts.
+  new MutationObserver(() => refreshView()).observe(reqBody, { childList: true });
+  new MutationObserver(() => refreshView()).observe(addBody, { childList: true });
+
+  // ── Collapsible groups ──
+  // Collapse state is shared across both views, so a group folds the same
+  // whether you're looking at the table or the grid.
+  function applyCollapse(section) {
+    const isC = collapsedSection[section];
+    const g = groups[section];
+    if (g.body) g.body.classList.toggle('is-collapsed', isC);
+    if (g.sec) g.sec.classList.toggle('is-collapsed', isC);
+    document.querySelectorAll('[data-stk-collapse="' + section + '"]').forEach(btn =>
+      btn.setAttribute('aria-expanded', isC ? 'false' : 'true'));
+  }
+  document.addEventListener('click', (ev) => {
+    const toggle = ev.target.closest('[data-stk-collapse]');
+    if (!toggle) return;
+    const section = toggle.dataset.stkCollapse;
+    if (!groups[section]) return;
+    collapsedSection[section] = !collapsedSection[section];
+    applyCollapse(section);
+    // The empty row/message must fold with the group.
+    refreshView();
+  });
+
+  // ── Kind filter (multi-select "Type" facet) → removable chips + badge. ──
+  function syncKindUrl() {
+    const url = new URL(window.location);
+    // Keep the ?kind= deep-link meaningful for the single-select case; drop it
+    // when zero or several kinds are active.
+    if (kindFilter.size === 1) url.searchParams.set('kind', Array.from(kindFilter)[0]);
+    else url.searchParams.delete('kind');
+    history.replaceState(null, '', url);
+  }
+  function renderChips() {
+    chipsEl.innerHTML = '';
+    const n = kindFilter.size;
+    if (n) {
+      const frag = document.createDocumentFragment();
+      kindFilter.forEach(kind => {
+        const chip = document.createElement('span');
+        chip.className = 'fbar-chip';
+        const lab = document.createElement('span');
+        lab.className = 'fbar-chip__label';
+        lab.textContent = 'Type:';
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'fbar-chip__x';
+        x.setAttribute('aria-label', 'Remove Type ' + (KIND_LABEL[kind] || kind));
+        x.textContent = '×';
+        x.addEventListener('click', () => setKind(kind, false));
+        chip.appendChild(lab);
+        chip.appendChild(document.createTextNode(' ' + (KIND_LABEL[kind] || kind)));
+        chip.appendChild(x);
+        frag.appendChild(chip);
+      });
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'fbar-chips__clear';
+      clear.textContent = 'Clear all';
+      clear.addEventListener('click', clearKinds);
+      frag.appendChild(clear);
+      chipsEl.appendChild(frag);
+    }
+    chipsEl.hidden = n === 0;
+    filterBtn.classList.toggle('is-active', n > 0);
+    if (filterBadge) { filterBadge.textContent = String(n); filterBadge.hidden = n === 0; }
+  }
+  function setKind(kind, on) {
+    if (on) kindFilter.add(kind); else kindFilter.delete(kind);
+    const input = filterMenu.querySelector('input[data-facet="kind"][value="' + kind + '"]');
+    if (input) input.checked = on;
+    syncKindUrl();
+    refreshView();
+    renderChips();
+  }
+  function clearKinds() {
+    kindFilter.clear();
+    kindInputs.forEach(i => { i.checked = false; });
+    syncKindUrl();
+    refreshView();
+    renderChips();
+  }
+  function openFilterMenu(open) {
+    filterMenu.hidden = !open;
+    filterBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  kindInputs.forEach(input => input.addEventListener('change', () => setKind(input.value, input.checked)));
+  const fClear = filterMenu.querySelector('[data-stk-filter-clear]');
+  if (fClear) fClear.addEventListener('click', clearKinds);
+  const fDone = filterMenu.querySelector('[data-stk-filter-done]');
+  if (fDone) fDone.addEventListener('click', () => openFilterMenu(false));
+  filterBtn.addEventListener('click', (e) => { e.stopPropagation(); openFilterMenu(filterMenu.hidden); });
+  document.addEventListener('click', (e) => {
+    if (!filterMenu.hidden && !filterMenu.contains(e.target) && !filterBtn.contains(e.target)) openFilterMenu(false);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !filterMenu.hidden) openFilterMenu(false); });
+
+  searchInput.addEventListener('input', refreshView);
+  sortSelect.addEventListener('change', rebuild);
+
+  // ── Row builder for client-hydrated plugins + live-added artefacts. MUST
+  //    mirror the server-side stack_row macro (+ kind_glyph()). Keyed by
+  //    `c.glyph || c.kind`, same fallback the Jinja macro uses, so an
+  //    artefact card (kind='library', glyph='doc'|'library') resolves to
+  //    the right icon without a new per-kind color variant. ──
+  const GLYPH_SVG = {
     data: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3" stroke="currentColor" stroke-width="1.7"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6" stroke="currentColor" stroke-width="1.7"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6" stroke="currentColor" stroke-width="1.7"/></svg>',
     plugins: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4a2 2 0 1 1 4 0v2h3a1 1 0 0 1 1 1v3h2a2 2 0 1 1 0 4h-2v3a1 1 0 0 1-1 1h-3v-2a2 2 0 1 0-4 0v2H7a1 1 0 0 1-1-1v-3H4a2 2 0 1 1 0-4h2V7a1 1 0 0 1 1-1h3V4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
     memory: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3c-1.7 0-3 1.3-3 3-1.6.2-3 1.5-3 3.2 0 .6.2 1.2.5 1.7-.6.6-1 1.4-1 2.4 0 1.5.9 2.7 2.2 3.2 0 1.7 1.4 3 3.1 3 .8 0 1.5-.3 2-.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 3c1.7 0 3 1.3 3 3 1.6.2 3 1.5 3 3.2 0 .6-.2 1.2-.5 1.7.6.6 1 1.4 1 2.4 0 1.5-.9 2.7-2.2 3.2 0 1.7-1.4 3-3.1 3-.8 0-1.5-.3-2-.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 3v18" stroke="currentColor" stroke-width="1.6"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h7l4 4v12H7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13 4v4h4" stroke="currentColor" stroke-width="1.6"/></svg>',
     library: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7h6l4 4v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M15 7v4h4" stroke="currentColor" stroke-width="1.6"/><path d="M6 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h6l1 1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   };
 
-  function rowStatusHtml(a) {
-    a = a || {};
-    if (a.mode === 'required') {
-      return '<span class="cc-required"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:14px;height:14px"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.7"/></svg>Required</span>';
-    }
-    if (a.mode === 'stack') {
-      return '<button type="button" class="cc-btn cc-btn--instack" data-stack-toggle data-state="in"' +
-        ' data-add-url="' + esc(a.add_url) + '" data-remove-url="' + esc(a.remove_url) + '"' +
-        (a.rt ? ' data-rt="' + esc(a.rt) + '" data-rid="' + esc(a.rid) + '"' : '') + '>' +
-        '<span class="cc-btn-instack"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> In stack</span>' +
-        '<span class="cc-btn-remove"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Remove</span></button>';
-    }
-    return '<a class="cc-btn" href="' + esc(a.href) + '">' + esc(a.label || 'Open') +
-      '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></a>';
+  const REQ_BADGE =
+    '<span class="stk-req"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.8"/></svg>Required</span>';
+
+  function menuHtml(c) {
+    const removeUrl = (c.action && c.action.remove_url) || '';
+    return '<div class="stk-menu" data-stk-menu>' +
+      '<button type="button" class="stk-menu-btn" aria-haspopup="true" aria-expanded="false" aria-label="More actions for ' + esc(c.title) + '">' +
+      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>' +
+      '<div class="stk-menu-pop" role="menu" hidden>' +
+      '<a class="stk-menu-item" role="menuitem" href="' + esc(c.href) + '">View details</a>' +
+      '<a class="stk-menu-item" role="menuitem" href="/chat">Use in agent…</a>' +
+      '<div class="stk-menu-sep"></div>' +
+      '<button type="button" class="stk-menu-item stk-menu-item--danger" role="menuitem" data-stk-remove' +
+      ' data-title="' + esc(c.title) + '" data-remove-url="' + esc(removeUrl) + '">Remove from My Stack</button>' +
+      '</div></div>';
   }
 
-  function renderRow(c, rowKind) {
+  function sourceText(c) {
+    if (c.source_text) return c.source_text;
+    if (c.category) return c.category;
+    if (c.shared_by && c.shared_by !== 'You') return 'Shared by ' + c.shared_by;
+    return '—';
+  }
+
+  // `rowKind` is the tab-filter tag (data-kind) — distinct from `c.kind`
+  // (the visual icon color/kind), same split the server-side stack_row(c,
+  // row_kind, section) macro already uses. Defaults to c.kind so the
+  // existing plugin hydration call site (rowKind === c.kind) is unaffected.
+  function renderRow(c, section, rowKind) {
+    const kind = rowKind || c.kind;
+    const searchStr = [c.title, c.description, c.kind_label, c.category, c.source_text, c.shared_by, c.meta_text]
+      .filter(Boolean).join(' ').toLowerCase();
     const tr = document.createElement('tr');
     tr.setAttribute('data-stack-row', '');
-    tr.dataset.kind = rowKind;
-    tr.dataset.search = ((c.title || '') + ' ' + (c.description || '')).toLowerCase();
+    tr.dataset.kind = kind;
+    tr.dataset.section = section;
+    tr.dataset.search = searchStr;
     tr.dataset.title = (c.title || '').toLowerCase();
     tr.dataset.added = c.added_iso || '';
-    const added = c.added_iso
-      ? '<time datetime="' + esc(c.added_iso) + '" data-relative>' + esc(c.added_iso.slice(0, 10)) + '</time>'
-      : '—';
+    const glyphKey = c.glyph || c.kind;
     tr.innerHTML =
       '<td><a class="stk-name" href="' + esc(c.href) + '">' +
-        '<span class="cc-icon cc-icon--' + esc(c.kind) + '">' + (ROW_GLYPH[c.kind] || '') + '</span>' +
+        '<span class="cc-icon cc-icon--' + esc(c.kind) + '">' + (GLYPH_SVG[glyphKey] || '') + '</span>' +
         '<span class="stk-name-text"><span class="stk-name-title">' + esc(c.title) + '</span>' +
-        '<span class="stk-name-desc">' + esc(c.description || '') + '</span></span></a></td>' +
-      '<td><span class="stk-type stk-type--' + esc(c.kind) + '">' + esc(c.kind_label) + '</span></td>' +
+        (c.description ? '<span class="stk-name-desc">' + esc(c.description) + '</span>' : '') +
+        '</span></a></td>' +
+      '<td><span class="stk-typechip">' + esc(c.kind_label) + '</span></td>' +
       '<td class="stk-cell-muted">' + esc(c.meta_text || '—') + '</td>' +
-      '<td class="stk-cell-muted">' + added + '</td>' +
-      '<td class="stk-cell-muted">' + esc(c.shared_by || '—') + '</td>' +
-      '<td class="stk-cell-status">' + rowStatusHtml(c.action) + '</td>';
+      '<td class="stk-cell-muted">' + esc(sourceText(c)) + '</td>' +
+      '<td class="stk-cell-actions">' + (section === 'required' ? REQ_BADGE : menuHtml(c)) + '</td>';
     return tr;
   }
 
-  // ── Relative "Added" labels (AgnesTime loads deferred, so wait for it).
-  function relativizeTimes() {
-    if (!window.AgnesTime) return;
-    document.querySelectorAll('#stk-table time[data-relative]').forEach(el => {
-      const label = window.AgnesTime.formatRelative(el.getAttribute('datetime'));
-      if (label) { el.textContent = label; el.setAttribute('data-hydrated', '1'); }
+  // ── Overflow menu open/close (delegated). ──
+  function closeMenus(except) {
+    document.querySelectorAll('.stk-menu-pop:not([hidden])').forEach(pop => {
+      if (pop === except) return;
+      pop.hidden = true;
+      const btn = pop.parentElement.querySelector('.stk-menu-btn');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
     });
   }
-  document.addEventListener('DOMContentLoaded', relativizeTimes);
+  document.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.stk-menu-btn');
+    if (btn) {
+      ev.preventDefault();
+      const pop = btn.parentElement.querySelector('.stk-menu-pop');
+      const willOpen = pop.hidden;
+      closeMenus(willOpen ? pop : null);
+      pop.hidden = !willOpen;
+      btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      return;
+    }
+    if (!ev.target.closest('.stk-menu-pop')) closeMenus(null);
+  });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeMenus(null); });
 
-  // ── Plugins (client-hydrated into table rows) ────────────────────────
+  // ── Remove flow: confirm, then DELETE the resource's remove_url and drop
+  //    the row. ──
+  const confirmModal = document.getElementById('stk-confirm');
+  const confirmTitle = document.getElementById('stk-confirm-title');
+  const confirmOk = document.getElementById('stk-confirm-ok');
+  let pending = null; // { row, url }
+
+  function openConfirm(row, title, url) {
+    pending = { row, url };
+    confirmTitle.textContent = 'Remove “' + (title || 'this resource') + '” from My Stack?';
+    confirmModal.classList.add('is-open');
+    confirmOk.focus();
+  }
+  function closeConfirm() {
+    pending = null;
+    confirmModal.classList.remove('is-open');
+    confirmOk.disabled = false;
+  }
+
+  document.addEventListener('click', (ev) => {
+    const rm = ev.target.closest('[data-stk-remove]');
+    if (!rm) return;
+    ev.preventDefault();
+    closeMenus(null);
+    // In grid view the trigger lives inside a card whose back-reference (_row)
+    // points at the authoritative table row.
+    const card = rm.closest('.stk-card');
+    const row = rm.closest('[data-stack-row]') || (card && card._row) || null;
+    openConfirm(row, rm.dataset.title, rm.dataset.removeUrl);
+  });
+  confirmModal.addEventListener('click', (ev) => {
+    if (ev.target === confirmModal || ev.target.closest('[data-stk-cancel]')) closeConfirm();
+  });
+  confirmOk.addEventListener('click', async () => {
+    if (!pending) return;
+    const { row, url } = pending;
+    confirmOk.disabled = true;
+    try {
+      if (url) {
+        const resp = await fetch(url, { method: 'DELETE', credentials: 'same-origin' });
+        if (!(resp.ok || resp.status === 204)) throw new Error('HTTP ' + resp.status);
+      }
+      if (row) row.remove(); // MutationObserver refreshes groups + counts
+      closeConfirm();
+    } catch (e) {
+      console.error('my stack: remove failed', e);
+      confirmOk.disabled = false;
+    }
+  });
+
+  // ── Plugins (client-hydrated into the right group) ──
   function pluginAction(i) {
     if (i.is_system || i.is_required) return { mode: 'required' };
     let url;
     if (i.source === 'curated') {
       const m = /\/marketplace\/curated\/([^/]+)\/([^/?#]+)/.exec(i.detail_url || '');
-      if (!m) return { mode: 'link', href: i.detail_url || '/marketplace', label: 'Manage' };
-      url = '/api/marketplace/curated/' + m[1] + '/' + m[2] + '/install';
+      url = m ? '/api/marketplace/curated/' + m[1] + '/' + m[2] + '/install' : null;
     } else {
       url = '/api/store/entities/' + encodeURIComponent(i.id) + '/install';
     }
-    // Everything on My Stack is already installed → 'in' (Remove drops it).
-    return { mode: 'stack', state: 'in', add_url: url, remove_url: url };
+    return { mode: 'stack', remove_url: url };
   }
 
   async function loadPlugins() {
@@ -415,19 +924,26 @@
       const items = body.items || [];
       pluginCount = items.length;
       items.forEach(i => {
-        tbody.insertBefore(renderRow({
+        const action = pluginAction(i);
+        const section = action.mode === 'required' ? 'required' : 'added';
+        const card = {
           kind: 'plugins',
           kind_label: 'Plugin',
           title: i.display_name || i.name || i.title || 'Plugin',
           href: i.detail_url || '/marketplace',
           description: i.tagline || i.description || '',
-          meta_text: i.type || 'plugin',
+          // Origin reads as a source, not a person: "Marketplace · Curated".
+          source_text: 'Marketplace · ' + (i.source === 'curated' ? 'Curated' : 'Flea Market'),
+          meta_text: '',
+          category: null,
           added_iso: null,
           shared_by: i.source === 'curated' ? 'Curated' : 'Flea Market',
-          action: pluginAction(i),
-        }, 'plugins'), emptyRow);
+          action: action,
+        };
+        const g = groups[section];
+        g.body.insertBefore(renderRow(card, section), g.empty);
       });
-      refreshView();
+      rebuild();
     } catch (e) {
       console.error('my stack: plugins hydration failed', e);
       pluginCount = 0;
@@ -435,14 +951,224 @@
     }
   }
 
-  // ── Boot: honor ?kind=… deep links, then hydrate plugins.
-  const urlKind = new URLSearchParams(window.location.search).get('kind');
-  const validKinds = ['all', 'data', 'plugins', 'memory'];
-  if (validKinds.includes(urlKind) && urlKind !== 'all') {
-    const tab = document.querySelector('.uc-kindtab[data-kind="' + urlKind + '"]');
-    if (tab) tab.click();
+  // ── "Add artefacts to Stack" picker (requirements 2/3/6/7/10/11) ──
+  const afPicker = document.getElementById('stk-af-picker');
+  const afList = document.getElementById('stk-af-list');
+  const afEmpty = document.getElementById('stk-af-empty');
+  const afSearch = document.getElementById('stk-af-search');
+  const afVisibility = document.getElementById('stk-af-visibility');
+  const afSelCount = document.getElementById('stk-af-selcount');
+  const afConfirm = document.getElementById('stk-af-confirm');
+  const afCancelBtns = afPicker ? afPicker.querySelectorAll('[data-af-picker-cancel]') : [];
+  let afCandidates = [];       // full candidate list from the server
+  let afTotalAccessible = 0;  // accessible regardless of Stack membership
+  let afSelected = new Set(); // selected candidate ids
+  let afTrigger = null;       // element to refocus on close
+
+  const AF_BADGE_ICON =
+    '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function afBadge(item) {
+    const label = item.mine ? 'Mine' : item.visibility_label;
+    const cls = item.mine ? ' stk-af-badge--mine' : '';
+    return '<span class="stk-af-badge' + cls + '">' + esc(label) + '</span>';
   }
-  refreshView();
+
+  function afRowHtml(item) {
+    const metaBits = [item.type_label, item.owner_label].filter(Boolean).join(' · ');
+    return '<span class="stk-af-check">' + AF_BADGE_ICON + '</span>' +
+      '<span class="stk-af-body">' +
+      '<span class="stk-af-title">' + esc(item.title) + '</span>' +
+      '<span class="stk-af-meta">' + esc(metaBits) + (item.description ? ' — ' + esc(item.description) : '') + '</span>' +
+      '</span>' +
+      '<span class="stk-af-badges">' + afBadge(item) + '</span>';
+  }
+
+  function afApplyFilters() {
+    const q = (afSearch.value || '').trim().toLowerCase();
+    const vis = afVisibility.value;
+    return afCandidates.filter(it => {
+      if (vis && it.visibility !== vis) return false;
+      if (!q) return true;
+      const hay = [it.title, it.description, it.owner_label].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  function afUpdateSelCount() {
+    const n = afSelected.size;
+    afSelCount.textContent = n === 1 ? '1 selected' : n + ' selected';
+    afConfirm.disabled = n === 0;
+  }
+
+  function afRenderList() {
+    const visible = afApplyFilters();
+    afList.innerHTML = '';
+    if (!afCandidates.length) {
+      afList.hidden = true;
+      afEmpty.hidden = false;
+      if (afTotalAccessible === 0) {
+        afEmpty.innerHTML = '<p><strong>No artefacts exist</strong></p>' +
+          '<p>Create an artefact first, then add it to your Stack.</p>' +
+          '<a class="cc-btn cc-btn--primary" href="/artefacts">Go to Artefacts</a>';
+      } else {
+        afEmpty.innerHTML = '<p><strong>All artefacts are already in your Stack</strong></p>' +
+          '<p>All available artefacts are already in your Stack.</p>';
+      }
+      return;
+    }
+    if (!visible.length) {
+      afList.hidden = true;
+      afEmpty.hidden = false;
+      afEmpty.innerHTML = '<p><strong>No artefacts match your search</strong></p>';
+      return;
+    }
+    afList.hidden = false;
+    afEmpty.hidden = true;
+    visible.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'stk-af-row';
+      row.setAttribute('role', 'option');
+      row.setAttribute('tabindex', '0');
+      row.dataset.id = item.id;
+      row.setAttribute('aria-selected', afSelected.has(item.id) ? 'true' : 'false');
+      row.innerHTML = afRowHtml(item);
+      afList.appendChild(row);
+    });
+  }
+
+  function afToggleRow(row) {
+    const id = row.dataset.id;
+    const nowSelected = !afSelected.has(id);
+    if (nowSelected) afSelected.add(id); else afSelected.delete(id);
+    row.setAttribute('aria-selected', nowSelected ? 'true' : 'false');
+    afUpdateSelCount();
+  }
+
+  if (afList) {
+    afList.addEventListener('click', (ev) => {
+      const row = ev.target.closest('.stk-af-row');
+      if (row) afToggleRow(row);
+    });
+    afList.addEventListener('keydown', (ev) => {
+      const row = ev.target.closest('.stk-af-row');
+      if (!row) return;
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        afToggleRow(row);
+      }
+    });
+  }
+  if (afSearch) afSearch.addEventListener('input', afRenderList);
+  if (afVisibility) afVisibility.addEventListener('change', afRenderList);
+
+  // Minimal focus trap + Escape handling — mirrors modal.js's onKey (this
+  // modal is static markup with a rich custom body, not one of modal.js's
+  // dynamically-built confirm/alert/prompt dialogs, so it owns its own).
+  function afOnKeydown(ev) {
+    if (!afPicker.classList.contains('is-open')) return;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      afClosePicker();
+      return;
+    }
+    if (ev.key === 'Tab') {
+      const f = afPicker.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault(); last.focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault(); first.focus();
+      }
+    }
+  }
+
+  async function afOpenPicker(trigger) {
+    afTrigger = trigger || document.activeElement;
+    afSelected = new Set();
+    afSearch.value = '';
+    afVisibility.value = '';
+    afUpdateSelCount();
+    afList.innerHTML = '';
+    afEmpty.hidden = true;
+    afPicker.classList.add('is-open');
+    document.addEventListener('keydown', afOnKeydown, true);
+    try {
+      const r = await fetch('/api/stack/artefacts/candidates', { credentials: 'same-origin' });
+      const body = r.ok ? await r.json() : { items: [], total_accessible: 0 };
+      afCandidates = body.items || [];
+      afTotalAccessible = body.total_accessible || 0;
+    } catch (e) {
+      console.error('stack: could not load artefact candidates', e);
+      afCandidates = [];
+      afTotalAccessible = 0;
+    }
+    afRenderList();
+    setTimeout(() => afSearch && afSearch.focus(), 30);
+  }
+
+  function afClosePicker() {
+    afPicker.classList.remove('is-open');
+    document.removeEventListener('keydown', afOnKeydown, true);
+    if (afTrigger && typeof afTrigger.focus === 'function') {
+      try { afTrigger.focus(); } catch (_) { /* trigger gone */ }
+    }
+  }
+
+  document.querySelectorAll('[data-open-artefact-picker]').forEach(btn => {
+    btn.addEventListener('click', () => afOpenPicker(btn));
+  });
+  if (afPicker) {
+    afPicker.addEventListener('click', (ev) => {
+      if (ev.target === afPicker) afClosePicker();
+    });
+  }
+  afCancelBtns.forEach(b => b.addEventListener('click', afClosePicker));
+
+  if (afConfirm) afConfirm.addEventListener('click', async () => {
+    const ids = Array.from(afSelected);
+    if (!ids.length) return;
+    afConfirm.disabled = true;
+    afConfirm.textContent = 'Adding…';
+    let addedCount = 0;
+    for (const id of ids) {
+      try {
+        const resp = await fetch('/api/stack/artefacts/' + encodeURIComponent(id), {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        if (!resp.ok) continue;
+        const body = await resp.json();
+        if (body && body.card) {
+          const row = renderRow(body.card, 'added', 'artefacts');
+          groups.added.body.insertBefore(row, groups.added.empty);
+          addedCount++;
+        }
+      } catch (e) {
+        console.error('stack: add artefact failed', e, id);
+      }
+    }
+    afConfirm.disabled = false;
+    afConfirm.textContent = 'Add to Stack';
+    afClosePicker();
+    rebuild();
+    if (addedCount > 0 && window.appToast) {
+      window.appToast({ kind: 'success', msg: 'Artefacts added to Stack' });
+    }
+  });
+
+  // ── Boot: honor ?kind=… deep links, then hydrate plugins. ──
+  try {
+    if (localStorage.getItem('stk-view') === 'grid') currentView = 'grid';
+  } catch (_) { /* private mode — default to table */ }
+  const urlKind = new URLSearchParams(window.location.search).get('kind');
+  if (['data', 'plugins', 'artefacts', 'memory'].includes(urlKind)) {
+    setKind(urlKind, true);  // checks the box, renders the chip, applies the filter
+  }
+  rebuild();  // applySort + refreshView → applyView reflects the restored view
   loadPlugins();
 })();
 </script>

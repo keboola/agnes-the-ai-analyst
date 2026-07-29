@@ -1,0 +1,613 @@
+{% extends "base_index.html" %}
+{# Skills — the caller's authored skills, plus a builder to create more.
+
+   The index counterpart to the Skill Builder, modelled on /agents:
+     - LIST     — the caller's own skills as cards (REAL store data, fetched
+                  from /api/store/entities?type=skill&owner=<self>) + a
+                  "New skill" affordance.
+     - BUILDER  — the redesigned "New skill" form: numbered sections
+                  (Identity · Instructions) with a live preview aside, matching
+                  the Agent builder's look. Publishes to
+                  /api/store/entities/from-markdown (the same endpoint the
+                  studio Skill Builder uses), with an advisory dry-run lint.
+                  In-progress work can also be saved as a draft — persisted in
+                  localStorage (per-user key), the same honesty-about-
+                  persistence pattern as the Agent builder — so it survives
+                  navigating away without going anywhere near the store's
+                  review pipeline until the author saves it for everyone. #}
+{% block title %}Skills — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--wide{% endblock %}
+
+{% block head_extra %}
+{# catalog_card.css defines the shared .cc-btn / .cc-btn--primary button used
+   by the page-head action (same as /agents) — without it the button falls back
+   to the unstyled browser default. #}
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+<style>
+  /* Page chrome only — all colors ride --ds-* tokens. Skills use the
+     categorical --ds-kind-skill accent for their avatar/preview; actions stay
+     on --ds-primary. The visual language mirrors /agents (.ag-*) so the two
+     builder surfaces read as one system. */
+  .sk-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; padding-bottom: 24px; }
+  .sk-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
+  .sk-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
+  .sk-lede-alt { color: var(--ds-text-muted); font-size: 13.5px; margin: 8px 0 0; max-width: 64ch; }
+  .sk-lede-alt strong { color: var(--ds-text-secondary); font-weight: 650; }
+  .sk-lede-alt a { color: var(--ds-primary); }
+  .sk-wip { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 2px 9px; }
+
+  /* ── List view ── */
+  .sk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .sk-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; cursor: pointer; text-decoration: none; color: inherit; transition: border-color var(--ds-motion-fast) var(--ds-ease-standard), box-shadow var(--ds-motion-fast) var(--ds-ease-standard); }
+  .sk-card:hover { border-color: var(--ds-border); box-shadow: var(--ds-shadow-md); }
+  .sk-card-top { display: flex; align-items: center; gap: 11px; }
+  .sk-ava { width: 38px; height: 38px; border-radius: 10px; background: var(--ds-kind-skill-soft); color: var(--ds-kind-skill); display: grid; place-items: center; flex-shrink: 0; }
+  .sk-ava svg { width: 20px; height: 20px; }
+  .sk-card h3 { font-size: 15px; margin: 0; line-height: 1.25; word-break: break-word; }
+  .sk-card-desc { font-size: 13px; color: var(--ds-text-secondary); line-height: 1.5; min-height: 39px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .sk-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--ds-border); padding-top: 11px; margin-top: auto; }
+  .sk-card-meta { font-size: 12.5px; color: var(--ds-text-muted); font-weight: 500; }
+  .sk-new { border: 1.5px dashed var(--ds-border); background: var(--ds-surface-sunken); color: var(--ds-text-secondary); border-radius: 14px; padding: 16px 18px; display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 14px; font-weight: 600; cursor: pointer; min-height: 158px; font-family: inherit; transition: color var(--ds-motion-fast) var(--ds-ease-standard), border-color var(--ds-motion-fast) var(--ds-ease-standard); }
+  .sk-new:hover { border-color: var(--ds-primary); color: var(--ds-primary); background: var(--ds-primary-light); }
+
+  /* Draft-resume card — an unpublished skill saved in this browser
+     (localStorage only, never sent to the store). Dashed border like
+     .sk-new (not-yet-real) but keeps the card layout so it slots into the
+     grid next to real skills. */
+  .sk-card--draft { border-style: dashed; position: relative; }
+  .sk-draft-discard { position: absolute; top: 10px; right: 10px; border: none; background: none; color: var(--ds-text-muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 3px 6px; border-radius: 8px; font-family: inherit; }
+  .sk-draft-discard:hover { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
+  .sk-empty { text-align: center; padding: 48px 20px; border: 1px dashed var(--ds-border); border-radius: 14px; }
+  .sk-empty .sk-ava { margin: 0 auto 12px; width: 46px; height: 46px; }
+  .sk-empty h3 { margin: 0 0 6px; font-size: 16px; color: var(--ds-text-primary); }
+  .sk-empty p { margin: 0 0 16px; color: var(--ds-text-secondary); font-size: 14px; }
+  .sk-firstrun { margin: 16px 0 0; font-size: 13.5px; color: var(--ds-text-secondary); max-width: 66ch; line-height: 1.55; }
+  .sk-firstrun strong { color: var(--ds-text-primary); font-weight: 650; }
+  .sk-loadnote { color: var(--ds-text-muted); font-style: italic; padding: 24px 4px; }
+
+  /* ── Access picker — a required choice before saving. Private leads because
+     it's the safe default: a new skill shouldn't reach the whole org until the
+     author says so. Selection is carried by the radio + an is-on outline, never
+     colour alone. ── */
+  .sk-access { margin: 0 0 var(--space-5); padding: var(--space-4); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-lg, 14px); background: var(--ds-surface); }
+  .sk-access-title { font-size: 13px; font-weight: 650; color: var(--ds-text-primary); margin-bottom: 10px; }
+  .sk-access-opt { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 10px; cursor: pointer; }
+  .sk-access-opt + .sk-access-opt { margin-top: 8px; }
+  .sk-access-opt:hover { border-color: var(--ds-text-muted); }
+  .sk-access-opt.is-on { border-color: var(--ds-primary); background: var(--ds-primary-light); }
+  .sk-access-opt input { margin-top: 2px; accent-color: var(--ds-primary); flex-shrink: 0; }
+  .sk-access-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .sk-access-name { font-size: 13.5px; font-weight: 600; color: var(--ds-text-primary); }
+  .sk-access-hint { font-size: 12.5px; line-height: 1.45; color: var(--ds-text-secondary); }
+
+  /* Status pill — mirrors the store's visibility_status. */
+  .sk-status { font-size: 12px; font-weight: 600; border-radius: var(--ds-radius-pill); padding: 2px 10px; flex-shrink: 0; white-space: nowrap; }
+  .sk-status--live { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); }
+  .sk-status--review { color: var(--ds-text-secondary); background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); }
+  .sk-status--flagged { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); border: 1px solid var(--ds-accent-danger-line); }
+
+  /* Category tag. */
+  .sk-tag { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-radius: var(--ds-radius-pill); padding: 1px 8px; background: var(--ds-kind-skill-soft); color: var(--ds-kind-skill); white-space: nowrap; }
+
+  /* ── Builder (mirrors /agents .ag-* ) ── */
+  .sk-back { border: none; background: none; color: var(--ds-text-secondary); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer; padding: 4px 8px 4px 0; margin-bottom: 6px; }
+  .sk-back:hover { color: var(--ds-primary); }
+  .sk-build-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 2px 0 18px; }
+  .sk-build-kicker { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ds-kind-skill); }
+  .sk-build-head h2 { font-size: 24px; margin: 2px 0 0; word-break: break-word; }
+  .sk-build-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 1 1 320px; flex-wrap: wrap; min-width: 0; margin-top: 4px; }
+  .sk-bgrid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }
+  @media (max-width: 980px) { .sk-bgrid { grid-template-columns: 1fr; } }
+
+  /* Numbered sections. */
+  .sk-sec { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; margin-bottom: 14px; overflow: hidden; }
+  .sk-sec-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
+  .sk-sec-no { width: 26px; height: 26px; border-radius: 50%; background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); color: var(--ds-text-secondary); font-size: 12.5px; font-weight: 700; display: grid; place-items: center; flex-shrink: 0; }
+  .sk-sec-head h3 { font-size: 15px; margin: 0; }
+  .sk-sec-head h3 .sk-sec-note { font-weight: 400; color: var(--ds-text-muted); font-size: 13px; margin-left: 4px; }
+  .sk-sec-sub { margin: 2px 0 0; font-size: 12.5px; color: var(--ds-text-secondary); }
+  .sk-sec-grow { flex: 1; min-width: 0; }
+  .sk-sec-body { padding: 4px 18px 18px; border-top: 1px solid var(--ds-border); }
+
+  /* Fields. */
+  .sk-field { display: block; margin: 14px 0 0; }
+  .sk-field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--ds-text-primary); }
+  .sk-field > span em { font-weight: 400; color: var(--ds-text-muted); font-style: normal; }
+  .sk-field input[type=text], .sk-field textarea, .sk-field select { width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); resize: vertical; }
+  .sk-field textarea.mono { font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 13px; line-height: 1.55; }
+  .sk-field input:focus, .sk-field textarea:focus, .sk-field select:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .sk-hint { font-size: 12px; color: var(--ds-text-muted); margin: 6px 0 0; }
+  .sk-hint.err { color: var(--ds-accent-danger-ink); }
+  .sk-note { font-size: 12.5px; color: var(--ds-text-secondary); background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 9px; padding: 8px 12px; margin: 14px 0 0; }
+  .sk-note a { color: var(--ds-primary); }
+
+  /* .md drop zone — an alternative way to fill the Skill content field.
+     Dashed like the other "not real content yet" affordances (.sk-new,
+     .sk-card--draft) for visual consistency. */
+  .sk-mdrop { border: 1.5px dashed var(--ds-border); border-radius: 9px; padding: 10px 14px; margin: 14px 0 0; font-size: 12.5px; color: var(--ds-text-secondary); text-align: center; transition: border-color var(--ds-motion-fast) var(--ds-ease-standard), background var(--ds-motion-fast) var(--ds-ease-standard); }
+  .sk-mdrop.is-dragover { border-color: var(--ds-primary); background: var(--ds-primary-light); color: var(--ds-primary); }
+  .sk-mdrop-link { color: var(--ds-primary); font-weight: 600; cursor: pointer; text-decoration: underline; }
+
+  /* Preview aside. */
+  .sk-preview { position: sticky; top: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .sk-preview h3 { font-size: 14px; margin: 0 0 10px; }
+  .sk-pv-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; box-shadow: var(--ds-shadow-md); overflow: hidden; }
+  .sk-pv-hd { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--ds-border); }
+  .sk-pv-hd .sk-ava { width: 32px; height: 32px; border-radius: 9px; }
+  .sk-pv-name { font-size: 14px; font-weight: 650; color: var(--ds-text-primary); word-break: break-word; }
+  .sk-pv-cat { font-size: 12px; color: var(--ds-text-muted); }
+  .sk-pv-body { padding: 14px; }
+  .sk-pv-desc { font-size: 13.5px; color: var(--ds-text-secondary); line-height: 1.5; white-space: pre-wrap; min-height: 20px; }
+  .sk-pv-meta { margin-top: 12px; border: 1px solid var(--ds-border); border-radius: 10px; overflow: hidden; }
+  .sk-pv-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-size: 12.5px; border-bottom: 1px solid var(--ds-border); }
+  .sk-pv-row:last-child { border-bottom: none; }
+  .sk-pv-k { color: var(--ds-text-secondary); }
+  .sk-pv-v { color: var(--ds-text-primary); font-weight: 550; text-align: right; word-break: break-word; }
+  .sk-pv-v code { font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; }
+
+  /* Advisory lint (dry-run) — never blocks saving. */
+  .sk-lint { border: 1px solid var(--ds-border); border-radius: 12px; padding: 12px 14px; background: var(--ds-surface); }
+  .sk-lint-head { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; font-weight: 700; color: var(--ds-text-muted); margin: 0 0 8px; }
+  .sk-lint-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .sk-lint-row { display: flex; align-items: flex-start; gap: 8px; }
+  .sk-lint-sev { flex: 0 0 auto; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: var(--ds-radius-pill); background: var(--ds-surface-sunken); color: var(--ds-text-secondary); text-transform: capitalize; }
+  .sk-lint-msg { flex: 1; font-size: 12.5px; color: var(--ds-text-primary); line-height: 1.45; }
+  .sk-lint-msg a { font-size: 12px; white-space: nowrap; color: var(--ds-primary); }
+  .sk-lint-clean { font-size: 12.5px; color: var(--ds-accent-success-ink); }
+
+  /* Result / status line above the actions — takes its own flex row so a long
+     validation message wraps instead of running off the page. */
+  .sk-result { font-size: 13px; color: var(--ds-text-secondary); flex: 1 1 100%; min-width: 0; text-align: right; line-height: 1.45; overflow-wrap: anywhere; }
+  .sk-result:empty { display: none; }
+  .sk-result.err { color: var(--ds-accent-danger-ink); }
+  .sk-result.ok { color: var(--ds-accent-success-ink); font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block page_head %}
+<div class="sk-head" id="sk-page-head">
+  <div>
+    <h1>Skills <span class="sk-wip">WIP</span></h1>
+    <p class="lede">Author reusable skills — step-by-step recipes your agents load on demand. Choose who can use it, then save it to your Library.</p>
+    {# The Marketplace's "Submit a skill or plugin" CTA lands here, so the
+       plugin half of that promise needs an onward path — otherwise the
+       curated hand-off guide is unreachable from the Marketplace. #}
+    <p class="sk-lede-alt">Submitting a <strong>plugin</strong> instead? Follow the <a href="/marketplace/guide/curated">curated marketplace guide</a>.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_surface %}
+<script type="application/json" id="sk-categories">{{ store_categories | tojson }}</script>
+
+<div id="sk-builder-view" hidden></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  var CATEGORIES = JSON.parse(document.getElementById('sk-categories').textContent || '[]');
+  var USER_ID = "{{ session.user.id }}";
+  // Unpublished skill drafts never touch the store — they live only in this
+  // browser (mirrors the Agent builder's localStorage persistence, and its
+  // honesty about not being shared yet). One slot: the builder holds a
+  // single in-progress skill at a time.
+  var DRAFT_KEY = 'agnes_skill_draft_v1_' + USER_ID;
+  // Store name contract: ^[a-z][a-z0-9-]{0,63}$ (mirrors _NAME_RE in
+  // app/api/store.py). The builder validates against it before enabling
+  // Save so the server never rejects on format alone.
+  var NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
+
+  var builderView = document.getElementById('sk-builder-view');
+  var pageHead = document.getElementById('sk-page-head');
+  var pageHeadBand = pageHead ? pageHead.closest('.idx-head') : null;
+
+  var draft = null;       // the in-progress skill in the builder
+  var lint = null;        // last dry-run lint report (or null)
+  var inFlight = false;
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  // The index head belonged to the retired "your skills" listing; /skills is
+  // the builder now and renders its own header, so hide the band once.
+  function hidePageHead() {
+    if (pageHead) pageHead.hidden = true;
+    if (pageHeadBand) pageHeadBand.hidden = true;
+  }
+
+  var SKILL_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4.6a2 2 0 0 1 4 0c0 .5.4 1 1 1h2.4V8c0 .6.4 1 1 1a2 2 0 0 1 0 4c-.6 0-1 .4-1 1v2.4H15c-.6 0-1 .4-1 1a2 2 0 0 1-4 0c0-.6-.4-1-1-1H6.6V14c0-.6-.5-1-1-1a2 2 0 0 1 0-4c.5 0 1-.4 1-1V5.6H9c.6 0 1-.5 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+
+  /* ── Draft persistence (localStorage only — see DRAFT_KEY note above) ── */
+  function loadStoredDraft() {
+    try {
+      var raw = localStorage.getItem(DRAFT_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function persistDraft(d) {
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch (e) { /* quota / private mode — soft-fail */ }
+  }
+  function clearStoredDraft() {
+    try { localStorage.removeItem(DRAFT_KEY); } catch (e) { /* ignore */ }
+  }
+  var storedDraft = loadStoredDraft();
+
+  function relativeSavedAt(iso) {
+    var t = iso ? Date.parse(iso) : NaN;
+    if (isNaN(t)) return 'saved';
+    var mins = Math.round((Date.now() - t) / 60000);
+    if (mins < 1) return 'saved just now';
+    if (mins < 60) return 'saved ' + mins + ' min ago';
+    var hrs = Math.round(mins / 60);
+    if (hrs < 24) return 'saved ' + hrs + ' hr' + (hrs === 1 ? '' : 's') + ' ago';
+    return 'saved ' + Math.round(hrs / 24) + ' day' + (Math.round(hrs / 24) === 1 ? '' : 's') + ' ago';
+  }
+
+  /* ── Data ── */
+  function makeDraft() {
+    return { name: '', description: '', category: '', skill_md: '', access: 'private' };
+  }
+
+  function nameState() {
+    var n = (draft.name || '').trim();
+    if (!n) return { ok: false, msg: 'Lowercase letters, numbers and hyphens — e.g. quarterly-report-recipe.' };
+    if (!NAME_RE.test(n)) return { ok: false, msg: 'Must start with a letter and use only lowercase letters, numbers and hyphens.', err: true };
+    return { ok: true, msg: 'Looks good.' };
+  }
+  // Gate for Save to Library: a valid name plus an actual body.
+  function canPublish() {
+    return nameState().ok && (draft.skill_md || '').trim().length > 0;
+  }
+
+  function bodyStats() {
+    var t = (draft.skill_md || '').trim();
+    if (!t) return '—';
+    var words = t.split(/\s+/).filter(Boolean).length;
+    var lines = t.split(/\n/).length;
+    return words + ' word' + (words === 1 ? '' : 's') + ' · ' + lines + ' line' + (lines === 1 ? '' : 's');
+  }
+
+  function catOptions() {
+    return '<option value="">— none —</option>' + CATEGORIES.map(function (c) {
+      return '<option value="' + esc(c) + '"' + (draft.category === c ? ' selected' : '') + '>' + esc(c) + '</option>';
+    }).join('');
+  }
+
+  function lintHtml() {
+    if (!lint) return '';
+    var findings = (lint && lint.findings) || [];
+    var rows;
+    if (!findings.length) {
+      rows = '<li class="sk-lint-clean">✓ No advisory findings — looks good.</li>';
+    } else {
+      rows = findings.map(function (f) {
+        var doc = f.doc ? ' <a href="' + esc(f.doc) + '" target="_blank" rel="noopener">docs ↗</a>' : '';
+        return '<li class="sk-lint-row"><span class="sk-lint-sev">' + esc(f.severity || 'note') + '</span>' +
+          '<span class="sk-lint-msg">' + esc(f.message || '') + doc + '</span></li>';
+      }).join('');
+    }
+    return '<div class="sk-lint"><p class="sk-lint-head">Advisory check — doesn’t block publishing</p><ul class="sk-lint-list">' + rows + '</ul></div>';
+  }
+
+  function previewHtml() {
+    var ns = nameState();
+    return '<div>' +
+      '<h3>Preview</h3>' +
+      '<div class="sk-pv-card">' +
+        '<div class="sk-pv-hd">' +
+          '<span class="sk-ava">' + SKILL_SVG + '</span>' +
+          '<div style="min-width:0"><div class="sk-pv-name" id="sk-pv-name">' + (esc(draft.name) || 'your-skill') + '</div>' +
+          '<div class="sk-pv-cat" id="sk-pv-cat">' + (esc(draft.category) || 'Skill') + '</div></div>' +
+        '</div>' +
+        '<div class="sk-pv-body">' +
+          '<div class="sk-pv-desc" id="sk-pv-desc">' + (esc(draft.description) || 'Use when … (the trigger that tells an agent to load this skill).') + '</div>' +
+          '<div class="sk-pv-meta">' +
+            '<div class="sk-pv-row"><span class="sk-pv-k">Invoked as</span><span class="sk-pv-v"><code id="sk-pv-inv">' + (esc(draft.name) || '—') + '</code></span></div>' +
+            '<div class="sk-pv-row"><span class="sk-pv-k">Type</span><span class="sk-pv-v">Skill</span></div>' +
+            '<div class="sk-pv-row"><span class="sk-pv-k">Content</span><span class="sk-pv-v" id="sk-pv-stats">' + bodyStats() + '</span></div>' +
+            '<div class="sk-pv-row"><span class="sk-pv-k">Status</span><span class="sk-pv-v">' + (ns.ok ? 'Ready to publish' : 'Draft') + '</span></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      lintHtml() +
+    '</div>';
+  }
+
+  function renderBuilder() {
+    hidePageHead();
+    builderView.hidden = false;
+    var ns = nameState();
+
+    builderView.innerHTML =
+      '<a class="sk-back" href="/library">← Library</a>' +
+      '<div class="sk-build-head">' +
+        '<div style="min-width:0">' +
+          '<div class="sk-build-kicker">Authoring skill</div>' +
+          '<h2 id="sk-build-title">' + (esc(draft.name) || 'New skill') + '</h2>' +
+        '</div>' +
+        '<div class="sk-build-actions">' +
+          '<span class="sk-result" id="sk-result"></span>' +
+          '<button type="button" class="cc-btn" id="sk-check" ' + (canPublish() ? '' : 'disabled') + '>Check</button>' +
+          '<button type="button" class="cc-btn cc-btn--primary" id="sk-save" ' + (canPublish() ? '' : 'disabled') + '>Save to Library</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="sk-access" role="radiogroup" aria-label="Who can use this skill">' +
+        '<div class="sk-access-title">Who can use this skill?</div>' +
+        '<label class="sk-access-opt' + (draft.access === 'everyone' ? '' : ' is-on') + '">' +
+          '<input type="radio" name="sk-access" value="private" ' + (draft.access === 'everyone' ? '' : 'checked') + '>' +
+          '<span class="sk-access-body"><span class="sk-access-name">Private</span>' +
+          '<span class="sk-access-hint">Only you. It lands in your Library and nobody else sees it.</span></span>' +
+        '</label>' +
+        '<label class="sk-access-opt' + (draft.access === 'everyone' ? ' is-on' : '') + '">' +
+          '<input type="radio" name="sk-access" value="everyone" ' + (draft.access === 'everyone' ? 'checked' : '') + '>' +
+          '<span class="sk-access-body"><span class="sk-access-name">Everyone in the organization</span>' +
+          '<span class="sk-access-hint">Published to the store after the automated review, then available to everyone here.</span></span>' +
+        '</label>' +
+      '</div>' +
+      '<div class="sk-bgrid">' +
+        '<div>' +
+          // Section 1 — Identity
+          '<div class="sk-sec">' +
+            '<div class="sk-sec-head"><span class="sk-sec-no">1</span>' +
+              '<div class="sk-sec-grow"><h3>Identity</h3><p class="sk-sec-sub">What the skill is and when an agent should reach for it.</p></div>' +
+            '</div>' +
+            '<div class="sk-sec-body">' +
+              '<label class="sk-field"><span>Name <em>— lowercase-hyphenated handle</em></span>' +
+                '<input type="text" data-sk-field="name" value="' + esc(draft.name) + '" placeholder="quarterly-report-recipe" maxlength="64" autocomplete="off" spellcheck="false"></label>' +
+              '<p class="sk-hint' + (ns.err ? ' err' : '') + '" id="sk-name-hint">' + ns.msg + '</p>' +
+              '<label class="sk-field"><span>Description <em>— the trigger</em></span>' +
+                '<textarea rows="2" data-sk-field="description" placeholder="Use when … (the situation that should make an agent load this skill).">' + esc(draft.description) + '</textarea></label>' +
+              '<label class="sk-field"><span>Category</span>' +
+                '<select data-sk-field="category">' + catOptions() + '</select></label>' +
+            '</div>' +
+          '</div>' +
+          // Section 2 — Instructions
+          '<div class="sk-sec">' +
+            '<div class="sk-sec-head"><span class="sk-sec-no">2</span>' +
+              '<div class="sk-sec-grow"><h3>Instructions <span class="sk-sec-note">the skill body</span></h3><p class="sk-sec-sub">The step-by-step Markdown an agent follows once the skill loads.</p></div>' +
+            '</div>' +
+            '<div class="sk-sec-body">' +
+              '<div class="sk-mdrop" id="sk-mdrop">Drop a .md file here to fill this in, or <label class="sk-mdrop-link" for="sk-md-file">browse</label>' +
+                '<input type="file" id="sk-md-file" accept=".md,.markdown,text/markdown,text/plain" hidden></div>' +
+              '<label class="sk-field"><span>Skill content <em>— Markdown</em></span>' +
+                '<textarea rows="14" class="mono" data-sk-field="skill_md" placeholder="## Steps&#10;1. …&#10;2. …&#10;&#10;Describe exactly what the agent should do, step by step.">' + esc(draft.skill_md) + '</textarea></label>' +
+              '<div class="sk-note">Write at least a couple of paragraphs (the store needs ~200+ characters): explain what the skill does, when to use it, and what inputs it expects. A YAML frontmatter block (<code>name</code>, <code>description</code>) is added for you if you don’t write one. Publishing runs the store’s automated review before the skill appears to others.</div>' +
+              '<div class="sk-note">Your work is kept in this browser as you type. <strong>Save to Library</strong> makes it real — it lands in your Library with the access you chose above.</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<aside class="sk-preview" id="sk-preview">' + previewHtml() + '</aside>' +
+      '</div>';
+  }
+
+  /* Light-touch preview sync while typing (no re-render → keeps focus). */
+  function syncPreview() {
+    var el, ns = nameState();
+    if ((el = document.getElementById('sk-pv-name'))) el.textContent = draft.name || 'your-skill';
+    if ((el = document.getElementById('sk-pv-cat'))) el.textContent = draft.category || 'Skill';
+    if ((el = document.getElementById('sk-pv-desc'))) el.textContent = draft.description || 'Use when … (the trigger that tells an agent to load this skill).';
+    if ((el = document.getElementById('sk-pv-inv'))) el.textContent = draft.name || '—';
+    if ((el = document.getElementById('sk-pv-stats'))) el.textContent = bodyStats();
+    if ((el = document.getElementById('sk-build-title'))) el.textContent = draft.name || 'New skill';
+    if ((el = document.getElementById('sk-name-hint'))) { el.textContent = ns.msg; el.className = 'sk-hint' + (ns.err ? ' err' : ''); }
+    var enable = canPublish();
+    ['sk-save', 'sk-check'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = !enable; });
+  }
+
+  function openBuilder(existing) {
+    // Clone rather than reuse the stored reference, so editing a resumed
+    // in-progress skill doesn't mutate the persisted copy in place.
+    draft = existing ? JSON.parse(JSON.stringify(existing)) : makeDraft();
+    // A resumed copy from before the access picker existed has no `access`.
+    if (!draft.access) draft.access = 'private';
+    lint = null; renderBuilder(); window.scrollTo(0, 0);
+  }
+  function closeBuilder() { window.location.href = '/library'; }
+
+  function payload(extra) {
+    var p = { type: 'skill', name: (draft.name || '').trim(), description: (draft.description || '').trim(), category: draft.category || null, skill_md: draft.skill_md || '' };
+    if (extra) Object.keys(extra).forEach(function (k) { p[k] = extra[k]; });
+    return p;
+  }
+  /* The store returns rich errors: a plain string, a FastAPI validation list
+     ([{loc,msg}]), or a structured guardrail object
+     ({code, checks:{<phase>:{issues:[{hint|code}]}}}). Flatten any of them into
+     one readable line so the builder never shows "[object Object]". */
+  function errMessage(detail, status) {
+    if (detail == null) return 'HTTP ' + status;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) return detail.map(function (d) { return d.msg || d.code || JSON.stringify(d); }).join('; ');
+    if (detail.checks) {
+      var msgs = [];
+      Object.keys(detail.checks).forEach(function (phase) {
+        (detail.checks[phase].issues || []).forEach(function (i) { if (i.hint || i.code) msgs.push(i.hint || i.code); });
+      });
+      if (msgs.length) return msgs.join(' ');
+    }
+    return detail.code || detail.detail || ('HTTP ' + status);
+  }
+  function post(body) {
+    return fetch('/api/store/entities/from-markdown', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(errMessage(j && j.detail, r.status));
+        return j;
+      });
+    });
+  }
+
+  function setResult(msg, cls) {
+    var el = document.getElementById('sk-result');
+    if (el) { el.textContent = msg; el.className = 'sk-result' + (cls ? ' ' + cls : ''); }
+  }
+
+  function doCheck() {
+    if (inFlight || !canPublish()) return;
+    inFlight = true; setResult('Checking…');
+    post(payload({ dry_run: true }))
+      .then(function (res) { lint = (res && res.lint) || { findings: [] }; setResult('Reviewed — save when ready.', 'ok'); renderBuilder(); })
+      .catch(function (e) { setResult('Advisory check unavailable (' + e.message + ') — you can still publish.'); })
+      .finally(function () { inFlight = false; });
+  }
+
+  function doSave() {
+    if (inFlight || !canPublish()) return;
+    inFlight = true; setResult('Saving…');
+    var body = payload();
+    body.access = draft.access === 'everyone' ? 'everyone' : 'private';
+    post(body)
+      .then(function (created) {
+        // It's real now — the local-only draft copy would just be stale.
+        clearStoredDraft(); storedDraft = null;
+        // Straight back to the Library, which expands the new item's section,
+        // scrolls to it and flashes it (see ?new= handling in library.html).
+        window.location.href = '/library?new=' + encodeURIComponent(created.id);
+      })
+      .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
+  }
+
+  // Uploading/dropping a .md file only fills the Skill content field (+ Name,
+  // if still blank) — it's still a single skill body either way, same as
+  // pasting the text by hand. A real bundle upload (multiple files, commands,
+  // hooks, MCP config) is a Plugin, which has its own wizard at /store/new.
+  function slugFromFilename(filename) {
+    var base = String(filename || '').replace(/\.[^./\\]+$/, '');
+    return base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  }
+  function loadSkillMdFile(file) {
+    if (!file || !draft) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      draft.skill_md = String(reader.result == null ? '' : reader.result);
+      if (!(draft.name || '').trim()) {
+        var slug = slugFromFilename(file.name);
+        if (slug) draft.name = slug;
+      }
+      lint = null;
+      renderBuilder();
+    };
+    reader.onerror = function () { setResult('Could not read that file.', 'err'); };
+    reader.readAsText(file);
+  }
+
+  /* Access radios live inside the re-rendered builder, so read them via
+     delegation rather than binding per render. */
+  document.addEventListener('change', function (e) {
+    if (!draft || !e.target.matches || !e.target.matches('input[name="sk-access"]')) return;
+    draft.access = e.target.value === 'everyone' ? 'everyone' : 'private';
+    persistDraft(draft);
+    renderBuilder();
+  });
+
+  /* ── Events ── */
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-sk-new],[data-sk-resume-draft],[data-sk-discard-draft],#sk-check,#sk-save');
+    if (!t) return;
+    if (t.hasAttribute('data-sk-discard-draft')) {
+      e.stopPropagation();
+      clearStoredDraft(); storedDraft = null; openBuilder(null);
+    }
+    else if (t.hasAttribute('data-sk-resume-draft')) { openBuilder(storedDraft); }
+    else if (t.hasAttribute('data-sk-new')) { openBuilder(); }
+    else if (t.hasAttribute('data-sk-back')) { closeBuilder(); }
+    else if (t.id === 'sk-check') { doCheck(); }
+    else if (t.id === 'sk-save') { doSave(); }
+  });
+
+  // The draft-resume card is a div[role=button] (a real <button> can't
+  // nest the discard <button>) — wire Enter/Space for keyboard parity with
+  // the real skill cards (<a>) and the "+ New skill" <button>.
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var t = e.target.closest('[data-sk-resume-draft]');
+    if (!t) return;
+    e.preventDefault();
+    openBuilder(storedDraft);
+  });
+
+  document.addEventListener('input', function (e) {
+    var f = e.target.getAttribute && e.target.getAttribute('data-sk-field');
+    if (!f || !draft) return;
+    draft[f] = e.target.value;
+    if (f === 'category') { var el = document.getElementById('sk-pv-cat'); if (el) el.textContent = draft.category || 'Skill'; return; }
+    // Editing the body invalidates a prior lint result.
+    if (f === 'skill_md') lint = null;
+    syncPreview();
+  });
+
+  /* .md drop zone — delegated at the document level (like every other
+     handler here) since #sk-mdrop is recreated on every renderBuilder(). */
+  document.addEventListener('dragover', function (e) {
+    var z = e.target.closest && e.target.closest('#sk-mdrop');
+    if (!z) return;
+    e.preventDefault();
+    z.classList.add('is-dragover');
+  });
+  document.addEventListener('dragleave', function (e) {
+    var z = e.target.closest && e.target.closest('#sk-mdrop');
+    if (z) z.classList.remove('is-dragover');
+  });
+  document.addEventListener('drop', function (e) {
+    var z = e.target.closest && e.target.closest('#sk-mdrop');
+    if (!z) return;
+    e.preventDefault();
+    z.classList.remove('is-dragover');
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    loadSkillMdFile(f);
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.id === 'sk-md-file') {
+      loadSkillMdFile(e.target.files && e.target.files[0]);
+      e.target.value = ''; // allow re-selecting the same file afterwards
+    }
+  });
+  // Page-level guard — dropping a file anywhere outside the zone must not
+  // navigate the browser away from the builder (the default file-drop
+  // behavior). Mirrors the same guard on the /store/new upload wizard.
+  ['dragover', 'drop'].forEach(function (evt) {
+    window.addEventListener(evt, function (e) {
+      if (!(e.target.closest && e.target.closest('#sk-mdrop'))) e.preventDefault();
+    });
+  });
+
+  /* ── Spotlight onboarding ──
+     Authors arrive here from the Marketplace's "Submit a skill or plugin"
+     CTA (/skills?spotlight=new-skill). The grid opens on their existing
+     skills, so point them at the one card that starts authoring — a
+     single-step coach-mark on the shared tour engine.
+
+     One-shot: the query param is stripped once the coach-mark is up, so a
+     reload or a back-button return doesn't re-pop it. Silent no-op if the
+     anchor is missing (builder view already open) or the engine fails to
+     load — onboarding is additive and must never block the page. */
+  function maybeSpotlightNew() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('spotlight') !== 'new-skill') return;
+    if (!document.querySelector('[data-sk-field="name"]')) return;
+    params.delete('spotlight');
+    var qs = params.toString();
+    try {
+      history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    } catch (e) { /* history unavailable — non-fatal */ }
+    import("{{ static_url('js/tour.js') }}")
+      .then(function (mod) { mod.launchTour('skill-builder'); })
+      .catch(function () { /* coach-mark is additive — never block the page */ });
+  }
+
+  // The separate "your skills" index is retired: created skills live in the
+  // Library, so /skills IS the builder. Resume an in-progress draft if the
+  // browser has one, else start blank.
+  openBuilder(storedDraft || null);
+  maybeSpotlightNew();
+})();
+</script>
+{% endblock %}

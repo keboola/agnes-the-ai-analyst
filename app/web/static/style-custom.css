@@ -265,15 +265,20 @@ body {
 
 /* Index / resource-list page layout (#896 prototype) — used via
    base_index.html by My Stack, Catalog, and similar list pages. The
-   header zone (title + description + actions + search + tabs) stays on
-   the app's light --ds-bg; a full-width white band begins just below
-   the tabs and runs to the foot of the page, carrying the card grid.
-   Shared here so pages carry no per-page background/border styling.
-   Structure/spacing/backgrounds only. */
+   header zone (title + description + actions + search + tabs) and the
+   full-width band below it that carries the card grid are one unbroken
+   surface, running to the foot of the page. Shared here so pages carry
+   no per-page background/border styling. Structure/spacing/backgrounds
+   only. */
 .idx {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    /* The header zone reads as part of the page surface, not as a grey
+       band above it: paint the whole shell --ds-surface so the app
+       background never shows behind the title/description/actions row
+       (full-width, so no grey gutters beside the centred header either). */
+    background: var(--ds-surface);
 }
 .idx-head {
     width: 100%;
@@ -282,12 +287,14 @@ body {
     padding: 32px 32px 0;
 }
 /* The tab strip is the last row of the header; drop its bottom margin
-   so the white band sits flush beneath it. */
+   so the content band sits flush beneath it. */
 .idx-head > :last-child { margin-bottom: 0; }
+/* No divider above the band: header and body share one surface, so a
+   hairline between them drew a line across the middle of a single page.
+   Spacing alone separates the two zones. */
 .idx-band {
     flex: 1 0 auto;
     background: var(--ds-surface);
-    border-top: 1px solid var(--ds-border);
 }
 .idx-band-inner {
     width: 100%;
@@ -326,6 +333,18 @@ html[data-ui-layout="rail"] body.detail-page footer {
     border: none;
     border-radius: 16px;
     text-align: left;
+}
+/* --ds-agnes-soft is a LIGHT-ONLY tint (it has no dark-theme override), so
+   under `data-theme="dark"` the banner kept its near-white #ecfdf5 fill while
+   --ds-text-primary flipped to near-white too — the title landed at ~1:1
+   contrast and disappeared. Tint the current surface with the Agnes green
+   instead, the same idiom `.ag-pv-bubble` (agents.html) already uses for this
+   exact reason, so the fill follows the theme and the text tokens stay legible
+   on it. Dark-scoped: the light + paper themes keep the flat -soft fill.
+   `.cbn--bar` opts out — it paints the Knowledge Layer hero's gradient (see
+   the shared fill rule below), which already follows --ds-surface. */
+:root[data-theme="dark"] .cbn:not(.cbn--bar) {
+    background: color-mix(in srgb, var(--ds-agnes) 18%, var(--ds-surface));
 }
 .cbn-title { color: var(--ds-text-primary); font-weight: 750; letter-spacing: -0.02em; }
 .cbn-copy { color: var(--ds-text-secondary); }
@@ -416,6 +435,74 @@ html[data-ui-layout="rail"] body.detail-page footer {
     .cbn--orbit { padding: 18px 20px; }
 }
 
+/* ── Product notice (macros/_page_notice.html) ───────────────────────────
+   The quiet "still being finished" caveat that closes a page head. Tuned to
+   be secondary on purpose: the treatment it replaced filled the panel with
+   --ds-warn-bg, then stacked a 34px tinted icon tile, a warn-ink 15px/650
+   heading and a bordered pill on top of it — four amber signals for copy
+   nobody has to act on, which read as a system error rather than a note.
+   Here the amber survives as ONE carrier (a 15px glyph) over a
+   half-strength wash, with neutral type on top. All three themes are covered
+   by the tokens: --ds-warn-* is redefined per theme (dark maps to the
+   translucent accent tints), so the mixes below follow the theme instead of
+   pinning a light-only pastel. */
+.pnote {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0 0 10px;
+    padding: 10px 13px;
+    background: color-mix(in srgb, var(--ds-warn-bg) 45%, var(--ds-surface));
+    border: 1px solid color-mix(in srgb, var(--ds-warn-line) 50%, transparent);
+    border-radius: 10px;
+}
+/* Optical alignment: the glyph centres on the title's x-height rather than
+   its line box, so it reads as sitting ON the first line. */
+.pnote-icon {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    margin-top: 2px;
+    /* Full-strength ink: this glyph is the ONE amber carrier, so it should be
+       the most saturated thing in the panel. Measured 4.8:1 against the wash
+       in the weakest theme (paper) — comfortably over the 3:1 floor for a
+       graphic, and it does not need to carry meaning on its own (aria-hidden;
+       the title says the same thing in words). */
+    color: var(--ds-warn-ink);
+}
+.pnote-body { min-width: 0; }
+.pnote-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--ds-text-primary);
+}
+.pnote-text {
+    margin: 3px 0 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+    max-width: 78ch;
+}
+/* Flat marker, not a chip — see the macro's note on why. At 9.5px this is
+   "small text" for contrast purposes however bold it is, so the amber is
+   pulled toward the text colour rather than thinned with alpha: warn-ink
+   alone measures only 4.8:1 on the paper theme's wash, and alpha took it to
+   4.0 — under the 4.5 floor. This mix keeps the amber cast and measures
+   5.9 / 8.8 / 11.5 across paper / blue / dark. */
+.pnote-badge {
+    flex-shrink: 0;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--ds-warn-ink) 85%, var(--ds-text-primary));
+}
+
 /* ── Knowledge Layer hero (macros/_knowledge_layer.html) ─────────────────
    A single premium horizontal banner: a text lead + green CTA on the left,
    the Agnes orb as the visual anchor in the centre, and lightweight floating
@@ -429,9 +516,19 @@ html[data-ui-layout="rail"] body.detail-page footer {
     overflow: hidden;
     border-radius: 24px;
     padding: 38px 46px;
-    /* Almost-white base with a whisper of mint on the left, a very light
-       purple on the right, and subtle radial blues — an expensive-SaaS
-       gradient, no hard edges. Kept faint so it reads as near-white. */
+}
+
+/* Shared knowledge-surface fill — the near-white layered gradient + soft lift.
+   Both banners that speak for the Knowledge Layer paint the SAME surface: the
+   full hero (`.klb`, chat landing) and the compact connect bar (`.cbn--bar`,
+   Library / Workspace). One rule, so the two can only differ in geometry.
+   Almost-white base with a whisper of mint on the left, a very light purple on
+   the right, and subtle radial blues — an expensive-SaaS gradient, no hard
+   edges. Kept faint so it reads as near-white. Every layer rides --ds-surface
+   or a color-mix into it, so the fill follows every palette theme (which is
+   why `.cbn--bar` needs no dark-theme override of its own). */
+.klb,
+.cbn--bar {
     background:
         radial-gradient(60% 120% at 84% 12%, color-mix(in srgb, var(--ds-kind-agent) 7%, transparent), transparent 60%),
         radial-gradient(58% 120% at 6% 92%, color-mix(in srgb, var(--ds-primary) 9%, transparent), transparent 60%),

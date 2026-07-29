@@ -35,6 +35,9 @@ class FileCorpus(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     created_by: Mapped[str] = mapped_column(String, nullable=False)
+    # v102: provenance for the Library's Source facet — 'uploaded' (a person
+    # brought the file in) or 'generated' (an agent authored it).
+    origin: Mapped[str] = mapped_column(String, server_default="uploaded", nullable=False)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         server_default=_text("CURRENT_TIMESTAMP"),

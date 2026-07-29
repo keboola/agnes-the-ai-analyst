@@ -156,6 +156,90 @@ def test_skill_studio_renders_for_admin(seeded_app):
     assert 'id="studio-f-skill_md"' in resp.text  # the markdown textarea rendered
 
 
+def test_skills_page_is_the_builder(seeded_app):
+    """/skills IS the Skill builder now. The separate "your skills" index was
+    retired — created skills land in the Library — so the page opens straight
+    into authoring, carries the access picker, and offers ONE primary action."""
+    c = seeded_app["client"]
+    resp = c.get("/skills", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    body = resp.text
+    # Retired: the index container and its "+ New skill" grid card.
+    assert 'id="sk-list-view"' not in body
+    assert "renderList" not in body
+    # The builder is the whole page.
+    assert 'id="sk-builder-view"' in body
+    assert 'id="sk-categories"' in body  # store-category options island
+    # Access is a required choice before saving: Private or the whole org.
+    assert 'name="sk-access"' in body
+    assert 'value="private"' in body
+    assert 'value="everyone"' in body
+    assert "Who can use this skill?" in body
+    # One primary action; "Save as draft" / "Publish to marketplace" are gone.
+    assert 'id="sk-save"' in body
+    assert "Save to Library" in body
+    assert "Save as draft" not in body
+    assert "Publish to marketplace" not in body
+    # Saving returns to the Library and highlights the new item.
+    assert "/library?new=" in body
+    # Creates through the same markdown endpoint as before.
+    assert "/api/store/entities/from-markdown" in body
+    # Regression: the builder's buttons use the shared .cc-btn styles.
+    assert "css/catalog_card.css" in body
+
+
+def test_skills_page_arms_new_skill_spotlight(seeded_app):
+    """/skills still carries the one-step coach-mark that the Marketplace's
+    "Submit a skill or plugin" CTA arrives with (`?spotlight=new-skill`). With
+    the index retired it anchors on the builder's first field rather than the
+    old "+ New skill" card."""
+    c = seeded_app["client"]
+    body = c.get("/skills", headers=_auth(seeded_app["analyst_token"])).text
+
+    assert "spotlight" in body and "new-skill" in body
+    assert "js/tour.js" in body  # lazy dynamic import of the engine
+    assert "launchTour('skill-builder')" in body
+    assert 'data-sk-field=\"name\"' in body  # the new anchor
+    # One-shot: the param is stripped so a reload doesn't re-pop the coach-mark.
+    assert "history.replaceState" in body
+    # Launch waits for the repaint that paints [data-sk-new].
+    # No list repaint to wait for any more — the builder is rendered up front,
+    # so the coach-mark fires right after it.
+    assert "maybeSpotlightNew()" in body
+    # The CTA promises "skill or plugin" — plugin authors landing here keep an
+    # onward path, so the curated guide doesn't go unreachable.
+    assert 'href="/marketplace/guide/curated"' in body
+
+
+def test_skill_builder_tour_anchors_on_builder_name_field():
+    """The `skill-builder` tour is a single step on /skills. With the skills
+    index retired (created skills land in the Library) it anchors on the
+    builder's first field rather than the old "+ New skill" card. Single-step
+    tours render in the popover's solo form (no dots / no "explore on my own"),
+    so guard both the definition and the branch that produces it."""
+    from pathlib import Path
+
+    js = Path("app/web/static/js/tour.js").read_text()
+    assert "'skill-builder':" in js
+    assert "'[data-sk-field=\"name\"]'" in js
+    assert "[data-sk-new]" not in js  # retired anchor
+    assert "page: '/skills'" in js
+    # Solo rendering: one step ⇒ 'Got it', no dots, no escape-hatch button.
+    assert "const solo = total === 1;" in js
+    assert "tour-popover-footer--solo" in js
+    assert Path("app/web/static/css/tour.css").read_text().count(".tour-popover-footer--solo"), (
+        "solo footer modifier must be styled or the action row sits left"
+    )
+
+
+def test_skills_index_requires_login(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/skills", follow_redirects=False)
+    assert resp.status_code in (302, 307, 401, 403)
+    if resp.status_code in (302, 307):
+        assert "/login" in resp.headers.get("location", "")
+
+
 def test_existing_domains_keep_suggestion_flow(seeded_app):
     c = seeded_app["client"]
     resp = c.get("/admin/studio/data-package", headers=_auth(seeded_app["analyst_token"]))

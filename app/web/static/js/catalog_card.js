@@ -32,6 +32,9 @@
     doc: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h7l4 4v12H7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13 4v4h4" stroke="currentColor" stroke-width="1.6"/></svg>',
   };
   const ARROW = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  // Verification tick — the ONLY trust glyph on a card. Mirrors the SVG in the
+  // Jinja macro's cc-trust--verified branch.
+  const CHECK_GLYPH = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   // Two wordings share the same toggle mechanics (POST/DELETE add_url/
   // remove_url, flip in↔add): 'stack' is Marketplace install/uninstall
@@ -81,6 +84,20 @@
     }
     let eyebrow = '<span class="cc-kind cc-kind--' + c.kind + '">' + esc(c.kind_label) + '</span>';
     if (c.curator) eyebrow += '<span class="cc-sep">·</span><span>' + esc(c.curator) + '</span>';
+    // v104 trust line — keep in lockstep with the Jinja macro's `publisher` /
+    // `verified` block. Only the POSITIVE verification state renders; there is
+    // deliberately no "Unverified" label (see the macro header).
+    const pub = c.publisher || {};
+    if (pub.name) {
+      eyebrow += '<span class="cc-sep">·</span><span class="cc-pub">' +
+        (pub.kind === 'organization' ? '' : 'by ') + esc(pub.name) + '</span>';
+      if (pub.kind === 'organization') {
+        eyebrow += '<span class="cc-trust cc-trust--org">Organization</span>';
+      } else if (c.verified) {
+        eyebrow += '<span class="cc-trust cc-trust--verified" title="Verified by your organization">' +
+          CHECK_GLYPH + 'Verified</span>';
+      }
+    }
     if (c.category) eyebrow += '<span class="cc-sep">·</span><span>' + esc(c.category) + '</span>';
     return '<article class="cc-card" data-search="' + esc((c.title + ' ' + (c.description || '')).toLowerCase()) + '">' +
       '<div class="cc-head">' +

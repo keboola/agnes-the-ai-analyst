@@ -15,6 +15,17 @@
      href        detail / drilldown URL                (required)
      curator     e.g. 'Curated by Admin'  → eyebrow, omitted if falsy
      category    e.g. 'Sales'             → eyebrow, omitted if falsy
+     publisher   dict driving the trust line under the title (v104):
+                   kind  'organization'|'user'
+                   name  label to print — "Your organization" for org-published
+                         items, the author's display name otherwise
+                 Renders as "Skill · by Anna Nováková" (user) or
+                 "Skill · Your organization" + an "Organization" badge.
+     verified    truthy → a small "Verified" check beside the publisher.
+                 ONLY the positive state is ever rendered: there is no
+                 "Unverified" label, because on an instance with no reviewer it
+                 would print on ~every card and read as a warning on the whole
+                 catalogue. Absence of the check is the neutral default.
      description  body copy (falls back to a neutral line)
      tags        list[str] — first 3 shown, rest collapse to '+N'
      meta_icon   'tables'|'items'|'plugin'|'doc'  → footer glyph
@@ -61,6 +72,12 @@
     {# Single document — a one-file artefact presented AS the file (see the
        adaptive `_catalog_card_upload`); distinct from the two-sheet library. #}
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h7l4 4v12H7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13 4v4h4" stroke="currentColor" stroke-width="1.6"/></svg>
+  {%- elif kind == 'folder' -%}
+    {# A collection listed INSIDE the Library's Files table, where it sits
+       beside loose files and takes drops. The two-sheet 'library' glyph reads
+       as "some documents"; a folder reads as "a container you can put files
+       into", which is exactly the affordance that row carries. #}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7.5A1.5 1.5 0 0 1 5.5 6h3.2a1.5 1.5 0 0 1 1.06.44L11 7.5h7.5A1.5 1.5 0 0 1 20 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 10.5h16" stroke="currentColor" stroke-width="1.6"/></svg>
   {%- elif kind == 'skill' -%}
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
   {%- elif kind == 'agent' -%}
@@ -92,6 +109,22 @@
       <div class="cc-eyebrow">
         <span class="cc-kind cc-kind--{{ c.kind }}">{{ c.kind_label }}</span>
         {% if c.curator %}<span class="cc-sep">·</span><span>{{ c.curator }}</span>{% endif %}
+        {# v104 trust line. "by <name>" for a person; the bare label for the
+           organization — "by Your organization" reads wrong, and the
+           institutional claim needs no byline preposition. #}
+        {% set _pub = c.publisher or {} %}
+        {% if _pub.name %}
+          <span class="cc-sep">·</span>
+          <span class="cc-pub">{% if _pub.kind != 'organization' %}by {% endif %}{{ _pub.name }}</span>
+          {% if _pub.kind == 'organization' %}
+            <span class="cc-trust cc-trust--org">Organization</span>
+          {% elif c.verified %}
+            {# Positive state only — see the macro header on why there is no
+               "Unverified" counterpart. #}
+            <span class="cc-trust cc-trust--verified" title="Verified by your organization">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Verified</span>
+          {% endif %}
+        {% endif %}
         {% if c.category %}<span class="cc-sep">·</span><span>{{ c.category }}</span>{% endif %}
       </div>
     </div>

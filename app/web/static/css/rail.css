@@ -35,10 +35,11 @@ html[data-ui-layout="rail"] .rail {
     gap: 2px;
     padding: 16px 12px;
     z-index: 40;
-    /* `visible` (not `auto`) so hover flyouts — the Studio dropdown card —
-       can escape the rail's right edge instead of being clipped. The Chats
-       region scrolls internally (.rail-history-body), so the rail itself
-       does not need its own scrollbar in normal use. */
+    /* `visible` (not `auto`) so popovers can escape the rail's edges instead
+       of being clipped — the user-menu panel below is absolutely positioned
+       and depends on this. (It also served the Studio flyout, since retired.)
+       The Chats region scrolls internally (.rail-history-body), so the rail
+       itself does not need its own scrollbar in normal use. */
     overflow: visible;
     font-family: var(--ds-font);
 }
@@ -148,120 +149,11 @@ html[data-ui-layout="rail"] .rail-i:focus-visible {
     outline-offset: var(--ds-focus-outline-offset);
 }
 
-/* Nav item with a trailing badge (e.g. Artefacts "WIP"): the label takes the
-   free space so the badge hugs the right edge of the item. */
+/* The label takes the free space so any trailing element in a nav item hugs
+   the right edge. */
 html[data-ui-layout="rail"] .rail-i-label {
     flex: 1 1 auto;
     min-width: 0;
-}
-
-html[data-ui-layout="rail"] .rail-badge {
-    flex-shrink: 0;
-    font-size: 9.5px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--ds-warn-ink);
-    background: var(--ds-warn-bg);
-    border: 1px solid var(--ds-warn-line);
-    border-radius: var(--ds-radius-pill, 999px);
-    padding: 1px 6px;
-    line-height: 1.5;
-}
-
-/* ── Studio — nav group with an inline hover dropdown ──────────────────
-   A right-side flyout would be clipped by the rail's overflow-y:auto, so the
-   dropdown expands inline beneath the trigger (grid-rows 0fr→1fr) on hover or
-   keyboard focus. Agents lives here; the two "Maybe?" items are exploratory
-   concepts rendered as non-interactive labels. */
-html[data-ui-layout="rail"] .rail-studio {
-    position: relative;
-}
-
-/* Caret points right — toward the flyout card that opens on the right. */
-html[data-ui-layout="rail"] .rail-studio-trigger .rail-studio-caret {
-    margin-left: auto;
-    width: 15px;
-    height: 15px;
-    color: var(--ds-text-muted);
-}
-
-/* Floating dropdown card, revealed on hover / keyboard focus — flies out to
-   the RIGHT of the Studio item, overlaying the main content. The rail's
-   `overflow: visible` lets it escape the right edge. */
-html[data-ui-layout="rail"] .rail-studio-menu {
-    position: absolute;
-    top: 0;
-    left: 100%;
-    width: 232px;
-    z-index: 60;
-    display: none;
-    background: var(--ds-surface);
-    border: 1px solid var(--ds-border);
-    border-radius: 12px;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
-    padding: 6px;
-}
-html[data-ui-layout="rail"] .rail-studio:hover .rail-studio-menu,
-html[data-ui-layout="rail"] .rail-studio:focus-within .rail-studio-menu {
-    display: block;
-}
-html[data-ui-layout="rail"] .rail-studio-menu-inner {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-}
-
-html[data-ui-layout="rail"] .rail-studio-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 7px 11px;
-    border-radius: 9px;
-    font-size: 13px;
-    font-weight: 500;
-    line-height: 1.2;
-    color: var(--ds-text-secondary);
-    text-decoration: none;
-    cursor: pointer;
-}
-html[data-ui-layout="rail"] .rail-studio-item svg {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
-    color: var(--ds-text-muted);
-}
-html[data-ui-layout="rail"] .rail-studio-item-label {
-    flex: 1 1 auto;
-    min-width: 0;
-    line-height: 1.25;
-}
-html[data-ui-layout="rail"] a.rail-studio-item:hover {
-    background: var(--ds-surface-dim);
-    color: var(--ds-text-primary);
-}
-html[data-ui-layout="rail"] a.rail-studio-item:hover svg {
-    color: var(--ds-text-secondary);
-}
-html[data-ui-layout="rail"] .rail-studio-item.on {
-    background: var(--ds-primary-light);
-    color: var(--ds-primary-dark);
-    font-weight: 600;
-}
-html[data-ui-layout="rail"] .rail-studio-item.on svg {
-    color: var(--ds-primary-dark);
-}
-/* Exploratory "Maybe?" concepts — shown but not yet actionable. */
-html[data-ui-layout="rail"] .rail-studio-item.is-maybe {
-    cursor: default;
-    color: var(--ds-text-muted);
-}
-html[data-ui-layout="rail"] .rail-badge--maybe {
-    color: var(--ds-text-muted);
-    background: transparent;
-    border: 1px dashed var(--ds-border);
-    text-transform: none;
-    letter-spacing: 0.01em;
 }
 
 /* ── Chat history ──────────────────────────────────────────────────────

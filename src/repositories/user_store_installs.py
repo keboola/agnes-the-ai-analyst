@@ -18,15 +18,13 @@ class UserStoreInstallsRepository:
     def install(self, user_id: str, entity_id: str) -> bool:
         """Insert idempotently. Returns True iff a new row was created."""
         existing = self.conn.execute(
-            "SELECT 1 FROM user_store_installs "
-            "WHERE user_id = ? AND entity_id = ?",
+            "SELECT 1 FROM user_store_installs WHERE user_id = ? AND entity_id = ?",
             [user_id, entity_id],
         ).fetchone()
         if existing:
             return False
         self.conn.execute(
-            "INSERT INTO user_store_installs (user_id, entity_id) "
-            "VALUES (?, ?)",
+            "INSERT INTO user_store_installs (user_id, entity_id) VALUES (?, ?)",
             [user_id, entity_id],
         )
         return True
@@ -34,18 +32,52 @@ class UserStoreInstallsRepository:
     def uninstall(self, user_id: str, entity_id: str) -> bool:
         """Returns True iff a row was deleted."""
         before = self.conn.execute(
-            "SELECT 1 FROM user_store_installs "
-            "WHERE user_id = ? AND entity_id = ?",
+            "SELECT 1 FROM user_store_installs WHERE user_id = ? AND entity_id = ?",
             [user_id, entity_id],
         ).fetchone()
         if not before:
             return False
         self.conn.execute(
-            "DELETE FROM user_store_installs "
-            "WHERE user_id = ? AND entity_id = ?",
+            "DELETE FROM user_store_installs WHERE user_id = ? AND entity_id = ?",
             [user_id, entity_id],
         )
         return True
+
+    def install_for_group_members(self, group_id: str, entity_id: str) -> int:
+        """Install ``entity_id`` for every current member of ``group_id``.
+
+        The Required tier's fan-out. Curated plugins get "always in the stack"
+        from ``user_plugin_optouts`` presence semantics, but a store entity is
+        served through this per-person install table — so making one Required has
+        to materialize a row per member, or the lock would be a label with
+        nothing behind it.
+
+        Members who join the group later are picked up by
+        :meth:`install_required_for_user` at their next resolve. Idempotent via
+        ON CONFLICT DO NOTHING; returns the number of newly-created rows.
+        """
+        before = self.installer_count(entity_id)
+        self.conn.execute(
+            """INSERT INTO user_store_installs (user_id, entity_id)
+               SELECT m.user_id, ? FROM user_group_members m
+               WHERE m.group_id = ?
+               ON CONFLICT (user_id, entity_id) DO NOTHING""",
+            [entity_id, group_id],
+        )
+        return max(0, self.installer_count(entity_id) - before)
+
+    def install_required_for_user(self, user_id: str, entity_ids: List[str]) -> int:
+        """Install every entity in ``entity_ids`` for ``user_id``.
+
+        The join-later half of the Required fan-out: a user added to a group
+        after the grant was written still has to end up with the item. Idempotent;
+        returns the number of newly-created rows.
+        """
+        created = 0
+        for entity_id in entity_ids:
+            if self.install(user_id, entity_id):
+                created += 1
+        return created
 
     def list_for_user(self, user_id: str) -> List[Dict[str, Any]]:
         """Joins store_entities so a single round-trip returns everything the
@@ -88,8 +120,7 @@ class UserStoreInstallsRepository:
     def is_installed(self, user_id: str, entity_id: str) -> bool:
         return bool(
             self.conn.execute(
-                "SELECT 1 FROM user_store_installs "
-                "WHERE user_id = ? AND entity_id = ?",
+                "SELECT 1 FROM user_store_installs WHERE user_id = ? AND entity_id = ?",
                 [user_id, entity_id],
             ).fetchone()
         )

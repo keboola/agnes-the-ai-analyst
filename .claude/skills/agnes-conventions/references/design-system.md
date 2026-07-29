@@ -81,11 +81,15 @@ to `[data-theme="paper"]`; the rail chrome CSS is
    the other (`tests/test_ui_layout_theme.py::TestRailOptIn` asserts
    the rail side). The two chromes deliberately differ in IA: topnav
    keeps the flat link row (Home · Chat · Marketplace · Data Packages
-   · Library · Memory); the rail uses the prototype IA — Chat,
-   My Stack (→ `/catalog?tab=my`), and Catalog with the content
-   surfaces as subcategories (Data Packages, Plugins, Library,
-   Memory). New content surfaces join the rail as another
-   `.rail-sub-i` under Catalog, not as a new top-level item.
+   · Library · Memory); the rail is one flat, undivided group of
+   primary destinations — New chat · Library · Agents. The Studio
+   dropdown, the Marketplace entry and the `.rail-sub-i` subcategory
+   tree under Catalog are all retired, and My Stack is demoted out of
+   the rail (#1088) — `/stack` stays live, reached from the Library
+   header, the chat hero counts and the `/catalog` lede. A new
+   content surface reaches the caller through an existing destination
+   (the Library's "+ New" menu, chat suggestions, search), not by
+   growing the rail.
 9. **Verify visually.** After any UI change, run the app with both
    configs and screenshot: default (nothing set) and
    `AGNES_INSTANCE_THEME=paper AGNES_UI_LAYOUT=rail`. A page that

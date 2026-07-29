@@ -83,12 +83,11 @@
 {% import "macros/_detail.html" as detail %}
 
 {% set _rail = (ui_layout | default('topnav')) == 'rail' %}
-{# Under the rail layout uploads live on the Artefacts surface (/artefacts) —
-   there is no Library index to return to (that surface is topnav-only), so
-   send "back" to Artefacts instead of the dead-end /catalog?kind=library,
-   which has no library tab. #}
-{% set _back = '/artefacts' if _rail else '/library' %}
-{% set _back_label = 'Artefacts' if _rail else 'All library collections' %}
+{# Both layouts now return to /library: the former /artefacts surface WAS
+   renamed to Library and took over the route, so there is a single index to go
+   back to instead of one per layout. #}
+{% set _back = '/library' %}
+{% set _back_label = 'Library' %}
 {# Presentation adapts to file count: a one-file artefact reads AS the file
    (single-document glyph, filename title, TYPE · size), two-or-more (or zero)
    as a collection (two-sheet glyph, N files). Adding a second file promotes a

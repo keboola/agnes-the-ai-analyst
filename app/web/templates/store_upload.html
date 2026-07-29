@@ -917,6 +917,21 @@ document.querySelectorAll('#type-tiles label').forEach(lbl => {
   });
 });
 
+// Deep-link preselect — the Studio nav's "Plugin builder" entry points here
+// with ?type=plugin already chosen (a plugin is a real zip upload, not a
+// markdown body like the Skill/Agent builders, so it reuses this wizard
+// instead of a dedicated page). Silently ignored if the value isn't one of
+// the three tiles.
+(function preselectTypeFromQuery() {
+  const wanted = new URLSearchParams(location.search).get('type');
+  if (!wanted) return;
+  const radio = document.querySelector('#type-tiles input[value="' + wanted + '"]');
+  if (!radio) return;
+  radio.checked = true;
+  document.querySelectorAll('#type-tiles label').forEach(l => l.classList.remove('is-active'));
+  radio.closest('label').classList.add('is-active');
+})();
+
 // Generic drop-zone wiring — used for both the ZIP archive and the cover
 // photo. The two differ only in their accepted MIME/extension and the
 // onAccept callback that updates page state.

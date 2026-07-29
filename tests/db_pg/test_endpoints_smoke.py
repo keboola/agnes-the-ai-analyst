@@ -2153,6 +2153,31 @@ KNOWN_UNTESTED = {
     "GET /api/stack",
     "GET /api/stack/browse",
     "POST /api/stack/subscribe",
+    # Library files-as-folders: per-file detail page + drag-to-move, both
+    # covered by tests/test_web_library_files_folders.py (DuckDB) and, for the
+    # repository layer, tests/db_pg/test_corpus_files_contract.py.
+    "GET /library/{slug}/f/{file_id}",
+    "POST /api/collections/{collection_id}/files/{file_id}/move",
+    # Library: agent registry (v103) + owner-initiated sharing — covered by
+    # tests/test_web_library_sharing.py (DuckDB) and, for the repository layer,
+    # the cross-engine tests/db_pg/test_agents_contract.py; no dedicated PG
+    # smoke class yet, same convention as the stack rows below.
+    "GET /api/agents",
+    "POST /api/agents",
+    "GET /api/agents/{agent_id}",
+    "PATCH /api/agents/{agent_id}",
+    "DELETE /api/agents/{agent_id}",
+    "GET /api/sharing/groups",
+    "GET /api/sharing/{resource_type}/{resource_id}",
+    "PUT /api/sharing/{resource_type}/{resource_id}",
+    # Skill builder index page (HTML surface, no PG-specific behaviour).
+    "GET /skills",
+    # Add artefacts to My Stack — covered by tests/test_web_stack_artefacts.py
+    # (DuckDB) + tests/test_cli_api_parity.py (add/remove parity); no
+    # dedicated PG smoke class yet, same convention as the stack rows above.
+    "DELETE /api/stack/artefacts/{corpus_id}",
+    "GET /api/stack/artefacts/candidates",
+    "POST /api/stack/artefacts/{corpus_id}",
     # Store version restore
     "POST /api/store/entities/{entity_id}/versions/{version_no}/restore",
     # Sync (pull-confirm / settings)

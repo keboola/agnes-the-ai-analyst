@@ -1,0 +1,111 @@
+{% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
+{# One file inside a collection — its own detail page.
+
+   A single-file artefact IS its collection and keeps using library_detail.html;
+   this page serves the files *inside* a folder, which had no page of their own
+   before collections became folders in the Library.
+
+   Sharing here is the FILE's own (resource type `corpus_file`), independent of
+   the folder's — that's what makes "share an individual file within a
+   collection" real rather than a relabelled folder share. #}
+{% block title %}{{ file.filename }} — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+<style>
+  .lfd-back { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ds-text-secondary); text-decoration: none; margin-bottom: 14px; }
+  .lfd-back:hover { color: var(--ds-primary); }
+  .lfd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+  .lfd-ident { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .lfd-glyph { flex-shrink: 0; width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center; background: var(--ds-primary-light); color: var(--ds-primary); }
+  .lfd-glyph svg { width: 24px; height: 24px; }
+  .lfd-name { margin: 0; font-size: 21px; overflow-wrap: anywhere; }
+  .lfd-sub { margin: 3px 0 0; font-size: 13px; color: var(--ds-text-secondary); }
+  .lfd-sub a { color: var(--ds-primary); text-decoration: none; }
+  .lfd-sub a:hover { text-decoration: underline; }
+  .lfd-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+  .lfd-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .lfd-fact { padding: 13px 15px; background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; }
+  .lfd-fact dt { margin: 0 0 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-text-muted); }
+  .lfd-fact dd { margin: 0; font-size: 14px; font-weight: 600; color: var(--ds-text-primary); overflow-wrap: anywhere; }
+
+  /* Visibility chip — same vocabulary as the Library table. */
+  .lfd-vis { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; font-size: 11.5px; font-weight: 700; border-radius: var(--ds-radius-pill); border: 1px solid var(--ds-border); background: var(--ds-surface-dim); color: var(--ds-text-muted); }
+  .lfd-vis--shared, .lfd-vis--workspace { color: var(--ds-primary); background: var(--ds-primary-light); border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent); }
+  .lfd-vis svg { width: 12px; height: 12px; }
+
+  .lfd-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+  .lfd-status--indexed { color: var(--ds-ok-ink, var(--ds-primary)); }
+  .lfd-status--pending { color: var(--ds-text-secondary); }
+  .lfd-status--rejected { color: var(--ds-warn-ink); }
+
+  .lfd-note { font-size: 13px; line-height: 1.55; color: var(--ds-text-secondary); background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: 10px; padding: 12px 14px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<a class="lfd-back" href="/library">
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:15px;height:15px"><path d="M19 12H5m6-6-6 6 6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  Library
+</a>
+
+<div class="lfd-head">
+  <div class="lfd-ident">
+    <span class="lfd-glyph">{{ ico.icon('doc', 24) }}</span>
+    <div style="min-width:0">
+      <h1 class="lfd-name">{{ file.filename }}</h1>
+      <p class="lfd-sub">In <a href="/library/{{ collection.slug }}">{{ collection.name or collection.slug }}</a></p>
+    </div>
+  </div>
+  <div class="lfd-actions">
+    <span class="lfd-vis lfd-vis--{{ file_visibility }}" id="lfd-vis-chip">
+      {% if file_visibility == 'private' %}
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.9"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.9"/></svg>Private
+      {% elif file_visibility == 'workspace' %}
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Workspace
+      {% else %}
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Shared
+      {% endif %}
+    </span>
+    {% if can_share %}
+    <a class="cc-btn" href="/library?share={{ file.id }}&amp;type=corpus_file">Share this file</a>
+    {% endif %}
+  </div>
+</div>
+
+<dl class="lfd-facts">
+  <div class="lfd-fact">
+    <dt>Type</dt>
+    <dd>{{ (file.file_type or '—')|upper }}</dd>
+  </div>
+  <div class="lfd-fact">
+    <dt>Size</dt>
+    <dd>{{ file_size_display or '—' }}</dd>
+  </div>
+  <div class="lfd-fact">
+    <dt>Indexing</dt>
+    <dd>
+      {% set _st = file.processing_status or 'pending' %}
+      <span class="lfd-status lfd-status--{{ 'indexed' if _st == 'indexed' else ('rejected' if _st == 'rejected' else 'pending') }}">
+        {% if _st == 'indexed' %}Indexed — your agents can search it
+        {% elif _st == 'rejected' %}Rejected
+        {% elif _st == 'needs_review' %}Needs review
+        {% else %}{{ _st|capitalize }}{% endif %}
+      </span>
+    </dd>
+  </div>
+  <div class="lfd-fact">
+    <dt>Added</dt>
+    <dd>{% if file.created_at %}<time datetime="{{ file.created_at.isoformat() }}">{{ file.created_at.isoformat()[:10] }}</time>{% else %}—{% endif %}</dd>
+  </div>
+</dl>
+
+<p class="lfd-note">
+  This file has its own sharing, separate from
+  <a href="/library/{{ collection.slug }}">{{ collection.name or collection.slug }}</a>.
+  Sharing the collection shares everything in it; sharing this file shares only
+  this file. Move it between collections by dragging it in the Library.
+</p>
+{% endblock %}

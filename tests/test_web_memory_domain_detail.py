@@ -22,15 +22,18 @@ def _make_domain(slug: str, name: str) -> str:
     conn = get_system_db()
     try:
         return MemoryDomainsRepository(conn).create(
-            slug=slug, name=name, description=f"{name} desc",
-            icon="🎯", color="#dcfce7", created_by="test",
+            slug=slug,
+            name=name,
+            description=f"{name} desc",
+            icon="🎯",
+            color="#dcfce7",
+            created_by="test",
         )
     finally:
         conn.close()
 
 
-def _make_item(item_id: str, title: str, domain_id: str,
-               is_required: bool = False, status: str = "approved"):
+def _make_item(item_id: str, title: str, domain_id: str, is_required: bool = False, status: str = "approved"):
     from src.db import get_system_db
     from src.repositories.knowledge import KnowledgeRepository
 
@@ -38,30 +41,30 @@ def _make_item(item_id: str, title: str, domain_id: str,
     try:
         repo = KnowledgeRepository(conn)
         repo.create(
-            id=item_id, title=title, content=f"# {title}\n\nbody",
-            category="workflow", status=status, is_required=is_required,
+            id=item_id,
+            title=title,
+            content=f"# {title}\n\nbody",
+            category="workflow",
+            status=status,
+            is_required=is_required,
             source_user="contrib@example.com",
         )
         # Wire into the junction so the domain drill-down picks it up.
         conn.execute(
-            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
-            "VALUES (?, ?, 'test')",
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) VALUES (?, ?, 'test')",
             [item_id, domain_id],
         )
     finally:
         conn.close()
 
 
-def _grant_domain(group_name: str, domain_id: str, requirement: str = "available",
-                  users: list[str] | None = None):
+def _grant_domain(group_name: str, domain_id: str, requirement: str = "available", users: list[str] | None = None):
     from src.db import get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
 
     conn = get_system_db()
     try:
-        gid_row = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [group_name]
-        ).fetchone()
+        gid_row = conn.execute("SELECT id FROM user_groups WHERE name = ?", [group_name]).fetchone()
         if not gid_row:
             return
         group_id = gid_row[0]
@@ -117,6 +120,25 @@ class TestMemoryDomainDetail:
         assert 'href="/catalog?kind=memory"' in body
         assert 'href="/corporate-memory"' not in body
 
+    def test_back_link_returns_to_the_library_when_opened_from_it(self, seeded_app):
+        # Library rows link in with ?source=library — sending the visitor
+        # "back" to the memory listing would strand them on a page they never
+        # opened, so the hero returns to the surface they came from.
+        dom_id = _make_domain("ops-from-lib", "Ops From Library")
+        _make_item("ops_lib_item_1", "Ops lib runbook", dom_id)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/memory/d/ops-from-lib?source=library", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+        # Assert on the hero's own back link — the topnav also carries a
+        # /corporate-memory entry, so a bare substring check would pass either
+        # way.
+        assert 'class="detail-back" href="/library"' in body
+        assert "Back to library" in body
+        assert 'class="detail-back" href="/corporate-memory"' not in body
+        assert "All memory domains" not in body
+
     def test_analyst_no_grant_blocked(self, seeded_app):
         _make_domain("locked-dom", "Locked")
         c = seeded_app["client"]
@@ -127,8 +149,7 @@ class TestMemoryDomainDetail:
     def test_required_item_shows_required_badge(self, seeded_app):
         dom_id = _make_domain("req-dom", "Required things")
         _make_item("req_item_1", "Critical SOP", dom_id, is_required=True)
-        _grant_domain("Everyone", dom_id, requirement="available",
-                      users=["analyst1"])
+        _grant_domain("Everyone", dom_id, requirement="available", users=["analyst1"])
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
         resp = c.get("/memory/d/req-dom", headers=_auth(token))

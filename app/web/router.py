@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Request, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
@@ -55,6 +55,7 @@ from src.repositories import (
     notifications_telegram_repo,
     profile_repo,
     recipes_repo,
+    resource_grants_repo,
     store_entities_repo,
     store_lint_repo,
     store_submissions_repo,
@@ -65,6 +66,7 @@ from src.repositories import (
     user_group_members_repo,
     user_groups_repo,
     user_stack_subscriptions_repo,
+    user_store_installs_repo,
     users_repo,
 )
 from src.connectors_manifest import load_manifest
@@ -924,11 +926,15 @@ async def dashboard(
     # `can_chat` mirrors the rail nav's own predicate exactly (see
     # _build_context: chat enabled AND has_explicit_grant) so the LANDING and
     # the NAV agree. The dashboard exists to start Agnes conversations, so
-    # without a chat grant it would be a dead shell — those users keep the
-    # existing 302 to My Stack (the data-estate home). has_explicit_grant is
-    # stricter than /chat's own can_access guard, so the /chat redirect is
-    # loop-safe. 302 (not 308) so a later layout/grant flip isn't cached
-    # permanently by the browser.
+    # without a chat grant it would be a dead shell — those users 302 to the
+    # Library instead. That landing used to be My Stack, but /stack is no
+    # longer a rail destination (#1088), so grant-less callers would have
+    # landed on a surface the rail neither links to nor highlights, with the
+    # rail logo (href = home_route = /dashboard) bouncing them right back to
+    # it. The Library is the nearest thing to a data-estate home that IS in
+    # the nav. has_explicit_grant is stricter than /chat's own can_access
+    # guard, so the /chat redirect is loop-safe. 302 (not 308) so a later
+    # layout/grant flip isn't cached permanently by the browser.
     if get_ui_layout() == "rail":
         from app.auth.access import has_explicit_grant
         from app.resource_types import ResourceType
@@ -937,7 +943,7 @@ async def dashboard(
         can_chat = bool(
             chat_cfg and chat_cfg.enabled and has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat")
         )
-        return RedirectResponse(url="/chat" if can_chat else "/stack", status_code=302)
+        return RedirectResponse(url="/chat" if can_chat else "/library", status_code=302)
 
     sync_repo = sync_state_repo()
     settings_repo = sync_settings_repo()
@@ -1477,6 +1483,80 @@ def _catalog_card_upload(c: dict) -> dict:
     }
 
 
+def _catalog_card_stack_artefact(
+    col: dict,
+    *,
+    visibility: str,
+    visibility_label: str,
+    owner_label: str,
+    accessible: bool,
+) -> dict:
+    """Artefact-in-My-Stack → catalog_card `c`. Modeled on
+    `_catalog_card_upload` for the file-vs-collection title/glyph/meta_text
+    logic, but the action is Remove-from-Stack (never Delete — removing a
+    Stack membership must never touch the underlying artefact) instead of a
+    plain "Open" link, and it carries the visibility/owner metadata the
+    `stack_row` macro's Source column needs.
+
+    ``accessible=False`` means the artefact is still IN the caller's Stack
+    (a membership row is never dropped silently just because access
+    changed — see requirement 7) but the caller can no longer reach the
+    underlying collection; the row's description is overridden to explain
+    that and the caller-facing card sets ``unavailable`` so the template can
+    render the badge. Remove-from-Stack stays available either way.
+    """
+    n = col.get("file_count", 0) or 0
+    ff = col.get("first_file") or None
+    rid = col["id"]
+    if n == 1 and ff:
+        size = _human_size(ff.get("size_bytes") or 0)
+        fname = ff.get("filename")
+        meta_text = f"{fname} · {size}" if fname else size
+        kind_label = "File"
+        title = col.get("name") or fname
+        glyph = "doc"
+    else:
+        meta_text = f"{n} file{'s' if n != 1 else ''}"
+        kind_label = "Collection"
+        title = col.get("name")
+        glyph = "library"
+
+    description = col.get("description") or ""
+    if not accessible:
+        description = "You no longer have access to this artefact."
+
+    c: dict = {
+        "kind": "library",
+        "glyph": glyph,
+        "kind_label": kind_label,
+        "title": title,
+        "href": f"/library/{col.get('slug')}",
+        "curator": None,
+        "category": None,
+        "shared_by": None,
+        "description": description,
+        "tags": [],
+        "meta_icon": "doc",
+        "meta_text": meta_text,
+        "unavailable": not accessible,
+        "action": {"mode": "stack", "remove_url": f"/api/stack/artefacts/{rid}"},
+    }
+    # Drives the stack_row macro's Source column (stack_source()): Private/
+    # Workspace are a category label; "shared with me" names the owner;
+    # "shared by me" (caller owns it, shared to a non-Everyone group) sets
+    # category too, since shared_by would resolve to "You" and fall through
+    # to the macro's em-dash branch.
+    if visibility == "workspace":
+        c["category"] = "Workspace"
+    elif visibility == "private":
+        c["category"] = "Private"
+    elif owner_label == "You":
+        c["category"] = "Shared"
+    else:
+        c["shared_by"] = owner_label
+    return c
+
+
 @router.get("/catalog", response_class=HTMLResponse)
 async def catalog(
     request: Request,
@@ -1882,6 +1962,58 @@ async def my_stack_page(
         c["shared_by"] = "You"
         upload_card_models.append(c)
 
+    # Artefacts tab — everything the caller has added to their Stack (a
+    # `user_stack_subscriptions` row, resource_type='collection'). The
+    # artefact (file_corpora) stays the single source of truth for
+    # title/owner/sharing/updated-date; a membership row never mutates it.
+    # A hard-gone artefact (file_corpora.get() returns None — default
+    # excludes soft-deleted) is skipped entirely rather than rendered as a
+    # tombstone row — a deliberately smaller scope than a full "deleted
+    # artefact" treatment.
+    artefact_cards: list = []
+    try:
+        stack_collection_ids = user_stack_subscriptions_repo().list_for_user(user["id"], ResourceType.COLLECTION.value)
+        if stack_collection_ids:
+            from app.auth.access import can_access_collection
+            from app.services.artefact_access import (
+                build_artefact_access_context,
+                collection_visibility,
+                owner_label_for,
+            )
+
+            access_ctx = build_artefact_access_context(user["id"])
+            cf_repo = corpus_files_repo()
+            for cid in stack_collection_ids:
+                col = file_corpora_repo().get(cid)
+                if not col:
+                    continue
+                accessible = can_access_collection(user["id"], cid)
+                visibility, visibility_label = collection_visibility(access_ctx, cid)
+                try:
+                    files = cf_repo.list_for_corpus(cid)
+                except Exception:
+                    files = []
+                file_count = len(files)
+                first_file = None
+                if file_count == 1:
+                    f0 = files[0]
+                    first_file = {
+                        "filename": f0.get("filename"),
+                        "file_type": f0.get("file_type"),
+                        "size_bytes": f0.get("size_bytes"),
+                    }
+                c = _catalog_card_stack_artefact(
+                    {**col, "file_count": file_count, "first_file": first_file},
+                    visibility=visibility,
+                    visibility_label=visibility_label,
+                    owner_label=owner_label_for(access_ctx, col),
+                    accessible=accessible,
+                )
+                c["added_iso"] = _added_iso("collection", cid)
+                artefact_cards.append(c)
+    except Exception as e:
+        logger.warning("/stack: could not resolve artefact stack: %s", e)
+
     ctx = _build_context(
         request,
         user=user,
@@ -1889,39 +2021,947 @@ async def my_stack_page(
         data_cards=data_cards,
         memory_entries=memory_entries,
         memory_cards=memory_card_models,
+        artefact_cards=artefact_cards,
     )
     return templates.TemplateResponse(request, "stack_unified.html", ctx)
 
 
-@router.get("/artefacts", response_class=HTMLResponse)
-async def artefacts_page(
+# Artefact type facets for the /artefacts toolbar filter. A single-file
+# artefact filters by its file's kind (so "Images", "Spreadsheets" etc. group
+# naturally); a multi-file artefact is always a "Collection". Keys are stable
+# filter tokens (emitted as data-type); labels are what the dropdown shows.
+_ARTEFACT_TYPE_FACETS: dict[str, tuple[str, str]] = {
+    "pdf": ("pdf", "PDF"),
+    "doc": ("document", "Document"),
+    "docx": ("document", "Document"),
+    "txt": ("document", "Document"),
+    "md": ("document", "Document"),
+    "rtf": ("document", "Document"),
+    "odt": ("document", "Document"),
+    "csv": ("spreadsheet", "Spreadsheet"),
+    "tsv": ("spreadsheet", "Spreadsheet"),
+    "xls": ("spreadsheet", "Spreadsheet"),
+    "xlsx": ("spreadsheet", "Spreadsheet"),
+    "ods": ("spreadsheet", "Spreadsheet"),
+    "ppt": ("presentation", "Presentation"),
+    "pptx": ("presentation", "Presentation"),
+    "png": ("image", "Image"),
+    "jpg": ("image", "Image"),
+    "jpeg": ("image", "Image"),
+    "gif": ("image", "Image"),
+    "svg": ("image", "Image"),
+    "webp": ("image", "Image"),
+    "heic": ("image", "Image"),
+    "json": ("data", "Data"),
+    "ndjson": ("data", "Data"),
+    "parquet": ("data", "Data"),
+}
+
+
+def _artefact_type(file_count: int, first_file: dict | None) -> tuple[str, str]:
+    """(filter_key, label) for the type facet. Multi-file → Collection; a lone
+    file → its extension's facet, falling back to a generic File."""
+    if file_count != 1 or not first_file:
+        return ("collection", "Collection")
+    ext = (first_file.get("file_type") or "").lower().lstrip(".")
+    if not ext:
+        fn = first_file.get("filename") or ""
+        ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+    return _ARTEFACT_TYPE_FACETS.get(ext, ("file", "File"))
+
+
+# ---------------------------------------------------------------------------
+# Library — the caller's own things: artefacts (files/images/documents) and
+# skills. Agents live on /agents. See ``library_page``.
+# ---------------------------------------------------------------------------
+
+#: Store-entity visibility_status -> (visibility_key, label) for a skill row.
+#: A store entity is readable by every authenticated user once approved, so
+#: "approved" IS workspace-wide sharing; anything else is still private to its
+#: owner. Keys match the artefact/agent visibility vocabulary so one filter and
+#: one chip style covers all three kinds.
+_SKILL_VISIBILITY: dict[str, tuple[str, str]] = {
+    "approved": ("workspace", "Workspace"),
+    "pending": ("private", "In review"),
+    # 'hidden' is now the state the builder writes for "Private" access.
+    "hidden": ("private", "Private"),
+    "archived": ("private", "Archived"),
+}
+
+
+def _library_row_base(
+    *,
+    item_id: str,
+    kind: str,
+    title: str,
+    description: str,
+    href: str,
+    glyph: str,
+    type_key: str,
+    type_label: str,
+    origin: str,
+    origin_label: str,
+    added_iso: str | None,
+    owner_label: str,
+    ownership: str,
+    visibility: str,
+    visibility_label: str,
+    meta_text: str,
+    share_type: str | None,
+    extra_search: str = "",
+    requirement: str = "optional",
+    tags: list | None = None,
+    owner_key: str | None = None,
+) -> dict:
+    """Assemble one Library row.
+
+    Every kind (artefact / skill / agent) funnels through this so the table,
+    the grid projection and the toolbar facets read the same field names
+    regardless of which registry the item came from.
+
+    ``share_type`` is the ``resource_grants`` resource type the Share dialog
+    should PUT to, or ``None`` for a kind that isn't grant-shareable (skills —
+    see ``app/services/library_sharing.py``).
+    """
+    return {
+        "id": item_id,
+        "kind": kind,
+        # Stack state. "in_stack" = the default agent can already use this;
+        # "available" = the caller can reach it but it isn't in their Stack.
+        # EVERY row that can be filtered carries one of the two — a row with no
+        # state would be silently dropped by the "In stack only" toggle while its
+        # own pill claimed membership. The row renders the state as the
+        # presence/absence of the "In Stack" badge, so the filter never hides
+        # anything for an invisible reason.
+        "stack_state": "",
+        "stack_title": "",
+        # What the pill READS on the row, kept separate from ``stack_state`` so
+        # the wording can differ from the filtered value. Empty → the template
+        # falls back to "In Stack".
+        "stack_pill": "",
+        # Membership the caller cannot drop: an admin ``required`` grant. It
+        # reads the SAME "In Stack" as any other member (it is one) and is
+        # marked by a LOCK plus the locked tooltip — the tier is an attribute
+        # of the membership, not a different state, and the separate
+        # Optional/Required facet is where the tier is filterable. Driving the
+        # lock off this flag rather than off the pill's text keeps the wording
+        # and the affordance independent.
+        "stack_locked": False,
+        # What Add/Remove writes to, and which of the two the caller may do.
+        # Artefacts and store entities have different membership APIs, so the row
+        # carries its own endpoint rather than the template guessing from `kind`.
+        "stack_endpoint": "",
+        "stack_addable": False,
+        "stack_removable": False,
+        "title": title,
+        "description": description,
+        "href": href,
+        "glyph": glyph,
+        "type_key": type_key,
+        "type_label": type_label,
+        "origin": origin,
+        "origin_label": origin_label,
+        "added_iso": added_iso,
+        "owner_label": owner_label,
+        "ownership": ownership,
+        "visibility": visibility,
+        "visibility_label": visibility_label,
+        "meta_text": meta_text,
+        "share_type": share_type,
+        "shareable": share_type is not None,
+        # Facet fields. ``requirement`` is the grant tier an admin set
+        # ("required" = mandatory, everything else optional). ``tags`` reuses
+        # whatever the source registry already carries (data-package tags,
+        # store-entity category) — no generic tagging table exists, so kinds
+        # without tags simply never match a Tags filter. ``owner_key`` is the
+        # stable value the Owner facet groups on (the label is what's shown).
+        "requirement": requirement,
+        "requirement_label": "Required" if requirement == "required" else "Optional",
+        "tags": tags or [],
+        "owner_key": owner_key or "",
+        "search": " ".join(s for s in (title, description, type_label, owner_label, extra_search) if s).lower(),
+    }
+
+
+@router.get("/library", response_class=HTMLResponse)
+async def library_page(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Artefacts — the caller's private uploads, and (soon) their data
-    apps. Uploads (per-user file collections) moved here off My Stack so the
-    stack stays a knowledge inventory (data · plugins · memory) and personal
-    artefacts get their own home. Owner-scoped: a user sees only the uploads
-    they created (created_by), never group-shared ones (that's /library).
+    """Library — everything the caller has: artefacts, skills, and agents.
 
-    Data apps are the second artefact kind, still in design — the page carries
-    a work-in-progress banner for them rather than a live list."""
-    upload_entries = _unified_upload_cards(user)
+    This is the renamed and widened former ``/artefacts`` surface. It answers
+    "what do I have?" across every kind Agnes governs — the caller's own things
+    plus everything shared with them:
 
-    upload_card_models = []
-    for col in upload_entries:
-        c = _catalog_card_upload(col)
-        created = col.get("created_at")
-        c["added_iso"] = created.isoformat() if created is not None else None
-        upload_card_models.append(c)
+      - **Artefacts** — ``file_corpora`` uploads: images, documents, data
+        files, and multi-file collections, whether *uploaded* by a person or
+        *generated* by an agent (the Source facet).
+      - **Skills** — the caller's own store entities of type ``skill``, i.e.
+        what the Skill builder (/skills) publishes.
+      - **Granted resources** — governed **data packages**, **memory
+        domains**, **recipes** and curated **marketplace plugins** granted to
+        one of the caller's groups, plus the community-store items they have
+        **installed**. These are not the caller's to re-share, so they carry no
+        Share action; the grant belongs to an admin.
+
+    Agents are deliberately NOT here — they have their own home at ``/agents``
+    (they are still real server-side rows in the v103 ``agents`` registry, and
+    ``/api/agents`` reads honour agent grants; the Library just isn't their
+    listing surface).
+
+    Scope is grant-aware: items you OWN plus anything shared into a group you
+    belong to, tagged ``mine`` / ``shared_with_me`` / ``shared_by_me`` so the
+    toolbar can slice by ownership. Deliberately NOT admin god-mode — an admin
+    still sees their own Library, not every item in the instance (the audit
+    view is /admin/access).
+
+    Every row carries its real visibility (Private / Shared / Workspace) and,
+    for the grant-backed kinds, a Share action writing through
+    ``PUT /api/sharing/{resource_type}/{resource_id}``. Skills are the
+    exception: an approved store entity is already readable by every
+    authenticated user, so the row reports that state rather than offering a
+    group grant nothing would read.
+
+    Rendering is server-side; the toolbar (search, ownership segments, Type +
+    Source facets, sort, and the table ⇄ grid switch) is client-side over
+    those rows.
+    """
+    from app.resource_types import ResourceType
+    from app.services.artefact_access import build_artefact_access_context, collection_visibility
+    from src.db import SYSTEM_EVERYONE_GROUP
+
+    uid = user.get("id") or ""
+    ct = ResourceType.COLLECTION.value
+
+    access_ctx = build_artefact_access_context(uid)
+    granted_to_me = access_ctx.granted_to_me
+    shared_ids = access_ctx.shared_ids
+    owner_name = access_ctx.owner_name
+
+    # Per-file sharing state, tallied in ONE pass. A file inside a folder is
+    # independently shareable, so each needs its own private/shared/workspace
+    # verdict — resolving that with a visibility_for() call per row would
+    # re-read every resource_grants row once per file.
+    cft = ResourceType.CORPUS_FILE.value
+    try:
+        _everyone = user_groups_repo().get_by_name(SYSTEM_EVERYONE_GROUP)
+        _everyone_id = _everyone["id"] if _everyone else None
+    except Exception:
+        _everyone_id = None
+    file_shared_groups: dict = {}
+    try:
+        for g in resource_grants_repo().list_all(resource_type=cft):
+            file_shared_groups.setdefault(g["resource_id"], set()).add(g["group_id"])
+    except Exception as e:
+        logger.warning("/library: could not resolve per-file grants: %s", e)
+
+    def file_visibility(file_id: str) -> str:
+        groups = file_shared_groups.get(file_id)
+        if not groups:
+            return "private"
+        if _everyone_id and _everyone_id in groups:
+            return "workspace"
+        return "shared"
+
+    # Artefacts already in the caller's Stack — drives the "Add to Stack" vs
+    # quiet "In Stack" badge on artefact rows.
+    try:
+        in_stack_ids = set(user_stack_subscriptions_repo().list_for_user(uid, ct))
+    except Exception as e:
+        logger.warning("/library: could not resolve stack membership: %s", e)
+        in_stack_ids = set()
+
+    items: list = []
+
+    # ── Artefacts (file_corpora) ──────────────────────────────────────────
+    fc_repo = file_corpora_repo()
+    cf_repo = corpus_files_repo()
+    try:
+        for col in fc_repo.list():
+            owned = col.get("created_by") == uid
+            if not owned and col["id"] not in granted_to_me:
+                continue  # not yours and not shared with you -> invisible here
+            try:
+                files = cf_repo.list_for_corpus(col["id"])
+            except Exception:
+                files = []
+            file_count = len(files)
+            first_file = None
+            if file_count == 1:
+                f0 = files[0]
+                first_file = {
+                    "filename": f0.get("filename"),
+                    "file_type": f0.get("file_type"),
+                    "size_bytes": f0.get("size_bytes"),
+                }
+            c = _catalog_card_upload(
+                {
+                    "id": col["id"],
+                    "name": col.get("name") or col.get("slug"),
+                    "description": col.get("description") or "",
+                    "slug": col.get("slug"),
+                    "file_count": file_count,
+                    "first_file": first_file,
+                }
+            )
+            shared = col["id"] in shared_ids
+            if not owned:
+                ownership = "shared_with_me"
+                owner_label = owner_name.get(col.get("created_by"), "Someone")
+            elif shared:
+                ownership = "shared_by_me"
+                owner_label = "You"
+            else:
+                ownership = "mine"
+                owner_label = "You"
+            visibility, visibility_label = collection_visibility(access_ctx, col["id"])
+            file_type_key, file_type_label = _artefact_type(file_count, first_file)
+            origin = col.get("origin") or "uploaded"
+            created = col.get("created_at")
+            fname = first_file.get("filename") if first_file else ""
+            is_folder = file_count != 1
+            row = _library_row_base(
+                item_id=col["id"],
+                kind="artefact",
+                title=c.get("title") or "",
+                description=c.get("description") or "",
+                href=f"/library/{col.get('slug')}",
+                # A collection sits beside loose files in the Files table, so it
+                # wears a FOLDER glyph there — the container it actually is, and
+                # the shape that reads as "you can drop a file on me". Its own
+                # detail page keeps the two-sheet 'library' hero glyph.
+                glyph="folder" if is_folder else (c.get("glyph") or "doc"),
+                # Files and folders share ONE section; the per-row Type label
+                # still names the real thing (Image / PDF / Collection / …) so
+                # the merge doesn't cost the reader any information.
+                type_key="files",
+                type_label=file_type_label,
+                origin=origin,
+                origin_label="Generated" if origin == "generated" else "Uploaded",
+                added_iso=created.isoformat() if created is not None else None,
+                owner_label=owner_label,
+                ownership=ownership,
+                visibility=visibility,
+                visibility_label=visibility_label,
+                meta_text=c.get("meta_text") or "",
+                share_type=ct,
+                extra_search=fname or "",
+                owner_key="me" if owned else (col.get("created_by") or ""),
+            )
+            # Artefact-only affordances: Stack membership + file-count sort key.
+            row["in_stack"] = col["id"] in in_stack_ids
+            row["stack_state"] = "in_stack" if row["in_stack"] else "available"
+            row["stack_title"] = (
+                "The default agent can use this artefact"
+                if row["in_stack"]
+                else "You can reach this, but the default agent can't until you add it"
+            )
+            # An artefact is the one kind whose membership IS the caller's to
+            # set (no admin grant tier exists for a personal upload), so its
+            # pill is a real toggle and the template supplies the button copy.
+            # This value is what the *child* rows fall back to — a file inside
+            # a folder shows its folder's state as a plain badge.
+            row["stack_pill"] = "In Stack"
+            # Membership here is a `user_stack_subscriptions` row, and it is the
+            # caller's to add or drop either way. Children deliberately inherit
+            # neither flag: Stack membership is per collection, so a file inside a
+            # folder is added by adding its folder.
+            row["stack_endpoint"] = f"/api/stack/artefacts/{col['id']}"
+            row["stack_addable"] = not row["in_stack"]
+            row["stack_removable"] = bool(row["in_stack"])
+            row["file_count"] = file_count
+            # Folder vs loose file. A folder is a drop target and expands to its
+            # children; a loose file is draggable INTO a folder. Both keep their
+            # own detail page and their own sharing.
+            row["is_folder"] = is_folder
+            row["file_kind"] = file_type_key
+            # A loose file's ROW id is its collection id (a single-file artefact
+            # IS its collection), but moving it needs the corpus_files id — so
+            # carry that separately rather than making the drag guess.
+            row["file_id"] = files[0]["id"] if (not is_folder and files) else ""
+            # The slug + the file's own name are what a client-side move needs to
+            # rebuild the moved row (its per-file URL is /library/{slug}/f/{id},
+            # and as a child it is titled by its FILENAME, not the artefact name)
+            # without a round-trip to re-render the page.
+            row["slug"] = col.get("slug") or ""
+            row["file_name"] = fname or ""
+            # The collection's OWN description, undefaulted. A collection row shows
+            # its file COUNT where the description would go, so the real thing has
+            # to travel separately for the client-side 1-file transition to restore
+            # it (the file default differs from the collection default).
+            row["own_description"] = col.get("description") or ""
+            row["children"] = []
+            if is_folder:
+                slug = col.get("slug")
+                for f in files:
+                    ftype_key, ftype_label = _artefact_type(1, f)
+                    fsize = f.get("size_bytes")
+                    child = _library_row_base(
+                        item_id=f["id"],
+                        kind="artefact",
+                        title=f.get("filename") or "Untitled file",
+                        description="",
+                        # Per-file detail page (files inside a folder had none).
+                        href=f"/library/{slug}/f/{f['id']}",
+                        glyph="doc",
+                        type_key="files",
+                        type_label=ftype_label,
+                        origin=origin,
+                        origin_label="Generated" if origin == "generated" else "Uploaded",
+                        added_iso=(f.get("created_at").isoformat() if f.get("created_at") is not None else None),
+                        owner_label=owner_label,
+                        ownership=ownership,
+                        # A file's own sharing is independent of its folder's.
+                        visibility=file_visibility(f["id"]),
+                        visibility_label="",
+                        meta_text=_human_size(fsize) if fsize else "",
+                        share_type=ResourceType.CORPUS_FILE.value,
+                        owner_key="me" if owned else (col.get("created_by") or ""),
+                    )
+                    child["file_kind"] = ftype_key
+                    child["file_id"] = f["id"]
+                    child["file_name"] = f.get("filename") or ""
+                    child["slug"] = slug or ""
+                    child["is_folder"] = False
+                    # Stack membership is per collection, so a file inherits its
+                    # folder's state rather than claiming an independent one.
+                    child["stack_state"] = row["stack_state"]
+                    child["stack_title"] = row["stack_title"]
+                    child["stack_pill"] = row["stack_pill"]
+                    child["parent_id"] = col["id"]
+                    child["visibility_label"] = {
+                        "workspace": "Workspace",
+                        "shared": "Shared",
+                    }.get(child["visibility"], "Private")
+                    row["children"].append(child)
+            items.append(row)
+    except Exception as e:
+        logger.warning("/library: could not enumerate artefacts: %s", e)
+
+    # ── Store entities the caller may see: SKILLS and PLUGINS ─────────────
+    # The Library is the single source of truth for what a user can reach, so it
+    # lists the store the same way the store itself decides visibility — the rule
+    # /api/marketplace browse already uses: entries whose review state is
+    # ``approved`` (readable by every authenticated user, i.e. shared with
+    # everyone) UNION the caller's own entries whatever state they are in. The
+    # repo's ``include_owner_id`` knob is exactly that union, and it already
+    # excludes the owner's archived rows.
+    #
+    # Deliberately NOT swept: pending or hidden entries belonging to someone
+    # else. An admin may be *able* to read those, but they are submissions in
+    # review, not things shared with anyone — moderation lives at /admin/store.
+    # AGENTS are also not swept: they keep their own surface at /agents. An agent
+    # the caller INSTALLED still lists (further down), as it always has.
+    #
+    # Visibility and Stack membership stay two separate properties: visibility is
+    # who can DISCOVER the entity (above), while an install row is what makes the
+    # default agent actually USE it. So authoring an entity does not put it in
+    # your Stack, and "Add to stack" / "Remove from stack" on these rows write
+    # POST / DELETE /api/store/entities/{id}/install.
+    installed_store: dict = {}
+    try:
+        for inst in user_store_installs_repo().list_for_user(uid):
+            installed_store[inst["id"]] = inst
+    except Exception as e:
+        logger.warning("/library: could not resolve store installs: %s", e)
+
+    for _etype, _type_label in (("skill", "Skill"), ("plugin", "Plugin")):
+        try:
+            _entities, _total = store_entities_repo().list(
+                type=_etype,
+                visibility_status=["approved"],
+                include_owner_id=uid,
+                limit=1000,
+            )
+        except Exception as e:
+            logger.warning("/library: could not enumerate %ss: %s", _etype, e)
+            continue
+        for s in _entities:
+            status = s.get("visibility_status") or "pending"
+            if status == "archived":
+                continue  # soft-deleted; hidden from every listing
+            owned = (s.get("owner_user_id") or "") == uid
+            version = s.get("version") or ""
+            meta_bits = [b for b in (s.get("category") or "", f"v{version}" if version else "") if b]
+            created = s.get("created_at")
+            if owned:
+                # The caller's own entry reports its real store state, which is
+                # the honest answer for an unpublished one ("In review",
+                # "Private") as well as a published one ("Workspace").
+                visibility, visibility_label = _SKILL_VISIBILITY.get(status, ("private", "Private"))
+                owner_label, owner_key = "You", "me"
+                ownership = "shared_by_me" if visibility == "workspace" else "mine"
+                origin, origin_label = "built", "Built here"
+            else:
+                # Someone else's approved entry: shared with everyone here.
+                visibility, visibility_label = "workspace", "Workspace"
+                owner_label = owner_name.get(s.get("owner_user_id"), "Someone")
+                owner_key = s.get("owner_user_id") or ""
+                ownership = "shared_with_me"
+                origin, origin_label = "shared", "Shared with everyone"
+            # v104: an organization-published item speaks for the instance, so
+            # the Owner column names the organization rather than whoever
+            # uploaded the bundle — including for the uploader themselves, since
+            # publisher is a property of the item, not of who is looking.
+            #
+            # Deliberately NO Publisher facet on this page: the Ownership segment
+            # (mine / shared with me / shared by me) already asks "whose is
+            # this", and two controls for one question is what the marketplace
+            # shelves got wrong. The Library gets the trust LABEL only.
+            _publisher_kind = s.get("publisher_kind") or "user"
+            if _publisher_kind == "organization":
+                owner_label = "Your organization"
+            items.append(
+                _library_row_base(
+                    item_id=s["id"],
+                    kind=_etype,
+                    title=s.get("name") or "",
+                    description=s.get("description") or "",
+                    href=f"/marketplace/flea/{s['id']}?from=library",
+                    glyph="plugins" if _etype == "plugin" else "doc",
+                    type_key=_etype,
+                    type_label=_type_label,
+                    origin=origin,
+                    origin_label=origin_label,
+                    added_iso=created.isoformat() if created is not None else None,
+                    owner_label=owner_label,
+                    ownership=ownership,
+                    visibility=visibility,
+                    visibility_label=visibility_label,
+                    meta_text=" · ".join(meta_bits),
+                    # Store visibility, not a group grant — the badge reports the
+                    # model rather than offering a grant nothing would read.
+                    share_type=None,
+                    tags=[s["category"]] if s.get("category") else [],
+                    owner_key=owner_key,
+                )
+            )
+            items[-1]["publisher_kind"] = _publisher_kind
+            # Only the positive verification state travels to the view — there is
+            # no "Unverified" label anywhere in the product.
+            items[-1]["verified"] = (s.get("verification_state") or "none") == "verified"
+            # Stack membership: the install row, addable and removable by the
+            # caller either way — including on their own entity.
+            _inst = installed_store.get(s["id"])
+            items[-1]["stack_endpoint"] = f"/api/store/entities/{s['id']}/install"
+            if _inst:
+                items[-1]["stack_state"] = "in_stack"
+                items[-1]["stack_pill"] = "In Stack"
+                items[-1]["stack_removable"] = True
+                items[-1]["stack_title"] = "The default agent can use this — click to remove it"
+            else:
+                items[-1]["stack_state"] = "available"
+                items[-1]["stack_addable"] = True
+                items[-1]["stack_title"] = (
+                    "Yours, but not part of your Stack"
+                    if owned
+                    else "Available to you, but the default agent can't use it until you add it"
+                )
+
+    # ── Everything else the caller has ACCESS to ──────────────────────────
+    # Beyond their own files/skills, the Library also lists what has been
+    # SHARED WITH them: governed data packages, memory domains, recipes and
+    # curated marketplace plugins granted to one of their groups, plus the
+    # community-store items they have installed. None of these are theirs to
+    # re-share, so they carry no Share action (``share_type=None``) — the grant
+    # is an admin's to change. Their "Source" facet says where they came from.
+    #
+    # Deliberately NOT included: the whole public community store. An approved
+    # store entity is readable by every authenticated user, so listing all of
+    # them would make every user's Library a copy of /marketplace rather than
+    # "the things I have". Installed items are the honest subset.
+    from app.services.stack_resolver import StackResolver
+    from src.repositories import marketplace_plugins_repo
+
+    resolver = StackResolver()
+
+    def _granted_ids(rt: str) -> set:
+        try:
+            return set(resource_grants_repo().list_resource_ids_for_user(uid, rt))
+        except Exception as e:
+            logger.warning("/library: could not resolve %s grants: %s", rt, e)
+            return set()
+
+    def _add_shared_row(
+        *,
+        item_id,
+        title,
+        description,
+        href,
+        glyph,
+        type_key,
+        type_label,
+        origin,
+        origin_label,
+        added,
+        meta_text,
+        owner_label,
+        requirement="optional",
+        tags=None,
+        owner_key=None,
+    ) -> None:
+        """Append one access-granted row (never owner-shareable)."""
+        items.append(
+            _library_row_base(
+                item_id=item_id,
+                kind=type_key,
+                title=title or "",
+                description=description or "",
+                href=href,
+                glyph=glyph,
+                type_key=type_key,
+                type_label=type_label,
+                origin=origin,
+                origin_label=origin_label,
+                added_iso=added.isoformat() if added is not None else None,
+                owner_label=owner_label,
+                ownership="shared_with_me",
+                visibility="shared",
+                visibility_label="Shared with you",
+                meta_text=meta_text,
+                share_type=None,
+                requirement=requirement,
+                tags=tags,
+                owner_key=owner_key or "workspace",
+            )
+        )
+        # Auto-membership: a grant on one of the caller's groups puts the
+        # resource in their Stack with no action needed (see StackResolver's
+        # `browse`), so these rows are always "In Stack" — never addable.
+        items[-1]["stack_state"] = "in_stack"
+        # Every granted row says the same thing about membership — "In Stack",
+        # because it is. A REQUIRED grant differs only in that the caller
+        # cannot drop it (the unsubscribe API answers 400
+        # ``cannot_remove_required``), which the LOCK and its tooltip carry.
+        items[-1]["stack_pill"] = "In Stack"
+        if requirement == "required":
+            items[-1]["stack_locked"] = True
+            items[-1]["stack_title"] = "Required by your admin and cannot be removed from your stack."
+        else:
+            items[-1]["stack_title"] = "Granted to your group, so it's in your Stack"
+
+    # Governed data packages + memory domains — StackResolver.browse() is
+    # exactly "required ∪ available for my groups" for these two types.
+    # Both drill-downs are slug-keyed (/catalog/p/{slug}, /memory/d/{slug}),
+    # so map id -> slug: a Library row is ONE package / ONE memory domain and
+    # must open that item, not the generic listing page.
+    try:
+        pkg_slugs = {r["id"]: r.get("slug") for r in data_packages_repo().list(limit=100000)}
+    except Exception:
+        pkg_slugs = {}
+    try:
+        dom_slugs = {r["id"]: r.get("slug") for r in memory_domains_repo().list(limit=100000)}
+    except Exception:
+        dom_slugs = {}
+    for rt, type_key, type_label, glyph in (
+        (ResourceType.DATA_PACKAGE, "data_package", "Data package", "data"),
+        (ResourceType.MEMORY_DOMAIN, "memory_domain", "Memory", "memory"),
+    ):
+        try:
+            for e in resolver.browse(uid, rt):
+                if type_key == "data_package":
+                    slug = pkg_slugs.get(e.id)
+                    href = f"/catalog/p/{slug}" if slug else "/catalog"
+                else:
+                    slug = dom_slugs.get(e.id)
+                    # ?source=library so the drill-down's back link returns
+                    # HERE instead of to the memory listing the caller never
+                    # visited (also feeds the memory_domain.view event).
+                    href = f"/memory/d/{slug}?source=library" if slug else f"/corporate-memory#{e.id}"
+                _add_shared_row(
+                    item_id=e.id,
+                    title=e.name,
+                    description=e.description,
+                    href=href,
+                    glyph=glyph,
+                    type_key=type_key,
+                    type_label=type_label,
+                    origin="granted",
+                    origin_label="Shared with you",
+                    added=None,
+                    meta_text=e.category or "",
+                    owner_label=e.owner_name or "Your workspace",
+                    # StackResolver's non-required tier is "available";
+                    # collapse it into "optional" so the facet has exactly two
+                    # values rather than a duplicate pair.
+                    requirement=("required" if e.requirement == "required" else "optional"),
+                    tags=list(e.tags or []),
+                )
+        except Exception as e:
+            logger.warning("/library: could not resolve %s: %s", rt.value, e)
+
+    # Recipes — granted, resolved straight off the repo (no _fetch_entries
+    # support for this type in StackResolver).
+    try:
+        recipe_ids = _granted_ids(ResourceType.RECIPE.value)
+        if recipe_ids:
+            for r in recipes_repo().list(limit=100000):
+                if r["id"] not in recipe_ids:
+                    continue
+                _add_shared_row(
+                    item_id=r["id"],
+                    title=r.get("title") or r.get("slug"),
+                    description=r.get("description"),
+                    href=f"/catalog/r/{r.get('slug') or r['id']}",
+                    glyph="doc",
+                    type_key="recipe",
+                    type_label="Recipe",
+                    origin="granted",
+                    origin_label="Shared with you",
+                    added=r.get("created_at"),
+                    meta_text="",
+                    owner_label="Your workspace",
+                )
+    except Exception as e:
+        logger.warning("/library: could not resolve recipes: %s", e)
+
+    # Curated marketplace plugins — grant resource_id is the canonical
+    # "<marketplace_slug>/<plugin_name>" path, so match on that.
+    try:
+        plugin_paths = _granted_ids(ResourceType.MARKETPLACE_PLUGIN.value)
+        if plugin_paths:
+            # The grant's resource_id is "<marketplace_id>/<plugin_name>" — the
+            # SAME key `require_resource_access(MARKETPLACE_PLUGIN,
+            # "{marketplace_id}/{plugin_name}")` gates the API with, and
+            # `marketplace_plugins.marketplace_id` already IS that id. This
+            # used to indirect through a `{id: row["slug"]}` map, but
+            # `marketplace_registry` has no `slug` column (its PRIMARY KEY id
+            # *is* the slug), so every lookup produced None → "None/<plugin>",
+            # matched no grant, and silently dropped EVERY curated plugin from
+            # the Library — invisibly, because a non-matching path is not an
+            # exception the enclosing handler could report.
+            for pl in marketplace_plugins_repo().list_all():
+                path = f"{pl.get('marketplace_id')}/{pl.get('name')}"
+                if path not in plugin_paths:
+                    continue
+                _add_shared_row(
+                    item_id=path,
+                    title=pl.get("display_name") or pl.get("name"),
+                    description=pl.get("description"),
+                    href=f"/marketplace/curated/{pl.get('marketplace_id')}/{pl.get('name')}",
+                    glyph="plugins",
+                    type_key="plugin",
+                    type_label="Plugin",
+                    origin="granted",
+                    origin_label="Shared with you",
+                    added=None,
+                    meta_text=pl.get("category") or "",
+                    owner_label="Your workspace",
+                )
+    except Exception as e:
+        logger.warning("/library: could not resolve marketplace plugins: %s", e)
+
+    # Installed AGENTS. Skills and plugins are already covered by the store sweep
+    # above — whether installed or not — so listing them here again would double
+    # every row. Agents are not swept (they have their own surface at /agents),
+    # so an installed one is surfaced here, as it always has been.
+    try:
+        for inst in installed_store.values():
+            if (inst.get("type") or "").lower() != "agent":
+                continue
+            _add_shared_row(
+                item_id=inst["id"],
+                title=inst.get("name"),
+                description=inst.get("description"),
+                href=f"/marketplace/flea/{inst['id']}?from=library",
+                glyph="doc",
+                type_key="agent",
+                type_label="Agent",
+                origin="installed",
+                origin_label="From the marketplace",
+                added=inst.get("installed_at") or inst.get("created_at"),
+                meta_text=inst.get("category") or "",
+                owner_label=inst.get("owner_display_name") or inst.get("owner_username") or "Someone",
+                tags=[inst["category"]] if inst.get("category") else [],
+                owner_key=inst.get("owner_user_id") or "",
+            )
+            # Installing a store item IS its Stack membership, and the caller may
+            # undo it — the same install endpoint, removed.
+            items[-1]["stack_state"] = "in_stack"
+            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_removable"] = True
+            items[-1]["stack_endpoint"] = f"/api/store/entities/{inst['id']}/install"
+            items[-1]["stack_title"] = "The default agent can use this — click to remove it"
+    except Exception as e:
+        logger.warning("/library: could not resolve installed agents: %s", e)
+
+    # Default order = recently added first (undated rows sort last).
+    items.sort(key=lambda c: c.get("added_iso") or "", reverse=True)
+
+    # ── Facets ────────────────────────────────────────────────────────────
+    # Only values actually present are offered, so the Filter menu never shows
+    # an option that matches nothing. Type is NOT a facet any more — items are
+    # GROUPED by type into collapsible sections instead, which is both the
+    # filter and the navigation.
+    def _present(attr_key: str, label_key: str) -> list:
+        counts: dict = {}
+        labels: dict = {}
+        for c in items:
+            k = c.get(attr_key)
+            if not k:
+                continue
+            counts[k] = counts.get(k, 0) + 1
+            labels[k] = c.get(label_key) or k
+        return sorted(((k, labels[k], n) for k, n in counts.items()), key=lambda x: x[1])
+
+    library_origins = _present("origin", "origin_label")
+    library_requirements = _present("requirement", "requirement_label")
+    library_owners = _present("owner_key", "owner_label")
+
+    # Stack is a single "In stack only" TOGGLE, not a category: its two states
+    # are complementary, so an Available/In-Stack submenu was a longer way to
+    # say "everything" — picking both equals picking neither, and picking
+    # "Available" is the unfiltered page minus what the toggle keeps. The count
+    # is what the toggle leaves standing, locked admin-required memberships
+    # included: a locked membership IS a membership (its tier is filterable on
+    # its own Optional/Required category).
+    library_in_stack_count = sum(1 for c in items if c.get("stack_state") == "in_stack")
+
+    # Tags are multi-valued per row, so they need their own tally.
+    tag_counts: dict = {}
+    for c in items:
+        for tag in c.get("tags") or []:
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    library_tags = sorted(((k, k, n) for k, n in tag_counts.items()), key=lambda x: x[1].lower())
+
+    # A single-valued facet is dead weight (every row matches), so drop it.
+    if len(library_requirements) < 2:
+        library_requirements = []
+    if len(library_owners) < 2:
+        library_owners = []
+    # Same rule for the Stack toggle: it renders only when flipping it would
+    # actually change the page — something is in the Stack, and something isn't.
+    library_stack_toggle = 0 < library_in_stack_count < len(items)
+
+    # ── Grouping: one collapsible section per type ─────────────────────────
+    # Section order is deliberate, and reads outward from what an agent is built
+    # on: the governed DATA first, then the capabilities that act on it
+    # (plugins, then the skills they bundle, then the agents and recipes made
+    # from both), then the caller's own files, and curated Memory last. The
+    # sections render folded, so this order is what the caller actually reads on
+    # arrival — a list of what the Library holds — which is why the shared,
+    # organization-wide inventory leads and personal uploads sit below it.
+    # Unlisted types fall to the end, alphabetically.
+    _SECTION_ORDER = [
+        "data_package",
+        "plugin",
+        "skill",
+        "agent",
+        "recipe",
+        # Loose files + collections-as-folders.
+        "files",
+        "memory_domain",
+    ]
+    grouped: dict = {}
+    for c in items:
+        grouped.setdefault(c["type_key"], []).append(c)
+
+    def _section_rank(type_key: str) -> tuple:
+        try:
+            return (0, _SECTION_ORDER.index(type_key), "")
+        except ValueError:
+            return (1, 0, type_key)
+
+    # Section headings name the CATEGORY, so they're plural regardless of how
+    # many rows are in them ("Skills", not "Skill"). Spelled out rather than
+    # suffixing "s" because several are irregular (PDFs, Memory, Data files).
+    _SECTION_LABELS = {
+        # Documents, images and every other format share one section, with
+        # collections nested inside it as folders.
+        "files": "Files",
+        "skill": "Skills",
+        "plugin": "Plugins",
+        "agent": "Agents",
+        "recipe": "Recipes",
+        "data_package": "Data packages",
+        "memory_domain": "Memory",
+    }
+    #: One line per group, in the header beside the label — the same slot My
+    #: Stack uses to say why a group exists ("Optional resources you added.").
+    #: Now that the groups are bands inside ONE list rather than separate
+    #: tables, the label alone no longer has a heading's worth of space around
+    #: it to explain itself. Kept to a short clause; a group with no hint simply
+    #: renders none.
+    _SECTION_HINTS = {
+        "files": "Uploaded by you, or generated by an agent.",
+        "skill": "Skills built here.",
+        "plugin": "Bundles of skills and commands.",
+        "agent": "Assistants you installed.",
+        "recipe": "Prepared analyses you can run.",
+        "data_package": "Governed data you can query.",
+        "memory_domain": "Curated organizational knowledge.",
+    }
+    #: Each section wears the SAME accent its members' detail pages wear, so a
+    #: type is recognizable by colour before the label is read. Values are the
+    #: `--ds-kind-*` vocabulary the detail hero resolves through
+    #: (macros/_detail.html sets `--kind: var(--ds-kind-{kind})`), paired with
+    #: that kind's canonical glyph for the section heading.
+    _SECTION_KINDS = {
+        "files": ("library", "library"),
+        "skill": ("skill", "skill"),
+        "plugin": ("plugin", "plugins"),
+        "agent": ("agent", "agent"),
+        "recipe": ("recipe", "recipes"),
+        "data_package": ("data", "data"),
+        "memory_domain": ("memory", "memory"),
+    }
+
+    def _section_rows(key: str, rows: list) -> list:
+        """Row order inside one section.
+
+        Files is the only mixed section: collections (folders) and loose files
+        share it, so the folders come FIRST as their own block — the reader sees
+        the containers before the loose contents, and the drop targets are all
+        in one place. Everything else keeps the global recency order.
+        """
+        if key != "files":
+            return rows
+        return [r for r in rows if r.get("is_folder")] + [r for r in rows if not r.get("is_folder")]
+
+    library_sections = []
+    for key, rows in sorted(grouped.items(), key=lambda kv: _section_rank(kv[0])):
+        kind, glyph = _SECTION_KINDS.get(key, ("library", "doc"))
+        library_sections.append(
+            {
+                "key": key,
+                "label": _SECTION_LABELS.get(key) or (rows[0]["type_label"] + "s"),
+                "hint": _SECTION_HINTS.get(key, ""),
+                "rows": _section_rows(key, rows),
+                "kind": kind,
+                "glyph": glyph,
+                # Top-level entries only — a folder counts once, not once per
+                # file inside it (its own count rides the folder row).
+                "count": len(rows),
+            }
+        )
 
     ctx = _build_context(
         request,
         user=user,
-        upload_entries=upload_entries,
-        upload_cards=upload_card_models,
+        library_items=items,
+        library_sections=library_sections,
+        library_origins=library_origins,
+        library_requirements=library_requirements,
+        library_in_stack_count=library_in_stack_count,
+        library_stack_toggle=library_stack_toggle,
+        library_owners=library_owners,
+        library_tags=library_tags,
+        # Highlight target after "Save to Library" (see the builders).
+        library_new_id=request.query_params.get("new") or "",
     )
-    return templates.TemplateResponse(request, "artefacts.html", ctx)
+    return templates.TemplateResponse(request, "library.html", ctx)
+
+
+@router.get("/artefacts", include_in_schema=False)
+async def artefacts_redirect():
+    """``/artefacts`` was renamed to ``/library``.
+
+    Kept as a temporary (307, not 308) redirect so existing links, bookmarks
+    and the onboarding tour keep working without pinning the old path in
+    browser caches.
+    """
+    return RedirectResponse(url="/library", status_code=307)
 
 
 @router.get("/agents", response_class=HTMLResponse)
@@ -1982,6 +3022,34 @@ async def agents_page(
             )
     except Exception as e:
         logger.warning("/agents: could not resolve memory stack: %s", e)
+    # Artefacts (file collections) the caller can reach — owned ∪ shared with a
+    # group they belong to (admin → all). These are a third knowledge kind the
+    # agent can be grounded in, alongside governed data + memory. Same access
+    # resolution the /artefacts page uses, so the builder never offers a file
+    # the caller can't actually open.
+    try:
+        from app.auth.access import accessible_collection_ids
+
+        allowed = accessible_collection_ids(user)  # None => admin sees all
+        cf_repo = corpus_files_repo()
+        for col in file_corpora_repo().list():
+            if allowed is not None and col["id"] not in allowed:
+                continue
+            try:
+                fcount = len(cf_repo.list_for_corpus(col["id"]))
+            except Exception:
+                fcount = 0
+            knowledge_sources.append(
+                {
+                    "id": col["id"],
+                    "kind": "file",
+                    "name": col.get("name") or col.get("slug"),
+                    "description": col.get("description") or "",
+                    "meta": f"{fcount} file{'' if fcount == 1 else 's'}",
+                }
+            )
+    except Exception as e:
+        logger.warning("/agents: could not resolve artefacts: %s", e)
 
     ctx = _build_context(
         request,
@@ -1989,6 +3057,31 @@ async def agents_page(
         knowledge_sources=knowledge_sources,
     )
     return templates.TemplateResponse(request, "agents.html", ctx)
+
+
+@router.get("/skills", response_class=HTMLResponse)
+async def skills_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Skills — the caller's authored skills, plus a builder to create more.
+
+    The index counterpart to the Skill Builder: a self-contained surface with
+    two in-page views (mirrors ``/agents``). The LIST view fetches the caller's
+    own skills client-side from ``GET /api/store/entities?type=skill&owner=…``
+    (which returns their whole catalogue, including entries still in review),
+    and the BUILDER view is a section-based authoring form that publishes to
+    ``POST /api/store/entities/from-markdown`` — the same endpoint the studio
+    Skill Builder uses, so quota, guardrails, and the store review pipeline all
+    apply identically. Category options come from the shared store taxonomy."""
+    from src.store_categories import STORE_CATEGORIES
+
+    ctx = _build_context(
+        request,
+        user=user,
+        store_categories=list(STORE_CATEGORIES),
+    )
+    return templates.TemplateResponse(request, "skills.html", ctx)
 
 
 @router.get("/catalog/semantics", response_class=HTMLResponse)
@@ -2180,30 +3273,63 @@ async def catalog_package_detail(
     return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
 
 
-@router.get("/library", response_class=HTMLResponse)
-async def library(
+@router.get("/library/{slug}/f/{file_id}", response_class=HTMLResponse)
+async def library_file_detail(
+    slug: str,
+    file_id: str,
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Library — the caller's accessible file Collections (bring-your-files).
+    """One file inside a collection — its own detail page.
 
-    Accessible = admin (all), plus collections owned by the caller
-    (private uploads) or granted to one of their groups (shared)."""
-    from app.auth.access import accessible_collection_ids
+    A single-file artefact IS its collection, so it keeps using
+    ``/library/{slug}``; this route serves the files *inside* a folder, which
+    previously had no page of their own. Reachable by anyone who can reach the
+    parent collection OR who holds a grant on the file itself (per-file
+    sharing), so a file shared out of a folder is actually openable.
+
+    404 for missing AND for no-access, matching the collection contract, so the
+    URL space can't be probed.
+    """
+    from app.auth.access import can_access_collection
+    from app.resource_types import ResourceType
+    from app.services.library_sharing import visibility_for
+
+    col = file_corpora_repo().get_by_slug(slug)
+    if not col:
+        raise HTTPException(status_code=404, detail="collection_not_found")
+    row = corpus_files_repo().get(file_id)
+    if not row or row.get("corpus_id") != col["id"]:
+        raise HTTPException(status_code=404, detail="file_not_found")
 
     is_admin = is_user_admin(user["id"], conn)
-    accessible_ids = accessible_collection_ids(user, conn)  # None => admin/all
-    allowed = None if accessible_ids is None else set(accessible_ids)
-    cf_repo = corpus_files_repo()
-    cards = []
-    for col in file_corpora_repo().list():
-        if not is_admin and allowed is not None and col["id"] not in allowed:
-            continue
-        files = cf_repo.list_for_corpus(col["id"])
-        cards.append({**col, "file_count": len(files)})
-    ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collections=cards)
-    return templates.TemplateResponse(request, "library.html", ctx)
+    can_parent = is_admin or can_access_collection(user["id"], col["id"], conn)
+    file_granted = False
+    if not can_parent:
+        try:
+            file_granted = file_id in set(
+                resource_grants_repo().list_resource_ids_for_user(user["id"], ResourceType.CORPUS_FILE.value)
+            )
+        except Exception:
+            file_granted = False
+    if not (can_parent or file_granted):
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    size = row.get("size_bytes")
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_admin,
+        collection=col,
+        file=row,
+        file_size_display=_human_size(size) if size else None,
+        file_visibility=visibility_for(ResourceType.CORPUS_FILE.value, file_id),
+        # An owner (or admin) may change this one file's sharing from here.
+        can_share=is_admin or col.get("created_by") == user["id"],
+    )
+    return templates.TemplateResponse(request, "library_file_detail.html", ctx)
 
 
 @router.get("/library/{slug}", response_class=HTMLResponse)
@@ -2668,6 +3794,10 @@ async def memory_domain_detail(
         required_count=required_count,
         effective_requirement="required" if effective_required else "available",
         in_stack=in_stack,
+        # Where the visitor came from, so the hero's back link returns THERE
+        # rather than always to the memory listing (the Library links in with
+        # ?source=library). Same value the view event already carries.
+        source=source_hint,
     )
     return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
@@ -3340,7 +4470,7 @@ async def marketplace_listing(
 ):
     import json as _json
     from src.category_icons import all_paths
-    from app.instance_config import get_value
+    from app.instance_config import get_store_verification_enabled, get_value
 
     curators_url = (get_value("marketplace", "curators_url") or "").strip()
     ctx = _build_context(
@@ -3348,6 +4478,9 @@ async def marketplace_listing(
         user=user,
         category_icons_json=_json.dumps(all_paths()),
         curators_url=curators_url,
+        # Off by default: an instance with no reviewer must not render the
+        # verification vocabulary at all (see get_store_verification_enabled).
+        store_verification_enabled=get_store_verification_enabled(),
     )
     return templates.TemplateResponse(request, "marketplace.html", ctx)
 
@@ -3356,6 +4489,7 @@ async def marketplace_listing(
 async def marketplace_flea_detail(
     request: Request,
     entity_id: str,
+    from_source: str | None = Query(None, alias="from"),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -3405,14 +4539,27 @@ async def marketplace_flea_detail(
     # v37: the Edit button locks while a submission is under review.
     edit_in_flight = bool(quarantine_sub and quarantine_sub.get("status") in ("pending_inline", "pending_llm"))
 
+    # v104 trust strip. `entity_owner_label` resolves the byline the same way
+    # the card does (display name → email → username) so the detail page never
+    # shows a kebab-case username where the grid showed a real name.
+    from app.api.store import _resolve_owner_display
+    from app.instance_config import get_store_verification_enabled
+
+    entity_owner_label = _resolve_owner_display(entity["owner_user_id"]) or entity.get("owner_username") or "Someone"
+
     common = dict(
         source="flea",
         entity=entity,
         entity_id=entity_id,
         is_owner=is_owner,
         is_admin=is_admin,
+        entity_owner_label=entity_owner_label,
+        store_verification_enabled=get_store_verification_enabled(),
         quarantine_sub=quarantine_sub,
         edit_in_flight=edit_in_flight,
+        # Where the visitor came from, so the detail page's back link can point
+        # home to the right surface (e.g. ?from=skills → the Skill builder).
+        from_source=from_source,
     )
 
     if entity["type"] == "plugin":
@@ -4228,7 +5375,6 @@ def admin_contribute_skill_delete(
     from app.marketplace_server.packager import invalidate_etag_cache
     from app.utils import get_marketplaces_dir
     from src.marketplace import _lock, _refresh_plugin_cache
-    from src.repositories import resource_grants_repo
     from src.skill_contribution import CONTRIBUTED_MARKETPLACE_SLUG
 
     repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG

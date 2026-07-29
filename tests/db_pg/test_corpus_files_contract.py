@@ -383,3 +383,24 @@ def test_multiple_null_paths_allowed(repo):
             storage_path=f"/p/loose{i}.md",
         )
     assert len(repo.list_for_corpus(CORPUS_ID)) == 3
+
+
+def test_move_to_corpus_reparents_and_clears_path(repo):
+    """Drag-and-drop in the Library moves a file between collections. The
+    file keeps its identity; `path` is cleared because it described a location
+    inside the OLD collection and is unique per (corpus_id, path)."""
+    a = repo.add(
+        corpus_id="col_src", filename="f.md", sha256="s1", file_type="md",
+        size_bytes=10, storage_path="blobs/s1", path="sub/f.md",
+    )
+    assert repo.move_to_corpus(a, "col_dst") is True
+    row = repo.get(a)
+    assert row["corpus_id"] == "col_dst"
+    assert row["path"] is None
+    # It left the source and joined the target.
+    assert [r["id"] for r in repo.list_for_corpus("col_dst")] == [a]
+    assert repo.list_for_corpus("col_src") == []
+
+
+def test_move_to_corpus_returns_false_when_missing(repo):
+    assert repo.move_to_corpus("cf_nonexistent", "col_dst") is False

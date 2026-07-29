@@ -2858,3 +2858,57 @@ class TestItemDetailHeroPlaceholder:
         # window + name-derived initials are gone.
         assert 'id="hero-icon"' in r.text
         assert 'id="hero-window-body"' not in r.text
+
+
+class TestDetailBackLink:
+    """The detail-page back link is pinned to the top (above the review banner
+    + versions card, not mid-page) and honors ?from=skills → Skill builder."""
+
+    def test_back_link_renders_above_versions_card(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backpos@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backpos")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        # Owner sees the versions card; the back link must render BEFORE it
+        # (top of page) rather than after it (the mid-page regression).
+        assert "detail-back" in r.text and "versions-card" in r.text
+        assert r.text.index("detail-back") < r.text.index("versions-card")
+
+    def test_from_skills_returns_to_skill_builder(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backfrom@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backfrom")
+        r = web_client.get(f"/marketplace/flea/{eid}?from=skills", cookies=owner_cookies)
+        assert r.status_code == 200
+        assert 'href="/skills"' in r.text
+        assert "Skill builder" in r.text
+
+    def test_default_back_link_is_not_skill_builder(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backdef@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backdef")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        # No ?from → the back link targets the marketplace, never /skills.
+        assert 'href="/skills"' not in r.text
+
+
+class TestDetailHeroOrdering:
+    """The kind-tinted hero IS the page header, so it renders first — the
+    owner/admin strip (actions + versions card) follows it. Previously the
+    strip rendered above the hero, pushing the header of a freshly published
+    skill below three other cards."""
+
+    def test_hero_renders_above_owner_strip(self, web_client):
+        _, owner_cookies = _create_user(web_client, "heropos@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="heropos")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        body = r.text
+        # Anchor on the markup, not the class name — the same names also
+        # appear in the page's <style> blocks.
+        back = '<a class="detail-back"'
+        hero = '<div class="detail-hero detail-hero--paneled">'
+        strip = '<div class="owner-actions">'
+        versions = '<div class="versions-card">'
+        for marker in (back, hero, strip, versions):
+            assert marker in body, marker
+        assert body.index(back) < body.index(hero) < body.index(strip) < body.index(versions)

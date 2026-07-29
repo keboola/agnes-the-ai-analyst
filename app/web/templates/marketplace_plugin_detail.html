@@ -653,6 +653,22 @@
      data-plugin-name="{{ plugin_name or '' }}"
      data-entity-id="{{ entity_id or '' }}"
      data-visibility="{{ entity.visibility_status if entity else 'approved' }}">
+  {# Back link — pinned to the very top, above the review banner + owner
+     actions strip (previously it rendered after them, landing mid-page).
+     Rail browses via the unified Catalog; topnav keeps the classic per-tab
+     marketplace link; ?from=skills returns to the Skill builder. #}
+  {% if from_source == 'skills' %}
+    {% set _back = '/skills' %}
+    {% set _back_label = 'Skill builder' %}
+  {% elif (ui_layout | default('topnav')) == 'rail' %}
+    {% set _back = '/catalog?kind=plugins' %}
+    {% set _back_label = 'All plugins' %}
+  {% else %}
+    {% set _back = '/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea') %}
+    {% set _back_label = 'Curated Marketplace' if source == 'curated' else 'Flea Market' %}
+  {% endif %}
+  <a class="detail-back" href="{{ _back }}">{{ detail.ico('back') }}{{ _back_label }}</a>
+
   {# Quarantine banner — owner / admin only when non-approved. Self-guarded. #}
   {% include "_quarantine_banner.html" %}
 
@@ -732,14 +748,6 @@
   {% endif %}
 
   {% include "_flea_versions.html" %}
-
-  {# Back target is layout-aware: the rail IA browses the marketplace through
-     the unified Catalog (`/catalog?kind=plugins`), not the topnav-only
-     `/marketplace` page — hardcoding the latter dead-ends rail users on an
-     orphaned surface. Topnav keeps the classic per-tab marketplace link. #}
-  {% set _back = '/catalog?kind=plugins' if (ui_layout | default('topnav')) == 'rail' else ('/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea')) %}
-  {% set _back_label = 'All plugins' if (ui_layout | default('topnav')) == 'rail' else ('Curated Marketplace' if source == 'curated' else 'Flea Market') %}
-  <a class="detail-back" href="{{ _back }}">{{ detail.ico('back') }}{{ _back_label }}</a>
 
   <div class="detail-hero detail-hero--paneled">
     {{ detail.hero_deco() }}

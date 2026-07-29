@@ -584,98 +584,25 @@
      data-inner-name="{{ inner_name or '' }}"
      data-visibility="{{ entity.visibility_status if entity else 'approved' }}">
 
-  {# v32+ quarantine banner. Owner / admin only when non-approved. #}
-  {% include "_quarantine_banner.html" %}
-
-  {% if entity and (is_owner or is_admin) %}
-  <style>
-    /* Container layout only — buttons render via `ds.button(variant=
-       'secondary'|'danger', size='sm')`, so per-button bg/border/
-       padding/disabled styling that lived here is supplied by the
-       canonical .btn family in style-custom.css. */
-    .item-detail .owner-actions {
-      display: flex; gap: var(--space-2); margin: 0 0 var(--space-4) 0;
-      justify-content: flex-end;
-    }
-  </style>
-  <div class="owner-actions">
-    {% if edit_in_flight %}
-      {{ ds.button('Edit (review in flight)', variant='secondary', size='sm',
-                   href='#', disabled=True,
-                   attrs='title="Wait for the in-flight review to finish before editing."') }}
-    {% else %}
-      {{ ds.button('Edit', variant='secondary', size='sm',
-                   href='/marketplace/flea/' ~ entity.id ~ '/edit',
-                   attrs='title="Edit metadata or upload a new version."') }}
-    {% endif %}
-    {# Same v35 delete UX as the plugin detail page — see comment there. #}
-    {% if is_admin %}
-      {% if entity.visibility_status == 'approved' %}
-        {{ ds.button('Archive', variant='danger', size='sm', type='button',
-                     id='owner-archive-btn',
-                     attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
-      {% elif entity.visibility_status == 'archived' %}
-        {{ ds.button('Archived', variant='danger', size='sm', type='button',
-                     disabled=True,
-                     attrs='title="Already archived. Hidden from browse; existing installs still served."') }}
-      {% else %}
-        {{ ds.button('Archive (not applicable while ' ~ entity.visibility_status ~ ')',
-                     variant='danger', size='sm', type='button', disabled=True,
-                     attrs='title="Archive is only available for approved entities. Use Override (in quarantine banner) to publish, Rescan to re-evaluate, or Hard delete to purge."') }}
-      {% endif %}
-      {% call ds.button(variant='danger', size='sm', type='button',
-                        id='owner-hard-delete-btn',
-                        attrs='title="Hard delete: drops the bundle + removes existing installs. Use only for legal / privacy removals. Visible only to admins — analysts won\'t see this button."') %}
-        Hard delete <span class="admin-only-hint">admin-only</span>
-      {% endcall %}
-    {% elif entity.visibility_status == 'approved' %}
-      {{ ds.button('Archive', variant='danger', size='sm', type='button',
-                   id='owner-archive-btn',
-                   attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
-    {% elif entity.visibility_status == 'archived' %}
-      {{ ds.button('Archived', variant='danger', size='sm', type='button',
-                   disabled=True,
-                   attrs='title="Already archived. Hidden from browse; existing installs still served."') }}
-    {% elif entity.visibility_status == 'pending' %}
-      {{ ds.button('Delete (locked — under review)', variant='danger', size='sm',
-                   type='button', disabled=True,
-                   attrs='title="Submission is under review — Delete is locked until checks finish."') }}
-    {% else %}
-      {{ ds.button('Delete (locked — quarantined)', variant='danger', size='sm',
-                   type='button', disabled=True,
-                   attrs='title="Submission is quarantined. Only an admin can delete it. Edit + re-upload to fix."') }}
-    {% endif %}
-  </div>
-
-  {% include "_flea_versions.html" %}
-
-  <script>
-  (function(){
-    const root = document.getElementById('root');
-    if (root.dataset.source !== 'flea' || !root.dataset.entityId) return;
-    function bindDel(id, opts){
-      const b = document.getElementById(id);
-      if (!b) return;
-      b.addEventListener('click', async () => {
-        if (!(await confirmModal(opts.confirm))) return;
-        const url = `/api/store/entities/${encodeURIComponent(root.dataset.entityId)}${opts.hard ? '?hard=true' : ''}`;
-        const r = await fetch(url, {method: 'DELETE'});
-        if (!r.ok) { await alertModal((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')'); return; }
-        window.location = '/marketplace?tab=flea';
-      });
-    }
-    bindDel('owner-archive-btn', {hard: false, confirm: 'Archive this entity? Disappears from browse; existing installs keep working.'});
-    bindDel('owner-hard-delete-btn', {hard: true, confirm: 'HARD DELETE — drops bundle + removes ALL existing installs. Continue?'});
-  })();
-  </script>
+  {# Back link — pinned to the very top, above the hero.
+     Layout-aware target; when the visitor arrived from the Skill builder
+     (`?from=skills`) it returns there instead of the generic marketplace. #}
+  {% if from_source == 'skills' %}
+    {% set _back = '/skills' %}
+    {% set _back_label = 'Skill builder' %}
+  {% elif (ui_layout | default('topnav')) == 'rail' %}
+    {% set _back = '/catalog?kind=plugins' %}
+    {% set _back_label = 'All plugins' %}
+  {% else %}
+    {% set _back = '/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea') %}
+    {% set _back_label = 'Curated Marketplace' if source == 'curated' else 'Flea Market' %}
   {% endif %}
-
-  {# Layout-aware back target — rail browses the marketplace via the unified
-     Catalog (`/catalog?kind=plugins`); topnav keeps the classic per-tab link. #}
-  {% set _back = '/catalog?kind=plugins' if (ui_layout | default('topnav')) == 'rail' else ('/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea')) %}
-  {% set _back_label = 'All plugins' if (ui_layout | default('topnav')) == 'rail' else ('Curated Marketplace' if source == 'curated' else 'Flea Market') %}
   <a class="detail-back" href="{{ _back }}">{{ detail.ico('back') }}{{ _back_label }}</a>
 
+  {# The hero is the page header, so it renders first — directly under the
+     back link. The owner/admin strip below it (review banner, actions,
+     versions) used to sit above the hero, which pushed the header of a
+     just-published skill halfway down the page. #}
   <div class="detail-hero detail-hero--paneled">
     {{ detail.hero_deco() }}
     <div class="detail-hero__bar">
@@ -740,6 +667,221 @@
       </div>
     </div>
   </div>
+
+  {# v32+ quarantine banner. Owner / admin only when non-approved. #}
+  {% include "_quarantine_banner.html" %}
+
+  {% if entity and (is_owner or is_admin) %}
+  <style>
+    /* Container layout only — buttons render via `ds.button(variant=
+       'secondary'|'danger', size='sm')`, so per-button bg/border/
+       padding/disabled styling that lived here is supplied by the
+       canonical .btn family in style-custom.css. */
+    .item-detail .owner-actions {
+      display: flex; gap: var(--space-2); margin: 0 0 var(--space-4) 0;
+      justify-content: flex-end;
+    }
+  </style>
+  <div class="owner-actions">
+    {% if edit_in_flight %}
+      {{ ds.button('Edit (review in flight)', variant='secondary', size='sm',
+                   href='#', disabled=True,
+                   attrs='title="Wait for the in-flight review to finish before editing."') }}
+    {% else %}
+      {{ ds.button('Edit', variant='secondary', size='sm',
+                   href='/marketplace/flea/' ~ entity.id ~ '/edit',
+                   attrs='title="Edit metadata or upload a new version."') }}
+    {% endif %}
+    {# Same v35 delete UX as the plugin detail page — see comment there. #}
+    {% if is_admin %}
+      {% if entity.visibility_status == 'approved' %}
+        {{ ds.button('Archive', variant='danger', size='sm', type='button',
+                     id='owner-archive-btn',
+                     attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
+      {% elif entity.visibility_status == 'archived' %}
+        {{ ds.button('Archived', variant='danger', size='sm', type='button',
+                     disabled=True,
+                     attrs='title="Already archived. Hidden from browse; existing installs still served."') }}
+      {% else %}
+        {{ ds.button('Archive (not applicable while ' ~ entity.visibility_status ~ ')',
+                     variant='danger', size='sm', type='button', disabled=True,
+                     attrs='title="Archive is only available for approved entities. Use Override (in quarantine banner) to publish, Rescan to re-evaluate, or Hard delete to purge."') }}
+      {% endif %}
+      {% call ds.button(variant='danger', size='sm', type='button',
+                        id='owner-hard-delete-btn',
+                        attrs='title="Hard delete: drops the bundle + removes existing installs. Use only for legal / privacy removals. Visible only to admins — analysts won\'t see this button."') %}
+        Hard delete <span class="admin-only-hint">admin-only</span>
+      {% endcall %}
+    {% elif entity.visibility_status == 'approved' %}
+      {{ ds.button('Archive', variant='danger', size='sm', type='button',
+                   id='owner-archive-btn',
+                   attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
+    {% elif entity.visibility_status == 'archived' %}
+      {{ ds.button('Archived', variant='danger', size='sm', type='button',
+                   disabled=True,
+                   attrs='title="Already archived. Hidden from browse; existing installs still served."') }}
+    {% elif entity.visibility_status == 'pending' %}
+      {{ ds.button('Delete (locked — under review)', variant='danger', size='sm',
+                   type='button', disabled=True,
+                   attrs='title="Submission is under review — Delete is locked until checks finish."') }}
+    {% else %}
+      {{ ds.button('Delete (locked — quarantined)', variant='danger', size='sm',
+                   type='button', disabled=True,
+                   attrs='title="Submission is quarantined. Only an admin can delete it. Edit + re-upload to fix."') }}
+    {% endif %}
+  </div>
+
+  {# ── Trust strip (v104) ───────────────────────────────────────────────
+     Publisher + verification live here, not on the card, because these are
+     decisions rather than glances. Deliberately understated: the primary
+     action on any item surface stays Add to stack.
+
+     Verification is admin-only and OPT-IN per instance — where the axis is off
+     the whole block collapses to the publisher row, because an instance with no
+     reviewer must not show the vocabulary. #}
+  <style>
+    .item-detail .trust-strip {
+      display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3);
+      margin: 0 0 var(--space-4) 0; padding: var(--space-3) var(--space-4);
+      border: 1px solid var(--ds-border); border-radius: var(--ds-radius-md);
+      background: var(--ds-surface-sunken); font-size: 13px;
+    }
+    .item-detail .trust-strip__label { color: var(--ds-text-muted); font-weight: 600; }
+    .item-detail .trust-strip__value { color: var(--ds-text-primary); font-weight: 600; }
+    .item-detail .trust-strip__note {
+      flex: 1 1 100%; color: var(--ds-text-secondary); font-size: 12.5px;
+    }
+    .item-detail .trust-strip__actions { margin-left: auto; display: flex; gap: var(--space-2); }
+    /* Local chips — this page does not load catalog_card.css, so .cc-trust
+       would render unstyled here. Same palette, same "at most one chip, never a
+       negative label" rule. */
+    .item-detail .trust-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 9px; border-radius: var(--ds-radius-pill);
+      border: 1px solid transparent; font-size: 11px; font-weight: 700;
+    }
+    .item-detail .trust-chip--org {
+      background: var(--ds-surface); border-color: var(--ds-border);
+      color: var(--ds-text-secondary);
+    }
+    .item-detail .trust-chip--verified {
+      background: var(--ds-accent-success-bg);
+      border-color: var(--ds-accent-success-line);
+      color: var(--ds-accent-success-ink);
+    }
+  </style>
+  <div class="trust-strip" id="trust-strip">
+    <span class="trust-strip__label">Publisher</span>
+    <span class="trust-strip__value">
+      {% if entity.publisher_kind == 'organization' %}Your organization{% else %}{{ entity_owner_label or entity.owner_username }}{% endif %}
+    </span>
+    {% if entity.publisher_kind == 'organization' %}
+      <span class="trust-chip trust-chip--org">Organization</span>
+    {% elif entity.verification_state == 'verified' %}
+      <span class="trust-chip trust-chip--verified">Verified</span>
+    {% endif %}
+
+    {% if entity.publisher_kind != 'organization' and store_verification_enabled %}
+      {# Workflow states are shown to the author and to admins only — other
+         users see the verdict, never the internal queue position. #}
+      {% if is_owner or is_admin %}
+        {% if entity.verification_state == 'requested' %}
+          <span class="trust-strip__note">Verification requested — an admin will take a look.</span>
+        {% elif entity.verification_state == 'changes_requested' %}
+          <span class="trust-strip__note">
+            Changes requested{% if entity.verification_note %}: {{ entity.verification_note }}{% endif %}
+          </span>
+        {% endif %}
+      {% endif %}
+      <div class="trust-strip__actions">
+        {% if is_admin %}
+          {% if entity.verification_state != 'verified' %}
+            {{ ds.button('Verify', variant='secondary', size='sm', type='button',
+                         id='verify-btn',
+                         attrs='data-verification-state="verified" title="Mark as reviewed by your organization."') }}
+          {% else %}
+            {{ ds.button('Remove verification', variant='secondary', size='sm', type='button',
+                         id='unverify-btn',
+                         attrs='data-verification-state="none" title="Withdraw the organization\'s verification."') }}
+          {% endif %}
+          {{ ds.button('Request changes', variant='secondary', size='sm', type='button',
+                       id='request-changes-btn',
+                       attrs='data-verification-state="changes_requested" title="Send the author a note. The item stays published."') }}
+        {% elif is_owner and entity.verification_state in ('none', 'changes_requested') %}
+          {{ ds.button('Request verification', variant='secondary', size='sm', type='button',
+                       id='request-verification-btn',
+                       attrs='title="Ask your organization to review this item."') }}
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+  <script>
+  (function(){
+    const root = document.getElementById('root');
+    const entityId = root && root.dataset.entityId;
+    if (!entityId) return;
+    async function send(url, opts) {
+      const r = await fetch(url, opts);
+      if (!r.ok) {
+        const detail = await r.json().catch(() => ({}));
+        await alertModal('Could not update verification (' + r.status + ')' +
+          (detail.detail ? ': ' + detail.detail : ''));
+        return;
+      }
+      window.location.reload();
+    }
+    function bindVerdict(id) {
+      const b = document.getElementById(id);
+      if (!b) return;
+      b.addEventListener('click', async () => {
+        const stateVal = b.dataset.verificationState;
+        // "Request changes" is the only verdict carrying a note — it is the one
+        // that has something to say to the author.
+        let note = null;
+        if (stateVal === 'changes_requested') {
+          note = await promptModal('What should the author change?');
+          if (note === null) return;
+        }
+        await send(`/api/store/entities/${encodeURIComponent(entityId)}/verification`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({verification_state: stateVal, note: note || null}),
+        });
+      });
+    }
+    ['verify-btn', 'unverify-btn', 'request-changes-btn'].forEach(bindVerdict);
+    const req = document.getElementById('request-verification-btn');
+    if (req) {
+      req.addEventListener('click', () => send(
+        `/api/store/entities/${encodeURIComponent(entityId)}/verification/request`,
+        {method: 'POST'},
+      ));
+    }
+  })();
+  </script>
+
+  {% include "_flea_versions.html" %}
+
+  <script>
+  (function(){
+    const root = document.getElementById('root');
+    if (root.dataset.source !== 'flea' || !root.dataset.entityId) return;
+    function bindDel(id, opts){
+      const b = document.getElementById(id);
+      if (!b) return;
+      b.addEventListener('click', async () => {
+        if (!(await confirmModal(opts.confirm))) return;
+        const url = `/api/store/entities/${encodeURIComponent(root.dataset.entityId)}${opts.hard ? '?hard=true' : ''}`;
+        const r = await fetch(url, {method: 'DELETE'});
+        if (!r.ok) { await alertModal((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')'); return; }
+        window.location = '/marketplace?tab=flea';
+      });
+    }
+    bindDel('owner-archive-btn', {hard: false, confirm: 'Archive this entity? Disappears from browse; existing installs keep working.'});
+    bindDel('owner-hard-delete-btn', {hard: true, confirm: 'HARD DELETE — drops bundle + removes ALL existing installs. Continue?'});
+  })();
+  </script>
+  {% endif %}
 
   <!-- Use cases — populated from marketplace-metadata.json use_cases[]. -->
   <section class="ds-card detail-section" id="panel-use-cases" hidden>
