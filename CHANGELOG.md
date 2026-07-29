@@ -12,8 +12,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- CLI: `agnes admin memory approve|reject|revoke|require|unrequire` — lifecycle moderation of corporate-memory knowledge items from the terminal, wrapping the existing governance endpoints (`POST /api/memory/admin/batch`, per-item `mark-unmandatory`) with the same dedicated audit rows. Status changes stay off the generic `edit`/`bulk-edit` paths by design; these subcommands are the CLI counterpart of the web admin review queue.
-
 ### Changed
 
 ### Fixed
@@ -23,6 +21,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+
+## [0.77.18] - 2026-07-29
+
+### Added
+
+- CLI: `agnes admin memory approve|reject|revoke|require|unrequire` — lifecycle moderation of corporate-memory knowledge items from the terminal, wrapping the existing governance endpoints (`POST /api/memory/admin/batch`, per-item `mark-unmandatory`) with the same dedicated audit rows. Status changes stay off the generic `edit`/`bulk-edit` paths by design; these subcommands are the CLI counterpart of the web admin review queue.
 
 ## [0.77.17] - 2026-07-29
 
