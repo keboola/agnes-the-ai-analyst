@@ -244,9 +244,11 @@ def resolve_token_to_user(
     if payload.get("typ") not in _PAT_LIKE_TYPES:
         # v106 follow-up: session-JWT-backed AGENT surfaces get the stack
         # data-read surface, mirroring the PAT default minted by `agnes
-        # init` / mcp_connect. Two mint sites tag themselves via the
+        # init` / mcp_connect. Three mint sites tag themselves via the
         # `scope` claim: the per-user chat runner (`mint_session_jwt`,
-        # scope="chat" — the E2B/web-chat sandbox) and the MCP
+        # scope="chat" — the E2B/web-chat sandbox), the brokered solo-chat
+        # replay identity (`app/api/broker.py::_mint_identity_jwt`, also
+        # scope="chat" — same narrowing, deliberately), and the MCP
         # streamable-HTTP OAuth transport (`app.auth.mcp_oauth`,
         # scope="mcp-oauth" — Claude Desktop / claude.ai connectors).
         # Browser session JWTs carry no scope claim → no key → surface

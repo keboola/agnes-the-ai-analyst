@@ -322,3 +322,17 @@ def test_direct_bq_path_all_surface_admin_keeps_bypass(monkeypatch):
     for user in ({"id": "admin1", "credential_surface": "all"}, {"id": "admin1"}):
         _, _, blocked = _run_bq_pass(user, allowed=None)
         assert blocked is None
+
+
+def test_chat_scope_mint_sites_carry_the_claim():
+    """Every session-JWT mint site that should be stack-narrowed carries the
+    scope claim the resolver keys on. Guards against a silent revert in any
+    one site (e.g. broker.py dropping scope='chat' would restore god-mode for
+    brokered admin solo sessions without failing any other test)."""
+    import inspect
+
+    import app.api.broker as broker_mod
+    from app.auth import access as access_mod
+
+    assert '"scope": "chat"' in inspect.getsource(access_mod.mint_session_jwt)
+    assert '"scope": "chat"' in inspect.getsource(broker_mod._mint_identity_jwt)
