@@ -293,7 +293,8 @@ NOT need to ship these in your template (if you do, Agnes replaces its own
 entries; foreign hook entries and a custom statusLine are preserved):
 
 - **SessionStart** → one detached `agnes update --quiet` (the convergence:
-  self-upgrade + template + Agnes-owned hooks/commands + marketplace + pull).
+  self-upgrade + template + Agnes-owned hooks/commands + marketplace + session
+  push catch-up + pull).
 - **SessionEnd** → detached `agnes push`.
 - **statusLine** → `agnes statusline` (the `🔒 agnes-private` indicator).
 - **Slash commands** → `/update-agnes-plugins`, `/agnes-private`.
@@ -345,8 +346,9 @@ These hook/statusLine entries mirror what Agnes installs automatically, so you
 normally leave them OUT of your repo — Agnes re-asserts them on every
 `agnes update`. They are shown only so you can see what the converged
 workspace ends up with. The single SessionStart `agnes update` runs the whole
-convergence (self-upgrade, template, marketplace, pull) in the background; the
-SessionEnd `agnes push` is detached so headless-mode SIGTERM can't truncate it.
+convergence (self-upgrade, template, marketplace, session push catch-up, pull)
+in the background; the SessionEnd `agnes push` is detached so headless-mode
+SIGTERM can't truncate it.
 
 ### Slash commands
 
