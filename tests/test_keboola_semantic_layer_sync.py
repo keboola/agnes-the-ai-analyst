@@ -1295,7 +1295,7 @@ class TestSyncSemanticLayerMultiSource:
 
 
 def test_metric_definitions_has_source_ref_column(tmp_path):
-    """v106: metric_definitions + glossary_terms grow a nullable
+    """v107: metric_definitions + glossary_terms grow a nullable
     ``source_ref`` column — per-connection provenance for the multi-project
     semantic-layer sync (2026-07-28 spec)."""
     from src.db import _ensure_schema
