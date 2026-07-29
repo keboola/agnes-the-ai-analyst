@@ -380,6 +380,37 @@ def test_library_add_actions_live_behind_one_menu(seeded_app):
     assert 'class="cbn cbn--bar"' not in head
 
 
+def test_search_and_new_ride_the_page_header(seeded_app):
+    """The two WHOLE-PAGE controls — search and "+ Add" — sit in the page header
+    on the title's row, not in the toolbar and not on the count row: neither one
+    narrows or reorders the list the way the toolbar's controls do."""
+    # One item, so the type sections actually render — they are what bounds the
+    # count row below (an empty Library renders no `data-lib-sec`).
+    _create_collection(seeded_app, "Row Anchor", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+
+    # Both live inside `.lib-head`, which the connect banner closes — so both
+    # land ahead of the banner, and everything below the header comes after it.
+    head = text.split('class="lib-head"', 1)[1].split('class="cbn cbn--bar"', 1)[0]
+    assert 'id="lib-search"' in head
+    assert 'id="lib-new-btn"' in head
+    assert 'id="lib-new-menu"' in head
+
+    # The toolbar keeps every list control and no search box, and both its rows
+    # centre now that the one flex-grow child has left.
+    assert 'class="fbar fbar--center"' in text
+    assert 'class="fbar-chips fbar-chips--center"' in text
+    bar = text.split('class="fbar fbar--center"', 1)[1].split('id="lib-chips"', 1)[0]
+    assert 'id="lib-search"' not in bar
+    for kept in ('id="lib-filter-btn"', 'id="lib-sort"', 'class="fbar-view"'):
+        assert kept in bar
+
+    # The count row carries the count alone.
+    row = text.split('class="lib-section-head"', 1)[1].split("data-lib-sec=", 1)[0]
+    assert 'id="lib-item-count"' in row
+    assert 'id="lib-new-btn"' not in row
+
+
 def test_library_head_closes_with_two_quiet_notices(seeded_app):
     """Both page-level caveats ride the shared `.pnote` component, in order:
     connect banner, then "content is still being prepared", then Data apps."""

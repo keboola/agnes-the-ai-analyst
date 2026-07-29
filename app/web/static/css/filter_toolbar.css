@@ -29,6 +29,14 @@
 }
 @media (max-width: 760px) { .fbar { flex-wrap: wrap; } }
 
+/* `--center` — for a bar whose SEARCH lives somewhere else (the Library keeps it
+   in the page header, level with the title). Search is the only flex-grow child,
+   so without it the remaining pills collapse to their content and pack against
+   the left edge of a full-width band, reading as leftovers in the corner rather
+   than as the page's control row. Centring restores a balanced strip. Opt-in, so
+   every bar that still owns its search is untouched. */
+.fbar--center { justify-content: center; }
+
 /* Search — the dominant control. */
 .fbar__search { position: relative; flex: 1 1 220px; min-width: 0; max-width: 420px; display: flex; align-items: center; }
 .fbar__search svg { position: absolute; left: 11px; width: 16px; height: 16px; color: var(--ds-text-muted); pointer-events: none; }
@@ -99,6 +107,10 @@
 
 .fbar-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
 .fbar-chips[hidden] { display: none; }
+/* Pairs with `.fbar--center`: the chips are row 2 of the same toolbar, so they
+   follow the bar's alignment — a chip should sit under the control it came from,
+   not across the page from it. */
+.fbar-chips--center { justify-content: center; }
 /* One chip per filter CATEGORY, reading "Source: Generated, Uploaded". The chip
    is its own edit affordance: the label+values part is a button that reopens
    that category's options popover, and the × clears the category outright. Long

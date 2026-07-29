@@ -167,14 +167,19 @@
 .cc-meta svg { width: 15px; height: 15px; flex-shrink: 0; }
 .cc-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Height matches the toolbar's other controls (`.fbar__search input`,
+   `.fbar-select select`, `.fbar-filter__btn`, `.fbar-toggle` — all 38px), so a
+   primary action sitting beside the search field or an input doesn't read as
+   a smaller, secondary control. */
 .cc-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 7px 12px;
+  height: 38px;
+  padding: 0 14px;
   border-radius: 9px;
   border: 1px solid var(--ds-border);
   background: var(--ds-surface);

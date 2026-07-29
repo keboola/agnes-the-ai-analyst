@@ -265,7 +265,14 @@
   /* Page chrome only — the table rides the shared .data-table primitive
      (style-custom.css), the toolbar + card grid ride .fbar-* (filter_toolbar.css);
      all colors come from --ds-* tokens. */
-  .lib-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; }
+  /* Title block left, the page's own controls (search + "+ Add") right, on ONE
+     row. `flex-start` keeps the controls level with the h1 rather than centring
+     them against the whole title block, which would drop them beside the lede.
+     The title block may shrink (`min-width: 0`) so a long lede never pushes the
+     controls off the row; below the wrap breakpoint the controls take a full row
+     of their own under the title. */
+  .lib-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px 20px; flex-wrap: wrap; margin: 8px 0 0; }
+  .lib-head__titles { flex: 1 1 320px; min-width: 0; }
   /* Page-level notes close the head: this banner, then the two `.pnote`
      caveats. The gap BELOW comes from padding, not margin — the first notice
      has no top margin of its own, and margin here would collapse-adjoin it.
@@ -276,10 +283,19 @@
   .lib-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
   .lib-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 68ch; }
   .lib-wip { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 2px 9px; }
-  /* Header actions — a single "+ Add" primary button whose chevron opens the
-     per-kind menu, so the header keeps one call to action as the Library grows
-     more kinds. */
+  /* Header actions — the search field plus a single "+ Add" primary button whose
+     chevron opens the per-kind menu, so the page keeps one call to action as the
+     Library grows more kinds. Rides `.lib-head`, level with the title. */
   .lib-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  /* The search reuses `.fbar__search` (which carries the icon, the input chrome
+     and the focus ring) and only re-states its flex sizing for this host: a
+     ~280px field that may shrink but not grow, instead of the toolbar's
+     grow-to-fill. It goes full-width once the actions wrap to their own row. */
+  .lib-head__search { flex: 0 1 280px; }
+  @media (max-width: 760px) {
+    .lib-actions { width: 100%; }
+    .lib-head__search { flex: 1 1 auto; max-width: none; }
+  }
   .lib-new { position: relative; }
   .lib-new__btn { display: inline-flex; align-items: center; gap: 7px; }
   .lib-new__caret { width: 15px; height: 15px; transition: transform .15s ease; }
@@ -296,7 +312,10 @@
 
   /* ── Section scaffolding ── */
   .lib-section { margin: 0; }
-  .lib-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+  /* Just the count now that "+ Add" sits in the page header — so the row loses
+     the 38px min-height that reserved a button's box and closes up to the type
+     bands it heads. */
+  .lib-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
   .lib-section-head .lib-count { font-size: 13px; color: var(--ds-text-muted); }
 
   /* ── Per-type accent ──
@@ -880,24 +899,34 @@
 {% endblock %}
 
 {% block page_head %}
+{# The header row carries the page's two WHOLE-PAGE controls on its right, level
+   with the title: SEARCH and the "+ Add" menu. Neither one narrows or reorders
+   the list the way the toolbar below does — search is the way INTO a library of
+   any size, "+ Add" the way to add to it — so they read as the page's own
+   controls, at a fixed spot in the header, rather than as two more chips in the
+   filter row. Search leaves `.fbar` entirely (it is the only control that ever
+   grew there, so the rest of the bar can then centre under the header) and
+   `#lib-search` keeps its id: filter_toolbar.js resolves it off `document`, so
+   the engine is indifferent to where in the page it sits. #}
 <div class="lib-head">
-  <div>
+  <div class="lib-head__titles">
     <h1>Library</h1>
     <p class="lede">Everything you have in one place — your files, images and documents, whether you uploaded them or an agent generated them, plus the skills you've built. Share any of it with your team, and {{ instance_brand_short or 'Agnes' }} indexes your files so your agents can search across them.</p>
   </div>
-  {# Every "add something" path lives behind ONE primary button + chevron, so
-     the header carries a single call to action however many kinds the Library
-     grows. Click (not hover) so it works on touch + keyboard. The plugin
-     builder is the existing /store/new upload wizard with the Plugin tile
-     preselected — a plugin is a real zip bundle, not a markdown body, so it
-     has no separate builder page. #}
-  {# No cross-link to /stack here: the toolbar's "In stack only" toggle already
-     answers "what can the default agent use?" against this same list, and the
-     list is a superset — data packages and memory domains come from the SAME
-     StackResolver.browse() the Stack page reads (see library_page), and the
-     toggle keeps locked admin-required memberships. A header link would just
-     point at a narrower view of the rows already on screen. See #1088. #}
   <div class="lib-actions">
+    {# Same `.fbar__search` control the toolbar used, carrying its own
+       `role="search"` landmark now that it no longer sits inside the bar's. #}
+    <div class="fbar__search lib-head__search" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+      <input type="search" id="lib-search" placeholder="Search library…" autocomplete="off" aria-label="Search library">
+    </div>
+
+    {# Every "add something" path lives behind ONE primary button + chevron, so
+       the page carries a single call to action however many kinds the Library
+       grows. Click (not hover) so it works on touch + keyboard. The plugin
+       builder is the existing /store/new upload wizard with the Plugin tile
+       preselected — a plugin is a real zip bundle, not a markdown body, so it
+       has no separate builder page. #}
     <div class="lib-new">
       <button type="button" class="cc-btn cc-btn--primary lib-new__btn" id="lib-new-btn"
               aria-haspopup="true" aria-expanded="false">
@@ -947,16 +976,17 @@
 
 {% block page_surface %}
 <section class="lib-section">
-  {# ── Toolbar (shared .fbar component). Row 1: search · ownership scope ·
-       Filter menu (Type + Source facets) · sort · table⇄grid view toggle.
-       Row 2 (#lib-chips): removable chips for applied facets. All client-side
-       (static/js/filter_toolbar.js) over the server-rendered rows. ── #}
-  <div class="fbar" role="search" aria-label="Filter library">
-    <div class="fbar__search">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
-      <input type="search" id="lib-search" placeholder="Search library…" autocomplete="off" aria-label="Search library">
-    </div>
+  {# ── Toolbar (shared .fbar component). Row 1: Filter menu (Type + Source
+       facets) · sort · table⇄grid view toggle. Row 2 (#lib-chips): removable
+       chips for applied facets. All client-side (static/js/filter_toolbar.js)
+       over the server-rendered rows.
 
+       Search is NOT here — it rides the page header (see `page_head`), which is
+       why both rows take `--center`: with the one flex-grow control gone, the
+       remaining pills would hug the left edge of a full-width band, under a
+       header whose own controls are at the right. The bar is a `group`, not a
+       `search` landmark, now that the input it fronted lives elsewhere. ── #}
+  <div class="fbar fbar--center" role="group" aria-label="Filter and sort library">
     {# Filter menu — CATEGORIES, each revealing its options in a secondary
        popover on hover/focus (see .fbar-cat in filter_toolbar.css). Type is
        absent by design: items are GROUPED by type into collapsible sections
@@ -1027,9 +1057,21 @@
     </div>
   </div>
 
-  {# Row 2 — applied-filter chips (populated by filter_toolbar.js). #}
-  <div class="fbar-chips" id="lib-chips" hidden></div>
+  {# Row 2 — applied-filter chips (populated by filter_toolbar.js). Centred to
+     match the bar that produced them: a chip should sit under the control it
+     came from, not across the page from it. #}
+  <div class="fbar-chips fbar-chips--center" id="lib-chips" hidden></div>
 
+  {# The row that opens the list, now carrying only the count: "+ Add" moved up
+     to the page header, level with the title, since it acts on the Library as a
+     whole rather than on the list the toolbar has narrowed.
+
+     No cross-link to /stack here: the toolbar's "In stack only" toggle already
+     answers "what can the default agent use?" against this same list, and the
+     list is a superset — data packages and memory domains come from the SAME
+     StackResolver.browse() the Stack page reads (see library_page), and the
+     toggle keeps locked admin-required memberships. A link would just point at a
+     narrower view of the rows already on screen. See #1088. #}
   <div class="lib-section-head">
     <span class="lib-count" id="lib-item-count">{{ library_items|length }} item{{ '' if library_items|length == 1 else 's' }}</span>
   </div>
