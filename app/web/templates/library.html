@@ -276,7 +276,7 @@
   .lib-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
   .lib-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 68ch; }
   .lib-wip { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 2px 9px; }
-  /* Header actions — a single "+ New" primary button whose chevron opens the
+  /* Header actions — a single "+ Add" primary button whose chevron opens the
      per-kind menu, so the header keeps one call to action as the Library grows
      more kinds. */
   .lib-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -291,6 +291,8 @@
   .lib-new__item:hover { background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); color: var(--ds-primary); }
   .lib-new__item svg { width: 17px; height: 17px; flex-shrink: 0; color: var(--ds-text-secondary); }
   .lib-new__item:hover svg { color: var(--ds-primary); }
+  /* WIP marker on a menu row sits at the far end, so the labels stay aligned. */
+  .lib-new__item .lib-wip { margin-left: auto; flex-shrink: 0; font-size: 9.5px; padding: 1px 6px; }
 
   /* ── Section scaffolding ── */
   .lib-section { margin: 0; }
@@ -899,7 +901,7 @@
     <div class="lib-new">
       <button type="button" class="cc-btn cc-btn--primary lib-new__btn" id="lib-new-btn"
               aria-haspopup="true" aria-expanded="false">
-        <span>+ New</span>
+        <span>+ Add</span>
         <svg class="lib-new__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <div class="lib-new__menu" id="lib-new-menu" role="menu" aria-label="Add to your library" hidden>
@@ -910,6 +912,7 @@
         <a class="lib-new__item" href="/store/new?type=plugin" role="menuitem">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 20 7v10l-8 4-8-4V7l8-4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 11 20 7M12 11v10M12 11 4 7" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
           <span>Build a plugin</span>
+          <span class="lib-wip">WIP</span>
         </a>
         <button type="button" class="lib-new__item" role="menuitem" data-new-upload>
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V5m0 0L8 9m4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -1115,7 +1118,7 @@
   {% else %}
   <div class="lib-empty">
     <h3>Your library is empty</h3>
-    <p>Use <b>+ New</b> to upload a file — keep it on its own, or group several into a collection — or to build a skill or a plugin. Everything you make lands here, ready to share.</p>
+    <p>Use <b>+ Add</b> to upload a file — keep it on its own, or group several into a collection — or to build a skill or a plugin. Everything you make lands here, ready to share.</p>
     <button type="button" class="cc-btn cc-btn--primary" data-new-upload>Upload a file</button>
   </div>
   {% endif %}
@@ -2382,7 +2385,7 @@
   });
   document.querySelectorAll('[data-close-share]').forEach(b => b.addEventListener('click', closeShare));
 
-  // ── "+ New" menu — one header control for every add-a-thing path. Click
+  // ── "+ Add" menu — one header control for every add-a-thing path. Click
   //    (not hover) so touch + keyboard work; closes on outside click, Escape,
   //    or picking an item (the upload item hands off to the modal below). ──
   const newBtn = document.getElementById('lib-new-btn');

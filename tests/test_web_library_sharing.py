@@ -20,6 +20,8 @@ read by nothing. ``/api/sharing/skill/...`` must 404 rather than pretend.
 
 from __future__ import annotations
 
+import re
+
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
@@ -355,7 +357,7 @@ def test_library_offers_grid_view_toggle(seeded_app):
 
 
 def test_library_add_actions_live_behind_one_menu(seeded_app):
-    """A single "+ New" chevron button fronts every add path; there is no
+    """A single "+ Add" chevron button fronts every add path; there is no
     separate per-kind button in the header, and no agent entry."""
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
     assert 'id="lib-new-btn"' in text
@@ -363,9 +365,19 @@ def test_library_add_actions_live_behind_one_menu(seeded_app):
     for label in ("Build a skill", "Build a plugin", "Upload a file"):
         assert f"<span>{label}</span>" in text
     assert "Build an agent" not in text
-    # The connect banner sits BELOW the header row, not inside it.
+    # "Build a plugin" still routes to the unfinished /store/new upload wizard,
+    # so that row (and only that row) carries the WIP marker. Matched with the
+    # whitespace between the two spans collapsed, so re-indenting the menu
+    # cannot break the assertion.
+    compact = re.sub(r">\s+<", "><", text)
+    assert '<span>Build a plugin</span><span class="lib-wip">WIP</span>' in compact
+    for live in ("Build a skill", "Upload a file"):
+        assert f'<span>{live}</span><span class="lib-wip">' not in compact
+    # The connect banner is a page-level note under the header, never inside
+    # the header row itself.
     assert 'class="cbn cbn--bar"' in text
-    assert text.index('id="lib-new-menu"') < text.index('class="cbn cbn--bar"')
+    head = text.split('class="lib-head"', 1)[1].split("</div>", 1)[0]
+    assert 'class="cbn cbn--bar"' not in head
 
 
 def test_library_head_closes_with_two_quiet_notices(seeded_app):
