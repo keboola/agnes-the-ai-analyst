@@ -2220,17 +2220,35 @@
                     + '  </div>'
                     + '  <a class="btn btn-secondary" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
                     + '  <button class="btn btn-secondary" onclick="openEditMemoryDomainModal(\'' + esc(d.id) + '\')" style="font-size:12px;">Edit</button>'
-                    + '  <button class="btn btn-danger" onclick="deleteMemoryDomain(\'' + esc(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
+                    + '  <button class="btn btn-danger" data-del-domain '
+                    +           'data-domain-id="' + esc(d.id) + '" '
+                    // Raw (unescaped) name in the data attribute — deleteMemoryDomain
+                    // renders it via textContent (confirmModal + undo toast), so an
+                    // HTML-escaped copy would double-escape. `esc` keeps the attribute
+                    // safe; reading .dataset decodes it back to the raw string.
+                    +           'data-domain-name="' + esc(d.name || d.slug || '') + '" '
+                    +           'style="font-size:12px;">Delete</button>'
                     + '</div>';
             }).join('');
+            wrap.querySelectorAll('[data-del-domain]').forEach(b =>
+                b.addEventListener('click', () =>
+                    deleteMemoryDomain(b.dataset.domainId, b.dataset.domainName)));
         } catch (e) {
             wrap.innerHTML = '<div class="empty-state" style="color:var(--error);">Failed to load domains: ' + e.message + '</div>';
         }
     }
 
     async function deleteMemoryDomain(id, name) {
-        // v54: soft delete + Undo toast. confirm() removed — the toast's
-        // 10s Undo button is the recovery affordance.
+        // Soft delete + Undo toast. An upfront confirm still guards it —
+        // deleting a domain drops its /memory/d/<slug> page, its
+        // knowledge_item_domains rows and its resource_grants, and the
+        // 10s toast is easy to miss.
+        if (!await confirmModal({
+            title: 'Delete memory domain?',
+            message: '"' + name + '" and its resource grants will be removed. You can undo for 10 seconds.',
+            confirmText: 'Delete',
+            danger: true,
+        })) return;
         try {
             const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id),
                 { method: 'DELETE', credentials: 'same-origin' });
