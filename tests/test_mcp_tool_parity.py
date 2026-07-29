@@ -70,3 +70,29 @@ def test_data_apps_preview_tools_are_foundation_tools():
         "agnes_data_app_credentials",
     ):
         assert name in FOUNDATION_TOOL_NAMES
+
+
+def test_data_app_tool_names_is_subset_of_foundation():
+    """The data-app family constant may not drift from the foundation list."""
+    from app.api.mcp.foundation_tools import (
+        DATA_APP_TOOL_NAMES,
+        FOUNDATION_TOOL_NAMES,
+    )
+
+    assert set(DATA_APP_TOOL_NAMES) <= set(FOUNDATION_TOOL_NAMES)
+
+
+def test_stdio_server_exposes_data_app_family():
+    """The CLI stdio ``agnes mcp`` server (cli/mcp/server.py) — the surface the
+    in-chat authoring agent connects through — must expose the whole data-app
+    family, or the chat agent can neither author/deploy nor emit the
+    ``data_app_preview`` render frame (the wave-3C in-chat preview pane).
+
+    The two HTTP foundation transports are covered above; the stdio server is a
+    separately hand-maintained curated subset, so it needs its own guard.
+    """
+    pytest.importorskip("mcp", reason="mcp package not installed")
+    from app.api.mcp.foundation_tools import DATA_APP_TOOL_NAMES
+    from cli.mcp import server as stdio_server
+
+    assert set(DATA_APP_TOOL_NAMES) <= _tool_names(stdio_server.mcp)

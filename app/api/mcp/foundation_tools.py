@@ -134,6 +134,31 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
 )
 
 
+# The hosted-data-app tool family — must be exposed on the CLI **stdio**
+# `agnes mcp` surface too, not only the HTTP foundation transports, because the
+# in-chat authoring agent connects through the stdio server
+# (`app/chat/runner.py::_agnes_mcp_servers()` spawns `agnes mcp` =
+# `cli/mcp/server.py`). Wave-3C originally registered these only here (the HTTP
+# foundation surface) — the stdio server hand-registers a curated analyst
+# subset and never got the family, so the chat agent could never emit the
+# `data_app_preview` render frame and the in-chat preview pane was inert. A
+# guard in tests/test_mcp_tool_parity.py asserts the stdio server exposes every
+# name below, and that this tuple stays a subset of FOUNDATION_TOOL_NAMES.
+DATA_APP_TOOL_NAMES: tuple[str, ...] = (
+    "data_apps_list",
+    "data_app_get",
+    "data_app_deploy",
+    "data_app_logs",
+    "data_app_create_draft",
+    "data_app_delete_draft",
+    "data_app_git_credential",
+    "agnes_data_app_preview",
+    "agnes_data_app_refresh",
+    "agnes_data_app_close",
+    "agnes_data_app_credentials",
+)
+
+
 def register_foundation_tools(
     mcp: FastMCP,
     *,
