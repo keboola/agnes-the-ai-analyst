@@ -32,9 +32,15 @@
        chips: '#af-chips',
        sort:    { el: '#af-sort',
                   keys: { added: 'data-added', name: 'data-name', files: 'data-files' },
-                  pinFirst: 'data-folder' },   // optional: rows carrying this
+                  pinFirst: 'data-folder',     // optional: rows carrying this
                                                // attribute sort above the rest,
                                                // whatever the chosen order
+                  headers: '.lib-sort',        // optional: clickable column
+                                               // headers (see below)
+                  wrap: '#lib-sortwrap' },     // optional: the toolbar
+                                               // control's wrapper, hidden in
+                                               // table view when `headers` are
+                                               // present
        count:   { el: '#af-upload-count', noun: 'artefact' },
        noResults: '#af-noresults',
        view:    { buttons: '.fbar-view__btn', tableWrap: '#lib-tablewrap',
@@ -51,6 +57,18 @@
    "Clear all" and by reset, which sync the button back. The facet's value comes
    from the control's `data-facet-value`, mirroring how an in-menu checkbox
    carries it in `value`.
+
+   `sort.headers` moves sorting onto the TABLE, where a column header is the
+   natural place to ask for an order: each button carries `data-sort-key` (a key
+   of `sort.keys`) and `data-sort-first` (the direction its first click applies —
+   `asc` for names, `desc` for dates). Clicking the active column flips it,
+   clicking another takes over; the engine drives `aria-sort` on the enclosing
+   `<th>`, an `is-sorted` class and a `data-sort-dir` hook for the caret. Only
+   columns with a meaningful order should get one — a categorical column the
+   Filter menu already slices is a filter, not a sort. On a sectioned page every
+   group has its own `<thead>`; all of them are kept in step. Pair it with
+   `sort.wrap` so the toolbar `<select>` yields to the headers in table view and
+   returns in grid view, where there are no headers.
 
    The optional `view` config adds a table ⇄ grid switch: cards are projected
    from the (filtered, sorted) rows by the caller's `card(row)` builder, so the
@@ -73,6 +91,10 @@
     var searchAttr = cfg.search ? cfg.search.attr : null;
     var sortEl = cfg.sort ? qs(cfg.sort.el) : null;
     var sortKeys = (cfg.sort && cfg.sort.keys) || {};
+    // Column headers as a second way to set the order (`sort.headers`), and the
+    // toolbar control's wrapper (`sort.wrap`) so the two never both show.
+    var sortBtns = (cfg.sort && cfg.sort.headers) ? qsa(cfg.sort.headers) : [];
+    var sortWrapEl = (cfg.sort && cfg.sort.wrap) ? qs(cfg.sort.wrap) : null;
     var countEl = cfg.count ? qs(cfg.count.el) : null;
     var noun = (cfg.count && cfg.count.noun) || 'item';
     var noResultsEl = cfg.noResults ? qs(cfg.noResults) : null;
@@ -448,6 +470,12 @@
         b.classList.toggle('is-active', on);
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
       });
+      // Where the columns can be clicked, the HEADERS are the sort control and
+      // the toolbar one would be a second readout of the same state — the same
+      // reason a facet with its own toolbar button grows no chip. So it shows
+      // only in grid view, where there are no headers to click. A page with no
+      // sortable headers keeps its control in both views.
+      if (sortWrapEl && sortBtns.length) sortWrapEl.hidden = !grid;
       if (grid) renderGrid();
     }
     function setView(value) {
@@ -488,11 +516,69 @@
       }
     }
 
-    // ── sort ──
+    // ── sort ─────────────────────────────────────────────────────────────────
+    //    ONE order, up to two ways to set it: the toolbar <select> and, on a
+    //    table, clickable column headers. Both write `sortValue` and both are
+    //    re-synced from it, so the order survives switching control and
+    //    switching view — and a page can offer either, or both.
+    var sortValue = (sortEl && sortEl.value) || (cfg.sort && cfg.sort.initial) || '';
+
+    //: A sort value is `<key>_<dir>` ("added_desc"). Split on the LAST
+    //: underscore so a multi-word key ("file_size_desc") still parses.
+    function sortParts(v) {
+      var i = String(v).lastIndexOf('_');
+      return i === -1 ? { key: v, dir: 'asc' } : { key: v.slice(0, i), dir: v.slice(i + 1) };
+    }
+    //: The direction a column opens in on its FIRST click — names read A→Z,
+    //: dates read newest-first, and a blanket "ascending" would open a date
+    //: column at the oldest row, which is never what "sort by date" means.
+    function firstDir(btn) { return btn.getAttribute('data-sort-first') || 'asc'; }
+
+    //: Push `sortValue` back onto every control that can display it. The
+    //: headers live in one <thead> PER GROUP on a sectioned page, so all of
+    //: them are updated — a group showing a stale arrow would be claiming a
+    //: different order for its own rows.
+    function syncSortControls() {
+      var cur = sortParts(sortValue);
+      if (sortEl && sortEl.value !== sortValue) sortEl.value = sortValue;
+      sortBtns.forEach(function (btn) {
+        var on = btn.getAttribute('data-sort-key') === cur.key;
+        var dir = on ? cur.dir : firstDir(btn);
+        btn.classList.toggle('is-sorted', on);
+        //: The caret always shows the direction it stands for: the ACTIVE one
+        //: on the sorted column, the one a first click would apply on the rest
+        //: (revealed on hover, so the header row isn't a wall of arrows).
+        btn.setAttribute('data-sort-dir', dir);
+        var th = btn.closest ? btn.closest('th') : null;
+        //: aria-sort is what a screen reader announces the column BY, so it
+        //: must name the applied state, not the affordance.
+        if (th) th.setAttribute('aria-sort', on ? (dir === 'asc' ? 'ascending' : 'descending') : 'none');
+        var label = btn.getAttribute('data-sort-label') || (btn.textContent || '').trim();
+        var next = on ? (cur.dir === 'asc' ? 'desc' : 'asc') : dir;
+        btn.setAttribute('aria-label',
+          'Sort by ' + label + ', ' + (next === 'asc' ? 'ascending' : 'descending'));
+      });
+    }
+
+    function setSort(value) {
+      sortValue = value;
+      syncSortControls();
+      applySort();
+    }
+
     function applySort() {
-      if (!sortEl || !rows.length) return;
-      var mode = sortEl.value;
-      var addedK = sortKeys.added, nameK = sortKeys.name, filesK = sortKeys.files;
+      if (!cfg.sort || !rows.length) return;
+      // Any key in `sort.keys` sorts, in either direction — the set of orders is
+      // whatever the page declares, not a fixed list baked in here, so adding a
+      // sortable column is one entry in `keys` and one header button. Keys named
+      // in `sort.numeric` compare as numbers; everything else compares as a
+      // string, which is right for names, owners, labels AND ISO timestamps
+      // alike (ISO 8601 sorts lexicographically, by design).
+      var cur = sortParts(sortValue);
+      var attr = sortKeys[cur.key];
+      if (!attr) return;                 //: unknown key — leave the order alone
+      var flip = cur.dir === 'desc' ? -1 : 1;
+      var numeric = ((cfg.sort && cfg.sort.numeric) || []).indexOf(cur.key) !== -1;
       // Optional structural grouping that OUTRANKS the chosen order: rows
       // carrying `sort.pinFirst` stay above the rest (e.g. the Library's
       // collections above its loose files). The group is part of the table's
@@ -504,14 +590,12 @@
           var pd = pinned(a) - pinned(b);
           if (pd !== 0) return pd;
         }
-        switch (mode) {
-          case 'added_asc':  return (a.getAttribute(addedK) || '').localeCompare(b.getAttribute(addedK) || '');
-          case 'name_asc':   return (a.getAttribute(nameK) || '').localeCompare(b.getAttribute(nameK) || '');
-          case 'name_desc':  return (b.getAttribute(nameK) || '').localeCompare(a.getAttribute(nameK) || '');
-          case 'files_desc': return (parseInt(b.getAttribute(filesK), 10) || 0) - (parseInt(a.getAttribute(filesK), 10) || 0);
-          case 'added_desc':
-          default:           return (b.getAttribute(addedK) || '').localeCompare(a.getAttribute(addedK) || '');
-        }
+        var av = a.getAttribute(attr) || '';
+        var bv = b.getAttribute(attr) || '';
+        var d = numeric
+          ? (parseInt(av, 10) || 0) - (parseInt(bv, 10) || 0)
+          : av.localeCompare(bv);
+        return flip * d;
       });
       // Re-attach each row to ITS OWN parent, not to rows[0]'s: on a sectioned
       // page the rows span one tbody per section, and appending them all to the
@@ -565,7 +649,19 @@
 
     // ── wiring ──
     if (searchEl) searchEl.addEventListener('input', apply);
-    if (sortEl) sortEl.addEventListener('change', applySort);
+    if (sortEl) sortEl.addEventListener('change', function () { setSort(sortEl.value); });
+    // Clicking a column header: the SAME column flips direction, a different
+    // one takes over in the direction that column is read in. There is no
+    // third "unsorted" state — the list always has an order, so a click that
+    // removed it would only ever leave the reader somewhere arbitrary.
+    sortBtns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-sort-key');
+        var cur = sortParts(sortValue);
+        var dir = cur.key === key ? (cur.dir === 'asc' ? 'desc' : 'asc') : firstDir(btn);
+        setSort(key + '_' + dir);
+      });
+    });
     if (cfg.segments) {
       qsa('.fbar-seg__btn', qs(cfg.segments.container)).forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -677,8 +773,16 @@
       apply();
     }
 
+    // The server renders the rows in the default order already, so the first
+    // paint needs no re-sort — only the controls have to be told which order
+    // that is, or the active column would start with no arrow on it.
+    syncSortControls();
+
     apply();
-    return { apply: apply, refresh: refresh, reset: resetAll, setView: setView, renderGrid: renderGrid };
+    return {
+      apply: apply, refresh: refresh, reset: resetAll,
+      setView: setView, renderGrid: renderGrid, setSort: setSort,
+    };
   }
 
   global.FilterToolbar = { init: init };

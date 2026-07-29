@@ -304,3 +304,90 @@ def test_every_row_carries_a_stack_state(seeded_app):
     assert rows, "no library rows rendered"
     stateless = [r for r in rows if 'data-stack=""' in r]
     assert not stateless, f"{len(stateless)} row(s) have no Stack state"
+
+
+# ---------------------------------------------------------------------------
+# Sorting lives on the column headers, not in the toolbar
+# ---------------------------------------------------------------------------
+
+
+def test_sortable_columns_are_name_owner_and_sharing(seeded_app):
+    """A column header is where a reader asks "order by this", so sorting moved
+    out of the toolbar and onto the columns. Type is excluded by design: the
+    list is already GROUPED by type into these very sections, so ordering by it
+    inside one of them is a no-op. Actions is not data."""
+    import re
+
+    _create(seeded_app, "Sort Columns", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+
+    head = text.split("<thead>", 1)[1].split("</thead>", 1)[0]
+    keys = re.findall(r'data-sort-key="([^"]+)"', head)
+    assert keys == ["name", "owner", "sharing"], f"sortable columns drifted: {keys}"
+    for dead in ("Type", "Actions"):
+        before, _, _ = head.partition(f">{dead}<")
+        assert _, f"{dead} header missing"
+        assert "lib-sort" not in before.rsplit("<th", 1)[-1], f"{dead} must not be sortable"
+
+
+def test_every_sortable_column_opens_a_to_z(seeded_app):
+    """All three sort text the reader can see, so all three open ascending —
+    there is no date column to want newest-first."""
+    import re
+
+    _create(seeded_app, "Sort Direction", seeded_app["admin_token"])
+    head = (
+        seeded_app["client"]
+        .get("/library", headers=_auth(seeded_app["admin_token"]))
+        .text.split("<thead>", 1)[1]
+        .split("</thead>", 1)[0]
+    )
+    pairs = re.findall(r'data-sort-key="([^"]+)" data-sort-first="([^"]+)"', head)
+    assert dict(pairs) == {"name": "asc", "owner": "asc", "sharing": "asc"}
+
+
+def test_sortable_header_keeps_the_plain_column_header_look(seeded_app):
+    """A sortable column is a column first and a control second: same muted
+    uppercase as the headers that don't sort, with a chevron as the entire
+    difference. The <button> UA style resets `text-transform`, so the header
+    would otherwise read "Name" in a row of "TYPE" / "OWNER"."""
+    # One item, or the type sections — and with them the <thead> — don't render.
+    _create(seeded_app, "Header Look", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert "text-transform: inherit; letter-spacing: inherit;" in text
+    assert 'Name <span class="lib-sort__dir"' in text
+    # No accent recolour on the active column — the chevron carries the state.
+    assert ".lib-sort.is-sorted { color: var(--ds-text-primary); }" in text
+
+
+def test_sharing_sorts_on_the_label_not_the_internal_key(seeded_app):
+    """`data-visibility` ("private" / "shared" / "workspace") does not sort into
+    the order the column is READ in, so the header sorts on the label the cell
+    actually shows."""
+    import re
+
+    _create(seeded_app, "Shared Sort", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert "sharing: 'data-sharing'" in text
+    labels = re.findall(r'data-sharing="([^"]*)"', text)
+    assert labels, "no row carries the Sharing sort key"
+    assert any(v and not v.islower() for v in labels), f"looks like keys, not labels: {set(labels)}"
+
+
+def test_toolbar_sort_select_is_grid_only(seeded_app):
+    """In table view the headers ARE the sort control, so the toolbar select
+    would be a second live readout of one order — it ships hidden and the engine
+    reveals it only in grid view, where there are no headers to click. Hidden by
+    the engine rather than by Jinja because the view is a client-side, persisted
+    choice the server cannot know."""
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert '<div class="fbar-select" id="lib-sortwrap" hidden>' in text
+    assert "headers: '.lib-table .lib-sort', wrap: '#lib-sortwrap'" in text
+
+    js = seeded_app["client"].get("/static/js/filter_toolbar.js").text
+    # One order, two controls, both re-synced from it.
+    assert "function setSort(value)" in js
+    assert "function syncSortControls()" in js
+    assert "if (sortWrapEl && sortBtns.length) sortWrapEl.hidden = !grid;" in js
+    # The header drives the accessible sorted state, not colour alone.
+    assert "th.setAttribute('aria-sort'" in js
