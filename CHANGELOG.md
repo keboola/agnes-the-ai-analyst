@@ -22,6 +22,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.27] - 2026-07-29
+
+### Fixed
+
+- The passthrough MCP forward's 502 detail now surfaces the upstream's actual
+  error instead of the MCP SDK's `unhandled errors in a TaskGroup
+  (1 sub-exception)` ExceptionGroup wrapper — the leaf `McpError` often carries
+  an actionable provider message (e.g. GitHub's token-policy remedy URL) that
+  chat agents and CLI callers were never shown. Same unwrapping the admin
+  connect probes gained in 0.77.13, now shared from `connectors/mcp/client.py`.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.77.26] - 2026-07-29
 
 ### Added

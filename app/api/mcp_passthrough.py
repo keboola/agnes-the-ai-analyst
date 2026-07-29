@@ -43,7 +43,7 @@ from app.api.mcp_policy import (
 )
 from app.auth.access import _user_group_ids
 from app.auth.dependencies import get_current_user
-from connectors.mcp.client import call_tool_async
+from connectors.mcp.client import call_tool_async, exc_summary
 from src.repositories import mcp_sources_repo, tool_registry_repo
 from src.repositories.tool_registry import PASSTHROUGH
 
@@ -226,7 +226,19 @@ async def invoke_passthrough_tool(
     except Exception as exc:
         logger.exception("passthrough call to %s failed", tool_id)
         # 502 — Agnes IS reachable, but the upstream MCP we're proxying isn't.
-        raise HTTPException(status_code=502, detail=f"upstream call failed: {exc}") from exc
+        # exc_summary unwraps the SDK's anyio ExceptionGroup so the caller
+        # (often a chat agent) sees the upstream's actionable message, not
+        # "unhandled errors in a TaskGroup (1 sub-exception)".
+        #
+        # Exposure decision (deliberate): the leaf message can carry the
+        # upstream URL / JSON-RPC error.message, and every RBAC-authorized
+        # caller of this tool sees it — that's the point (an actionable
+        # remedy beats an opaque wrapper). Agnes's own stored credential is
+        # never part of str(exc): auth rides only in the Authorization
+        # header (connectors/mcp/client._build_http_headers), which no
+        # exception type in this chain stringifies. Keep it that way — do
+        # not add query-string or URL-embedded auth to the client.
+        raise HTTPException(status_code=502, detail=f"upstream call failed: {exc_summary(exc)}") from exc
 
     redacted_text, redacted_data = redact_response(
         text=result.text,
