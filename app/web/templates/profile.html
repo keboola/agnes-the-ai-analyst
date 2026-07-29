@@ -270,6 +270,8 @@ async function pfSaveName() {
     if (resp.ok) {
       const saved = data.name ?? name.trim();
       document.getElementById("pf-name-text").textContent = saved || "—";
+      btn.disabled = false;
+      btn.textContent = "Save";
       pfCancelName();
       return;
     }
