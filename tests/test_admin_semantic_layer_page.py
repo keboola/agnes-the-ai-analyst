@@ -143,6 +143,52 @@ class TestSemanticLayerPageSources:
         assert '<td class="num">3</td>' in body
         assert '<td class="num">1</td>' in body
 
+    def test_semantic_layer_page_renders_skipped_source_neutrally(self, seeded_app, vault_key):
+        """A source whose last-sync entry has status='skipped' (the
+        duplicate-project dedupe short-circuit in
+        connectors/keboola/semantic_layer.py — carries no 'error' key) must
+        render with neutral copy/styling, not as a failure. Regression for
+        a review finding: the generic `{% elif s.last %}` fallback treated
+        any non-'ok' status as an error and rendered '✗ failed'."""
+        from app.api.keboola_semantic_layer_refresh import _record_completion
+
+        _make_master_connection(
+            "conn-a",
+            name="Production Project",
+            stack_url="https://connection.keboola.com",
+            token="master-tok",
+            is_default=True,
+        )
+        _record_completion(
+            "ok",
+            {
+                "status": "ok",
+                "sources": [
+                    {
+                        "connection_id": "conn-a",
+                        "name": "Production Project",
+                        "status": "skipped",
+                        "skipped_duplicate_project": 1,
+                    }
+                ],
+            },
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/semantic-layer", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+
+        assert "skipped" in body.lower()
+        assert 'class="sl-last-skipped"' in body
+        # Must NOT be rendered as a failure — the page's CSS/JS always
+        # contain the "sl-last-error"/"failed" strings (class definition,
+        # toolbar error toast), so scope this to the actual rendered
+        # per-source markup: no danger-styled span, no bare "✗".
+        assert 'class="sl-last-error"' not in body
+        assert "✗" not in body
+
     def test_semantic_layer_page_empty_state(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
