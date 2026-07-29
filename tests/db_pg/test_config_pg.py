@@ -217,6 +217,18 @@ def test_access_token_create_get_revoke(config_engine):
     assert row["revoked_at"] is not None
 
 
+def test_access_token_surface_column_v106(config_engine):
+    """v106: ``surface`` persists when passed and defaults to 'all' —
+    mirror of the DuckDB assertions in tests/test_pat_surface.py."""
+    from src.repositories.access_tokens_pg import AccessTokenPgRepository
+
+    repo = AccessTokenPgRepository(config_engine)
+    repo.create(id="ts1", user_id="u1", name="stack", token_hash="h", prefix="p1", surface="stack")
+    repo.create(id="ts2", user_id="u1", name="default", token_hash="h", prefix="p2")
+    assert repo.get_by_id("ts1")["surface"] == "stack"
+    assert repo.get_by_id("ts2")["surface"] == "all"
+
+
 def test_access_token_list_excludes_revoked_when_asked(config_engine):
     from src.repositories.access_tokens_pg import AccessTokenPgRepository
 

@@ -22,6 +22,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.18] - 2026-07-29
+
+### Added
+
+- PAT data-read **surface** (`personal_access_tokens.surface`, v106): `'all'` or `'stack'`. `POST /auth/tokens` accepts `surface` (default `all`) and token listings show it; `agnes auth token create --surface` mirrors it. New `POST /cli/auth/rescope-surface` (admin-only, PAT-authenticated) mints a full-surface token; `agnes init --as-admin` uses it.
+
+### Changed
+
+- **BREAKING** (admins only): PATs minted by `agnes init` / the CLI login exchange, Cowork setup bundles, and self-service MCP connections now carry `surface='stack'` — an admin's workspace/agent catalog and server-side queries follow their stack (required ∪ subscribed data packages + internal tables) like any analyst, instead of god-mode over every registered table. Existing tokens are grandfathered to `surface='all'`; opt up per-workspace with `agnes init --as-admin`. Parquet distribution was already stack-scoped and is unchanged; session (browser) logins and `/admin` are unchanged.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.77.17] - 2026-07-29
 
 ### Added

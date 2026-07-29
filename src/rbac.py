@@ -15,6 +15,23 @@ from fastapi import HTTPException
 from src.db import get_system_db
 
 
+def _credential_surface(user) -> str:
+    """The credential's data-read surface: ``'all'`` or ``'stack'`` (v106).
+
+    Stashed onto the user dict by ``resolve_token_to_user`` from the PAT
+    row's ``surface`` column. Every non-PAT credential (session JWT,
+    scheduler shared-secret, local-dev bypass) and every internal caller
+    that builds a bare user dict simply lacks the key — and MUST read as
+    ``'all'`` so their behavior is unchanged; only a PAT explicitly minted
+    with ``surface='stack'`` narrows an admin to the stack branch. Any
+    unrecognized value fails closed to ``'stack'`` (never widens).
+    """
+    if not isinstance(user, dict):
+        return "all"
+    value = user.get("credential_surface", "all") or "all"
+    return "all" if value == "all" else "stack"
+
+
 def table_not_in_stack_message(table_id: str) -> str:
     """Standardized 403 detail string for table-access denial.
 
@@ -62,6 +79,11 @@ def can_access_table(
          own rows.
       2. Admin god-mode — members of the Admin system group see every
          registered table (dict users only; a Principal is never admin).
+         v106: gated on the credential's data-read surface — a PAT minted
+         with ``surface='stack'`` (the `agnes init` default) drops an admin
+         into the stack branch below like any analyst. Non-PAT credentials
+         (session JWT, scheduler, local-dev) never carry the key and read
+         as ``'all'`` — see ``_credential_surface``.
       3. **Stack-gated**: the table must belong to at least one data
          package in the user's stack (required ∪ subscribed). Per-table
          resource_grants alone NO LONGER grant analyst visibility — the
@@ -104,7 +126,7 @@ def can_access_table(
     try:
         from app.auth.access import is_user_admin
 
-        if is_user_admin(user_id, conn):
+        if is_user_admin(user_id, conn) and _credential_surface(user) == "all":
             return True
 
         from app.services.stack_resolver import StackResolver
@@ -217,8 +239,15 @@ def get_accessible_tables(
     try:
         from app.auth.access import is_user_admin
 
-        if is_user_admin(user_id, conn):
-            return None  # admin sees everything
+        if is_user_admin(user_id, conn) and _credential_surface(user) == "all":
+            # Admin on a full-surface credential sees everything. The None
+            # sentinel is also a perf contract (single resolution, no N+1 —
+            # see app/api/catalog.py) so a surface='all' admin must get
+            # None, never a concrete all-ids list. An admin on a
+            # surface='stack' PAT falls through to the stack branch below —
+            # StackResolver.stack() already carries the admin subscription
+            # bypass, so their curated stack resolves like any analyst's.
+            return None
 
         from app.services.stack_resolver import StackResolver
         from app.resource_types import ResourceType

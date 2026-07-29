@@ -412,7 +412,7 @@ def test_da_auth_token_create_calls_api(monkeypatch):
     result = runner.invoke(auth_app, ["token", "create", "--name", "laptop", "--ttl", "30d"])
     assert result.exit_code == 0, result.output
     assert captured["path"] == "/auth/tokens"
-    assert captured["json"] == {"name": "laptop", "expires_in_days": 30}
+    assert captured["json"] == {"name": "laptop", "expires_in_days": 30, "surface": "all"}
     assert "raw-token-once" in result.output
 
 

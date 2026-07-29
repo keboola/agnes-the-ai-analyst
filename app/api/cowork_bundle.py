@@ -58,7 +58,7 @@ import textwrap
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -91,11 +91,14 @@ _SETUP_TOKEN_TTL = timedelta(hours=24)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _audit(conn, actor: str, action: str, target: str, params=None):
     try:
         audit_repo().log(
-            user_id=actor, action=action,
-            resource=f"setup_token:{target}", params=params,
+            user_id=actor,
+            action=action,
+            resource=f"setup_token:{target}",
+            params=params,
         )
     except Exception:
         pass
@@ -116,15 +119,22 @@ _SKILL_FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
 # Names reserved for Agnes curated skills — marketplace content must never
 # claim these so a plugin can't silently overwrite onboarding/workflow skills.
-_CURATED_SKILL_NAMES: frozenset[str] = frozenset({
-    "setup-cowork", "explore-data", "query-data", "new-skill",
-})
+_CURATED_SKILL_NAMES: frozenset[str] = frozenset(
+    {
+        "setup-cowork",
+        "explore-data",
+        "query-data",
+        "new-skill",
+    }
+)
 
 # Names reserved for Agnes curated agents — same protection as curated skills,
 # so a marketplace plugin can't shadow the bundled skill-router agent.
-_CURATED_AGENT_NAMES: frozenset[str] = frozenset({
-    "skill-router",
-})
+_CURATED_AGENT_NAMES: frozenset[str] = frozenset(
+    {
+        "skill-router",
+    }
+)
 
 
 def _filter_skill_for_bundle(text: str, name: str) -> str:
@@ -137,7 +147,7 @@ def _filter_skill_for_bundle(text: str, name: str) -> str:
     m = _SKILL_FM_RE.match(text)
     if not m:
         return f"---\nname: {name}\ndescription: {name}\n---\n\n{text.lstrip()}"
-    block, body = m.group(1), text[m.end():]
+    block, body = m.group(1), text[m.end() :]
     parsed: dict = {}
     for line in block.splitlines():
         if ":" in line and not line.startswith((" ", "\t")):
@@ -152,9 +162,7 @@ def _filter_skill_for_bundle(text: str, name: str) -> str:
     return "---\n" + "\n".join(lines) + "\n---\n" + body.lstrip("\n")
 
 
-def _collect_marketplace_content(
-    conn, user: dict
-) -> tuple[list[tuple[str, bytes]], list[tuple[str, bytes]]]:
+def _collect_marketplace_content(conn, user: dict) -> tuple[list[tuple[str, bytes]], list[tuple[str, bytes]]]:
     """Return (skills, agents) lists of (arcname, bytes) from the user's granted plugins.
 
     Skills land in ``.claude/skills/<name>/SKILL.md`` (directory format, with
@@ -168,6 +176,7 @@ def _collect_marketplace_content(
     agents: list[tuple[str, bytes]] = []
     try:
         from src import marketplace_filter
+
         plugins = marketplace_filter.resolve_user_marketplace(conn, user)
     except Exception:
         return skills, agents
@@ -185,8 +194,7 @@ def _collect_marketplace_content(
         if skills_dir.is_dir():
             for folder in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
                 skill_md = next(
-                    (f for f in folder.iterdir()
-                     if f.name.lower() == "skill.md" and f.is_file()),
+                    (f for f in folder.iterdir() if f.name.lower() == "skill.md" and f.is_file()),
                     None,
                 )
                 if skill_md is None:
@@ -207,9 +215,7 @@ def _collect_marketplace_content(
                 # never picked up). Emit the rewritten SKILL.md plus every
                 # supporting file (references/, assets/, ...) so the skill
                 # arrives intact and Claude can auto-select it.
-                skills.append(
-                    (f".claude/skills/{name}/SKILL.md", filtered.encode("utf-8"))
-                )
+                skills.append((f".claude/skills/{name}/SKILL.md", filtered.encode("utf-8")))
                 for extra in sorted(folder.rglob("*")):
                     if not extra.is_file() or extra == skill_md:
                         continue
@@ -242,6 +248,7 @@ def _collect_marketplace_content(
 
 # ── bundle generation helpers ─────────────────────────────────────────────────
 
+
 def _bundle_settings_json(server_url: str, access_token: str) -> str:  # noqa: ARG001
     """Return .claude/settings.json content for the setup bundle.
 
@@ -254,9 +261,7 @@ def _bundle_settings_json(server_url: str, access_token: str) -> str:  # noqa: A
     After that run setup.py deletes itself from the hook and replaces it with
     ``agnes pull``.
     """
-    _init_cmd = (
-        "python3 setup.py 2>/dev/null || python setup.py 2>/dev/null || true"
-    )
+    _init_cmd = "python3 setup.py 2>/dev/null || python setup.py 2>/dev/null || true"
     cfg = {
         "model": "sonnet",
         "permissions": {
@@ -684,7 +689,7 @@ def _bundle_setup_py(server_url: str) -> str:
     Fallback flags for Terminal use (when access_token is absent):
         python setup.py --server-url https://agnes.example.com --token <PAT>
     """
-    return textwrap.dedent(f"""\
+    return textwrap.dedent("""\
         #!/usr/bin/env python3
         \"\"\"Agnes Cowork one-time setup — no external packages needed.\"\"\"
         from __future__ import annotations
@@ -772,9 +777,9 @@ def _bundle_setup_py(server_url: str) -> str:
         if not pat and setup_token:
             try:
                 req = urllib.request.Request(
-                    f"{{server_url}}/api/auth/exchange-setup-token",
-                    data=json.dumps({{"setup_token": setup_token}}).encode(),
-                    headers={{"Content-Type": "application/json"}},
+                    f"{server_url}/api/auth/exchange-setup-token",
+                    data=json.dumps({"setup_token": setup_token}).encode(),
+                    headers={"Content-Type": "application/json"},
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as r:
@@ -793,7 +798,7 @@ def _bundle_setup_py(server_url: str) -> str:
             print("ERROR: No token available. Download a fresh bundle.")
             sys.exit(2)
 
-        print(f"Setting up Agnes Cowork for {{user_email or server_url}} ...")
+        print(f"Setting up Agnes Cowork for {user_email or server_url} ...")
 
         # 2. Save credentials — pure file I/O, no network needed.
         #    The Agnes CLI reads server URL from config.yaml (YAML, not JSON)
@@ -803,15 +808,15 @@ def _bundle_setup_py(server_url: str) -> str:
         config_dir.mkdir(parents=True, exist_ok=True)
         # config.yaml — read by the CLI (pyyaml); simple single-key YAML
         # written without the yaml library (stdlib-only constraint).
-        (config_dir / "config.yaml").write_text(f"server: {{server_url}}\\n")
+        (config_dir / "config.yaml").write_text(f"server: {server_url}\\n")
         # config.json — read by setup.py itself and some older tooling
         (config_dir / "config.json").write_text(
-            json.dumps({{"server": server_url}}, indent=2)
+            json.dumps({"server": server_url}, indent=2)
         )
         # token.json holds a plaintext bearer token → 0o600 (owner-only).
         _write_secret(
             config_dir / "token.json",
-            json.dumps({{"access_token": pat}}, indent=2),
+            json.dumps({"access_token": pat}, indent=2),
         )
         # Also write to the project folder — this file is on the Mac filesystem,
         # so it persists across cowork VM restarts (unlike ~/.config/agnes/ which
@@ -819,7 +824,7 @@ def _bundle_setup_py(server_url: str) -> str:
         # token → 0o600.
         _write_secret(
             HERE / ".agnes-creds.json",
-            json.dumps({{"server_url": server_url, "access_token": pat}}, indent=2),
+            json.dumps({"server_url": server_url, "access_token": pat}, indent=2),
         )
         print("Credentials saved.")
 
@@ -829,19 +834,19 @@ def _bundle_setup_py(server_url: str) -> str:
         settings_path = HERE / ".claude" / "settings.json"
         if settings_path.exists():
             cfg = json.loads(settings_path.read_text())
-            cfg.setdefault("hooks", {{}})
+            cfg.setdefault("hooks", {})
             cfg["hooks"]["SessionStart"] = [
-                {{"hooks": [{{"type": "command", "command":
+                {"hooks": [{"type": "command", "command":
                     "agnes pull --quiet 2>/dev/null || true"
-                }}]}},
+                }]},
             ]
             cfg["hooks"].pop("SessionEnd", None)
-            cfg["mcpServers"] = {{
-                "agnes": {{
+            cfg["mcpServers"] = {
+                "agnes": {
                     "command": sys.executable,
                     "args": [str(HERE / "mcp_server.py")],
-                }}
-            }}
+                }
+            }
             settings_path.write_text(json.dumps(cfg, indent=2) + "\\n")
             print("Session hook installed (agnes pull on start).")
 
@@ -921,29 +926,29 @@ def _bundle_setup_py(server_url: str) -> str:
                 # Plaintext token → 0o600.
                 _write_secret(
                     _stable_dir / ".agnes-creds.json",
-                    json.dumps({{"server_url": server_url, "access_token": pat}},
+                    json.dumps({"server_url": server_url, "access_token": pat},
                                indent=2),
                 )
                 # claude_desktop_config.json supports stdio transport only —
                 # "type": "sse" with headers is for claude.ai web, not Desktop.
-                _desktop_cfg = {{}}
+                _desktop_cfg = {}
                 if _cfg_path.exists():
                     try:
                         _desktop_cfg = json.loads(_cfg_path.read_text())
                     except Exception:
-                        _desktop_cfg = {{}}
-                _desktop_cfg.setdefault("mcpServers", {{}})
-                _desktop_cfg["mcpServers"]["agnes"] = {{
+                        _desktop_cfg = {}
+                _desktop_cfg.setdefault("mcpServers", {})
+                _desktop_cfg["mcpServers"]["agnes"] = {
                     "command": "python3",
                     "args": [str(_stable_mcp)],
-                }}
+                }
                 _cfg_path.parent.mkdir(parents=True, exist_ok=True)
                 _cfg_path.write_text(json.dumps(_desktop_cfg, indent=2))
-                print(f"Agnes MCP registered: {{_cfg_path}}")
+                print(f"Agnes MCP registered: {_cfg_path}")
                 _registered = True
                 break
             except Exception as _e:
-                _reg_errors.append(f"  {{_cfg_path}}: {{_e}}")
+                _reg_errors.append(f"  {_cfg_path}: {_e}")
                 continue
         if not _registered and _reg_errors:
             print("WARNING: Agnes MCP registration failed for all candidates:")
@@ -959,7 +964,7 @@ def _bundle_setup_py(server_url: str) -> str:
                          "button returned of (display dialog "
                          "\\"Agnes MCP tools registered. "
                          "Restart Claude Desktop now to activate them?\\" "
-                         "buttons {{\\"Later\\", \\"Restart Now\\"}} "
+                         "buttons {\\"Later\\", \\"Restart Now\\"} "
                          "default button \\"Restart Now\\" "
                          "with title \\"Agnes Cowork Setup\\")"],
                         capture_output=True, text=True, timeout=60,
@@ -988,21 +993,21 @@ def _bundle_setup_py(server_url: str) -> str:
         _user_claude_dir.mkdir(parents=True, exist_ok=True)
         _user_settings_path = _user_claude_dir / "settings.json"
         try:
-            _user_cfg = {{}}
+            _user_cfg = {}
             if _user_settings_path.exists():
                 try:
                     _user_cfg = json.loads(_user_settings_path.read_text())
                 except Exception:
-                    _user_cfg = {{}}
-            _user_cfg.setdefault("mcpServers", {{}})
+                    _user_cfg = {}
+            _user_cfg.setdefault("mcpServers", {})
             _mcp_path = (
                 str(_stable_mcp) if _registered
                 else str(HERE / "mcp_server.py")
             )
-            _user_cfg["mcpServers"]["agnes"] = {{
+            _user_cfg["mcpServers"]["agnes"] = {
                 "command": sys.executable,
                 "args": [_mcp_path],
-            }}
+            }
             _user_settings_path.write_text(json.dumps(_user_cfg, indent=2) + "\\n")
             print("Agnes MCP registered in ~/.claude/settings.json (user-level).")
         except Exception:
@@ -1018,8 +1023,8 @@ def _bundle_setup_py(server_url: str) -> str:
         #    Skipped silently if unreachable — the existing CLAUDE.md stays.
         try:
             req2 = urllib.request.Request(
-                f"{{server_url}}/api/welcome?server_url={{server_url}}",
-                headers={{"Authorization": f"Bearer {{pat}}"}},
+                f"{server_url}/api/welcome?server_url={server_url}",
+                headers={"Authorization": f"Bearer {pat}"},
             )
             with urllib.request.urlopen(req2, timeout=10, context=_SSL_CTX) as r:
                 welcome = json.loads(r.read())
@@ -1046,8 +1051,8 @@ def _bundle_setup_py(server_url: str) -> str:
 
         print()
         print("Agnes Cowork ready!")
-        print(f"  Server : {{server_url}}")
-        print(f"  Account: {{user_email}}")
+        print(f"  Server : {server_url}")
+        print(f"  Account: {user_email}")
         print(f"  MCP    : starts automatically when you open this project")
         print()
         print("Ask: \\"What data do I have access to?\\"")
@@ -1339,14 +1344,17 @@ def _build_bundle_zip(
     ``setup_token`` is kept for the ``agnes init --bundle`` CLI path which runs
     outside the sandbox and does the full server-side exchange.
     """
-    bundle_json = json.dumps({
-        "version": 1,
-        "server_url": server_url,
-        "setup_token": setup_token,
-        "access_token": access_token,
-        "user_email": user_email,
-        "expires_at": expires_at.isoformat(),
-    }, indent=2)
+    bundle_json = json.dumps(
+        {
+            "version": 1,
+            "server_url": server_url,
+            "setup_token": setup_token,
+            "access_token": access_token,
+            "user_email": user_email,
+            "expires_at": expires_at.isoformat(),
+        },
+        indent=2,
+    )
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -1367,9 +1375,9 @@ def _build_bundle_zip(
         # skill(s) for a task (Cowork's Customize panel can't list them).
         zf.writestr(f"{folder_name}/.claude/agents/skill-router.md", _bundle_agent_skill_router())
         # Marketplace skills + agents from the user's RBAC-granted plugins.
-        for arcname, content in (marketplace_skills or []):
+        for arcname, content in marketplace_skills or []:
             zf.writestr(f"{folder_name}/{arcname}", content)
-        for arcname, content in (marketplace_agents or []):
+        for arcname, content in marketplace_agents or []:
             zf.writestr(f"{folder_name}/{arcname}", content)
         zf.writestr(
             f"{folder_name}/CLAUDE.md",
@@ -1379,6 +1387,7 @@ def _build_bundle_zip(
 
 
 # ── request / response models ─────────────────────────────────────────────────
+
 
 class ExchangeRequest(BaseModel):
     setup_token: str
@@ -1397,6 +1406,7 @@ class SetupTokenItem(BaseModel):
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
+
 
 @user_router.post("/cowork-bundle", status_code=200)
 async def generate_bundle(
@@ -1423,8 +1433,7 @@ async def generate_bundle(
             detail={
                 "kind": "too_many_setup_tokens",
                 "hint": (
-                    f"You have {active_count} active setup tokens. "
-                    "Revoke unused ones before generating a new bundle."
+                    f"You have {active_count} active setup tokens. Revoke unused ones before generating a new bundle."
                 ),
                 "active_count": active_count,
             },
@@ -1434,9 +1443,7 @@ async def generate_bundle(
     token_hash = _hash_token(raw_token)
     token_id = str(uuid.uuid4())
     expires_at = datetime.now(timezone.utc) + _SETUP_TOKEN_TTL
-    server_url = (
-        os.environ.get("AGNES_BASE_URL") or str(request.base_url)
-    ).rstrip("/")
+    server_url = (os.environ.get("AGNES_BASE_URL") or str(request.base_url)).rstrip("/")
 
     repo.create(
         id=token_id,
@@ -1449,6 +1456,7 @@ async def generate_bundle(
     # save credentials without any outbound HTTP — works inside Claude
     # Desktop's sandboxed Bash tool which blocks external network calls.
     import hashlib as _hl
+
     pat_id = str(uuid.uuid4())
     pat_jwt = create_access_token(
         user_id=user["id"],
@@ -1465,10 +1473,11 @@ async def generate_bundle(
         token_hash=_hl.sha256(pat_jwt.encode()).hexdigest(),
         prefix=pat_id.replace("-", "")[:8],
         expires_at=expires_at,
+        # v106: Cowork onboarding is an analyst surface — stack default.
+        surface="stack",
     )
 
-    _audit(conn, user["id"], "cowork_bundle.create", token_id,
-           {"server_url": server_url})
+    _audit(conn, user["id"], "cowork_bundle.create", token_id, {"server_url": server_url})
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     folder_name = f"agnes-cowork-setup-{ts}"
@@ -1583,6 +1592,7 @@ async def exchange_setup_token(
         extra_claims={"scope": "cowork"},
     )
     import hashlib as _hl
+
     pat_hash = _hl.sha256(jwt_token.encode()).hexdigest()
     prefix = token_id.replace("-", "")[:8]
     expires_at = now + expires_delta
@@ -1593,14 +1603,13 @@ async def exchange_setup_token(
         token_hash=pat_hash,
         prefix=prefix,
         expires_at=expires_at,
+        # v106: Cowork onboarding is an analyst surface — stack default.
+        surface="stack",
     )
 
-    _audit(conn, user_row["id"], "cowork_bundle.exchange", row["id"],
-           {"pat_id": token_id})
+    _audit(conn, user_row["id"], "cowork_bundle.exchange", row["id"], {"pat_id": token_id})
 
-    server_url = (
-        os.environ.get("AGNES_BASE_URL") or str(request.base_url)
-    ).rstrip("/")
+    server_url = (os.environ.get("AGNES_BASE_URL") or str(request.base_url)).rstrip("/")
     return ExchangeResponse(
         access_token=jwt_token,
         server_url=server_url,
