@@ -135,6 +135,43 @@ def test_session_token_carries_no_surface_key(fresh_db):
         close_system_db()
 
 
+def test_agent_scoped_session_tokens_get_stack_surface(fresh_db):
+    """Session JWTs minted for AGENT surfaces (chat runner scope='chat',
+    MCP OAuth scope='mcp-oauth') stamp the stack surface; other scope
+    values behave like a plain browser session (no key)."""
+    from src.db import close_system_db, get_system_db
+    from src.repositories.users import UserRepository
+
+    conn = get_system_db()
+    try:
+        UserRepository(conn).create("u3", "u3@test", "U3")
+        from app.auth.jwt import create_access_token
+        from app.auth.pat_resolver import resolve_token_to_user
+
+        for scope, expect_stack in (("chat", True), ("mcp-oauth", True), ("general", False)):
+            jwt = create_access_token(user_id="u3", email="u3@test", extra_claims={"scope": scope})
+            user, reason = resolve_token_to_user(conn, jwt, request=None)
+            assert reason is None, scope
+            if expect_stack:
+                assert user["credential_surface"] == "stack", scope
+            else:
+                assert "credential_surface" not in user, scope
+    finally:
+        conn.close()
+        close_system_db()
+
+
+def test_mcp_oauth_mints_scope_claim(fresh_db):
+    """Both MCP-OAuth mint sites tag their access tokens with scope='mcp-oauth'
+    so the resolver's surface stamp actually fires."""
+    import inspect
+
+    from app.auth import mcp_oauth
+
+    src = inspect.getsource(mcp_oauth)
+    assert src.count('extra_claims={"scope": "mcp-oauth"}') == 2
+
+
 # ---------------------------------------------------------------------------
 # RBAC gate (src/rbac.py)
 # ---------------------------------------------------------------------------
@@ -285,3 +322,17 @@ def test_direct_bq_path_all_surface_admin_keeps_bypass(monkeypatch):
     for user in ({"id": "admin1", "credential_surface": "all"}, {"id": "admin1"}):
         _, _, blocked = _run_bq_pass(user, allowed=None)
         assert blocked is None
+
+
+def test_chat_scope_mint_sites_carry_the_claim():
+    """Every session-JWT mint site that should be stack-narrowed carries the
+    scope claim the resolver keys on. Guards against a silent revert in any
+    one site (e.g. broker.py dropping scope='chat' would restore god-mode for
+    brokered admin solo sessions without failing any other test)."""
+    import inspect
+
+    import app.api.broker as broker_mod
+    from app.auth import access as access_mod
+
+    assert '"scope": "chat"' in inspect.getsource(access_mod.mint_session_jwt)
+    assert '"scope": "chat"' in inspect.getsource(broker_mod._mint_identity_jwt)

@@ -242,6 +242,21 @@ def resolve_token_to_user(
         return None, "deactivated"
 
     if payload.get("typ") not in _PAT_LIKE_TYPES:
+        # v106 follow-up: session-JWT-backed AGENT surfaces get the stack
+        # data-read surface, mirroring the PAT default minted by `agnes
+        # init` / mcp_connect. Three mint sites tag themselves via the
+        # `scope` claim: the per-user chat runner (`mint_session_jwt`,
+        # scope="chat" — the E2B/web-chat sandbox), the brokered solo-chat
+        # replay identity (`app/api/broker.py::_mint_identity_jwt`, also
+        # scope="chat" — same narrowing, deliberately), and the MCP
+        # streamable-HTTP OAuth transport (`app.auth.mcp_oauth`,
+        # scope="mcp-oauth" — Claude Desktop / claude.ai connectors).
+        # Browser session JWTs carry no scope claim → no key → surface
+        # 'all' → /admin and the web UI are untouched. Non-admins are
+        # unaffected either way (the surface only gates the admin
+        # short-circuit in src/rbac.py).
+        if payload.get("scope") in ("chat", "mcp-oauth"):
+            user["credential_surface"] = "stack"
         _stash_payload(request, payload)
         return user, None
 
