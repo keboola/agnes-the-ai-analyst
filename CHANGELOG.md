@@ -22,6 +22,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.21] - 2026-07-29
+
+### Added
+
+### Changed
+
+- **BREAKING** (admins only): session-JWT agent surfaces follow the stack too — the web-chat/E2B runner (`scope="chat"`) and the MCP streamable-HTTP OAuth transport (Claude Desktop / claude.ai connectors) now resolve with the `stack` data-read surface, matching the PAT default. Browser sessions, `/admin`, and non-admins are unchanged.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.77.20] - 2026-07-29
 
 ### Added
