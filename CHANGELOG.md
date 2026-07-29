@@ -16,6 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **BREAKING** (admins only): session-JWT agent surfaces follow the stack too — the web-chat/E2B runner (`scope="chat"`) and the MCP streamable-HTTP OAuth transport (Claude Desktop / claude.ai connectors) now resolve with the `stack` data-read surface, matching the PAT default. Browser sessions, `/admin`, and non-admins are unchanged.
 - **BREAKING** (admins only): PATs minted by `agnes init` / the CLI login exchange, Cowork setup bundles, and self-service MCP connections now carry `surface='stack'` — an admin's workspace/agent catalog and server-side queries follow their stack (required ∪ subscribed data packages + internal tables) like any analyst, instead of god-mode over every registered table. Existing tokens are grandfathered to `surface='all'`; opt up per-workspace with `agnes init --as-admin`. Parquet distribution was already stack-scoped and is unchanged; session (browser) logins and `/admin` are unchanged.
 
 ### Fixed
