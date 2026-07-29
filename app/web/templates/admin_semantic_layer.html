@@ -63,6 +63,7 @@
   }
   .sl-last-ok { color: var(--ds-accent-success-ink); }
   .sl-last-error { color: var(--ds-accent-danger-ink); }
+  .sl-last-skipped { color: var(--ds-text-secondary); }
   .sl-last-none { color: var(--ds-text-muted); }
 
   .sl-orphan-ref { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
@@ -135,6 +136,8 @@
         <td>
           {% if s.last and s.last.status == 'ok' %}
             <span class="sl-last-ok">✓ {{ s.last.created_or_updated | default(0) }} updated, {{ s.last.pruned | default(0) }} pruned</span>
+          {% elif s.last and s.last.status == 'skipped' %}
+            <span class="sl-last-skipped">— skipped (duplicate project)</span>
           {% elif s.last %}
             <span class="sl-last-error">✗ {{ s.last.error | default('failed') }}</span>
           {% else %}
