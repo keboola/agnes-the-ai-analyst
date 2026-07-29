@@ -377,7 +377,23 @@ def _resolve_keboola_credentials(
     explicit_url: Optional[str],
     explicit_token: Optional[str],
 ) -> tuple[str, str]:
-    """Resolve (stack_url, token) for the semantic-layer sync.
+    """Resolve (stack_url, token) for the semantic-layer sync — see
+    ``_resolve_keboola_credentials_slot`` for the full precedence; this wrapper
+    drops the slot label for callers that only need the credentials."""
+    url, token, _slot = _resolve_keboola_credentials_slot(explicit_url, explicit_token)
+    return url, token
+
+
+def _resolve_keboola_credentials_slot(
+    explicit_url: Optional[str],
+    explicit_token: Optional[str],
+) -> tuple[str, str, str]:
+    """Resolve (stack_url, token, slot) for the semantic-layer sync.
+
+    ``slot`` names WHERE the credentials came from — ``"explicit"``,
+    ``"legacy_env"``, ``"connection"`` or ``"none"``. Only the
+    ``"connection"`` slot has a connection identity, so only it may stamp
+    rows with that connection's ``source_ref`` (spec §3, fallback bullet).
 
     Precedence: explicit args > legacy ``KEBOOLA_STACK_URL``/
     ``KEBOOLA_STORAGE_TOKEN`` (env or system-secrets vault) > the default
@@ -398,20 +414,20 @@ def _resolve_keboola_credentials(
     existing "not configured" error.
     """
     if explicit_url and explicit_token:
-        return explicit_url, explicit_token
+        return explicit_url, explicit_token, "explicit"
 
     from app.datasource_secrets import datasource_secret
 
     url = explicit_url or os.environ.get("KEBOOLA_STACK_URL", "")
     token = explicit_token or datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
     if url and token:
-        return url, token
+        return url, token, "legacy_env"
 
     from src.repositories import connection_secrets_repo
 
     conn = _default_keboola_connection()
     if conn is None:
-        return url, token
+        return url, token, "none"
 
     conn_url = (conn.get("config") or {}).get("stack_url", "")
     conn_token = ""
@@ -431,7 +447,7 @@ def _resolve_keboola_credentials(
     # other half could pair one project's token with a different project's
     # stack URL. Only a full legacy pair counts as "legacy resolved"; a
     # partial one falls through to the named connection as a coherent pair.
-    return conn_url, conn_token
+    return conn_url, conn_token, "connection"
 
 
 # Every per-source counter the sync reports. The orchestrator sums these
@@ -458,9 +474,14 @@ def _empty_counters() -> dict[str, int]:
     return {key: 0 for key in _COUNTER_KEYS}
 
 
-def _in_scope(row: dict, source_ref: Optional[str], adopt_null: bool) -> bool:
+def _in_scope(row: dict, scope_refs: set, adopt_null: bool) -> bool:
     """True if an existing metric/glossary row belongs to the source currently
     syncing — i.e. is inside that source's prune scope.
+
+    ``scope_refs`` is usually just the source's own ``source_ref``; the legacy
+    fallback path widens it to "NULL or the default connection id" so a
+    downgrade (last master token removed) still prunes the rows it used to own
+    even when the credentials it resolved have no connection identity to stamp.
 
     Only imported rows are ever in scope (manual/yaml rows are never touched).
     A row stamped with a DIFFERENT connection's ``source_ref`` is out of scope
@@ -470,31 +491,30 @@ def _in_scope(row: dict, source_ref: Optional[str], adopt_null: bool) -> bool:
     if row.get("source") != "keboola_semantic_layer":
         return False
     ref = row.get("source_ref")
-    return ref == source_ref or (ref is None and adopt_null)
+    return ref in scope_refs or (ref is None and adopt_null)
 
 
 def _is_owned_by_source(
     existing: Optional[dict],
     incoming_id: str,
-    source_ref: Optional[str],
+    scope_refs: set,
     adopt_null: bool,
 ) -> bool:
     """True if this source may write a row under a name/term that ``existing``
     (the row currently holding that name/term, or None) already occupies.
 
-    Names must stay unique for catalog UX, and ownership is sticky: whichever
-    source's ref is already on the row keeps it, so discovery order does not
-    decide outcomes beyond the deterministic first claim. A non-imported row
-    (manual / yaml_import) always keeps its name.
+    Ownership tracks the same scope as the prune (``scope_refs``): the rows a
+    source may delete are exactly the rows it may overwrite. Names must stay
+    unique for catalog UX, and ownership is sticky — whichever source's ref is
+    already on the row keeps it, so discovery order does not decide outcomes
+    beyond the deterministic first claim. A non-imported row (manual /
+    yaml_import) always keeps its name.
     """
     if existing is None:
         return True
     if existing.get("id") == incoming_id:
         return True
-    if existing.get("source") != "keboola_semantic_layer":
-        return False
-    ref = existing.get("source_ref")
-    return ref == source_ref or (ref is None and adopt_null)
+    return _in_scope(existing, scope_refs, adopt_null)
 
 
 def _project_key(url: str, token_info: dict) -> tuple[str, Any]:
@@ -563,6 +583,7 @@ def _sync_one_source(
     source_ref: Optional[str],
     *,
     adopt_null: bool,
+    prune_scope_refs: Optional[set] = None,
     seen_project_keys: Optional[set[tuple[str, Any]]] = None,
 ) -> dict:
     """Fetch ONE Keboola project's semantic layer (Metastore) and upsert it
@@ -570,9 +591,13 @@ def _sync_one_source(
     rows *of this source only* that no longer exist upstream.
 
     ``source_ref`` is the originating ``source_connections.id`` stamped onto
-    every written row (None in the legacy single-project path).
+    every written row (None when the credentials have no connection identity).
     ``adopt_null`` lets the default connection claim legacy rows written
     before provenance existed (``source_ref IS NULL``).
+    ``prune_scope_refs`` widens the owned/prunable set beyond ``source_ref``
+    (the legacy fallback owns "NULL or the default connection id" while
+    stamping only what the resolved credentials justify); it defaults to
+    ``{source_ref}``.
 
     ``seen_project_keys``, when given, is the set of project identities
     already synced in this run: if this source resolves to one of them it
@@ -589,6 +614,8 @@ def _sync_one_source(
     from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
     from src.repositories import table_registry_repo, metric_repo, column_metadata_repo, glossary_repo
+
+    scope_refs: set = set(prune_scope_refs) if prune_scope_refs is not None else {source_ref}
 
     storage_client = KeboolaStorageClient(url=url, token=token)
     # A Storage API outage during the master-token preflight must abort with a
@@ -662,6 +689,11 @@ def _sync_one_source(
 
     repo = metric_repo()
     seen_ids: set[str] = set()
+    # Ids this run refused to write because another owner holds the name. They
+    # are NOT "gone upstream" — upstream still publishes them — so they must be
+    # held back from the prune loop, which would otherwise delete this source's
+    # own previously-written row the first time a conflict appears.
+    retained_ids: set[str] = set()
     skipped_unresolved_table = 0
     skipped_foreign_alias = 0
     skipped_embedded_comment = 0
@@ -703,17 +735,18 @@ def _sync_one_source(
         # Name-uniqueness gate: another source (or a hand-authored row) may
         # already hold this metric name. Ownership is sticky — skip and count
         # rather than shadowing the incumbent with a second same-named row.
-        if not _is_owned_by_source(repo.find_by_name(row["name"]), row["id"], source_ref, adopt_null):
+        if not _is_owned_by_source(repo.find_by_name(row["name"]), row["id"], scope_refs, adopt_null):
             logger.warning(
                 "Keboola semantic metric %r already exists under a different owner; skipping",
                 row["name"],
             )
             skipped_conflict += 1
+            retained_ids.add(row["id"])
             continue
         repo.create(**row, source_ref=source_ref)
         seen_ids.add(row["id"])
 
-    existing = [m for m in repo.list() if _in_scope(m, source_ref, adopt_null)]
+    existing = [m for m in repo.list() if _in_scope(m, scope_refs, adopt_null)]
     pruned = 0
     if not seen_ids and existing:
         # Safety valve: the fetch succeeded (HTTP 200) but produced zero
@@ -733,13 +766,14 @@ def _sync_one_source(
         )
     else:
         for m in existing:
-            if m["id"] not in seen_ids:
+            if m["id"] not in seen_ids and m["id"] not in retained_ids:
                 repo.delete(m["id"])
                 pruned += 1
 
     glossary_repository = glossary_repo()
     used_glossary_ids: set[str] = set()
     seen_glossary_ids: set[str] = set()
+    retained_glossary_ids: set[str] = set()
     skipped_missing_term = 0
 
     for item in glossary_items:
@@ -755,12 +789,13 @@ def _sync_one_source(
                 )
             continue
         # Same sticky-ownership gate as the metric loop, keyed on the term.
-        if not _is_owned_by_source(glossary_repository.find_by_term(row["term"]), row["id"], source_ref, adopt_null):
+        if not _is_owned_by_source(glossary_repository.find_by_term(row["term"]), row["id"], scope_refs, adopt_null):
             logger.warning(
                 "Keboola glossary term %r already exists under a different owner; skipping",
                 row["term"],
             )
             skipped_conflict += 1
+            retained_glossary_ids.add(row["id"])
             continue
         # refresh_fts=False: rebuilding the BM25 index is O(N) per call, so
         # doing it once per imported term is O(N^2) over a sync. Refresh once
@@ -768,7 +803,7 @@ def _sync_one_source(
         glossary_repository.create(**row, source_ref=source_ref, refresh_fts=False)
         seen_glossary_ids.add(row["id"])
 
-    existing_glossary = [g for g in glossary_repository.list(limit=100000) if _in_scope(g, source_ref, adopt_null)]
+    existing_glossary = [g for g in glossary_repository.list(limit=100000) if _in_scope(g, scope_refs, adopt_null)]
     glossary_pruned = 0
     if not seen_glossary_ids and existing_glossary:
         # Same safety valve as the metric prune above: a successful-but-empty
@@ -781,7 +816,7 @@ def _sync_one_source(
         )
     else:
         for g in existing_glossary:
-            if g["id"] not in seen_glossary_ids:
+            if g["id"] not in seen_glossary_ids and g["id"] not in retained_glossary_ids:
                 glossary_repository.delete(g["id"])
                 glossary_pruned += 1
 
@@ -862,8 +897,10 @@ def sync_semantic_layer(
        sources: the legacy env pair has no connection identity to scope a
        prune to, and mixing it in would recreate the cross-wipe problem.
     3. Otherwise the legacy single-source resolution
-       (``_resolve_keboola_credentials``), stamped with the default
-       connection's id when there is one. Rows belonging to other connections
+       (``_resolve_keboola_credentials_slot``): rows are stamped with the
+       default connection's id only when the credentials came from that
+       connection, else left NULL, while the prune scope covers "NULL or the
+       default connection id" either way. Rows belonging to other connections
        are left orphaned-but-intact rather than pruned.
 
     MasterTokenRequiredError propagates in modes 1 and 3 (a configuration
@@ -897,10 +934,17 @@ def sync_semantic_layer(
             except MasterTokenRequiredError as e:
                 logger.error("Keboola semantic layer: connection %s rejected: %s", connection_id, e)
                 result = {"status": "error", "error": str(e)}
+            except Exception as e:
+                # Per-source isolation is the whole point of the loop: one
+                # connection blowing up in an unforeseen way (a client bug, an
+                # unexpected upstream shape) must not abort the sources after
+                # it. Broad on purpose — the error is recorded, not swallowed.
+                logger.exception("Keboola semantic layer: connection %s failed", connection_id)
+                result = {"status": "error", "error": str(e)}
             entries.append(_as_source_entry(connection_id, source["name"], result))
         return _aggregate_sources(entries)
 
-    url, token = _resolve_keboola_credentials(keboola_url, keboola_token)
+    url, token, slot = _resolve_keboola_credentials_slot(keboola_url, keboola_token)
     if not url or not token:
         return {
             "status": "error",
@@ -910,7 +954,19 @@ def sync_semantic_layer(
         }
     default_conn = _default_keboola_connection()
     default_id = default_conn["id"] if default_conn else None
-    result = _sync_one_source(url, token, default_id, adopt_null=True)
+    # Stamp the default connection's id only when the credentials actually came
+    # from that connection — a legacy env pair may well point at a different
+    # project, and mislabeling it would hand those rows to the connection on a
+    # later master-token sync. The prune scope stays "NULL or default id"
+    # either way, so a downgrade still cleans up what it previously owned.
+    stamp = default_id if slot == "connection" else None
+    result = _sync_one_source(
+        url,
+        token,
+        stamp,
+        adopt_null=True,
+        prune_scope_refs={None, default_id},
+    )
     return _aggregate_sources([_as_source_entry(default_id, default_conn["name"] if default_conn else None, result)])
 
 
