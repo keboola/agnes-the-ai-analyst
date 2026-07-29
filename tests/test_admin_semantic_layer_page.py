@@ -230,3 +230,48 @@ class TestSemanticLayerPageSources:
 
         assert "orphan" in body.lower()
         assert "conn-deleted" in body
+
+    def test_semantic_layer_page_null_rows_surface_when_default_has_no_master_token(self, seeded_app):
+        """NULL-``source_ref`` legacy rows normally fold into the default
+        connection's row (see test_semantic_layer_page_renders_sources). But
+        when the default Keboola connection has NO master token, it's never
+        enumerated by ``_enumerate_master_sources()`` and never appears in
+        ``sources`` — so the fold never happens. Before the fix, the truthy
+        ``source_ref`` filter for "orphaned" rows also excluded NULL refs,
+        so these rows appeared nowhere on the page. They must now surface as
+        a distinct "legacy / unattributed" row in the orphaned section."""
+        from src.repositories import metric_repo, source_connections_repo
+
+        # A default Keboola connection that has NO master token at all — it
+        # is a valid source_connections row (so _default_keboola_connection()
+        # resolves it) but is absent from _enumerate_master_sources().
+        source_connections_repo().create(
+            id="conn-no-master",
+            name="No Master Token Project",
+            source_type="keboola",
+            config={"stack_url": "https://connection.keboola.com"},
+            is_default=True,
+            created_by="test",
+        )
+
+        metric_repo().create(
+            id="revenue/legacy",
+            name="legacy",
+            display_name="Legacy",
+            category="revenue",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+            source_ref=None,
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/semantic-layer", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+
+        assert "orphan" in body.lower()
+        assert "legacy / unattributed" in body
+        # Not folded into any per-connection row — there is none rendered,
+        # since the only connection has no master token.
+        assert "No Master Token Project" not in body

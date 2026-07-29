@@ -26,6 +26,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- `metric_definitions.source_ref` + `glossary_terms.source_ref` (schema v106, Alembic 0053): per-connection provenance for the multi-project semantic-layer sync.
+
 ### Security
 
 ## [0.77.13] - 2026-07-28

@@ -664,10 +664,13 @@ class TestSourceConnectionsMasterSecret:
 
         from connectors.keboola.storage_api import StorageApiError
 
+        # The candidate token must appear in the simulated failure so this
+        # assertion actually exercises the client's redaction rather than
+        # trivially passing because the token was never in the message.
         with (
             patch(
                 "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
-                side_effect=StorageApiError("boom"),
+                side_effect=StorageApiError("boom: token=super-secret-master-token"),
             ),
             patch("app.api.admin._validate_url_not_private", return_value=None),
         ):
