@@ -178,7 +178,10 @@ def test_pull_empty_manifest_explains_zero_tables(tmp_path, monkeypatch):
     assert result.exit_code == 0
     out = _clean(result.stdout)
     assert "no tables" in out.lower() or "nothing" in out.lower()
-    assert "grant" in out.lower() or "regist" in out.lower()
+    # Post-#356 the actionable hint is the data-package/stack flow, not
+    # per-table grants — the message must point at `agnes stack browse`.
+    assert "stack browse" in out.lower()
+    assert "data package" in out.lower() or "data_package" in out.lower()
 
 
 def test_pull_empty_manifest_silent_under_quiet(tmp_path, monkeypatch):
