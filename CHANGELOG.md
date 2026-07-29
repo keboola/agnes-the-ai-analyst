@@ -14,6 +14,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- `agnes refresh-marketplace` (and the `agnes update` convergence) now prunes plugins that left your stack: an `@agnes` plugin installed in the workspace but absent from a successfully-fetched, non-empty marketplace manifest is uninstalled and its `enabledPlugins` entry dropped (entries from other marketplaces are never touched). A transiently empty or unreadable manifest still never removes anything.
+
 ### Fixed
 
 ### Removed
