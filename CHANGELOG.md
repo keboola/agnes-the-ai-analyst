@@ -22,6 +22,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.23] - 2026-07-29
+
+### Fixed
+
+- Data apps: the in-chat authoring + live-preview loop is now actually reachable by the chat agent. The `data_app_*` MCP tool family — the hosted-app actions (`data_apps_list`, `data_app_get`, `data_app_deploy`, `data_app_logs`, `data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`) and the four in-chat preview render tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) — was registered only on the HTTP MCP foundation surface (the SSE/streamable transports serving external clients), but the chat agent connects through the CLI **stdio** `agnes mcp` server, which never exposed them. As a result the chat agent could neither author/deploy an app nor open the split-pane preview. The stdio server now registers the whole family (mirroring the REST contracts), and a `DATA_APP_TOOL_NAMES` parity guard asserts both surfaces stay in sync. Analysts running a local `agnes mcp` gain the same app-management tools.
+- Data apps: `agnes_data_app_preview` no longer returns the scoped preview-grant cookie in its MCP tool result (on either transport). The cookie is a short-TTL bearer credential and a tool result is archived in the chat session transcript; the grant is still minted server-side and installed via the grant endpoint's `Set-Cookie` header (the web chat re-fetches it same-origin), so the preview pane is unaffected.
+
 ## [0.77.22] - 2026-07-29
 
 ### Added
