@@ -760,6 +760,23 @@ async def materialize_mcp_source(
     except Exception as exc:
         logger.exception("materialize failed for source %s", source_id)
         raise HTTPException(status_code=500, detail=f"materialize_failed: {exc}")
+    # Linked data apps: if this source materialized a `keboola_data_apps` table,
+    # project it into the data_apps registry as grantable `linked` rows. No-op
+    # for any other source (the projection guards on the table's presence).
+    # Best-effort — a projection failure must not fail the materialize call.
+    try:
+        from src.data_apps.linked_projection import project_from_extract
+
+        proj = project_from_extract(source_id, result.get("extract_duckdb"))
+        if proj is not None:
+            result["linked_projection"] = {
+                "created": proj.created,
+                "updated": proj.updated,
+                "hidden": proj.hidden,
+            }
+    except Exception:
+        logger.exception("linked-app projection failed for source %s", source_id)
+
     _audit(
         conn,
         user["id"],

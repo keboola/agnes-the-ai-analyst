@@ -70,6 +70,67 @@ def test_project_preserves_description_override(repo):
     assert repo.effective_description(row) == "admin desc"
 
 
+def _seed_extract(path, rows):
+    """Write a keboola_data_apps table into an extract.duckdb file."""
+    c = duckdb.connect(str(path))
+    c.execute("CREATE TABLE keboola_data_apps (id VARCHAR, name VARCHAR, description VARCHAR, url VARCHAR)")
+    for r in rows:
+        c.execute(
+            "INSERT INTO keboola_data_apps VALUES (?, ?, ?, ?)",
+            [r["id"], r["name"], r.get("description", ""), r["url"]],
+        )
+    c.close()
+
+
+def test_project_from_extract_creates_linked(tmp_path, repo):
+    from src.data_apps.linked_projection import project_from_extract
+
+    path = tmp_path / "extract.duckdb"
+    _seed_extract(
+        path,
+        [
+            {"id": "10", "name": "Sales", "url": "https://example.com/10"},
+            {"id": "11", "name": "Ops", "url": "https://example.com/11"},
+        ],
+    )
+    res = project_from_extract("srcX", str(path), repo=repo)
+    assert res is not None and (res.created, res.hidden) == (2, 0)
+    assert {r["name"] for r in repo.list_linked()} == {"Sales", "Ops"}
+
+
+def test_project_from_extract_skips_rows_without_url(tmp_path, repo):
+    from src.data_apps.linked_projection import project_from_extract
+
+    path = tmp_path / "extract.duckdb"
+    _seed_extract(
+        path,
+        [
+            {"id": "10", "name": "Sales", "url": "https://example.com/10"},
+            {"id": "11", "name": "NoUrl", "url": ""},
+        ],
+    )
+    res = project_from_extract("srcX", str(path), repo=repo)
+    assert res is not None and res.created == 1
+    assert {r["name"] for r in repo.list_linked()} == {"Sales"}
+
+
+def test_project_from_extract_noop_without_table(tmp_path, repo):
+    from src.data_apps.linked_projection import project_from_extract
+
+    path = tmp_path / "extract.duckdb"
+    c = duckdb.connect(str(path))
+    c.execute("CREATE TABLE some_other_table (x INTEGER)")
+    c.close()
+    assert project_from_extract("srcX", str(path), repo=repo) is None
+    assert repo.list_linked() == []
+
+
+def test_project_from_extract_missing_file_noop(repo):
+    from src.data_apps.linked_projection import project_from_extract
+
+    assert project_from_extract("srcX", "/no/such/extract.duckdb", repo=repo) is None
+
+
 def test_project_reappearance_relinks_same_row(repo):
     project("c", [_rec("a", "A")], repo=repo)
     slug = adapter.slug_for("c", "a")
