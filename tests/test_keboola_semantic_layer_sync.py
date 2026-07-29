@@ -915,6 +915,51 @@ class TestSyncSemanticLayerMultiSource:
         assert metric_repo().get("keboola/model-a/shared")["source_ref"] == conn_a
         assert metric_repo().get("keboola/model-b/shared") is None
 
+    def test_glossary_term_conflict_skipped_sticky(self, e2e_env, vault_key, monkeypatch):
+        """Same conflict policy as metrics, keyed on the exact glossary term:
+        two projects defining "MRR" don't produce two rows, and ownership of
+        the first claim is sticky across discovery orders."""
+        from connectors.keboola import semantic_layer
+        from src.repositories import glossary_repo
+
+        conn_a = _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://b.keboola.com", token="tok-b")
+
+        projects = {
+            "tok-a": {
+                "owner_id": 111,
+                "model_uuid": "model-a",
+                "glossary": [_glossary_item("MRR", "Monthly recurring revenue (project A).")],
+            },
+            "tok-b": {
+                "owner_id": 222,
+                "model_uuid": "model-b",
+                "glossary": [_glossary_item("MRR", "Monthly recurring revenue (project B).")],
+            },
+        }
+        result = _run_sync(projects)
+
+        assert result["glossary_created_or_updated"] == 1
+        assert result["skipped_conflict"] == 1
+        assert glossary_repo().get("keboola/model-a/mrr")["source_ref"] == conn_a
+        assert glossary_repo().get("keboola/model-b/mrr") is None
+
+        # Reversed discovery order must not flip the first claim.
+        original = semantic_layer._enumerate_master_sources
+        monkeypatch.setattr(
+            semantic_layer,
+            "_enumerate_master_sources",
+            lambda: list(reversed(original())),
+        )
+        result = _run_sync(projects)
+
+        assert result["skipped_conflict"] == 1
+        assert result["glossary_pruned"] == 0
+        row = glossary_repo().get("keboola/model-a/mrr")
+        assert row["source_ref"] == conn_a
+        assert row["definition"] == "Monthly recurring revenue (project A)."
+        assert glossary_repo().get("keboola/model-b/mrr") is None
+
     def test_duplicate_project_deduped(self, e2e_env, vault_key):
         from src.repositories import metric_repo
 
