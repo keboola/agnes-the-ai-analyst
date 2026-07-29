@@ -37,10 +37,10 @@
         {% endif %}
     </a>
 
-    {# Below 760px the rail becomes a wrapping top bar (rail.css) with nowhere
+    {# Below 1024px the rail becomes a wrapping top bar (rail.css) with nowhere
        to collapse to — every nav item, the Chats history, and Admin stayed
        permanently on screen, eating vertical space. This toggle is invisible
-       above 760px (rail.css); below it, it shows/hides `.rail-collapsible`
+       above 1024px (rail.css); below it, it shows/hides `.rail-collapsible`
        (nav + Chats + Admin) while the compact foot (Get started + user menu)
        stays reachable either way. #}
     <button type="button" class="rail-collapse-toggle" id="rail-collapse-toggle"
@@ -232,6 +232,7 @@
             <button type="button" class="rail-i rail-getstarted-btn"
                     id="rail-getstarted-toggle"
                     aria-expanded="false"
+                    aria-label="Get started"
                     aria-controls="rail-getstarted-panel">
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3c3 1.5 5 4.6 5 8.5 0 2-.7 3.4-1.4 4.4l-.1.1H8.5l-.1-.1C7.7 14.9 7 13.5 7 11.5 7 7.6 9 4.5 12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="10.5" r="1.6" stroke="currentColor" stroke-width="1.6"/><path d="M9 19c.8.7 1.8 1 3 1s2.2-.3 3-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                 <span class="rail-getstarted-txt">Get started</span>

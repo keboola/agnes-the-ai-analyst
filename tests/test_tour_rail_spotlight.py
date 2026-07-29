@@ -13,7 +13,7 @@ Two independent defects on the same two steps:
    stacking context — the spotlighted nav item stayed dimmed under the scrim
    because its z-index was being resolved inside the rail's own context, not
    against the root-level scrim.
-2. Below 760px the rail becomes a wrapping top bar but kept the column
+2. Below 1024px the rail becomes a wrapping top bar but kept the column
    layout's `overflow: visible` and each nav item's `width: 100%` — both of
    which let the bar overflow the viewport horizontally, and `scrollIntoView`
    would then drag the whole page sideways to center an anchor past the edge.
@@ -82,7 +82,7 @@ def test_rail_row_layout_contains_its_own_overflow():
     layout. In the row (mobile) layout `.rail` is back in normal document
     flow, so that same overflow drags the whole page horizontally."""
     css = _rail_css()
-    narrow = css.split("@media (max-width: 760px)", 1)[1]
+    narrow = css.split("@media (max-width: 1024px)", 1)[1]
     assert "overflow-x: auto" in narrow
     assert "max-width: 100%" in narrow
 
@@ -93,5 +93,5 @@ def test_rail_nav_items_do_not_force_full_row_width_on_mobile():
     resolves against the wrapping flex row, forcing every item onto its own
     full-width line."""
     css = _rail_css()
-    narrow = css.split("@media (max-width: 760px)", 1)[1]
+    narrow = css.split("@media (max-width: 1024px)", 1)[1]
     assert ".rail-i {\n        width: auto;" in narrow
