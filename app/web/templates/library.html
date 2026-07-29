@@ -292,7 +292,12 @@
   /* Header actions — the search field plus a single "+ Add" primary button whose
      chevron opens the per-kind menu, so the page keeps one call to action as the
      Library grows more kinds. Rides `.lib-head`, level with the title. */
-  .lib-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  /* `min-height` reserves the row even while the two controls are away in the
+     dock (see the relocation script). Two reasons: the header must not collapse
+     and yank the page under a scroll that is already in motion, and the
+     IntersectionObserver watches THIS element — an emptied box with no height
+     would stop reporting the position it is supposed to track. */
+  .lib-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-height: 38px; }
   /* The search reuses `.fbar__search` (which carries the icon, the input chrome
      and the focus ring) and only re-states its flex sizing for this host: a
      ~280px field that may shrink but not grow, instead of the toolbar's
@@ -316,8 +321,163 @@
   /* WIP marker on a menu row sits at the far end, so the labels stay aligned. */
   .lib-new__item .lib-wip { margin-left: auto; flex-shrink: 0; font-size: 9.5px; padding: 1px 6px; }
 
+  /* ── Floating toolbar dock ──
+     The filter/sort controls are pinned to the bottom of the viewport instead
+     of sitting in the flow above the list. On a scrolling inventory the
+     controls that narrow the list are wanted at row 200 as much as at row 1,
+     and a strip parked under the header scrolls away exactly when the list is
+     long enough to need it.
+
+     Two elements, deliberately: `.lib-dock` is a full-width fixed FRAME that
+     does nothing but centre, and `.lib-dock__card` is the visible surface. The
+     frame is `pointer-events: none` so the strip of empty space either side of
+     the card doesn't eat clicks on the rows underneath — the card turns them
+     back on for itself.
+
+     Centring is done with `left/right` + flex, never `translateX`: a transform
+     on this element would make it the containing block for the `position:
+     fixed` category popovers inside it, and filter_toolbar.js positions those
+     with plain viewport arithmetic (see `placeSubmenu`). Under the rail layout
+     the frame starts at the rail's edge so the card centres on the CONTENT, not
+     on the window; at the rail's own 760px breakpoint the rail unpins and that
+     offset goes with it. */
+  .lib-dock {
+    position: fixed;
+    left: 0; right: 0; bottom: 20px;
+    /* Above the rail (40) and the sticky group bands (3–4), below the row-level
+       "move to collection" popover (60) and the modals (100) — a control that
+       is always on screen must never be the thing covering a dialog. */
+    z-index: 55;
+    display: flex; justify-content: center;
+    padding: 0 16px;
+    pointer-events: none;
+  }
+  html[data-ui-layout="rail"] .lib-dock { left: 240px; }
+  @media (max-width: 760px) { html[data-ui-layout="rail"] .lib-dock { left: 0; } }
+
+  /* The card. Chips row on top (state), controls below (machinery) — in a
+     bottom-anchored card the row nearer the list is the one that describes it.
+     The chips row is `hidden` until a facet is applied, so the card is a single
+     row at rest and grows upward, never pushing the controls off the bottom. */
+  .lib-dock__card {
+    pointer-events: auto;
+    position: relative;              /* containing block for the Filter menu */
+    display: flex; flex-direction: column; gap: 10px;
+    max-width: 100%;
+    padding: 10px 14px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 18px;
+    /* Three layers, not one: a hairline contact shadow so the card's edge reads
+       against a row of the same surface colour directly under it, a mid ambient
+       layer for the body of the lift, and a wide, heavily-spread-in bottom layer
+       that does the actual "this is off the page" work. A single blur can have
+       one of those jobs, not all three, and the token shadows are all tuned for
+       cards sitting IN the flow — this one has to float over live content. */
+    box-shadow:
+      0 1px 2px color-mix(in srgb, var(--ds-text-primary) 10%, transparent),
+      0 8px 20px -4px color-mix(in srgb, var(--ds-text-primary) 20%, transparent),
+      0 26px 52px -14px color-mix(in srgb, var(--ds-text-primary) 30%, transparent);
+  }
+  .lib-dock__card .fbar,
+  .lib-dock__card .fbar-chips { margin: 0; }
+  /* Both rows stay CENTRED inside the card at every width — that is what makes
+     the dock read as one object rather than as a strip of controls that happens
+     to have a border. `--center` already does it; nothing here may override it. */
+  .lib-dock__card .fbar-chips { max-width: 100%; }
+
+  /* Everything the dock opens, opens UPWARD. The base `.fbar-menu` hangs below
+     its button (`top: calc(100% + 6px)`), which from a card at the bottom of
+     the viewport would render off-screen.
+
+     It stays anchored to its BUTTON, because the row is centred and the button
+     therefore has no fixed x in the card. That means the offset has to clear the
+     chips row on its own: `--lib-dock-chips` is the chips row's height plus the
+     card's row gap, published by the dock script whenever the row appears,
+     disappears or rewraps, and 0 while there are no chips. Without it a menu
+     measured from the button opens straight into the chips and covers the very
+     state it is about to change.
+
+     The category popovers beside it need no rule — they are `position: fixed`
+     and filter_toolbar.js already clamps them into the viewport, which from
+     down here resolves upward on its own. */
+  .lib-dock .fbar-menu {
+    top: auto;
+    bottom: calc(100% + 8px + var(--lib-dock-chips, 0px));
+  }
+
+  /* ── The page's own controls, docked ──
+     Once the header scrolls away, search and "+ Add" are relocated into the
+     controls row (the real nodes, not copies — ids, listeners and the open menu
+     all travel with them). They keep the header's reading order: search LEFT,
+     the call to action RIGHT.
+
+     The card HUGS its controls in this state as in every other — no definite
+     width, no auto margins, no padded arms. It used to take `min(900px, 100%)`
+     here and push the two page-level controls onto the card's edges with a pair
+     of auto margins, on the theory that the list controls should stay on the
+     card's centre line. What that actually produced was a fixed-width card with
+     a hole in it: with a handful of middle controls the auto margins had ~300px
+     of free space to absorb, and the dock read as a wide empty bar with a button
+     stranded at each end. A floating card has no column grid to align to and
+     nothing beside it to line up with, so there is no centre line to hold —
+     only its own contents, which should sit at one consistent gap from each
+     other and let the card end where they do.
+
+     Removing the definite width is also what lets the resize animation do its
+     job: the card now has an intrinsic size in every state, so `animateDockResize`
+     has a real from-box and a real to-box to interpolate between, and the card
+     grows and shrinks into each shape instead of snapping between two fixed
+     ones. Search keeps a shrinkable basis because an input has no useful
+     content width; "+ Add" is content-sized like every other control. */
+  .lib-dock .lib-head__search { flex: 0 1 240px; min-width: 0; max-width: none; }
+  .lib-dock .lib-new { flex: 0 0 auto; }
+  /* Its menu opens upward too, clearing the chips row on the same variable. */
+  .lib-dock .lib-new__menu {
+    top: auto;
+    bottom: calc(100% + 6px + var(--lib-dock-chips, 0px));
+  }
+
+  /* ── Moving between states ──
+     Every one of the dock's states is reached by adding or removing a control:
+     the sort select on the way into grid view, the chips row on the first
+     filter, search and "+ Add" when the header scrolls off. Each of those
+     changes the card's intrinsic size, and an intrinsic size change fires no
+     transition — the `width` property never changes value, only its used
+     result does — so the card snapped between shapes. The dock script animates
+     it explicitly (see `animateDockResize`); these are the pieces CSS can own.
+
+     The controls themselves fade in rather than appearing mid-animation, so a
+     growing card isn't also popping new pills into existence at full opacity.
+     `@starting-style` is what makes that possible for something arriving from
+     `display: none`; browsers without it just get today's instant swap, which
+     is the same thing minus the polish. */
+  @media (prefers-reduced-motion: no-preference) {
+    .lib-dock__card > * > * { transition: opacity 160ms var(--ds-ease-standard, ease); }
+    @starting-style {
+      .lib-dock__card > * > * { opacity: 0; }
+    }
+
+    /* The view swap itself. Only the ARRIVING view animates: transitioning the
+       leaving one out would keep it displayed for the duration, and for a
+       moment the page would carry both a table and a grid — a far bigger jump
+       than the one being smoothed. */
+    .lib-group > .lib-tablewrap,
+    .lib-group > .fbar-grid {
+      transition: opacity 200ms var(--ds-ease-standard, ease),
+                  transform 200ms var(--ds-ease-standard, ease);
+    }
+    @starting-style {
+      .lib-group > .lib-tablewrap,
+      .lib-group > .fbar-grid { opacity: 0; transform: translateY(6px); }
+    }
+  }
+
   /* ── Section scaffolding ── */
-  .lib-section { margin: 0; }
+  /* The dock floats over the page, so the list has to end above it or its last
+     rows sit under the card forever. Clears the tallest resting state (card +
+     chips row + the 20px inset) with room to spare. */
+  .lib-section { margin: 0; padding-bottom: 132px; }
   /* Just the count now that "+ Add" sits in the page header — so the row loses
      the 38px min-height that reserved a button's box and closes up to the type
      bands it heads. */
@@ -1035,16 +1195,36 @@
 
 {% block page_surface %}
 <section class="lib-section">
-  {# ── Toolbar (shared .fbar component). Row 1: Filter menu (Type + Source
-       facets) · sort · table⇄grid view toggle. Row 2 (#lib-chips): removable
-       chips for applied facets. All client-side (static/js/filter_toolbar.js)
-       over the server-rendered rows.
+  {# ── Toolbar — a FLOATING DOCK pinned to the bottom of the viewport rather
+       than a strip between the header and the list. The Library is a scrolling
+       inventory, so the controls that narrow it have to stay reachable at row
+       200 as much as at row 1; parked at the top they scroll away exactly when
+       a long list makes them worth having. The dock is one card holding both
+       rows, in this order:
+
+         Row 1 (#lib-chips) — removable chips for the applied facets. ABOVE the
+           controls: they are the current STATE, the row below is the machinery
+           that changes it, and in a bottom-anchored card the row nearer the
+           list should be the one describing the list. (The stack toggle is
+           excluded here — its own button shows its state.) Hidden when empty,
+           so the card is a single row until a filter is applied.
+         Row 2 (.fbar) — Filter menu (Optional/Required, Tags, Owner, Source
+           facets) · "In stack only" toggle · sort · table⇄grid view toggle.
+
+       Both are client-side (static/js/filter_toolbar.js) over the
+       server-rendered rows; the engine is untouched by the move — it only ever
+       reads the ids.
 
        Search is NOT here — it rides the page header (see `page_head`), which is
        why both rows take `--center`: with the one flex-grow control gone, the
-       remaining pills would hug the left edge of a full-width band, under a
-       header whose own controls are at the right. The bar is a `group`, not a
-       `search` landmark, now that the input it fronted lives elsewhere. ── #}
+       remaining pills would hug the left edge of the card. The bar is a
+       `group`, not a `search` landmark, now that the input it fronted lives
+       elsewhere.
+
+       Everything the dock opens (the Filter menu, its category popovers) opens
+       UPWARD — see `.lib-dock` in the head block. ── #}
+  <div class="lib-dock"><div class="lib-dock__card">
+  <div class="fbar-chips fbar-chips--center" id="lib-chips" hidden></div>
   <div class="fbar fbar--center" role="group" aria-label="Filter and sort library">
     {# Filter menu — CATEGORIES, each revealing its options in a secondary
        popover on hover/focus (see .fbar-cat in filter_toolbar.css). Type is
@@ -1156,11 +1336,7 @@
       </button>
     </div>
   </div>
-
-  {# Row 2 — applied-filter chips (populated by filter_toolbar.js). Centred to
-     match the bar that produced them: a chip should sit under the control it
-     came from, not across the page from it. #}
-  <div class="fbar-chips fbar-chips--center" id="lib-chips" hidden></div>
+  </div></div>
 
   {# The row that opens the list, now carrying only the count: "+ Add" moved up
      to the page header, level with the title, since it acts on the Library as a
@@ -2594,6 +2770,108 @@
       if (!newMenu.hidden && !newMenu.contains(e.target) && !newBtn.contains(e.target)) openNewMenu(false);
     });
     newMenu.addEventListener('click', () => openNewMenu(false));
+  }
+
+  // ── Page controls follow the scroll into the dock ──────────────────────
+  //    Search and "+ Add" live in the page header, which scrolls away on a long
+  //    list — and they are the two controls a caller reaches for from anywhere
+  //    in that list. When the header's action row leaves the viewport they move
+  //    into the floating toolbar (search left, "+ Add" right, list controls
+  //    between); when it comes back they move home.
+  //
+  //    The REAL nodes are relocated, not clones: ids stay unique, every
+  //    listener above still fires because it is bound to the element rather
+  //    than to a position in the document, and a half-typed query or an open
+  //    menu survives the trip. The only state the DOM move itself destroys is
+  //    focus, so the caret is captured and restored around it — someone typing
+  //    in the search box while the page settles must not lose the field.
+  const libHeadActions = document.querySelector('.lib-actions');
+  const libDock = document.querySelector('.lib-dock');
+  const libDockBar = libDock && libDock.querySelector('.fbar');
+  const libSearchBox = document.querySelector('.lib-head__search');
+  const libNewBox = document.querySelector('.lib-new');
+  if (libHeadActions && libDockBar && libSearchBox && libNewBox && 'IntersectionObserver' in window) {
+    let libDocked = false;
+    const relocate = (toDock) => {
+      if (toDock === libDocked) return;
+      const focused = libSearchBox.contains(document.activeElement) ? document.activeElement : null;
+      const at = focused && focused.selectionStart, to = focused && focused.selectionEnd;
+      if (toDock) {
+        libDockBar.insertBefore(libSearchBox, libDockBar.firstChild);
+        libDockBar.appendChild(libNewBox);
+      } else {
+        libHeadActions.insertBefore(libSearchBox, libHeadActions.firstChild);
+        libHeadActions.appendChild(libNewBox);
+      }
+      libDock.classList.toggle('has-page-actions', toDock);
+      libDocked = toDock;
+      if (focused) {
+        focused.focus();
+        try { focused.setSelectionRange(at, to); } catch (_) { /* not a text input */ }
+      }
+    };
+    new IntersectionObserver(
+      (entries) => relocate(!entries[entries.length - 1].isIntersecting),
+      { threshold: 0 },
+    ).observe(libHeadActions);
+  }
+
+  // ── The dock changes shape smoothly ────────────────────────────────────
+  //    The card's size is intrinsic — it is whatever its controls come to — so
+  //    every state change (grid's sort select arriving, the first chip, the
+  //    header's controls docking, chips rewrapping at a narrow width) resized
+  //    it in a single frame. No CSS transition can catch that: the `width` and
+  //    `height` properties stay `auto` throughout, and only their used values
+  //    move, so there is no property change to transition.
+  //
+  //    A ResizeObserver watches the card and replays each change as an
+  //    explicit animation from the previous box to the new one. The animation
+  //    itself resizes the card, which the observer would see as another change,
+  //    so it is muted while one is running and re-reads the box on the way out
+  //    (the card may have changed again mid-flight). Reduced-motion callers get
+  //    the instant swap.
+  const libDockCard = libDock && libDock.querySelector('.lib-dock__card');
+  const libDockChips = document.getElementById('lib-chips');
+  if (libDockCard && 'ResizeObserver' in window) {
+    const still = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const box = () => ({ w: libDockCard.offsetWidth, h: libDockCard.offsetHeight });
+    // Published for the menus above, which open upward from a control in the
+    // BOTTOM row and have to clear the chips row to avoid covering it.
+    const publishChipsHeight = () => {
+      const h = libDockChips && !libDockChips.hidden ? libDockChips.offsetHeight + 10 : 0;
+      libDock.style.setProperty('--lib-dock-chips', h + 'px');
+    };
+    // Armed only once the page has settled. A ResizeObserver fires immediately
+    // on observe and again for every reflow that follows — web fonts landing,
+    // the grid projecting itself — and animating those would replay the whole
+    // load as a toolbar that pops open. Worse, the baseline captured at script
+    // time is pre-layout, so the first animation would run from a nonsense box.
+    // Nothing before `armed` animates; it only records where the card is.
+    let from = box(), animating = false, armed = false;
+    publishChipsHeight();
+    const arm = () => requestAnimationFrame(() => { from = box(); armed = true; });
+    if (document.readyState === 'complete') arm();
+    else window.addEventListener('load', arm, { once: true });
+
+    new ResizeObserver(() => {
+      if (animating) return;
+      const to = box();
+      publishChipsHeight();
+      const moved = Math.abs(to.w - from.w) > 1 || Math.abs(to.h - from.h) > 1;
+      const was = from;
+      from = to;
+      if (!armed || !moved || still.matches || !libDockCard.animate) return;
+      animating = true;
+      const run = libDockCard.animate(
+        [
+          { width: was.w + 'px', height: was.h + 'px' },
+          { width: to.w + 'px', height: to.h + 'px' },
+        ],
+        { duration: 220, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
+      );
+      const release = () => { animating = false; from = box(); };
+      run.finished.then(release, release);
+    }).observe(libDockCard);
   }
 
   // ── Upload modal: create a private collection, then upload files ──

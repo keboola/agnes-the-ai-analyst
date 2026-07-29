@@ -397,10 +397,13 @@ def test_search_and_new_ride_the_page_header(seeded_app):
     assert 'id="lib-new-menu"' in head
 
     # The toolbar keeps every list control and no search box, and both its rows
-    # centre now that the one flex-grow child has left.
+    # centre now that the one flex-grow child has left. Bounded by the dock's
+    # own closing markup rather than by the chips row — the chips sit ABOVE the
+    # bar, so slicing to `id="lib-chips"` would run to the end of the document
+    # and assert nothing.
     assert 'class="fbar fbar--center"' in text
     assert 'class="fbar-chips fbar-chips--center"' in text
-    bar = text.split('class="fbar fbar--center"', 1)[1].split('id="lib-chips"', 1)[0]
+    bar = text.split('class="fbar fbar--center"', 1)[1].split("</div></div>", 1)[0]
     assert 'id="lib-search"' not in bar
     for kept in ('id="lib-filter-btn"', 'id="lib-sort"', 'class="fbar-view"'):
         assert kept in bar
@@ -409,6 +412,83 @@ def test_search_and_new_ride_the_page_header(seeded_app):
     row = text.split('class="lib-section-head"', 1)[1].split("data-lib-sec=", 1)[0]
     assert 'id="lib-item-count"' in row
     assert 'id="lib-new-btn"' not in row
+
+    # Page order: header → dock → count row → groups, and INSIDE the dock the
+    # applied-filter chips come before the controls that produced them.
+    assert text.index('class="lib-head"') < text.index('class="lib-dock"')
+    assert text.index('class="lib-dock"') < text.index('id="lib-chips"')
+    assert text.index('id="lib-chips"') < text.index('class="fbar fbar--center"')
+    assert text.index('class="fbar fbar--center"') < text.index('class="lib-section-head"')
+    assert text.index('class="lib-section-head"') < text.index("data-lib-sec=")
+
+
+def test_toolbar_is_a_floating_bottom_dock(seeded_app):
+    """The filter/sort controls ride a fixed card pinned to the bottom of the
+    viewport, with the applied-filter chips as its TOP row.
+
+    Four things make that work and are worth pinning, because each one silently
+    breaks something a caller can see:
+
+      * both rows live in ONE card (`.lib-dock__card`), chips first;
+      * the list reserves room below itself, or the dock covers its last rows;
+      * every menu the dock opens is re-anchored upward — a menu still hanging
+        off `top: 100%` renders below the viewport floor;
+      * `.lib-actions` keeps a reserved height, since the script moves its two
+        controls into the dock and observes the box they left behind.
+    """
+    _create_collection(seeded_app, "Dock Anchor", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+
+    # One card, chips row first, controls row second.
+    card = text.split('class="lib-dock__card"', 1)[1].split('class="lib-section-head"', 1)[0]
+    assert card.index('id="lib-chips"') < card.index('class="fbar fbar--center"')
+
+    css = text.split("{% endblock %}", 1)[0]
+    assert "position: fixed;" in text.split(".lib-dock {", 1)[1].split("}", 1)[0]
+    # Room below the list for the card to float over.
+    assert "padding-bottom: 132px" in css
+    # Upward-opening menus, both of them.
+    assert ".lib-dock .fbar-menu {" in css and ".lib-dock .lib-new__menu {" in css
+    for rule in (".lib-dock .fbar-menu {", ".lib-dock .lib-new__menu {"):
+        block = css.split(rule, 1)[1].split("}", 1)[0]
+        assert "top: auto;" in block
+        assert "bottom: calc(100%" in block
+    # The header keeps the row its two controls leave behind.
+    assert "min-height: 38px" in css.split(".lib-actions {", 1)[1].split("}", 1)[0]
+
+
+def test_dock_card_hugs_its_controls_in_every_state(seeded_app):
+    """The card is sized by what is in it, always.
+
+    It used to take a definite `min(900px, 100%)` once search and "+ Add" docked
+    into it, and push those two onto its edges with a pair of auto margins, so
+    the list controls would stay on the card's centre line. With a handful of
+    middle controls that left ~300px of free space for the margins to absorb and
+    the dock rendered as a wide empty bar with a button stranded at each end. A
+    floating card has nothing beside it to line up with, so there is no centre
+    line to hold — only one consistent gap between its own controls.
+
+    Keeping it intrinsic is also what gives the resize animation something to
+    interpolate: with a definite width most state changes moved nothing."""
+    _create_collection(seeded_app, "Dock Hug", seeded_app["admin_token"])
+    css = (
+        seeded_app["client"]
+        .get("/library", headers=_auth(seeded_app["admin_token"]))
+        .text.split("{% endblock %}", 1)[0]
+    )
+
+    # No definite width in the docked state, and no arms to pad it out.
+    assert ".lib-dock.has-page-actions .lib-dock__card { width:" not in css
+    for gap_maker in (
+        ".lib-dock .lib-head__search { margin-right: auto; }",
+        ".lib-dock .lib-new { margin-left: auto;",
+    ):
+        assert gap_maker not in css, f"auto margin reopens the whitespace hole: {gap_maker}"
+    # "+ Add" is content-sized, not given the search's basis.
+    assert ".lib-dock .lib-new { flex: 0 0 auto; }" in css
+
+    # The card still animates between the shapes it hugs into.
+    assert "animating = true" in css or "libDockCard.animate(" in css
 
 
 def test_library_head_closes_with_two_quiet_notices(seeded_app):
@@ -423,8 +503,8 @@ def test_library_head_closes_with_two_quiet_notices(seeded_app):
     )
     assert "Some items and information may be incomplete" in text
     # Only Data apps carries a marker, and it is the flat `.pnote-badge` label,
-    # not the bordered `.lib-wip` pill — inside a panel this quiet, a filled
-    # chip would outshout the sentence it qualifies.
+    # not the bordered `.lib-wip` pill the "+ Add" menu uses — inside a panel this
+    # quiet, a filled chip would outshout the sentence it qualifies.
     assert text.count('class="pnote-badge"') == 1
     # The loud page-local banner these replaced is gone, markup and CSS both.
     assert "lib-apps" not in text
