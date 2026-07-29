@@ -471,3 +471,39 @@ def test_delete_not_found():
     with patch("cli.commands.data_apps.api_delete", return_value=fake):
         result = runner.invoke(app, ["app", "delete", "nope", "--yes"])
     assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# linked apps (v108): --linked filter + set-description
+# ---------------------------------------------------------------------------
+
+
+def test_list_linked_filter_passes_kind():
+    fake = _mock_response(
+        200,
+        [{"slug": "kbc-x", "name": "X", "kind": "linked", "state": "linked", "url": "https://example.com/x"}],
+    )
+    with patch("cli.commands.data_apps.api_get", return_value=fake) as mock_get:
+        result = runner.invoke(app, ["app", "list", "--linked"])
+    assert result.exit_code == 0, result.output
+    assert "kbc-x" in result.stdout
+    assert "linked" in result.stdout
+    assert mock_get.call_args.args[0] == "/api/data-apps"
+    assert mock_get.call_args.kwargs.get("params") == {"kind": "linked"}
+
+
+def test_set_description_calls_patch():
+    fake = _mock_response(200, {"slug": "kbc-x", "effective_description": "new desc"})
+    with patch("cli.commands.data_apps.api_patch", return_value=fake) as mock_patch:
+        result = runner.invoke(app, ["app", "set-description", "kbc-x", "new desc"])
+    assert result.exit_code == 0, result.output
+    assert "new desc" in result.stdout
+    assert mock_patch.call_args.args[0] == "/api/data-apps/kbc-x"
+    assert mock_patch.call_args.kwargs.get("json") == {"description": "new desc"}
+
+
+def test_set_description_reports_failure():
+    fake = _mock_response(409, {}, text="not_managed")
+    with patch("cli.commands.data_apps.api_patch", return_value=fake):
+        result = runner.invoke(app, ["app", "set-description", "hosted-x", "x"])
+    assert result.exit_code != 0
