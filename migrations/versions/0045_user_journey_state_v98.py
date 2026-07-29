@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0045_user_journey_state_v98"
-down_revision: str = "0044_corpus_files_path_v97"
+down_revision: str = "0054_semantic_source_ref_v107"  # restacked onto main head (PG parity gap: main lacks user_journey_state)
 branch_labels = None
 depends_on = None
 
