@@ -7,8 +7,11 @@ Surface (all gated by ``Depends(require_admin)``):
   GET    /api/admin/source-connections/{id}         — detail; 404 if missing
   PUT    /api/admin/source-connections/{id}         — update config / token_env; 404 if missing
   DELETE /api/admin/source-connections/{id}         — delete; 404 if missing
-  PUT    /api/admin/source-connections/{id}/secret  — store vault secret; 409 if AGNES_VAULT_KEY missing
-  DELETE /api/admin/source-connections/{id}/secret  — clear vault secret
+  PUT    /api/admin/source-connections/{id}/secret  — store vault secret (kind=storage|master
+                                                       in body); 409 if AGNES_VAULT_KEY missing;
+                                                       kind=master is keboola-only and validated
+                                                       live via a verify_token preflight
+  DELETE /api/admin/source-connections/{id}/secret  — clear vault secret (?kind=storage|master)
   POST   /api/admin/source-connections/{id}/test    — verify connectivity; timeout 10s
   GET    /api/admin/source-connections/{id}/tables  — list buckets/tables for the "add data
                                                        source" wizard; keboola only, REST-only
@@ -24,12 +27,14 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import httpx
+import requests
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.secrets_vault import VaultKeyNotConfiguredError
+from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
 from src.repositories import (
     connection_secrets_repo,
@@ -67,6 +72,7 @@ class UpdateConnectionBody(BaseModel):
 
 class SecretBody(BaseModel):
     value: str
+    kind: str = "storage"
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +80,16 @@ class SecretBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def master_secret_key(connection_id: str) -> str:
+    """Vault key for a connection's Keboola master (owner) Storage API token —
+    a separate slot from the plain storage token (see ``SecretBody.kind``).
+    Shared with the semantic-layer sync (which requires a master token)."""
+    return f"{connection_id}:master"
+
+
 def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Annotate a connection row with ``has_secret`` (a vault secret is stored).
+    """Annotate a connection row with ``has_secret``/``has_master_secret``
+    (whether a vault secret is stored under each slot).
 
     The token's storage location isn't derivable from ``token_env`` alone —
     vault secrets live in the separate ``connection_secrets`` store. The UI
@@ -87,6 +101,10 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         row["has_secret"] = bool(connection_secrets_repo().has(row["id"]))
     except Exception:
         row["has_secret"] = False
+    try:
+        row["has_master_secret"] = bool(connection_secrets_repo().has(master_secret_key(row["id"])))
+    except Exception:
+        row["has_master_secret"] = False
     return row
 
 
@@ -144,6 +162,19 @@ def _reject_disallowed_token_env(token_env: Optional[str]) -> None:
                 "or store the token in the vault via PUT .../secret instead."
             ),
         )
+
+
+class _VerifiedTokenInfo:
+    """Adapts an already-fetched ``verify_token()`` response so it can be
+    passed to ``connectors.keboola.semantic_layer.require_master_token``
+    (which expects an object exposing ``verify_token() -> dict``) without a
+    second Storage API round-trip just to reuse its exact error message."""
+
+    def __init__(self, info: Dict[str, Any]) -> None:
+        self._info = info
+
+    def verify_token(self) -> Dict[str, Any]:
+        return self._info
 
 
 def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool) -> None:
@@ -275,6 +306,10 @@ async def delete_connection(
         connection_secrets_repo().delete(connection_id)
     except Exception:
         logger.debug("no vault secret for connection %s (expected)", connection_id)
+    try:
+        connection_secrets_repo().delete(master_secret_key(connection_id))
+    except Exception:
+        logger.debug("no master vault secret for connection %s (expected)", connection_id)
 
 
 @router.put("/{connection_id}/secret", status_code=204)
@@ -285,14 +320,52 @@ async def set_connection_secret(
 ):
     """Store (or rotate) the vault secret for a connection token.
 
+    ``kind="storage"`` (default): the plain Storage API token used for pulls.
+    ``kind="master"``: a *separate* slot for a Keboola master (owner) Storage
+    API token, required by the semantic-layer sync (Metastore API rejects
+    non-master tokens). 400 if the connection isn't ``source_type="keboola"``,
+    or if the token fails a live ``verify_token`` preflight (not a master
+    token). 502 if the Storage API preflight call itself fails.
+
     409 if AGNES_VAULT_KEY is not configured on the server.
     """
-    if source_connections_repo().get(connection_id) is None:
+    row = source_connections_repo().get(connection_id)
+    if row is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
     if not body.value:
         raise HTTPException(status_code=400, detail="secret value required")
+    if body.kind not in ("storage", "master"):
+        raise HTTPException(status_code=400, detail="invalid_kind")
+
+    if body.kind == "master":
+        if row.get("source_type") != "keboola":
+            raise HTTPException(status_code=400, detail="master_token_only_for_keboola")
+        config = row.get("config") or {}
+        # Validate-at-use SSRF guard, re-checked immediately before the
+        # outbound preflight call (same rationale as /test and /tables).
+        _validate_stack_url(config, required=True)
+        stack_url = (config.get("stack_url") or "").rstrip("/")
+        client = KeboolaStorageClient(url=stack_url, token=body.value)
+        try:
+            info = await run_in_threadpool(client.verify_token)
+        except (StorageApiError, requests.RequestException, Exception) as exc:
+            # A freshly typed token is in flight — never surface bare str(exc);
+            # route through the client's own token-aware redaction.
+            raise HTTPException(status_code=502, detail=f"storage_api_error: {client._redact(exc)}") from exc
+        if not info.get("isMasterToken"):
+            # Reuse require_master_token's exact message rather than duplicating
+            # it — it already fetched isMasterToken, so hand it the cached
+            # response instead of a second Storage API round-trip.
+            try:
+                require_master_token(_VerifiedTokenInfo(info))
+            except MasterTokenRequiredError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        key = master_secret_key(connection_id)
+    else:
+        key = connection_id
+
     try:
-        connection_secrets_repo().upsert(connection_id, body.value)
+        connection_secrets_repo().upsert(key, body.value)
     except VaultKeyNotConfiguredError as exc:
         raise HTTPException(
             status_code=409,
@@ -303,12 +376,19 @@ async def set_connection_secret(
 @router.delete("/{connection_id}/secret", status_code=204)
 async def delete_connection_secret(
     connection_id: str,
+    kind: str = "storage",
     _user: dict = Depends(require_admin),
 ):
-    """Clear the vault secret for a connection (idempotent)."""
+    """Clear the vault secret for a connection (idempotent).
+
+    ``kind`` is a query param: ``storage`` (default) or ``master``.
+    """
     if source_connections_repo().get(connection_id) is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
-    connection_secrets_repo().delete(connection_id)
+    if kind not in ("storage", "master"):
+        raise HTTPException(status_code=400, detail="invalid_kind")
+    key = master_secret_key(connection_id) if kind == "master" else connection_id
+    connection_secrets_repo().delete(key)
 
 
 @router.post("/{connection_id}/test")
