@@ -155,7 +155,9 @@ class TestMyStackArtefactsTab:
         assert resp.status_code == 200
         text = resp.text
         assert 'data-kind="artefacts"' in text
-        assert 'id="stk-count-artefacts"' in text
+        # The redesigned My Stack counts by membership section (stk-count-required /
+        # stk-count-added), not per data-kind, so there is no stk-count-artefacts
+        # element — the artefact still renders under its kind (asserted below).
         assert "Board Notes" in text
         assert "Remove from My Stack" in text
         # Private (owned, not shared) → the Source column shows "Private".
