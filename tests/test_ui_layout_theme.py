@@ -372,6 +372,28 @@ class TestRailOptIn:
         # than rendering an unsaved shell (the server owns the id).
         assert "createAgent(null)" in text
 
+    def test_agent_builder_has_delete_action(self, web_client, admin_cookie, monkeypatch):
+        """The builder can delete the agent it is configuring — previously the
+        only Delete lived on the list card, so the detail view was a dead end
+        for the one destructive action. It sits LEFT of the status button
+        (Mark ready / Back to draft), reuses the list's `data-ag-del` hook and
+        its DELETE /api/agents/{id} handler, and — unlike the list card —
+        confirms first, because here it is one button away from a primary
+        action on the config the caller is looking at."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        text = resp.text
+        assert 'class="cc-btn ag-del-btn" data-ag-del=' in text
+        # Left of the status button, inside the builder's action group.
+        actions = text.index('<div class="ag-build-actions">')
+        assert actions < text.index('class="cc-btn ag-del-btn"') < text.index("data-ag-status")
+        # Confirms only for the builder button; the list card is unchanged.
+        assert "window.confirm(" in text
+        assert "t.classList.contains('ag-del-btn')" in text
+        # A pending debounced PATCH must not outlive the row it would write to.
+        assert "clearTimeout(saveTimers[id]);" in text
+
     def test_agents_page_has_no_default_agent_card(self, web_client, admin_cookie, monkeypatch):
         """/agents lists the caller's OWN agents only — the always-on baseline
         assistant is not a card here (it is configured from /stack)."""
