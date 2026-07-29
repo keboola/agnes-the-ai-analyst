@@ -4,10 +4,12 @@ Follow-up to #62 / PR #126 which shipped the bulk-edit batch bar in the
 Review tab only. This test guards the symmetric bar on the All Items tab:
 
 - batch-bar block visible on page render (regardless of pending count)
-- the 5 bulk-edit actions ship with distinct ``*BtnAll`` IDs so they don't
+- the bulk-edit actions ship with distinct ``*BtnAll`` IDs so they don't
   collide with the Review tab's bare-ID buttons
-- Approve / Reject are intentionally absent — those stay scoped to Review
-  per the issue's scope decision
+- moderation actions (Approve / Reject / Revoke / Mark required) are
+  present too: the original issue-#129 "status changes stay in Review"
+  scope decision was revised once search landed on All Items, turning it
+  into the find-and-moderate surface
 """
 
 from __future__ import annotations
@@ -41,21 +43,33 @@ class TestAllItemsBatchBar:
         assert 'id="selectedCountAll"' in body
         assert "toggleSelectAll('all')" in body
 
-    def test_all_items_bar_omits_approve_reject(self, seeded_app):
-        """Approve / Reject are Review-only by design (issue #129 scope)."""
+    def test_all_items_bar_has_moderation_actions(self, seeded_app):
+        """All Items carries the full moderation set alongside bulk-edit.
+
+        Inverts the original issue-#129 guard (Approve/Reject Review-only):
+        with search on the tab, All Items is the find-and-moderate surface.
+        Revoke / Mark required exist only here — they act on approved items,
+        which the pending-only Review queue never shows.
+        """
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.get("/admin/corporate-memory", headers=_auth(token))
         assert resp.status_code == 200
         body = resp.text
 
-        # Bare-suffix Review buttons stay; *BtnAll variants of approve/reject
-        # must NOT appear — otherwise the JS in updateSelectionCount('all')
-        # would silently enable a status-change action the All-tab UX hasn't
-        # signed off on.
-        assert 'id="batchApproveBtn"' in body  # Review tab still has it
-        assert 'id="batchApproveBtnAll"' not in body
-        assert 'id="batchRejectBtnAll"' not in body
+        assert 'id="batchApproveBtn"' in body  # Review tab keeps its own
+        for btn_id in (
+            "batchApproveBtnAll",
+            "batchRejectBtnAll",
+            "batchRevokeBtnAll",
+            "batchRequireBtnAll",
+        ):
+            assert f'id="{btn_id}"' in body, f"missing button id={btn_id}"
+        # Revoke / Mark required stay All-Items-only — no bare-ID variants
+        # in the Review bar (pending items can't be revoked/required-toggled
+        # before approval).
+        assert 'id="batchRevokeBtn"' not in body.replace('id="batchRevokeBtnAll"', "")
+        assert 'id="batchRequireBtn"' not in body.replace('id="batchRequireBtnAll"', "")
 
     def test_browse_tab_omits_row_checkbox(self, seeded_app):
         """Regression guard for the adversarial-review finding: widening
