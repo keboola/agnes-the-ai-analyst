@@ -188,6 +188,31 @@ def test_invoke_502_when_upstream_call_blows_up(seeded_app):
     assert "upstream gone" in r.json()["detail"]
 
 
+def test_invoke_502_unwraps_exception_groups(seeded_app):
+    """The MCP SDK's HTTP transports raise through an anyio TaskGroup, so the
+    actionable upstream error (an McpError with the provider's message, often
+    including a remedy URL) arrives wrapped in an ExceptionGroup whose str()
+    is just "unhandled errors in a TaskGroup (1 sub-exception)". The 502
+    detail must surface the leaf, not the wrapper — chat agents read it."""
+    _seed_two_tools_two_groups()
+    client = seeded_app["client"]
+    leaf = RuntimeError("failed to list releases: 403 token lifetime policy — see https://example.com/fix")
+    grouped = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [ExceptionGroup("unhandled errors in a TaskGroup", [leaf])],
+    )
+    with _patch_upstream_call(raise_exc=grouped):
+        r = client.post(
+            "/api/mcp/passthrough/tools/test-upstream.lookup/call",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+            json={"arguments": {}},
+        )
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert "403 token lifetime policy" in detail
+    assert "TaskGroup" not in detail
+
+
 # ── Policy gates (mutating / rate-limit / PII redact) ──────────────────────
 
 

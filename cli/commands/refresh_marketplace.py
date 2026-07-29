@@ -292,7 +292,7 @@ def refresh_marketplace(
             raise typer.Exit(_EXIT_MARKETPLACE_DRIFT)
         raise typer.Exit(0)
 
-    events: dict[str, list[str]] = {"installed": [], "updated": [], "enabled": []}
+    events: dict[str, list[str]] = {"installed": [], "updated": [], "enabled": [], "removed": []}
 
     if not _git_fetch_and_reset(token):
         raise typer.Exit(1)
@@ -309,7 +309,7 @@ def refresh_marketplace(
 
     _reconcile_with_manifest(events=events, installed_pre=installed_pre)
 
-    if events["installed"] or events["updated"] or events["enabled"]:
+    if events["installed"] or events["updated"] or events["enabled"] or events["removed"]:
         typer.echo(
             "\nRun `/reload-plugins` in Claude Code to load the "
             "new/updated plugins into the running session — no restart needed."
@@ -764,6 +764,7 @@ def _reconcile_with_manifest(
 
     Missing → `claude plugin install <name>@agnes --scope project`.
     Version differs → `claude plugin update <name>@agnes`.
+    Installed but absent from the manifest → `claude plugin uninstall`.
     Match → skip.
 
     `installed_pre` is the snapshot taken before `claude plugin marketplace
@@ -771,8 +772,15 @@ def _reconcile_with_manifest(
     Claude silently auto-applied are still detected. Bootstrap path passes
     None and we read live — there's no pre-state to preserve.
 
-    Don't auto-uninstall plugins that disappeared from the manifest — a
-    transient empty manifest from the server would wipe the user's stack.
+    Uninstall guardrails: the prune only ever considers plugins installed
+    FROM the Agnes marketplace in THIS workspace (`installed` is already
+    `@agnes`-and-projectPath-filtered), and only runs when the manifest was
+    read successfully AND is non-empty — a transient empty/unreadable
+    manifest still cannot wipe the user's stack (both cases early-return
+    above). Accepted limitation: a user who unsubscribes their LAST plugin
+    ends with an empty manifest, which is indistinguishable from the
+    transient failure, so that final plugin is not auto-pruned —
+    `claude plugin uninstall` by hand covers it.
     """
     base = _claude_base_cmd()
     if base is None:
@@ -798,11 +806,19 @@ def _reconcile_with_manifest(
             to_install.append(name)
         elif installed_version != manifest_version:
             to_update.append(name)
+    # Stack-as-source-of-truth prune: an @agnes plugin installed in this
+    # workspace that the (successfully read, non-empty) manifest no longer
+    # serves left the user's stack — unsubscribed, or its grant was revoked.
+    # Without this it stays installed+enabled forever (the historical drift:
+    # workspaces carrying plugins their server stack dropped months ago).
+    to_remove = sorted(set(installed) - set(manifest))
 
     if to_install:
         typer.echo(f"Installing {len(to_install)} new plugin(s): " + ", ".join(to_install))
     if to_update:
         typer.echo(f"Updating {len(to_update)} plugin(s) to latest version: " + ", ".join(to_update))
+    if to_remove:
+        typer.echo(f"Removing {len(to_remove)} plugin(s) no longer in your stack: " + ", ".join(to_remove))
 
     for name in to_install:
         target = f"{name}@{MARKETPLACE_NAME}"
@@ -848,14 +864,49 @@ def _reconcile_with_manifest(
         if result.stdout:
             typer.echo(result.stdout.rstrip())
 
+    for name in to_remove:
+        target = f"{name}@{MARKETPLACE_NAME}"
+        result = subprocess.run(
+            [*base, "plugin", "uninstall", target, "--scope", "project"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if result.returncode != 0:
+            typer.echo(
+                f"warn: `claude plugin uninstall {target}` exited {result.returncode}.",
+                err=True,
+            )
+            if result.stderr:
+                typer.echo(result.stderr.rstrip(), err=True)
+            continue
+        events["removed"].append(name)
+        if result.stdout:
+            typer.echo(result.stdout.rstrip())
+
     # Whether anything was installed or updated above, the workspace
     # settings.json must end up with `enabledPlugins["<name>@agnes"]: true`
     # for every plugin in the stack — `claude plugin install` does not do
     # this on its own, and a fresh refresh on a workspace where the user
     # manually `claude plugin disable`-d a stack plugin must re-enable it.
+    # Symmetrically, stale `@agnes` entries whose plugin left the manifest
+    # are dropped so a pruned (or out-of-band-uninstalled) plugin doesn't
+    # linger enabled in settings.json.
     _enable_plugins_in_workspace_settings(manifest, events=events)
 
-    if not to_install and not to_update and not events["enabled"]:
+    # `settings_pruned` counts too: an out-of-band uninstall leaves a stale
+    # enabledPlugins key that the cleanup above just dropped — announcing
+    # "up to date" right after "Dropped N stale entries" would misreport a
+    # run that changed settings.json (Devin Review on #1105).
+    if (
+        not to_install
+        and not to_update
+        and not to_remove
+        and not events["enabled"]
+        and not events.get("settings_pruned")
+    ):
         typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
 
 
@@ -1027,16 +1078,38 @@ def _enable_plugins_in_workspace_settings(
         )
         return
 
-    changed: list[str] = []
+    newly_enabled: list[str] = []
     for name in manifest:
         key = f"{name}@{MARKETPLACE_NAME}"
         if enabled.get(key) is not True:
             enabled[key] = True
-            changed.append(name)
+            newly_enabled.append(name)
 
-    if not changed:
+    # Symmetric cleanup: drop `@agnes` entries whose plugin is no longer in
+    # the manifest (pruned above, or uninstalled out-of-band) so settings
+    # don't accumulate enabled-but-gone plugins. Entries from OTHER
+    # marketplaces (e.g. `superpowers@claude-plugins-official`) are never
+    # touched — only the Agnes marketplace suffix is ours to manage.
+    suffix = f"@{MARKETPLACE_NAME}"
+    manifest_keys = {f"{name}{suffix}" for name in manifest}
+    stale = sorted(k[: -len(suffix)] for k in list(enabled) if k.endswith(suffix) and k not in manifest_keys)
+    for name in stale:
+        del enabled[f"{name}{suffix}"]
+
+    if not newly_enabled and not stale:
         return
 
     settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    events["enabled"].extend(sorted(changed))
-    typer.echo(f"Enabled {len(changed)} plugin(s) in workspace settings: " + ", ".join(sorted(changed)))
+    if newly_enabled:
+        events["enabled"].extend(sorted(newly_enabled))
+        typer.echo(f"Enabled {len(newly_enabled)} plugin(s) in workspace settings: " + ", ".join(sorted(newly_enabled)))
+    if stale:
+        # setdefault: pre-existing callers build `events` without this key
+        # (refresh_marketplace's own dict literal included) — don't KeyError
+        # on them, but DO give machine-readable consumers (`agnes update`'s
+        # run report) the pruned names instead of only a stdout line.
+        events.setdefault("settings_pruned", []).extend(stale)
+        typer.echo(
+            f"Dropped {len(stale)} stale plugin entr{'y' if len(stale) == 1 else 'ies'} "
+            "from workspace settings: " + ", ".join(stale)
+        )
