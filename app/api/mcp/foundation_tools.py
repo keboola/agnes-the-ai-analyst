@@ -145,6 +145,31 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
 )
 
 
+# The hosted-data-app tool family — must be exposed on the CLI **stdio**
+# `agnes mcp` surface too, not only the HTTP foundation transports, because the
+# in-chat authoring agent connects through the stdio server
+# (`app/chat/runner.py::_agnes_mcp_servers()` spawns `agnes mcp` =
+# `cli/mcp/server.py`). Wave-3C originally registered these only here (the HTTP
+# foundation surface) — the stdio server hand-registers a curated analyst
+# subset and never got the family, so the chat agent could never emit the
+# `data_app_preview` render frame and the in-chat preview pane was inert. A
+# guard in tests/test_mcp_tool_parity.py asserts the stdio server exposes every
+# name below, and that this tuple stays a subset of FOUNDATION_TOOL_NAMES.
+DATA_APP_TOOL_NAMES: tuple[str, ...] = (
+    "data_apps_list",
+    "data_app_get",
+    "data_app_deploy",
+    "data_app_logs",
+    "data_app_create_draft",
+    "data_app_delete_draft",
+    "data_app_git_credential",
+    "agnes_data_app_preview",
+    "agnes_data_app_refresh",
+    "agnes_data_app_close",
+    "agnes_data_app_credentials",
+)
+
+
 def register_foundation_tools(
     mcp: FastMCP,
     *,
@@ -1739,13 +1764,17 @@ def register_foundation_tools(
             url:  Empty (default) for the placeholder call; the app's URL
                   (e.g. ``/apps/<slug>/``) to swap to the live pane.
 
-        Returns ``{"render": "data_app_preview", "slug", "url",
-        "preview_cookie"}`` — ``url``/``preview_cookie`` are ``null`` on the
-        placeholder call. Returns a friendly ``data_apps_disabled`` payload
-        (not an error) if data apps are disabled on this instance.
+        Returns ``{"render": "data_app_preview", "slug", "url"}`` — ``url`` is
+        ``null`` on the placeholder call. The live-URL call mints the scoped
+        preview cookie server-side (installed via the grant endpoint's
+        ``Set-Cookie`` header; the web chat re-fetches it same-origin), but the
+        token value is deliberately NOT returned — a tool result is archived in
+        the session transcript, and this is a live bearer credential. Returns a
+        friendly ``data_apps_disabled`` payload (not an error) if data apps are
+        disabled on this instance.
         """
         if not url:
-            return {"render": "data_app_preview", "slug": slug, "url": None, "preview_cookie": None}
+            return {"render": "data_app_preview", "slug": slug, "url": None}
         async with httpx.AsyncClient() as c:
             r = await c.post(
                 f"{base_url}/api/data-apps/{slug}/preview-grant",
@@ -1755,13 +1784,12 @@ def register_foundation_tools(
             if _is_data_apps_disabled_response(r):
                 return _data_apps_disabled_payload()
             r.raise_for_status()
-            grant = r.json()
-        return {
-            "render": "data_app_preview",
-            "slug": slug,
-            "url": url,
-            "preview_cookie": grant.get("preview_cookie"),
-        }
+        # The POST above validates view access (403 -> raises) and installs the
+        # scoped cookie via its Set-Cookie header. We intentionally do NOT read
+        # or surface the cookie value: the render directive the web chat needs
+        # carries only slug + url, and the frontend lands the HttpOnly cookie
+        # itself via a same-origin re-fetch of the grant endpoint.
+        return {"render": "data_app_preview", "slug": slug, "url": url}
 
     @mcp.tool()
     async def agnes_data_app_refresh(slug: str) -> dict:

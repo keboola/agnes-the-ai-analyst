@@ -252,14 +252,16 @@ def test_preview_placeholder_then_live(preview_env):
     client, call_tool = preview_env
     first = call_tool("agnes_data_app_preview", slug="dash--init")
     assert first["render"] == "data_app_preview" and first["url"] is None
-    assert first["preview_cookie"] is None
+    # The scoped preview cookie is a live bearer credential and must NOT leak
+    # into the tool result (archived in the session transcript). The frontend
+    # installs it via a same-origin re-fetch of the grant endpoint instead.
+    assert "preview_cookie" not in first
 
     live = call_tool("agnes_data_app_preview", slug="dash--init", url="/apps/dash--init/")
     assert live["render"] == "data_app_preview"
     assert live["slug"] == "dash--init"
     assert live["url"] == "/apps/dash--init/"
-    assert "data-app-preview" in live["preview_cookie"] or "Max-Age" in live["preview_cookie"]
-    assert "Path=/apps/dash--init/" in live["preview_cookie"]
+    assert "preview_cookie" not in live
 
 
 def test_preview_refresh_render_directive(preview_env):

@@ -1620,7 +1620,7 @@ function _coerceToTablePreview(result) {
 // preview-extras.md) that drives a persistent split pane next to the
 // chat thread instead:
 //
-//   {render:"data_app_preview", slug, url: null|"/apps/<slug>/", preview_cookie?}
+//   {render:"data_app_preview", slug, url: null|"/apps/<slug>/"}
 //   {render:"data_app_preview_refresh", slug}
 //   {render:"data_app_preview_close", slug}
 //   {render:"data_app_credentials", slug, url, password}

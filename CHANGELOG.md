@@ -1239,6 +1239,1065 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Security
 
+## [0.77.24] - 2026-07-29
+
+### Fixed
+
+- Corporate memory now actually reads the `CLAUDE.local.md` files `agnes push` uploads. The collector scanned only `<HOME_BASE>/<user>/CLAUDE.local.md` — the bare-VM layout where analysts work on the server — while `POST /api/upload/local-md` writes to `${DATA_DIR}/user_local_md/`. On any deployment that doesn't populate `/home` (Docker Compose, i.e. analysts on laptops) the every-17-min job therefore found zero files and returned `skipped` forever: the upload arrived and was never read, so corporate memory had no `claude_local_md` input at all. It now scans both layouts; a user present in both is collected once with the home copy winning, and the bare-VM layout keeps emitting the directory name as `source_user` so existing hash keys and item provenance don't shift. `HOME_BASE` also gained a `CORPORATE_MEMORY_HOME_BASE` env override (it was hardcoded, unlike its sibling constants), and the per-run "Home base directory does not exist" WARNING that fired on every Docker run is now debug-level. The filename + directory are derived through shared helpers (`app.utils.local_md_filename` / `uploaded_local_md_dir`) used by both the writing endpoint and the reading collector, with a round-trip test asserting the two agree — that divergence is what made this silent.
+
+## [0.77.23] - 2026-07-29
+
+### Fixed
+
+- Data apps: the in-chat authoring + live-preview loop is now actually reachable by the chat agent. The `data_app_*` MCP tool family — the hosted-app actions (`data_apps_list`, `data_app_get`, `data_app_deploy`, `data_app_logs`, `data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`) and the four in-chat preview render tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) — was registered only on the HTTP MCP foundation surface (the SSE/streamable transports serving external clients), but the chat agent connects through the CLI **stdio** `agnes mcp` server, which never exposed them. As a result the chat agent could neither author/deploy an app nor open the split-pane preview. The stdio server now registers the whole family (mirroring the REST contracts), and a `DATA_APP_TOOL_NAMES` parity guard asserts both surfaces stay in sync. Analysts running a local `agnes mcp` gain the same app-management tools.
+- Data apps: `agnes_data_app_preview` no longer returns the scoped preview-grant cookie in its MCP tool result (on either transport). The cookie is a short-TTL bearer credential and a tool result is archived in the chat session transcript; the grant is still minted server-side and installed via the grant endpoint's `Set-Cookie` header (the web chat re-fetches it same-origin), so the preview pane is unaffected.
+
+## [0.77.22] - 2026-07-29
+
+### Added
+
+- `agnes update` now runs an `agnes push` catch-up step (step 4b, before the data pull), so the SessionStart hook uploads session transcripts + `CLAUDE.local.md` that the SessionEnd hook never got to send. SessionEnd is not a dependable trigger — closing the terminal window (or a crash / kill) can take Claude Code down before it reaches the hook, leaving the transcript on disk and invisible in the admin session views, which read the pipeline's summary table and have no filesystem fallback. SessionStart cannot be missed, because the session is being created. push is already a full folder scan with ledger dedup, so one call recovers everything earlier runs missed, including a session still open in another window whose transcript has grown; the convergence report gains a `push` stage line.
+
+## [0.77.21] - 2026-07-29
+
+### Added
+
+### Changed
+
+- **BREAKING** (admins only): session-JWT agent surfaces follow the stack too — the web-chat/E2B runner (`scope="chat"`) and the MCP streamable-HTTP OAuth transport (Claude Desktop / claude.ai connectors) now resolve with the `stack` data-read surface, matching the PAT default. Browser sessions, `/admin`, and non-admins are unchanged.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.20] - 2026-07-29
+
+### Added
+
+- Per-connection Keboola master (owner) Storage API token for the semantic-layer sync — a separate vault slot from the plain storage token, set/rotate/remove via `/admin/data-sources`'s connection card ("Master token (semantic layer)" control) or `agnes admin connection secret <connection_id> --kind master`, validated with a live `verify_token` preflight at save time (rejected if the token isn't a master token, since the Metastore API rejects non-master tokens).
+- Multi-project semantic-layer sync: every Keboola connection holding a master token now syncs independently under its own `source_ref` provenance, with metric/glossary prune scoped to that connection's own rows so one connection's sync can never wipe another's.
+- `GET /admin/semantic-layer` — per-connection view of the sync: one row per master-token project with its own metric/glossary counts and last-sync result, plus an "orphaned rows" section for rows whose recorded project no longer matches any connected source.
+
+### Changed
+
+- `/admin/data-sources`'s semantic-layer card is now a one-line status ("Semantic layer: <status> — manage at /admin/semantic-layer"); the per-project counts, "Sync now" control, and the new orphaned-rows view moved to `/admin/semantic-layer`.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+- `metric_definitions.source_ref` + `glossary_terms.source_ref` (schema v107, Alembic 0054): per-connection provenance for the multi-project semantic-layer sync.
+
+### Security
+
+## [0.77.19] - 2026-07-29
+
+### Added
+
+- CLI: `agnes admin memory approve|reject|revoke|require|unrequire` — lifecycle moderation of corporate-memory knowledge items from the terminal, wrapping the existing governance endpoints (`POST /api/memory/admin/batch`, per-item `mark-unmandatory`) with the same dedicated audit rows. Status changes stay off the generic `edit`/`bulk-edit` paths by design; these subcommands are the CLI counterpart of the web admin review queue.
+
+## [0.77.18] - 2026-07-29
+
+### Added
+
+- PAT data-read **surface** (`personal_access_tokens.surface`, v106): `'all'` or `'stack'`. `POST /auth/tokens` accepts `surface` (default `all`) and token listings show it; `agnes auth token create --surface` mirrors it. New `POST /cli/auth/rescope-surface` (admin-only, PAT-authenticated) mints a full-surface token; `agnes init --as-admin` uses it.
+
+### Changed
+
+- **BREAKING** (admins only): PATs minted by `agnes init` / the CLI login exchange, Cowork setup bundles, and self-service MCP connections now carry `surface='stack'` — an admin's workspace/agent catalog and server-side queries follow their stack (required ∪ subscribed data packages + internal tables) like any analyst, instead of god-mode over every registered table. Existing tokens are grandfathered to `surface='all'`; opt up per-workspace with `agnes init --as-admin`. Parquet distribution was already stack-scoped and is unchanged; session (browser) logins and `/admin` are unchanged.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.17] - 2026-07-29
+
+### Added
+
+### Changed
+
+### Fixed
+
+- `agnes pull` empty-manifest hint no longer recommends the retired per-table grant flow (`agnes admin grant`); it now points at the post-#356 data-package path — `agnes stack browse` + `agnes stack add data_package <id>` — while keeping the "nothing registered yet" explanation.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.16] - 2026-07-28
+
+
+### Fixed
+
+- Store guardrails: the LLM security review no longer false-positives on the
+  pipeline's own file-truncation marker. Oversized files clipped to fit the
+  review budget used to get an anonymous `[... truncated N bytes ...]` marker
+  that reviewer models flagged as submitter-side "intentional content hiding"
+  (`prompt_injection`, medium) and blocked the submission. The marker now
+  self-identifies as pipeline-authored (`[AGNES-REVIEW-PIPELINE: …]`), the
+  reviewer system prompts declare it benign, and submitter forgeries of the
+  marker are defused by the same escaping that protects the `<bundle>`
+  sentinels (applies to the security review, the whole-bundle truncation note,
+  and the SL010 craft review).
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.15] - 2026-07-28
+
+
+### Added
+
+- The admin MCP source detail page gains an inline "Your connection" panel
+  for `per_user`-scoped sources — connect, test, or disconnect your own
+  credential (the one Introspect / Test connection run under) without
+  hopping to `/me/connections` first. Uses the same write-only
+  `/api/mcp/sources/{id}/my-secret` API as the self-service page.
+
+### Fixed
+
+- The `/me/connections` page (connect your own accounts for `per_user` MCP
+  sources) is now reachable from the user dropdown menu ("My connections").
+  It shipped in #919 but was never wired into the header, so users could
+  only reach it by typing the URL.
+- Admins can now store/test their own credential on a freshly registered
+  `per_user` source that has no passthrough tools yet. The `my-secret`
+  endpoints' admin short-circuit previously resolved through registered
+  passthrough tools, so the connect step 403'd exactly at the start of the
+  register → connect → introspect flow (tools only exist after the first
+  introspect). Non-admin callers still require a grant on the source.
+
+## [0.77.14] - 2026-07-28
+
+### Added
+
+- **Data Apps: in-chat AI authoring loop (wave 3C).** A chat conversation can now scaffold, preview, and promote a hosted data app end-to-end with no shell access. The bundled `agnes-data-apps-extras` skill (the first bundled skill; loads alongside the upstream `dataapp-development` skill) drives a baked `nodejs-dashboard` React+Vite+Tailwind+Express scaffold (with `server/agnesQuery.ts` helpers over `AGNES_TOKEN`/`AGNES_URL`) onto a draft branch, deploys it in `dev` mode, and shows it live in a split-pane preview iframe. Four chat-surface MCP tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) render the preview, authorized by a short-TTL scoped `data-app-preview:<slug>` grant (`POST /api/data-apps/{slug}/preview-grant`) that the ingress proxy accepts for the view-only serving path only — reusing the existing `access_tokens` table (no migration) and mirroring the `data-app-git:<slug>` fail-closed scope guard. On approval the agent merges the draft into `main` and redeploys prod. Operators register the upstream `dataapp-developer` marketplace plugin per the new `docs/DEPLOYMENT.md` runbook.
+
+### Changed
+
+### Fixed
+
+- **Data Apps: the `nodejs-dashboard` scaffold's `server/` directory is now committed.** The repo `.gitignore`'s broad `server/` rule (for the legacy top-level `server/` dir) also matched the scaffold's `server/index.ts` + `server/agnesQuery.ts`, so they were silently excluded and the scaffold copied into a chat session would be incomplete. Force-added, with a negation rule so the path isn't re-swallowed.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.13] - 2026-07-28
+
+
+### Fixed
+
+- Admin MCP connect probes (`POST /api/admin/mcp-sources/{id}/introspect`,
+  `/classify`, `/test`) now surface the real upstream failure (e.g.
+  `httpx.HTTPStatusError: Client error '401 Unauthorized' …`) instead of the
+  MCP SDK's opaque `unhandled errors in a TaskGroup (1 sub-exception)`
+  ExceptionGroup wrapper.
+- The same probes on a `per_user`-scoped source now use the calling admin's
+  own connected secret when one exists (previously they always ran
+  caller-less, so a per-user source with no shared fallback secret probed
+  anonymously and failed with 401 even though the admin had a working token
+  connected). Sources with a shared/fallback secret behave as before.
+## [0.77.12] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- `POST /api/admin/run-keboola-semantic-layer-refresh` no longer reports success when the sync couldn't run at all (missing Keboola credentials, or a Storage/Metastore API failure) — `sync_semantic_layer()` surfaces those as a returned `{"status": "error"}` value rather than an exception, and the endpoint previously recorded and returned "ok" regardless. The `/admin/data-sources` "Semantic layer" summary card showed a false green "OK" after a failed sync; it now shows the actual failure reason.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.11] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Chat bootstrap reads the feature overlay from the same file the admin
+  panel writes.** `app/main.py` resolved the chat `instance.yaml` overlay as
+  `DATA_DIR/state/instance.yaml`, ignoring a `STATE_DIR` override — on a
+  flat-mount deployment the admin server-config toggle wrote a file the chat
+  runtime never read, so the panel and the running app could disagree about
+  chat being enabled. The bootstrap now resolves via the same
+  `app.secrets._state_dir()` helper as the overlay writer and
+  `load_instance_config`.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.10] - 2026-07-28
+
+### Added
+
+- **Canonical feature-flag convention.** `app.instance_config.feature_enabled`
+  is now the single resolver (env var > instance.yaml/server-config overlay >
+  default) for every operator-facing feature toggle, backed by a
+  `FEATURE_FLAGS` registry; `/admin/server-config` gained a read-only
+  "Feature flags" inventory panel (also surfaced via
+  `GET /api/admin/server-config`'s new `feature_flags` field).
+  `get_studio_enabled` and `get_guardrails_enabled` now delegate to it
+  (behavior-preserving); `guardrails.enabled` gained a new
+  `AGNES_GUARDRAILS_ENABLED` env override (additive); `chat.enabled` gained a
+  new `AGNES_CHAT_ENABLED` env override at its `load_chat_config` read site;
+  `data_apps.enabled`'s read sites (the existing `AGNES_DATA_APPS_ENABLED`
+  var) now route through the same resolver. See `docs/feature-flags.md`.
+  (#1022)
+
+### Changed
+
+- `AGNES_DATA_APPS_ENABLED` now follows the canonical flag resolution: when
+  set, it wins over `data_apps.enabled` in instance.yaml in **both**
+  directions (a falsy value forces the feature off; previously falsy values
+  were ignored and the yaml decided). Unset behavior is unchanged, and the
+  shipped infra module only ever writes `true`. (#1022)
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.9] - 2026-07-28
+
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **BigQuery jobs from a restricted principal keep their cost-attribution
+  labels.** `_user_id_label` reached for `user.get("email")` on a frozen
+  `SessionPrincipal` / `AgentPrincipal`; the `AttributeError` hit
+  `build_bq_job_labels`' totality guard, which dropped the ENTIRE label set
+  (`workload_type`, `agent_name`, `environment` — not just `user_id`), so a
+  scoped agent's BQ spend was unattributable in `INFORMATION_SCHEMA.JOBS` and
+  the billing export. Identity now routes through `identity_for_audit()`: an
+  agent's jobs carry its owner, a co-session's carry the remaining labels.
+- **`GET /api/v2/catalog` writes its audit row for a restricted principal.**
+  The last `user.get("id")` audit call site missed by the identity rollout —
+  the `AttributeError` landed in the `except Exception` around the audit
+  write, so a co-session or agent-session listed the catalog (200) while its
+  `catalog.list` row was silently dropped.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.8] - 2026-07-28
+
+### Changed
+
+- Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
+
+## [0.77.7] - 2026-07-28
+
+### Added
+
+- `usage_session_summary.uploaded_at` (schema v105): sessions record when
+  they ARRIVED, not just when they started. The health pulse gains a
+  `session_ingest` field reconciling `session.upload` audit rows against
+  ingested summaries (joined on the file name — resumed/forked sessions
+  carry a different content-derived session id); the browser hints the file
+  id when it differs.
+
+### Changed
+
+- **The sessions browser windows on arrival by default** (`anchor=uploaded`;
+  `anchor=started` and `agnes admin sessions list --anchor started` restore
+  the old view). Previously a session uploaded late (queue catch-up) never
+  appeared in any recent window and read as data loss — on a production
+  dataset, 34 of 157 uploads in 30 days were invisible this way. Adoption
+  charts stay anchored on `started_at` (usage-over-time semantics).
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.6] - 2026-07-28
+
+### Added
+
+- Activity Center timeline rows carry a server-computed `source`
+  (web/cli/scheduler/system/…) so every consumer classifies rows by one rule
+  (landed unreleased in #1071; recorded here after a changelog-section
+  collision with the concurrent 0.77.3/0.77.4 cuts).
+- Activity Center **result classes**: the Result filter now partitions every
+  row (`success` = success/ok, `errors`, `denied` = denied/blocked/
+  invalid_password/deactivated, `no result`, `other`) — previously 35% of
+  rows matched neither dropdown option. Facets expose per-class counts;
+  `agnes admin activity` gains `--result-class`, `--source`,
+  `--include-self-reads`.
+- `duration_ms` is now auto-measured for every HTTP-triggered audit write via
+  a request-start contextvar (no per-endpoint instrumentation); the p95 card
+  shows what fraction of rows carry a measurement.
+
+### Changed
+
+- **Activity Center KPI cards, facet dropdowns and the timeline share one
+  server-side filter surface** — KPIs/facets accept the same filters as the
+  table (user, action, resource, result class, source, search), so the cards
+  finally change when the filters do. The `source` filter is applied
+  server-side (was client-side on the loaded page only).
+- **Activity Center hides its own `activity.read` audit rows by default**
+  (toggle "Include Activity Center reads" to see them); the rows are still
+  written for governance.
+- Activity Center "Active users" counts people — scheduler/system actors are
+  excluded from the user count (events totals still include them); card
+  sub-labels state each number's population.
+
+### Fixed
+
+- Audit rows record `users.id` in `user_id` everywhere — the chat,
+  corporate-memory governance, authoring-suggestion, and Slack-binding
+  writers previously stored the email, splitting one person into two
+  Activity Center facet entries. Schema v104 backfills historical rows
+  (exact single-account email matches only). (#1071)
+- Scheduler-tick audit writers (`run_*`) stamp `client_kind`, and source
+  classification uses the shared `action LIKE 'run_%'` rule instead of a
+  stale hardcoded action list — scheduler traffic no longer floods the
+  "other" bucket in the Activity Center source facet. (#1071)
+- Activity Center Reset button clears the Resource and Source filters too.
+- Audit writers standardize on `result="success"` (`"ok"` retired; a guard
+  test pins the vocabulary to the classification map).
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.5] - 2026-07-28
+
+### Changed
+
+- **Infra (customer-instance module): `data_apps_enabled` is now a per-VM field.** It moved from a module-global variable to an `optional(bool, false)` field on the `prod_instance` / `dev_instances[*]` object types (mirroring `dispatcher_enabled`), so an operator can enable hosted data apps on a single dev VM without also flipping every other VM in the instance — including prod. `data_apps_runtime_image` stays instance-wide. Consumed by a new `infra-v1.20.0` module tag.
+
+## [0.77.4] - 2026-07-28
+
+### Added
+
+- **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
+  with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
+  carrying a bare `*` (implicit `SELECT *`), now prints an advisory stderr
+  warning before proceeding — making the `CLAUDE.md` query rails mechanical at
+  the point the fetch is issued. WARN-only: it never blocks the fetch, and the
+  `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
+  Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
+
+## [0.77.3] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Broker fails closed on a deleted or misconfigured scoped agent.**
+  `_mint_identity_jwt` previously fell through to the owner's full-access
+  identity JWT when a session's agent had been deleted or carried an
+  unknown mode value — silently restoring the very authority the scope
+  removed. A deleted/missing agent now yields 401 `ticket_agent_not_found`
+  (mirroring the resolver's fail-closed posture), and only an explicit
+  all-`'all'` agent (`agent_is_passthrough`) skips the enforced
+  agent-session path.
+
+- **Agent scope is now enforced at request time, not merely recorded.** A
+  `selected`-scoped agent's brokered requests are authorized against
+  `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`
+  (`app/auth/session_principal.py`), so an agent PAT — or a chat session
+  bound to that agent — can no longer reach tables, plugins, or MCP tools
+  outside the agent's declared scope. Agents never inherit their owner's
+  admin authority, even when the owner is an admin. Previously the scope
+  was computed and audit-snapshotted (`agent_scope_snapshots`) but the
+  brokered request still ran under the owner's full grants — the HIGH
+  finding from the V1 `/agnes-review`. See
+  `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`
+  and the end-to-end proof in `tests/test_agent_scope_e2e.py`.
+- **`/api/query` crashed instead of returning rows for a restricted
+  principal's successful (in-scope) request against a real local table.**
+  A co-session (`SessionPrincipal`) or agent-session (`AgentPrincipal`)
+  request that RBAC correctly *allowed* still 400'd downstream, because the
+  audit-log and BQ-quota-key bookkeeping called `user.get(...)` unconditionally
+  — a frozen-dataclass principal has no `.get`. Denials were unaffected (the
+  crash was swallowed inside an already-caught audit-log failure), which is
+  why this went unnoticed until the agent-scope end-to-end test exercised an
+  actually-successful principal-authenticated query. Fixed via a
+  principal-aware `_identity_for_audit` helper used only for audit/quota
+  bookkeeping, never for an authorization decision.
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.2] - 2026-07-28
+
+### Added
+
+- **Data Apps: durable enablement via the customer-instance Terraform module.** A new `data_apps_enabled` module variable (off by default; `data_apps_runtime_image` sets the runtime image) brings the feature up on VM boot without hand-editing config: the startup script mints/persists an `APPS_RUNNER_TOKEN`, resolves `DOCKER_GID` from the docker socket, writes `AGNES_DATA_APPS_ENABLED=true` (plus the runner token/prefix/gid) into the app `.env`, and enables the `apps` compose profile via a `--profile apps` command-line flag in both the startup script and `agnes-auto-upgrade.sh` (not `COMPOSE_PROFILES` in `.env` — docker compose ignores that env var whenever any `--profile` flag such as `--profile tls` is present). The app honors a Terraform-friendly `AGNES_DATA_APPS_ENABLED` env override (mirrors `AGNES_HOME_ROUTE`/`PUBLIC_URL`) that flips the feature on and backfills the example-config `data_apps:` defaults, so no instance.yaml edit is needed. Disabled instances render byte-identically.
+
+### Changed
+
+### Fixed
+
+- **Data Apps: the apps-runner sidecar can now reach the docker socket.** The sidecar runs as the image's non-root uid 999 but bind-mounts the root:docker-owned socket; with no group membership every container `up`/`stop` failed the daemon handshake with `PermissionError(13)`, surfaced as a 502 `runner_unavailable` (found in a live end-to-end run). `docker-compose.yml` now adds `${DOCKER_GID}` to the sidecar via `group_add` (the customer-instance startup resolves the host gid; a hand-run `--profile apps` must export it), keeping the sidecar uid 999 so the `config.json` it writes stays owner-deletable by the app.
+- **Data Apps: internal-repo containers can now clone their app.** The runtime image only embeds git credentials into HTTPS clone URLs and leaves plain-HTTP URLs untouched, so the container cloning Agnes's internal `http://app:8000/...` git backend prompted for a username in a non-interactive shell and crash-looped (proxy then 502 `container_unreachable`). `build_config_json` now embeds the percent-encoded push token directly in the repository URL (`http://agnes:<token>@app:8000/...`), which the image preserves.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.1] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Cloud-chat answers finally stream token-by-token on TLS-fronted
+  deployments.** The real cause of the "silence, then the whole answer at
+  once" behavior was Caddy, not the app: Caddy only auto-flushes a reverse-
+  proxied response when the Content-Type is EXACTLY `text/event-stream`, but
+  Starlette appends `; charset=utf-8`, so the SSE completion was buffered and
+  every token delta arrived in one end-of-turn burst. Every Caddy
+  `reverse_proxy` that fronts the app now sets `flush_interval -1` (main
+  `Caddyfile` + the m-tier and apps-subdomain variants), forcing an immediate
+  flush. Diagnosed by a live A/B: `mac→Caddy→app→Anthropic` delivered all
+  deltas at a single timestamp, while the identical request straight to the
+  app streamed over seconds. (Supersedes the earlier `/api/broker/anthropic`
+  GZip skip-list attempt, which was a no-op — GZip never buffered the stream;
+  the buffering was entirely in the proxy.)
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.0] - 2026-07-28
+
+### Added
+
+- **Agent profiles.** Named, scoped agents layered over a user's own stack
+  (agent-api V1a). `POST/GET /api/v1/agents` (create/list), `GET/PUT/DELETE
+  /api/v1/agents/{id}` (detail/update/delete), and `PUT
+  /api/v1/agents/{id}/scope` (replace an agent's resource-grant set: plugins,
+  connections, tables, memory domains) — every route requires an interactive
+  session token, never a PAT. Every user gets an implicit `default` agent
+  (seeded lazily, `all`-mode scope on every dimension, undeletable); web chat
+  sessions are now attributed to it. A new agent defaults all four scope
+  modes (`plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode`) to
+  `selected` — the owner grants specific resources via `scope set` rather
+  than inheriting the account's full stack. Optional per-agent `model`
+  (pins the brokered LLM to one model) and `token_budget_monthly`. Surfaced
+  at `/agents` (a minimal builder page: list, create, issue token, delete)
+  and via `agnes agent {list,create,show,delete,scope set,token,ask}`.
+  New `agents` / `agent_scope` / `agent_scope_snapshots` / `llm_usage`
+  tables (DuckDB v100 + Alembic `0047`).
+- **Agent personal access tokens (`typ=agent_pat`).** `POST
+  /api/v1/agents/{id}/tokens` mints a token bound to one agent — accepted
+  only on the agent runtime API (`/api/v1/{agents,jobs}/...`), rejected
+  everywhere else, and only issuable once all four scope modes are
+  `selected` (`403 agent_not_selected_mode` otherwise — never for an
+  `all`-mode agent, including the default agent). Deleting an agent revokes
+  every PAT minted for it.
+- **`POST /api/v1/agents/{slug}/responses`** — one-shot request/response over
+  an owner's agent (agent-api V1a, Task 9). Runs a headless (no-WebSocket)
+  chat turn and returns `{answer, session_id, response_id, usage,
+  agent_config_hash, request_id}` synchronously, bounded by a clamped
+  `timeout_s` (default 120s, 1..600) — a wait that times out but already
+  collected an answer serves it as a 200 rather than degrading. `background:
+  true`, or a sync call whose wait genuinely times out with no answer yet,
+  degrades to a background job — the run itself is never killed, only the
+  wait — via the new `agent_response` job kind (registered only on a process
+  with a live chat manager, so it runs on gateway-colocated workers);
+  `GET /api/v1/jobs/{job_id}` (owner-scoped, and agent-PAT-bound to the same
+  agent when called with one) reads the result back. Callable with an
+  interactive session token or an agent PAT scoped to the exact agent. A
+  per-user concurrency-cap hit maps to `429 {"code": "concurrency_cap"}`.
+  Supports an `Idempotency-Key` header (scoped to caller+agent, 24h default
+  TTL): the key is reserved before the request runs, closing a
+  double-execution race between concurrent calls under the same key — a
+  losing concurrent call gets `409 idempotency_key_in_flight`; identical-body
+  replay of a completed call returns the original response verbatim; a
+  different body under the same key is `409 idempotency_key_reuse`.
+- **Agent-as-API multi-turn sessions + SSE streaming** (agent-api V1b Task
+  4). `POST /api/v1/agents/{slug}/sessions` creates an API-surface session
+  bound to an agent (`201 {session_id}`); `POST
+  /api/v1/sessions/{id}/messages` streams one turn as Server-Sent Events in
+  the AG-UI event vocabulary (`RUN_STARTED`/`TEXT_MESSAGE_CONTENT`/
+  `TOOL_CALL_START`/`TOOL_CALL_END`/`RUN_FINISHED`/`RUN_ERROR`, each record
+  carrying a monotonic `id: {session_id}:{seq}` line), rejecting a second
+  concurrent turn on the same session with `409 {"code": "turn_in_flight"}`
+  and force-terminating a turn that never reaches a terminal event with
+  `RUN_ERROR{code: "idle_timeout"}`; `GET /api/v1/sessions/{id}` reads back
+  state + full message history; `POST /api/v1/sessions/{id}/cancel` cancels
+  the in-flight turn (`202`, session preserved); `DELETE
+  /api/v1/sessions/{id}` archives it. Same owner/agent-PAT auth model as
+  `/responses`, collapsed to a uniform `404` on any mismatch (wrong owner,
+  or an agent PAT bound to a different agent) so a non-owner can never
+  distinguish "no such session" from "not yours" — and, after ownership
+  passes, the same `ResourceType.CHAT` grant `/responses` requires is
+  re-checked too (`403 {"code": "chat_access_denied"}`), since a session
+  outlives the grant that let its owner create it. A `send_user_message`
+  failure right after a successful `attach()` now detaches the sink before
+  releasing the turn lock, instead of leaking it in `live.sinks`. Create-session
+  maps a config-level `chat.enabled=false` to `503 {"code": "chat_disabled"}`
+  rather than an unhandled 500.
+- **Agent-as-API sandbox artifact harvest + download** (agent-api V1b Task
+  5). Files an agent writes under `/work/outputs` inside its E2B sandbox are
+  now harvested into the object store + `agent_artifacts` registry when a
+  one-shot `/responses`/`/jobs` turn completes and when `DELETE
+  /api/v1/sessions/{id}` tears the sandbox down — best-effort, never fails
+  the run/delete it piggybacks on. Filenames are agent-chosen input and are
+  sanitized to a flat, CR/LF-free basename before use as the object key
+  (`agent-artifacts/{session_id}/{filename}`) or in a download response's
+  `Content-Disposition` header. Per-session caps (`agent_api_artifact_max_bytes`,
+  25 MiB default; `agent_api_artifact_max_files`, 20 default) bound a single
+  run's harvest. `GET /api/v1/sessions/{id}/artifacts` lists harvested
+  artifacts (cursor envelope); `GET /api/v1/sessions/{id}/artifacts/{id}`
+  streams the bytes (default, through this endpoint's own auth) or, with
+  `?redirect=true`, 307-redirects to a short-TTL (≤120s) presigned
+  object-store URL. Same owner/agent-PAT auth as the rest of
+  `/api/v1/sessions/{id}/*`. New `agent_artifacts` table (DuckDB v101 +
+  Alembic `0048`, shared with the webhooks migration below).
+- **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
+  token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
+  to every upstream credential mode — static key, workload identity, LLM
+  dispatcher) now enforces an agent's pinned `model` before spending a
+  token (`403 model_not_allowed` if the request's `model` is outside
+  `{agent.model} ∪ utility_models`; an agent with `model IS NULL` has no
+  policy at all) and its `token_budget_monthly` (`429 budget_exhausted`,
+  deliberately no `Retry-After` so SDKs don't auto-retry). Every brokered
+  call's token usage (input/output/cache-read/cache-creation, parsed from
+  both JSON and buffered SSE upstream responses) is buffered in-memory by a
+  new `UsageAccumulator` and flushed in bulk to the `llm_usage` ledger on a
+  size/age threshold (20 rows or 30s) rather than one synchronous write per
+  call. Every proxied response carries `x-agnes-budget-limit` /
+  `x-agnes-budget-used` headers; the month-to-date total backing the budget
+  check is cached in the coordination backend (60s TTL) so the hot path
+  doesn't hit the ledger table on every call.
+- **MCP tools `agent_list` / `agent_ask`** (agent-api V1a) — triple-surface
+  with `/api/v1/agents` (`GET`, list your agent profiles) and
+  `/api/v1/agents/{slug}/responses` (`POST`, one-shot ask). `agent_ask` is
+  sync-only: it never sets `background: true` and does not poll
+  `GET /api/v1/jobs/{id}` — waiting out a background degrade has no MCP
+  tool by design (a tool call blocking on a poll loop is a poor fit for a
+  chat turn); use `agnes agent ask` or the REST endpoint directly for that.
+- **Outbound agent webhooks, SSRF-hardened (agent-api V1b Task 6).**
+  `GET/POST /api/v1/agents/{slug}/webhooks` and `DELETE
+  /api/v1/agents/{slug}/webhooks/{id}` register an HTTPS callback URL that
+  gets an HMAC-signed POST (`x-agnes-signature: sha256=...`) whenever a
+  background `agent_response` job reaches `job.completed`/`job.failed`.
+  Owner-only (`require_session_token`, rejects PATs). The notification body
+  is deliberately minimal — `{event, job_id, agent_slug, status, ts}`, never
+  the agent's answer — the receiver fetches the actual result afterward via
+  `GET /api/v1/jobs/{id}`. Registration validates the URL up front
+  (`400 webhook_url_forbidden` for anything resolving to a
+  private/loopback/link-local/reserved/cloud-metadata address); delivery
+  (a new `webhook-deliver` worker job kind) re-resolves and pins the target
+  IP fresh on every send, closing the DNS-rebinding window a create-time-only
+  check would leave open. A webhook auto-disables after
+  `agent_api_webhook_max_failures` (default 5) consecutive delivery
+  failures. New `agent_webhooks` table (DuckDB v101 + Alembic `0048`,
+  shared with the artifact-harvest migration above).
+- **Structured JSON output, `response_format: {"type": "json_schema", ...}`**
+  (agent-api V1b Task 7). `POST /api/v1/agents/{slug}/responses` accepts an
+  optional `response_format`; when present, a schema directive is appended
+  to the prompt (steering, not constrained decoding — there is no
+  provider-level grammar/sampler hook in this runtime) and the collected
+  answer is validated against the schema server-side (`jsonschema`,
+  tolerating a fenced ` ```json ` block) before the response is built. A
+  matching answer gets a `parsed` field alongside the raw `answer` string; a
+  violating or non-JSON answer returns `422 {"code":
+  "schema_validation_failed", "message", "session_id", "usage",
+  "raw_answer"}` instead — the run already spent tokens, so the structured
+  error carries everything needed to recover the paid-for output, and (like
+  any other terminal response) it's stored under the caller's
+  `Idempotency-Key` so a retry replays the same 422 instead of re-running.
+  Background and sync-timeout-degraded runs (the `agent_response` job kind)
+  validate the same way, failing the job with the identical structured
+  error. `POST /api/v1/sessions/{id}/messages` accepts the same field and
+  applies the prompt-steering directive, but does not yet post-validate the
+  streamed answer — see `SendSessionMessageBody.response_format`'s
+  docstring (`app/api/agent_sessions.py`) for why that's a separate,
+  deferred design question (no HTTP status is left to change once an SSE
+  stream has started).
+- **`GET /api/v1/agents/{slug}/usage`** (agent-api V1b Task 8) — per-agent
+  monthly token usage against its budget. `?period=YYYY-MM` (default:
+  current UTC month; `400 invalid_period` for anything else) → `{period,
+  agent_slug, input_tokens, output_tokens, cache_read_tokens,
+  cache_creation_tokens, total_tokens, budget_limit, budget_remaining}` —
+  the usage-shaped fields mirror Anthropic's own usage object.
+  `total_tokens` excludes `cache_read_tokens` (informational only), the
+  same quantity the broker's budget check compares against
+  `token_budget_monthly`, so `budget_remaining` (floored at `0`) lines up
+  with when a call against this agent would actually 429 with
+  `budget_exhausted`. Same owner/agent-PAT auth as `/responses`. Surfaced
+  as `agnes agent usage <slug> [--period YYYY-MM] [--json]` and the
+  `agent_usage` MCP foundation tool.
+- **`agnes agent webhooks list|add|delete`** — CLI surface for the
+  `/api/v1/agents/{slug}/webhooks` registration API (landed REST-only in
+  Task 6). `add` takes `--url` and repeatable `--event`, printing the HMAC
+  signing secret exactly once, like `agnes agent token`.
+- **Per-agent memory** (agent-api V1c). Agents keep a private notebook that
+  persists across runs, materialized pre-spawn into `.claude/agent-memory.md`
+  up to a ~6000-token budget (newest-first; older active memories can be
+  shadowed out — never silently, see below). A sandbox "remember" tool
+  (`POST /api/v1/sessions/{id}/memories`, `{content: str}` → `201 {id,
+  status}`) writes new memories, size-capped (`agent_memory_max_chars`,
+  default 2000 → `413`), rate-limited (`agent_memory_writes_per_hour`,
+  default 20/hr → `429 memory_rate_limited`), and backlog-capped
+  (`agent_memory_max_pending`, default 100 → `429 memory_pending_full`);
+  the write is bound to the CALLING session (never a path `{id}`), closing
+  a same-owner-different-agent memory-poisoning gap. `memory_write_mode`
+  (`off`/`propose`/`auto`, default `propose`) decides whether a write needs
+  owner approval before it re-materializes: `off` rejects with `403
+  memory_writes_disabled`, `propose` lands `pending`, `auto` lands already
+  `active`. Owners inspect/approve/archive/delete via `GET/PATCH/DELETE
+  /api/v1/agents/{id}/memories[/{memory_id}]` — `GET` marks every `active`
+  row `in_budget: bool` so an owner who just approved a memory can tell
+  whether it actually lands in the next spawn or is shadowed behind newer
+  content — the `agnes agent memory list|approve|archive|delete` CLI, and a
+  per-agent Memory panel on `/agents` (status badges, in-effect/shadowed
+  marker, Approve/Delete buttons). New `agent_memories` table (DuckDB v102
+  + Alembic `0049`).
+- **`agnes chat <slug>`** (agent-api V1c) — an interactive, streaming
+  terminal REPL over a composed agent's session API
+  (`POST /api/v1/agents/{slug}/sessions` + SSE
+  `POST /api/v1/sessions/{id}/messages`), plus a scriptable
+  `--once "<prompt>" [--json]` mode. Pure client of the public `/api/v1`
+  surface (session token or agent PAT, no privileged backchannel). Ctrl-C
+  cancels the in-flight turn server-side (a bare disconnect does not — only
+  `/cancel` stops the run and its budget burn); `/exit` best-effort frees
+  the sandbox.
+### Fixed
+
+- **Schema upgrade crashed on any DB between v82 and v96.** The
+  `corpus_files(corpus_id, path)` UNIQUE INDEX was declared inside
+  `_SYSTEM_SCHEMA`, which executes *before* the migration ladder. Because
+  `corpus_files` is created at v82 but its `path` column is only ALTER-added at
+  v97, the `CREATE TABLE IF NOT EXISTS` was a no-op on those DBs and the index
+  statement then raised `BinderException: Table "corpus_files" does not have a
+  column named "path"` — aborting the whole schema pass before the ALTER could
+  run, so the instance never started. The index is now created by
+  `_ensure_corpus_path_index()` after the ladder, guarded on the column
+  existing, which covers fresh installs, incremental upgrades, and the
+  split-brain future-version self-heal path alike.
+
+### Internal
+
+- **DuckDB schema v101/v102/v103 + Alembic `0048`/`0049`/`0050`** — new tables
+  `agents`, `agent_scope`, `agent_scope_snapshots`, `llm_usage`,
+  `idempotency_keys` (v101), `agent_webhooks`, `agent_artifacts` (v102),
+  `agent_memories` (v103), plus `agent_id` columns on
+  `personal_access_tokens`/`chat_sessions` — dual-backend parity (DuckDB +
+  Postgres), no secondary indexes per the ART-index incident rule.
+- **Flaky relay test de-flaked.** `test_relay_non_sse_anthropic_response_stays_buffered`
+  asserted on a single `reader.read()`, which returns only the bytes available
+  at that instant and often yielded just the status line (~40% failure rate in
+  isolation). It now accumulates until the full buffered response arrives — the
+  same read-until-complete idiom the streaming test beside it already used.
+- **`agnes chat --help` test no longer asserts on colourised output.**
+  `test_group_help_shows_repl_usage_and_caveats` matched `agnes chat <slug>`
+  against the raw output; rich-click highlights the metavar, so with colour on
+  (off for a non-tty locally, on in CI) the literal is split by ANSI codes and
+  the assertion failed only in CI. It now strips SGR codes first, the same
+  `_clean()` idiom the other CLI test modules use.
+- **Migration-safety tests no longer pin a literal future schema version.**
+  Both future-version tests derive it from `SCHEMA_VERSION + 1`; the previous
+  hardcoded `99` silently stopped exercising the noop path as the ladder grew,
+  then broke outright once the ladder passed it.
+
+## [0.76.38] - 2026-07-28
+
+### Added
+
+### Changed
+
+- **Cloud-chat sessions get a resend notice on server restart — but only when
+  the turn is actually lost.** A chat whose turn was mid-generation when the
+  server drained (deploy/restart) previously just stopped mid-answer with the
+  composer wedged in the "running" state (it only clears on
+  done/error/cancelled). `ChatManager.shutdown()` now broadcasts a
+  `server_restarting` notice + a `done` frame to an in-flight session on the
+  kill path (`on_detach="kill"`, or a failed pause), so the client can prompt
+  a resend against the replacement process. On the default successful-pause
+  path the notice is deliberately suppressed: the snapshot keeps the turn
+  running and it finishes after resume, so "please resend" there would invite
+  a duplicate turn. Idle sessions drain silently as before.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.37] - 2026-07-28
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Broker SSE stream no longer re-buffered by PostHog/rate-limit middleware.**
+  Follow-up to the GZip skip (0.76.36): `PosthogInjectionMiddleware` and the
+  auth `SlowAPIMiddleware` both subclass Starlette's `BaseHTTPMiddleware`,
+  which buffers the whole response body — so the broker's `text/event-stream`
+  completion was still collapsed into one end-of-turn burst (and risked the
+  Python 3.13 `AssertionError` on a second `http.response.start`) two hops
+  above the broker. Both middlewares now consult a shared
+  `SSE_BYPASS_PREFIXES` tuple (`/api/mcp`, `/api/broker/anthropic`) and fall
+  through to the bare ASGI app for SSE paths; a guard test keeps the gzip
+  skip-list in sync with the tuple.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.36] - 2026-07-27
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **Cloud-chat token streaming now actually reaches the browser** — the
+  final missing link after the broker/relay stream-through (#1020). The app
+  wraps responses in `GZipMiddleware`, which buffers a `StreamingResponse`
+  whole to compress it, re-collapsing the model's SSE completion into one
+  end-of-turn burst one hop above the broker. `/api/broker/anthropic` is now
+  gzip-skip-listed alongside the existing `/api/mcp` SSE endpoint, so the
+  streamed deltas pass through uncompressed and arrive incrementally.
+  Diagnosed with an in-sandbox trace: the in-sandbox CLI was receiving all
+  SSE events at a single timestamp (one text delta for a 500-char answer);
+  skip-listing restores true token-by-token delivery.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.35] - 2026-07-27
+
+### Added
+
+- **Partitioned local tables can now be distributed to analyst laptops via `agnes pull`.** Tables stored as a *directory* of parquet parts — Jira (hive `month=*/data.parquet`) and Keboola `sync_strategy=partitioned` (`<key>.parquet`) — were previously undistributable: the manifest/download/pull path assumed exactly one `{table}.parquet` per table, so the orchestrator wrote an empty hash, `/api/data/{id}/download` 404'd, and the client couldn't build a view. Now the whole chain is part-aware: `sync_state` gains a `parts` JSON column (per-part `{path, hash, size_bytes}`; DuckDB + Postgres, schema v100 / alembic `0047`); the orchestrator hashes each part (`_hash_table_parts`) and stores a rollup hash so the whole-table "changed?" compare + object-store mirror keep working; the manifest emits `parts`; `GET /api/data/{id}/download?part=<relpath>` serves a single part (path-traversal-guarded); and `agnes pull` fetches only the changed parts into `server/parquet/{id}/`, swaps them all-or-nothing (a failed part leaves the prior dir intact — never a silently-partial view), prunes server-dropped parts, and builds one hive-partitioned local view per table (`union_by_name=true, hive_partitioning=true`, byte-identical to the server view). Single-file tables are unchanged (`parts` is `NULL`/absent → treated as single-file). Incremental by design: an analyst re-pulls only the month(s) that changed.
+
+### Changed
+
+### Fixed
+
+- **Caddy `@download` `forward_auth` no longer deletes the client's credential.** The block used `copy_headers Authorization Cookie`, which copies headers *from* the `check-access` response back onto the request; since `check-access` returns `204` with no such headers, on Caddy ≥ v2.11.2 (GHSA-7r4p-vjf4-gxv4) that unconditionally *stripped* the client's Authorization/Cookie. Any download not served by the `file_server` static path (a partitioned-table `?part=` fetch, or any table whose parquet isn't at the hardcoded `try_files` locations) then reached the app reverse-proxy fallback with no credential and returned `401`. Removed the directive — `forward_auth` already forwards the original request headers to `check-access`.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.34] - 2026-07-24
+
+### Added
+
+### Changed
+
+- **BREAKING: `agnes setup bootstrap` no longer takes `--password`.** The
+  first-admin password is now read from `AGNES_BOOTSTRAP_PASSWORD` or prompted
+  with hidden input via `--set-password`, so it never lands on the process argv
+  (security audit F14). Scripts passing `--password <secret>` must switch to the
+  env var.
+
+### Fixed
+
+### Removed
+
+- **MCP connect page: the "Generic URL" (`?token=<PAT>`) snippet is gone.** A
+  365-day PAT in a URL query string leaks into server/proxy access logs and
+  browser history (CWE-598); use the `Authorization: Bearer` header snippets
+  (Cursor / VS Code / Claude Code) instead (security audit F13).
+
+### Internal
+
+### Security
+
+Remediation of the 2026-07-24 whole-repo security audit
+(`CLAUDE-SECURITY-20260724`). 1 HIGH, 11 MEDIUM, 3 LOW:
+
+- **F1 (HIGH) — SQL injection via uploaded-file column names in the profiler.**
+  Column identifiers from a `DESCRIBE` of an attacker-uploaded parquet were
+  interpolated into profiling SQL wrapped only in bare double-quotes; a name
+  containing `"` broke out and executed arbitrary DuckDB SQL. All identifier
+  interpolation in `src/profiler.py` now routes through a `quote_ident()`
+  helper that doubles embedded `"`.
+- **F2 (MEDIUM) — CSRF on `GET /slack/bind`.** The Slack-identity bind
+  happened on a cookie-gated GET, letting an attacker bind their Slack to a
+  victim's account. Binding now requires a POST with a double-submit CSRF
+  token; the GET only renders a confirmation page.
+- **F3 (MEDIUM) — stored XSS in chat via `marked`→`innerHTML`.** Chat message
+  content (incl. co-presence peers') was rendered with no sanitizer. All
+  `marked.parse()`→`innerHTML` sinks now route through `renderMarkdownSafe()`,
+  which parses into an inert `<template>` and strips dangerous
+  elements/attributes and unsafe URL schemes; tool-call metadata is built via
+  `textContent`.
+- **F4 (MEDIUM) — SSTI in the admin install-prompt override.** The
+  admin-authored install/workspace-prompt override was rendered with a
+  non-sandboxed Jinja2 `Environment` — an SSTI → RCE sink. Every server-side
+  render of that content (the `/setup` page, the dashboard clipboard banner in
+  `src/welcome_template.py`, the workspace overlay in `src/initial_workspace.py`,
+  and the welcome/prompts preview endpoints) now routes through a single
+  sandboxed factory `src.prompt_render.make_prompt_env` (`SandboxedEnvironment`),
+  so no render path is left unsandboxed.
+- **F5 (MEDIUM) — ReDoS in the internal-query SQL sanitizer.** The `E''`
+  string-literal regex had an ambiguous alternation that backtracked
+  exponentially on a backslash run, freezing the worker. Rewritten with
+  disjoint branches for linear-time matching.
+- **F6 (MEDIUM) — path traversal in the marketplace asset mirror.** A
+  curator-controlled plugin name flowed into an on-disk path; names are now
+  validated as a single safe segment and `_write_body` asserts containment
+  under the cache root.
+- **F7 (MEDIUM) — PAT on the `git clone` command line.** `agnes` bootstrap
+  embedded the PAT in the clone URL (readable via `ps`/`/proc`). It now clones
+  the credential-free URL and supplies the token via the env-based git
+  credential helper.
+- **F8 (MEDIUM) — `/api/query` file-replacement-scan bypass.** A quoted
+  relative path in table position (`FROM 'data/…parquet'`) read files with no
+  `read_parquet()` call. The SELECT guard now rejects string literals directly
+  in `FROM`/`JOIN` position and, via a sqlglot parse, any table source whose
+  name is a file path (path separator, glob, or data-file extension) — so
+  comma-list/glob forms are caught while legitimate value literals in
+  `SELECT`/`WHERE` (e.g. `WHERE f = 'report.csv'`) are not.
+- **F9 (MEDIUM) — auth rate limiter keyed on spoofable leftmost XFF hop.** The
+  client IP is now derived from the `AGNES_TRUSTED_PROXY_HOPS` (default 1)
+  rightmost X-Forwarded-For hops via a shared `app/auth/client_ip.py` helper,
+  and the shipped Caddyfile overwrites `X-Forwarded-For` with the real peer.
+- **F10 / F11 (MEDIUM) — connector-controlled ATTACH URL had no host
+  allowlist.** An adversarial connector could exfiltrate an allowlisted
+  credential to `attacker.example`. Both attach paths now honor
+  `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` (enforced when set; warns when unset).
+- **F12 (MEDIUM) — one dev VM's `tls_mode=none` opened `:8000` fleet-wide.**
+  The Terraform raw-HTTP firewall is now per-instance (a raw-http network tag
+  attached only to VMs whose own `tls_mode != "caddy"`).
+- **F13 (LOW) — MCP connect embedded a 365-day PAT in a URL** (see Removed).
+- **F14 (LOW) — bootstrap admin password on argv** (see Changed).
+- **F15 (LOW) — Telegram `send_photo` read arbitrary caller-supplied paths.**
+  `photo_path` is now realpath-contained under `AGNES_TELEGRAM_PHOTO_DIR`
+  (default `DATA_DIR`).
+
+New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST`,
+`AGNES_BOOTSTRAP_PASSWORD`, `AGNES_TELEGRAM_PHOTO_DIR`.
+
+## [0.76.33] - 2026-07-24
+
+### Changed
+
+- **Cloud-chat conversations survive a sandbox respawn with FULL context.**
+  A fresh sandbox for a chat with history (crash respawn, post-restart
+  spawn, cross-gateway takeover) previously replayed only the last 3 raw
+  user messages over stdin — dropping every assistant answer and tool
+  result (the agent lost the thread of its own analysis) and burning one
+  full LLM turn per replayed message. The manager now uploads a bounded
+  restored-conversation transcript (user + assistant turns, newest-first
+  under a character budget; departed co-session participants' turns still
+  omitted per SR-11) and the runner appends it to the agent's system
+  prompt at boot.
+
+### Fixed
+
+- **Redelivered pending question could be silently lost on a mid-answer disconnect.** The trailing-unanswered-turn redelivery introduced above wrote the live `user_msg` frame directly to stdin instead of going through the shared turn-delivery helper, so it never set `turn_in_flight`. If the user disconnected while the agent was still answering, the idle-linger-pause didn't know a turn was in flight and could pause the sandbox mid-answer, dropping the reply. Redelivery now goes through the same delivery path as every other live turn.
+- **Context restore and pending-question redelivery both used stale history in chats past 500 messages.** Both looked at the trailing element of `list_messages()`'s default `ORDER BY created_at ASC LIMIT 500`, so for a conversation longer than that the "latest" message they inspected was actually the 500th-oldest one — either dropping the real pending question, re-answering a stale one, or restoring context from the middle of the conversation instead of its recent tail. A new `list_recent_messages()` (`ORDER BY created_at DESC`, implemented on both the DuckDB and Postgres repos) replaces `list_messages()` at both call sites.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.76.32] - 2026-07-24
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **`resolve_token_to_user` no longer stashes a JWT payload on
+  `request.state.token_payload` until the token has fully passed
+  validation.** Previously the stash ran right after JWT signature
+  verification, before the revoked/expired/mismatched/wrong-surface/
+  deleted-agent checks — a token that failed one of those later checks
+  still left its claims (including `agent_id`) readable via
+  `agent_id_from_request` for the rest of the request. Task 4 review
+  carry-over.
+- **`DELETE /api/v1/agents/{id}` now cascades to webhooks and artifacts,
+  not just PATs.** Previously deleting an agent revoked its tokens but
+  left every `agent_webhooks` row and every `agent_artifacts` row (plus
+  their object-store blobs) behind, orphaned and unreachable through any
+  API surface. The delete now also removes the agent's webhook
+  registrations and harvested-artifact rows, best-effort deleting each
+  artifact's object-store blob first (a single blob-delete failure is
+  logged and skipped, never blocking the agent delete).
+### Removed
+
+### Internal
+
+- **Verification loop for the sync-map rows CI did not guard.**
+  `scripts/verify_syncmap.py` (stdlib-only, diff-scoped) fails on an
+  unregistered `ResourceType`, a user-visible change with no `## [Unreleased]`
+  CHANGELOG bullet, a new boolean scope flag in a CLI command, and
+  `query_mode='remote'` in a connector that never mentions `_remote_attach`; it
+  warns on a new entity-scoped endpoint carrying authn but no authz. The
+  `verify-agnes-change` skill wraps it into a cheapest-first loop (sync-map →
+  targeted guards → full suite → `/agnes-review`) so mechanical findings stop
+  consuming LLM review. `CONTRIBUTING.md` sync-map now names the new guard per
+  row instead of `NO`.
+- **The test suite no longer wedges the machine when it runs out of disk.** Two
+  consecutive full runs filled a 460 GB disk (218 GB of retained `pytest-of-*`
+  dirs), after which every teardown raised `OSError: [Errno 28]` and buried the
+  real result. A `pytest_sessionstart` guard in `tests/conftest.py` now refuses
+  to start below 5 GB free and warns below 60 GB, naming the cleanup command;
+  bypass with `AGNES_SKIP_DISK_CHECK=1`. Thresholds are set so a CI shard
+  (`--splits 8`) is never aborted. `tmp_path_retention_count` stays at `1` —
+  `pytest.ini` now records why `0` is not an option (it sweeps the current
+  session's dir, so live tests lose their `tmp_path` mid-run).
+
+### Security
+
+## [0.76.31] - 2026-07-24
+
+### Fixed
+
+- **Materialized Keboola tables no longer OOM the sync on large results.**
+  The typed-parquet retype (the all-VARCHAR fix) loaded the whole
+  materialized parquet into one in-memory `pyarrow.Table` before casting —
+  peak memory scaled 2–3× with the result size (pyarrow copy + pandas
+  fallback copies) and OOM-killed syncs of large materialized tables,
+  leaving them stale. The retype now streams through a memory-capped DuckDB
+  `COPY` with per-column `TRY_CAST`, so peak memory is bounded by the
+  consolidation cap regardless of table size. Cast semantics keep the
+  coerce-to-NULL behavior (uncastable values → NULL, now with a
+  footer-stats warning per affected column); DATE columns additionally
+  retype correctly now (previously a single bad value left the whole
+  column VARCHAR), and an already-typed parquet skips the rewrite
+  entirely.
+
+## [0.76.30] - 2026-07-24
+
+### Added
+
+- **Data Apps: prod + draft iteration model.** Create a draft on an iteration branch
+  (`agnes app draft create`), deploy it in `dev` mode, then promote by merging into
+  `main`; drafts share the prod app's git repo and are hidden from the app list.
+  New MCP tools (`data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`)
+  and a broker `data_apps` scope let the chat agent author apps end-to-end.
+
+### Changed
+
+### Fixed
+
+- **Data Apps: drafts hidden from the `/apps` web list and admin grant picker.** `GET /api/data-apps`, `agnes app list`, and the MCP `data_apps_list` tool already excluded drafts; the human-facing `/apps` page and `/admin/access`'s data-app grant picker now filter them too.
+- **Data Apps: draft metadata hidden from non-owner grantees.** `GET /{slug}`'s inlined `drafts` list (branch, state, URL of every in-progress draft) was gated on the same broad `_can_view` check as the rest of the app detail response — a group merely holding a read grant on the parent app could see it, even though every draft-mutating endpoint is owner/Admin-only. `drafts` is now omitted entirely unless the caller is the owner or an Admin.
+- **Data Apps: `git-credential` clone URL uses the public base URL.** `POST /{slug}/git-credential` (and `data_app_git_credential`) previously built the returned clone URL from `AGNES_INTERNAL_URL` (the in-cluster hostname), unusable from an analyst laptop, the MCP tool, or a remote sandbox. It now uses `get_public_url()` when configured (falling back to the internal URL otherwise), matching `create_data_app`'s `git_url`. The container-facing clone URL used inside `config.json` is unaffected — it stays on the internal URL.
+- **Data Apps: reject git-invalid draft branch names.** `POST /{slug}/drafts`'s branch validation admitted names `git update-ref` refuses (`a..b`, `a//b`, a trailing `/` or `.`, an `x.lock` suffix), which previously surfaced as an unhandled 500 and left an orphaned draft row (turning a retry into a misleading 409 `slug_exists`). Now rejected up front as 400 `invalid_branch`, with a `subprocess.CalledProcessError` catch around the git call as a second line of defense that also rolls back the draft row.
+- **Data Apps: draft creation no longer 500s on Postgres when the slug races.** The new-app and new-draft endpoints only caught DuckDB's `ConstraintException` on a unique-slug violation; on the Postgres backend the same race raises `sqlalchemy.exc.IntegrityError`, which fell through to an unhandled 500 instead of the intended 409 `slug_exists`. Both endpoints now catch either exception, matching the existing pattern in `knowledge_digests.py`/`marketplaces.py`.
+- **Data Apps: a user's drafts no longer eat their prod-app quota.** The non-admin `max_apps_per_user` check listed apps without excluding drafts, so a user's in-progress drafts counted toward the same limit as their prod apps and could block them from creating a new one. The quota check now excludes drafts, matching every other listing surface.
+- **Data Apps: a failed draft creation cleans up after itself when the owner is gone.** `POST /{slug}/drafts` already rolled back the just-inserted draft row (and avoided leaving a branch behind) when the branch was invalid or the parent had no `main`; the owner-account-missing failure path — hit when minting the push credential — did not, so a retry after that 500 was wrongly refused as `slug_exists`. It now rolls back the same way as the other two failure paths.
+- **Data Apps: draft teardown now serializes with a concurrent wake.** `_teardown_draft` (used by both `DELETE /{slug}/drafts/{draft_slug}` and the cascade in `DELETE /{slug}`) stopped a draft's container without holding its `dataapp:op:{draft_slug}` lease — the same lease every other runner-mutating operation takes to prevent the unlocked check-then-act container swap in the runner sidecar (see 0.76.23). A draft deleted at the same moment someone opens its URL could leave a zombie or clobbered container; teardown now takes the lease first.
+- **Data Apps: deleting a draft through the generic app-delete route no longer orphans its branch.** A draft is a full `data_apps` row, so `DELETE /{slug}` (and `agnes app delete <draft_slug>`) would happily resolve and delete it — but that route's own teardown never deletes the draft's branch on the parent's repo (only `_teardown_draft`, used by the dedicated drafts route, does). Now rejected up front as 400 `use_draft_delete_route`.
+
+### Removed
+
+### Internal
+
+- `JobsRepository.complete()` / `JobsPgRepository.complete()` gained an
+  optional `result: Optional[dict]` parameter, merged into
+  `payload_json["result"]` when given (the `jobs` table has no dedicated
+  result column) — backs the new `agent_response` job kind's
+  `GET /api/v1/jobs/{id}` result surface. Every other job kind's handler
+  still returns `None`, so this is a no-op for them.
+- `IdempotencyRepository`/`IdempotencyPgRepository` gained `reserve()`/
+  `fulfill()` (atomic `INSERT ... ON CONFLICT ... WHERE <stale> ...
+  RETURNING` — see `src/repositories/idempotency.py`'s module docstring);
+  `LlmUsageRepository`/`LlmUsagePgRepository` gained `list_for_session()`
+  (exact SQL filter, replacing an in-Python filter over the last 1000 rows
+  per agent) — both Task 9 review carry-overs.
+
+### Security
+
+- **Data Apps: enforce the `data-app-git:<slug>` PAT scope.** The credential minted by `POST /{slug}/git-credential` (and `data_app_git_credential`) now authenticates only the `/data-apps.git/{slug}` surface it was minted for, pinned to that one app's slug — previously the `scope` claim was unenforced, so the credential was a full-privilege user PAT usable against the whole non-admin (and, for an Admin owner, admin) REST/MCP API. Rejected JSON-API calls get 401 `git_scope_token_not_allowed`.
+
+## [0.76.29] - 2026-07-24
+
+### Fixed
+
+- **Cloud-chat answers now stream token-by-token.** Both credential hops on
+  the model-call path buffered the LLM's SSE response whole — the broker's
+  Anthropic proxy read the full completion before responding, and the
+  in-sandbox loopback relay did the same again (writing a single
+  Content-Length body) — so every token delta collapsed into one burst at
+  turn end: the user stared at silence for the whole generation, then the
+  entire answer appeared at once. The broker now stream-opens the upstream
+  call and forwards 2xx `text/event-stream` responses chunk-by-chunk
+  (closing the upstream in the background once drained), and the relay
+  forwards event streams with chunked transfer encoding, flushing each
+  chunk to the in-sandbox CLI as it arrives. Non-stream responses (JSON
+  endpoints, upstream errors) keep the exact buffered behavior, including
+  the operator credential diagnostics.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.76.28] - 2026-07-24
 
 ### Changed
