@@ -2320,14 +2320,22 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
 .cloud-chat-journey-head {
   display: flex;
   align-items: center;
+  /* See the matching rail.css block: no flex-wrap + no min-width:0 on the
+     heading let this row overflow once the "Complete ✓" badge appears,
+     clipping the icon buttons past the panel's overflow-y:auto edge. */
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 8px;
+  gap: 4px 8px;
 }
 .cloud-chat-journey-head h3 {
   margin: 0;
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--ds-text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cloud-chat-journey-badge {
   font-size: var(--text-xs);
@@ -2358,6 +2366,16 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   border: 1px solid var(--ds-border);
   border-radius: var(--ds-radius-pill);
   cursor: pointer;
+  /* Visual pill stays 20px; the hit area is expanded to the 44px touch-target
+     minimum via an invisible ::before rather than growing the element. */
+  position: relative;
+}
+.cloud-chat-journey-iconbtn::before {
+  content: '';
+  position: absolute;
+  /* Full 44px vertical touch target; horizontal expansion capped at 2px (half
+     the 4px inter-button gap) so the ↻ and × hit areas never overlap. */
+  inset: -12px -2px;
 }
 .cloud-chat-journey-iconbtn:hover {
   color: var(--ds-text-primary);

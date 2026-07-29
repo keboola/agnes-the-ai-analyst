@@ -37,6 +37,19 @@
         {% endif %}
     </a>
 
+    {# Below 760px the rail becomes a wrapping top bar (rail.css) with nowhere
+       to collapse to — every nav item, the Chats history, and Admin stayed
+       permanently on screen, eating vertical space. This toggle is invisible
+       above 760px (rail.css); below it, it shows/hides `.rail-collapsible`
+       (nav + Chats + Admin) while the compact foot (Get started + user menu)
+       stays reachable either way. #}
+    <button type="button" class="rail-collapse-toggle" id="rail-collapse-toggle"
+            aria-expanded="false" aria-controls="rail-collapsible" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+
+    <div class="rail-collapsible" id="rail-collapsible">
+
     {% set _path = request.url.path %}
     {% set _home = home_route or '/dashboard' %}
     {% set _on_library = _path.startswith('/library') or _path == '/artefacts' %}
@@ -202,6 +215,8 @@
         </div>
     </details>
     {% endif %}
+
+    </div>{# /.rail-collapsible #}
 
     <div class="rail-foot">
         {% if can_chat %}

@@ -44,6 +44,22 @@
     });
   }
 
+  // ---- Mobile nav collapse (row layout, ≤760px) -----------------------
+  // Below 760px the rail becomes a wrapping top bar with nowhere to collapse
+  // to — this toggle shows/hides the nav + Chats + Admin group
+  // (.rail-collapsible); the compact foot (Get started + user menu) stays
+  // reachable regardless of its state. Inert above the breakpoint (the
+  // button is display:none there, rail.css) — no harm wiring it always.
+  const navToggle = document.getElementById("rail-collapse-toggle");
+  const railEl = document.querySelector("html[data-ui-layout='rail'] .rail");
+  if (navToggle && railEl) {
+    navToggle.addEventListener("click", () => {
+      const open = !railEl.classList.contains("is-nav-open");
+      railEl.classList.toggle("is-nav-open", open);
+      navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
   // ---- "Get started" journey card ------------------------------------
   // Reveals on hover via CSS, but ALSO opens on click and stays pinned (the
   // `.is-open` class forces it visible) so click users aren't left with a
@@ -54,6 +70,13 @@
   if (gsToggle && gsWrap) {
     const setOpen = (open) => {
       gsWrap.classList.toggle("is-open", open);
+      // `.is-closed` (rail.css) is the only thing that can override the
+      // panel's CSS :hover / :focus-within reveal rules — closing here
+      // otherwise has no visible effect while the cursor is still over the
+      // launcher (exactly when a click-to-close fires) or while the toggle
+      // itself holds focus (it's a descendant of .rail-getstarted, so
+      // :focus-within stays true after Escape moves focus there below).
+      gsWrap.classList.toggle("is-closed", !open);
       gsToggle.setAttribute("aria-expanded", open ? "true" : "false");
     };
     gsToggle.addEventListener("click", (e) => {
@@ -68,6 +91,19 @@
         setOpen(false);
         gsToggle.focus();
       }
+    });
+    // Once the cursor genuinely leaves the launcher, lift the suppression so
+    // a later hover can preview the panel again — `.is-closed` is meant to
+    // block the SAME hover session from immediately reopening what was just
+    // closed, not to disable hover-to-preview permanently.
+    // ...but only once nothing inside the launcher still holds focus. The
+    // toggle keeps DOM focus after a click-to-close, and Escape explicitly
+    // refocuses it, so lifting `.is-closed` while `:focus-within` is still
+    // true would let the CSS reveal reopen the panel the instant the cursor
+    // leaves. Guarding on activeElement keeps hover-to-preview working while
+    // fixing the toggle-click / Escape close paths.
+    gsWrap.addEventListener("mouseleave", () => {
+      if (!gsWrap.contains(document.activeElement)) gsWrap.classList.remove("is-closed");
     });
   }
 

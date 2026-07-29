@@ -59,6 +59,34 @@ html[data-ui-layout="rail"] .rail-logo svg {
     width: auto;
 }
 
+/* Collapse toggle for the ≤760px row layout (see the media query below) —
+   inert and hidden above it, since the column layout has room for
+   everything and nothing to collapse. */
+html[data-ui-layout="rail"] .rail-collapse-toggle {
+    display: none;
+}
+
+/* Nav + Chats + Admin are wrapped in this div so the ≤760px layout has a
+   single thing to collapse. Above that breakpoint it must be a completely
+   transparent wrapper — matching .rail's own flex/gap exactly — or nesting
+   it introduces new spacing between items that used to be direct flex
+   children of .rail (a change to the byte-identical default column layout,
+   which CLAUDE.md's design-system contract forbids).
+   flex:1 1 auto + min-height:0 carries forward what .rail-history relied on
+   .rail itself for: growing to fill the remaining fixed-height column so
+   its own flex:1/overflow:hidden can turn IT into the scrolling region,
+   instead of the whole rail growing past the viewport. No `overflow`
+   here — the Studio hover flyout (rail-nav, position:absolute) still needs
+   to escape rightward through this wrapper exactly as it did through .rail
+   directly. */
+html[data-ui-layout="rail"] .rail-collapsible {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
 /* Agnes brand orb — the raster brand mark sitting before the wordmark. */
 html[data-ui-layout="rail"] .rail-orb {
     width: 30px;
@@ -569,6 +597,18 @@ html[data-ui-layout="rail"] .rail-getstarted:focus-within .rail-getstarted-panel
 html[data-ui-layout="rail"] .rail-getstarted.is-open .rail-getstarted-panel {
     display: block;
 }
+
+/* Explicit-close override. The toggle button lives INSIDE .rail-getstarted,
+   so :focus-within stays true for as long as it (or the "×" the user just
+   clicked) holds focus — and the cursor is, by definition, still over the
+   launcher at the exact moment "×" or an outside-click handler fires. Both
+   reveal rules above would therefore keep the panel visible regardless of
+   what JS does to .is-open. `.is-closed` (added by rail_history.js's close
+   paths and chat_onboarding.js's dismissJourney) forces it shut until the
+   user's cursor actually leaves the launcher or they reopen it explicitly. */
+html[data-ui-layout="rail"] .rail-getstarted.is-closed .rail-getstarted-panel {
+    display: none !important;
+}
 html[data-ui-layout="rail"] .rail-getstarted-panel {
     /* Hidden by default via CSS (the `hidden` attribute was dropped so the
        hover / .is-open rules above can reveal it — a `[hidden]` reset was
@@ -606,8 +646,15 @@ html[data-ui-layout="rail"] .rail-getstarted-panel .cloud-chat-journey {
 html[data-ui-layout="rail"] .cloud-chat-journey-head {
     display: flex;
     align-items: center;
+    /* Was a non-wrapping row: h3 + the "Complete ✓" badge + two icon buttons
+       with no flex-wrap and no min-width:0 on the heading. In the completed
+       state the badge appears and the row exceeds the panel's width (a fixed
+       280px below 760px, rail.css) — the panel's own `overflow-y: auto`
+       computes overflow-x to auto too, so the icon buttons were clipped past
+       the edge instead of just visible on their own line. */
+    flex-wrap: wrap;
     justify-content: space-between;
-    gap: 8px;
+    gap: 4px 8px;
 }
 
 html[data-ui-layout="rail"] .cloud-chat-journey-head h3 {
@@ -615,6 +662,10 @@ html[data-ui-layout="rail"] .cloud-chat-journey-head h3 {
     font-size: 14px;
     font-weight: 650;
     color: var(--ds-text-primary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 html[data-ui-layout="rail"] .cloud-chat-journey-badge {
@@ -648,6 +699,19 @@ html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn {
     border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius-pill, 999px);
     cursor: pointer;
+    /* The visual pill stays 20px (a 44px button would dominate this compact
+       header), but the actual hit area is expanded to the 44px touch-target
+       minimum via an invisible ::before, not by growing the element itself. */
+    position: relative;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn::before {
+    content: '';
+    position: absolute;
+    /* Full 44px vertical touch target, but horizontal expansion capped at 2px
+       (half the 4px inter-button gap) so adjacent buttons' hit areas can't
+       overlap — otherwise the later-painted × steals the right edge of the ↻. */
+    inset: -12px -2px;
 }
 
 html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn:hover {
@@ -743,11 +807,78 @@ html[data-ui-layout="rail"] .cloud-chat-journey-step.locked:hover {
         align-items: center;
         border-right: none;
         border-bottom: 1px solid var(--ds-border);
+        /* The base rule sets `overflow: visible` so the Studio hover flyout can
+           escape the fixed column's right edge — harmless there since the rail
+           IS the viewport-height column. In this row layout `.rail` is back in
+           normal document flow, so unconstrained overflow drags the whole page
+           horizontally (most visibly when the tour scrolls a nav item into
+           view). Cap the bar's own width — but keep `.rail` itself
+           `overflow: visible`: making the BAR the scroll box (`overflow-x:
+           auto`) axis-couples `overflow-y` to `auto` per the CSS Overflow
+           spec, clipping the Get-started popover and the account menu that
+           open downward out of the bar (Devin Review on #1092). The scroll
+           containment lives on `.rail-nav` below instead — the popover and
+           user-menu panels are its SIBLINGS, so they escape freely while the
+           nav list (the thing the tour scrolls into view) scrolls
+           internally. */
+        max-width: 100%;
     }
 
     html[data-ui-layout="rail"] .rail-nav {
         flex-direction: row;
         flex-wrap: wrap;
+        /* See the `.rail` comment above: this is the scroll box that keeps a
+           tour-driven scrollIntoView from dragging the page sideways, scoped
+           to an element that contains no popovers. */
+        max-width: 100%;
+        overflow-x: auto;
+    }
+
+    /* `.rail-i` is `width: 100%` for the column layout, where every item
+       should span the rail's fixed 240px. Left unscoped here, that same
+       100% resolves against the row's own width inside a wrapping flex
+       container — each item claims a full line, which is the other half of
+       why the bar overflowed (independent of the overflow fix above). */
+    html[data-ui-layout="rail"] .rail-i {
+        width: auto;
+    }
+
+    /* The row layout has nothing to collapse to — every nav item, the Chats
+       history, and Admin stayed permanently on screen, eating vertical
+       space, and at narrow widths flex-wrap grew the bar to several rows.
+       The toggle (hidden entirely above this breakpoint) shows/hides this
+       group; the compact foot below (Get started + user menu) always stays
+       reachable regardless of its state. Collapsed by default. */
+    html[data-ui-layout="rail"] .rail-collapse-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        margin-left: auto;
+        border: 1px solid var(--ds-border);
+        border-radius: 9px;
+        background: var(--ds-surface);
+        color: var(--ds-text-secondary);
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+
+    html[data-ui-layout="rail"] .rail-collapse-toggle svg {
+        width: 20px;
+        height: 20px;
+    }
+
+    html[data-ui-layout="rail"] .rail-collapsible {
+        display: none;
+        /* Always its own full-width line below the logo+toggle row, rather
+           than squeezing in beside them (.rail is flex-wrap: wrap here). */
+        flex: 1 1 100%;
+        flex-direction: column;
+    }
+
+    html[data-ui-layout="rail"] .rail.is-nav-open .rail-collapsible {
+        display: flex;
     }
 
     html[data-ui-layout="rail"] .rail-foot {

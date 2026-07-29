@@ -9,7 +9,8 @@
  *
  * State:
  *   localStorage  'agnes.tour.<id>.seen'  — don't auto-launch a seen tour
- *   sessionStorage 'agnes.tour.pending'   — cross-page resume {id, index}
+ *   sessionStorage 'agnes.tour.pending'   — cross-page resume
+ *                                           {id, index, ts, skipped?}
  *
  * Usage:
  *   import { launchTour, TOURS } from './tour.js';
@@ -124,9 +125,14 @@ function markSeen(id) {
   } catch (_) { /* storage unavailable — non-fatal */ }
 }
 
-function stashPending(id, index) {
+function stashPending(id, index, skipped) {
   try {
-    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ id, index, ts: Date.now() }));
+    // `skipped` rides along so steps dropped for a missing anchor stay dropped
+    // across the tour's cross-page hops — otherwise the progress dots would
+    // re-count them after every navigation.
+    const rec = { id, index, ts: Date.now() };
+    if (skipped && skipped.size) rec.skipped = Array.from(skipped);
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify(rec));
   } catch (_) { /* storage unavailable — non-fatal */ }
 }
 
@@ -146,19 +152,46 @@ function getPending() {
 }
 
 // ── Journey patch helper (fire-and-forget) ──────────────────────────────────
-// Marks all journey steps done via the existing /api/chat/journey endpoint.
-async function markAllJourneyDone() {
+// Mark ONLY the journey steps the tour genuinely walks the user through.
+//
+// The tour visits My Stack (explored_stack) and the Marketplace
+// (catalog_discovered), so it may assert those. It must NOT touch the
+// activity-driven flags — chat_onboarding.js deliberately leaves those to real
+// activity: `first_asked` completes when a question is asked, and
+// `stack_setup_done` when a package is actually subscribed. `stack_setup_done`
+// additionally gates the in-chat gap resolver, so asserting it here would
+// permanently suppress the "your Stack is empty, here's what I'd add" card for
+// anyone who takes the tour before asking their first question.
+//
+// `use_anywhere` is likewise left alone: the final step OFFERS "Connect my AI
+// tools" but finishing the tour is not the same as having connected one.
+async function markTourStepsDone() {
   try {
     await fetch('/api/chat/journey', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        first_asked: true,
-        stack_setup_done: true,
         explored_stack: true,
         catalog_discovered: true,
-        use_anywhere: true,
       }),
+    });
+  } catch (_) { /* fire-and-forget — onboarding is soft state */ }
+}
+
+// Mark the "Use Agnes from other AI tools" step — fired when the final step's
+// "Connect my AI tools" button navigates to the AI Connector page.
+async function markUseAnywhereDone() {
+  try {
+    // keepalive: the one call site fires this immediately before a full-page
+    // navigation (`window.location.href = '/me/ai-connector'`); without it
+    // the browser cancels the in-flight PUT and the journey step stays
+    // unmarked (Devin Review on #1092). keepalive lets the write survive the
+    // page teardown while keeping the call fire-and-forget.
+    await fetch('/api/chat/journey', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ use_anywhere: true }),
+      keepalive: true,
     });
   } catch (_) { /* fire-and-forget — onboarding is soft state */ }
 }
@@ -193,7 +226,7 @@ function pathMatches(page, path) {
   return norm(page) === norm(path);
 }
 
-function _startTour(id, steps, index) {
+function _startTour(id, steps, index, skipped) {
   _endTour(false); // clean up any prior run
   // Wire Escape + resize/scroll reflow for EVERY launch path (direct
   // launchTour on the current page as well as resumePendingTour). Guarded by
@@ -204,7 +237,19 @@ function _startTour(id, steps, index) {
   overlay.className = 'tour-overlay';
   document.body.appendChild(overlay);
 
-  _active = { id, steps, index: null, overlay, popover: null, spotlight: null };
+  // `skipped` collects indices whose anchor turned out to be absent on their
+  // page (permission-gated CTAs, layout-dependent nav items). The progress dots
+  // are built from the steps that actually render, so the count stays honest
+  // instead of promising a "Step 4 of 5" that never appears. It can only grow
+  // as the tour walks forward — a step on a page not yet visited is assumed
+  // renderable until proven otherwise. `liftedAncestor` tracks a stacking-
+  // context ancestor (e.g. the rail) temporarily promoted above the scrim so
+  // a spotlighted descendant is reachable — see _findStackingContextAncestor.
+  _active = {
+    id, steps, index: null, overlay, popover: null, spotlight: null,
+    skipped: new Set(skipped || []),
+    liftedAncestor: null,
+  };
   _showStep(index);
 }
 
@@ -220,6 +265,10 @@ function _showStep(index) {
     _active.spotlight.classList.remove('tour-spotlight');
     _active.spotlight = null;
   }
+  if (_active.liftedAncestor) {
+    _active.liftedAncestor.classList.remove('tour-lifts-ancestor');
+    _active.liftedAncestor = null;
+  }
 
   _active.index = index;
 
@@ -228,35 +277,86 @@ function _showStep(index) {
   if (!step.centered && step.selector) {
     anchor = document.querySelector(step.selector);
     if (!anchor) {
-      // Resilient: the anchor is absent here. Route through _gotoStep so a next
-      // step on another page cross-navigates instead of recursing on the current
-      // page (which would blow through cross-page steps to the final screen).
+      // Resilient: the anchor is absent here. Record it so the progress dots
+      // stop counting a step the user will never see, then route through
+      // _gotoStep so a next step on another page cross-navigates instead of
+      // recursing on the current page (which would blow through cross-page
+      // steps to the final screen).
+      _active.skipped.add(index);
       _gotoStep(index + 1);
       return;
     }
-    // Scroll target into view (center) before positioning.
-    anchor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Scroll target into view — horizontally only "nearest" so a target near
+    // the viewport edge (e.g. a nav item in the rail's mobile top-bar layout)
+    // never induces horizontal scroll of the page itself (see the
+    // rail-overflow note on _positionPopover's horizontal clamp).
+    anchor.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
     anchor.classList.add('tour-spotlight');
     _active.spotlight = anchor;
+
+    // If the anchor sits inside a positioned ancestor that has its own
+    // z-index (a stacking context — e.g. the rail: `position: fixed;
+    // z-index: 40`), `.tour-spotlight`'s z-index resolves INSIDE that
+    // context and can never outrank the scrim, which paints at the root.
+    // Lift the ancestor above the scrim for the step's duration so the
+    // spotlighted target is actually reachable through it.
+    const stackingAncestor = _findStackingContextAncestor(anchor);
+    if (stackingAncestor) {
+      stackingAncestor.classList.add('tour-lifts-ancestor');
+      _active.liftedAncestor = stackingAncestor;
+    }
   }
 
   // Keep the resume record in sync with the step actually on screen (not just
   // cross-page hops), so a reload mid-tour resumes here — and re-stamp its
   // freshness. Combined with the RESUME_FRESH_MS window, an abandoned tour
   // stops re-popping once the record goes stale.
-  stashPending(_active.id, index);
+  stashPending(_active.id, index, _active.skipped);
 
   // Build popover.
   const popover = _buildPopover(step, index, steps.length);
   document.body.appendChild(popover);
   _active.popover = popover;
 
-  // Position after a short yield (scroll settles).
-  requestAnimationFrame(() => {
+  // Position once the scroll above has actually settled — `scrollIntoView`
+  // with `behavior: 'smooth'` takes ~300-500ms, while a single
+  // requestAnimationFrame fires in ~16ms. Positioning on the very next frame
+  // reads the anchor's PRE-scroll rect, so the popover lands wherever the
+  // anchor used to be and is never corrected once the scroll finishes. Wait
+  // for the anchor's rect to stop moving instead of guessing a fixed delay.
+  _waitForScrollSettle(anchor, () => {
     if (_active && _active.index === index) {
       _positionPopover(popover, anchor, step.centered);
     }
   });
+}
+
+// Resolve once `anchor`'s bounding rect is unchanged across two consecutive
+// animation frames (the scroll driving it has settled), or after
+// SCROLL_SETTLE_TIMEOUT_MS elapses — whichever comes first, so a scroll that
+// never quite stabilizes (e.g. a still-loading page) can't hang the tour
+// forever. No-op (fires on the next frame) when there's no anchor, i.e. a
+// centered step.
+const SCROLL_SETTLE_TIMEOUT_MS = 600;
+
+function _waitForScrollSettle(anchor, cb) {
+  if (!anchor) {
+    requestAnimationFrame(cb);
+    return;
+  }
+  const start = performance.now();
+  let last = anchor.getBoundingClientRect();
+  const check = () => {
+    const rect = anchor.getBoundingClientRect();
+    const stable = rect.top === last.top && rect.left === last.left;
+    if (stable || performance.now() - start > SCROLL_SETTLE_TIMEOUT_MS) {
+      cb();
+      return;
+    }
+    last = rect;
+    requestAnimationFrame(check);
+  };
+  requestAnimationFrame(check);
 }
 
 // ── Popover builder ─────────────────────────────────────────────────────────
@@ -317,12 +417,19 @@ function _buildPopover(step, index, total) {
   // Dots
   const dots = document.createElement('div');
   dots.className = 'tour-dots';
-  dots.setAttribute('aria-label', `Step ${index + 1} of ${total}`);
-  for (let i = 0; i < total; i++) {
+  // Count only the steps that will actually render. A step whose anchor was
+  // missing is dropped from the progress indicator entirely, so the label never
+  // promises a step the user cannot reach.
+  const skipped = (_active && _active.skipped) || new Set();
+  const shown = [];
+  for (let i = 0; i < total; i++) if (!skipped.has(i)) shown.push(i);
+  const position = shown.indexOf(index);
+  dots.setAttribute('aria-label', `Step ${position + 1} of ${shown.length}`);
+  shown.forEach((i) => {
     const dot = document.createElement('span');
     dot.className = 'tour-dot' + (i === index ? ' on' : '');
     dots.appendChild(dot);
-  }
+  });
 
   // Actions
   const actions = document.createElement('div');
@@ -343,7 +450,7 @@ function _buildPopover(step, index, total) {
     finishBtn.textContent = 'Finish onboarding';
     finishBtn.addEventListener('click', async () => {
       markSeen(_active ? _active.id : 'stack');
-      await markAllJourneyDone();
+      await markTourStepsDone();
       _endTour(true);
       window.location.href = '/chat';
     });
@@ -354,6 +461,11 @@ function _buildPopover(step, index, total) {
     connectBtn.textContent = 'Connect my AI tools';
     connectBtn.addEventListener('click', () => {
       markSeen(_active ? _active.id : 'stack');
+      // Navigating to the AI Connector is exactly what the journey panel's
+      // "Use Agnes from other AI tools" step does, and that step marks itself
+      // done on click — mirror it so the same action doesn't behave two ways.
+      // Fire-and-forget: the navigation below must not wait on it.
+      markUseAnywhereDone();
       _endTour(true);
       // The AI Connector page (/me/ai-connector) is the per-tool MCP guide
       // (Claude Code · Cursor · VS Code · …) that matches this button's intent
@@ -425,7 +537,7 @@ function _gotoStep(nextIndex) {
   if (!pathMatches(nextStep.page, window.location.pathname)) {
     // Cross-page: persist progress (as pending, NOT "seen" — the tour isn't
     // done) + navigate. resumePendingTour resumes it on the destination page.
-    stashPending(id, nextIndex);
+    stashPending(id, nextIndex, _active.skipped);
     window.location.href = nextStep.page;
     return;
   }
@@ -448,10 +560,31 @@ function _endTour(markSeenNow) {
   if (_active.spotlight) {
     _active.spotlight.classList.remove('tour-spotlight');
   }
+  if (_active.liftedAncestor) {
+    _active.liftedAncestor.classList.remove('tour-lifts-ancestor');
+  }
   if (_active.popover) _active.popover.remove();
   if (_active.overlay) _active.overlay.remove();
   _active = null;
   _removeListeners();
+}
+
+// Walk up from `el` to find the nearest ancestor that establishes its own
+// stacking context via a positioned + z-indexed box (the pattern behind the
+// bug this exists to work around: the rail is `position: fixed; z-index:
+// 40`). A z-index set on a descendant of such an ancestor is scoped to that
+// ancestor's context and can never out-rank an element painted at the root,
+// like the tour scrim — regardless of how large the descendant's own
+// z-index is. Stops at <body> since promoting the whole document is never
+// useful here.
+function _findStackingContextAncestor(el) {
+  let node = el.parentElement;
+  while (node && node !== document.body) {
+    const cs = getComputedStyle(node);
+    if (cs.position !== 'static' && cs.zIndex !== 'auto') return node;
+    node = node.parentElement;
+  }
+  return null;
 }
 
 // ── Positioning ─────────────────────────────────────────────────────────────
@@ -483,35 +616,25 @@ function _positionPopover(popover, anchor, centered) {
   const vh = window.innerHeight;
   const vw = window.innerWidth;
 
-  // Try below the anchor first, then flip above.
-  let top = rect.bottom + POPOVER_GAP;
-  const fitsBelow = top + popH <= vh - VIEWPORT_PAD;
-  const aboveTop = rect.top - POPOVER_GAP - popH;
-  const fitsAbove = aboveTop >= VIEWPORT_PAD;
+  // Room available on each side of the anchor (clamped at 0 — an anchor
+  // partly scrolled off-screen must not report negative space).
+  const spaceBelow = Math.max(0, vh - rect.bottom - POPOVER_GAP - VIEWPORT_PAD);
+  const spaceAbove = Math.max(0, rect.top - POPOVER_GAP - VIEWPORT_PAD);
 
-  if (!fitsBelow && !fitsAbove) {
-    // Neither band has room — a tall popover against a mid-page anchor. The
-    // old clamp-to-top parked the card on top of the very thing it points at
-    // (the Skills coach-mark landed squarely over the "+ New skill" card), so
-    // go beside the anchor instead, on whichever side has room.
-    const roomRight = vw - rect.right - POPOVER_GAP - VIEWPORT_PAD;
-    const roomLeft = rect.left - POPOVER_GAP - VIEWPORT_PAD;
-    if (Math.max(roomRight, roomLeft) >= popW) {
-      const sideLeft = roomRight >= popW
-        ? rect.right + POPOVER_GAP
-        : rect.left - POPOVER_GAP - popW;
-      // Vertically centre on the anchor, clamped into the viewport.
-      const sideTop = Math.max(
-        VIEWPORT_PAD,
-        Math.min(rect.top + rect.height / 2 - popH / 2, vh - popH - VIEWPORT_PAD),
-      );
-      popover.style.top = `${sideTop}px`;
-      popover.style.left = `${sideLeft}px`;
-      return;
-    }
+  if (popH > spaceBelow && popH > spaceAbove) {
+    // The card fits on neither side of the anchor — e.g. a short viewport, or
+    // an anchor near an edge after the rail collapses to a top bar on mobile.
+    // Pinning to `top: VIEWPORT_PAD` in this case reads as broken (the card
+    // floats disconnected from what it's supposed to be pointing at); centering
+    // at least reads as an intentional layout, and `.tour-popover`'s own
+    // max-height + scroll (tour.css) keeps the content reachable either way.
+    _positionPopover(popover, anchor, true);
+    return;
   }
 
-  if (!fitsBelow) top = fitsAbove ? aboveTop : VIEWPORT_PAD;
+  // Try below the anchor first, else flip above.
+  let top = popH <= spaceBelow ? rect.bottom + POPOVER_GAP : rect.top - POPOVER_GAP - popH;
+  top = Math.max(VIEWPORT_PAD, Math.min(top, vh - popH - VIEWPORT_PAD));
 
   // Horizontal: align to anchor left, clamped into viewport.
   let left = rect.left;
@@ -571,7 +694,7 @@ export function resumePendingTour() {
     return false;
   }
 
-  const { id, index } = pending;
+  const { id, index, skipped } = pending;
   const steps = TOURS[id];
   if (!steps) { clearPending(); return false; }
 
@@ -581,6 +704,6 @@ export function resumePendingTour() {
   if (!pathMatches(step.page, window.location.pathname)) return false;
 
   // Resume — don't clearPending yet; _endTour will. _startTour attaches listeners.
-  _startTour(id, steps, index);
+  _startTour(id, steps, index, skipped);
   return true;
 }

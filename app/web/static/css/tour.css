@@ -49,10 +49,28 @@
   border-radius: var(--ds-radius-lg, 12px);
   /* Backing plate (white gap) + a clean primary ring, so the target reads
      lifted off the dimmed page regardless of the surface behind it. */
+  /* Opaque light fill so the lifted target never shows the dark scrim through
+     a transparent / background-less zone (e.g. the My Stack search+sort+table
+     band, which otherwise reads dark grey because the scrim bleeds through). */
+  background: var(--ds-surface);
   box-shadow:
     0 0 0 6px var(--ds-surface),
     0 0 0 8px var(--ds-assistant);
   outline: none;
+}
+
+/* A z-index on `.tour-spotlight` only outranks the scrim (9000) if the
+   spotlighted element is NOT inside another positioned ancestor with its own
+   z-index — e.g. the rail (`position: fixed; z-index: 40`, rail.css). Such an
+   ancestor creates its own stacking context, and `.tour-spotlight`'s 9010 is
+   then resolved INSIDE that context (painted at the ancestor's z-index, 40),
+   never against the root-level scrim. tour.js walks up from the anchor to
+   find that ancestor and adds this class for the step's duration, promoting
+   the whole context to just above the scrim (9000 < 9011 < the popover's
+   9020, so the popover still renders on top of everything). Removed when the
+   step ends — the rail's normal z-index: 40 is otherwise untouched. */
+.tour-lifts-ancestor {
+  z-index: 9011 !important;
 }
 
 /* ── Popover ─────────────────────────────────────────────────────────────────
@@ -62,6 +80,14 @@
   position: fixed;
   z-index: 9020;
   width: min(380px, calc(100vw - 24px));
+  /* Vertical counterpart to the width clamp above: without it, a card taller
+     than the space either side of its anchor gets pinned at the viewport top
+     by the JS positioning fallback and spills past the bottom edge with no
+     way to reach the rest of it. The header/footer stay put; only the body
+     (below) scrolls, so title + actions are always visible. */
+  max-height: calc(100dvh - 24px);
+  display: flex;
+  flex-direction: column;
   background: var(--ds-surface);
   border: 1px solid var(--ds-border);
   border-radius: 16px;
@@ -94,6 +120,7 @@
   gap: 8px;
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--ds-border-light);
+  flex-shrink: 0;
 }
 
 .tour-popover-header-orb {
@@ -120,9 +147,12 @@
   text-transform: uppercase;
 }
 
-/* Body — title + description + bullets */
+/* Body — title + description + bullets. Only this region scrolls when the
+   card exceeds the popover's max-height; header + footer stay pinned. */
 .tour-popover-body {
   padding: 14px 16px 12px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .tour-popover-title {
@@ -177,6 +207,7 @@
   gap: 10px;
   padding: 10px 16px 14px;
   border-top: 1px solid var(--ds-border-light);
+  flex-shrink: 0;
 }
 
 /* Single-step coach-mark: no progress dots, so the lone action row would
@@ -297,22 +328,68 @@
   background: var(--ds-surface-sunken);
 }
 
-/* Final step: footer stacks vertically on small screens */
-.tour-popover--final .tour-popover-footer {
-  flex-direction: column-reverse;
-  align-items: stretch;
-}
+/* ── Compact mode (≈phone widths) ─────────────────────────────────────────
+   tour.css previously had no width breakpoint at all — every dimension below
+   was a desktop constant, and the final step's button stacking (moved into
+   this block) had a comment claiming it was for "small screens" while
+   actually applying unconditionally at every width, including desktop. */
+@media (max-width: 600px) {
+  .tour-popover-header {
+    padding: 11px 14px 8px;
+    gap: 7px;
+  }
 
-.tour-popover--final .tour-actions {
-  flex-direction: column;
-  gap: 6px;
-}
+  .tour-popover-header-orb {
+    width: 24px;
+    height: 24px;
+  }
 
-.tour-popover--final .tour-actions .tour-btn {
-  justify-content: center;
-  width: 100%;
-  padding: 8px 14px;
-  font-size: 14px;
+  .tour-popover-body {
+    padding: 12px 14px 10px;
+  }
+
+  .tour-popover-title {
+    font-size: 15px;
+    margin: 0 0 6px;
+  }
+
+  .tour-popover-desc {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .tour-popover-footer {
+    padding: 8px 14px 12px;
+  }
+
+  /* Both the regular-step and final-step action rows get an explicit narrow
+     layout instead of relying on flex-wrap: full-width, stacked, and tall
+     enough to clear the 44px touch-target minimum — rather than wrapping
+     one-per-line at whatever width each label happens to need. */
+  .tour-popover-footer,
+  .tour-popover--final .tour-popover-footer {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .tour-actions,
+  .tour-popover--final .tour-actions {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .tour-actions .tour-btn,
+  .tour-popover--final .tour-actions .tour-btn {
+    justify-content: center;
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 14px;
+  }
+
+  .tour-dots {
+    justify-content: center;
+  }
 }
 
 .tour-popover--final .tour-dots {
