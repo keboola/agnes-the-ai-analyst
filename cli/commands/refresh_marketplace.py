@@ -1094,6 +1094,11 @@ def _enable_plugins_in_workspace_settings(
         events["enabled"].extend(sorted(newly_enabled))
         typer.echo(f"Enabled {len(newly_enabled)} plugin(s) in workspace settings: " + ", ".join(sorted(newly_enabled)))
     if stale:
+        # setdefault: pre-existing callers build `events` without this key
+        # (refresh_marketplace's own dict literal included) — don't KeyError
+        # on them, but DO give machine-readable consumers (`agnes update`'s
+        # run report) the pruned names instead of only a stdout line.
+        events.setdefault("settings_pruned", []).extend(stale)
         typer.echo(
             f"Dropped {len(stale)} stale plugin entr{'y' if len(stale) == 1 else 'ies'} "
             "from workspace settings: " + ", ".join(stale)

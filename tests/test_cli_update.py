@@ -1021,3 +1021,51 @@ def test_step_push_skip_matches_real_push_lock_behavior(monkeypatch, tmp_path):
     upd._step_push(report=report)
 
     assert report == [{"stage": "push", "status": "skipped", "detail": "another push already running"}]
+
+
+def test_marketplace_no_drift_prune_is_silent_under_quiet(monkeypatch, tmp_path, capsys):
+    """The no-drift reassert path must not leak the enable/drop notices to raw
+    stdout when quiet (the --json / silent-hook contract): the stale-entry
+    cleanup added on #1105 echoed outside _invoke's sink. The outcome must land
+    in the run report instead (Devin Review on #1105)."""
+    import json
+
+    import cli.commands.refresh_marketplace as rm
+
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", clone)
+
+    def fake_refresh(*, check, bootstrap):
+        raise typer.Exit(0)  # no drift
+
+    monkeypatch.setattr(rm, "refresh_marketplace", fake_refresh)
+    monkeypatch.setattr(rm, "_read_marketplace_plugin_versions", lambda: {"flea": "1.0"})
+
+    ws = tmp_path / "ws"
+    (ws / ".claude").mkdir(parents=True)
+    # A stale @agnes entry (plugin gone from the manifest) + a foreign entry.
+    (ws / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "enabledPlugins": {
+                    "flea@agnes": True,
+                    "ghost@agnes": True,
+                    "superpowers@claude-plugins-official": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(ws)
+
+    report: list[dict] = []
+    upd._step_marketplace(report=report, quiet=True)
+
+    out = capsys.readouterr().out
+    assert "Dropped" not in out and "Enabled" not in out, f"leaked to stdout: {out!r}"
+    assert report[0]["status"] == "pruned"
+    assert "ghost" in report[0]["detail"]
+    cfg = json.loads((ws / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert "ghost@agnes" not in cfg["enabledPlugins"]
+    assert cfg["enabledPlugins"]["superpowers@claude-plugins-official"] is True
