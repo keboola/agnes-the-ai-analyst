@@ -76,6 +76,14 @@ class TestDataSourcesPageAuth:
         assert "Rotate token" in body
         assert 'class="ds-rotate-row"' in body
 
+        # Master (owner) token controls — separate vault slot consumed by the
+        # semantic-layer sync (task 8, #contract in Task 3).
+        assert "saveMasterToken" in body
+        assert "removeMasterToken" in body
+        assert "Master token (semantic layer)" in body
+        assert 'kind: "master"' in body
+        assert "required only for semantic-layer sync (Metastore)" in body
+
         # Reciprocal link to the vault-secrets page.
         assert "/admin/datasource-credentials" in body
 

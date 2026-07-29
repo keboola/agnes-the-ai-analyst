@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - `GET /admin/semantic-layer` — per-connection view of the Keboola semantic-layer sync: one row per master-token project with its own metric/glossary counts and last-sync result, plus an "orphaned rows" section for rows whose recorded project no longer matches any connected source.
+- `/admin/data-sources`'s Keboola connection cards now have a "Master token (semantic layer)" control (set/rotate/remove) for the separate owner-token vault slot the semantic-layer sync requires.
 
 ### Changed
 
