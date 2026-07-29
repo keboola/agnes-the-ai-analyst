@@ -431,6 +431,38 @@ def test_library_lists_granted_resources_of_every_kind(seeded_app):
     assert 'data-ownership="shared_with_me"' in text
 
 
+def test_granted_rows_link_to_the_individual_item(seeded_app):
+    """A Library row is ONE item, so it opens that item's page — never the
+    generic listing. Memory rows used to hand every domain the same
+    /corporate-memory href, which lost which row was clicked; ?source=library
+    additionally makes the drill-down's back link return here."""
+    from src.repositories import data_packages_repo, memory_domains_repo
+
+    gid = _group_with_member("analyst1", "lib-drilldown-grp")
+    pkg = data_packages_repo().create(
+        name="Drilldown Data",
+        slug="lib-drill-data",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="admin",
+    )
+    dom = memory_domains_repo().create(
+        name="Drilldown Memory",
+        slug="lib-drill-memory",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="admin",
+    )
+    _grant(gid, "data_package", pkg)
+    _grant(gid, "memory_domain", dom)
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    assert "/catalog/p/lib-drill-data" in text
+    assert "/memory/d/lib-drill-memory?source=library" in text
+
+
 def test_granted_resources_are_not_reshareable_by_the_caller(seeded_app):
     """A granted resource is an admin's to share, not the recipient's — so its
     row carries no Share action (only the explain-sharing affordance)."""

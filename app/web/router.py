@@ -2643,11 +2643,17 @@ async def library_page(
 
     # Governed data packages + memory domains — StackResolver.browse() is
     # exactly "required ∪ available for my groups" for these two types.
-    # /catalog/p/{slug} is slug-keyed, so map id -> slug for the link.
+    # Both drill-downs are slug-keyed (/catalog/p/{slug}, /memory/d/{slug}),
+    # so map id -> slug: a Library row is ONE package / ONE memory domain and
+    # must open that item, not the generic listing page.
     try:
         pkg_slugs = {r["id"]: r.get("slug") for r in data_packages_repo().list(limit=100000)}
     except Exception:
         pkg_slugs = {}
+    try:
+        dom_slugs = {r["id"]: r.get("slug") for r in memory_domains_repo().list(limit=100000)}
+    except Exception:
+        dom_slugs = {}
     for rt, type_key, type_label, glyph in (
         (ResourceType.DATA_PACKAGE, "data_package", "Data package", "data"),
         (ResourceType.MEMORY_DOMAIN, "memory_domain", "Memory", "memory"),
@@ -2658,7 +2664,11 @@ async def library_page(
                     slug = pkg_slugs.get(e.id)
                     href = f"/catalog/p/{slug}" if slug else "/catalog"
                 else:
-                    href = "/corporate-memory"
+                    slug = dom_slugs.get(e.id)
+                    # ?source=library so the drill-down's back link returns
+                    # HERE instead of to the memory listing the caller never
+                    # visited (also feeds the memory_domain.view event).
+                    href = f"/memory/d/{slug}?source=library" if slug else f"/corporate-memory#{e.id}"
                 _add_shared_row(
                     item_id=e.id,
                     title=e.name,
@@ -3781,6 +3791,10 @@ async def memory_domain_detail(
         required_count=required_count,
         effective_requirement="required" if effective_required else "available",
         in_stack=in_stack,
+        # Where the visitor came from, so the hero's back link returns THERE
+        # rather than always to the memory listing (the Library links in with
+        # ?source=library). Same value the view event already carries.
+        source=source_hint,
     )
     return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
