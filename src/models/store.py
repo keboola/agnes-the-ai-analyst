@@ -131,6 +131,14 @@ class StoreEntity(Base):
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     tagline: Mapped[str | None] = mapped_column(String, nullable=True)
     synthetic_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v104 trust line — who stands behind the item (publisher_kind) and the
+    # org's advisory review of a user-published item (verification_*). Mirrors
+    # migration 0051_store_publisher_v104 + DuckDB _v108_to_v109.
+    publisher_kind: Mapped[str] = mapped_column(String, server_default=text("'user'"), nullable=False)
+    verification_state: Mapped[str] = mapped_column(String, server_default=text("'none'"), nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    verification_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("owner_user_id", "name", name="uq_store_entities_owner_name"),
@@ -142,6 +150,15 @@ class StoreEntity(Base):
             "visibility_status IN ('pending','approved','hidden','archived')",
             name="ck_store_entities_visibility",
         ),
+        CheckConstraint(
+            "publisher_kind IN ('organization', 'user')",
+            name="ck_store_entities_publisher_kind",
+        ),
+        CheckConstraint(
+            "verification_state IN ('none', 'requested', 'verified', 'changes_requested')",
+            name="ck_store_entities_verification_state",
+        ),
+        Index("idx_store_entities_publisher_kind", "publisher_kind"),
     )
 
 
