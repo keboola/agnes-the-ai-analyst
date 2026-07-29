@@ -20,6 +20,10 @@ runner = CliRunner()
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "config"))
+    # Same suppression as the parity harness: keep the auto-update probe from
+    # ever mixing output into `result.output`, which several tests parse as
+    # JSON (Devin Review on #1091).
+    monkeypatch.setenv("AGNES_NO_UPDATE_CHECK", "1")
     (tmp_path / "config").mkdir()
     yield tmp_path
 
@@ -183,4 +187,23 @@ class TestUnrequire:
             result = runner.invoke(app, ["admin", "memory", "unrequire", "item_1", "item_2"])
         assert result.exit_code == 1
         assert "unrequire: item_1" in result.output
-        assert "already demoted" in result.output
+        assert "applied before the error" in result.output
+
+    def test_unrequire_error_with_json_keeps_stdout_parseable(self):
+        """--json consumers must get the partial results dict, not prose."""
+        with patch(
+            "cli.commands.memory_admin.api_post",
+            side_effect=[
+                _resp(200, {"id": "item_1", "is_required": False}),
+                _resp(404, {"detail": "Knowledge item not found"}),
+                _resp(500, {"detail": "boom"}, text="boom"),
+            ],
+        ):
+            result = runner.invoke(
+                app,
+                ["admin", "memory", "unrequire", "item_1", "ghost", "item_3", "--json"],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["success"] == ["item_1"]
+        assert payload["not_found"] == ["ghost"]
