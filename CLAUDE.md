@@ -177,7 +177,7 @@ git branch -d <branch-name>
 
 Both trail with `; true` and run detached (`( nohup … & )`) so a server outage or slow sync never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace. `agnes update` is also the recommended manual command to repair a broken install or pick up a new release; it holds a single-instance lock so only one runs at a time.
 
-Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `agnes pull` downloads it. No per-user sync config; the admin layer is the single source of truth.
+Admin RBAC for auto-sync flows through data packages (per-table `resource_grants` no longer surface tables in analyst manifests): the admin adds `query_mode IN ('local', 'materialized')` tables to a data package and grants the package to one of the analyst's groups; the package then appears in the analyst's stack — automatically when the grant is marked required, otherwise once the analyst subscribes (`agnes stack browse` / `agnes stack add data_package <id>`) — and its tables land in their manifest for `agnes pull` to download. No per-user sync config; the admin layer plus the user's stack are the source of truth.
 
 ## Business Metrics
 
