@@ -12,6 +12,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Linked (externally-hosted) data apps: an admin can surface an app that runs elsewhere — e.g. a Keboola-platform data app ingested via an MCP source — as a grantable Agnes resource without Agnes hosting it. A Keboola MCP tool set to *materialize* produces a `keboola_data_apps` table; a generic projection reconciler upserts `data_apps` rows with the new `repo_mode="linked"` (external URL, no git repo/runtime), keyed by ingest provenance and soft-deleting apps that disappear upstream (per-connection scoped, admin `description` override preserved across re-sync). Linked apps are granted like hosted ones (`ResourceType.DATA_APP` on `/admin/access`), appear in the same `/apps` list + detail (opening at their external URL, Keboola handling auth), and are known to a user's LLM through `data_apps_list` (RBAC-filtered, carries the description). New surfaces: `GET /api/data-apps?kind=hosted|linked`, `PATCH /api/data-apps/{slug}` (description override) + `agnes app list --linked` / `agnes app set-description` + the `data_app_set_description` MCP tool (foundation + stdio). Schema v108. Design: `docs/superpowers/specs/2026-07-29-keboola-dataapps-linking-design.md`.
+
 ### Changed
 
 ### Fixed
