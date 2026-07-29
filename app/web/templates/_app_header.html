@@ -215,11 +215,13 @@
                     {% endif %}
                 </div>
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
-                {# The redesign replaced the "AI Connector" / "My connections"
-                   dropdown links with a single "Learn how it works" entry — the
-                   connector page is reached from the "Connect your tools" CTA
-                   instead (see tests/test_web_nav_cowork.py). #}
+                {# The redesign dropped the "AI Connector" link (the connector
+                   page is reached from the "Connect your tools" CTA) and added
+                   "Learn how it works" (tests/test_web_nav_cowork.py). "My
+                   connections" (#1086) stays — tests/test_web_nav_me_connections
+                   requires it here. #}
                 <a class="app-user-menu-item {% if _path == '/home' %}is-active{% endif %}" role="menuitem" href="/home">Learn how it works</a>
+                <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
 
                 <div class="app-user-menu-sep" role="separator"></div>
