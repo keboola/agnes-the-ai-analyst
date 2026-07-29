@@ -40,6 +40,15 @@ def test_restart_button_resets_all_five_flags_to_false():
         assert f"{field}: false" in handler
 
 
+def test_restart_also_re_arms_the_greeting():
+    """#1110 — "Start over" must clear `onboarded` too, otherwise the
+    "Hi, I'm Agnes 👋" greeting (gated on `journey.onboarded`) never
+    replays alongside the freshly-unchecked checklist."""
+    js = _js()
+    handler = js.split('el.querySelector("[data-journey-restart]")', 1)[1].split("});\n  }", 1)[0]
+    assert "onboarded: false" in handler
+
+
 def test_restart_reuses_the_existing_patch_journey_helper():
     """No bespoke fetch call — it goes through the same optimistic
     merge-then-PUT path every other journey action uses, so the panel
