@@ -46,7 +46,9 @@ def tree(
     source_type: Optional[str] = typer.Option(None, "--source-type", help="Filter by source_type"),
     audience: Optional[str] = typer.Option(None, "--audience", help="Filter by audience value"),
     q: Optional[str] = typer.Option(None, "-q", "--query", help="Substring filter on title/content"),
-    has_duplicate: bool = typer.Option(False, "--has-duplicate", help="Only items with unresolved duplicate-candidates"),
+    has_duplicate: bool = typer.Option(
+        False, "--has-duplicate", help="Only items with unresolved duplicate-candidates"
+    ),
     per_page: int = typer.Option(50, "--per-page", help="Groups per page"),
     page: int = typer.Option(1, "--page"),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
@@ -92,7 +94,9 @@ def edit(
     audience: Optional[str] = typer.Option(None, "--audience"),
     add_tag: list[str] = typer.Option([], "--add-tag", help="Tag to add (repeatable)"),
     remove_tag: list[str] = typer.Option([], "--remove-tag", help="Tag to remove (repeatable)"),
-    set_tags: Optional[str] = typer.Option(None, "--set-tags", help="Comma-separated replacement set (overrides add/remove)"),
+    set_tags: Optional[str] = typer.Option(
+        None, "--set-tags", help="Comma-separated replacement set (overrides add/remove)"
+    ),
 ):
     """Patch a knowledge item — partial update."""
     body: dict = {}
@@ -114,7 +118,10 @@ def edit(
 
     nothing_to_do = not body and not add_tag and not remove_tag and set_tags is None
     if nothing_to_do:
-        typer.echo("Nothing to update — pass at least one --title/--content/--category/--domain/--audience/--add-tag/--remove-tag/--set-tags option.", err=True)
+        typer.echo(
+            "Nothing to update — pass at least one --title/--content/--category/--domain/--audience/--add-tag/--remove-tag/--set-tags option.",
+            err=True,
+        )
         raise typer.Exit(2)
 
     updated_fields: list[str] = []
@@ -199,6 +206,120 @@ def bulk_edit(
     )
     for item_id, msg in (body.get("errors") or {}).items():
         typer.echo(f"  ! {item_id}: {msg}")
+
+
+# ----- lifecycle moderation (approve / reject / revoke / require) -----
+
+
+def _moderate(
+    action: str,
+    item_ids: list[str],
+    *,
+    label: Optional[str] = None,
+    reason: Optional[str] = None,
+    audience: Optional[str] = None,
+    as_json: bool = False,
+) -> None:
+    """Drive ``POST /api/memory/admin/batch`` for a governance action.
+
+    Status transitions deliberately do NOT ride the generic ``edit`` /
+    ``bulk-edit`` paths — the API allowlist excludes ``status`` so every
+    lifecycle change goes through the dedicated governance endpoints and
+    their ``corporate_memory.<action>`` audit rows.
+    """
+    label = label or action
+    body: dict = {"item_ids": item_ids, "action": action}
+    if reason is not None:
+        body["reason"] = reason
+    if audience is not None:
+        body["audience"] = audience
+    resp = api_post("/api/memory/admin/batch", json=body)
+    if resp.status_code != 200:
+        _fail(resp, label)
+    data = resp.json()
+    if as_json:
+        typer.echo(_json.dumps(data, indent=2))
+    else:
+        for item_id in data.get("success") or []:
+            typer.echo(f"{label}: {item_id}")
+    not_found = data.get("not_found") or []
+    if not_found:
+        typer.echo(
+            f"Not found: {', '.join(not_found)} — list pending ids with `agnes admin memory tree --status pending`.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
+@memory_admin_app.command("approve")
+def approve(
+    item_ids: list[str] = typer.Argument(..., help="Knowledge item id(s)"),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Approve item(s) — status → approved."""
+    _moderate("approve", list(item_ids), as_json=as_json)
+
+
+@memory_admin_app.command("reject")
+def reject(
+    item_ids: list[str] = typer.Argument(..., help="Knowledge item id(s)"),
+    reason: Optional[str] = typer.Option(None, "--reason", help="Recorded in the audit row"),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Reject item(s) — status → rejected."""
+    _moderate("reject", list(item_ids), reason=reason, as_json=as_json)
+
+
+@memory_admin_app.command("revoke")
+def revoke(
+    item_ids: list[str] = typer.Argument(..., help="Knowledge item id(s)"),
+    reason: Optional[str] = typer.Option(None, "--reason", help="Recorded in the audit row"),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Revoke previously-approved item(s) — status → revoked."""
+    _moderate("revoke", list(item_ids), reason=reason, as_json=as_json)
+
+
+@memory_admin_app.command("require")
+def require(
+    item_ids: list[str] = typer.Argument(..., help="Knowledge item id(s)"),
+    audience: Optional[str] = typer.Option(None, "--audience", help="Audience to set alongside the flag"),
+    reason: Optional[str] = typer.Option(None, "--reason", help="Recorded in the audit row"),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Mark item(s) as required reading (``is_required`` = TRUE)."""
+    # The batch endpoint spells this action ``mandate`` (pre-v49 name); the
+    # CLI surfaces the v49 "required tier" vocabulary.
+    _moderate("mandate", list(item_ids), label="require", reason=reason, audience=audience, as_json=as_json)
+
+
+@memory_admin_app.command("unrequire")
+def unrequire(
+    item_ids: list[str] = typer.Argument(..., help="Knowledge item id(s)"),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Demote item(s) from required reading (``is_required`` = FALSE)."""
+    # No batch analogue exists server-side — mark-unmandatory is per-item.
+    results: dict = {"success": [], "not_found": []}
+    for item_id in item_ids:
+        resp = api_post(f"/api/memory/items/{item_id}/mark-unmandatory")
+        if resp.status_code == 200:
+            results["success"].append(item_id)
+        elif resp.status_code == 404:
+            results["not_found"].append(item_id)
+        else:
+            _fail(resp, "unrequire")
+    if as_json:
+        typer.echo(_json.dumps(results, indent=2))
+    else:
+        for item_id in results["success"]:
+            typer.echo(f"unrequire: {item_id}")
+    if results["not_found"]:
+        typer.echo(
+            f"Not found: {', '.join(results['not_found'])} — list ids with `agnes admin memory tree`.",
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 # ----- stats -----
