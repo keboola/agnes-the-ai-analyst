@@ -219,6 +219,7 @@ def _moderate(
     reason: Optional[str] = None,
     audience: Optional[str] = None,
     as_json: bool = False,
+    lookup_hint: str = "`agnes admin memory tree`",
 ) -> None:
     """Drive ``POST /api/memory/admin/batch`` for a governance action.
 
@@ -226,6 +227,11 @@ def _moderate(
     ``bulk-edit`` paths — the API allowlist excludes ``status`` so every
     lifecycle change goes through the dedicated governance endpoints and
     their ``corporate_memory.<action>`` audit rows.
+
+    ``lookup_hint`` is the "not found" recovery suggestion — approve/reject
+    act on the pending queue so they point at ``--status pending``; revoke/
+    require act on already-approved items where that filter would never
+    surface the id, so they keep the unfiltered listing.
     """
     label = label or action
     body: dict = {"item_ids": item_ids, "action": action}
@@ -245,7 +251,7 @@ def _moderate(
     not_found = data.get("not_found") or []
     if not_found:
         typer.echo(
-            f"Not found: {', '.join(not_found)} — list pending ids with `agnes admin memory tree --status pending`.",
+            f"Not found: {', '.join(not_found)} — list ids with {lookup_hint}.",
             err=True,
         )
         raise typer.Exit(1)
@@ -257,7 +263,12 @@ def approve(
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """Approve item(s) — status → approved."""
-    _moderate("approve", list(item_ids), as_json=as_json)
+    _moderate(
+        "approve",
+        list(item_ids),
+        as_json=as_json,
+        lookup_hint="`agnes admin memory tree --status pending`",
+    )
 
 
 @memory_admin_app.command("reject")
@@ -267,7 +278,13 @@ def reject(
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """Reject item(s) — status → rejected."""
-    _moderate("reject", list(item_ids), reason=reason, as_json=as_json)
+    _moderate(
+        "reject",
+        list(item_ids),
+        reason=reason,
+        as_json=as_json,
+        lookup_hint="`agnes admin memory tree --status pending`",
+    )
 
 
 @memory_admin_app.command("revoke")
