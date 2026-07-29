@@ -152,6 +152,17 @@
   }
   .ds-rotate-row input:focus { outline: 2px solid var(--ds-primary, var(--ds-primary)); outline-offset: -1px; }
 
+  /* Master (owner) token row — separate vault slot for the semantic-layer sync */
+  .ds-master-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border, var(--ds-border));
+  }
+  .ds-master-label {
+    font-size: 12px; color: var(--text-secondary, var(--ds-text-secondary));
+    margin-right: 4px; cursor: help;
+  }
+
   /* Table-browse panel (inline, per connection card) */
   .ds-browse-panel {
     display: none;
@@ -410,6 +421,32 @@ function _secretBadgeHtml(row) {
   return `<span class="ds-badge ${classes[src] || "badge-unset"}">${labels[src] || "unset"}</span>`;
 }
 
+function _masterTokenRowHtml(row) {
+  // Semantic-layer sync (Metastore) needs a separate Keboola *master* (project
+  // owner) token — not the plain storage token above. Only keboola connections
+  // support this vault slot.
+  if (row.source_type && row.source_type !== "keboola") return "";
+  const id = row.id;
+  const hasMaster = row.has_master_secret === true;
+  const badgeClass = hasMaster ? "badge-vault" : "badge-unset";
+  const badgeLabel = hasMaster ? "set" : "not set";
+  const removeBtn = hasMaster
+    ? `<button type="button" class="btn btn-secondary" style="color:var(--ds-accent-danger-ink); border-color:var(--ds-accent-danger-line);" onclick="removeMasterToken('${id}')">Remove</button>`
+    : "";
+  return `
+  <div class="ds-master-row">
+    <span class="ds-master-label" title="Optional. Project owner token — required only for semantic-layer sync (Metastore).">Master token (semantic layer)</span>
+    <span class="ds-badge ${badgeClass}">${badgeLabel}</span>
+    <button type="button" class="btn btn-secondary" onclick="toggleMasterToken('${id}')">${hasMaster ? "Rotate" : "Set token"}</button>
+    ${removeBtn}
+  </div>
+  <div class="ds-rotate-row" id="ds-master-row-${id}">
+    <input type="password" id="ds-master-input-${id}" placeholder="paste master (owner) token" autocomplete="off">
+    <button type="button" class="btn btn-primary" onclick="saveMasterToken('${id}')">Save token</button>
+    <button type="button" class="btn btn-secondary" onclick="toggleMasterToken('${id}')">Cancel</button>
+  </div>`;
+}
+
 function _connectionCardHtml(row) {
   const id = row.id;
   const name = _esc(row.name || "");
@@ -445,6 +482,7 @@ function _connectionCardHtml(row) {
     <button type="button" class="btn btn-primary" onclick="saveRotatedToken('${id}')">Save token</button>
     <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Cancel</button>
   </div>
+  ${_masterTokenRowHtml(row)}
   <div class="ds-browse-panel" id="ds-browse-${id}"></div>
 </div>`;
 }
@@ -573,6 +611,62 @@ async function saveRotatedToken(id) {
         ? "Server vault key missing — set AGNES_VAULT_KEY first."
         : "Failed: " + (body.detail || "unknown error");
       showToast(msg, false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+/* ── Master (owner) token — separate vault slot for the semantic-layer sync ── */
+
+function toggleMasterToken(id) {
+  const row = document.getElementById(`ds-master-row-${id}`);
+  if (row.classList.contains("show")) {
+    row.classList.remove("show");
+    document.getElementById(`ds-master-input-${id}`).value = "";
+  } else {
+    row.classList.add("show");
+    document.getElementById(`ds-master-input-${id}`).focus();
+  }
+}
+
+async function saveMasterToken(id) {
+  const input = document.getElementById(`ds-master-input-${id}`);
+  const token = input.value.trim();
+  if (!token) { showToast("Paste a token first.", false); return; }
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}/secret`, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: token, kind: "master" }),
+    });
+    if (r.ok || r.status === 204) {
+      showToast("Master token saved.", true);
+      input.value = "";
+      toggleMasterToken(id);
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      const msg = r.status === 409
+        ? "Server vault key missing — set AGNES_VAULT_KEY first."
+        : "Failed: " + (body.detail || "unknown error");
+      showToast(msg, false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+async function removeMasterToken(id) {
+  if (!confirm("Remove the master token for this connection? Semantic-layer sync will stop working until a new one is set.")) return;
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}/secret?kind=master`, { method: "DELETE", credentials: "include" });
+    if (r.ok || r.status === 204) {
+      showToast("Master token removed.", true);
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      showToast("Failed: " + (body.detail || "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
