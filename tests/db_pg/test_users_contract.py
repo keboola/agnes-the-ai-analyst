@@ -323,7 +323,9 @@ def test_consume_reset_token_valid_wins_and_stamps(users_repo):
     now = datetime.now(timezone.utc)
     _seed_reset_token(repo, created=now)
     won = repo.consume_reset_token(
-        email="u@example.com", token="rtok", cutoff=now - timedelta(hours=24),
+        email="u@example.com",
+        token="rtok",
+        cutoff=now - timedelta(hours=24),
         consume_id="CONSUMED:abc",
     )
     assert won is True
@@ -336,7 +338,9 @@ def test_consume_reset_token_wrong_token_loses(users_repo):
     now = datetime.now(timezone.utc)
     _seed_reset_token(repo, created=now)
     won = repo.consume_reset_token(
-        email="u@example.com", token="WRONG", cutoff=now - timedelta(hours=24),
+        email="u@example.com",
+        token="WRONG",
+        cutoff=now - timedelta(hours=24),
         consume_id="CONSUMED:abc",
     )
     assert won is False
@@ -348,7 +352,9 @@ def test_consume_reset_token_expired_loses(users_repo):
     now = datetime.now(timezone.utc)
     _seed_reset_token(repo, created=now - timedelta(hours=25))  # older than the 24h cutoff
     won = repo.consume_reset_token(
-        email="u@example.com", token="rtok", cutoff=now - timedelta(hours=24),
+        email="u@example.com",
+        token="rtok",
+        cutoff=now - timedelta(hours=24),
         consume_id="CONSUMED:abc",
     )
     assert won is False
@@ -361,7 +367,9 @@ def test_consume_reset_token_single_use(users_repo):
     cutoff = now - timedelta(hours=24)
     assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:1") is True
     # second attempt with the same original token loses (already consumed)
-    assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is False
+    assert (
+        repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -457,3 +465,39 @@ def test_get_by_email_prefix_underscore_is_not_a_wildcard(users_repo):
     row = repo.get_by_email_prefix("alice_smith")
     assert row is not None
     assert row["id"] == "user-real"
+
+
+# ---------------------------------------------------------------------------
+# update_display_name — self-service name edit (issue #1036)
+# ---------------------------------------------------------------------------
+
+
+def test_update_display_name_persists(users_repo):
+    """update_display_name stores the new name and rounds-trips on get_by_id."""
+    repo, _, _ = users_repo
+    _make_user(repo)
+    repo.update_display_name("user-1", "Alice Smith")
+    row = repo.get_by_id("user-1")
+    assert row is not None
+    assert row["name"] == "Alice Smith"
+
+
+def test_update_display_name_empty_string_allowed(users_repo):
+    """Clearing the display name to an empty string is permitted."""
+    repo, _, _ = users_repo
+    _make_user(repo, name="Original")
+    repo.update_display_name("user-1", "")
+    row = repo.get_by_id("user-1")
+    assert row is not None
+    assert row["name"] == ""
+
+
+def test_update_display_name_overwrite_existing(users_repo):
+    """A second call to update_display_name replaces the previous value."""
+    repo, _, _ = users_repo
+    _make_user(repo, name="Old")
+    repo.update_display_name("user-1", "New")
+    repo.update_display_name("user-1", "Newest")
+    row = repo.get_by_id("user-1")
+    assert row is not None
+    assert row["name"] == "Newest"

@@ -97,6 +97,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     # (GET) and enqueue (POST); `/api/jobs/{job_id}` is the detail view.
     "/api/jobs": ("admin jobs list", "admin_jobs_list"),
     "/api/jobs/{job_id}": ("admin jobs show", "admin_job_get"),
+    # Self-service display name edit (issue #1036).
+    "/api/me/display-name": ("profile set-name", "profile_set_name"),
     # DuckLake analytics-backend migration (wave-2G Task 6).
     "/api/admin/analytics/migrate": ("admin analytics migrate", "admin_analytics_migrate"),
     # Hosted data apps control-plane (data-apps platform plan, Task 7/10/11) —

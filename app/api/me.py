@@ -25,8 +25,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, status
+from pydantic import BaseModel, Field
 
 from app.auth.dependencies import get_current_user
 from src.repositories import audit_repo, usage_repo, users_repo
@@ -53,6 +53,45 @@ async def post_onboarded(
         result="ok",
     )
     return {"status": "ok", "onboarded": target}
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/me/display-name — self-service display name edit (issue #1036)
+# ---------------------------------------------------------------------------
+
+_DISPLAY_NAME_MAX_LEN = 120
+
+
+class DisplayNameRequest(BaseModel):
+    name: str = Field(..., max_length=_DISPLAY_NAME_MAX_LEN, description="New display name (max 120 chars).")
+
+
+@router.patch("/display-name", status_code=status.HTTP_200_OK)
+async def patch_display_name(
+    body: DisplayNameRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Update the calling user's display name.
+
+    Auth: any authenticated user; the update is scoped to their own row.
+    Email stays unchanged — it is the identity key from the auth provider
+    and may only change through the provider's own flow.
+
+    Google Workspace sync only sets ``name`` at account *creation* (first
+    sign-in), not on subsequent logins or group-sync runs, so a manually-
+    set name is never overwritten by the sync process.
+
+    Returns ``{"status": "ok", "name": "<new name>"}`` on success.
+    """
+    stripped = body.name.strip()
+    users_repo().update_display_name(user["id"], stripped)
+    audit_repo().log(
+        user_id=user["id"],
+        action="user_display_name_updated",
+        params={"name": stripped},
+        result="ok",
+    )
+    return {"status": "ok", "name": stripped}
 
 
 # ---------------------------------------------------------------------------

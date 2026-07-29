@@ -30,9 +30,7 @@ class UserRepository:
         if not ids:
             return {}
         placeholders = ",".join(["?"] * len(ids))
-        rows = self.conn.execute(
-            f"SELECT id, email FROM users WHERE id IN ({placeholders})", ids
-        ).fetchall()
+        rows = self.conn.execute(f"SELECT id, email FROM users WHERE id IN ({placeholders})", ids).fetchall()
         return {r[0]: r[1] for r in rows}
 
     def get_info_by_ids(self, user_ids: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -47,9 +45,7 @@ class UserRepository:
         if not ids:
             return {}
         placeholders = ",".join(["?"] * len(ids))
-        rows = self.conn.execute(
-            f"SELECT id, email, name FROM users WHERE id IN ({placeholders})", ids
-        ).fetchall()
+        rows = self.conn.execute(f"SELECT id, email, name FROM users WHERE id IN ({placeholders})", ids).fetchall()
         return {r[0]: {"email": r[1], "name": r[2]} for r in rows}
 
     def get_by_email(self, email: str) -> Optional[Dict[str, Any]]:
@@ -66,8 +62,7 @@ class UserRepository:
         literal underscores / percents in a username don't act as wildcards."""
         escaped = local_part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         result = self.conn.execute(
-            "SELECT * FROM users WHERE email LIKE ? || '@%' ESCAPE '\\' "
-            "ORDER BY updated_at DESC NULLS LAST LIMIT 1",
+            "SELECT * FROM users WHERE email LIKE ? || '@%' ESCAPE '\\' ORDER BY updated_at DESC NULLS LAST LIMIT 1",
             [escaped],
         ).fetchone()
         return self._row_to_dict(result)
@@ -236,9 +231,7 @@ class UserRepository:
             if "conflict" in err or "transaction" in err:
                 return False
             raise
-        row = self.conn.execute(
-            "SELECT reset_token FROM users WHERE email = ?", [email]
-        ).fetchone()
+        row = self.conn.execute("SELECT reset_token FROM users WHERE email = ?", [email]).fetchone()
         return bool(row and row[0] == consume_id)
 
     def count_admins(self, active_only: bool = True) -> int:
@@ -254,6 +247,24 @@ class UserRepository:
             sql += " AND COALESCE(u.active, TRUE) = TRUE"
         result = self.conn.execute(sql).fetchone()
         return int(result[0]) if result else 0
+
+    def update_display_name(self, user_id: str, name: str) -> None:
+        """Persist a user-supplied display name for *user_id*.
+
+        Self-service path (issue #1036): the caller has already validated that
+        it owns the row (``get_current_user`` gate at the API layer). Only
+        ``users.name`` and ``updated_at`` are touched — email, password hash,
+        group memberships, and every other column are left unchanged.
+
+        Google OAuth only sets ``name`` at account creation, not on subsequent
+        logins, so calling this method does not risk being overwritten by a
+        future sign-in or group-sync run.
+        """
+        now = datetime.now(timezone.utc)
+        self.conn.execute(
+            "UPDATE users SET name = ?, updated_at = ? WHERE id = ?",
+            [name, now, user_id],
+        )
 
     def delete(self, user_id: str) -> None:
         """Delete user + cascade their group memberships."""

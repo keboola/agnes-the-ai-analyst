@@ -105,6 +105,9 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
+    # Self-service display name edit (issue #1036) — triple-surface with
+    # PATCH /api/me/display-name + `agnes profile set-name`.
+    "profile_set_name",
 )
 
 
@@ -1404,6 +1407,32 @@ def register_foundation_tools(
                 f"{base_url}/api/data-apps/{slug}/logs",
                 headers=headers_fn(),
                 params={"tail": tail},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def profile_set_name(name: str) -> dict:
+        """Update your display name on the Agnes server (issue #1036).
+
+        Self-scoped — only the calling user's own row is updated. Email
+        stays read-only (it is the identity key from the auth provider).
+        Google Workspace sync only sets the name at first sign-in, so a
+        name set here is never overwritten by a subsequent sync run.
+
+        Args:
+            name: New display name (max 120 characters). Leading/trailing
+                  whitespace is stripped server-side.
+
+        Returns ``{"status": "ok", "name": "<new name>"}``.
+        Mirrors ``PATCH /api/me/display-name`` and ``agnes profile set-name``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.patch(
+                f"{base_url}/api/me/display-name",
+                json={"name": name},
+                headers=headers_fn(),
                 timeout=30,
             )
             r.raise_for_status()

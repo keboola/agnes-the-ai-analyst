@@ -17,6 +17,35 @@
 .group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
 .group-chip.is-custom      { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
 
+/* Inline display-name editor (issue #1036). */
+.pf-name-row      { display: flex; align-items: center; gap: 8px; }
+.pf-name-view     { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.pf-name-edit     { display: none; align-items: center; gap: 8px; flex: 1; }
+.pf-name-edit.visible { display: flex; }
+.pf-name-view.hidden  { display: none; }
+.pf-name-input    { font: inherit; font-size: 14px; flex: 1; max-width: 260px;
+                    padding: 5px 10px; border: 1px solid var(--ds-primary);
+                    border-radius: 8px; background: var(--ds-surface);
+                    color: var(--ds-text-primary); outline: none; }
+.pf-name-input:focus { box-shadow: 0 0 0 3px var(--ds-accent-info-bg); }
+.pf-edit-btn      { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+                    padding: 4px 10px; border-radius: 7px;
+                    border: 1px solid var(--ds-border);
+                    background: transparent; color: var(--ds-text-secondary); }
+.pf-edit-btn:hover { background: var(--ds-surface-dim); }
+.pf-save-btn      { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+                    padding: 4px 10px; border-radius: 7px;
+                    border: 1px solid var(--ds-primary);
+                    background: var(--ds-primary); color: var(--ds-text-inverse); }
+.pf-save-btn:hover { background: var(--ds-primary-dark); border-color: var(--ds-primary-dark); }
+.pf-cancel-btn    { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+                    padding: 4px 10px; border-radius: 7px;
+                    border: 1px solid var(--ds-border);
+                    background: transparent; color: var(--ds-text-secondary); }
+.pf-cancel-btn:hover { background: var(--ds-surface-dim); }
+.pf-name-err      { display: none; font-size: 12px; color: var(--ds-accent-warn-ink);
+                    margin-top: 4px; }
+
 /* Notification channels (moved off the retired /dashboard, issue 896). Self-
    contained + --ds-* tokens only, so it rides light/dark + paper themes and
    passes the design-system contract guard (only --ds-* tokens, no raw hex colours). */
@@ -73,7 +102,20 @@
       <span class="k">Email</span>
       <span class="v">{{ user.email or "—" }}</span>
       <span class="k">Name</span>
-      <span class="v">{{ user.name or "—" }}</span>
+      <span class="v pf-name-row" id="pf-name-cell">
+        <span class="pf-name-view" id="pf-name-view">
+          <span id="pf-name-text">{{ user.name or "—" }}</span>
+          <button type="button" class="pf-edit-btn" onclick="pfEditName()" aria-label="Edit display name">Edit</button>
+        </span>
+        <span class="pf-name-edit" id="pf-name-edit" aria-label="Edit display name form">
+          <input type="text" id="pf-name-input" class="pf-name-input"
+                 value="{{ user.name or '' }}" maxlength="120"
+                 aria-label="Display name" autocomplete="off">
+          <button type="button" class="pf-save-btn" id="pf-save-btn" onclick="pfSaveName()">Save</button>
+          <button type="button" class="pf-cancel-btn" onclick="pfCancelName()">Cancel</button>
+        </span>
+        <span class="pf-name-err" id="pf-name-err" role="alert"></span>
+      </span>
     </div>
   {% endcall %}
 
@@ -189,6 +231,53 @@
 </div>
 
 <script>
+// ── Display name inline edit (issue #1036) ──────────────────────────────────
+function pfEditName() {
+  document.getElementById("pf-name-view").classList.add("hidden");
+  const editEl = document.getElementById("pf-name-edit");
+  editEl.classList.add("visible");
+  const inp = document.getElementById("pf-name-input");
+  inp.focus();
+  inp.select();
+}
+
+function pfCancelName() {
+  document.getElementById("pf-name-edit").classList.remove("visible");
+  document.getElementById("pf-name-view").classList.remove("hidden");
+  document.getElementById("pf-name-err").style.display = "none";
+}
+
+async function pfSaveName() {
+  const inp = document.getElementById("pf-name-input");
+  const errEl = document.getElementById("pf-name-err");
+  const btn = document.getElementById("pf-save-btn");
+  const name = inp.value;
+  errEl.style.display = "none";
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  try {
+    const resp = await fetch("/api/me/display-name", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      const saved = data.name ?? name.trim();
+      document.getElementById("pf-name-text").textContent = saved || "—";
+      pfCancelName();
+      return;
+    }
+    errEl.textContent = data.detail || "Failed to save name.";
+    errEl.style.display = "block";
+  } catch (_e) {
+    errEl.textContent = "Network error. Please try again.";
+    errEl.style.display = "block";
+  }
+  btn.disabled = false;
+  btn.textContent = "Save";
+}
+
 (function () {
   const host = document.getElementById("effective-access-host");
   fetch("/api/me/effective-access", { credentials: "include" })
