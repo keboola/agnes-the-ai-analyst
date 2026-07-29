@@ -2540,9 +2540,18 @@ async def library_page(
                 )
             )
             items[-1]["publisher_kind"] = _publisher_kind
-            # Only the positive verification state travels to the view — there is
-            # no "Unverified" label anywhere in the product.
-            items[-1]["verified"] = (s.get("verification_state") or "none") == "verified"
+            _is_verified = (s.get("verification_state") or "none") == "verified"
+            items[-1]["verified"] = _is_verified
+            # Explicit trust level for the 3-state chip: 'org' for organization
+            # publishers, 'verified' for community items the instance has
+            # reviewed, 'unverified' for everything else. The unverified branch
+            # renders only when the opt-in flag is set (see template).
+            if _publisher_kind == "organization":
+                items[-1]["trust_level"] = "org"
+            elif _is_verified:
+                items[-1]["trust_level"] = "verified"
+            else:
+                items[-1]["trust_level"] = "unverified"
             # Stack membership: the install row, addable and removable by the
             # caller either way — including on their own entity.
             _inst = installed_store.get(s["id"])
@@ -2938,6 +2947,8 @@ async def library_page(
             }
         )
 
+    from app.instance_config import feature_enabled
+
     ctx = _build_context(
         request,
         user=user,
@@ -2951,6 +2962,13 @@ async def library_page(
         library_tags=library_tags,
         # Highlight target after "Save to Library" (see the builders).
         library_new_id=request.query_params.get("new") or "",
+        # Opt-in flag: when true, show amber chip for unverified Store items.
+        show_unverified_trust=feature_enabled(
+            "library",
+            "show_unverified_trust",
+            env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
+            default=False,
+        ),
     )
     return templates.TemplateResponse(request, "library.html", ctx)
 

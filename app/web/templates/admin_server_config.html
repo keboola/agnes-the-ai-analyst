@@ -374,9 +374,11 @@
     </div>
   </section>
 
-  <!-- Feature flags — read-only inventory (#1022). Toggling still happens
-       per-section above (or via an env var) — this panel is display-only,
-       fed by the `feature_flags` block in GET /api/admin/server-config. -->
+  <!-- Feature flags — read-only inventory (#1022). A flag is editable in
+       the UI only if its config section is registered as editable (currently
+       guardrails and library); all others must be set via their env var or
+       instance.yaml. This panel is display-only, fed by the `feature_flags`
+       block in GET /api/admin/server-config. -->
   <section class="cfg-section" id="feature-flags-section">
     <header>
       <div>
@@ -384,9 +386,10 @@
         <div class="section-help">
           Every flag registered in <code>app.instance_config.FEATURE_FLAGS</code>,
           resolved <strong>env var &gt; instance.yaml &gt; default</strong>
-          (see <code>docs/feature-flags.md</code>). Read-only — flip a flag
-          via its config section above, the admin overlay, or the listed
-          env var.
+          (see <code>docs/feature-flags.md</code>). Read-only summary — a flag
+          is editable in the UI only if its config section appears above
+          (currently <strong>guardrails</strong> and <strong>library</strong>);
+          others must be set via their env var or instance.yaml directly.
         </div>
       </div>
     </header>
@@ -467,6 +470,10 @@ const SECTION_META = {
   connectors: {
     title: "Connector params",
     help: "Per-tenant connector params served by /api/connectors/params and written into every analyst's .env by `agnes init`. Keys are connector slugs from the seed manifest (plus `globals`). Secret VALUES don't belong here — use *_ENV keys naming the server env var.",
+  },
+  library: {
+    title: "Library",
+    help: "Analyst Library display options. show_unverified_trust surfaces a muted amber 'Community' chip in the Owner column for user-authored Store items your organization hasn't verified — off by default; absence of a chip is the neutral default.",
   },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
@@ -970,7 +977,7 @@ function renderSection(section, payload, knownForSection) {
 
 const SECTION_GROUPS = [
   { label: "General",      sections: ["instance", "data_source", "email", "theme"] },
-  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace", "connectors"] },
+  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace", "connectors", "library"] },
   { label: "Services",     sections: [], bespoke: [
     { id: "chat-section",          title: "Cloud chat" },
     { id: "slack-secrets-section", title: "Slack bot secrets" },

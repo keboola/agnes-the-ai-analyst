@@ -115,14 +115,18 @@
               <td>{% if not c.is_folder %}<span class="lib-typechip">{{ c.type_label }}</span>{% endif %}</td>
               <td>
                 <span class="lib-owner"><span class="lib-owner-name">{{ c.owner_label }}</span>
-                  {# v104 trust chip. At most one, and never a negative: an
-                     "Unverified" label would sit on nearly every row on an
-                     instance with no reviewer and read as a warning about the
-                     whole Library. Absence of a chip is the neutral default. #}
+                  {# v104 trust chip — three levels, one of which is opt-in:
+                     org (gray) and verified (green) always render when present;
+                     unverified (amber) renders only when show_unverified_trust
+                     is enabled (library.show_unverified_trust in instance.yaml,
+                     or AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST env var). Absence of
+                     a chip remains the neutral default for unverified items. #}
                   {% if c.publisher_kind == 'organization' %}
                     <span class="lib-trust lib-trust--org">Organization</span>
                   {% elif c.verified %}
                     <span class="lib-trust lib-trust--verified" title="Verified by your organization">Verified</span>
+                  {% elif c.trust_level == 'unverified' and show_unverified_trust %}
+                    <span class="lib-trust lib-trust--unverified" title="Community-contributed, not yet verified by your organization">Community &#x3F;</span>
                   {% endif %}
                 </span>
               </td>
@@ -723,6 +727,7 @@
   .lib-trust { flex-shrink: 0; padding: 1px 7px; border-radius: var(--ds-radius-pill); border: 1px solid transparent; font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
   .lib-trust--org { background: var(--ds-surface-sunken); border-color: var(--ds-border); color: var(--ds-text-secondary); }
   .lib-trust--verified { background: var(--ds-accent-success-bg); border-color: var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
+  .lib-trust--unverified { background: var(--ds-accent-warn-bg); border-color: var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink); }
 
   /* Visibility chip — Private (quiet) · Shared / Workspace (primary tint).
      Never colour-only: each state carries its own word. */

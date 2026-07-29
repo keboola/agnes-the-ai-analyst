@@ -305,6 +305,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "corporate_memory",
     "materialize",
     "guardrails",
+    "library",
     "marketplace",
     "connectors",
 )
@@ -911,6 +912,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "before the reaper flips it to `review_error`. Default "
                 "1800 (30 min) comfortably exceeds Sonnet / Opus p99 "
                 "wall time. 0 disables the reaper."
+            ),
+        },
+    },
+    "library": {
+        "show_unverified_trust": {
+            "kind": "bool",
+            "default": False,
+            "hint": (
+                "Show a muted amber 'Community' trust chip in the Library's "
+                "Owner column for user-authored Store items your organization "
+                "has not yet verified. Off by default — absence of a chip is "
+                "the neutral default. Organization and Verified chips are "
+                "unaffected."
             ),
         },
     },
