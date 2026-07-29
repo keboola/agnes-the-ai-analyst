@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.17] - 2026-07-29
+
+### Added
+
+### Changed
+
+### Fixed
+
 - `agnes pull` empty-manifest hint no longer recommends the retired per-table grant flow (`agnes admin grant`); it now points at the post-#356 data-package path — `agnes stack browse` + `agnes stack add data_package <id>` — while keeping the "nothing registered yet" explanation.
 
 ### Removed
