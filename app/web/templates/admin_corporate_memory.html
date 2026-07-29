@@ -2229,8 +2229,16 @@
     }
 
     async function deleteMemoryDomain(id, name) {
-        // v54: soft delete + Undo toast. confirm() removed — the toast's
-        // 10s Undo button is the recovery affordance.
+        // Soft delete + Undo toast. An upfront confirm still guards it —
+        // deleting a domain drops its /memory/d/<slug> page, its
+        // knowledge_item_domains rows and its resource_grants, and the
+        // 10s toast is easy to miss.
+        if (!await confirmModal({
+            title: 'Delete memory domain?',
+            message: '"' + name + '" and its resource grants will be removed. You can undo for 10 seconds.',
+            confirmText: 'Delete',
+            danger: true,
+        })) return;
         try {
             const r = await fetch('/api/admin/memory-domains/' + encodeURIComponent(id),
                 { method: 'DELETE', credentials: 'same-origin' });

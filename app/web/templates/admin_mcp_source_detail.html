@@ -570,6 +570,12 @@ document.getElementById("set-secret-btn").addEventListener("click", async () => 
 });
 
 document.getElementById("clear-secret-btn").addEventListener("click", async () => {
+  if (!await confirmModal({
+    title: "Clear vault secret?",
+    message: "The stored secret will be removed. This source will fall back to its host env var (if any).",
+    confirmText: "Clear",
+    danger: true,
+  })) return;
   const btn = document.getElementById("clear-secret-btn");
   document.getElementById("secret-result").className = "test-result";
   btn.disabled = true;

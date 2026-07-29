@@ -250,6 +250,7 @@ function renderGroups() {
     const li = document.createElement("li");
     li.className = "gr-grant-row";
     li.dataset.groupId = g.id;
+    li.dataset.groupName = g.name;
     li.innerHTML = `
       <input type="checkbox" ${grantedIds.has(g.id) ? "checked" : ""} aria-label="Grant ${esc(g.name)}">
       <div class="gr-group-meta">
@@ -281,6 +282,19 @@ document.getElementById("group-list").addEventListener("click", async (e) => {
     checkbox.checked = !checkbox.checked;
   }
   const grant = checkbox.checked;
+  if (!grant) {
+    // Revoking — confirm before dropping the grant. Undo the visual
+    // uncheck if the admin cancels.
+    if (!await confirmModal({
+      title: "Revoke tool grant?",
+      message: `"${row.dataset.groupName}" will lose access to this tool.`,
+      confirmText: "Revoke",
+      danger: true,
+    })) {
+      checkbox.checked = true;
+      return;
+    }
+  }
   // Optimistic UI — flip the set, re-render the count, then call the API.
   // On failure, revert.
   if (grant) grantedIds.add(groupId); else grantedIds.delete(groupId);

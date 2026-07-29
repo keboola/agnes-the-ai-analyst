@@ -120,6 +120,23 @@
     if (btn.disabled) return;
     const adding = btn.dataset.state !== 'in';
     const kind = btn.dataset.toggleKind === 'download' ? 'download' : 'stack';
+    // Removals need a confirm. Two flavours: a 'stack' remove is a
+    // destructive uninstall (the resource leaves the stack), a 'download'
+    // remove only drops the on-disk local copy (re-downloadable), so the
+    // copy tailors severity/wording per the two cases.
+    if (!adding && typeof window.confirmModal === 'function') {
+      const card = btn.closest('.cc-card, [data-stack-row]');
+      const nameEl = card && card.querySelector('.cc-title');
+      const name = nameEl ? nameEl.textContent.trim() : 'this item';
+      const opts = kind === 'download'
+        ? { title: 'Remove local copy?',
+            message: '"' + name + '" stays in your stack — only the downloaded copy on disk is removed. You can download it again anytime.',
+            confirmText: 'Remove local copy', danger: false }
+        : { title: 'Remove from stack?',
+            message: '"' + name + '" will be removed from your stack.',
+            confirmText: 'Remove', danger: true };
+      if (!await window.confirmModal(opts)) return;
+    }
     btn.disabled = true;
     try {
       let resp;

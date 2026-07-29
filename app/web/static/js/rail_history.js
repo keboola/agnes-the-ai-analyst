@@ -208,6 +208,12 @@
     del.innerHTML = "&times;";
     del.addEventListener("click", async (e) => {
       e.stopPropagation();
+      if (typeof window.confirmModal === "function" && !await window.confirmModal({
+        title: "Delete conversation?",
+        message: `"${s.title || "this conversation"}" will be permanently deleted.`,
+        confirmText: "Delete",
+        danger: true,
+      })) return;
       await deleteSession(s.id);
     });
     li.appendChild(del);
