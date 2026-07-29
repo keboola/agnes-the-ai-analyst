@@ -7,6 +7,9 @@ Each subcommand maps 1:1 to one HTTP endpoint:
   - ``add``     → ``POST /api/admin/source-connections`` + ``PUT /{id}/secret``
   - ``remove``  → ``DELETE /api/admin/source-connections/{id}``
   - ``test``    → ``POST /api/admin/source-connections/{id}/test``
+  - ``secret``  → ``PUT /{id}/secret`` (or ``DELETE /{id}/secret?kind=``
+                  with ``--remove``); ``--kind storage|master`` selects which
+                  vault secret (``master`` = semantic-layer owner token)
 """
 
 from __future__ import annotations
@@ -112,6 +115,30 @@ def remove_connection(
     if resp.status_code not in (200, 204):
         _fail(resp)
     typer.echo(f"Deleted connection {connection_id}")
+
+
+@admin_connection_app.command("secret")
+def set_secret(
+    connection_id: str = typer.Argument(..., help="Connection id"),
+    kind: str = typer.Option("storage", "--kind", help="storage | master (master = semantic-layer owner token)"),
+    remove: bool = typer.Option(False, "--remove", help="Clear the secret instead of setting it"),
+):
+    """Set or clear a connection's vault secret. The token is read from a
+    hidden prompt — never pass secrets on the command line."""
+    if kind not in ("storage", "master"):
+        typer.echo("Error: --kind must be storage or master", err=True)
+        raise typer.Exit(1)
+    if remove:
+        resp = api_delete(f"/api/admin/source-connections/{connection_id}/secret", params={"kind": kind})
+        if resp.status_code not in (200, 204):
+            _fail(resp)
+        typer.echo(f"Cleared {kind} secret for {connection_id}")
+        return
+    token = typer.prompt("Token", hide_input=True)
+    resp = api_put(f"/api/admin/source-connections/{connection_id}/secret", json={"value": token, "kind": kind})
+    if resp.status_code not in (200, 204):
+        _fail(resp)
+    typer.echo(f"Stored {kind} secret for {connection_id}")
 
 
 @admin_connection_app.command("test")

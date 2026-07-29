@@ -223,6 +223,56 @@ class TestLastRefreshSummary:
         assert summary["last_status"] == "error"
         assert "boom" in summary["last_result"]
 
+    def test_per_source_breakdown_flows_through_response(self, seeded_app):
+        """sync_semantic_layer() now returns a top-level 'sources' list with
+        per-source dicts (connection_id, name, status, counters, optional error).
+        The endpoint must pass this through unchanged to the response and record
+        it in the summary (regression guard: the dict passthrough at
+        _record_completion and response return must not lose 'sources')."""
+        from app.api.keboola_semantic_layer_refresh import get_last_refresh_summary
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_result = {
+            "status": "ok",
+            "created_or_updated": 5,
+            "pruned": 1,
+            "sources": [
+                {
+                    "connection_id": "conn_1",
+                    "name": "S3 Source",
+                    "status": "ok",
+                    "created_or_updated": 3,
+                    "pruned": 0,
+                },
+                {
+                    "connection_id": "conn_2",
+                    "name": "GCS Source",
+                    "status": "ok",
+                    "created_or_updated": 2,
+                    "pruned": 1,
+                },
+            ],
+        }
+        with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
+            r = c.post(
+                "/api/admin/run-keboola-semantic-layer-refresh",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Verify response contains sources list
+        assert "sources" in body
+        assert len(body["sources"]) == 2
+        assert body["sources"][0]["connection_id"] == "conn_1"
+        assert body["sources"][1]["name"] == "GCS Source"
+
+        # Verify summary also preserves sources
+        summary = get_last_refresh_summary()
+        assert summary["last_status"] == "ok"
+        assert "sources" in summary["last_result"]
+        assert len(summary["last_result"]["sources"]) == 2
+
 
 def endpoint_module_state():
     from app.api import keboola_semantic_layer_refresh as endpoint_module

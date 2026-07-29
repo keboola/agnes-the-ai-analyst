@@ -13,11 +13,18 @@ Covers:
 - non-admin → 403
 - set secret → 204 (vault key required)
 - set secret without vault key → 409
+- master-token vault slot (kind=master): keboola-only, verify_token preflight,
+  storage-api-outage redaction, cleanup on connection delete
 """
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from cryptography.fernet import Fernet
+
+from app.secrets_vault import _reset_ephemeral_key_for_tests
 
 
 def _auth(token: str) -> dict:
@@ -542,3 +549,164 @@ class TestSourceConnectionsTables:
         token = seeded_app["analyst_token"]
         resp = c.get(f"{BASE}/some-id/tables", headers=_auth(token))
         assert resp.status_code == 403
+
+
+class TestSourceConnectionsMasterSecret:
+    """PUT/DELETE .../secret with kind=master — Keboola master-token vault slot.
+
+    Distinct from the plain ``kind=storage`` secret exercised by
+    ``TestSourceConnectionsSecret``: this is validated at save time via a
+    Storage API ``verify_token`` preflight (keboola-only, must be a master
+    token), and stored under a separate vault key (``master_secret_key``).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stable_vault_key(self, monkeypatch):
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _create_keboola(self, c, token, *, name="test-master-kbc"):
+        resp = c.post(
+            BASE,
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    def test_master_secret_rejected_for_non_keboola(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={
+                "name": "test-master-bq",
+                "source_type": "bigquery",
+                "config": {"project_id": "p"},
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        conn_id = resp.json()["id"]
+
+        resp2 = c.put(
+            f"{BASE}/{conn_id}/secret",
+            json={"value": "some-master-token", "kind": "master"},
+            headers=_auth(token),
+        )
+        assert resp2.status_code == 400
+        assert resp2.json()["detail"] == "master_token_only_for_keboola"
+
+    def test_master_secret_rejects_non_master_token(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-nonmaster")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"isMasterToken": False},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "not-a-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+        assert "master" in resp.json()["detail"].lower()
+
+    def test_master_secret_stores_and_reports(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-store")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"isMasterToken": True},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "a-real-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204
+
+        detail = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert detail["has_master_secret"] is True
+        assert detail["has_secret"] is False
+
+        resp2 = c.delete(
+            f"{BASE}/{conn_id}/secret",
+            params={"kind": "master"},
+            headers=_auth(token),
+        )
+        assert resp2.status_code == 204
+
+        detail2 = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert detail2["has_master_secret"] is False
+        assert detail2["has_secret"] is False
+
+    def test_master_secret_storage_api_outage(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-outage")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        # The candidate token must appear in the simulated failure so this
+        # assertion actually exercises the client's redaction rather than
+        # trivially passing because the token was never in the message.
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=StorageApiError("boom: token=super-secret-master-token"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "super-secret-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 502
+        assert "super-secret-master-token" not in resp.text
+
+    def test_connection_delete_clears_master_secret(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-delete-conn")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"isMasterToken": True},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "a-master-token-to-be-deleted", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204
+
+        from app.api.admin_source_connections import master_secret_key
+        from src.repositories import connection_secrets_repo
+
+        assert connection_secrets_repo().has(master_secret_key(conn_id)) is True
+
+        resp2 = c.delete(f"{BASE}/{conn_id}", headers=_auth(token))
+        assert resp2.status_code == 204
+
+        assert connection_secrets_repo().has(master_secret_key(conn_id)) is False
