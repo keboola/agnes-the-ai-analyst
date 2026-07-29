@@ -698,6 +698,12 @@ def _fake_clients(projects: dict):
     def metastore_factory(url, token):
         project = projects[token]
         client = MagicMock()
+        if project.get("explode"):
+            # An unforeseen failure (client bug / unexpected upstream shape) —
+            # NOT one of the MetastoreApiError/RequestException types the
+            # per-source body converts into a structured error.
+            client.list_items.side_effect = RuntimeError("upstream client exploded")
+            return client
         client.list_items.side_effect = lambda item_type, model_uuid=None: {
             "semantic-model": [_model_item(project["model_uuid"])],
             "semantic-dataset": [],
@@ -960,6 +966,122 @@ class TestSyncSemanticLayerMultiSource:
         assert row["definition"] == "Monthly recurring revenue (project A)."
         assert glossary_repo().get("keboola/model-b/mrr") is None
 
+    def test_conflict_skip_does_not_prune_the_sources_own_row(self, e2e_env, vault_key):
+        """A conflict-skipped metric is still published upstream — it must not
+        be treated as "gone" and prune the source's own existing row.
+
+        Reproduces the probe scenario: a foreign row wins ``find_by_name``
+        (ids sort before this source's own id), so source B skips the create
+        while its previously-written ``keboola/model-b/shared`` row is still
+        inside B's prune scope. B also publishes a second, non-conflicting
+        metric so the zero-usable-metrics safety valve does not mask the
+        prune loop.
+        """
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        conn_a = _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://b.keboola.com", token="tok-b")
+
+        projects = {
+            "tok-a": {"owner_id": 111, "model_uuid": "model-a", "metrics": []},
+            "tok-b": {
+                "owner_id": 222,
+                "model_uuid": "model-b",
+                "metrics": [
+                    _metric_item("shared", "COUNT(*)", "in.c-example_source.orders"),
+                    _metric_item("b_ok", "COUNT(*)", "in.c-example_source.orders"),
+                ],
+            },
+        }
+        _run_sync(projects)
+        assert metric_repo().get("keboola/model-b/shared")["source_ref"] == "conn-b"
+
+        # Source A now also holds the name "shared", under an id that sorts
+        # first — so B's next run loses the find_by_name lookup.
+        metric_repo().create(
+            id="finance/shared",
+            name="shared",
+            display_name="shared",
+            category="keboola",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+            source_ref=conn_a,
+        )
+
+        result = _run_sync(projects)
+
+        assert result["skipped_conflict"] == 1
+        assert result["pruned"] == 0
+        assert metric_repo().get("keboola/model-b/shared") is not None
+        assert metric_repo().get("keboola/model-b/b_ok") is not None
+        assert metric_repo().get("finance/shared") is not None
+
+    def test_conflict_skip_does_not_prune_the_sources_own_glossary_row(self, e2e_env, vault_key):
+        """Glossary mirror of the metric retention case."""
+        from src.repositories import glossary_repo
+
+        conn_a = _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://b.keboola.com", token="tok-b")
+
+        projects = {
+            "tok-a": {"owner_id": 111, "model_uuid": "model-a", "glossary": []},
+            "tok-b": {
+                "owner_id": 222,
+                "model_uuid": "model-b",
+                # The second term keeps seen_glossary_ids non-empty so the
+                # zero-usable-terms safety valve cannot mask the prune loop.
+                "glossary": [_glossary_item("MRR", "def b"), _glossary_item("ARR", "def arr")],
+            },
+        }
+        _run_sync(projects)
+        assert glossary_repo().get("keboola/model-b/mrr")["source_ref"] == "conn-b"
+
+        glossary_repo().create(
+            id="finance/mrr",
+            term="MRR",
+            definition="def a",
+            source="keboola_semantic_layer",
+            source_ref=conn_a,
+        )
+
+        result = _run_sync(projects)
+
+        assert result["skipped_conflict"] == 1
+        assert result["glossary_pruned"] == 0
+        assert glossary_repo().get("keboola/model-b/mrr") is not None
+        assert glossary_repo().get("keboola/model-b/arr") is not None
+        assert glossary_repo().get("finance/mrr") is not None
+
+    def test_unexpected_source_error_is_isolated(self, e2e_env, vault_key):
+        """An exception that is not MasterTokenRequiredError (and not one of
+        the API error types the per-source body handles) must be recorded
+        against that source, not abort the sources after it."""
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://b.keboola.com", token="tok-b")
+
+        result = _run_sync(
+            {
+                "tok-a": {"owner_id": 111, "model_uuid": "model-a", "explode": True},
+                "tok-b": {
+                    "owner_id": 222,
+                    "model_uuid": "model-b",
+                    "metrics": [_metric_item("b1", "COUNT(*)", "in.c-example_source.orders")],
+                },
+            }
+        )
+
+        assert result["status"] == "ok"
+        assert result["created_or_updated"] == 1
+        by_conn = {s["connection_id"]: s for s in result["sources"]}
+        assert by_conn["conn-a"]["status"] == "error"
+        assert "exploded" in by_conn["conn-a"]["error"]
+        assert by_conn["conn-b"]["status"] == "ok"
+        assert metric_repo().get("keboola/model-b/b1") is not None
+
     def test_duplicate_project_deduped(self, e2e_env, vault_key):
         from src.repositories import metric_repo
 
@@ -1042,6 +1164,93 @@ class TestSyncSemanticLayerMultiSource:
         assert metric_repo().get("keboola/model-1/stale") is None
         assert metric_repo().get("keboola/model-x/foreign") is not None
         assert metric_repo().get("keboola/model-1/a") is not None
+
+    def _run_fallback_sync(self, metric_name: str = "a"):
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True, "owner": {"id": 1}}
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = _metastore_side_effect(
+            metric_items=[_metric_item(metric_name, 'SUM("amount")', "in.c-example_source.orders")]
+        )
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            return sync_semantic_layer()
+
+    def test_fallback_env_credentials_do_not_claim_the_default_connection(self, e2e_env, vault_key, monkeypatch):
+        """Legacy env pair + a default connection present: the env pair has no
+        connection identity, so rows are stamped NULL (spec §3 — the default
+        connection id is stamped only when the credentials came FROM that
+        connection). The prune scope still covers NULL *or* the default id."""
+        from src.repositories import connection_secrets_repo, metric_repo, source_connections_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        source_connections_repo().create(
+            id="conn-default",
+            name="default-conn",
+            source_type="keboola",
+            config={"stack_url": "https://named.keboola.com"},
+            is_default=True,
+            created_by="test",
+        )
+        connection_secrets_repo().upsert("conn-default", "plain-token")  # regular slot, NOT master
+        monkeypatch.setenv("KEBOOLA_STACK_URL", "https://connection.keboola.com")
+        monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "legacy-tok")
+
+        # Stale row previously owned by the default connection, plus another
+        # connection's row that must survive.
+        metric_repo().create(
+            id="keboola/model-1/stale_default",
+            name="stale_default",
+            display_name="stale_default",
+            category="keboola",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+            source_ref="conn-default",
+        )
+        metric_repo().create(
+            id="keboola/model-x/foreign",
+            name="foreign",
+            display_name="foreign",
+            category="keboola",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+            source_ref="other-conn",
+        )
+
+        result = self._run_fallback_sync()
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/a")["source_ref"] is None
+        # Prune scope = NULL or default connection id.
+        assert result["pruned"] == 1
+        assert metric_repo().get("keboola/model-1/stale_default") is None
+        assert metric_repo().get("keboola/model-x/foreign") is not None
+
+    def test_fallback_connection_credentials_stamp_the_default_connection(self, e2e_env, vault_key, monkeypatch):
+        """Same fallback path, but the credentials came from the default
+        connection itself — those rows DO carry its id."""
+        from src.repositories import connection_secrets_repo, metric_repo, source_connections_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        source_connections_repo().create(
+            id="conn-default",
+            name="default-conn",
+            source_type="keboola",
+            config={"stack_url": "https://named.keboola.com"},
+            is_default=True,
+            created_by="test",
+        )
+        connection_secrets_repo().upsert("conn-default", "plain-token")  # regular slot, NOT master
+
+        result = self._run_fallback_sync()
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/a")["source_ref"] == "conn-default"
+        assert [s["connection_id"] for s in result["sources"]] == ["conn-default"]
 
 
 def test_metric_definitions_has_source_ref_column(tmp_path):
