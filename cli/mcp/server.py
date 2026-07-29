@@ -36,7 +36,7 @@ from mcp.server.fastmcp import FastMCP
 from cli.client import api_get
 from cli.config import get_server_url, get_token
 from cli.query_hints import missing_table, remote_table_hint
-from cli.v2_client import V2ClientError, api_delete, api_get_json, api_post_json
+from cli.v2_client import V2ClientError, api_delete, api_get_json, api_patch_json, api_post_json
 from src.duckdb_conn import _open_duckdb
 
 mcp = FastMCP(
@@ -570,6 +570,27 @@ def data_app_logs(slug: str, tail: int = 200) -> dict:
         return api_get_json(f"/api/data-apps/{slug}/logs", tail=tail)
     except V2ClientError as exc:
         raise ValueError(_mcp_error(f"data_app_logs({slug})", exc)) from exc
+
+
+@mcp.tool()
+def data_app_set_description(slug: str, description: str) -> dict:
+    """Set the admin description override on a managed (linked) data app.
+
+    Linked apps are org resources whose ``description`` the ingest sync
+    refreshes; this pins a human-authored description the sync won't clobber.
+    Owner/Admin only; managed rows only (a 409 comes back for a hosted app).
+
+    Args:
+        slug:        The app's slug.
+        description: The description to pin (empty string clears it).
+
+    Returns the updated app dict. Mirrors ``PATCH /api/data-apps/{slug}`` and
+    ``agnes app set-description``.
+    """
+    try:
+        return api_patch_json(f"/api/data-apps/{slug}", {"description": description})
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_set_description({slug})", exc)) from exc
 
 
 @mcp.tool()

@@ -1,7 +1,7 @@
 """HTTP client helpers for /api/v2/* endpoints (CLI side)."""
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 import io
 
@@ -81,6 +81,16 @@ def api_put_json(path: str, payload: dict) -> dict:
     return r.json()
 
 
+def api_patch_json(path: str, payload: dict) -> dict:
+    url = f"{get_server_url().rstrip('/')}{path}"
+    r = httpx.patch(url, json=payload, headers=_headers(), timeout=30)
+    if r.status_code >= 400:
+        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    if not r.content:
+        return {}
+    return r.json()
+
+
 def api_post_multipart(
     path: str,
     *,
@@ -95,8 +105,11 @@ def api_post_multipart(
     """
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.post(
-        url, files=files or None, data=data or None,
-        headers=_headers(), timeout=600,
+        url,
+        files=files or None,
+        data=data or None,
+        headers=_headers(),
+        timeout=600,
     )
     if r.status_code >= 400:
         raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
@@ -111,8 +124,11 @@ def api_put_multipart(
 ) -> dict:
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.put(
-        url, files=files or None, data=data or None,
-        headers=_headers(), timeout=600,
+        url,
+        files=files or None,
+        data=data or None,
+        headers=_headers(),
+        timeout=600,
     )
     if r.status_code >= 400:
         raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
@@ -126,10 +142,13 @@ def api_get_stream(path: str, dest: "io.IOBase | str", **params) -> int:
     Returns the byte count written. Raises V2ClientError on non-2xx with
     the parsed error body.
     """
-    import io as _io
     url = f"{get_server_url().rstrip('/')}{path}"
     with httpx.stream(
-        "GET", url, headers=_headers(), params=params or None, timeout=600,
+        "GET",
+        url,
+        headers=_headers(),
+        params=params or None,
+        timeout=600,
     ) as r:
         if r.status_code >= 400:
             # Read the (likely small) error body before raising.
