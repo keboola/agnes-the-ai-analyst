@@ -651,7 +651,7 @@ async function renderMyConnection() {
     if (!r.ok) throw new Error(r.statusText);
     const st = await r.json();
     if (st.has_secret) {
-      el.textContent = "🔗 Connected" + (st.updated_at ? ` (since ${st.updated_at.slice(0, 10)})` : "");
+      el.textContent = "Connected" + (st.updated_at ? ` (since ${st.updated_at.slice(0, 10)})` : "");
       el.style.color = "#166534";
     } else {
       el.textContent = "Not connected — Introspect will run without your credential";

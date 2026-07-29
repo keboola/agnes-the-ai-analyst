@@ -69,8 +69,11 @@ def _corpus_file_owner(resource_id: str) -> Optional[str]:
 def _agent_owner(resource_id: str) -> Optional[str]:
     from src.repositories import agents_repo
 
-    row = agents_repo().get(resource_id)
-    return row.get("created_by") if row else None
+    # main's agents table is canonical after the combine: owner is
+    # ``owner_user_id`` (the builder's ``created_by`` maps to it), and the
+    # lookup is ``get_by_id`` (includes soft-deleted, fine for owner checks).
+    row = agents_repo().get_by_id(resource_id)
+    return row.get("owner_user_id") if row else None
 
 
 _OWNER_RESOLVERS[ResourceType.COLLECTION.value] = _collection_owner

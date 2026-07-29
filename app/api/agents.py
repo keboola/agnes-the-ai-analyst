@@ -241,7 +241,11 @@ async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_us
     uid = user["id"]
     name = (payload.name or "").strip()
     slug = _unique_slug(_auto_slug(name or "agent"), uid)
-    agent_id = str(uuid.uuid4())
+    # Builder ids carry the ``agt_`` prefix (the redesign's convention, asserted
+    # by the Library sharing tests) so a builder-authored agent is
+    # distinguishable at a glance from the agent-as-API rows that main's
+    # get_or_create_default seeds with a bare UUID.
+    agent_id = "agt_" + uuid.uuid4().hex
     agents_repo().create(
         id=agent_id,
         owner_user_id=uid,
@@ -253,7 +257,9 @@ async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_us
         greeting=payload.greeting or "",
         knowledge=json.dumps(payload.knowledge or []),
         plugins=json.dumps(payload.plugins or []),
-        surfaces=json.dumps(payload.surfaces or {}),
+        # A new agent is web-enabled by default (the builder's convention); an
+        # explicit surfaces payload overrides it.
+        surfaces=json.dumps(payload.surfaces if payload.surfaces is not None else {"web": True}),
         status=payload.status or "draft",
     )
     logger.info("agent created id=%s slug=%s by=%s", agent_id, slug, user.get("email"))

@@ -86,6 +86,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Knob | Env override | `instance.yaml` path | Default | Resolver |
 |------|--------------|----------------------|---------|----------|
 | Landing route after auth (`/home` vs `/dashboard`) | `AGNES_HOME_ROUTE` | `instance.home_route` | `/dashboard` | `get_home_route()` |
+| Offer the org-verification axis on the store/marketplace (Verify / Request changes / Request verification + the Verified chip). Off means the whole vocabulary is hidden — publisher attribution still carries accountability. | `AGNES_STORE_VERIFICATION_ENABLED` | `store.verification_enabled` | `false` | `get_store_verification_enabled()` |
 | Show the "turn on auto-accept mode" install block | `AGNES_HOME_SHOW_AUTOMODE` | `instance.home.show_automode` | `true` | `get_home_automode_visibility()` |
 | Show the homepage status frame (sync/sessions/tokens) | `AGNES_HOME_SHOW_STATUS_FRAME` | `instance.home.show_status_frame` | `true` | `get_home_status_frame_visibility()` |
 | Operator-authored Overview HTML on `/home` | `AGNES_INSTANCE_OVERVIEW` | `instance.overview` | `""` (hidden) | `get_instance_overview()` |
