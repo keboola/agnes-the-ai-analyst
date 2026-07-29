@@ -2835,19 +2835,22 @@ async def library_page(
     library_stack_toggle = 0 < library_in_stack_count < len(items)
 
     # ── Grouping: one collapsible section per type ─────────────────────────
-    # Section order is deliberate — the caller's OWN things first (collections,
-    # then media/documents, then what they authored), and the resources granted
-    # to them last, so the page opens on what they made rather than on inherited
-    # workspace inventory. Unlisted types fall to the end, alphabetically.
+    # Section order is deliberate, and reads outward from what an agent is built
+    # on: the governed DATA first, then the capabilities that act on it
+    # (plugins, then the skills they bundle, then the agents and recipes made
+    # from both), then the caller's own files, and curated Memory last. The
+    # sections render folded, so this order is what the caller actually reads on
+    # arrival — a list of what the Library holds — which is why the shared,
+    # organization-wide inventory leads and personal uploads sit below it.
+    # Unlisted types fall to the end, alphabetically.
     _SECTION_ORDER = [
-        # Files (loose files + collections-as-folders) lead: they're what the
-        # caller put there themselves.
-        "files",
-        "skill",
+        "data_package",
         "plugin",
+        "skill",
         "agent",
         "recipe",
-        "data_package",
+        # Loose files + collections-as-folders.
+        "files",
         "memory_domain",
     ]
     grouped: dict = {}

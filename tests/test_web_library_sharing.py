@@ -348,7 +348,7 @@ def test_library_offers_grid_view_toggle(seeded_app):
 
     # One table + one grid per GROUP, both inside the group's own section, so the
     # view toggle and the grouping compose (there is no page-level pair).
-    groups = re.findall(r'<section class="fbar-group lib-group" data-lib-sec="([^"]+)"', text)
+    groups = re.findall(r'<section class="fbar-group lib-group[^"]*" data-lib-sec="([^"]+)"', text)
     assert groups
     assert text.count('class="lib-tablewrap"') == len(groups)
     assert text.count('class="fbar-grid"') == len(groups)

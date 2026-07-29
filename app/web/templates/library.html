@@ -8,9 +8,13 @@
    filter_toolbar.css), hosted here by a sticky `.fbar-groupband` block. It heads
    the group's table AND its card grid, so a group announces itself identically
    whichever view is on. `data-sec-toggle` carries the group key: that is what
-   the persisted collapse state is written under. #}
+   the persisted collapse state is written under.
+
+   Rendered COLLAPSED, matching the page's default: the script re-opens whatever
+   the caller has stored, and doing it the other way round would flash the whole
+   unfolded list before folding it away. #}
 {% macro group_toggle(sec) %}
-<button type="button" class="fbar-grouptoggle" data-sec-toggle="{{ sec.key }}" aria-expanded="true">
+<button type="button" class="fbar-grouptoggle" data-sec-toggle="{{ sec.key }}" aria-expanded="false">
   <svg class="fbar-group__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
   <span class="lib-sec-icon">{{ kind_glyph(sec.glyph) }}</span>
   <span class="fbar-group__title">{{ sec.label }}</span>
@@ -1035,7 +1039,7 @@
      rows — inherits it, so one attribute colours the whole group. #}
   <div class="lib-list">
   {% for sec in library_sections %}
-  <section class="fbar-group lib-group" data-lib-sec="{{ sec.key }}"
+  <section class="fbar-group lib-group is-collapsed" data-lib-sec="{{ sec.key }}"
            style="--lib-kind: var(--ds-kind-{{ sec.kind }}); --lib-kind-soft: var(--ds-kind-{{ sec.kind }}-soft);">
     {# The band is the block host of the shared component (`.fbar-groupband`),
        sticky at the top of its own section so the group you are reading stays
@@ -1546,18 +1550,28 @@
   }
   refreshCategoryCounts();
 
-  // ── Collapsible type sections. Collapse state persists per type so a user
-  //    who always folds "Data packages" keeps it folded. ──
+  // ── Collapsible type sections, FOLDED by default. ──
+  //    The Library spans six kinds; opened flat it is a wall of rows you have
+  //    to scroll past to learn what is even in here. Folded, the first screen
+  //    is the inventory itself — one named, counted band per kind — and opening
+  //    one is a deliberate act. Collapse state persists per type, so a caller
+  //    who keeps "Data packages" open keeps it open.
+  //
+  //    `undefined` means COLLAPSED, which is why the state is read through
+  //    `isCollapsed` rather than off the object: a plain `!!collapsed[key]`
+  //    would treat "never touched" as open, and every new kind — and every
+  //    first visit — would land expanded again.
   const COLLAPSE_KEY = 'lib-collapsed';
   let collapsed = {};
   try { collapsed = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}') || {}; } catch (_) { collapsed = {}; }
+  const isCollapsed = (key) => (key in collapsed ? !!collapsed[key] : true);
   //    Keyed off the toggle's own `data-sec-toggle` value: the group element is
   //    the single host of both views, and the key is what the persisted state is
   //    written under.
   function applyCollapsed() {
     document.querySelectorAll('[data-lib-sec]').forEach(sec => {
       const key = sec.dataset.libSec;
-      const on = !!collapsed[key];
+      const on = isCollapsed(key);
       sec.classList.toggle('is-collapsed', on);
       const head = sec.querySelector('[data-sec-toggle]');
       if (head) head.setAttribute('aria-expanded', on ? 'false' : 'true');
@@ -1568,7 +1582,7 @@
     if (!head) return;
     const key = head.dataset.secToggle;
     if (!key) return;
-    collapsed[key] = !collapsed[key];
+    collapsed[key] = !isCollapsed(key);
     try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed)); } catch (_) { /* private mode */ }
     applyCollapsed();
   });
