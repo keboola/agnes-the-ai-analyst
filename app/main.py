@@ -364,7 +364,6 @@ from app.api.data_apps import router as data_apps_router
 from app.api.data_apps_git import router as data_apps_git_router
 from app.api.data_apps_proxy import router as data_apps_proxy_router
 from app.web.router import router as web_router
-from app.web.agents_page import router as agents_page_router
 from app.web.router import apps_web_router as data_apps_web_router
 from app.api.chat import router as chat_router
 from app.api.chat_uploads import router as chat_uploads_router
@@ -2370,10 +2369,12 @@ def create_app() -> FastAPI:
     for _plugin_router in _load_plugin_routers(_get_value("plugins", "admin_routers", default=[]) or []):
         app.include_router(_plugin_router)
 
-    # /agents — minimal builder page (Task 10). Own module (like
-    # app/api/agents_admin.py), so must be mounted before web_router's
-    # catch-all route below, same as the plugin/docs routers above.
-    app.include_router(agents_page_router)
+    # /agents is served by the paper-theme redesign builder page in
+    # web_router (app/web/router.py). main's minimal agents_page.py builder
+    # was retired at the merge — the two branches shipped competing /agents
+    # pages, and the redesign one (client-rendered against /api/agents) wins
+    # the URL. main's agent-as-API endpoints (/api/v1/agents, agents_admin,
+    # sessions, …) are untouched.
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)

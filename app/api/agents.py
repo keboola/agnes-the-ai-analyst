@@ -1,4 +1,4 @@
-"""Agents API — CRUD for the caller's composed assistants (v103).
+"""Agents API — CRUD for the caller's composed assistants.
 
 Endpoints:
 
@@ -19,15 +19,23 @@ than decorative.
 Fail-closed: an agent the caller cannot read returns 404 (not 403), matching
 the collections contract, so callers cannot probe for existence.
 
-Before v103 agent definitions lived only in the browser's ``localStorage``, so
-they could not be listed on a second device, surfaced in the Library, or
-shared. This API is the registry that replaced that.
+This is the paper-theme agent-BUILDER surface. When the paper-theme branch
+merged into main it stopped owning its own ``agents`` table: main's
+agent-as-API subsystem is the canonical owner, and the builder's authored
+fields ride it as a SUPERSET (``src/db.py`` v110 / ``src/models/agents.py``).
+This module is the thin adapter between the builder's wire shape and
+``AgentsRepository`` — it maps the builder's ``created_by`` → the table's
+``owner_user_id`` and ``instructions`` → ``system_prompt``, and JSON-encodes
+the opaque ``knowledge`` / ``plugins`` / ``surfaces`` id-lists into the
+TEXT columns.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -57,25 +65,25 @@ def _auto_slug(name: str) -> str:
     return _SLUG_RE.sub("-", name.lower()).strip("-")[:100].strip("-") or "agent"
 
 
-def _unique_slug(base: str) -> str:
-    """First free slug in ``base``, ``base-2``, ``base-3``, …
+def _unique_slug(base: str, owner_user_id: str) -> str:
+    """First free slug in ``base``, ``base-2``, ``base-3``, … for one owner.
 
-    Agents are user-named and duplicates are ordinary (two people, or one
-    person twice, naming an agent "Analyst"), so a name clash must not surface
-    as a 409 the way an admin-curated slug would.
+    Agents are user-named and duplicates are ordinary (one person naming two
+    agents "Analyst"), so a name clash must not surface as a 409 the way an
+    admin-curated slug would. The table's ``(owner_user_id, slug)`` UNIQUE is
+    per-owner, so the search is scoped to the owner.
 
     ``include_deleted=True`` is load-bearing: ``delete`` only sets
-    ``deleted_at``, while the ``slug`` UNIQUE constraint spans deleted rows on
-    both backends. Searching live rows only would report a soft-deleted agent's
-    slug as free and drive the INSERT straight into a ConstraintException — a
-    500 on the ordinary create-delete-create path.
+    ``deleted_at`` while the UNIQUE spans deleted rows, so searching live rows
+    only would report a soft-deleted agent's slug as free and drive the INSERT
+    straight into a ConstraintException.
     """
     repo = agents_repo()
-    if repo.get_by_slug(base, include_deleted=True) is None:
+    if repo.get_by_slug(owner_user_id, base, include_deleted=True) is None:
         return base
     for n in range(2, 1000):
         candidate = f"{base}-{n}"[:100].strip("-")
-        if repo.get_by_slug(candidate, include_deleted=True) is None:
+        if repo.get_by_slug(owner_user_id, candidate, include_deleted=True) is None:
             return candidate
     # Pathological (999 same-named agents) — fall back to a random suffix
     # rather than raising, so creation never hard-fails on naming alone.
@@ -110,6 +118,18 @@ class AgentUpdate(BaseModel):
     status: Optional[str] = Field(default=None, max_length=30)
 
 
+def _decode(raw: Any, fallback: Any) -> Any:
+    """Decode a JSON-text column (knowledge/plugins/surfaces) to its object."""
+    if raw is None or raw == "":
+        return fallback
+    if isinstance(raw, (list, dict)):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _granted_agent_ids(user_id: str) -> set:
     """Agent ids granted to one of ``user_id``'s groups."""
     try:
@@ -120,28 +140,37 @@ def _granted_agent_ids(user_id: str) -> set:
 
 
 def _agent_out(row: dict, *, uid: str) -> Dict[str, Any]:
-    """Wire shape. Mirrors the builder's in-browser object 1:1 (the builder
-    was written against this shape while it was still localStorage-only), plus
-    server-side ownership so the Library can label rows without a second call.
+    """Wire shape — the builder's in-browser object 1:1, projected off main's
+    canonical row (``owner_user_id`` → ``created_by``, ``system_prompt`` →
+    ``instructions``, JSON-text id-lists decoded), plus server-side ownership
+    so the Library can label rows without a second call.
     """
-    owned = row.get("created_by") == uid
+    owner = row.get("owner_user_id")
     return {
         "id": row["id"],
         "slug": row.get("slug"),
         "name": row.get("name") or "",
         "role": row.get("role") or "",
-        "instructions": row.get("instructions") or "",
+        "instructions": row.get("system_prompt") or "",
         "tone": row.get("tone") or "concise",
         "greeting": row.get("greeting") or "",
-        "knowledge": row.get("knowledge") or [],
-        "plugins": row.get("plugins") or [],
-        "surfaces": row.get("surfaces") or {},
+        "knowledge": _decode(row.get("knowledge"), []),
+        "plugins": _decode(row.get("plugins"), []),
+        "surfaces": _decode(row.get("surfaces"), {}),
         "status": row.get("status") or "draft",
-        "mine": owned,
-        "created_by": row.get("created_by"),
+        "mine": owner == uid,
+        "created_by": owner,
         "created_at": row["created_at"].isoformat() if row.get("created_at") is not None else None,
         "updated": row["updated_at"].isoformat() if row.get("updated_at") is not None else None,
     }
+
+
+def _live(agent_id: str) -> Optional[dict]:
+    """Fetch a non-soft-deleted agent by id (``get_by_id`` includes tombstones)."""
+    row = agents_repo().get_by_id(agent_id)
+    if not row or row.get("deleted_at") is not None:
+        return None
+    return row
 
 
 def _readable(agent_id: str, user: dict) -> dict:
@@ -149,11 +178,11 @@ def _readable(agent_id: str, user: dict) -> dict:
 
     Readable = owner, admin, or a grantee via one of their groups.
     """
-    row = agents_repo().get(agent_id)
+    row = _live(agent_id)
     if not row:
         raise HTTPException(status_code=404, detail="agent_not_found")
     uid = user["id"]
-    if row.get("created_by") == uid:
+    if row.get("owner_user_id") == uid:
         return row
     if is_user_admin(uid):
         return row
@@ -168,10 +197,10 @@ def _writable(agent_id: str, user: dict) -> dict:
     A grant conveys *use*, not authorship — only the owner (or an admin) may
     edit or delete, so a shared agent can't be rewritten under its author.
     """
-    row = agents_repo().get(agent_id)
+    row = _live(agent_id)
     if not row:
         raise HTTPException(status_code=404, detail="agent_not_found")
-    if row.get("created_by") != user["id"] and not is_user_admin(user["id"]):
+    if row.get("owner_user_id") != user["id"] and not is_user_admin(user["id"]):
         raise HTTPException(status_code=404, detail="agent_not_found")
     return row
 
@@ -184,14 +213,21 @@ async def list_agents(user: dict = Depends(get_current_user)):
     not every agent in the instance (that audit view is /admin/access).
     """
     uid = user["id"]
-    granted = _granted_agent_ids(uid)
+    repo = agents_repo()
     out: List[Dict[str, Any]] = []
+    seen: set = set()
     try:
-        for row in agents_repo().list():
-            if row.get("created_by") == uid or row["id"] in granted:
-                out.append(_agent_out(row, uid=uid))
+        for row in repo.list_for_user(uid):
+            out.append(_agent_out(row, uid=uid))
+            seen.add(row["id"])
     except Exception as e:
-        logger.warning("agents: could not enumerate: %s", e)
+        logger.warning("agents: could not enumerate for %s: %s", uid, e)
+    for agent_id in _granted_agent_ids(uid):
+        if agent_id in seen:
+            continue
+        row = _live(agent_id)
+        if row:
+            out.append(_agent_out(row, uid=uid))
     return {"agents": out}
 
 
@@ -202,24 +238,27 @@ async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_us
     An unnamed agent is legal — the builder creates the row first and the user
     names it as they go, so a blank name must not 422 the whole flow.
     """
+    uid = user["id"]
     name = (payload.name or "").strip()
-    slug = _unique_slug(_auto_slug(name or "agent"))
-    agent_id = agents_repo().create(
+    slug = _unique_slug(_auto_slug(name or "agent"), uid)
+    agent_id = str(uuid.uuid4())
+    agents_repo().create(
+        id=agent_id,
+        owner_user_id=uid,
         name=name,
         slug=slug,
-        created_by=user["id"],
+        system_prompt=payload.instructions or "",
         role=payload.role or "",
-        instructions=payload.instructions or "",
         tone=payload.tone or "concise",
         greeting=payload.greeting or "",
-        knowledge=payload.knowledge,
-        plugins=payload.plugins,
-        surfaces=payload.surfaces,
+        knowledge=json.dumps(payload.knowledge or []),
+        plugins=json.dumps(payload.plugins or []),
+        surfaces=json.dumps(payload.surfaces or {}),
         status=payload.status or "draft",
     )
     logger.info("agent created id=%s slug=%s by=%s", agent_id, slug, user.get("email"))
-    row = agents_repo().get(agent_id)
-    return _agent_out(row or {}, uid=user["id"])
+    row = _live(agent_id)
+    return _agent_out(row or {}, uid=uid)
 
 
 @router.get("/{agent_id}")
@@ -236,10 +275,19 @@ async def update_agent(
 ):
     """Patch an agent the caller owns. Only supplied fields change."""
     _writable(agent_id, user)
-    fields = payload.model_dump(exclude_unset=True, exclude_none=True)
+    supplied = payload.model_dump(exclude_unset=True, exclude_none=True)
+    # Map the builder's wire names onto the canonical columns.
+    fields: Dict[str, Any] = {}
+    for key, value in supplied.items():
+        if key == "instructions":
+            fields["system_prompt"] = value
+        elif key in ("knowledge", "plugins", "surfaces"):
+            fields[key] = json.dumps(value)
+        else:
+            fields[key] = value
     if fields:
         agents_repo().update(agent_id, **fields)
-    row = agents_repo().get(agent_id)
+    row = _live(agent_id)
     if not row:
         raise HTTPException(status_code=404, detail="agent_not_found")
     return _agent_out(row, uid=user["id"])

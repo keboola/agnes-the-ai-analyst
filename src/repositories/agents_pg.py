@@ -27,6 +27,15 @@ _UPDATABLE = frozenset(
         "tables_mode",
         "memory_mode",
         "memory_write_mode",
+        # v110 paper-theme agent-builder superset (knowledge/plugins/surfaces
+        # are JSON text the caller encodes).
+        "role",
+        "tone",
+        "greeting",
+        "knowledge",
+        "plugins",
+        "surfaces",
+        "status",
     }
 )
 
@@ -53,6 +62,16 @@ class AgentsPgRepository:
         memory_mode: str = "all",
         memory_write_mode: str = "propose",
         is_default: bool = False,
+        # v110 paper-theme agent-builder superset. knowledge/plugins/surfaces
+        # are opaque JSON text the caller encodes; None falls back to the
+        # column DEFAULT.
+        role: Optional[str] = None,
+        tone: Optional[str] = None,
+        greeting: Optional[str] = None,
+        knowledge: Optional[str] = None,
+        plugins: Optional[str] = None,
+        surfaces: Optional[str] = None,
+        status: Optional[str] = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -62,11 +81,16 @@ class AgentsPgRepository:
                     INSERT INTO agents
                       (id, owner_user_id, name, slug, description, system_prompt, model,
                        token_budget_monthly, plugins_mode, connections_mode, tables_mode,
-                       memory_mode, memory_write_mode, is_default, created_at, updated_at)
+                       memory_mode, memory_write_mode, is_default,
+                       role, tone, greeting, knowledge, plugins, surfaces, status,
+                       created_at, updated_at)
                     VALUES
                       (:id, :owner_user_id, :name, :slug, :description, :system_prompt, :model,
                        :token_budget_monthly, :plugins_mode, :connections_mode, :tables_mode,
-                       :memory_mode, :memory_write_mode, :is_default, :created_at, :updated_at)
+                       :memory_mode, :memory_write_mode, :is_default,
+                       COALESCE(:role, ''), COALESCE(:tone, 'concise'), COALESCE(:greeting, ''),
+                       COALESCE(:knowledge, '[]'), COALESCE(:plugins, '[]'), COALESCE(:surfaces, '{}'),
+                       COALESCE(:status, 'draft'), :created_at, :updated_at)
                     """
                 ),
                 {
@@ -84,6 +108,13 @@ class AgentsPgRepository:
                     "memory_mode": memory_mode,
                     "memory_write_mode": memory_write_mode,
                     "is_default": is_default,
+                    "role": role,
+                    "tone": tone,
+                    "greeting": greeting,
+                    "knowledge": knowledge,
+                    "plugins": plugins,
+                    "surfaces": surfaces,
+                    "status": status,
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -95,14 +126,16 @@ class AgentsPgRepository:
             row = conn.execute(sa.text("SELECT * FROM agents WHERE id = :id"), {"id": agent_id}).mappings().first()
         return dict(row) if row else None
 
-    def get_by_slug(self, owner_user_id: str, slug: str) -> Optional[Dict[str, Any]]:
+    def get_by_slug(self, owner_user_id: str, slug: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        # include_deleted spans soft-deleted rows because the (owner_user_id,
+        # slug) UNIQUE constraint does too — the builder's slug picker must see
+        # tombstones or a create-delete-create reuses a slug and hits the
+        # constraint.
+        clause = "" if include_deleted else " AND deleted_at IS NULL"
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
-                    sa.text(
-                        "SELECT * FROM agents "
-                        "WHERE owner_user_id = :owner_user_id AND slug = :slug AND deleted_at IS NULL"
-                    ),
+                    sa.text("SELECT * FROM agents WHERE owner_user_id = :owner_user_id AND slug = :slug" + clause),
                     {"owner_user_id": owner_user_id, "slug": slug},
                 )
                 .mappings()
