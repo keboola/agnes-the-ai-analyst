@@ -12,8 +12,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- `agnes update` now runs an `agnes push` catch-up step (step 4b, before the data pull), so the SessionStart hook uploads session transcripts + `CLAUDE.local.md` that the SessionEnd hook never got to send. SessionEnd is not a dependable trigger — closing the terminal window (or a crash / kill) can take Claude Code down before it reaches the hook, leaving the transcript on disk and invisible in the admin session views, which read the pipeline's summary table and have no filesystem fallback. SessionStart cannot be missed, because the session is being created. push is already a full folder scan with ledger dedup, so one call recovers everything earlier runs missed, including a session still open in another window whose transcript has grown; the convergence report gains a `push` stage line.
-
 ### Changed
 
 ### Fixed
@@ -23,6 +21,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+
+## [0.77.20] - 2026-07-29
+
+### Added
+
+- `agnes update` now runs an `agnes push` catch-up step (step 4b, before the data pull), so the SessionStart hook uploads session transcripts + `CLAUDE.local.md` that the SessionEnd hook never got to send. SessionEnd is not a dependable trigger — closing the terminal window (or a crash / kill) can take Claude Code down before it reaches the hook, leaving the transcript on disk and invisible in the admin session views, which read the pipeline's summary table and have no filesystem fallback. SessionStart cannot be missed, because the session is being created. push is already a full folder scan with ledger dedup, so one call recovers everything earlier runs missed, including a session still open in another window whose transcript has grown; the convergence report gains a `push` stage line.
 
 ## [0.77.19] - 2026-07-29
 
