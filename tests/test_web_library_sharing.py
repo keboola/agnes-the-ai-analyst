@@ -368,6 +368,25 @@ def test_library_add_actions_live_behind_one_menu(seeded_app):
     assert text.index('id="lib-new-menu"') < text.index('class="cbn cbn--bar"')
 
 
+def test_library_head_closes_with_two_quiet_notices(seeded_app):
+    """Both page-level caveats ride the shared `.pnote` component, in order:
+    connect banner, then "content is still being prepared", then Data apps."""
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert text.count('class="pnote"') == 2
+    assert (
+        text.index('class="cbn cbn--bar"')
+        < text.index("Library content is still being prepared")
+        < text.index(">Data apps")
+    )
+    assert "Some items and information may be incomplete" in text
+    # Only Data apps carries a marker, and it is the flat `.pnote-badge` label,
+    # not the bordered `.lib-wip` pill — inside a panel this quiet, a filled
+    # chip would outshout the sentence it qualifies.
+    assert text.count('class="pnote-badge"') == 1
+    # The loud page-local banner these replaced is gone, markup and CSS both.
+    assert "lib-apps" not in text
+
+
 # ---------------------------------------------------------------------------
 # The Library also lists what has been SHARED WITH the caller
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 {% extends "base_index.html" %}
+{% from "macros/_page_notice.html" import page_notice %}
 {% import "macros/_icon.html" as ico %}
 {# Agents — build a focused assistant out of the caller's own stack (#draft
    prototype: evviku.github.io/agnes-the-ai-analyst, Build Agent module).
@@ -31,7 +32,6 @@
   .ag-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; padding-bottom: 24px; }
   .ag-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
   .ag-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
-  .ag-wip { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 2px 9px; }
 
   /* ── List view ── */
   .ag-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
@@ -52,7 +52,12 @@
   .ag-empty .ag-ava { margin: 0 auto 12px; width: 46px; height: 46px; }
   .ag-empty h3 { margin: 0 0 6px; font-size: 16px; color: var(--ds-text-primary); }
   .ag-empty p { margin: 0 0 16px; color: var(--ds-text-secondary); font-size: 14px; }
-  .ag-localnote { margin: 18px 0 0; font-size: 12.5px; color: var(--ds-text-muted); }
+  /* The work-in-progress caveat rides the shared `.pnote` component
+     (macros/_page_notice.html, styled in style-custom.css). In the page head
+     it needs to stand clear of the lede above it; the builder's own copy
+     (rendered in JS, the head is hidden there) sits after the columns. */
+  .ag-head + .pnote { margin-top: 16px; }
+  #ag-builder-view .pnote { margin: 18px 0 0; }
 
   /* Status pill — draft vs ready. */
   .ag-status { font-size: 12px; font-weight: 600; border-radius: var(--ds-radius-pill); padding: 2px 10px; flex-shrink: 0; white-space: nowrap; }
@@ -162,10 +167,18 @@
 {% block page_head %}
 <div class="ag-head" id="ag-page-head">
   <div>
-    <h1>Agents <span class="ag-wip">WIP</span></h1>
+    <h1>Agents</h1>
     <p class="lede">Build a focused assistant from anything you can access — governed data, memory, and your files for what it knows, plus any plugin or skill for what it can do. Everything here respects your existing permissions.</p>
   </div>
 </div>
+{# The "not wired to the surfaces yet" caveat belongs under the description,
+   not at the foot of the grid: it qualifies the whole page, and a caller who
+   reads it before building an agent learns the limit before investing in one
+   — at the bottom it landed after the work, and below the fold once the grid
+   filled. Shared `.pnote` component, so it reads identically to the Library's
+   caveats. #}
+{{ page_notice('Work in progress',
+     'Your agents are saved to your workspace and live on this page. Actually running them on the surfaces you pick is the next step.') }}
 {% endblock %}
 
 {% block page_surface %}
@@ -292,6 +305,9 @@
   }
 
   var AVA_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>';
+  /* Rendered from the shared icon macro rather than hand-copied path data, so
+     the builder's notice glyph cannot drift from the head's. */
+  var WARN_SVG = {{ ico.icon('warning', 15) | tojson }};
   function statusPill(a) {
     return a.status === 'ready'
       ? '<span class="ag-status ag-status--ready">● Ready</span>'
@@ -318,7 +334,7 @@
           '<h3>No agents yet</h3>' +
           '<p>Build your first agent — pick what it knows from your stack, what it can do from your plugins, and where it runs.</p>' +
           '<button type="button" class="cc-btn cc-btn--primary" data-ag-new>+ Build an agent</button>' +
-        '</div>' + localNote();
+        '</div>';
       return;
     }
     var cards = agents.map(function (a) {
@@ -340,12 +356,23 @@
        instead of drifting to the end of a growing list (and below the fold). */
     listView.innerHTML = '<div class="ag-grid">' +
       '<button type="button" class="ag-new" data-ag-new><span style="font-size:18px">+</span> New agent</button>' +
-      cards + '</div>' +
-      localNote();
+      cards + '</div>';
   }
 
+  /* The list view no longer appends this — the page head carries the caveat
+     server-rendered, under the description (macros/_page_notice.html). The
+     BUILDER still needs its own copy: setPageHead(false) hides the whole
+     `.idx-head` there, and the builder is where the limit actually bites, one
+     section below "Surfaces". Same `.pnote` markup as the macro so the two
+     placements are visually identical — keep them in step if either moves. */
   function localNote() {
-    return '<p class="ag-localnote">Work in progress — your agents are saved to your workspace and live on this page. Actually running them on the surfaces you pick is the next step.</p>';
+    return '<div class="pnote" role="note">' +
+      '<span class="pnote-icon" aria-hidden="true">' + WARN_SVG + '</span>' +
+      '<div class="pnote-body">' +
+        '<p class="pnote-title">Work in progress</p>' +
+        '<p class="pnote-text">Your agents are saved to your workspace and live on this page. ' +
+        'Actually running them on the surfaces you pick is the next step.</p>' +
+      '</div></div>';
   }
 
   /* ── Builder view ── */

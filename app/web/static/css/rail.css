@@ -149,25 +149,11 @@ html[data-ui-layout="rail"] .rail-i:focus-visible {
     outline-offset: var(--ds-focus-outline-offset);
 }
 
-/* Nav item with a trailing badge (e.g. Artefacts "WIP"): the label takes the
-   free space so the badge hugs the right edge of the item. */
+/* The label takes the free space so any trailing element in a nav item hugs
+   the right edge. */
 html[data-ui-layout="rail"] .rail-i-label {
     flex: 1 1 auto;
     min-width: 0;
-}
-
-html[data-ui-layout="rail"] .rail-badge {
-    flex-shrink: 0;
-    font-size: 9.5px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--ds-warn-ink);
-    background: var(--ds-warn-bg);
-    border: 1px solid var(--ds-warn-line);
-    border-radius: var(--ds-radius-pill, 999px);
-    padding: 1px 6px;
-    line-height: 1.5;
 }
 
 /* ── Chat history ──────────────────────────────────────────────────────

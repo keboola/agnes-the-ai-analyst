@@ -75,15 +75,13 @@
         {% endif %}
         {# Library — the umbrella for the things the caller has and creates:
            their private collections of files (moved off My Stack), skills and
-           agents today and, soon, their data apps. Work-in-progress, so it
-           carries a WIP badge. #}
+           agents today and, soon, their data apps. #}
         {# id="nav-artefacts" is the tour step-2 anchor (private uploads live
            here now) — the id stays put so tour.js keeps resolving it across
            the /artefacts → /library rename. #}
         <a class="rail-i {% if _on_library %}on{% endif %}" href="/library" id="nav-artefacts">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13 3v5h5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             <span class="rail-i-label">Library</span>
-            <span class="rail-badge">WIP</span>
         </a>
         {# Agents — a primary destination in its own right, directly under
            Library: "what you have" then "what you build from it". It was
@@ -96,7 +94,6 @@
         <a class="rail-i {% if _on_agents %}on{% endif %}" href="/agents">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
             <span class="rail-i-label">Agents</span>
-            <span class="rail-badge">WIP</span>
         </a>
     </div>
 

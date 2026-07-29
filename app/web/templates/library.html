@@ -1,5 +1,6 @@
 {% extends "base_index.html" %}
 {% from "macros/_connect_banner.html" import connect_banner %}
+{% from "macros/_page_notice.html" import page_notice %}
 {% from "macros/_catalog_card.html" import kind_glyph %}
 {% import "macros/_icon.html" as ico %}
 {# One group header for the whole group — the shared `.fbar-grouptoggle` button
@@ -260,11 +261,12 @@
      (style-custom.css), the toolbar + card grid ride .fbar-* (filter_toolbar.css);
      all colors come from --ds-* tokens. */
   .lib-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; }
-  /* Two page-level notes close the head: this banner, then .lib-apps. The gap
-     BELOW comes from padding, not margin — the Data apps banner that follows
+  /* Page-level notes close the head: this banner, then the two `.pnote`
+     caveats. The gap BELOW comes from padding, not margin — the first notice
      has no top margin of its own, and margin here would collapse-adjoin it.
      The banner stands well clear of the lede above and sits closer to its
-     sibling below, so the pair reads as one block of notes under the header. */
+     siblings below, so the group reads as one block of notes under the
+     header, with the notices then keeping their own tighter 10px rhythm. */
   .lib-connect--head { margin: 18px 0 0; padding-bottom: 14px; }
   .lib-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
   .lib-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 68ch; }
@@ -577,13 +579,9 @@
   .lib-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); font-size: 15px; }
   .lib-empty .cc-btn { margin-top: 12px; }
 
-  /* ── Data-apps work-in-progress banner ── */
-  .lib-apps { margin: 0 0 22px; display: flex; align-items: flex-start; gap: 14px; padding: 14px 18px; background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: 12px; }
-  .lib-apps__icon { flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: color-mix(in srgb, var(--ds-warn-ink) 14%, transparent); color: var(--ds-warn-ink); }
-  .lib-apps__body { min-width: 0; }
-  .lib-apps__title { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-size: 15px; font-weight: 650; color: var(--ds-warn-ink); }
-  .lib-apps__title .lib-wip { flex-shrink: 0; }
-  .lib-apps__text { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--ds-text-secondary); max-width: 72ch; }
+  /* The data-apps banner is no longer a page-local component — it and the
+     "content is still being prepared" caveat both ride the shared `.pnote`
+     notice (macros/_page_notice.html, styled in style-custom.css). */
 
   /* ── Modals (upload + share) ── */
   .lib-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
@@ -858,7 +856,7 @@
 {% block page_head %}
 <div class="lib-head">
   <div>
-    <h1>Library <span class="lib-wip">WIP</span></h1>
+    <h1>Library</h1>
     <p class="lede">Everything you have in one place — your files, images and documents, whether you uploaded them or an agent generated them, plus the skills you've built. Share any of it with your team, and {{ instance_brand_short or 'Agnes' }} indexes your files so your agents can search across them.</p>
   </div>
   {# Every "add something" path lives behind ONE primary button + chevron, so
@@ -906,17 +904,18 @@
        copy='Connect your AI tools to give them access to the same knowledge.') }}
 </div>
 
-{# ── Data apps — a further Library kind, still in design. It closes the head
-     under the connect banner rather than heading the content band: both are
-     page-level notes about the Library as a whole, so they belong to the same
-     zone, and the band below then opens on the toolbar + the actual list. ── #}
-<div class="lib-apps" role="note" aria-label="Data apps — coming soon">
-  <span class="lib-apps__icon">{{ ico.icon('warning', 22) }}</span>
-  <div class="lib-apps__body">
-    <p class="lib-apps__title">Data apps <span class="lib-wip">WIP</span></p>
-    <p class="lib-apps__text">Hosted apps that run next to your data will live here too. This is still in the works — you'll be able to build them with {{ instance_brand_short or 'Agnes' }} or link an existing one. Nothing to do yet.</p>
-  </div>
-</div>
+{# ── Two page-level caveats close the head, under the connect banner rather
+     than heading the content band: both are notes about the Library as a
+     whole, so they belong to the same zone, and the band below then opens on
+     the toolbar + the actual list. Both ride the shared `.pnote` component,
+     so they read as one pair of quiet notes rather than two treatments — the
+     broad "content is still being prepared" caveat first, then the narrower
+     one that stands in for a kind that does not exist yet. ── #}
+{{ page_notice('Library content is still being prepared',
+     'Some items and information may be incomplete or change while we finish setting things up.') }}
+{{ page_notice('Data apps',
+     'Hosted apps that run next to your data will live here too. This is still in the works — you\'ll be able to build them with ' ~ (instance_brand_short or 'Agnes') ~ ' or link an existing one. Nothing to do yet.',
+     badge='WIP', label='Data apps — coming soon') }}
 {% endblock %}
 
 {% block page_surface %}

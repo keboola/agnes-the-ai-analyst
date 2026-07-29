@@ -121,21 +121,19 @@ class TestRailOptIn:
         for anchor in (
             'id="userMenu"',
             'id="themeToggle"',
-            # Library — private uploads (moved off My Stack) + future data
-            # apps; flagged work-in-progress with a WIP badge.
+            # Library — private uploads (moved off My Stack) + future data apps.
             'href="/library"',
             # Agents — build an assistant out of the caller's stack. A primary
             # destination directly under Library (it used to sit one hover deep
-            # inside the Studio dropdown); WIP badge.
+            # inside the Studio dropdown).
             'href="/agents"',
             # brand lockup: the Agnes orb mark + the Agnes wordmark beside it.
             'class="rail-orb"',
             'class="rail-logo-txt"',
         ):
             assert anchor in text, f"rail chrome is missing {anchor}"
-        # The Library entry carries a WIP badge.
-        assert 'class="rail-badge"' in text
-        assert ">WIP<" in text
+        # Rail nav items carry no WIP badge.
+        assert 'class="rail-badge"' not in text
         # Nav order, top → bottom: New chat · Library · Agents — one flat group,
         # no dividers (the rail is down to three destinations, so grouping rules
         # just add noise). New chat renders only for chat-granted callers, so
@@ -292,9 +290,14 @@ class TestRailOptIn:
         assert 'id="lib-new-menu"' in text
         for label in ("Build a skill", "Build a plugin", "Upload a file"):
             assert f"<span>{label}</span>" in text
-        # Data apps are still in design — a WIP banner stands in for them.
+        # Two page-level caveats close the head, both on the shared quiet
+        # `.pnote` notice: the broad "content is still being prepared" one,
+        # then the Data apps stand-in for a kind still in design.
+        assert "Library content is still being prepared" in text
         assert "Data apps" in text
-        assert "lib-apps" in text
+        assert text.count('class="pnote"') == 2
+        # The loud page-local banner they replaced is gone, class and all.
+        assert "lib-apps" not in text
         # The "same knowledge, everywhere" connect banner closes the Library
         # header (it moved here from the My Stack header).
         assert 'class="cbn cbn--bar"' in text
@@ -350,6 +353,14 @@ class TestRailOptIn:
         assert "live on this page" in text
         assert "saved in this browser" not in text
         assert "where you can share them" not in text
+        # It reads as the same quiet product notice the Library uses, and it
+        # sits in the page head under the description rather than trailing the
+        # grid. The builder keeps its own copy (the head is hidden there), so
+        # the markup appears twice — once server-rendered, once in the JS.
+        assert 'class="pnote"' in text
+        assert "ag-localnote" not in text
+        assert text.index('class="lede"') < text.index('class="pnote"')
+        assert text.index('class="pnote"') < text.index('id="ag-list-view"')
 
     def test_agents_page_opens_builder_from_query(self, web_client, admin_cookie, monkeypatch):
         """The builder is an in-page view, so the Library reaches it through
