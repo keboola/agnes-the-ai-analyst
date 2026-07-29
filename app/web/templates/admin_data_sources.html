@@ -425,7 +425,7 @@ function _masterTokenRowHtml(row) {
   // Semantic-layer sync (Metastore) needs a separate Keboola *master* (project
   // owner) token — not the plain storage token above. Only keboola connections
   // support this vault slot.
-  if (row.source_type && row.source_type !== "keboola") return "";
+  if (row.source_type !== "keboola") return "";
   const id = row.id;
   const hasMaster = row.has_master_secret === true;
   const badgeClass = hasMaster ? "badge-vault" : "badge-unset";

@@ -348,9 +348,12 @@ async def set_connection_secret(
         client = KeboolaStorageClient(url=stack_url, token=body.value)
         try:
             info = await run_in_threadpool(client.verify_token)
-        except (StorageApiError, requests.RequestException, Exception) as exc:
+        except (StorageApiError, requests.RequestException) as exc:
             # A freshly typed token is in flight — never surface bare str(exc);
-            # route through the client's own token-aware redaction.
+            # route through the client's own token-aware redaction. Only these
+            # two named types map to a 502 storage_api_error; an unrelated
+            # programming error should surface as a 500, not be mistaken for
+            # an upstream outage.
             raise HTTPException(status_code=502, detail=f"storage_api_error: {client._redact(exc)}") from exc
         if not info.get("isMasterToken"):
             # Reuse require_master_token's exact message rather than duplicating

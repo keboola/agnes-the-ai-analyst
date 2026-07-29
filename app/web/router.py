@@ -3354,6 +3354,7 @@ async def admin_semantic_layer_page(
             last_by_ref[entry.get("connection_id")] = entry
 
     sources = []
+    null_absorbed = False
     for source in raw_sources:
         connection_id = source["connection_id"]
         metric_count, glossary_count = _counts(connection_id)
@@ -3361,10 +3362,10 @@ async def admin_semantic_layer_page(
             null_metric_count, null_glossary_count = _counts(None)
             metric_count += null_metric_count
             glossary_count += null_glossary_count
+            null_absorbed = True
         stack_url = source["stack_url"]
         sources.append(
             {
-                "type": "keboola",
                 "connection_id": connection_id,
                 "label": source["name"],
                 "detail": urlsplit(stack_url).netloc or stack_url,
@@ -3384,7 +3385,27 @@ async def admin_semantic_layer_page(
     orphaned = []
     for ref in sorted(all_refs - known_ids):
         metric_count, glossary_count = _counts(ref)
-        orphaned.append({"source_ref": ref, "metric_count": metric_count, "glossary_count": glossary_count})
+        orphaned.append(
+            {"source_ref": ref, "label": ref, "metric_count": metric_count, "glossary_count": glossary_count}
+        )
+
+    # NULL-source_ref rows (legacy, pre-provenance) normally fold into the
+    # default connection's row above. When the default connection has no
+    # master token — so it's never enumerated by `_enumerate_master_sources()`
+    # and never appears in `sources` — those rows would otherwise be counted
+    # nowhere: the truthy `source_ref` filter above excludes them from
+    # `all_refs` too. Surface them here instead, so they're never invisible.
+    if not null_absorbed:
+        null_metric_count, null_glossary_count = _counts(None)
+        if null_metric_count or null_glossary_count:
+            orphaned.append(
+                {
+                    "source_ref": None,
+                    "label": "legacy / unattributed",
+                    "metric_count": null_metric_count,
+                    "glossary_count": null_glossary_count,
+                }
+            )
 
     ctx["sources"] = sources
     ctx["orphaned"] = orphaned

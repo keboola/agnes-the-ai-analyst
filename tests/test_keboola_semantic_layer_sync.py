@@ -1117,6 +1117,47 @@ class TestSyncSemanticLayerMultiSource:
         assert result["pruned"] == 0
         assert metric_repo().get("keboola/model-dup/dup_metric")["source_ref"] == conn_a
 
+    def test_missing_owner_id_is_not_deduped(self, e2e_env, vault_key):
+        """Two distinct upstream projects on the same host whose verify_token
+        response carries no owner id must NOT collide on a shared (host, None)
+        identity — that would silently skip the second one as a spurious
+        "duplicate project" even though it's an unrelated project. Both
+        sources must sync."""
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        _make_master_connection("conn-a", stack_url="https://dup.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://dup.keboola.com", token="tok-b")
+
+        # Same host as test_duplicate_project_deduped, but NEITHER verify_token
+        # response carries an owner id — no reliable identity to dedupe on.
+        projects = {
+            "tok-a": {
+                "owner_id": None,
+                "model_uuid": "model-a",
+                "metrics": [
+                    _metric_item("a_metric", 'SUM("amount")', "in.c-example_source.orders", model_uuid="model-a")
+                ],
+            },
+            "tok-b": {
+                "owner_id": None,
+                "model_uuid": "model-b",
+                "metrics": [
+                    _metric_item("b_metric", 'SUM("amount")', "in.c-example_source.orders", model_uuid="model-b")
+                ],
+            },
+        }
+        result = _run_sync(projects)
+
+        assert result["skipped_duplicate_project"] == 0
+        by_conn = {s["connection_id"]: s for s in result["sources"]}
+        assert by_conn["conn-a"]["status"] == "ok"
+        assert by_conn["conn-b"]["status"] == "ok"
+        assert by_conn["conn-a"]["skipped_duplicate_project"] == 0
+        assert by_conn["conn-b"]["skipped_duplicate_project"] == 0
+        assert metric_repo().get("keboola/model-a/a_metric") is not None
+        assert metric_repo().get("keboola/model-b/b_metric") is not None
+
     def test_fallback_no_master_tokens_preserves_foreign_rows(self, e2e_env, monkeypatch):
         """No master tokens at all: the legacy single-source path runs, and
         its prune scope covers only NULL-ref / default-connection rows —

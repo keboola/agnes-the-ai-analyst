@@ -517,7 +517,7 @@ def _is_owned_by_source(
     return _in_scope(existing, scope_refs, adopt_null)
 
 
-def _project_key(url: str, token_info: dict) -> tuple[str, Any]:
+def _project_key(url: str, token_info: dict) -> Optional[tuple[str, Any]]:
     """Identity of the upstream Keboola project behind (stack URL, token):
     (stack host, token owner id).
 
@@ -526,12 +526,23 @@ def _project_key(url: str, token_info: dict) -> tuple[str, Any]:
     connections syncing one project would flip-flop ``source_ref`` ownership
     and cross-wipe each other every run, so the orchestrator dedupes on this
     key and skips the later connection.
+
+    Returns ``None`` when the token's ``owner.id`` is missing — a
+    ``verify_token`` response without an owner id gives no reliable identity
+    to dedupe on, and treating a missing id as an identity (``(host, None)``)
+    would collide any two such projects on the same stack, silently skipping
+    the second one as a spurious "duplicate". Callers must treat ``None`` as
+    "not dedupable" and sync the source normally rather than folding it into
+    the seen-keys set.
     """
     from urllib.parse import urlparse
 
     host = urlparse(url).netloc or url
     owner = token_info.get("owner") or {}
-    return host, owner.get("id")
+    owner_id = owner.get("id")
+    if owner_id is None:
+        return None
+    return host, owner_id
 
 
 def _enumerate_master_sources() -> list[dict]:
@@ -630,7 +641,11 @@ def _sync_one_source(
     check_master_token(token_info)
 
     project_key = _project_key(url, token_info)
-    if seen_project_keys is not None:
+    # A missing owner id (project_key is None) gives no reliable identity to
+    # dedupe on — two distinct projects lacking an owner id must NOT collide
+    # on a shared "no identity" bucket and silently skip the second one.
+    # Only a real, comparable identity participates in the seen-keys set.
+    if seen_project_keys is not None and project_key is not None:
         if project_key in seen_project_keys:
             logger.warning(
                 "Keboola semantic layer: connection %s resolves to a project already "
@@ -848,7 +863,12 @@ def _sync_one_source(
 def _as_source_entry(connection_id: Optional[str], name: Optional[str], result: dict) -> dict:
     """Normalize one ``_sync_one_source`` result into the per-source entry the
     endpoint publishes: identity first, every counter present (so consumers
-    never have to guard on a missing key), no internal ``project_key``."""
+    never have to guard on a missing key), no internal ``project_key``.
+
+    ``connection_id`` is the one public identity key; ``result``'s own
+    ``source_ref`` (always equal to ``connection_id`` for this call site) is
+    dropped rather than published redundantly alongside it.
+    """
     entry = {
         "connection_id": connection_id,
         "name": name,
@@ -856,6 +876,7 @@ def _as_source_entry(connection_id: Optional[str], name: Optional[str], result: 
         **result,
     }
     entry.pop("project_key", None)
+    entry.pop("source_ref", None)
     return entry
 
 
