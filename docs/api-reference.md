@@ -1022,6 +1022,18 @@ above): `data_apps_list`, `data_app_get`, `data_app_deploy`,
 `data_app_git_credential` — no MCP analogue for
 create/stop/delete/secrets/reap-idle.
 
+**Linked (externally-hosted) apps (v108):** a `repo_mode='linked'` row points at
+an app running elsewhere (e.g. a Keboola-platform data app ingested via an MCP
+source) via an `external_url`, with no git repo/runtime — Agnes only catalogs +
+grants + links it. `GET /api/data-apps?kind=hosted|linked` filters the list;
+each entry carries `kind` + `effective_description` (an admin `description`
+override wins over the synced one). `PATCH /api/data-apps/{slug}` sets that
+override on a managed (linked) app (owner/Admin only; `409 not_managed` for a
+hosted app). Triple-surface: `agnes app list --linked` / `agnes app
+set-description` + MCP `data_app_set_description` and the `kind` arg on
+`data_apps_list`. Soft-deleted linked rows (upstream app gone) 404 on every
+by-slug surface but keep their grants for a lossless re-link.
+
 - /api/data-apps
 - /api/data-apps/reap-idle
 - /api/data-apps/{slug}

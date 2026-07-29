@@ -1431,18 +1431,26 @@ def register_foundation_tools(
             return r.json()
 
     @mcp.tool()
-    async def data_apps_list() -> dict:
-        """List hosted data apps you can see (RBAC-filtered).
+    async def data_apps_list(kind: str = "") -> dict:
+        """List data apps you can see (RBAC-filtered).
 
         Visible to any authenticated user: apps you own, apps a group you're
-        in has a ``resource_grants`` row for, or (Admin) all apps. Returns a
-        list of app summaries — ``slug``, ``name``, ``state``
-        (``stopped``/``deploying``/``running``/``sleeping``/``error``),
-        ``url``, and metadata; secrets are never included. Mirrors
-        ``GET /api/data-apps`` and ``agnes app list``.
+        in has a ``resource_grants`` row for, or (Admin) all apps. Each entry
+        has a ``kind`` — ``hosted`` (an app Agnes runs, with a runtime
+        ``state``) or ``linked`` (an externally-hosted app, e.g. on Keboola,
+        whose ``url`` opens the remote app directly). Returns a list of app
+        summaries — ``slug``, ``name``, ``kind``, ``state``, ``url``,
+        ``effective_description``, and metadata; secrets are never included.
+
+        Args:
+            kind: Optional filter — ``"hosted"`` or ``"linked"``; empty
+                  (default) lists both.
+
+        Mirrors ``GET /api/data-apps[?kind=]`` and ``agnes app list [--linked]``.
         """
+        params = {"kind": kind} if kind else None
         async with httpx.AsyncClient() as c:
-            r = await c.get(f"{base_url}/api/data-apps", headers=headers_fn(), timeout=30)
+            r = await c.get(f"{base_url}/api/data-apps", headers=headers_fn(), params=params, timeout=30)
             r.raise_for_status()
             return r.json()
 

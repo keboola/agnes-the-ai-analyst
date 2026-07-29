@@ -314,6 +314,13 @@ def _get_row_or_404(slug: str) -> dict:
     row = data_apps_repo().get_by_slug(slug)
     if not row:
         raise HTTPException(status_code=404, detail="data_app_not_found")
+    # A soft-deleted linked app (its upstream config disappeared) is hidden from
+    # the list; keep it hidden from every by-slug surface too (detail, PATCH,
+    # and the hosted-only op endpoints, which linked rows never reach anyway),
+    # so a stale grant can't still read/operate on a gone app. Its row + grants
+    # persist for a lossless re-link when the upstream app reappears.
+    if row.get("state") == "linked_hidden":
+        raise HTTPException(status_code=404, detail="data_app_not_found")
     return row
 
 

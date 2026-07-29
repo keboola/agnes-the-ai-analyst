@@ -151,3 +151,34 @@ def test_description_override_rejected_on_hosted(linked_env):
     c, pats = linked_env["client"], linked_env["pats"]
     r = c.patch("/api/data-apps/hosted-x", json={"description": "x"}, headers=_auth(pats["admin1"]))
     assert r.status_code == 409  # not managed
+
+
+def _hide_linked(slug="kbc-sales"):
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        # reconcile with an empty keep-list for this connection → hides the app
+        DataAppsRepository(conn).soft_delete_missing_linked(source_ref_prefix="conn1:", keep_source_refs=[])
+    finally:
+        conn.close()
+
+
+def test_hidden_linked_app_absent_from_list(linked_env):
+    c, pats = linked_env["client"], linked_env["pats"]
+    _hide_linked()
+    r = c.get("/api/data-apps?kind=linked", headers=_auth(pats["grantee1"]))
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_hidden_linked_app_404_on_detail_and_patch(linked_env):
+    c, pats = linked_env["client"], linked_env["pats"]
+    _hide_linked()
+    # a previously-granted analyst can no longer read the gone app…
+    assert c.get("/api/data-apps/kbc-sales", headers=_auth(pats["grantee1"])).status_code == 404
+    # …and an admin can't PATCH it either (it's soft-deleted, not just ungranted)
+    assert (
+        c.patch("/api/data-apps/kbc-sales", json={"description": "x"}, headers=_auth(pats["admin1"])).status_code == 404
+    )

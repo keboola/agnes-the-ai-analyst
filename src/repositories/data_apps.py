@@ -336,10 +336,15 @@ class DataAppsRepository:
         ).fetchall()
         keep = set(keep_source_refs)
         to_hide = [r[0] for r in active if r[0] not in keep]
-        for sr in to_hide:
+        if to_hide:
+            # One statement so the batch is all-or-nothing (matches the PG
+            # sibling's transaction): a mid-hide failure never leaves the
+            # connection's linked set partially reconciled.
+            placeholders = ",".join("?" for _ in to_hide)
             self.conn.execute(
-                "UPDATE data_apps SET state = 'linked_hidden', updated_at = now() WHERE source_ref = ?",
-                [sr],
+                f"UPDATE data_apps SET state = 'linked_hidden', updated_at = now() "
+                f"WHERE source_ref IN ({placeholders})",
+                to_hide,
             )
         return len(to_hide)
 
