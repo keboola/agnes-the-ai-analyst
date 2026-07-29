@@ -256,7 +256,7 @@ def init(
             "Admins only: give this workspace the FULL data-read surface "
             "(catalog + server-side query see every registered table) "
             "instead of the default stack-scoped one. Exchanges the saved "
-            "PAT for a surface=all token via /api/cli/auth/rescope-surface "
+            "PAT for a surface=all token via /cli/auth/rescope-surface "
             "(server re-checks admin membership). Parquet distribution "
             "stays stack-scoped either way — `agnes pull` downloads only "
             "your stack."
