@@ -220,3 +220,68 @@ def test_non_admin_ignores_surface_value(fresh_db, monkeypatch):
     tables = get_accessible_tables(user)
     assert tables is not None and "t1" in tables
     assert can_access_table(user, "t_other") is False
+
+
+# ---------------------------------------------------------------------------
+# Direct bq.* / full-backtick path pass (app/api/query.py) — the admin
+# bypass there skips the per-id grant check, so it must honor the
+# credential surface exactly like the src/rbac.py primitives (Devin Review
+# on #1090: without the gate a stack-surface admin could read
+# out-of-stack tables via a direct bq."<ds>"."<tbl>" reference even
+# though the bare-name pass correctly stack-scoped them).
+# ---------------------------------------------------------------------------
+
+
+def _bq_pass_env(monkeypatch, *, admin: bool, row_id: str):
+    import app.api.query as query_mod
+
+    monkeypatch.setattr(query_mod, "is_user_admin", lambda uid, conn=None: admin)
+
+    class _FakeRegistryRepo:
+        def list_by_source(self, source_type):
+            return []  # no registered bare names — pass 1 is a no-op
+
+        def find_by_bq_path(self, bucket, source_table):
+            return {
+                "id": row_id,
+                "name": row_id,
+                "bucket": bucket,
+                "source_table": source_table,
+            }
+
+    monkeypatch.setattr(query_mod, "table_registry_repo", lambda: _FakeRegistryRepo())
+    # Unconfigured BQ → the full-backtick pass (pass 3) falls through; the
+    # bq."<ds>"."<tbl>" pass (pass 2) is the one under test and both share
+    # the same surface-gated `is_admin`.
+    monkeypatch.setattr(query_mod, "get_bq_access", lambda: (_ for _ in ()).throw(RuntimeError("unconfigured")))
+
+
+def _run_bq_pass(user, allowed):
+    from app.api.query import _bq_guardrail_inputs
+
+    sql = 'SELECT * FROM bq."ds"."tbl" LIMIT 5'
+    return _bq_guardrail_inputs(sql, sql.lower(), None, user, allowed)
+
+
+def test_direct_bq_path_stack_surface_admin_is_grant_checked(monkeypatch):
+    """Out-of-stack direct bq.* reference must 403 for a stack-surface admin."""
+    _bq_pass_env(monkeypatch, admin=True, row_id="t_out_of_stack")
+    user = {"id": "admin1", "credential_surface": "stack"}
+    _, _, blocked = _run_bq_pass(user, allowed=["t_in_stack"])
+    assert blocked is not None and blocked["reason"] == "bq_path_access_denied"
+
+
+def test_direct_bq_path_stack_surface_admin_in_stack_allowed(monkeypatch):
+    _bq_pass_env(monkeypatch, admin=True, row_id="t_in_stack")
+    user = {"id": "admin1", "credential_surface": "stack"}
+    dry_run, _, blocked = _run_bq_pass(user, allowed=["t_in_stack"])
+    assert blocked is None
+    assert dry_run == [("ds", "tbl", 0)]
+
+
+def test_direct_bq_path_all_surface_admin_keeps_bypass(monkeypatch):
+    """surface='all' (and legacy no-key) admins keep the god-mode bypass."""
+    _bq_pass_env(monkeypatch, admin=True, row_id="t_any")
+    for user in ({"id": "admin1", "credential_surface": "all"}, {"id": "admin1"}):
+        _, _, blocked = _run_bq_pass(user, allowed=None)
+        assert blocked is None

@@ -1172,7 +1172,19 @@ def _bq_guardrail_inputs(
     if isinstance(user, PRINCIPAL_TYPES):
         is_admin = False
     else:
-        is_admin = is_user_admin(user.get("id") or user.get("email") or "", sys_conn)
+        # v106: the admin bypass below skips the per-id grant check, so it
+        # must honor the credential's data-read surface exactly like
+        # get_accessible_tables/can_access_table do — otherwise an admin on
+        # a surface='stack' PAT could read out-of-stack tables via a direct
+        # bq.* / full-backtick path while the bare-name pass (which uses
+        # `accessible_set`) correctly stack-scopes them. A stack-surface
+        # admin falls through to the grant check against `accessible_set`,
+        # which for them is the concrete stack-derived id set.
+        from src.rbac import _credential_surface
+
+        is_admin = (
+            is_user_admin(user.get("id") or user.get("email") or "", sys_conn) and _credential_surface(user) == "all"
+        )
     for m in BQ_PATH.finditer(sql):
         bucket_raw = m.group(1).strip('"')
         source_table_raw = m.group(2).strip('"')
