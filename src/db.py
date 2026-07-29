@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 106
+SCHEMA_VERSION = 107
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -477,6 +477,7 @@ CREATE TABLE IF NOT EXISTS metric_definitions (
     sql_variants    JSON,
     validation      JSON,
     source          VARCHAR DEFAULT 'manual',
+    source_ref      VARCHAR,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
 );
@@ -1546,6 +1547,7 @@ CREATE TABLE IF NOT EXISTS glossary_terms (
     see_also     VARCHAR[],
     model_uuid   VARCHAR,
     source       VARCHAR NOT NULL DEFAULT 'manual',
+    source_ref   VARCHAR,
     created_at   TIMESTAMP DEFAULT current_timestamp,
     updated_at   TIMESTAMP DEFAULT current_timestamp
 );
@@ -3828,6 +3830,7 @@ _V3_TO_V4_MIGRATIONS = [
         sql_variants    JSON,
         validation      JSON,
         source          VARCHAR DEFAULT 'manual',
+        source_ref      VARCHAR,
         created_at      TIMESTAMP DEFAULT current_timestamp,
         updated_at      TIMESTAMP DEFAULT current_timestamp
     )
@@ -6495,6 +6498,7 @@ def _v92_to_v93(conn: duckdb.DuckDBPyConnection) -> None:
             see_also     VARCHAR[],
             model_uuid   VARCHAR,
             source       VARCHAR NOT NULL DEFAULT 'manual',
+            source_ref   VARCHAR,
             created_at   TIMESTAMP DEFAULT current_timestamp,
             updated_at   TIMESTAMP DEFAULT current_timestamp
         )
@@ -6898,6 +6902,22 @@ def _v105_to_v106(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute("ALTER TABLE personal_access_tokens ADD COLUMN surface VARCHAR DEFAULT 'all'")
     conn.execute("UPDATE personal_access_tokens SET surface = 'all' WHERE surface IS NULL")
     conn.execute("UPDATE schema_version SET version = 106")
+
+
+def _v106_to_v107(conn: duckdb.DuckDBPyConnection) -> None:
+    """v106→v107: nullable ``source_ref`` on metric_definitions +
+    glossary_terms — per-connection provenance for the multi-project
+    semantic-layer sync (2026-07-28 spec). No-op on fresh installs
+    (snapshot DDL already declares the column).
+
+    (Authored as v106 on the branch; renumbered to v107 after the PAT
+    surface migration claimed v106 on main.)
+    """
+    for table in ("metric_definitions", "glossary_terms"):
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        if "source_ref" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN source_ref VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 107")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7331,6 +7351,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v105→v106: personal_access_tokens.surface — declared in
             # _SYSTEM_SCHEMA on fresh installs (no-op ALTER here).
             _v105_to_v106(conn)
+            # v106→v107: metric_definitions/glossary_terms.source_ref —
+            # declared in _SYSTEM_SCHEMA on fresh installs; no-op here.
+            _v106_to_v107(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7596,6 +7619,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v104_to_v105(conn)
             if current < 106:
                 _v105_to_v106(conn)
+            if current < 107:
+                _v106_to_v107(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
