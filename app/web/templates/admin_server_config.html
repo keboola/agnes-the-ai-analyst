@@ -471,6 +471,10 @@ const SECTION_META = {
     title: "Connector params",
     help: "Per-tenant connector params served by /api/connectors/params and written into every analyst's .env by `agnes init`. Keys are connector slugs from the seed manifest (plus `globals`). Secret VALUES don't belong here — use *_ENV keys naming the server env var.",
   },
+  library: {
+    title: "Library",
+    help: "Analyst Library display options. show_unverified_trust surfaces a muted amber 'Community' chip in the Owner column for user-authored Store items your organization hasn't verified — off by default; absence of a chip is the neutral default.",
+  },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 
@@ -973,7 +977,7 @@ function renderSection(section, payload, knownForSection) {
 
 const SECTION_GROUPS = [
   { label: "General",      sections: ["instance", "data_source", "email", "theme"] },
-  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace", "connectors"] },
+  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace", "connectors", "library"] },
   { label: "Services",     sections: [], bespoke: [
     { id: "chat-section",          title: "Cloud chat" },
     { id: "slack-secrets-section", title: "Slack bot secrets" },
