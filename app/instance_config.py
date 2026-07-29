@@ -2,6 +2,7 @@
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,97 @@ def get_value(*keys, default=None) -> Any:
         if current is None:
             return default
     return current
+
+
+def coerce_flag_value(raw: Any, default: bool = False) -> bool:
+    """Shared truthy-parsing convention for every boolean config/env value in
+    Agnes (mirrors the inline checks in :func:`get_studio_enabled`,
+    :func:`get_home_automode_visibility`, etc.) — factored out so
+    :func:`feature_enabled` and any raw-value caller (e.g.
+    ``app.chat.config.load_chat_config``, whose ``chat.enabled`` yaml source
+    is a caller-supplied path rather than :func:`get_value`'s global merged
+    config) share one rule instead of re-deriving it.
+
+    ``None`` -> ``default``. Bools pass through unchanged. Everything else
+    is stringified and lowercased: only ``"0"``, ``"false"``, ``"no"``,
+    ``"off"``, and ``""`` are false — every other string (including an
+    unrecognized typo) is true, so a truthy operator intent never silently
+    degrades to disabled.
+    """
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def feature_enabled(*keys: str, env_var: Optional[str] = None, default: bool = False) -> bool:
+    """Canonical feature-flag resolution used across Agnes (#1022).
+
+    Resolution order: ``env_var`` (if given and present in ``os.environ``) >
+    ``get_value(*keys)`` (the ``instance.yaml`` static base deep-merged with
+    the ``/admin/server-config`` writable overlay — see
+    :func:`load_instance_config`) > ``default``.
+
+    Every boolean value is parsed with :func:`coerce_flag_value`, the same
+    truthy-string convention used elsewhere in this module. See
+    ``docs/feature-flags.md`` for the convention this backs and
+    :data:`FEATURE_FLAGS` for the registry of flags that route through it.
+    """
+    if env_var:
+        raw_env = os.environ.get(env_var)
+        if raw_env is not None:
+            return coerce_flag_value(raw_env, default)
+    return coerce_flag_value(get_value(*keys, default=default), default)
+
+
+@dataclass(frozen=True)
+class FeatureFlag:
+    """One entry in the :data:`FEATURE_FLAGS` registry — everything the
+    `/admin/server-config` inventory panel needs to display a flag without
+    hardcoding its resolution elsewhere."""
+
+    name: str
+    config_keys: tuple[str, ...]
+    env_var: str
+    default: bool
+    description: str
+
+
+# Registry of every flag resolved via :func:`feature_enabled`. Adding a new
+# flag: call `feature_enabled` at the read site, append an entry here, and
+# add a row to `docs/feature-flags.md` (see that doc's "How to add a flag"
+# section, and CONTRIBUTING.md's sync-map).
+FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
+    FeatureFlag(
+        name="studio",
+        config_keys=("studio", "enabled"),
+        env_var="AGNES_STUDIO_ENABLED",
+        default=True,
+        description="Authoring Studio surface (/admin/studio*). Grandfathered on by default.",
+    ),
+    FeatureFlag(
+        name="guardrails",
+        config_keys=("guardrails", "enabled"),
+        env_var="AGNES_GUARDRAILS_ENABLED",
+        default=True,
+        description="Flea-market upload LLM security-review pipeline. Grandfathered on by default.",
+    ),
+    FeatureFlag(
+        name="chat",
+        config_keys=("chat", "enabled"),
+        env_var="AGNES_CHAT_ENABLED",
+        default=False,
+        description="Cloud-hosted chat (E2B sandbox agent sessions). New feature — off by default.",
+    ),
+    FeatureFlag(
+        name="data_apps",
+        config_keys=("data_apps", "enabled"),
+        env_var="AGNES_DATA_APPS_ENABLED",
+        default=False,
+        description="Hosted user web apps (data apps). New feature — off by default.",
+    ),
+)
 
 
 def get_data_source_type() -> str:
@@ -437,15 +529,12 @@ def get_studio_enabled() -> bool:
     instance.yaml — hides the Studio nav entry and redirects ``/admin/studio*``
     to home.
 
-    Resolution: env var > ``studio.enabled`` YAML > True. Mirrors
-    :func:`get_home_automode_visibility` so infra overrides land the same way.
+    Resolution: env var > ``studio.enabled`` YAML > True — delegates to
+    :func:`feature_enabled` (the canonical resolver, #1022); see
+    :data:`FEATURE_FLAGS` for the registry entry backing the
+    ``/admin/server-config`` inventory panel.
     """
-    raw = os.environ.get("AGNES_STUDIO_ENABLED")
-    if raw is None:
-        raw = get_value("studio", "enabled", default=True)
-    if isinstance(raw, bool):
-        return raw
-    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+    return feature_enabled("studio", "enabled", env_var="AGNES_STUDIO_ENABLED", default=True)
 
 
 def get_instance_name() -> str:
@@ -868,6 +957,21 @@ def get_corporate_memory_config() -> dict:
     return get_value("corporate_memory", default={})
 
 
+# Defaults backfilled when the feature is enabled via the AGNES_DATA_APPS_ENABLED
+# env override but instance.yaml carries no ``data_apps:`` block — mirror
+# config/instance.yaml.example so downstream spec-builders (which read
+# ``default_sleep_mode``/``default_mem_limit``/… by key) don't KeyError.
+_DATA_APPS_ENV_DEFAULTS = {
+    "runtime_image": "keboolapublic.azurecr.io/data-app-python-js:1.6.2_python-3.13_node-24",
+    "subdomain_base": "",
+    "default_idle_timeout_s": 1800,
+    "default_sleep_mode": "recreate",
+    "default_mem_limit": "1g",
+    "default_cpus": 1.0,
+    "max_apps_per_user": 3,
+}
+
+
 def get_data_apps_config() -> dict:
     """``data_apps:`` block — hosted user web apps feature (v96).
 
@@ -879,8 +983,32 @@ def get_data_apps_config() -> dict:
     (``app/data_apps_subdomain.py``) and ``session_cookie_domain()`` below
     (itself called from every login flow), so callers should never need
     their own ``(get_data_apps_config() or {})`` guard.
+
+    ``AGNES_DATA_APPS_ENABLED`` env override (Terraform-friendly, mirrors
+    :func:`get_home_route` / :func:`get_public_url`): the customer-instance
+    module flips the feature on by setting this in ``.env`` — alongside the
+    apps-runner token, ``DOCKER_GID`` and ``COMPOSE_PROFILES=apps`` — instead
+    of editing the instance.yaml overlay on disk. When set, the env var wins
+    over instance.yaml in BOTH directions per the canonical flag resolution
+    (#1022, :func:`feature_enabled` / ``docs/feature-flags.md``) — a falsy
+    value forces the feature off even when the yaml enables it, keeping this
+    accessor consistent with the request gates that resolve the same var.
+    Instances without the var are byte-for-byte unchanged. When enabled, the
+    example-config defaults are backfilled for any key instance.yaml omits so
+    the spec-builders have a complete block, and ``runtime_image`` can be
+    further pinned with ``AGNES_DATA_APPS_RUNTIME_IMAGE``.
     """
-    return get_value("data_apps", default={}) or {}
+    cfg = dict(get_value("data_apps", default={}) or {})
+    raw = os.environ.get("AGNES_DATA_APPS_ENABLED")
+    if raw is not None:
+        if coerce_flag_value(raw, default=False):
+            cfg = {**_DATA_APPS_ENV_DEFAULTS, **cfg, "enabled": True}
+            env_image = os.environ.get("AGNES_DATA_APPS_RUNTIME_IMAGE")
+            if env_image:
+                cfg["runtime_image"] = env_image
+        else:
+            cfg["enabled"] = False
+    return cfg
 
 
 def session_cookie_domain() -> Optional[str]:
@@ -1041,7 +1169,9 @@ def get_guardrails_enabled() -> bool:
     Reads ``guardrails.enabled`` from instance.yaml. Defaults to True.
     Operators can explicitly disable by setting ``guardrails.enabled:
     false`` — useful for local development against the UI without
-    burning Anthropic tokens.
+    burning Anthropic tokens. ``AGNES_GUARDRAILS_ENABLED`` env var wins
+    over both (new, additive — #1022 canonicalization; delegates to
+    :func:`feature_enabled`, see :data:`FEATURE_FLAGS`).
 
     Note: this returns intent ONLY. Whether the LLM provider has
     working credentials is a separate concern — see
@@ -1050,7 +1180,7 @@ def get_guardrails_enabled() -> bool:
     ``pending_llm`` (instead of silently auto-approving) when intent is
     True but credentials are missing.
     """
-    return bool(get_value("guardrails", "enabled", default=True))
+    return feature_enabled("guardrails", "enabled", env_var="AGNES_GUARDRAILS_ENABLED", default=True)
 
 
 def get_store_verification_enabled() -> bool:

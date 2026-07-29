@@ -55,8 +55,17 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from app.api.data_apps import OwnerNotFoundError, _can_view, _feature_gate, redeploy_current, try_acquire_op_lease
+from app.api.data_apps import (
+    _PREVIEW_COOKIE_NAME,
+    OwnerNotFoundError,
+    _can_view,
+    _feature_gate,
+    redeploy_current,
+    try_acquire_op_lease,
+)
 from app.auth.dependencies import _get_db, get_current_user
+from app.auth.jwt import verify_token
+from app.auth.pat_resolver import DATA_APP_PREVIEW_SCOPE_PREFIX, resolve_token_to_user
 from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
 from src.data_apps.runner_client import RunnerClient, RunnerError, RunnerUnavailable
@@ -134,6 +143,56 @@ def _get_row_or_404(slug: str) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="data_app_not_found")
     return row
+
+
+def _resolve_proxy_caller(request: Request, slug: str, conn: Optional[object]) -> tuple[Optional[dict], bool]:
+    """Resolve who's allowed to view ``/apps/<slug>/...``.
+
+    Returns ``(user, via_preview)``. Tries the normal session-cookie/PAT
+    chain first (``get_current_user``'s exact resolution, called directly
+    rather than via ``Depends`` so its 401 can be caught and traded for the
+    preview-token fallback below instead of short-circuiting the route).
+
+    If normal auth fails, falls back to a ``data-app-preview:<slug>``
+    scoped token (cookie named ``_PREVIEW_COOKIE_NAME``, or ``Authorization:
+    Bearer``) — mirroring the ``data-app-git`` scope-pin precedent in
+    ``app/api/data_apps_git.py``: the resolved identity is trusted to VIEW
+    THIS SLUG ONLY when the token's scope claim is exactly
+    ``data-app-preview:<slug>``. A token minted for a different app, or one
+    that's expired/revoked (caught by ``resolve_token_to_user``'s normal PAT
+    checks), resolves to ``(None, False)`` here — never falls through to
+    treating the caller as unauthenticated-but-otherwise-fine.
+
+    ``via_preview=True`` tells the caller to skip the normal ``_can_view``
+    RBAC check entirely: the mint-time call to
+    ``POST /{slug}/preview-grant`` already required ``_can_view`` to pass,
+    so a validly-scoped preview token is sufficient on its own for this
+    view-only serving path (never accepted on the JSON control-plane API —
+    ``resolve_token_to_user`` there defaults to rejecting the scope).
+    """
+    auth_header = request.headers.get("authorization")
+    try:
+        user = get_current_user(request=request, authorization=auth_header, conn=conn)
+        return user, False
+    except HTTPException:
+        pass
+
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.removeprefix("Bearer ")
+    if not token:
+        token = request.cookies.get(_PREVIEW_COOKIE_NAME)
+    if not token:
+        return None, False
+
+    user, _reason = resolve_token_to_user(conn, token, request, allow_data_app_preview_scope=True)
+    if not user:
+        return None, False
+    payload = verify_token(token) or {}
+    scope = payload.get("scope") or ""
+    if scope != f"{DATA_APP_PREVIEW_SCOPE_PREFIX}{slug}":
+        return None, False
+    return user, True
 
 
 def _touch(app_row: dict) -> None:
@@ -343,7 +402,7 @@ async def proxy_redirect_trailing_slash(slug: str, request: Request):
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     include_in_schema=False,
 )
-async def proxy_app(slug: str, path: str, request: Request, user: dict = Depends(get_current_user)):
+async def proxy_app(slug: str, path: str, request: Request, conn=Depends(_get_db)):
     """Excluded from OpenAPI (``include_in_schema=False``): a single FastAPI
     route registered against multiple HTTP methods shares ONE
     ``operation_id``/response-schema across all of them (FastAPI's
@@ -355,10 +414,24 @@ async def proxy_app(slug: str, path: str, request: Request, user: dict = Depends
     shape is fundamentally undocumentable via a single static OpenAPI
     operation; behaviour is covered in ``tests/test_data_apps_proxy.py``
     instead of the docs/coverage ratchets that key off the schema.
+
+    Auth is resolved via ``_resolve_proxy_caller`` (not a plain
+    ``Depends(get_current_user)``) so a request carrying only a
+    ``data-app-preview:<slug>`` scoped cookie/bearer — which
+    ``get_current_user``'s normal chain rejects outright, same as
+    ``data-app-git`` — still gets a chance to authorize this view-only
+    serving path (wave 3C, spec §7).
     """
     _feature_gate()
     row = _get_row_or_404(slug)
-    if not _can_view(user, row):
+    # Off the event loop: _resolve_proxy_caller does DB-backed auth
+    # (get_current_user + resolve_token_to_user), which would otherwise
+    # serialize every proxied request behind one blocking lookup (503s under
+    # load on Postgres) — same run_in_threadpool discipline as the runner calls.
+    user, via_preview = await run_in_threadpool(_resolve_proxy_caller, request, slug, conn)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    if not via_preview and not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
 
     _touch(row)
@@ -416,9 +489,9 @@ def _ws_authenticate(websocket: WebSocket) -> Optional[dict]:
 
 @router.websocket("/apps/{slug}/{path:path}")
 async def proxy_ws(websocket: WebSocket, slug: str, path: str):
-    from app.instance_config import get_data_apps_config
+    from app.instance_config import feature_enabled
 
-    if not get_data_apps_config().get("enabled"):
+    if not feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
         await websocket.close(code=4404, reason="data_apps_disabled")
         return
 

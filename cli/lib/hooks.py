@@ -16,7 +16,8 @@ Design notes:
 - SessionStart gets ONE entry: a detached `agnes update --quiet`. That single
   command is the unified convergence — it self-upgrades the CLI, applies the
   workspace template, re-asserts the Agnes-owned hooks/statusLine/commands,
-  refreshes marketplace plugins, and pulls data — then writes a run report.
+  refreshes marketplace plugins, runs the `agnes push` catch-up for whatever
+  the last SessionEnd missed, and pulls data — then writes a run report.
   It runs detached (`( nohup ... & )`, like the SessionEnd push) so it never
   blocks session start, sets `AGNES_NO_UPDATE_CHECK` internally so it doesn't
   recurse, and holds a single-instance lock so only one runs at a time. It
@@ -47,9 +48,16 @@ Design notes:
   orphans the upload child so it survives the Claude shutdown. Errors are
   routed to /dev/null — no worse than the previous `2>/dev/null` form.
   Operators who want visibility into push failures can manually run
-  `agnes push --json`. The next session's SessionEnd push re-scans the
-  folder, so any transcript a prior push missed (crash, kill, terminal
-  close) is picked up then — the upload ledger dedups what already landed.
+  `agnes push --json`.
+
+  SessionEnd is also not guaranteed to fire at all: a closed terminal
+  window (or a crash / kill) can take Claude Code down before it reaches
+  the hook. Any transcript a push missed that way is picked up by the NEXT
+  session's SessionStart `agnes update`, which runs the same push as a
+  catch-up step (`cli/commands/update.py::_step_push`) — SessionStart
+  cannot be missed, because the session is being created. Both triggers
+  re-scan the whole folder and the upload ledger dedups what already
+  landed, so the recovery costs nothing when there is nothing to recover.
 """
 
 from __future__ import annotations
@@ -190,7 +198,8 @@ def install_claude_hooks(workspace: Path) -> None:
     # ("agnes capture-session" or "capture-session/capture.sh").
     # SessionStart kicks off ONE detached `agnes update --quiet`: the unified
     # convergence (CLI self-upgrade -> workspace template -> Agnes-owned
-    # hooks/statusLine/commands -> marketplace plugins -> data pull -> report).
+    # hooks/statusLine/commands -> marketplace plugins -> session push
+    # catch-up -> data pull -> report).
     # Detached via `( nohup ... & )` (like the SessionEnd push) so it NEVER
     # blocks session start; a freshly-installed CLI binary, if any, activates
     # next session. `agnes update` sets AGNES_NO_UPDATE_CHECK internally so it

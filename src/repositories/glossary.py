@@ -33,6 +33,7 @@ class GlossaryRepository:
         see_also: Optional[List[str]] = None,
         model_uuid: Optional[str] = None,
         source: str = "manual",
+        source_ref: Optional[str] = None,
         refresh_fts: bool = True,
     ) -> Dict[str, Any]:
         """``refresh_fts=False`` skips the post-write BM25 index rebuild —
@@ -44,17 +45,18 @@ class GlossaryRepository:
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO glossary_terms (
-                id, term, definition, see_also, model_uuid, source,
+                id, term, definition, see_also, model_uuid, source, source_ref,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 term = excluded.term,
                 definition = excluded.definition,
                 see_also = excluded.see_also,
                 model_uuid = excluded.model_uuid,
                 source = excluded.source,
+                source_ref = excluded.source_ref,
                 updated_at = excluded.updated_at""",
-            [id, term, definition, see_also, model_uuid, source, now, now],
+            [id, term, definition, see_also, model_uuid, source, source_ref, now, now],
         )
         if refresh_fts:
             self._refresh_fts_index()
@@ -67,6 +69,10 @@ class GlossaryRepository:
     def list(self, limit: int = 100) -> List[Dict[str, Any]]:
         rows = self.conn.execute("SELECT * FROM glossary_terms ORDER BY term LIMIT ?", [limit]).fetchall()
         return self._rows_to_dicts(rows)
+
+    def find_by_term(self, term: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute("SELECT * FROM glossary_terms WHERE term = ? ORDER BY id LIMIT 1", [term]).fetchone()
+        return self._row_to_dict(row)
 
     def delete(self, glossary_id: str) -> bool:
         existing = self.get(glossary_id)

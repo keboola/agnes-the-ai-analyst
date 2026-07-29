@@ -96,6 +96,15 @@ async def run_keboola_semantic_layer_refresh(
             _record_completion("error", str(e))
             raise
         else:
+            # sync_semantic_layer() reports config/upstream failures (missing
+            # credentials, Storage/Metastore API errors) as a returned
+            # {"status": "error"} dict rather than an exception — those must
+            # be recorded and surfaced the same way as the exception paths
+            # above, or the admin UI shows a false "OK" after a failed sync.
+            if result.get("status") == "error":
+                message = result.get("error", "Keboola semantic layer sync failed")
+                _record_completion("error", message)
+                raise HTTPException(status_code=502, detail=message)
             _record_completion("ok", result)
         finally:
             _refresh_state["run_id"] = None
@@ -104,7 +113,7 @@ async def run_keboola_semantic_layer_refresh(
     logger.info(
         "keboola semantic layer refresh: run_id=%s status=%s created_or_updated=%s "
         "pruned=%s skipped_unresolved_table=%s skipped_foreign_alias=%s "
-        "skipped_embedded_comment=%s",
+        "skipped_embedded_comment=%s sources=%s",
         run_id,
         result.get("status"),
         result.get("created_or_updated"),
@@ -112,5 +121,6 @@ async def run_keboola_semantic_layer_refresh(
         result.get("skipped_unresolved_table"),
         result.get("skipped_foreign_alias"),
         result.get("skipped_embedded_comment"),
+        len(result.get("sources") or []),
     )
     return {**result, "run_id": run_id, "started_at": started_at}

@@ -73,12 +73,13 @@ def _validate_type(value: str) -> ResourceType:
 
 
 def _reject_co_session(user: object) -> None:
-    """Stack management is per-user — a co-session principal has no single
-    identity to subscribe with, and ``user["id"]`` would blow up on the
-    dataclass anyway. Every /api/stack endpoint must call this first."""
-    from app.auth.session_principal import SessionPrincipal
+    """Stack management is per-user — a restricted principal has no identity
+    to subscribe with (a co-session has no single one; an agent-session must
+    not mutate its owner's stack), and ``user["id"]`` would blow up on the
+    frozen dataclass anyway. Every /api/stack endpoint must call this first."""
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(403, "co_session cannot manage stack")
 
 

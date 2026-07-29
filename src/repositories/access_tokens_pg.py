@@ -2,6 +2,7 @@
 
 Mirrors ``src/repositories/access_tokens.py``.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -24,13 +25,16 @@ class AccessTokenPgRepository:
         prefix: str,
         expires_at: Optional[datetime] = None,
         scopes: Optional[str] = None,
+        *,
+        agent_id: Optional[str] = None,
+        surface: str = "all",
     ) -> None:
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     """INSERT INTO personal_access_tokens
-                       (id, user_id, name, token_hash, prefix, scopes, created_at, expires_at)
-                       VALUES (:id, :user_id, :name, :token_hash, :prefix, :scopes, :now, :expires_at)"""
+                       (id, user_id, name, token_hash, prefix, scopes, created_at, expires_at, agent_id, surface)
+                       VALUES (:id, :user_id, :name, :token_hash, :prefix, :scopes, :now, :expires_at, :agent_id, :surface)"""
                 ),
                 {
                     "id": id,
@@ -41,15 +45,21 @@ class AccessTokenPgRepository:
                     "scopes": scopes,
                     "now": datetime.now(timezone.utc),
                     "expires_at": expires_at,
+                    "agent_id": agent_id,
+                    "surface": surface,
                 },
             )
 
     def get_by_id(self, token_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM personal_access_tokens WHERE id = :id"),
-                {"id": token_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM personal_access_tokens WHERE id = :id"),
+                    {"id": token_id},
+                )
+                .mappings()
+                .first()
+            )
         return dict(row) if row else None
 
     def list_for_user(self, user_id: str, include_revoked: bool = True) -> List[Dict[str, Any]]:
@@ -63,32 +73,53 @@ class AccessTokenPgRepository:
 
     def list_all(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text("SELECT * FROM personal_access_tokens ORDER BY created_at DESC")
-            ).mappings().all()
+            rows = (
+                conn.execute(sa.text("SELECT * FROM personal_access_tokens ORDER BY created_at DESC")).mappings().all()
+            )
         return [dict(r) for r in rows]
 
     def list_all_with_user(self, limit: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """SELECT t.*, u.email AS user_email
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """SELECT t.*, u.email AS user_email
                        FROM personal_access_tokens t
                        LEFT JOIN users u ON u.id = t.user_id
                        ORDER BY t.created_at DESC
                        LIMIT :limit OFFSET :offset"""
-                ),
-                {"limit": limit, "offset": offset},
-            ).mappings().all()
+                    ),
+                    {"limit": limit, "offset": offset},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
+    def list_for_agent(self, agent_id: str, include_revoked: bool = True) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM personal_access_tokens WHERE agent_id = :agent_id"
+        if not include_revoked:
+            sql += " AND revoked_at IS NULL"
+        sql += " ORDER BY created_at DESC"
+        with self._engine.connect() as conn:
+            rows = conn.execute(sa.text(sql), {"agent_id": agent_id}).mappings().all()
         return [dict(r) for r in rows]
 
     def revoke(self, token_id: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE personal_access_tokens SET revoked_at = :now WHERE id = :id"
-                ),
+                sa.text("UPDATE personal_access_tokens SET revoked_at = :now WHERE id = :id"),
                 {"now": datetime.now(timezone.utc), "id": token_id},
+            )
+
+    def revoke_for_agent(self, agent_id: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE personal_access_tokens SET revoked_at = :now "
+                    "WHERE agent_id = :agent_id AND revoked_at IS NULL"
+                ),
+                {"now": datetime.now(timezone.utc), "agent_id": agent_id},
             )
 
     def delete(self, token_id: str) -> None:
@@ -101,8 +132,6 @@ class AccessTokenPgRepository:
     def mark_used(self, token_id: str, ip: Optional[str] = None) -> None:
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE personal_access_tokens SET last_used_at = :now, last_used_ip = :ip WHERE id = :id"
-                ),
+                sa.text("UPDATE personal_access_tokens SET last_used_at = :now, last_used_ip = :ip WHERE id = :id"),
                 {"now": datetime.now(timezone.utc), "ip": ip, "id": token_id},
             )

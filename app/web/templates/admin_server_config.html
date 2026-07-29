@@ -374,6 +374,27 @@
     </div>
   </section>
 
+  <!-- Feature flags — read-only inventory (#1022). Toggling still happens
+       per-section above (or via an env var) — this panel is display-only,
+       fed by the `feature_flags` block in GET /api/admin/server-config. -->
+  <section class="cfg-section" id="feature-flags-section">
+    <header>
+      <div>
+        <h3>Feature flags</h3>
+        <div class="section-help">
+          Every flag registered in <code>app.instance_config.FEATURE_FLAGS</code>,
+          resolved <strong>env var &gt; instance.yaml &gt; default</strong>
+          (see <code>docs/feature-flags.md</code>). Read-only — flip a flag
+          via its config section above, the admin overlay, or the listed
+          env var.
+        </div>
+      </div>
+    </header>
+    <div class="section-body">
+      <div id="feature-flags-list" class="cfg-loading">Loading…</div>
+    </div>
+  </section>
+
       <!-- Danger zone sections (auth, server) rendered separately so bespoke sections above sit before them -->
       <div id="cfg-sections-danger" hidden></div>
       <!-- Tail: sections not in any known group (e.g. marketplace) — rendered last, no danger styling -->
@@ -953,6 +974,7 @@ const SECTION_GROUPS = [
   { label: "Services",     sections: [], bespoke: [
     { id: "chat-section",          title: "Cloud chat" },
     { id: "slack-secrets-section", title: "Slack bot secrets" },
+    { id: "feature-flags-section", title: "Feature flags" },
   ]},
   { label: "Danger zone",  sections: ["auth", "server"], isDanger: true },
 ];
@@ -1013,10 +1035,47 @@ function buildSidenav(sections) {
   });
 }
 
+function flagSourceBadge(source) {
+  if (source === "env") return '<span style="color: #2a8c4a;">env</span>';
+  if (source === "config") return '<span style="color: #6366f1;">config</span>';
+  return '<span style="color: #888;">default</span>';
+}
+
+function renderFeatureFlags(flags) {
+  const el = document.getElementById("feature-flags-list");
+  if (!el) return;
+  if (!Array.isArray(flags) || !flags.length) {
+    el.textContent = "No feature flags registered.";
+    return;
+  }
+  const rows = flags.map(f => `
+    <tr>
+      <td><code>${escHtml(f.name)}</code></td>
+      <td>${f.effective ? '<span style="color: #2a8c4a;">&#10003; on</span>' : '<span style="color: #888;">&#10007; off</span>'}</td>
+      <td>${flagSourceBadge(f.source)}</td>
+      <td><code>${escHtml(f.env_var)}</code></td>
+      <td style="color: var(--text-secondary, #6b7280);">${escHtml(f.description)}</td>
+    </tr>`).join("");
+  el.innerHTML = `
+    <table style="width:100%; border-collapse: collapse; font-size: 13px;">
+      <thead>
+        <tr style="text-align:left; color: var(--text-muted, #9ca3af); font-size: 11px; text-transform: uppercase;">
+          <th style="padding: 4px 8px;">Flag</th>
+          <th style="padding: 4px 8px;">Effective</th>
+          <th style="padding: 4px 8px;">Source</th>
+          <th style="padding: 4px 8px;">Env var</th>
+          <th style="padding: 4px 8px;">Description</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 function renderAll(data) {
   const wrap = document.getElementById("cfg-sections");
   const dangerWrap = document.getElementById("cfg-sections-danger");
   const tailWrap = document.getElementById("cfg-sections-tail");
+  renderFeatureFlags(data.feature_flags);
   const apiSections = data.editable_sections || Object.keys(data.sections || {});
   // Sort sections to match sidebar group order (General → Integrations → Danger zone → tail)
   const groupOrder = SECTION_GROUPS.flatMap(g => g.sections);

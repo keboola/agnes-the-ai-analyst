@@ -80,6 +80,13 @@ class ObjectStore(Protocol):
         presigning + fetching over HTTP."""
         ...
 
+    def delete_object(self, key: str) -> None:
+        """Delete the object at *key*. A no-op (never raises) if it does
+        not exist — mirrors S3's own DELETE semantics. Used by the
+        `DELETE /api/v1/agents/{id}` cascade (agent-api V1b Task 8, C14) to
+        scrub harvested-artifact blobs when their owning agent is deleted."""
+        ...
+
 
 def _normalize_key(prefix: str, key: str) -> str:
     """Join *prefix* and *key* with exactly one ``/`` between segments,
@@ -170,6 +177,12 @@ class S3ObjectStore:
             raise
         body = response["Body"].read()
         return bytes(body)
+
+    def delete_object(self, key: str) -> None:
+        # S3's DeleteObject is already idempotent/no-op-on-missing-key —
+        # no need to duck-type a not-found error away here the way
+        # head_md5/get_bytes do.
+        self._client.delete_object(Bucket=self.bucket, Key=self._key(key))
 
 
 def _is_not_found(exc: Exception) -> bool:

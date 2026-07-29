@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import quote
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 
@@ -24,9 +25,46 @@ NETWORK = "agnes-apps"
 AGNES_INTERNAL_URL = "http://app:8000"
 
 
+def _embed_credentials(url: str, username: str, password: str) -> str:
+    """Insert percent-encoded basic-auth credentials after the scheme.
+
+    Idempotent — a URL whose authority already carries credentials is returned
+    unchanged. This mirrors the upstream runtime image's own
+    ``embed_credentials_in_url`` (``/usr/local/keboola`` ``functions.sh``) with
+    one critical difference the image's behavior forces on us: the image only
+    embeds ``username``/``#password`` from ``config.json`` into **HTTPS** clone
+    URLs and leaves a **plain-HTTP** URL untouched (its own bats suite asserts
+    "HTTP URL - no modification"). Agnes serves the internal git backend over
+    plain HTTP (``http://app:8000/data-apps.git/<slug>``), so unless we embed
+    the token into the URL ourselves the container clones bare, git prompts for
+    a username in a non-interactive shell, and the runtime crash-loops with
+    ``could not read Username`` (proxy then 502s ``container_unreachable``).
+    The image preserves a URL that already has credentials, so this is safe to
+    always apply."""
+    m = re.match(r"^(https?://)(.*)$", url)
+    if not m:
+        return url
+    scheme, rest = m.group(1), m.group(2)
+    authority = rest.split("/", 1)[0]
+    if "@" in authority:  # already credentialed — don't double-embed
+        return url
+    return f"{scheme}{quote(username, safe='')}:{quote(password, safe='')}@{rest}"
+
+
 def build_config_json(app_row: dict, *, secrets: dict[str, str], clone_url: str, clone_token: str) -> dict:
     if app_row["repo_mode"] == "internal":
-        git = {"repository": clone_url, "branch": LIVE_BRANCH, "username": "agnes", "#password": clone_token}
+        branch = app_row["draft_branch"] if app_row.get("is_draft") else LIVE_BRANCH
+        # Embed the push token into the repository URL: the runtime image won't
+        # add credentials to a plain-HTTP clone URL (see `_embed_credentials`),
+        # and Agnes's internal git backend is HTTP. `username`/`#password` are
+        # kept too — harmless, and they cover the HTTPS path if the internal
+        # URL is ever fronted by TLS.
+        git = {
+            "repository": _embed_credentials(clone_url, "agnes", clone_token),
+            "branch": branch,
+            "username": "agnes",
+            "#password": clone_token,
+        }
     else:
         git = {"repository": app_row["repo_url"], "branch": app_row["repo_branch"] or "main"}
     out_secrets = {f"#{k}": v for k, v in secrets.items()}

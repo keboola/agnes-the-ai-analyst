@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.chat import inbound, routing
+from app.chat import agent_profile, inbound, routing
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.frame_seq import stamp_frame
@@ -29,6 +29,51 @@ from app.coordination.leases import default_holder_id
 from src.repositories import ticket_repo, usage_repo, users_repo
 
 logger = logging.getLogger(__name__)
+
+# Process-wide handle to the live ChatManager (Task 9). ``app/main.py``'s
+# lifespan calls `set_current_chat_manager(app.state.chat_manager)` once
+# CHAT-INIT settles (whatever it settled to — a real manager, or None when
+# chat is disabled/degraded) — the SAME value it stores on
+# ``app.state.chat_manager``. Request handlers already read the manager off
+# ``request.app.state`` (see ``app/api/chat.py::_get_manager``); this
+# singleton exists ONLY for callers with no ``Request`` to hand them one —
+# namely the ``agent_response`` job-worker handler (``app/worker/kinds.py``),
+# which runs a plain ``Callable[[dict], None]`` with no app object in scope.
+#
+# ``_current_loop`` is captured alongside it (the running loop at the
+# moment ``set_current_chat_manager`` is called from ``app/main.py``'s
+# async lifespan — i.e. the SAME loop uvicorn serves requests on, and the
+# one every ``ChatManager`` lock/task/sink was created against). The job
+# worker runs handlers synchronously in a thread (``asyncio.to_thread`` —
+# see ``app/worker/runtime.py``), so calling back into ``ChatManager``'s
+# async methods from there needs ``asyncio.run_coroutine_threadsafe(coro,
+# get_current_chat_loop())``, never a fresh ``asyncio.run()`` in that
+# thread — a new loop would break the manager's existing locks/tasks/sinks,
+# which are asyncio primitives bound to the loop that created them.
+_current_manager: Optional["ChatManager"] = None
+_current_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_current_chat_manager(manager: Optional["ChatManager"]) -> None:
+    global _current_manager, _current_loop
+    _current_manager = manager
+    try:
+        _current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called from outside a running loop (e.g. a test that never awaits
+        # anything first) — leave the loop unset rather than raise; a
+        # worker-thread caller that needs it will simply see None and fail
+        # closed (RuntimeError from the job handler, not a crash here).
+        _current_loop = None
+
+
+def get_current_chat_manager() -> Optional["ChatManager"]:
+    return _current_manager
+
+
+def get_current_chat_loop() -> Optional[asyncio.AbstractEventLoop]:
+    return _current_loop
+
 
 # Sonnet pricing constants (USD per million tokens)
 _PRICE_IN_PER_MTOK = 3.0
@@ -497,6 +542,7 @@ class ChatManager:
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
         profile: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> ChatSession:
         if not self._config.enabled:
             raise RuntimeError("chat.enabled is false")
@@ -521,6 +567,7 @@ class ChatManager:
             slack_channel_id=slack_channel_id,
             slack_thread_ts=slack_thread_ts,
             title=title,
+            agent_id=agent_id,
         )
         if profile is not None:
             self._session_profiles[created.id] = profile
@@ -635,6 +682,20 @@ class ChatManager:
         When on_detach='pause', ACTIVE sessions are paused so they survive the
         restart (sandboxes preserve memory + running processes). When
         on_detach='kill' (or pause fails), the session is killed as before.
+
+        Drain notice (robustness parity): a session whose turn is IN FLIGHT
+        when the server goes down and is about to be KILLED would otherwise
+        show the answer simply stop mid-generation with no explanation — the
+        frontend keeps the composer wedged in the "running" state (it only
+        clears on done/error/cancelled). Such sessions get a user-facing
+        notice frame plus a ``done`` so the client can prompt a resend
+        against the replacement process. The notice is deliberately NOT sent
+        on the successful-pause path: pause snapshots the sandbox with the
+        turn still running, so on reconnect ``_resume_live`` restarts the
+        pump tasks and the in-flight turn finishes and delivers its frames —
+        telling the user to resend there would be wrong and invite a
+        duplicate turn. Best-effort and per-session isolated; a broadcast
+        failure never blocks the rest of the drain.
         """
         chat_ids = list(self._live.keys())
         for chat_id in chat_ids:
@@ -647,6 +708,19 @@ class ChatManager:
                     continue
                 except Exception:
                     logger.exception("shutdown pause failed for %s — killing instead", chat_id)
+            if live.turn_in_flight:
+                try:
+                    await self._broadcast(
+                        live,
+                        {
+                            "type": "error",
+                            "kind": "server_restarting",
+                            "message": "The chat server is restarting — please resend your last message.",
+                        },
+                    )
+                    await self._broadcast(live, {"type": "done"})
+                except Exception:
+                    logger.exception("shutdown drain notice failed for %s", chat_id)
             try:
                 await self.kill(chat_id, reason="server_shutdown")
             except Exception:
@@ -811,13 +885,40 @@ class ChatManager:
         # needs its own stamp (wave-2F task 2).
         await ws.send_json(stamp_frame(live.chat_id, {"type": "ready"}))
 
+    def _load_agent_row(self, agent_id: Optional[str]) -> Optional[dict]:
+        """Best-effort load of an `agents` row for spawn-time profile
+        resolution (Task 7). Returns ``None`` on a missing id, a missing
+        row, or any repo error — a lookup failure must never block a chat
+        spawn; it just means the session falls back to today's static
+        profile behavior and no scope snapshot is recorded."""
+        if not agent_id:
+            return None
+        try:
+            from src.repositories import agents_repo
+
+            return agents_repo().get_by_id(agent_id)
+        except Exception:
+            logger.exception("agent row lookup failed for agent_id=%s — spawn continues without it", agent_id)
+            return None
+
     async def _spawn_live(self, session: "ChatSession") -> "LiveSession":
         """Spawn a fresh sandbox, register refs, start pump/wait tasks.
 
         Returns the new LiveSession registered in self._live. Does NOT await
         the pump/wait tasks — they run independently (Task 8 contract).
+
+        Task 7: when ``session.agent_id`` resolves to an `agents` row with a
+        non-empty ``system_prompt``, that row's DB-sourced ``ChatProfile``
+        (``app.chat.agent_profile.build_profile``) takes precedence over the
+        static ``self._session_profiles`` slug lookup — otherwise (no
+        agent_id, agent missing, or empty system_prompt, as with the seeded
+        default agent) today's behavior is unchanged bit-for-bit. A scope
+        snapshot (audit trail — since V1d it describes what is live-enforced
+        at the broker/RBAC seams, see ``app.chat.agent_profile``'s
+        docstring) is recorded once the spawn has actually succeeded.
         """
         chat_id = session.id
+        agent_row = self._load_agent_row(session.agent_id)
         if session.is_co_session:
             parts = self._repo.get_session_participants(chat_id)
             emails = [p.user_email for p in parts if p.left_at is None]
@@ -830,7 +931,27 @@ class ChatManager:
             self._workdir_mgr.ensure_user_workdir(session.user_email)
             prof_slug = self._session_profiles.get(session.id)
             prof = get_profile(prof_slug) if prof_slug else None
+            dynamic_prof = None
+            if agent_row:
+                try:
+                    dynamic_prof = agent_profile.build_profile(agent_row)
+                except Exception:
+                    logger.exception(
+                        "agent profile build failed for agent_id=%s — falling back to static/default profile",
+                        session.agent_id,
+                    )
+                    dynamic_prof = None
+            prof = dynamic_prof or prof
             session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id, profile=prof)
+
+        # V1c Task 3: materialize this agent's active memories into the
+        # workdir BEFORE spawn — the same host-dir-then-uploaded seam
+        # build_profile's persona took above. session_dir is a host path;
+        # _spawn_runner (next line) is what actually uploads it into the
+        # remote sandbox, so this must run first or the agent never sees
+        # its memories. Never raises — see agent_profile.materialize_memories.
+        if agent_row is not None:
+            agent_profile.materialize_memories(agent_row, session_dir)
 
         handle = await self._spawn_runner(session, session_dir)
         import time as _t
@@ -872,6 +993,8 @@ class ChatManager:
             # for the LiveSession object's whole lifetime — see LiveSession.
             # inbound_task's docstring for why this is NOT part of `tasks`.
             live.inbound_task = asyncio.create_task(self._inbound_consumer_loop(live))
+            if agent_row is not None:
+                agent_profile.record_snapshot(chat_id, agent_row)
             return live
         except Exception:
             self._live.pop(chat_id, None)
@@ -1266,19 +1389,13 @@ class ChatManager:
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
         await self._push_ticket_frame(live)
         await self._broadcast(live, {"type": "ready"})
-        # Replay last 3 user turns.
-        history = self._repo.list_messages(live.chat_id)[-3:]
-        live_emails = set(live.participant_emails) or {live.user_email}
-        for msg in history:
-            if msg.role != "user":
-                continue
-            author = getattr(msg, "sender_email", None) or live.user_email
-            if live.participant_emails and author not in live_emails:
-                continue
-            payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-            async with live._stdin_lock:
-                new_handle.stdin.write(payload.encode("utf-8"))
-                await new_handle.stdin.drain()
+        # Conversation continuity for the fresh runner now travels as a
+        # restored-context transcript uploaded in _spawn_runner (see
+        # _build_restore_context) — full user+assistant history appended
+        # to the agent's system prompt, instead of replaying the last 3
+        # raw user messages over stdin (which dropped assistant/tool
+        # context and ran one full LLM turn per replayed message).
+        await self._redeliver_pending_question(live)
         old_pump = live.current_pump
         if old_pump is not None and not old_pump.done():
             old_pump.cancel()
@@ -1512,6 +1629,115 @@ class ChatManager:
         # entirely — left unstamped, per the additive/back-compat contract.
         await sink.send_json(stamp_frame(chat_id, {"type": "ready"}))
 
+    # Per-message and total character budgets for the restored-conversation
+    # transcript. Generous enough to carry a real working session, bounded so
+    # a long chat cannot blow the agent's context window before the first new
+    # message. Newest messages win when the budget bites.
+    _RESTORE_MSG_CHAR_CAP = 4000
+    _RESTORE_TOTAL_CHAR_CAP = 24000
+
+    def _build_restore_context(self, session: "ChatSession") -> Optional[str]:
+        """Markdown transcript of the persisted conversation for a FRESH sandbox.
+
+        Uploaded at spawn (``_spawn_runner``) and appended to the agent's
+        system prompt by the runner, so a crash respawn / post-restart spawn /
+        takeover keeps the conversation coherent — including ASSISTANT turns,
+        which the old replay-3-user-messages-over-stdin approach dropped
+        entirely (an answer that depended on an earlier tool result silently
+        lost its grounding).
+
+        SR-11: user turns authored by a departed co-session participant are
+        omitted, mirroring the old replay filter. Assistant turns stay — they
+        were already visible to every remaining participant.
+
+        Uses ``list_recent_messages`` (``ORDER BY created_at DESC``), NOT
+        ``list_messages`` (``ASC``) — for a chat past the 500-row default
+        limit, ``list_messages`` returns the OLDEST 500 rows, so the
+        "newest win" accumulation below would silently restore stale
+        mid-conversation history instead of the actual recent tail (Devin
+        review on #1030).
+
+        Returns ``None`` when there is nothing to restore (fresh session).
+        """
+        msgs = self._repo.list_recent_messages(session.id)
+        if not msgs:
+            return None
+        allowed: Optional[set[str]] = None
+        if session.is_co_session:
+            parts = self._repo.get_session_participants(session.id)
+            allowed = {p.user_email for p in parts if p.left_at is None}
+        blocks: list[str] = []
+        total = 0
+        # msgs is already newest-first; accumulate under the budget, then
+        # restore chronological order below.
+        for msg in msgs:
+            if msg.role == "user":
+                author = getattr(msg, "sender_email", None) or session.user_email
+                if allowed is not None and author not in allowed:
+                    continue  # SR-11: departed participant's turn
+                label = f"User ({author})" if session.is_co_session else "User"
+            elif msg.role == "assistant":
+                label = "Assistant"
+            else:
+                continue
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            if len(content) > self._RESTORE_MSG_CHAR_CAP:
+                content = content[: self._RESTORE_MSG_CHAR_CAP] + "\n…[truncated]"
+            block = f"**{label}:**\n{content}"
+            if total + len(block) > self._RESTORE_TOTAL_CHAR_CAP and blocks:
+                break
+            total += len(block)
+            blocks.append(block)
+        if not blocks:
+            return None
+        blocks.reverse()
+        header = (
+            "## Restored conversation context\n\n"
+            "The sandbox for this chat was restarted; the transcript below is "
+            "the persisted history of this conversation, restored for "
+            "continuity. Treat it strictly as prior context — do NOT re-answer "
+            "or re-execute anything in it; respond only to new messages.\n\n"
+        )
+        return header + "\n\n".join(blocks) + "\n"
+
+    async def _redeliver_pending_question(self, live: "LiveSession") -> None:
+        """Re-deliver the trailing UNANSWERED user turn to a fresh runner.
+
+        ``send_user_message`` persists the user turn BEFORE delivering it, so
+        a crash mid-turn leaves a user message with no assistant reply. The
+        restored-context transcript is read-only by instruction ("respond
+        only to new messages"), so without this the question would surface as
+        a crash notice followed by silence (Devin review on #1030). Exactly
+        ONE live turn is re-sent — and only when the last persisted message
+        is an unanswered user turn; the old 3-turn replay re-answered
+        already-answered questions as a side effect. SR-11: a departed
+        co-session participant's pending turn is not re-delivered. Goes
+        through ``_deliver_local_user_message`` (not a bare stdin write) so
+        this redelivery sets ``turn_in_flight`` like any other live turn —
+        without it, ``_linger_then_pause`` doesn't know a turn is in
+        flight and can pause the sandbox mid-answer if the user
+        disconnects while the redelivered question is still being
+        answered (Devin review on #1030).
+
+        Uses ``list_recent_messages(limit=1)`` (``ORDER BY created_at
+        DESC``), NOT ``list_messages`` (``ASC LIMIT 500``) — for a chat past
+        that default limit, ``msgs[-1]`` on the ASC-ordered result is the
+        500th-oldest message, not the true latest turn, so this would
+        either miss the real pending question or re-deliver a stale
+        already-answered one (Devin review on #1030).
+        """
+        assert live.handle is not None
+        msgs = self._repo.list_recent_messages(live.chat_id, limit=1)
+        if not msgs or msgs[0].role != "user":
+            return
+        last = msgs[0]
+        author = getattr(last, "sender_email", None) or live.user_email
+        if live.participant_emails and author not in set(live.participant_emails):
+            return  # SR-11
+        await self._deliver_local_user_message(live, last.content)
+
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt, mint_co_session_jwt
         from app.chat.e2b_workspace_sync import SANDBOX_WORKSPACE_READY
@@ -1603,6 +1829,7 @@ class ChatManager:
         # locally and push it after spawn — Q1's full-push strategy.
         if not getattr(self._provider, "syncs_workspace", False):
             from app.chat.e2b_workspace_sync import (
+                SANDBOX_CONTEXT_RESTORE,
                 WorkspaceTooLarge,
                 upload_agnes_wheel,
                 upload_workspace,
@@ -1625,6 +1852,25 @@ class ChatManager:
                         "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
                         session.id,
                     )
+                # Restored-conversation transcript for a fresh sandbox of a
+                # chat that already has history (crash respawn, post-restart
+                # spawn, takeover): the runner appends it to the agent's
+                # system prompt at boot, restoring FULL context — user AND
+                # assistant turns — where the old stdin replay carried only
+                # the last 3 user messages (and ran one LLM turn per message).
+                # Best-effort: a failed upload degrades to a context-free
+                # fresh session, never a blocked spawn. Must land before the
+                # workspace push so the workspace-ready sentinel (which gates
+                # the agent-CLI boot) also guarantees this file.
+                try:
+                    context_md = self._build_restore_context(session)
+                    if context_md:
+                        await sandbox.files.write(SANDBOX_CONTEXT_RESTORE, context_md)
+                except Exception:
+                    logger.exception(
+                        "restore-context upload failed for %s — respawned runner starts without prior context",
+                        session.id,
+                    )
                 try:
                     # Finishes by writing SANDBOX_WORKSPACE_READY, which the
                     # runner waits on before spawning the agent CLI (the CLI
@@ -1643,8 +1889,9 @@ class ChatManager:
         return handle
 
     async def _push_ticket_frame(self, live: "LiveSession") -> None:
-        """Mint fresh main+mcp broker tickets and push them to the sandbox's
-        in-process relay over stdin (chat sandbox secret broker, 2026-07-14).
+        """Mint fresh main+mcp+data_apps broker tickets and push them to the
+        sandbox's in-process relay over stdin (chat sandbox secret broker,
+        2026-07-14; ``data_apps`` scope added wave 3B 2026-07-24).
 
         Every runner process — freshly spawned or reconnected via
         ``provider.resume`` — starts with no ticket in its relay's memory, so
@@ -1656,7 +1903,13 @@ class ChatManager:
         assert live.handle is not None
         main = ticket_repo().mint(live.chat_id, "main")
         mcp = ticket_repo().mint(live.chat_id, "mcp")
-        payload = json.dumps({"type": "ticket_push", "main": main, "mcp": mcp}) + "\n"
+        # Minted unconditionally even when data_apps.enabled=false — harmless:
+        # the broker's /api/broker/data-apps route confines replay to
+        # /api/data-apps/*, and every handler under that prefix 404s via its
+        # own _feature_gate() when the feature is off, so an unused ticket
+        # never reaches a live route.
+        data_apps = ticket_repo().mint(live.chat_id, "data_apps")
+        payload = json.dumps({"type": "ticket_push", "main": main, "mcp": mcp, "data_apps": data_apps}) + "\n"
         async with live._stdin_lock:
             live.handle.stdin.write(payload.encode("utf-8"))
             await live.handle.stdin.drain()
@@ -1876,23 +2129,13 @@ class ChatManager:
             self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
             await self._push_ticket_frame(live)
             await self._broadcast(live, {"type": "ready"})
-            # Replay last 3 user turns into the new subprocess.
-            # SR-11: for co-sessions, skip turns authored by a departed
-            # participant and carry sender_email so the runner sees
-            # who sent each message.
-            history = self._repo.list_messages(live.chat_id)[-3:]
-            live_emails = set(live.participant_emails) or {live.user_email}
-            for msg in history:
-                if msg.role != "user":
-                    continue
-                author = getattr(msg, "sender_email", None) or live.user_email
-                # SR-11: do not replay a departed participant's turn
-                if live.participant_emails and author not in live_emails:
-                    continue
-                payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-                async with live._stdin_lock:
-                    new_handle.stdin.write(payload.encode("utf-8"))
-                    await new_handle.stdin.drain()
+            # Conversation continuity for the fresh runner now travels as a
+            # restored-context transcript uploaded in _spawn_runner (see
+            # _build_restore_context) — full user+assistant history appended
+            # to the agent's system prompt, instead of replaying the last 3
+            # raw user messages over stdin (which dropped assistant/tool
+            # context and ran one full LLM turn per replayed message).
+            await self._redeliver_pending_question(live)
             # Replace (not append) the per-session pump task so the task
             # list does not grow unboundedly across crash respawns.  The old
             # pump returned on EOF; cancel it for hygiene, then drop it from
@@ -2374,19 +2617,13 @@ class ChatManager:
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
         await self._push_ticket_frame(live)
         await self._broadcast(live, {"type": "ready"})
-        # Replay last 3 user turns skipping departed participants (SR-11).
-        history = self._repo.list_messages(live.chat_id)[-3:]
-        live_emails = set(live.participant_emails) or {live.user_email}
-        for msg in history:
-            if msg.role != "user":
-                continue
-            author = getattr(msg, "sender_email", None) or live.user_email
-            if author not in live_emails:
-                continue  # SR-11: do not replay a departed participant's turn
-            payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-            async with live._stdin_lock:
-                new_handle.stdin.write(payload.encode("utf-8"))
-                await new_handle.stdin.drain()
+        # Conversation continuity for the fresh runner now travels as a
+        # restored-context transcript uploaded in _spawn_runner (see
+        # _build_restore_context) — full user+assistant history appended
+        # to the agent's system prompt, instead of replaying the last 3
+        # raw user messages over stdin (which dropped assistant/tool
+        # context and ran one full LLM turn per replayed message).
+        await self._redeliver_pending_question(live)
         old_pump = live.current_pump
         if old_pump is not None and not old_pump.done():
             old_pump.cancel()
@@ -2495,6 +2732,23 @@ class ChatManager:
             ticket_repo().revoke_session(chat_id)
         except Exception:
             logger.warning("broker ticket revocation failed for %s on kill (non-fatal)", chat_id)
+        # Wave 3C Q4 (spec §7): SessionEnd hard cap on any `data-app-preview:*`
+        # grants minted during this chat — best-effort, alongside the ticket
+        # revoke above. The 30-minute `expires_at` on the token itself is the
+        # real backstop (a failure here just means the window stays open a
+        # little longer, never a hang or an error surfaced to the caller).
+        try:
+            session_for_preview = self._repo.get_session(chat_id)
+            if session_for_preview is not None:
+                from src.repositories import users_repo
+
+                from app.api.data_apps import revoke_preview_tokens_for_user
+
+                owner = users_repo().get_by_email(session_for_preview.user_email)
+                if owner:
+                    revoke_preview_tokens_for_user(owner["id"])
+        except Exception:
+            logger.warning("preview-token revocation failed for %s on kill (non-fatal)", chat_id)
         live = self._live.pop(chat_id, None)
         if live is None:
             # Multi-replica gate lift: kill() used to be process-local — a

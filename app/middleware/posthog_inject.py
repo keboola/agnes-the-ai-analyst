@@ -73,8 +73,10 @@ class PosthogInjectionMiddleware(BaseHTTPMiddleware):
     async def __call__(self, scope, receive, send) -> None:
         # BaseHTTPMiddleware buffers the full response body, which breaks SSE
         # streaming (Python 3.13 raises AssertionError on the second
-        # http.response.start message). Bypass for all SSE/MCP paths.
-        if scope.get("type") == "http" and scope.get("path", "").startswith("/api/mcp"):
+        # http.response.start message). Bypass for all SSE paths.
+        from app.middleware import SSE_BYPASS_PREFIXES
+
+        if scope.get("type") == "http" and scope.get("path", "").startswith(SSE_BYPASS_PREFIXES):
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)
@@ -85,6 +87,7 @@ class PosthogInjectionMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         from src.observability import get_posthog
+
         if not get_posthog().enabled:
             return await call_next(request)
 
@@ -115,7 +118,8 @@ class PosthogInjectionMiddleware(BaseHTTPMiddleware):
         if too_big:
             logger.warning(
                 "PostHog snippet injection skipped: HTML response > %d bytes (path=%s)",
-                _MAX_BUFFER_BYTES, request.url.path,
+                _MAX_BUFFER_BYTES,
+                request.url.path,
             )
             # We've consumed the iterator; rebuild from the chunks we
             # captured before the cap. Better to serve a truncated body

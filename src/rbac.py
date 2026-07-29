@@ -15,6 +15,23 @@ from fastapi import HTTPException
 from src.db import get_system_db
 
 
+def _credential_surface(user) -> str:
+    """The credential's data-read surface: ``'all'`` or ``'stack'`` (v106).
+
+    Stashed onto the user dict by ``resolve_token_to_user`` from the PAT
+    row's ``surface`` column. Every non-PAT credential (session JWT,
+    scheduler shared-secret, local-dev bypass) and every internal caller
+    that builds a bare user dict simply lacks the key — and MUST read as
+    ``'all'`` so their behavior is unchanged; only a PAT explicitly minted
+    with ``surface='stack'`` narrows an admin to the stack branch. Any
+    unrecognized value fails closed to ``'stack'`` (never widens).
+    """
+    if not isinstance(user, dict):
+        return "all"
+    value = user.get("credential_surface", "all") or "all"
+    return "all" if value == "all" else "stack"
+
+
 def table_not_in_stack_message(table_id: str) -> str:
     """Standardized 403 detail string for table-access denial.
 
@@ -48,7 +65,7 @@ def require_table_access(
 
 
 def can_access_table(
-    user,  # dict | SessionPrincipal
+    user,  # dict | Principal
     table_id: str,
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> bool:
@@ -61,7 +78,12 @@ def can_access_table(
          caller's rows). Admin gets the unscoped view; non-admin gets their
          own rows.
       2. Admin god-mode — members of the Admin system group see every
-         registered table (dict users only; SessionPrincipal is never admin).
+         registered table (dict users only; a Principal is never admin).
+         v106: gated on the credential's data-read surface — a PAT minted
+         with ``surface='stack'`` (the `agnes init` default) drops an admin
+         into the stack branch below like any analyst. Non-PAT credentials
+         (session JWT, scheduler, local-dev) never carry the key and read
+         as ``'all'`` — see ``_credential_surface``.
       3. **Stack-gated**: the table must belong to at least one data
          package in the user's stack — auto-membership: required ∪
          available, no subscription needed (``StackResolver.stack``).
@@ -77,14 +99,15 @@ def can_access_table(
     if is_internal_table(table_id):
         return True
 
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         from app.auth.access import can_access_session
         from app.resource_types import ResourceType
 
-        # Co-session: intersection membership, no admin short-circuit, no
-        # personal stack. The intersection is the sole authority.
+        # Restricted principal (co-session / agent-session): intersection
+        # membership, no admin short-circuit, no personal stack. The
+        # intersection is the sole authority.
         return can_access_session(user, ResourceType.TABLE.value, table_id)
 
     user_id = user.get("id")
@@ -104,7 +127,7 @@ def can_access_table(
     try:
         from app.auth.access import is_user_admin
 
-        if is_user_admin(user_id, conn):
+        if is_user_admin(user_id, conn) and _credential_surface(user) == "all":
             return True
 
         # Collection-derived tables (uploaded files → SQL-queryable tables, #4)
@@ -136,7 +159,7 @@ def can_access_table(
 
 
 def get_accessible_ids(
-    user,  # dict | SessionPrincipal
+    user,  # dict | Principal
     resource_type: str,
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> Optional[frozenset]:
@@ -149,12 +172,13 @@ def get_accessible_ids(
     must not be used for ``table`` access (see :func:`can_access_table` /
     :func:`get_accessible_tables` for that).
 
-    For a ``SessionPrincipal``, returns the intersection id-set for
-    ``resource_type`` (never ``None`` — no admin god-mode for a co-session).
+    For a ``Principal`` (co-session or agent-session), returns the
+    intersection id-set for ``resource_type`` — never ``None``: no admin
+    god-mode for a restricted principal, not even one whose owner is an admin.
     """
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         return frozenset(user.intersection.get(resource_type, frozenset()))
 
     user_id = user.get("id")
@@ -183,7 +207,7 @@ def get_accessible_ids(
 
 
 def get_accessible_tables(
-    user,  # dict | SessionPrincipal
+    user,  # dict | Principal
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> Optional[list[str]]:
     """List of table IDs the user can read. ``None`` means "all" (admin).
@@ -200,12 +224,14 @@ def get_accessible_tables(
     Per-table ``resource_grants(group, 'table', …)`` rows are NO LONGER
     consulted for analyst visibility — see :func:`can_access_table`.
 
-    For a ``SessionPrincipal``, returns the intersection table-ids plus
-    internal tables (never ``None`` — no admin god-mode for a co-session).
+    For a ``Principal`` (co-session or agent-session), returns the
+    intersection table-ids plus internal tables. NEVER ``None`` — ``None`` is
+    the admin "all" sentinel, and a restricted principal must always get a
+    concrete list, even when its intersection is empty.
     """
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         from app.resource_types import ResourceType
         from connectors.internal.access import INTERNAL_TABLES
 
@@ -230,8 +256,15 @@ def get_accessible_tables(
     try:
         from app.auth.access import is_user_admin
 
-        if is_user_admin(user_id, conn):
-            return None  # admin sees everything
+        if is_user_admin(user_id, conn) and _credential_surface(user) == "all":
+            # Admin on a full-surface credential sees everything. The None
+            # sentinel is also a perf contract (single resolution, no N+1 —
+            # see app/api/catalog.py) so a surface='all' admin must get
+            # None, never a concrete all-ids list. An admin on a
+            # surface='stack' PAT falls through to the stack branch below —
+            # StackResolver.stack() already carries the admin subscription
+            # bypass, so their curated stack resolves like any analyst's.
+            return None
 
         from app.services.stack_resolver import StackResolver
         from app.resource_types import ResourceType

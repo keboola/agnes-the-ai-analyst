@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0049_file_corpora_origin_v102"
-down_revision: Union[str, None] = "0048_mcp_connect_hint_heal_v101"
+down_revision: Union[str, None] = "0045_user_journey_state_v98"  # restacked onto main head
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -108,3 +108,105 @@ def test_update_sync_state_empty_hash_when_parquet_missing(
         conn.close()
     assert state is not None
     assert state["hash"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Partitioned tables: per-part hashing (partitioned distribution).
+# A table stored as a directory of parquet parts (Jira hive
+# `month=*/data.parquet`, Keboola flat `<key>.parquet`) gets a `parts`
+# list + a rollup hash in sync_state, instead of the empty hash it gets
+# today (no single `{table}.parquet` for the single-file path to find).
+# ---------------------------------------------------------------------------
+
+from src.orchestrator import _hash_table_parts, _parts_rollup_hash  # noqa: E402
+
+
+def test_hash_table_parts_hive_layout(tmp_path):
+    tdir = tmp_path / "issues"
+    (tdir / "month=2026-06").mkdir(parents=True)
+    (tdir / "month=2026-07").mkdir(parents=True)
+    b6, b7 = b"jun" * 10, b"july" * 20
+    (tdir / "month=2026-06" / "data.parquet").write_bytes(b6)
+    (tdir / "month=2026-07" / "data.parquet").write_bytes(b7)
+
+    assert _hash_table_parts(tdir) == [
+        {"path": "month=2026-06/data.parquet", "hash": hashlib.md5(b6).hexdigest(), "size_bytes": len(b6)},
+        {"path": "month=2026-07/data.parquet", "hash": hashlib.md5(b7).hexdigest(), "size_bytes": len(b7)},
+    ]
+
+
+def test_hash_table_parts_flat_layout(tmp_path):
+    tdir = tmp_path / "cost"
+    tdir.mkdir()
+    b = b"data123"
+    (tdir / "2025_11.parquet").write_bytes(b)
+    assert _hash_table_parts(tdir) == [
+        {"path": "2025_11.parquet", "hash": hashlib.md5(b).hexdigest(), "size_bytes": len(b)}
+    ]
+
+
+def test_hash_table_parts_none_when_not_a_dir(tmp_path):
+    assert _hash_table_parts(tmp_path / "nope") is None
+
+
+def test_hash_table_parts_none_when_no_parquets(tmp_path):
+    d = tmp_path / "empty"
+    d.mkdir()
+    (d / "readme.txt").write_text("x")
+    assert _hash_table_parts(d) is None
+
+
+def test_parts_rollup_hash_order_independent_and_full_md5():
+    a = [
+        {"path": "month=1/data.parquet", "hash": "aa", "size_bytes": 1},
+        {"path": "month=2/data.parquet", "hash": "bb", "size_bytes": 2},
+    ]
+    assert _parts_rollup_hash(a) == _parts_rollup_hash(list(reversed(a)))
+    assert len(_parts_rollup_hash(a)) == 32
+
+
+def test_parts_rollup_hash_changes_when_a_part_changes():
+    a = [{"path": "month=1/data.parquet", "hash": "aa", "size_bytes": 1}]
+    b = [{"path": "month=1/data.parquet", "hash": "cc", "size_bytes": 1}]
+    assert _parts_rollup_hash(a) != _parts_rollup_hash(b)
+
+
+def test_update_sync_state_stores_parts_for_partitioned_table(system_db_path, tmp_path):
+    """A table whose data is a directory of parts (no single {table}.parquet)
+    gets a parts list + rollup hash + summed size in sync_state."""
+    tdir = tmp_path / "extracts" / "keboola" / "data" / "orders" / "month=2026-06"
+    tdir.mkdir(parents=True)
+    b = b"PAR1" + b"y" * 512 + b"PAR1"
+    (tdir / "data.parquet").write_bytes(b)
+
+    _run_update(system_db_path, meta_rows=[("orders", 50, 0, "local")], data_dir=tmp_path)
+
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+
+    assert state["parts"] == [
+        {"path": "month=2026-06/data.parquet", "hash": hashlib.md5(b).hexdigest(), "size_bytes": len(b)}
+    ]
+    assert state["hash"] == _parts_rollup_hash(state["parts"])
+    assert state["file_size_bytes"] == len(b)
+
+
+def test_update_sync_state_single_file_still_has_no_parts(
+    system_db_path, parquet_with_known_md5, tmp_path
+):
+    """Backward-compat: a single-file table writes parts=None (NULL)."""
+    pq_path, _ = parquet_with_known_md5
+    _run_update(
+        system_db_path,
+        meta_rows=[("orders", 100, pq_path.stat().st_size, "local")],
+        data_dir=tmp_path,
+    )
+    conn = duckdb.connect(str(system_db_path))
+    try:
+        state = SyncStateRepository(conn).get_table_state("orders")
+    finally:
+        conn.close()
+    assert state["parts"] is None

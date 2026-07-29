@@ -230,6 +230,10 @@ _CREATOR_POST_ALLOWLIST = frozenset(
         # and upserts the pasted skill into the contributed marketplace; not a
         # JSON resource create. GET on the same path renders the form.
         "/admin/contribute-skill",
+        # Slack identity bind — the POST redeems a bind code from a web form and
+        # re-renders HTML (200), not a JSON resource create. The GET on the same
+        # path renders the confirmation form (security audit F2 CSRF fix).
+        "/slack/bind",
     }
 )
 

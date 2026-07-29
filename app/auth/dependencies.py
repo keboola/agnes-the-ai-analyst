@@ -38,8 +38,11 @@ _AUTH_DETAIL_BY_REASON = {
     "pat_revoked": "Token revoked",
     "pat_expired": "Token expired",
     "pat_mismatch": "Token mismatch",
+    "pat_scope_forbidden": "git_scope_token_not_allowed",
     "invalid_token": "Invalid or expired token",
     "no_token": "Invalid or expired token",
+    "agent_pat_wrong_surface": "Agent token not valid on this surface",
+    "agent_pat_agent_deleted": "Agent deleted",
 }
 
 
@@ -124,23 +127,17 @@ def _get_db():
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
-    """Return the request's client IP, preferring the first hop of X-Forwarded-For.
+    """Return the request's client IP (security audit F9).
 
-    Trust model: this deployment runs behind Caddy (see repo Caddyfile), which
-    strips incoming X-Forwarded-For and sets its own. The leftmost hop is
-    therefore trustworthy. If the app is ever exposed directly to the internet
-    without a proxy, this value becomes client-settable and should only be
-    relied on for audit/diagnostics, never access control. Value is stored in
+    Delegates to :func:`app.auth.client_ip.trusted_client_ip`, which trusts only
+    the ``AGNES_TRUSTED_PROXY_HOPS`` rightmost X-Forwarded-For hops rather than
+    the fully client-controllable leftmost hop. Value is stored in
     personal_access_tokens.last_used_ip and audit_log entries — informational
     only, never authorization.
     """
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",", 1)[0].strip() or None
-    client = getattr(request, "client", None)
-    return getattr(client, "host", None) if client else None
+    from app.auth.client_ip import trusted_client_ip
+
+    return trusted_client_ip(request)
 
 
 def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[dict]:
@@ -149,6 +146,7 @@ def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Opt
     ``conn`` retained for signature compat; ignored — uses the factory.
     """
     from src.repositories import users_repo
+
     user = users_repo().get_by_email(get_local_dev_email())
     if not user:
         logger.error(
@@ -158,9 +156,7 @@ def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Opt
     return user
 
 
-def _stash_chat_session_id_from_token(
-    request: Optional[Request], token: str
-) -> None:
+def _stash_chat_session_id_from_token(request: Optional[Request], token: str) -> None:
     """Decode ``token`` and, if it carries ``scope=chat`` plus a
     ``chat_session_id`` claim, stash that claim on ``request.state``.
 
@@ -175,6 +171,7 @@ def _stash_chat_session_id_from_token(
         return
     try:
         from app.auth.jwt import verify_token as _verify
+
         payload = _verify(token) or {}
     except Exception:
         return
@@ -252,6 +249,7 @@ def get_current_user(
     # verify_token() would log a spurious decode warning every cron tick.
     # See app/auth/scheduler_token.py for the threat model.
     from app.auth.scheduler_token import get_scheduler_user, is_scheduler_token
+
     if is_scheduler_token(token):
         scheduler_user = get_scheduler_user(conn)
         if scheduler_user:
@@ -263,9 +261,21 @@ def get_current_user(
         )
 
     from app.auth.pat_resolver import resolve_token_to_user
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
     user, reason = resolve_token_to_user(conn, token, request)
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
+        # A restricted principal is returned verbatim: it is a frozen
+        # dataclass, so ``_attach_admin_flag`` / ``_stash_user`` (both of
+        # which assign into the user dict) would raise. It also must never
+        # carry ``is_admin`` — the admin seam denies principals outright.
+        #
+        # The chat-session claim IS stashed first: the per-session BQ scan
+        # accumulator (app/api/query.py::_maybe_charge_chat_session_bq_budget)
+        # reads request.state.chat_session_id, and without this a scoped
+        # agent's (or co-session's) brokered queries would escape the
+        # per-session scan cap that scope="chat" promises to keep.
+        _stash_chat_session_id_from_token(request, token)
         return user
     if user:
         _attach_admin_flag(user, conn)
@@ -296,6 +306,7 @@ def _attach_admin_flag(user: dict, conn: duckdb.DuckDBPyConnection) -> None:
     (the same call all server-side admin gates use).
     """
     from app.auth.access import is_user_admin
+
     user_id = user.get("id")
     if user_id:
         try:
@@ -330,8 +341,13 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
 
     Two non-interactive paths exist today:
 
-    1. **PAT** — JWT with ``typ="pat"``. Detected by decoding the JWT and
-       inspecting the claim.
+    1. **PAT / agent PAT** — JWT with ``typ`` in ``pat_resolver._PAT_LIKE_TYPES``
+       (``"pat"`` or ``"agent_pat"``). Detected by decoding the JWT and
+       inspecting the claim. Agent PATs are already surface-allowlisted to
+       ``/api/v1/{agents,sessions,jobs}/`` in ``pat_resolver``, but that
+       allowlist is enforced in ``resolve_token_to_user`` — this dependency
+       runs independently (via ``get_current_user``), so it must reject them
+       here too, the same as a plain PAT.
     2. **Scheduler shared secret** — opaque string equal to
        ``SCHEDULER_API_TOKEN``. Not a JWT, so ``verify_token`` returns None
        and the PAT-claim check would silently pass — meaning a caller
@@ -351,14 +367,17 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
         token = request.cookies.get("access_token")
     if token:
         from app.auth.scheduler_token import is_scheduler_token
+
         if is_scheduler_token(token):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This endpoint requires an interactive session, not a service token",
             )
         from app.auth.jwt import verify_token
+        from app.auth.pat_resolver import _PAT_LIKE_TYPES
+
         payload = verify_token(token) or {}
-        if payload.get("typ") == "pat":
+        if payload.get("typ") in _PAT_LIKE_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This endpoint requires an interactive session, not a PAT",

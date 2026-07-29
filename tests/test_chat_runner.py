@@ -306,18 +306,18 @@ def test_ticket_push_frame_not_enqueued(monkeypatch):
         def __init__(self):
             self.tickets = None
 
-        def set_tickets(self, main, mcp):
-            self.tickets = (main, mcp)
+        def set_tickets(self, main, mcp, data_apps=""):
+            self.tickets = (main, mcp, data_apps)
 
     fake_relay = _FakeRelay()
     monkeypatch.setattr(runner, "_relay", fake_relay)
 
     async def _run():
         queue: asyncio.Queue = asyncio.Queue()
-        await runner._dispatch_frame({"type": "ticket_push", "main": "M", "mcp": "C"}, queue)
+        await runner._dispatch_frame({"type": "ticket_push", "main": "M", "mcp": "C", "data_apps": "D"}, queue)
         await runner._dispatch_frame({"type": "user_msg", "text": "hi"}, queue)
 
-        assert fake_relay.tickets == ("M", "C")
+        assert fake_relay.tickets == ("M", "C", "D")
         assert queue.qsize() == 1
         enqueued = queue.get_nowait()
         assert enqueued["type"] == "user_msg"
@@ -899,9 +899,7 @@ def test_tool_frames_carry_tool_use_id_and_text_blocks_join_with_blank_line(monk
         mod.AssistantMessage(content=[mod.TextBlock(text="There are 35 tables.")]),
         mod.ResultMessage(),
     ]
-    emitted, _client = _run_real_agent_turn(
-        monkeypatch, mod, script, [{"type": "user_msg", "text": "count tables"}]
-    )
+    emitted, _client = _run_real_agent_turn(monkeypatch, mod, script, [{"type": "user_msg", "text": "count tables"}])
 
     call = next(f for f in emitted if f["type"] == "tool_call")
     assert call["tool_use_id"] == "toolu_123"
@@ -978,3 +976,37 @@ def test_idle_watchdog_interrupts_a_wedged_turn(monkeypatch):
     finals = [f["content"] for f in emitted if f["type"] == "assistant_message"]
     assert finals == ["querying…", "recovered"]
     assert len([f for f in emitted if f == {"type": "done"}]) == 2
+
+
+def test_restore_context_appended_to_system_prompt(monkeypatch, tmp_path):
+    """When the manager staged a restored-conversation transcript, the runner
+    appends it to the CLI's stock system prompt (claude_code preset +
+    append); without the file, no system_prompt override is passed."""
+    from app.chat import runner
+
+    mod = _make_fake_sdk(monkeypatch, with_stream_event=True)
+    # Give the fake options dataclass a system_prompt field so the kwarg is
+    # accepted and observable.
+    import dataclasses
+
+    fields = [(f, object, dataclasses.field(default=None)) for f in (
+        "permission_mode", "cwd", "setting_sources", "mcp_servers", "system_prompt",
+    )]
+    fields.append(("include_partial_messages", bool, dataclasses.field(default=False)))
+    mod.ClaudeAgentOptions = dataclasses.make_dataclass("ClaudeAgentOptions", fields)
+
+    ctx_file = tmp_path / "agnes-context.md"
+    ctx_file.write_text("## Restored conversation context\n\n**User:**\nolder question\n")
+    monkeypatch.setattr(runner, "_CONTEXT_RESTORE_PATH", str(ctx_file))
+
+    script = [mod.AssistantMessage(content=[mod.TextBlock(text="ok")]), mod.ResultMessage()]
+    _emitted, client = _run_real_agent_turn(monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}])
+
+    sp = client.options.system_prompt
+    assert isinstance(sp, dict) and sp.get("type") == "preset" and sp.get("preset") == "claude_code"
+    assert "older question" in sp.get("append", "")
+
+    # Without the file → stock prompt untouched.
+    monkeypatch.setattr(runner, "_CONTEXT_RESTORE_PATH", str(tmp_path / "absent.md"))
+    _emitted2, client2 = _run_real_agent_turn(monkeypatch, mod, script, [{"type": "user_msg", "text": "hi"}])
+    assert client2.options.system_prompt is None

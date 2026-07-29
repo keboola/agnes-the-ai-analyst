@@ -10,7 +10,6 @@ table_registry to add the source_query column.
 """
 
 import duckdb
-import pytest
 
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
@@ -962,186 +961,26 @@ def test_v97_db_upgrades_to_v98(tmp_path):
     conn.close()
 
 
-def test_v99_to_v100_heals_stranded_corpus_files_path(tmp_path):
-    """A DuckDB stranded by the migration renumbering — stamped at v97+ but
-    with ``corpus_files`` lacking the ``path`` column that v97 is *supposed*
-    to add — gets the column (and its unique index) back via the v99→v100
-    heal, without losing existing rows.
-
-    Reproduces the real bug: the ``if current < 97`` guard skips
-    ``_v96_to_v97`` on a DB already stamped 97, so ``path`` never lands and
-    every ``corpus_files`` read/insert 500s. Simulated by dropping the column
-    the fresh schema created, then re-running the ladder from v97."""
-    db_path = tmp_path / "stranded.duckdb"
+def test_v99_db_migrates_to_v100_adds_sync_state_parts(tmp_path):
+    """A v99 DB whose ``sync_state`` predates the ``parts`` column upgrades
+    to v100 via ``_v99_to_v100``, adding ``parts`` (NULL on existing rows)
+    without losing data. ``parts`` has no FK dependents, so this simulates a
+    genuinely column-free table by dropping it."""
+    db_path = tmp_path / "v99.duckdb"
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
-    # Recreate the stranded shape: drop the index + column the fresh schema
-    # gave us, and pin the version to 97 (the "already past v97" state).
-    conn.execute("DROP INDEX IF EXISTS idx_corpus_files_corpus_path")
-    conn.execute("ALTER TABLE corpus_files DROP COLUMN path")
-    conn.execute("UPDATE schema_version SET version = 97")
-    conn.execute("INSERT INTO file_corpora (id, name, slug, created_by) VALUES ('col_keep', 'keep', 'keep', 'u_keep')")
-    conn.execute(
-        "INSERT INTO corpus_files (id, corpus_id, filename, sha256, file_type, size_bytes, storage_path) "
-        "VALUES ('cf_keep', 'col_keep', 'keep.md', 'abc', 'md', 3, '/blobs/abc')"
-    )
-    pre = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
-    assert "path" not in pre  # confirm the stranded precondition
+    # Simulate the pre-v100 shape: sync_state without `parts`, version 99.
+    conn.execute("ALTER TABLE sync_state DROP COLUMN parts")
+    conn.execute("UPDATE schema_version SET version = 99")
+    conn.execute("INSERT INTO sync_state (table_id, rows, hash, status) VALUES ('keep', 7, 'h', 'ok')")
     conn.close()
 
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
     assert get_schema_version(conn) == SCHEMA_VERSION
 
-    cols = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
-    assert "path" in cols, "v99→v100 must heal the missing corpus_files.path column"
-    # The previously-failing read now works and the existing row survives.
-    row = conn.execute("SELECT id, path FROM corpus_files WHERE id = 'cf_keep'").fetchone()
-    assert row == ("cf_keep", None)
-    conn.close()
-
-
-def test_v100_to_v101_heals_stranded_mcp_connect_hint(tmp_path):
-    """A DuckDB stranded by the migration renumbering — stamped past v92 but
-    with ``mcp_sources`` lacking the ``connect_hint`` column that v92 is
-    *supposed* to add — gets the column back via the v100→v101 heal, without
-    losing existing rows.
-
-    Same disease as corpus_files.path: the ``if current < 92`` guard skips
-    ``_v91_to_v92`` on a DB already stamped ≥92, so ``connect_hint`` never
-    lands and every ``mcp_sources`` read that selects it 500s. Simulated by
-    dropping the column the fresh schema created, then re-running the ladder."""
-    db_path = tmp_path / "stranded_mcp.duckdb"
-    conn = duckdb.connect(str(db_path))
-    _ensure_schema(conn)
-    conn.execute("ALTER TABLE mcp_sources DROP COLUMN connect_hint")
-    conn.execute("UPDATE schema_version SET version = 100")
-    conn.execute("INSERT INTO mcp_sources (id, name, transport, enabled) VALUES ('mcp_keep', 'keep', 'stdio', TRUE)")
-    pre = {r[1] for r in conn.execute("PRAGMA table_info('mcp_sources')").fetchall()}
-    assert "connect_hint" not in pre  # confirm the stranded precondition
-    conn.close()
-
-    conn = duckdb.connect(str(db_path))
-    _ensure_schema(conn)
-    assert get_schema_version(conn) == SCHEMA_VERSION
-
-    cols = {r[1] for r in conn.execute("PRAGMA table_info('mcp_sources')").fetchall()}
-    assert "connect_hint" in cols, "v100→v101 must heal the missing mcp_sources.connect_hint column"
-    row = conn.execute("SELECT id, connect_hint FROM mcp_sources WHERE id = 'mcp_keep'").fetchone()
-    assert row == ("mcp_keep", None)
-    conn.close()
-
-
-def test_v104_trust_columns_heal_on_a_db_stamped_without_them(tmp_path):
-    """A DB stamped 104 but missing the v104 columns must self-heal.
-
-    Reproduces the exact stranding: the ladder's tail writes ``SCHEMA_VERSION``
-    unconditionally, so a database opened by a build where the constant was
-    already bumped but ``_v103_to_v104`` did not yet exist gets marked 104
-    **without** the columns — and every ``if current < 104`` gate then skips the
-    step forever. The symptom is a query-time ``Binder Error: Referenced column
-    "publisher_kind" not found``, and only on paths that name the column in a
-    WHERE: a bare ``SELECT *`` keeps working, which is what makes it look
-    intermittent.
-
-    Guards ``_heal_store_entity_trust_columns``, which checks for the columns
-    directly instead of trusting the stamp.
-    """
-    from src.db import _heal_store_entity_trust_columns
-
-    db_path = tmp_path / "system.duckdb"
-    conn = duckdb.connect(str(db_path))
-    # Pre-v104 store_entities shape (v49-era columns, no trust columns) plus a
-    # schema_version already stamped past the step that should have added them.
-    conn.execute(
-        """CREATE TABLE store_entities (
-               id VARCHAR PRIMARY KEY,
-               owner_user_id VARCHAR NOT NULL,
-               owner_username VARCHAR NOT NULL,
-               type VARCHAR NOT NULL,
-               name VARCHAR NOT NULL,
-               description TEXT,
-               version VARCHAR NOT NULL,
-               visibility_status VARCHAR DEFAULT 'pending',
-               title VARCHAR,
-               synthetic_name VARCHAR
-           )"""
-    )
-    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP)")
-    conn.execute("INSERT INTO schema_version VALUES (104, current_timestamp)")
-    conn.execute(
-        "INSERT INTO store_entities "
-        "(id, owner_user_id, owner_username, type, name, version, title, synthetic_name) "
-        "VALUES ('e1', 'u1', 'anna', 'skill', 'x', 'v1', 'X', 'x-by-anna')"
-    )
-
-    # The exact failure the stranding produces.
-    with pytest.raises(duckdb.BinderException):
-        conn.execute("SELECT 1 FROM store_entities WHERE publisher_kind = 'user'")
-
-    _heal_store_entity_trust_columns(conn)
-
-    cols = {
-        r[0]
-        for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
-        ).fetchall()
-    }
-    assert {"publisher_kind", "verification_state", "verified_at", "verified_by"} <= cols
-
-    # The filter that used to raise now runs, and the pre-existing row reads as
-    # a non-null enum rather than NULL (ADD COLUMN's DEFAULT applies to inserts
-    # only, so the heal normalizes explicitly).
-    row = conn.execute(
-        "SELECT publisher_kind, verification_state FROM store_entities WHERE publisher_kind = 'user'"
-    ).fetchone()
-    assert row == ("user", "none")
-
-    # The heal must never move the stamp — calling the versioned step directly
-    # would have written 104 and downgraded an instance already past it.
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 104
-
-    _heal_store_entity_trust_columns(conn)  # idempotent
-    conn.close()
-
-
-def test_ensure_schema_heals_a_stranded_db_at_current_version(tmp_path):
-    """``_ensure_schema`` itself must repair the stranding, not just the helper.
-
-    The first cut of this fix put the heal call *inside* the
-    ``if current < SCHEMA_VERSION`` ladder guard — where a DB already stamped at
-    ``SCHEMA_VERSION`` never reaches it, so the repair silently did nothing and
-    the endpoint kept 500ing. This drives the real entry point at the exact
-    version that skips the whole ladder.
-    """
-    from src.db import _ensure_schema as ensure
-
-    db_path = tmp_path / "system.duckdb"
-    conn = duckdb.connect(str(db_path))
-    conn.execute(
-        """CREATE TABLE store_entities (
-               id VARCHAR PRIMARY KEY,
-               owner_user_id VARCHAR NOT NULL,
-               owner_username VARCHAR NOT NULL,
-               type VARCHAR NOT NULL,
-               name VARCHAR NOT NULL,
-               version VARCHAR NOT NULL,
-               visibility_status VARCHAR DEFAULT 'pending',
-               title VARCHAR,
-               synthetic_name VARCHAR
-           )"""
-    )
-    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP)")
-    conn.execute("INSERT INTO schema_version VALUES (?, current_timestamp)", [SCHEMA_VERSION])
-
-    ensure(conn)
-
-    cols = {
-        r[0]
-        for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
-        ).fetchall()
-    }
-    assert "publisher_kind" in cols, "_ensure_schema must heal a DB stamped at SCHEMA_VERSION"
-    conn.execute("SELECT 1 FROM store_entities WHERE publisher_kind = 'user'")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('sync_state')").fetchall()}
+    assert "parts" in cols
+    row = conn.execute("SELECT rows, parts FROM sync_state WHERE table_id = 'keep'").fetchone()
+    assert row == (7, None)  # data preserved, parts NULL on the legacy row
     conn.close()

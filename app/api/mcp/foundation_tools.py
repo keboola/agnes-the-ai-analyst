@@ -99,6 +99,15 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # DuckLake analytics-backend migration (wave-2G Task 6), triple-surface
     # with /api/admin/analytics/migrate + `agnes admin analytics migrate`.
     "admin_analytics_migrate",
+    # Agent profiles (agent-api V1a, Task 12) — triple-surface with
+    # /api/v1/agents + `agnes agent list` (management, session-token only)
+    # and /api/v1/agents/{slug}/responses + `agnes agent ask` (runtime,
+    # sync-only here — background mode + job polling has no MCP tool).
+    "agent_list",
+    "agent_ask",
+    # Agent-as-API monthly usage (agent-api V1b, Task 8) — triple-surface
+    # with GET /api/v1/agents/{slug}/usage + `agnes agent usage`.
+    "agent_usage",
     # Hosted data apps (data-apps platform plan, Task 11) — triple-surface
     # with /api/data-apps* + `agnes app list/show/deploy/logs`.
     "data_apps_list",
@@ -114,6 +123,25 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "stack_artefacts_candidates",
     "stack_artefact_add",
     "stack_artefact_remove",
+    # Wave 3B draft-iteration model (Task 8) — create/delete a draft copy of
+    # a prod app on an iteration branch, and mint a fresh git push credential.
+    # Triple-surface with /api/data-apps/{slug}/drafts* + /git-credential and
+    # `agnes app draft create/delete` + `agnes app git-credential`.
+    "data_app_create_draft",
+    "data_app_delete_draft",
+    "data_app_git_credential",
+    # Wave 3C in-chat preview loop (Task 4/5) — chat-surface-ONLY render
+    # directives for the split-pane preview iframe (spec §7/§9): no REST/CLI
+    # analogue exists or is planned (the fixed render-directive JSON these
+    # return is the frontend contract, not a general-purpose API response).
+    # `agnes_data_app_preview`'s live-URL call mints a short-TTL
+    # `data-app-preview:<slug>` scoped grant via
+    # POST /api/data-apps/{slug}/preview-grant (_EXEMPT in
+    # tests/test_documentation_api_triple_surface.py).
+    "agnes_data_app_preview",
+    "agnes_data_app_refresh",
+    "agnes_data_app_close",
+    "agnes_data_app_credentials",
 )
 
 
@@ -1415,6 +1443,99 @@ def register_foundation_tools(
             return r.json()
 
     @mcp.tool()
+    async def agent_list() -> dict:
+        """List your own agent profiles.
+
+        Every user has an implicit default agent (all-mode, unbounded scope)
+        plus any named agents they've created. Requires an interactive
+        session credential — the underlying endpoint
+        (``require_session_token``) rejects a PAT of any flavor (plain PAT
+        or agent PAT), so this tool only succeeds over the streamable-HTTP
+        OAuth transport, which forwards a real Agnes session JWT; over the
+        SSE transport (PAT-authenticated) it fails with a 403
+        ``"This endpoint requires an interactive session, not a PAT"``.
+
+        Returns ``{"data": [...], "has_more": false, "next_cursor": null}``.
+        Each entry has ``id``, ``slug``, ``name``, ``description``,
+        ``model`` (null = server default, no model policy), ``token_budget_monthly``
+        (null = unbounded), the four scope-mode fields
+        (``plugins_mode``/``connections_mode``/``tables_mode``/
+        ``memory_mode``, each ``"all"`` or ``"selected"``),
+        ``memory_write_mode``, ``is_default``, ``created_at``. Mirrors
+        ``GET /api/v1/agents`` and ``agnes agent list``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/v1/agents", headers=headers_fn(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def agent_ask(slug: str, prompt: str, timeout_s: int = 120) -> dict:
+        """One-shot synchronous request/response over one of your agents.
+
+        Sync-only: this tool never sets ``background: true`` and does not
+        poll ``GET /api/v1/jobs/{id}`` for you. If the run outlasts
+        ``timeout_s`` the server degrades to a background job and replies
+        with a ``job_id`` instead of an answer — the underlying run keeps
+        going server-side, only the wait was bounded. Waiting out a
+        background run (foreground polling to completion) has no MCP tool
+        by design — an MCP tool call blocking on a poll loop is a poor fit
+        for a chat turn; use ``agnes agent ask`` (CLI) or
+        ``POST /api/v1/agents/{slug}/responses`` directly for that.
+
+        Args:
+            slug:      Agent slug (from ``agent_list``).
+            prompt:    The input to send to the agent.
+            timeout_s: Max seconds to wait for a synchronous answer
+                       (default 120, clamped to [1, 600] server-side).
+
+        Returns the ``200`` body — ``{"answer", "session_id", "response_id",
+        "usage", "agent_config_hash", "request_id"}`` — or, on a ``202``
+        degrade, ``{"job_id": ...}`` with no ``answer`` yet. Mirrors
+        ``POST /api/v1/agents/{slug}/responses`` and ``agnes agent ask``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/v1/agents/{slug}/responses",
+                json={"input": prompt, "timeout_s": timeout_s},
+                headers=headers_fn(),
+                timeout=timeout_s + 10,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def agent_usage(slug: str, period: str = "") -> dict:
+        """Show one of your agents' monthly token usage against its budget.
+
+        Args:
+            slug:   Agent slug (from ``agent_list``).
+            period: Month to report, ``YYYY-MM``. Empty (default) reports
+                    the current UTC month.
+
+        Returns ``{period, agent_slug, input_tokens, output_tokens,
+        cache_read_tokens, cache_creation_tokens, total_tokens,
+        budget_limit, budget_remaining}`` — the usage-shaped fields mirror
+        Anthropic's own usage object; ``total_tokens`` excludes
+        ``cache_read_tokens`` (informational only, not counted against
+        budget), so ``budget_remaining`` lines up with when a call against
+        this agent would actually start 429ing with ``budget_exhausted``.
+        ``budget_limit``/``budget_remaining`` are ``null`` for an agent
+        with no configured budget. Mirrors
+        ``GET /api/v1/agents/{slug}/usage`` and ``agnes agent usage``.
+        """
+        params: dict[str, Any] = {"period": period} if period else {}
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/v1/agents/{slug}/usage",
+                headers=headers_fn(),
+                params=params,
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
     async def data_apps_list() -> dict:
         """List hosted data apps you can see (RBAC-filtered).
 
@@ -1448,28 +1569,114 @@ def register_foundation_tools(
             return r.json()
 
     @mcp.tool()
-    async def data_app_deploy(slug: str, sha: str = "") -> dict:
+    async def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
         """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
         Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given,
         otherwise the tracked branch's latest), mints a fresh service token,
-        and hands the build off to the runner sidecar.
+        and hands the build off to the runner sidecar. ``mode="dev"`` deploys
+        a draft app on its pinned iteration branch instead — a draft has no
+        ``agnes-live`` ref to fast-forward, so ``sha`` is ignored in that mode.
 
         Args:
-            slug: The app's slug.
+            slug: The app's slug (a prod app's slug, or a draft's own slug
+                  when ``mode="dev"``).
             sha:  Optional commit sha to deploy. Empty (default) fast-forwards
-                  to the tracked branch's latest commit.
+                  to the tracked branch's latest commit. Ignored for draft
+                  deploys.
+            mode: ``"dev"`` deploys a draft's branch; empty (default) deploys
+                  prod. A draft app rejects anything but ``mode="dev"``.
 
         Returns ``{"state": "running", "deployed_sha": "..."}``. Mirrors
         ``POST /api/data-apps/{slug}/deploy`` and ``agnes app deploy``.
         """
-        payload: dict = {"sha": sha} if sha else {}
+        payload: dict = {}
+        if sha:
+            payload["sha"] = sha
+        if mode:
+            payload["mode"] = mode
         async with httpx.AsyncClient() as c:
             r = await c.post(
                 f"{base_url}/api/data-apps/{slug}/deploy",
                 json=payload,
                 headers=headers_fn(),
                 timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_create_draft(slug: str, branch: str = "init") -> dict:
+        """Create a draft of a prod data app on an iteration branch — app owner or Admin only.
+
+        The draft shares the prod app's git repo (no second repo, no copy):
+        it is a registry sibling row pinned to ``branch`` on the parent's
+        repo, deployable with ``data_app_deploy(draft_slug, mode="dev")``.
+        Drafts are hidden from ``data_apps_list`` — reach them via the
+        parent's ``drafts`` field in ``data_app_get``.
+
+        Args:
+            slug:   The PROD app's slug (must not itself be a draft).
+            branch: Iteration branch name (default ``"init"``).
+
+        Returns ``{"id", "slug", "branch", "git_clone_url"}`` — the draft's
+        slug and a git push credential embedded in the clone URL. Mirrors
+        ``POST /api/data-apps/{slug}/drafts`` and ``agnes app draft create``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/drafts",
+                headers=headers_fn(),
+                json={"branch": branch},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
+        """Tear down a draft of a prod data app — app owner or Admin only.
+
+        Stops the draft's container, revokes its service token, deletes the
+        iteration branch on the parent's repo, and removes the draft's
+        registry row.
+
+        Args:
+            slug:       The PROD app's slug (the draft's parent).
+            draft_slug: The draft's own slug (from ``data_app_create_draft``
+                        or the parent's ``drafts`` field).
+
+        Returns ``{"status": "deleted"}``. Mirrors
+        ``DELETE /api/data-apps/{slug}/drafts/{draft_slug}`` and
+        ``agnes app draft delete``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.request(
+                "DELETE",
+                f"{base_url}/api/data-apps/{slug}/drafts/{draft_slug}",
+                headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return {"status": "deleted"}
+
+    @mcp.tool()
+    async def data_app_git_credential(slug: str) -> dict:
+        """Mint a fresh git push credential for a data app — app owner or Admin only.
+
+        Args:
+            slug: The app's slug (a prod app; drafts push through the same
+                  parent-repo credential minted here or at draft-create time).
+
+        Returns ``{"git_clone_url": "..."}`` with an embedded, time-scoped
+        push credential. Mirrors ``POST /api/data-apps/{slug}/git-credential``
+        and ``agnes app git-credential``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/git-credential",
+                headers=headers_fn(),
+                timeout=30,
             )
             r.raise_for_status()
             return r.json()
@@ -1494,5 +1701,132 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return r.json()
+
+    def _data_apps_disabled_payload() -> dict:
+        return {
+            "error": "data_apps_disabled",
+            "message": "Data apps are disabled on this instance.",
+        }
+
+    def _is_data_apps_disabled_response(r: httpx.Response) -> bool:
+        if r.status_code != 404:
+            return False
+        try:
+            return r.json().get("detail") == "data_apps_disabled"
+        except Exception:
+            return False
+
+    @mcp.tool()
+    async def agnes_data_app_preview(slug: str, url: str = "") -> dict:
+        """Open or refresh the in-chat split-pane preview of a hosted data app.
+
+        Chat-surface-only (spec §7/§9) — no REST/CLI analogue; the runner
+        forwards this tool's return value verbatim into a render directive
+        the web chat frontend switches on.
+
+        Call this TWICE per preview cycle: first with an empty ``url`` (the
+        default) the moment a scaffold/dev deploy is kicked off — this opens
+        a placeholder pane immediately (spec §7 mandate), before the app is
+        actually reachable. Once the dev deploy is healthy (poll
+        ``data_app_get`` in short steps), call again with the real ``url``
+        (typically ``/apps/<slug>/``) to swap the pane to the live app —
+        this second call mints a short-TTL scoped preview grant
+        (``POST /api/data-apps/{slug}/preview-grant``) so the iframe loads
+        without a cross-origin login.
+
+        Args:
+            slug: The (draft or prod) app's slug.
+            url:  Empty (default) for the placeholder call; the app's URL
+                  (e.g. ``/apps/<slug>/``) to swap to the live pane.
+
+        Returns ``{"render": "data_app_preview", "slug", "url",
+        "preview_cookie"}`` — ``url``/``preview_cookie`` are ``null`` on the
+        placeholder call. Returns a friendly ``data_apps_disabled`` payload
+        (not an error) if data apps are disabled on this instance.
+        """
+        if not url:
+            return {"render": "data_app_preview", "slug": slug, "url": None, "preview_cookie": None}
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps/{slug}/preview-grant",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            if _is_data_apps_disabled_response(r):
+                return _data_apps_disabled_payload()
+            r.raise_for_status()
+            grant = r.json()
+        return {
+            "render": "data_app_preview",
+            "slug": slug,
+            "url": url,
+            "preview_cookie": grant.get("preview_cookie"),
+        }
+
+    @mcp.tool()
+    async def agnes_data_app_refresh(slug: str) -> dict:
+        """Force-reload the in-chat preview pane for a hosted data app.
+
+        Chat-surface-only (spec §9) — no REST/CLI analogue; a pure render
+        directive with no server round-trip. Call after pushing a fresh
+        commit to a draft's dev deploy so the iframe picks up the change
+        without the user manually reloading.
+
+        Args:
+            slug: The app's slug the currently-open pane is showing.
+
+        Returns ``{"render": "data_app_preview_refresh", "slug"}``.
+        """
+        return {"render": "data_app_preview_refresh", "slug": slug}
+
+    @mcp.tool()
+    async def agnes_data_app_close(slug: str) -> dict:
+        """Tear down the in-chat preview pane for a hosted data app.
+
+        Chat-surface-only (spec §9) — no REST/CLI analogue; a pure render
+        directive with no server round-trip. Call this BEFORE
+        ``data_app_delete_draft`` when abandoning or promoting a draft (the
+        extras skill's ordering rule) — closing the pane first avoids the
+        iframe pointing at a container that's about to disappear.
+
+        Args:
+            slug: The app's slug the currently-open pane is showing.
+
+        Returns ``{"render": "data_app_preview_close", "slug"}``.
+        """
+        return {"render": "data_app_preview_close", "slug": slug}
+
+    @mcp.tool()
+    async def agnes_data_app_credentials(slug: str) -> dict:
+        """Show the shareable URL for a hosted data app — the TERMINAL
+        render of a reply (spec §7): never follow this tool's result with
+        more chat text.
+
+        Chat-surface-only (spec §9) — no REST/CLI analogue.
+
+        Args:
+            slug: The app's slug.
+
+        Returns ``{"render": "data_app_credentials", "slug", "url",
+        "password"}``. ``password`` is always ``null`` today — the
+        control-plane detail endpoint this calls never returns the
+        encrypted secrets blob (by design), so there is no shared
+        basic-auth password to surface yet; the chat reply should hint at
+        granting a group access via ``/admin/access`` instead of sharing a
+        password. Returns a friendly ``data_apps_disabled`` payload (not an
+        error) if data apps are disabled on this instance.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{base_url}/api/data-apps/{slug}", headers=headers_fn(), timeout=30)
+            if _is_data_apps_disabled_response(r):
+                return _data_apps_disabled_payload()
+            r.raise_for_status()
+            detail = r.json()
+        return {
+            "render": "data_app_credentials",
+            "slug": slug,
+            "url": detail.get("url"),
+            "password": None,
+        }
 
     return list(FOUNDATION_TOOL_NAMES)

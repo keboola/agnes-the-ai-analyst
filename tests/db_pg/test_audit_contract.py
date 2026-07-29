@@ -7,6 +7,7 @@ whichever side is wrong.
 This is the test that proves the dual-write window in the parent plan
 (Phase 2 step 3) can work without invisible behaviour deltas.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,6 +20,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repo(tmp_path):
     from src.db import _ensure_schema
@@ -43,10 +45,12 @@ def _make_pg_repo(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     db_pg.get_engine()
 
     from src.repositories.audit_pg import AuditPgRepository
+
     return AuditPgRepository(db_pg.get_engine()), None
 
 
@@ -67,6 +71,7 @@ def audit_repo(request, tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 # contract assertions — same SQL questions, same answers
 # ---------------------------------------------------------------------------
+
 
 def test_log_returns_id(audit_repo):
     repo, _, _ = audit_repo
@@ -175,6 +180,7 @@ def test_query_ordering_newest_first(audit_repo):
     """Both impls must order by (timestamp DESC, id DESC)."""
     repo, _, _ = audit_repo
     import time
+
     repo.log(action="first")
     time.sleep(0.01)
     repo.log(action="second")
@@ -209,6 +215,7 @@ def test_query_for_resources_helper(audit_repo):
 def test_query_cursor_pagination(audit_repo):
     repo, _, _ = audit_repo
     import time
+
     for i in range(5):
         repo.log(action=f"a.{i}")
         time.sleep(0.005)
@@ -227,6 +234,7 @@ def test_query_cursor_pagination(audit_repo):
 # ---------------------------------------------------------------------------
 # aggregates — count_for_user / query_governance / facets / kpis
 # ---------------------------------------------------------------------------
+
 
 def test_count_for_user(audit_repo):
     repo, _, _ = audit_repo
@@ -262,6 +270,7 @@ def test_query_governance_action_filter(audit_repo):
 def test_query_governance_offset_paging(audit_repo):
     repo, _, _ = audit_repo
     import time
+
     for i in range(5):
         repo.log(action=f"corporate_memory.evt_{i}")
         time.sleep(0.005)
@@ -281,10 +290,15 @@ def test_facets_group_buckets(audit_repo):
     repo.log(user_id="u1", action="a", resource="r1", result="success", client_kind="web")
     repo.log(user_id="u1", action="a", resource="r1", result="success", client_kind="web")
     repo.log(user_id="u2", action="b", resource="r2", result="error.x", client_kind="cli")
-    repo.log(user_id=None, action="run_corporate_memory")  # scheduler via action fallback
-    sched = ["run_corporate_memory", "marketplace.sync_all"]
-    out = repo.facets(since=since, scheduler_actions=sched, limit=50)
-    assert set(out.keys()) == {"users", "actions", "results", "resources", "sources"}
+    # scheduler classification is rule-based (action LIKE 'run_%'), not a
+    # hardcoded action list — these two must land in 'scheduler' without any
+    # caller-supplied fallback names.
+    repo.log(user_id="u3", action="run_session_processor:usage")
+    repo.log(user_id="u3", action="marketplace.sync_all")
+    # NULL user + non-scheduler action → 'system'
+    repo.log(user_id=None, action="job.enqueue")
+    out = repo.facets(since=since, limit=50)
+    assert set(out.keys()) == {"users", "actions", "results", "result_classes", "resources", "sources"}
     user_counts = {u["id"]: u["count"] for u in out["users"]}
     assert user_counts["u1"] == 2
     assert user_counts["u2"] == 1
@@ -293,7 +307,22 @@ def test_facets_group_buckets(audit_repo):
     sources = {s["value"]: s["count"] for s in out["sources"]}
     assert sources.get("web") == 2
     assert sources.get("cli") == 1
-    assert sources.get("scheduler") == 1
+    assert sources.get("scheduler") == 2
+    assert sources.get("system") == 1
+
+
+def test_query_rows_carry_computed_source(audit_repo):
+    repo, _, _ = audit_repo
+    repo.log(user_id="u1", action="table.read", client_kind="cli")
+    repo.log(user_id="u1", action="run_session_processor:usage")
+    repo.log(user_id=None, action="job.enqueue")
+    repo.log(user_id="u1", action="table.read")
+    rows, _ = repo.query(limit=10)
+    by_action_kind = {(r["action"], r["client_kind"]): r["source"] for r in rows}
+    assert by_action_kind[("table.read", "cli")] == "cli"
+    assert by_action_kind[("run_session_processor:usage", None)] == "scheduler"
+    assert by_action_kind[("job.enqueue", None)] == "system"
+    assert by_action_kind[("table.read", None)] == "other"
 
 
 def test_kpis(audit_repo):
@@ -353,6 +382,7 @@ def test_active_users_since_excludes_rows_before_window(audit_repo):
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _as_dict(v):
     """Normalize ``params``/``params_before`` to a dict for cross-backend
     comparison. DuckDB JSON returns the parsed value; SQLAlchemy with
@@ -364,3 +394,110 @@ def _as_dict(v):
     if isinstance(v, str):
         return json.loads(v)
     return v
+
+
+# ---------------------------------------------------------------------------
+# PR-B: facets/kpis honor the timeline filter set; result_class / source /
+# include_self_reads filters (same semantics both backends)
+# ---------------------------------------------------------------------------
+
+def _seed_parity_rows(repo):
+    repo.log(user_id="u1", action="table.read", result="success", client_kind="cli")
+    repo.log(user_id="u1", action="table.read", result="ok", client_kind="cli")
+    repo.log(user_id="u1", action="query.run", result="error.400", client_kind="web")
+    repo.log(user_id="u2", action="query.run", result="denied", client_kind="web")
+    repo.log(user_id="sched", action="run_session_processor:usage", result="success")
+    repo.log(user_id=None, action="job.enqueue")
+    repo.log(user_id="u1", action="activity.read", result="success", client_kind="web")
+
+
+def test_kpis_honor_filters(audit_repo):
+    repo, _, _ = audit_repo
+    _seed_parity_rows(repo)
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    k = repo.kpis(since=since, user_id="u1")
+    # u1 rows: table.read x2, query.run, activity.read (self-read included by default)
+    assert k["events_total"] == 4
+    k2 = repo.kpis(since=since, user_id="u1", include_self_reads=False)
+    assert k2["events_total"] == 3
+    k3 = repo.kpis(since=since, source="cli")
+    assert k3["events_total"] == 2
+
+
+def test_kpis_active_users_excludes_system_actors(audit_repo):
+    repo, _, _ = audit_repo
+    _seed_parity_rows(repo)
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    k = repo.kpis(since=since)
+    # u1 + u2 are people; 'sched' rows classify as scheduler, NULL as system
+    assert k["active_users"] == 2
+    # errors counts result_class='error' only (denied is its own class)
+    assert k["errors"] == 1
+    assert 0.0 <= k["duration_coverage"] <= 1.0
+
+
+def test_query_result_class_and_source_filters(audit_repo):
+    repo, _, _ = audit_repo
+    _seed_parity_rows(repo)
+    rows, _ = repo.query(result_class="success", limit=50)
+    assert {r["result"] for r in rows} == {"success", "ok"}
+    rows, _ = repo.query(result_class="denied", limit=50)
+    assert {r["result"] for r in rows} == {"denied"}
+    rows, _ = repo.query(source="scheduler", limit=50)
+    assert {r["action"] for r in rows} == {"run_session_processor:usage"}
+    rows, _ = repo.query(include_self_reads=False, limit=50)
+    assert "activity.read" not in {r["action"] for r in rows}
+
+
+def test_facets_honor_filters(audit_repo):
+    repo, _, _ = audit_repo
+    _seed_parity_rows(repo)
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    out = repo.facets(since=since, user_id="u1", include_self_reads=False)
+    assert {a["value"] for a in out["actions"]} == {"table.read", "query.run"}
+    assert [u["id"] for u in out["users"]] == ["u1"]
+    # result_classes bucket present for the UI dropdown
+    classes = {c["value"]: c["count"] for c in out["result_classes"]}
+    assert classes["success"] == 2  # success + ok
+    assert classes["error"] == 1
+
+
+def test_log_autofills_duration_from_request_context(audit_repo):
+    """duration_ms=None auto-fills from the request-timing contextvar in
+    BOTH backends; outside a request scope it stays NULL."""
+    import contextvars
+
+    from src.audit_context import mark_request_start
+
+    repo, _, _ = audit_repo
+
+    def _in_fresh_context(fn):
+        return contextvars.copy_context().run(fn)
+
+    _in_fresh_context(lambda: repo.log(user_id="u1", action="no.scope"))
+
+    def _scoped():
+        mark_request_start()
+        repo.log(user_id="u1", action="in.scope")
+
+    _in_fresh_context(_scoped)
+    rows, _ = repo.query(limit=10)
+    by_action = {r["action"]: r["duration_ms"] for r in rows}
+    assert by_action["no.scope"] is None
+    assert by_action["in.scope"] is not None and by_action["in.scope"] >= 0
+
+
+def test_upload_filenames_since_parses_params_on_both_engines(audit_repo):
+    """PR-C: the reconciliation source — distinct session.upload filenames.
+    Exercises the JSONB-vs-JSON-string params divergence between engines."""
+    repo, _, _ = audit_repo
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    repo.log(user_id="u1", action="session.upload",
+             params={"bytes": 1, "filename": "aaa.jsonl"})
+    repo.log(user_id="u1", action="session.upload",
+             params={"bytes": 2, "filename": "aaa.jsonl"})  # dup → distinct
+    repo.log(user_id="u2", action="session.upload",
+             params={"bytes": 3, "filename": "bbb.jsonl"})
+    repo.log(user_id="u2", action="session.upload", params={"bytes": 4})  # no filename
+    repo.log(user_id="u2", action="other.action", params={"filename": "zzz.jsonl"})
+    assert repo.upload_filenames_since(since) == ["aaa.jsonl", "bbb.jsonl"]

@@ -279,6 +279,11 @@ from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
 from app.api.cli_auth import router as cli_auth_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
+from app.api.agents_admin import router as agents_admin_router
+from app.api.agent_runtime import router as agent_runtime_router  # noqa: E402
+from app.api.agent_sessions import router as agent_sessions_router  # noqa: E402
+from app.api.agent_webhooks import router as agent_webhooks_router  # noqa: E402
+from app.api.agent_memory import router as agent_memory_router  # noqa: E402
 from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
@@ -1208,7 +1213,14 @@ async def lifespan(app):
         app.state.chat_repo = ChatRepository(_chat_conn)
         app.state.chat_data_dir = _chat_data_dir
 
-        _chat_instance_yaml = _chat_data_dir / "state" / "instance.yaml"
+        # Overlay location must honor STATE_DIR: the admin overlay WRITER
+        # (app/api/admin.py) and load_instance_config both resolve via
+        # app.secrets._state_dir(), so a flat-mount deployment (STATE_DIR
+        # outside DATA_DIR/state) would otherwise toggle chat in a file this
+        # bootstrap never reads (Devin review on #1076).
+        from app.secrets import _state_dir as _chat_state_dir
+
+        _chat_instance_yaml = _chat_state_dir() / "instance.yaml"
         app.state.chat_config = load_chat_config(_chat_instance_yaml)
 
         def _get_marketplace_sha() -> str:
@@ -1420,6 +1432,13 @@ async def lifespan(app):
     except Exception:
         logger.exception("CHAT-INIT failed (non-fatal); chat features will be unavailable")
         app.state.chat_manager = None
+    # Mirror whatever CHAT-INIT settled on (a real manager, or None) onto the
+    # process-wide singleton the `agent_response` job-worker handler reads —
+    # it has no `Request`/`app` in scope to read `app.state.chat_manager`
+    # from directly (see app.chat.manager.get_current_chat_manager).
+    from app.chat.manager import set_current_chat_manager
+
+    set_current_chat_manager(app.state.chat_manager)
     # --- end CHAT-INIT -------------------------------------------------------
 
     # --- SLACK-INIT: resolve bot user id once (mention loop-guard / strip) ---
@@ -1552,6 +1571,16 @@ async def lifespan(app):
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
+    # Flush any buffered llm_usage rows (broker Task 8 — batched ledger
+    # writes) BEFORE the system DB closes, so a graceful shutdown doesn't
+    # drop the tail of usage the accumulator hadn't hit a size/age
+    # threshold for yet.
+    try:
+        from app.api.broker_agent_policy import usage_accumulator
+
+        usage_accumulator.flush()
+    except Exception:
+        logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
     from src.db import close_analytics_db, close_operational_db, close_system_db
 
     close_system_db()
@@ -1815,6 +1844,14 @@ def create_app() -> FastAPI:
         skip_prefixes=(
             "/api/data/",
             "/api/mcp",  # SSE stream — do not gzip
+            # Chat sandbox LLM proxy: the model completion streams back as
+            # text/event-stream. GZipMiddleware buffers a StreamingResponse
+            # whole to compress it, which collapses every token delta into one
+            # end-of-turn burst (verified live: the in-sandbox CLI saw all SSE
+            # events arrive at one timestamp). Skipping gzip here is what makes
+            # the broker's stream-through (#1020) actually reach the sandbox
+            # incrementally.
+            "/api/broker/anthropic",  # SSE stream — do not gzip
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
@@ -1906,6 +1943,13 @@ def create_app() -> FastAPI:
     # downstream middleware or handler runs, and every response gets the
     # x-request-id header.
     app.add_middleware(RequestIdMiddleware)
+
+    # Audit-timing contextvar (pure ASGI, zero hot-path overhead) — lets
+    # audit_repo().log() auto-fill duration_ms for every HTTP-triggered
+    # audit write; see src/audit_context.py.
+    from app.middleware.audit_timing import AuditTimingMiddleware
+
+    app.add_middleware(AuditTimingMiddleware)
 
     # HTTP request metrics (three-plane wave 2D, task 1) — registered as an
     # `@app.middleware("http")` function (not add_middleware) so it becomes
@@ -2133,6 +2177,11 @@ def create_app() -> FastAPI:
     app.include_router(cli_auth_router)
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
+    app.include_router(agents_admin_router)
+    app.include_router(agent_runtime_router)
+    app.include_router(agent_sessions_router)
+    app.include_router(agent_webhooks_router)
+    app.include_router(agent_memory_router)
     app.include_router(v2_catalog_router)
     app.include_router(v2_schema_router)
     app.include_router(v2_sample_router)
@@ -2319,6 +2368,13 @@ def create_app() -> FastAPI:
 
     for _plugin_router in _load_plugin_routers(_get_value("plugins", "admin_routers", default=[]) or []):
         app.include_router(_plugin_router)
+
+    # /agents is served by the paper-theme redesign builder page in
+    # web_router (app/web/router.py). main's minimal agents_page.py builder
+    # was retired at the merge — the two branches shipped competing /agents
+    # pages, and the redesign one (client-rendered against /api/agents) wins
+    # the URL. main's agent-as-API endpoints (/api/v1/agents, agents_admin,
+    # sessions, …) are untouched.
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)

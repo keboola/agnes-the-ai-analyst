@@ -1,223 +1,218 @@
-"""DuckDB-backed repository for ``agents`` (v103).
-
-An agent is an assistant the caller composes in the Agent builder (/agents):
-an identity (name/role/instructions/tone/greeting), the knowledge sources and
-plugins it may reach, and the surfaces it answers on. Before v103 these lived
-in the browser's ``localStorage`` only; the registry makes them real Library
-items that can be shared through ``resource_grants``.
-
-The ``knowledge``, ``plugins`` and ``surfaces`` columns are JSON payloads the
-builder owns — this layer stores and returns them decoded, so callers work
-with lists/dicts and never see the wire format.
-
-Template: src/repositories/file_corpora.py.
-"""
+"""Repository for owner-scoped agent profiles + scope + scope snapshots (v96)."""
 
 from __future__ import annotations
 
-import json
-import secrets
-from typing import Any, Dict, List, Optional
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 
-#: Surfaces an agent can answer on. Web chat is the always-on baseline.
-DEFAULT_SURFACES: Dict[str, bool] = {
-    "web": True,
-    "slack": False,
-    "telegram": False,
-    "cli": False,
-    "mcp": False,
-}
-
-
-def decode_json_column(raw: Any, fallback: Any) -> Any:
-    """Decode a JSON column, tolerating NULL/blank/corrupt payloads.
-
-    An agent row with an unreadable payload still renders (with the empty
-    fallback) rather than breaking the whole Library listing. Shared with the
-    Postgres twin so both engines coerce identically.
-    """
-    if raw is None or raw == "":
-        return fallback
-    if isinstance(raw, (list, dict)):
-        return raw  # already decoded (PG JSON column / test fixture)
-    try:
-        decoded = json.loads(raw)
-    except (TypeError, ValueError):
-        return fallback
-    return decoded if isinstance(decoded, type(fallback)) else fallback
+_UPDATABLE = frozenset(
+    {
+        "name",
+        "description",
+        "system_prompt",
+        "model",
+        "token_budget_monthly",
+        "plugins_mode",
+        "connections_mode",
+        "tables_mode",
+        "memory_mode",
+        "memory_write_mode",
+        # v110 paper-theme agent-builder superset (knowledge/plugins/surfaces
+        # are JSON text the caller encodes).
+        "role",
+        "tone",
+        "greeting",
+        "knowledge",
+        "plugins",
+        "surfaces",
+        "status",
+    }
+)
 
 
 class AgentsRepository:
-    """DuckDB twin for the ``agents`` table."""
-
-    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+    def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
 
-    _COLS = [
-        "id",
-        "slug",
-        "name",
-        "role",
-        "instructions",
-        "tone",
-        "greeting",
-        "knowledge",
-        "plugins",
-        "surfaces",
-        "status",
-        "created_by",
-        "created_at",
-        "updated_at",
-        "deleted_at",
-    ]
-    _SELECT = ", ".join(_COLS)
+    def _row_to_dict(self, row) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        columns = [desc[0] for desc in self.conn.description]
+        return dict(zip(columns, row))
 
-    #: Columns a caller may PATCH. ``slug``/``created_by``/timestamps are
-    #: server-owned, so an update payload can never reassign ownership.
-    _MUTABLE = (
-        "name",
-        "role",
-        "instructions",
-        "tone",
-        "greeting",
-        "knowledge",
-        "plugins",
-        "surfaces",
-        "status",
-    )
-    _JSON_COLS = {"knowledge": list, "plugins": list, "surfaces": dict}
-
-    def _row(self, row: Any) -> Dict[str, Any]:
-        rec = dict(zip(self._COLS, row))
-        rec["knowledge"] = decode_json_column(rec.get("knowledge"), [])
-        rec["plugins"] = decode_json_column(rec.get("plugins"), [])
-        rec["surfaces"] = decode_json_column(rec.get("surfaces"), dict(DEFAULT_SURFACES))
-        return rec
-
-    # ------------------------------------------------------------------
-    # CRUD
-    # ------------------------------------------------------------------
+    def _rows_to_dicts(self, rows) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, r)) for r in rows]
 
     def create(
         self,
-        *,
+        id: str,
+        owner_user_id: str,
         name: str,
         slug: str,
-        created_by: str,
-        role: str = "",
-        instructions: str = "",
-        tone: str = "concise",
-        greeting: str = "",
-        knowledge: Optional[List[str]] = None,
-        plugins: Optional[List[str]] = None,
-        surfaces: Optional[Dict[str, bool]] = None,
-        status: str = "draft",
-    ) -> str:
-        """Insert a new agent; returns the generated ``agt_*`` id.
-
-        Raises ``duckdb.ConstraintException`` if ``slug`` collides.
-        """
-        agent_id = "agt_" + secrets.token_hex(8)
+        description: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        token_budget_monthly: Optional[int] = None,
+        plugins_mode: str = "all",
+        connections_mode: str = "all",
+        tables_mode: str = "all",
+        memory_mode: str = "all",
+        memory_write_mode: str = "propose",
+        is_default: bool = False,
+        # v110 paper-theme agent-builder superset. knowledge/plugins/surfaces
+        # are opaque JSON text the caller encodes; None falls back to the
+        # column DEFAULT.
+        role: Optional[str] = None,
+        tone: Optional[str] = None,
+        greeting: Optional[str] = None,
+        knowledge: Optional[str] = None,
+        plugins: Optional[str] = None,
+        surfaces: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
         self.conn.execute(
-            "INSERT INTO agents (id, slug, name, role, instructions, tone, greeting, "
-            "knowledge, plugins, surfaces, status, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO agents
+            (id, owner_user_id, name, slug, description, system_prompt, model,
+             token_budget_monthly, plugins_mode, connections_mode, tables_mode,
+             memory_mode, memory_write_mode, is_default,
+             role, tone, greeting, knowledge, plugins, surfaces, status,
+             created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE(?, ''), COALESCE(?, 'concise'), COALESCE(?, ''),
+                    COALESCE(?, '[]'), COALESCE(?, '[]'), COALESCE(?, '{}'),
+                    COALESCE(?, 'draft'), ?, ?)""",
             [
-                agent_id,
-                slug,
+                id,
+                owner_user_id,
                 name,
+                slug,
+                description,
+                system_prompt,
+                model,
+                token_budget_monthly,
+                plugins_mode,
+                connections_mode,
+                tables_mode,
+                memory_mode,
+                memory_write_mode,
+                is_default,
                 role,
-                instructions,
                 tone,
                 greeting,
-                json.dumps(knowledge or []),
-                json.dumps(plugins or []),
-                json.dumps(surfaces if surfaces is not None else DEFAULT_SURFACES),
+                knowledge,
+                plugins,
+                surfaces,
                 status,
-                created_by,
+                now,
+                now,
             ],
         )
-        return agent_id
 
-    def get(self, agent_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
-        """Fetch one agent by id. Returns ``None`` if not found."""
-        guard = "" if include_deleted else " AND deleted_at IS NULL"
+    def get_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Includes soft-deleted rows so slug tombstoning is inspectable."""
+        row = self.conn.execute("SELECT * FROM agents WHERE id = ?", [agent_id]).fetchone()
+        return self._row_to_dict(row)
+
+    def get_by_slug(self, owner_user_id: str, slug: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        # include_deleted spans soft-deleted rows because the (owner_user_id,
+        # slug) UNIQUE constraint does too — the builder's slug picker must see
+        # tombstones or a create-delete-create reuses a slug and hits the
+        # constraint.
+        clause = "" if include_deleted else " AND deleted_at IS NULL"
         row = self.conn.execute(
-            f"SELECT {self._SELECT} FROM agents WHERE id = ?{guard}",
-            [agent_id],
+            "SELECT * FROM agents WHERE owner_user_id = ? AND slug = ?" + clause,
+            [owner_user_id, slug],
         ).fetchone()
-        return self._row(row) if row else None
+        return self._row_to_dict(row)
 
-    def get_by_slug(self, slug: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
-        """Fetch one agent by slug. Returns ``None`` if not found or soft-deleted."""
-        guard = "" if include_deleted else " AND deleted_at IS NULL"
-        row = self.conn.execute(
-            f"SELECT id FROM agents WHERE slug = ?{guard}",
-            [slug],
-        ).fetchone()
-        return self.get(row[0], include_deleted=include_deleted) if row else None
+    def list_for_user(self, owner_user_id: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT * FROM agents
+            WHERE owner_user_id = ? AND deleted_at IS NULL
+            ORDER BY is_default DESC, name""",
+            [owner_user_id],
+        ).fetchall()
+        return self._rows_to_dicts(rows)
 
-    def list(
-        self,
-        *,
-        created_by: Optional[str] = None,
-        search: Optional[str] = None,
-        limit: int = 200,
-    ) -> List[Dict[str, Any]]:
-        """List live agents, name-ordered. ``created_by`` scopes to one owner."""
-        query = f"SELECT {self._SELECT} FROM agents WHERE deleted_at IS NULL"
-        params: List[Any] = []
-        if created_by:
-            query += " AND created_by = ?"
-            params.append(created_by)
-        if search:
-            query += " AND name ILIKE ?"
-            params.append(f"%{search}%")
-        query += " ORDER BY name LIMIT ?"
-        params.append(limit)
-        rows = self.conn.execute(query, params).fetchall()
-        return [self._row(r) for r in rows]
-
-    def update(self, agent_id: str, **fields: Any) -> bool:
-        """Patch mutable columns; returns False if the agent doesn't exist.
-
-        Unknown and server-owned keys are ignored, so a hostile payload can't
-        reassign ``created_by`` or ``slug``. A call with no recognised field
-        still bumps ``updated_at`` (an idempotent touch).
-        """
-        sets: List[str] = []
-        params: List[Any] = []
-        for col in self._MUTABLE:
-            if col not in fields:
-                continue
-            value = fields[col]
-            if col in self._JSON_COLS:
-                value = json.dumps(value if value is not None else self._JSON_COLS[col]())
-            sets.append(f"{col} = ?")
-            params.append(value)
-        sets.append("updated_at = current_timestamp")
+    def update(self, agent_id: str, **fields: Any) -> None:
+        bad = set(fields) - _UPDATABLE
+        if bad:
+            raise ValueError(f"cannot update non-whitelisted field(s): {sorted(bad)}")
+        if not fields:
+            return
+        set_clauses = [f"{col} = ?" for col in fields]
+        params: List[Any] = list(fields.values())
+        set_clauses.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc))
         params.append(agent_id)
-        # RETURNING 1 (same convention as ResourceGrantsRepository.delete) is
-        # how "did this touch a live row" is read — no separate existence SELECT.
-        res = self.conn.execute(
-            f"UPDATE agents SET {', '.join(sets)} WHERE id = ? AND deleted_at IS NULL RETURNING 1",
-            params,
-        ).fetchone()
-        return res is not None
-
-    def soft_delete(self, agent_id: str) -> None:
-        """Set ``deleted_at`` to now (also bumps ``updated_at``). Idempotent."""
         self.conn.execute(
-            "UPDATE agents SET deleted_at = current_timestamp, updated_at = current_timestamp WHERE id = ?",
-            [agent_id],
+            f"UPDATE agents SET {', '.join(set_clauses)} WHERE id = ?",
+            params,
         )
 
-    def count_for_user(self, user_id: str) -> int:
-        """Live agents owned by ``user_id`` (drives the Library's type facet)."""
+    def soft_delete(self, agent_id: str) -> None:
+        self.conn.execute(
+            "UPDATE agents SET deleted_at = ? WHERE id = ?",
+            [datetime.now(timezone.utc), agent_id],
+        )
+
+    def get_or_create_default(self, owner_user_id: str) -> Dict[str, Any]:
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM agents WHERE created_by = ? AND deleted_at IS NULL",
-            [user_id],
+            "SELECT * FROM agents WHERE owner_user_id = ? AND is_default AND deleted_at IS NULL",
+            [owner_user_id],
         ).fetchone()
-        return int(row[0]) if row else 0
+        existing = self._row_to_dict(row)
+        if existing is not None:
+            return existing
+
+        agent_id = str(uuid.uuid4())
+        self.create(
+            id=agent_id,
+            owner_user_id=owner_user_id,
+            name="Default",
+            slug="default",
+            plugins_mode="all",
+            connections_mode="all",
+            tables_mode="all",
+            memory_mode="all",
+            memory_write_mode="propose",
+            is_default=True,
+        )
+        return self.get_by_id(agent_id)  # type: ignore[return-value]
+
+    def set_scope(self, agent_id: str, items: List[Tuple[str, str]]) -> None:
+        self.conn.execute("DELETE FROM agent_scope WHERE agent_id = ?", [agent_id])
+        if items:
+            self.conn.executemany(
+                "INSERT INTO agent_scope (agent_id, item_type, item_id) VALUES (?, ?, ?)",
+                [[agent_id, item_type, item_id] for item_type, item_id in items],
+            )
+
+    def get_scope(self, agent_id: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT item_type, item_id FROM agent_scope WHERE agent_id = ? ORDER BY item_type, item_id",
+            [agent_id],
+        ).fetchall()
+        return self._rows_to_dicts(rows)
+
+    def record_scope_snapshot(self, id: str, session_id: str, agent_id: str, effective_scope: str) -> None:
+        self.conn.execute(
+            """INSERT INTO agent_scope_snapshots
+            (id, session_id, agent_id, effective_scope, created_at)
+            VALUES (?, ?, ?, ?, ?)""",
+            [id, session_id, agent_id, effective_scope, datetime.now(timezone.utc)],
+        )
+
+    def list_scope_snapshots(self, session_id: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM agent_scope_snapshots WHERE session_id = ? ORDER BY created_at",
+            [session_id],
+        ).fetchall()
+        return self._rows_to_dicts(rows)

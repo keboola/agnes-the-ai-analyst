@@ -70,6 +70,10 @@ COMPOSE_FILE="$(_env_get COMPOSE_FILE)"
 # later wave (this one only makes the host scripts role-split-ready).
 SCHEDULER_API_TOKEN="$(_env_get SCHEDULER_API_TOKEN)"
 COMPOSE_PROFILES="$(_env_get COMPOSE_PROFILES)"
+# Hosted data apps run under the `apps` compose profile, applied as a --profile
+# flag below (NOT via COMPOSE_PROFILES: compose ignores that env var whenever any
+# --profile flag — e.g. `--profile tls` — is present; the two are not merged).
+DATA_APPS_ENABLED="$(_env_get AGNES_DATA_APPS_ENABLED)"
 export AGNES_TAG STATE_DIR COMPOSE_FILE SCHEDULER_API_TOKEN COMPOSE_PROFILES
 
 STATE_DIR="${STATE_DIR:-/data/state}"
@@ -145,7 +149,20 @@ IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # colon-separator so docker compose sees a unified list — interleaving
 # ``-f`` args and a COMPOSE_FILE env var is unspecified behaviour.
 export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml}"
+# Fold any COMPOSE_PROFILES from .env (e.g. the m-tier topology's
+# ``COMPOSE_PROFILES=mtier``) into explicit ``--profile`` flags up front. Docker
+# compose ignores COMPOSE_PROFILES entirely the moment ANY ``--profile`` flag is
+# present (they are not merged), so once we add ``--profile tls``/``--profile
+# apps`` below a bare COMPOSE_PROFILES env value would be silently dropped —
+# flipping ROLE_SPLIT off on an mtier VM. Converting it to flags here keeps every
+# profile active regardless of the tls/apps combination.
 PROFILE_ARGS=()
+if [ -n "$COMPOSE_PROFILES" ]; then
+    IFS=',' read -ra _cp_list <<< "$COMPOSE_PROFILES"
+    for _cp in "${_cp_list[@]}"; do
+        [ -n "$_cp" ] && PROFILE_ARGS+=( --profile "$_cp" )
+    done
+fi
 
 # Re-fetch the bind-mounted config files (compose overlays + Caddyfile)
 # from the OSS main branch on every tick. Without this, an image-only
@@ -233,10 +250,18 @@ if [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem
       *:docker-compose.tls.yml:*) : ;;
       *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.tls.yml" ;;
     esac
-    PROFILE_ARGS=( --profile tls )
+    PROFILE_ARGS+=( --profile tls )
 elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ]; then
     logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
 fi
+
+# Data apps: append `--profile apps` so the apps-runner sidecar keeps running
+# across upgrade ticks. Must be a flag (mirrors the startup script): once
+# `--profile tls` is in PROFILE_ARGS the COMPOSE_PROFILES env var is ignored, so
+# relying on it would silently drop the sidecar on the default TLS instance.
+case "$DATA_APPS_ENABLED" in
+  1|true|TRUE|yes|on) PROFILE_ARGS+=( --profile apps ) ;;
+esac
 
 # gcplogs overlay — ships container stdout/stderr to GCP Cloud Logging. Gated
 # purely on file presence (mirrors the tls append above): the file is NOT baked

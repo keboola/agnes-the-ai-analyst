@@ -40,24 +40,83 @@ ResolutionReason = Literal[
     "pat_revoked",
     "pat_expired",
     "pat_mismatch",
+    "agent_pat_wrong_surface",
+    "agent_pat_agent_deleted",
+    "pat_scope_forbidden",
 ]
+
+# Path prefixes an agent PAT (typ="agent_pat") is allowed to authenticate
+# against. Everything else — legacy `/api/*`, `/git/`, `/marketplace.zip`,
+# and the `/api/v1/agents` *management* verbs (those use session auth) —
+# hard-rejects with "agent_pat_wrong_surface". Tuple (not a set) because it
+# is consumed via ``str.startswith(prefixes_tuple)``.
+_AGENT_PAT_ALLOWED_PREFIXES = ("/api/v1/agents/", "/api/v1/sessions/", "/api/v1/jobs/")
+
+# JWT `typ` values that live in `personal_access_tokens` and must run the
+# same DB-backed validity chain (revoked/expired/unknown/hash-mismatch +
+# last-used bookkeeping) below.
+_PAT_LIKE_TYPES = ("pat", "agent_pat")
+
+
+def _stash_payload(request: Optional[Request], payload: dict) -> None:
+    """Stash the verified JWT payload on ``request.state.token_payload`` so
+    `agent_id_from_request` can read claims off the request without
+    re-verifying the JWT.
+
+    Called ONLY on this function's successful-resolution return paths (never
+    right after `verify_token` succeeds) — a token that decodes fine but then
+    fails a later check (revoked/expired/mismatched/wrong-surface/deleted
+    agent) must leave no stashed payload behind. Before this was moved here,
+    the stash ran unconditionally right after JWT verification, so a
+    revoked/expired/wrong-surface token still left its claims readable by
+    `agent_id_from_request` for the rest of the request — including its
+    `agent_id`, letting a request whose auth outright failed still resolve
+    "which agent" a caller further down the dependency chain might
+    mistakenly treat as authenticated.
+    """
+    if request is not None:
+        try:
+            request.state.token_payload = payload
+        except Exception:
+            pass
+
+
+# Scope prefix minted by `app.api.data_apps._mint_git_credential` for the
+# data-app git-over-HTTP authoring surface. A token carrying this scope must
+# never authenticate the JSON API (or any other git-over-HTTP surface, e.g.
+# the marketplace's) — only `app/api/data_apps_git.py` may pass
+# `allow_data_app_git_scope=True` to accept it. Without this check the
+# credential is, in practice, a full-privilege user PAT: nothing else reads
+# the `scope` claim, so a sandboxed authoring agent holding it could call any
+# non-admin (or admin, if the owner is Admin) REST/MCP endpoint.
+DATA_APP_GIT_SCOPE_PREFIX = "data-app-git:"
+
+# Scope prefix minted by `app.api.data_apps._mint_preview_token` for the
+# short-TTL in-chat preview-iframe capability (wave 3C, spec §7 / Q4). Mirrors
+# `DATA_APP_GIT_SCOPE_PREFIX` exactly: a token carrying this scope must never
+# authenticate the JSON control-plane API (or anything else) — only
+# `app/api/data_apps_proxy.py`'s view-only serving path may pass
+# `allow_data_app_preview_scope=True` to accept it, and even there the caller
+# still pins the scope's `<slug>` to the requested app before treating the
+# resolved identity as authorized (a preview token minted for one app must
+# never authorize viewing a different one).
+DATA_APP_PREVIEW_SCOPE_PREFIX = "data-app-preview:"
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
-    """See app/auth/dependencies._client_ip — same trust model (Caddy-fronted)."""
-    if request is None:
-        return None
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",", 1)[0].strip() or None
-    client = getattr(request, "client", None)
-    return getattr(client, "host", None) if client else None
+    """See app/auth/dependencies._client_ip — same trusted-hop model (F9)."""
+    from app.auth.client_ip import trusted_client_ip
+
+    return trusted_client_ip(request)
 
 
 def resolve_token_to_user(
     conn: Optional[duckdb.DuckDBPyConnection],
     token: str,
     request: Optional[Request] = None,
+    *,
+    allow_data_app_git_scope: bool = False,
+    allow_data_app_preview_scope: bool = False,
 ) -> Tuple[Optional[dict], Optional[ResolutionReason]]:
     """Validate a bearer token and return (user_dict, None) on success.
 
@@ -69,6 +128,19 @@ def resolve_token_to_user(
     ``conn`` is retained for signature stability — repositories are looked
     up via the factory in ``src.repositories`` (DuckDB or Postgres per
     ``AGNES_DB_URL``), so this argument is ignored.
+
+    ``allow_data_app_git_scope`` gates whether a token carrying the
+    ``data-app-git:<slug>`` scope (minted by
+    ``app.api.data_apps._mint_git_credential``) is accepted. Every caller
+    defaults to ``False`` (fail closed) except ``app/api/data_apps_git.py``,
+    the one surface that credential is meant to authenticate.
+
+    ``allow_data_app_preview_scope`` is the same fail-closed gate for a
+    ``data-app-preview:<slug>`` scope (minted by
+    ``app.api.data_apps._mint_preview_token``) — only
+    ``app/api/data_apps_proxy.py``'s view-only serving path passes
+    ``True``. Both scope checks reject their own prefix independently, so a
+    caller that (mistakenly) allows one never accepts the other.
     """
     if not token:
         return None, "no_token"
@@ -76,6 +148,23 @@ def resolve_token_to_user(
     payload = verify_token(token)
     if not payload:
         return None, "invalid_token"
+
+    scope = payload.get("scope") or ""
+    if scope.startswith(DATA_APP_GIT_SCOPE_PREFIX) and not allow_data_app_git_scope:
+        return None, "pat_scope_forbidden"
+    if scope.startswith(DATA_APP_PREVIEW_SCOPE_PREFIX) and not allow_data_app_preview_scope:
+        return None, "pat_scope_forbidden"
+
+    if payload.get("typ") == "agent_pat":
+        # Callers that omit `request` (git smart-HTTP in
+        # app/marketplace_server/git_router.py, MCP HTTP in
+        # app/api/mcp_http.py — neither has a natural `Request` object to
+        # pass through their auth path) fall through to path="" here, which
+        # never matches `_AGENT_PAT_ALLOWED_PREFIXES` — an agent PAT is
+        # fail-closed rejected on those surfaces by design, not by accident.
+        path = request.url.path if request is not None else ""
+        if not path.startswith(_AGENT_PAT_ALLOWED_PREFIXES):
+            return None, "agent_pat_wrong_surface"
 
     typ = payload.get("typ")
     co_session_id = payload.get("chat_session_id")
@@ -91,9 +180,8 @@ def resolve_token_to_user(
         if typ == "co_session":
             from src.grant_intersection import compute_grant_intersection
             from app.auth.session_principal import SessionPrincipal
-            participants = chat_session_participants_repo().get_session_participants(
-                co_session_id
-            )
+
+            participants = chat_session_participants_repo().get_session_participants(co_session_id)
             if not participants:
                 return None, "invalid_token"  # no live participants -> deny
             emails = [p.user_email for p in participants]
@@ -105,7 +193,40 @@ def resolve_token_to_user(
                 # factory (backend-correct) rather than a raw DuckDB conn.
                 intersection=compute_grant_intersection(emails),
             )
+            _stash_payload(request, payload)
             return principal, None
+
+        if typ == "agent_session":
+            # V1d: session -> agent_id -> agent row -> owner -> AgentPrincipal.
+            # Fail closed on every missing link — a token that decodes fine
+            # but names a session/agent/owner that no longer resolves must
+            # never fall through to the owner-identity path below.
+            from src.repositories import agents_repo, users_repo
+            from src.agent_scope_intersection import compute_agent_intersection
+            from app.auth.session_principal import AgentPrincipal
+
+            session = chat_session_repo().get_session(co_session_id)
+            if session is None:
+                return None, "invalid_token"
+            agent_id = getattr(session, "agent_id", None)
+            if not agent_id:
+                return None, "invalid_token"
+            agent = agents_repo().get_by_id(agent_id)
+            if not agent or agent.get("deleted_at") is not None:
+                return None, "invalid_token"
+            owner = users_repo().get_by_id(agent.get("owner_user_id") or "")
+            if not owner:
+                return None, "invalid_token"
+            agent_principal = AgentPrincipal(
+                session_id=co_session_id,
+                agent_id=agent_id,
+                owner_user_id=owner["id"],
+                owner_email=owner["email"],
+                intersection=compute_agent_intersection(owner["id"], agent),
+            )
+            _stash_payload(request, payload)
+            return agent_principal, None
+
         # Defense-in-depth (SR-3): a plain single-user token that names a
         # co-session must never drive it, regardless of _spawn_runner.
         session = chat_session_repo().get_session(co_session_id)
@@ -113,16 +234,36 @@ def resolve_token_to_user(
             return None, "invalid_token"  # FAIL CLOSED
 
     from src.repositories import users_repo, access_token_repo
+
     user = users_repo().get_by_id(payload.get("sub", ""))
     if not user:
         return None, "user_not_found"
     if not bool(user.get("active", True)):
         return None, "deactivated"
 
-    if payload.get("typ") != "pat":
+    if payload.get("typ") not in _PAT_LIKE_TYPES:
+        # v106 follow-up: session-JWT-backed AGENT surfaces get the stack
+        # data-read surface, mirroring the PAT default minted by `agnes
+        # init` / mcp_connect. Three mint sites tag themselves via the
+        # `scope` claim: the per-user chat runner (`mint_session_jwt`,
+        # scope="chat" — the E2B/web-chat sandbox), the brokered solo-chat
+        # replay identity (`app/api/broker.py::_mint_identity_jwt`, also
+        # scope="chat" — same narrowing, deliberately), and the MCP
+        # streamable-HTTP OAuth transport (`app.auth.mcp_oauth`,
+        # scope="mcp-oauth" — Claude Desktop / claude.ai connectors).
+        # Browser session JWTs carry no scope claim → no key → surface
+        # 'all' → /admin and the web UI are untouched. Non-admins are
+        # unaffected either way (the surface only gates the admin
+        # short-circuit in src/rbac.py).
+        if payload.get("scope") in ("chat", "mcp-oauth"):
+            user["credential_surface"] = "stack"
+        _stash_payload(request, payload)
         return user, None
 
-    # PAT: extra DB-backed validation (revoked/expired/unknown/hash).
+    # PAT / agent PAT: extra DB-backed validation (revoked/expired/unknown/hash).
+    # Agent PATs live in the same `personal_access_tokens` table with
+    # `agent_id` set, so this chain — including revocation and expiry — is
+    # identical for both token kinds.
     tokens_repo = access_token_repo()
     record = tokens_repo.get_by_id(payload.get("jti", ""))
     if not record:
@@ -147,6 +288,23 @@ def resolve_token_to_user(
         if actual != stored_hash:
             return None, "pat_mismatch"
 
+    # Defense-in-depth (agent delete): `DELETE /api/v1/agents/{id}` soft-
+    # deletes the agent row and then revokes its PATs as two separate,
+    # non-atomic calls (see app/api/agents_admin.py::delete_agent). If the
+    # revoke call fails after the soft-delete already committed, the token
+    # row above would still look perfectly valid — so an agent PAT gets an
+    # independent liveness check straight against the `agents` table by the
+    # JWT's `agent_id` claim, not just the token row. Checked here (not
+    # earlier) so a wrong-surface agent PAT still gets
+    # "agent_pat_wrong_surface" first, matching the existing reason
+    # ordering.
+    if payload.get("typ") == "agent_pat":
+        from src.repositories import agents_repo
+
+        agent = agents_repo().get_by_id(payload.get("agent_id", ""))
+        if not agent or agent.get("deleted_at") is not None:
+            return None, "agent_pat_agent_deleted"
+
     # First-use-from-new-IP audit entry (#12 acceptance criterion).
     # Only emit when the IP changes on a *subsequent* use — the very
     # first use of a token is not surprising and doesn't need an entry.
@@ -156,6 +314,7 @@ def resolve_token_to_user(
     if already_used and current_ip and current_ip != previous_ip:
         try:
             from src.repositories import audit_repo
+
             audit_repo().log(
                 user_id=user["id"],
                 action="token.first_use_new_ip",
@@ -170,4 +329,34 @@ def resolve_token_to_user(
     except Exception:
         pass
 
+    # v106: credential data-read surface. Stashed on the user dict so the
+    # RBAC primitives (src/rbac.py get_accessible_tables/can_access_table)
+    # can narrow an ADMIN's read surface to their stack when the token was
+    # minted with surface='stack'. The rule is "non-PAT credential ⇒ all":
+    # session JWTs, the scheduler shared-secret, and local-dev bypass never
+    # reach this branch and therefore never carry the key — and a missing
+    # key reads as 'all' at every consumer, so their behavior is unchanged.
+    # Legacy PATs are backfilled to 'all' by the v106 migration; the
+    # `or "all"` below is belt-and-braces for a NULL that slipped through.
+    user["credential_surface"] = record.get("surface") or "all"
+
+    _stash_payload(request, payload)
     return user, None
+
+
+def agent_id_from_request(request: Optional[Request]) -> Optional[str]:
+    """agent_id claim of the presented agent PAT, or None for other creds.
+
+    Reads the JWT payload stashed on ``request.state.token_payload`` by
+    ``resolve_token_to_user`` — no re-verification. For Task 8/9 callers that
+    need to know which agent is bound to the current request.
+
+    Caller contract: only meaningful after ``get_current_user`` (or an
+    equivalent that runs ``resolve_token_to_user`` against this same
+    ``request``) has already succeeded for the current request. This helper
+    performs no verification of its own — it trusts whatever was stashed
+    earlier in the request lifecycle and returns ``None`` (never raises) if
+    nothing was stashed, e.g. because auth hasn't run yet or failed.
+    """
+    payload = getattr(request.state, "token_payload", None) if request is not None else None
+    return payload.get("agent_id") if payload and payload.get("typ") == "agent_pat" else None

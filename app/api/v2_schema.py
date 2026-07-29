@@ -8,7 +8,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from src.db import _open_duckdb
-from src.audit_helpers import client_kind_from_user
+from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
@@ -233,7 +233,7 @@ def schema(
         result = build_schema(conn, user, table_id, bq=bq)
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="catalog.schema",
                 resource=resource,
                 params={"duration_ms": int((time.monotonic() - t0) * 1000)},
@@ -254,7 +254,7 @@ def schema(
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="catalog.schema",
                 resource=resource,
                 params={"duration_ms": int((time.monotonic() - t0) * 1000),

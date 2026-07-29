@@ -117,8 +117,14 @@ def test_detailed_schema_check_does_not_block_event_loop(seeded_app, monkeypatch
     token = seeded_app["admin_token"]
     orig = health_mod._check_db_schema
 
+    # The sleep must dominate CI-load noise: with 0.5s the pass/fail
+    # discriminator was ~0.4s of ASGI/auth/thread-pool overhead, which loaded
+    # shard runners routinely exceed (observed 1.35-1.43s on overlapping
+    # probes vs the old 0.9s threshold). At 1.5s, overlap lands at ~1.5s +
+    # overhead while serialization is >= 3.0s, so a 2.5s threshold tolerates
+    # a full second of overhead in either direction.
     def slow():
-        time.sleep(0.5)
+        time.sleep(1.5)
         return orig()
 
     monkeypatch.setattr(health_mod, "_check_db_schema", slow)
@@ -136,7 +142,7 @@ def test_detailed_schema_check_does_not_block_event_loop(seeded_app, monkeypatch
 
     elapsed, r1, r2 = asyncio.run(fire())
     assert r1.status_code == 200 and r2.status_code == 200
-    assert elapsed < 0.9, f"detailed probes serialized ({elapsed:.2f}s) — event loop blocked"
+    assert elapsed < 2.5, f"detailed probes serialized ({elapsed:.2f}s) — event loop blocked"
 
 
 def test_detailed_schema_check_shares_liveness_cache(seeded_app, monkeypatch):

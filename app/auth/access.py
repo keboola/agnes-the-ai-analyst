@@ -37,7 +37,7 @@ import duckdb
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.dependencies import _get_db, get_current_user
-from app.auth.session_principal import SessionPrincipal
+from app.auth.session_principal import PRINCIPAL_TYPES, Principal
 from app.resource_types import ResourceType
 from src.db import SYSTEM_ADMIN_GROUP
 
@@ -317,13 +317,16 @@ def has_explicit_grant(
 
 
 def can_access_session(
-    principal: "SessionPrincipal",
+    principal: "Principal",
     resource_type: str,
     resource_id: str,
 ) -> bool:
-    """Co-session access: membership in the live intersection. Must NOT call
-    is_user_admin / can_access (PR checklist item) — the SessionPrincipal's
-    ``intersection`` was already built without the admin short-circuit."""
+    """Restricted-principal access: membership in the live intersection.
+
+    Must NOT call is_user_admin / can_access (PR checklist item) — both a
+    ``SessionPrincipal``'s and an ``AgentPrincipal``'s ``intersection`` were
+    already built without the admin short-circuit, so consulting either here
+    would re-introduce god-mode through the back door."""
     return resource_id in principal.intersection.get(resource_type, frozenset())
 
 
@@ -343,14 +346,18 @@ def require_admin(
     convention as before — endpoints write ``Depends(require_admin)`` (no
     parens) and receive the user dict.
 
-    A ``SessionPrincipal`` (co-session runner token) is HARD-DENIED before
-    any ``is_user_admin`` check — co-sessions never hold admin authority.
+    Any restricted principal (``SessionPrincipal`` co-session runner token,
+    ``AgentPrincipal`` agent-session sandbox token) is HARD-DENIED before any
+    ``is_user_admin`` check. This ordering is load-bearing: an
+    ``AgentPrincipal`` carries its owner's user id, so a lookup that ran
+    first would return True for an admin-owned agent and hand the sandbox
+    god-mode. An agent is a *restriction* of its owner, never an elevation.
 
     Plain ``def`` (not ``async def``) so FastAPI offloads it to the anyio
     thread pool — the body is a sync ``is_user_admin`` RBAC read that must
     not run on the event loop (Tier 1, PR #188).
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
@@ -403,7 +410,10 @@ def require_resource_access(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=(f"require_resource_access: path_template {path_template!r} references missing path_param {e}"),
             )
-        if isinstance(user, SessionPrincipal):
+        if isinstance(user, PRINCIPAL_TYPES):
+            # Restricted principal (co-session or agent-session): the live
+            # intersection is the sole authority — no admin short-circuit,
+            # no owner-group resolution, and no ``user["id"]`` to subscript.
             allowed = can_access_session(user, resource_type.value, resource_id)
         else:
             allowed = can_access(user["id"], resource_type.value, resource_id, conn)
@@ -559,5 +569,35 @@ def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
         # scope="chat" triggers the per-session BigQuery budget stash
         # (`_stash_chat_session_id_from_token`), same as the solo path — a
         # co-session is a chat session and must be capped too. (#849)
+        extra_claims={"scope": "chat", "chat_session_id": session_id},
+    )
+
+
+def mint_agent_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
+    """Mint an agent-scoped session runner token (V1d). Carries ONLY
+    chat_session_id + typ='agent_session' + a synthetic sub (never a user
+    UUID or the agent_id) — the same no-baked-in-authority contract as
+    ``mint_co_session_jwt``: no grants, no real user id, no agent identity.
+
+    The resolver (``app.auth.pat_resolver``) rebuilds the owner-grants ∩
+    agent-scope intersection live per request
+    (``src.agent_scope_intersection.compute_agent_intersection``), so
+    narrowing an agent or revoking a grant takes effect on the very next
+    request — no stale-replay window.
+
+    Encoded with the canonical auth secret (app/auth/jwt) so verify_token
+    decodes it in every env.
+    """
+    from datetime import timedelta
+    from app.auth.jwt import create_access_token
+
+    return create_access_token(
+        user_id=f"agent-session:{session_id}",
+        email="",  # no real identity; resolver never reads this
+        expires_delta=timedelta(seconds=ttl),
+        typ="agent_session",
+        # scope="chat" triggers the per-session BigQuery budget stash
+        # (`_stash_chat_session_id_from_token`) — a brokered agent session
+        # must stay capped too, same as the co-session and solo paths.
         extra_claims={"scope": "chat", "chat_session_id": session_id},
     )

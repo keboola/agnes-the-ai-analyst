@@ -311,7 +311,7 @@
     $('ukpi-users').textContent  = fmtN(d.distinct_users);
     $('ukpi-tools').textContent  = fmtN(d.distinct_tools);
     $('ukpi-errors').textContent = (d.error_rate * 100).toFixed(2) + '%';
-    $('ukpi-errors-sub').textContent = fmtN(d.errors) + ' errors';
+    $('ukpi-errors-sub').textContent = fmtN(d.errors) + ' of ' + fmtN(d.events_total) + ' tool events';
     renderNarrative(d);
   }
   function renderNarrative(d) {

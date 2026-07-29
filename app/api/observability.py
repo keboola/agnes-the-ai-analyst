@@ -27,6 +27,7 @@ from src.repositories import (
     observability_views_repo,
     users_repo,
 )
+
 router = APIRouter(prefix="/api/admin/observability", tags=["observability"])
 
 
@@ -34,18 +35,11 @@ router = APIRouter(prefix="/api/admin/observability", tags=["observability"])
 # Facets — distinct values for the filter dropdowns, scoped to the window
 # ---------------------------------------------------------------------------
 
-# Source classification mirrors the rule on /admin/scheduler-runs:
-# a row is `scheduler` when client_kind = 'scheduler' OR when its action
-# matches one of these hardcoded names (back-compat with pre-v41 audit rows
-# that didn't carry client_kind). 'cli' / 'web' come straight from
-# client_kind. Anything else is bucketed as 'other' so the dropdown is
-# closed-set.
-_SCHEDULER_ACTION_FALLBACK = (
-    "run_session_collector",
-    "run_verification_detector",
-    "run_corporate_memory",
-    "marketplace.sync_all",
-)
+# Source classification lives in the repo layer now — one shared rule
+# (src.audit_helpers.AUDIT_SOURCE_CASE_SQL, `action LIKE 'run_%'`), the same
+# predicate last_scheduler_tick() uses. The previous hardcoded action list
+# here had gone stale (it named four actions that no longer exist), which
+# silently bucketed all scheduler ticks as 'other'.
 
 
 def _window_since(since_minutes: int) -> datetime:
@@ -55,13 +49,22 @@ def _window_since(since_minutes: int) -> datetime:
 @router.get("/facets")
 def facets(
     since_minutes: int = Query(default=1440, ge=1, le=43200),
+    user_id: Optional[str] = None,
+    action_prefix: Optional[str] = None,
+    resource_prefix: Optional[str] = None,
+    result_pattern: Optional[str] = None,
+    result_class: Optional[str] = None,
+    q: Optional[str] = None,
+    source: Optional[str] = None,
+    include_self_reads: bool = Query(default=False),
     _user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return the distinct facet values present in `audit_log` for the
-    selected window, each with a count. The UI uses these to populate the
-    filter dropdowns — so an admin sees only users/actions that actually
-    exist, not a free-text guess.
+    selected window, each with a count — under the SAME filters the
+    timeline uses, so dropdown counts always describe rows the table can
+    actually show. `include_self_reads` defaults to False: the Activity
+    Center's own `activity.read` audit rows are hidden unless asked for.
 
     Counts are capped at 50 per facet (largest first). 50 is comfortable in
     a dropdown; tighter windows usually have <20 anyway.
@@ -70,7 +73,14 @@ def facets(
 
     data = audit_repo().facets(
         since=since,
-        scheduler_actions=list(_SCHEDULER_ACTION_FALLBACK),
+        user_id=user_id,
+        action_prefix=action_prefix,
+        resource_prefix=resource_prefix,
+        result_pattern=result_pattern,
+        result_class=result_class,
+        q=q,
+        source=source,
+        include_self_reads=include_self_reads,
     )
 
     # The facets 'users' bucket carries ids + counts only; resolve readable
@@ -79,14 +89,12 @@ def facets(
 
     return {
         "window_minutes": since_minutes,
-        "users":     [
-            {"id": u["id"], "label": emails.get(u["id"]) or u["id"], "count": u["count"]}
-            for u in data["users"]
-        ],
-        "actions":   data["actions"],
-        "results":   data["results"],
+        "users": [{"id": u["id"], "label": emails.get(u["id"]) or u["id"], "count": u["count"]} for u in data["users"]],
+        "actions": data["actions"],
+        "results": data["results"],
+        "result_classes": data["result_classes"],
         "resources": data["resources"],
-        "sources":   data["sources"],
+        "sources": data["sources"],
     }
 
 
@@ -94,16 +102,39 @@ def facets(
 # KPIs — headline numbers for the top-bar stats cards
 # ---------------------------------------------------------------------------
 
+
 @router.get("/kpis")
 def kpis(
     since_minutes: int = Query(default=1440, ge=1, le=43200),
+    user_id: Optional[str] = None,
+    action_prefix: Optional[str] = None,
+    resource_prefix: Optional[str] = None,
+    result_pattern: Optional[str] = None,
+    result_class: Optional[str] = None,
+    q: Optional[str] = None,
+    source: Optional[str] = None,
+    include_self_reads: bool = Query(default=False),
     _user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Four KPIs for the top-bar cards: events, active users, error rate, p95."""
+    """KPIs for the top-bar cards — same filter surface as the timeline, so
+    the cards and the table can never tell different stories. `active_users`
+    counts people (scheduler/system actors excluded); `errors` counts
+    result_class='error'; `duration_coverage` says what fraction of rows
+    carry a measured duration (feeds the p95 card's honesty sub-label)."""
     since = _window_since(since_minutes)
 
-    k = audit_repo().kpis(since=since)
+    k = audit_repo().kpis(
+        since=since,
+        user_id=user_id,
+        action_prefix=action_prefix,
+        resource_prefix=resource_prefix,
+        result_pattern=result_pattern,
+        result_class=result_class,
+        q=q,
+        source=source,
+        include_self_reads=include_self_reads,
+    )
     total = k["events_total"]
     errors = k["errors"]
     p95 = k["p95"]
@@ -116,12 +147,14 @@ def kpis(
         "errors": int(errors or 0),
         "error_rate": round(rate, 4),
         "p95_duration_ms": int(p95) if p95 is not None else None,
+        "duration_coverage": k["duration_coverage"],
     }
 
 
 # ---------------------------------------------------------------------------
 # Saved views — per-user CRUD
 # ---------------------------------------------------------------------------
+
 
 @router.get("/views")
 def list_views(
@@ -151,6 +184,7 @@ def save_view(
     # with a malformed save. 64 KiB is generous for the saved-view shape
     # (window + a handful of short filter values + sort).
     import json as _json
+
     if len(_json.dumps(query)) > 64 * 1024:
         raise HTTPException(
             status_code=400,

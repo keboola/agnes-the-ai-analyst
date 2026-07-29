@@ -1,9 +1,9 @@
 """Postgres-side smoke + invariant tests for the config cluster:
 metric_definitions, instance_templates (via ClaudeMdTemplate), personal_access_tokens.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,7 @@ def config_engine(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     return db_pg.get_engine()
 
@@ -31,6 +32,64 @@ def config_engine(pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 # metric_definitions
 # ---------------------------------------------------------------------------
+
+
+def _make_duckdb_metric_repo(tmp_path):
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+    from src.repositories.metrics import MetricRepository
+
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
+    _ensure_schema(conn)
+    return MetricRepository(conn), conn
+
+
+def _make_pg_metric_repo(pg_engine, monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
+    command.upgrade(cfg, "head")
+
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+    import src.db_pg as db_pg
+
+    db_pg.dispose()
+    db_pg.get_engine()
+
+    from src.repositories.metrics_pg import MetricPgRepository
+
+    return MetricPgRepository(db_pg.get_engine()), None
+
+
+@pytest.fixture(params=["duckdb", "pg"])
+def repo(request, tmp_path, pg_engine, monkeypatch):
+    if request.param == "duckdb":
+        r, conn = _make_duckdb_metric_repo(tmp_path)
+        yield r
+        conn.close()
+    else:
+        r, _ = _make_pg_metric_repo(pg_engine, monkeypatch)
+        yield r
+
+
+def test_metric_source_ref_roundtrip(repo):
+    repo.create(
+        id="keboola/m1/mrr",
+        name="mrr",
+        display_name="MRR",
+        category="revenue",
+        sql="SELECT 1",
+        source="keboola_semantic_layer",
+        source_ref="conn-a",
+    )
+    row = repo.get("keboola/m1/mrr")
+    assert row["source_ref"] == "conn-a"
+    assert repo.find_by_name("mrr")["id"] == "keboola/m1/mrr"
+    assert repo.find_by_name("nope") is None
+
 
 def test_metrics_create_and_get(config_engine):
     from src.repositories.metrics_pg import MetricPgRepository
@@ -68,16 +127,30 @@ def test_metrics_find_by_table_and_synonym(config_engine):
 
     repo = MetricPgRepository(config_engine)
     repo.create(
-        id="m1", name="metric1", display_name="M1", category="c",
-        sql="SELECT 1", table_name="orders", synonyms=["sales"],
+        id="m1",
+        name="metric1",
+        display_name="M1",
+        category="c",
+        sql="SELECT 1",
+        table_name="orders",
+        synonyms=["sales"],
     )
     repo.create(
-        id="m2", name="metric2", display_name="M2", category="c",
-        sql="SELECT 1", tables=["orders", "events"], synonyms=["events"],
+        id="m2",
+        name="metric2",
+        display_name="M2",
+        category="c",
+        sql="SELECT 1",
+        tables=["orders", "events"],
+        synonyms=["events"],
     )
     repo.create(
-        id="m3", name="metric3", display_name="M3", category="c",
-        sql="SELECT 1", table_name="users",
+        id="m3",
+        name="metric3",
+        display_name="M3",
+        category="c",
+        sql="SELECT 1",
+        table_name="users",
     )
 
     by_table = repo.find_by_table("orders")
@@ -92,12 +165,20 @@ def test_metrics_get_table_map_includes_both_columns(config_engine):
 
     repo = MetricPgRepository(config_engine)
     repo.create(
-        id="m1", name="metric1", display_name="M1", category="c",
-        sql="SELECT 1", table_name="orders",
+        id="m1",
+        name="metric1",
+        display_name="M1",
+        category="c",
+        sql="SELECT 1",
+        table_name="orders",
     )
     repo.create(
-        id="m2", name="metric2", display_name="M2", category="c",
-        sql="SELECT 1", tables=["orders", "events"],
+        id="m2",
+        name="metric2",
+        display_name="M2",
+        category="c",
+        sql="SELECT 1",
+        tables=["orders", "events"],
     )
     table_map = repo.get_table_map()
     # `orders` appears in both — should contain both metric names
@@ -110,8 +191,12 @@ def test_metrics_update_partial(config_engine):
 
     repo = MetricPgRepository(config_engine)
     repo.create(
-        id="m1", name="metric1", display_name="M1", category="c",
-        sql="SELECT 1", unit="USD",
+        id="m1",
+        name="metric1",
+        display_name="M1",
+        category="c",
+        sql="SELECT 1",
+        unit="USD",
     )
     updated = repo.update("m1", display_name="M1 prime", validation={"min": 0})
     assert updated["display_name"] == "M1 prime"
@@ -132,6 +217,7 @@ def test_metrics_delete(config_engine):
 # ---------------------------------------------------------------------------
 # instance_templates via ClaudeMdTemplate
 # ---------------------------------------------------------------------------
+
 
 def test_claude_md_template_get_creates_default(config_engine):
     from src.repositories.claude_md_template_pg import ClaudeMdTemplatePgRepository
@@ -166,6 +252,7 @@ def test_claude_md_template_set_and_reset(config_engine):
 # personal_access_tokens
 # ---------------------------------------------------------------------------
 
+
 def test_access_token_create_get_revoke(config_engine):
     from src.repositories.access_tokens_pg import AccessTokenPgRepository
 
@@ -185,6 +272,18 @@ def test_access_token_create_get_revoke(config_engine):
     repo.revoke("t1")
     row = repo.get_by_id("t1")
     assert row["revoked_at"] is not None
+
+
+def test_access_token_surface_column_v106(config_engine):
+    """v106: ``surface`` persists when passed and defaults to 'all' —
+    mirror of the DuckDB assertions in tests/test_pat_surface.py."""
+    from src.repositories.access_tokens_pg import AccessTokenPgRepository
+
+    repo = AccessTokenPgRepository(config_engine)
+    repo.create(id="ts1", user_id="u1", name="stack", token_hash="h", prefix="p1", surface="stack")
+    repo.create(id="ts2", user_id="u1", name="default", token_hash="h", prefix="p2")
+    assert repo.get_by_id("ts1")["surface"] == "stack"
+    assert repo.get_by_id("ts2")["surface"] == "all"
 
 
 def test_access_token_list_excludes_revoked_when_asked(config_engine):
@@ -211,6 +310,32 @@ def test_access_token_mark_used(config_engine):
     row = repo.get_by_id("t1")
     assert row["last_used_ip"] == "10.0.0.1"
     assert row["last_used_at"] is not None
+
+
+def test_access_token_create_list_revoke_for_agent(config_engine):
+    """PG parity for the agent-scoped access-token methods (c8f8248e): the
+    DuckDB side is covered by test_access_token_repo_create_stores_agent_id
+    / _revoke_for_agent / _list_for_agent in tests/test_agent_pat.py."""
+    from src.repositories.access_tokens_pg import AccessTokenPgRepository
+
+    repo = AccessTokenPgRepository(config_engine)
+    agent_id = "agent-1"
+    ids = ["t1", "t2"]
+    for tid in ids:
+        repo.create(id=tid, user_id="u1", name="agent-tok", token_hash="h", prefix=tid, agent_id=agent_id)
+    other_id = "t-other"
+    repo.create(id=other_id, user_id="u1", name="user-tok", token_hash="h", prefix="p-other")
+
+    assert repo.get_by_id("t1")["agent_id"] == agent_id
+    assert repo.get_by_id(other_id).get("agent_id") is None
+
+    rows = repo.list_for_agent(agent_id)
+    assert {r["id"] for r in rows} == set(ids)
+
+    repo.revoke_for_agent(agent_id)
+    for tid in ids:
+        assert repo.get_by_id(tid)["revoked_at"] is not None
+    assert repo.get_by_id(other_id)["revoked_at"] is None
 
 
 def test_access_token_list_all_with_user_join(config_engine):

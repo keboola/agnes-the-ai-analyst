@@ -1262,7 +1262,7 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
     not blow up on a partially-consistent snapshot.
     """
     name = state.get("table_id") or reg.get("name") or reg.get("id") or ""
-    return {
+    entry = {
         "id": reg.get("id") or name,
         "name": name,
         "hash": state.get("hash", ""),
@@ -1276,6 +1276,13 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
         "source_type": reg.get("source_type") or "",
         "updated": (state.get("last_sync").isoformat() if state.get("last_sync") else None),
     }
+    # Per-partition manifest for partitioned tables (partitioned distribution).
+    # Added ONLY when present so single-file entries stay byte-identical. The
+    # whole-table ``hash`` above is the rollup of the sorted part hashes, so the
+    # cheap "changed?" compare + object-store mirror keep working.
+    if state.get("parts") is not None:
+        entry["parts"] = state.get("parts")
+    return entry
 
 
 def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_table_id: dict) -> tuple[list, set, set]:
@@ -1298,10 +1305,10 @@ def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_t
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
     resolver = StackResolver(conn)
-    stack_subject = user if isinstance(user, SessionPrincipal) else user["id"]
+    stack_subject = user if isinstance(user, PRINCIPAL_TYPES) else user["id"]
     pkg_entries = resolver.stack(stack_subject, ResourceType.DATA_PACKAGE)
     if not pkg_entries:
         return [], set(), set()
@@ -1458,10 +1465,10 @@ def _build_memory_domains_section(conn, user) -> list:
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
     resolver = StackResolver(conn)
-    stack_subject = user if isinstance(user, SessionPrincipal) else user["id"]
+    stack_subject = user if isinstance(user, PRINCIPAL_TYPES) else user["id"]
     dom_entries = resolver.stack(stack_subject, ResourceType.MEMORY_DOMAIN)
     if not dom_entries:
         return []
@@ -1635,6 +1642,13 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
             "server_only": server_only,
             "source_type": reg.get("source_type") or "",
         }
+        # Per-partition manifest — the cli/lib/pull.py download-set loop reads
+        # THIS flat dict (not the typed sections), so `parts` MUST live here
+        # for partitioned tables to route to the per-part sync. Added ONLY for
+        # partitioned tables (like signed_url below), so single-file entries
+        # stay byte-identical for old CLIs / manifest-parity tests.
+        if state.get("parts") is not None:
+            entry["parts"] = state.get("parts")
         _apply_signed_url(
             entry,
             table_id,
@@ -1715,9 +1729,13 @@ def sync_manifest(
     a browser session) also count; cheap and accurate enough for a
     homepage card.
     """
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if not isinstance(user, SessionPrincipal):
+    # ``last_pull_at`` / the audit row belong to a HUMAN pull. A restricted
+    # principal (co-session or agent-session sandbox) has no user row to
+    # stamp — and an agent pulling on its own schedule must not masquerade
+    # as its owner in the /home "last pulled" card.
+    if not isinstance(user, PRINCIPAL_TYPES):
         try:
             users_repo().update(user["id"], last_pull_at=datetime.now(timezone.utc))
             # Also emit an audit_log row so /me/stats Sync activity has a
@@ -1729,7 +1747,7 @@ def sync_manifest(
                 user_id=user["id"],
                 action="manifest.fetch",
                 resource="manifest",
-                result="ok",
+                result="success",
                 client_kind="api",
             )
         except Exception:
@@ -2072,9 +2090,9 @@ def update_sync_settings(
     user_sync_settings layer is per-user preference, not authorization —
     the gate stops users from enabling sync on tables they cannot read.
     """
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(403, "co_session cannot mutate user settings")
     from app.auth.access import can_access
     from app.resource_types import ResourceType
@@ -2122,9 +2140,9 @@ def update_table_subscriptions(
     to when the user holds a resource_grants row for it (or is Admin). This
     prevents an authenticated user from subscribing to tables they cannot read.
     """
-    from app.auth.session_principal import SessionPrincipal
+    from app.auth.session_principal import PRINCIPAL_TYPES
 
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         raise HTTPException(403, "co_session cannot mutate user settings")
     from app.auth.access import can_access
     from app.resource_types import ResourceType

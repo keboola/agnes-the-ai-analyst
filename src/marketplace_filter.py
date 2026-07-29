@@ -36,8 +36,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import partial
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any, Callable, Iterable, List, Optional
 
 import duckdb
 
@@ -80,7 +81,9 @@ def required_plugin_keys(conn: duckdb.DuckDBPyConnection | None, user_id: str | 
     without an explicit subscription row. Marketplace plugins keep their
     own resolver (design D1), so the same union has to be applied here —
     ``resolve_user_marketplace`` serves
-    ``(rbac ∩ (subscriptions ∪ required)) ∪ store_installs``. Before this
+    ``(rbac ∩ (subscriptions ∪ required)) ∪ store_installs`` (for a
+    ``plugins_mode='selected'`` agent the trailing union is itself
+    scope-filtered — see ``_resolve_principal_marketplace``). Before this
     helper existed, flipping a marketplace_plugin grant to ``required``
     was a silent no-op for the served set (the separate global
     ``is_system`` flag was the only mandatory path).
@@ -315,12 +318,129 @@ def _compute_bundle_version(bundle_dirs: list[Path]) -> str:
     return h.hexdigest()[:16]
 
 
-def resolve_user_marketplace(conn: duckdb.DuckDBPyConnection, user: dict) -> List[dict]:
-    """Final, served plugin set for a user.
+def _grant_key(entry: dict) -> str:
+    """``<marketplace_slug>/<plugin_name>`` — the ``resource_grants``
+    ``resource_id`` an admin-curated plugin entry is granted under, and
+    therefore the id an ``agent_scope`` row / intersection member names."""
+    return f"{entry['marketplace_id']}/{entry['original_name']}"
+
+
+def _store_install_in_scope(row: dict, scoped: frozenset[str]) -> bool:
+    """True when an agent's ``plugin`` scope names this Store install.
+
+    Two accepted id forms (see ``_resolve_principal_marketplace``): the store
+    entity id — unambiguous, since two owners may upload the same plugin name
+    — or the ``store/<name>`` grant-key form, which matches the
+    ``<marketplace>/<plugin>`` vocabulary admin-curated scope rows use.
+    """
+    return row.get("id") in scoped or f"{STORE_MARKETPLACE_ID}/{row.get('name')}" in scoped
+
+
+def _resolve_principal_marketplace(conn: duckdb.DuckDBPyConnection, principal) -> List[dict]:
+    """Served plugin set for a restricted principal (V1d seam 3).
+
+    The live intersection is the authority: an admin-curated entry survives
+    only when its ``<slug>/<name>`` grant key is in
+    ``intersection['marketplace_plugin']``.
+
+    For an ``AgentPrincipal`` the candidate set is the OWNER's served set,
+    not the raw grant table — so the agent can never receive a plugin the
+    owner is granted but has not put in their stack, and a scope row naming
+    a plugin the owner does not hold is silently dropped (never an
+    elevation). A ``SessionPrincipal`` has no single owner, so its candidate
+    set is built from the intersection alone.
+
+    **Store installs** (``source`` ``store`` / ``store-bundle``) are the
+    owner's PERSONAL installs, resolved through ``user_store_installs`` and
+    never through ``resource_grants`` — so they cannot appear in the
+    intersection at all, exactly like MCP connections. They are therefore
+    filtered against the agent's ``plugin`` scope rows **directly**
+    (``agent_scope_filter``), not against the intersection, and only when the
+    agent's ``plugins_mode`` is ``'selected'``. Keying off the mode is what
+    keeps the common case intact: the broker mints an agent-session token as
+    soon as an agent narrows *anything*, so a tables-narrowed agent keeps
+    ``plugins_mode='all'`` and must still receive every install its owner has
+    — dropping them there would strip plugins the scope never claimed to
+    restrict.
+
+    A store scope row may name either the store entity id (unambiguous — two
+    owners may upload the same plugin name) or the ``store/<name>`` grant-key
+    form that matches the admin-curated vocabulary. Filtering happens on the
+    INSTALL rows (via ``store_install_filter``) rather than on the resulting
+    entries, so the synthetic ``flea`` bundle — one served plugin wrapping
+    every installed skill/agent — is narrowed per entity instead of being
+    admitted wholesale by one in-scope sibling.
+    """
+    from app.resource_types import ResourceType
+    from src.agent_scope_intersection import agent_scope_filter
+
+    allowed = frozenset(principal.intersection.get(ResourceType.MARKETPLACE_PLUGIN.value, frozenset()))
+    owner_user_id = getattr(principal, "owner_user_id", None)
+    if not owner_user_id:
+        # Co-session: no owner to resolve a served set from. The intersection
+        # (built from the live participant set) is the whole authority.
+        return _entries_for_grant_keys(allowed)
+
+    scoped_plugins = agent_scope_filter(getattr(principal, "agent_id", None), "plugins_mode", "plugin")
+    store_filter = None if scoped_plugins is None else partial(_store_install_in_scope, scoped=scoped_plugins)
+
+    candidates = resolve_user_marketplace(conn, {"id": owner_user_id}, store_install_filter=store_filter)
+    return [e for e in candidates if e.get("source") != "marketplace" or _grant_key(e) in allowed]
+
+
+def _entries_for_grant_keys(keys: frozenset[str]) -> List[dict]:
+    """Admin-curated marketplace entries for explicit ``<slug>/<name>`` grant
+    keys, in a deterministic (marketplace_id, name) order so the ETag / git
+    commit stays stable. Rows an admin has disabled are dropped, matching
+    ``list_granted_for_groups``."""
+    if not keys:
+        return []
+    root = get_marketplaces_dir()
+    out: List[dict] = []
+    for row in marketplace_plugins_repo().list_all():
+        slug = row["marketplace_id"]
+        name = row["name"]
+        if f"{slug}/{name}" not in keys or row.get("admin_disabled"):
+            continue
+        plugin_dir = root / slug / "plugins" / name
+        out.append(
+            {
+                "marketplace_id": slug,
+                "marketplace_slug": slug,
+                "original_name": name,
+                "prefixed_name": _prefixed_name(slug, name),
+                "manifest_name": resolve_manifest_name(plugin_dir, fallback=name),
+                "version": row.get("version"),
+                "raw": _resolve_raw(row.get("raw")),
+                "plugin_dir": plugin_dir,
+                "source": "marketplace",
+            }
+        )
+    return out
+
+
+def resolve_user_marketplace(
+    conn: duckdb.DuckDBPyConnection,
+    user,
+    *,
+    store_install_filter: Optional[Callable[[dict], bool]] = None,
+) -> List[dict]:
+    """Final, served plugin set for a user (``dict``) or ``Principal``.
 
     Composition::
 
         (admin_granted ∩ (subscriptions ∪ required)) ∪ store_installs
+
+    A restricted principal (co-session / agent-session token) takes the
+    intersection-filtered path — see ``_resolve_principal_marketplace``.
+
+    ``store_install_filter`` narrows the trailing ``∪ store_installs`` union,
+    which the intersection cannot reach (personal installs are not
+    ``resource_grants`` rows). It is applied to the raw ``user_store_installs``
+    rows, so it also narrows what goes INTO the synthetic ``flea`` bundle and
+    into that bundle's content hash. Only ``_resolve_principal_marketplace``
+    passes it, and only for a ``plugins_mode='selected'`` agent; ``None``
+    (every ordinary user) keeps today's behavior exactly.
 
     Output entries match ``resolve_allowed_plugins`` shape so that the
     existing ``packager`` / ``git_backend`` machinery iterates them
@@ -332,6 +452,11 @@ def resolve_user_marketplace(conn: duckdb.DuckDBPyConnection, user: dict) -> Lis
     name), then Store entries (by entity id) — so two requests with the same
     inputs produce byte-identical ZIPs and git commits.
     """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        return _resolve_principal_marketplace(conn, user)
+
     user_id = user.get("id")
     if not user_id:
         return []
@@ -364,6 +489,8 @@ def resolve_user_marketplace(conn: duckdb.DuckDBPyConnection, user: dict) -> Lis
     if required_entity_ids:
         installs_repo.install_required_for_user(user_id, sorted(required_entity_ids))
     installs = installs_repo.list_for_user(user_id)
+    if store_install_filter is not None:
+        installs = [row for row in installs if store_install_filter(row)]
     store_plugin_entries: List[dict] = []
     bundle_rows: List[dict] = []
     for row in installs:
@@ -452,7 +579,17 @@ def resolve_user_groups(conn: duckdb.DuckDBPyConnection, user: dict) -> List[str
     Membership semantics mirror ``app.auth.access._user_group_ids``:
     only real ``user_group_members`` rows are surfaced; there is no
     implicit Everyone membership.
+
+    A restricted principal returns ``[]``: its served set comes from the live
+    intersection, not from group membership, so naming groups here would
+    describe an authority path that was never consulted (and a principal has
+    no ``.get("id")`` to resolve one from).
     """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        return []
+
     user_id = user.get("id")
     if not user_id:
         return []

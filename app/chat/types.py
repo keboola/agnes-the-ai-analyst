@@ -27,6 +27,7 @@ class Surface(str, Enum):
     WEB = "web"
     SLACK_DM = "slack_dm"
     SLACK_THREAD = "slack_thread"
+    API = "api"
 
 
 class SessionState(str, Enum):
@@ -56,6 +57,11 @@ class ChatSession:
     sandbox_id: Optional[str] = None
     runner_pid: Optional[int] = None
     sandbox_paused_at: Optional[datetime] = None
+    # Owning agent profile (v96 `agents` table). Nullable — pre-v96 rows and
+    # any session created outside the default-agent attribution path (e.g.
+    # co-session forks) have no agent_id. NOTE: never index this column —
+    # same DuckDB 1.5.3 FK+index bug as the sandbox fields above.
+    agent_id: Optional[str] = None
     # Relay protocol version of the runner these sandbox refs point at (Tier
     # 1 restart-invariant reuse). NULL means unknown/legacy — see
     # RELAY_PROTOCOL_VERSION's docstring above.

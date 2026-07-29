@@ -26,6 +26,11 @@ Steps, in order, each wrapped so one failure never aborts the rest:
      the `agnes init --no-shortcut` opt-out survives updates).
   4. Marketplace plugins — bootstrap when the clone is missing, else cheap
      `--check` and a full reconcile only on drift.
+  4b. Sessions — `agnes push` catch-up for transcripts (+ CLAUDE.local.md) the
+     SessionEnd hook missed. SessionEnd is not a reliable trigger (a closed
+     terminal window can take Claude Code down before it runs the hook);
+     SessionStart cannot be missed. Runs BEFORE the pull so a large parquet
+     download never delays the upload.
   5. Data — `agnes pull` (MD5-skip, atomic sidecar swap; already idempotent).
   6. Report — append a JSON line recording the run outcome to the (rotated)
      `<workspace>/.claude/agnes/update.log`. Template/init sentinels are NOT
@@ -423,6 +428,85 @@ def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Step 4b — session catch-up push
+# --------------------------------------------------------------------------- #
+def _step_push(*, report: list[dict]) -> None:
+    """Upload session transcripts (+ CLAUDE.local.md) the SessionEnd hook missed.
+
+    SessionEnd is not a dependable trigger: closing the terminal window (or a
+    crash / kill) can take Claude Code down before it gets to run the hook, so
+    `agnes push` never fires for that session. The transcript then sits on disk
+    and stays invisible in the admin session views, which read the summary
+    table the server-side pipeline fills and have no filesystem fallback.
+    SessionStart, by contrast, cannot be missed — the session is being created.
+
+    `agnes push` is already a full folder scan with ledger dedup by
+    (session_id, byte size), so ONE call here uploads everything earlier runs
+    missed — including a session still open in another window whose transcript
+    has grown since its last upload. Re-uploading is safe end to end: the
+    server overwrites by filename, and the pipeline purges a session's rows
+    before reprocessing a changed transcript.
+
+    Note the anchor asymmetry, deliberately left as-is: push locates the
+    session folder from the `workspace_root` config key ONLY, while
+    `agnes update` resolves its workspace from `AGNES_LOCAL_DIR` first (see
+    `_resolve_workspace`). Running `agnes update` against a workspace other
+    than the configured anchor therefore pushes the anchor's sessions. That is
+    push's existing contract — the SessionEnd hook behaves identically — and
+    the two agree in practice because `update` backfills the anchor before the
+    steps run. Changing it would change the SessionEnd path too.
+
+    Reuses the `push` command callback rather than its internals so the two
+    triggers can never drift in dedup, redaction, or locking behavior. `--json`
+    yields a machine-readable summary for the report line, and its stdout is
+    captured unconditionally so `agnes update`'s own `--json` (exactly one
+    object) and `--quiet` (silence) stdout contracts hold. push's own lock is a
+    different file from update.lock, so there is no deadlock.
+
+    The just-started session's own transcript is uploaded too, as a nearly
+    empty stub that the SessionEnd push replaces once it has grown — one extra
+    upload plus one extra pipeline reprocess per session. That is deliberate:
+    filtering it out would mean either forking push's scan or reading the
+    session id from hook stdin, which is precisely the unreliable input (empty
+    on macOS) that push was rewritten to stop depending on.
+    """
+    import contextlib
+    import io
+
+    from cli.commands.push import push
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        push(quiet=False, as_json=True, dry_run=False)
+    raw = buf.getvalue().strip()
+
+    if not raw:
+        # push returns before emitting its JSON when another push holds the
+        # per-workspace lock — typically the previous session's still-running
+        # detached SessionEnd run, which is doing this very same folder scan.
+        # That is a success, not an error.
+        report.append({"stage": "push", "status": "skipped", "detail": "another push already running"})
+        return
+
+    try:
+        summary = json.loads(raw.splitlines()[-1])
+    except ValueError:
+        report.append({"stage": "push", "status": "error", "detail": f"unparseable push output: {raw[:200]}"})
+        return
+
+    detail = f"{summary.get('sessions', 0)} session(s)"
+    if summary.get("local_md"):
+        detail += " + CLAUDE.local.md"
+    if summary.get("private_skipped"):
+        detail += f", {summary['private_skipped']} private skipped"
+    errors = summary.get("errors") or []
+    if errors:
+        report.append({"stage": "push", "status": "error", "detail": f"{detail}; errors={errors}"})
+    else:
+        report.append({"stage": "push", "status": "ok", "detail": detail})
+
+
+# --------------------------------------------------------------------------- #
 # Step 5 — data pull
 # --------------------------------------------------------------------------- #
 def _step_pull(workspace: Path, *, server_url: str, token: str, quiet: bool, report: list[dict]) -> None:
@@ -587,6 +671,10 @@ def update(
                     _run_step("agnes-owned", lambda: _step_agnes_owned(workspace, report=report), report)
                     _run_step("launcher", lambda: _step_launcher(workspace, report=report), report)
                     _run_step("marketplace", lambda: _step_marketplace(report=report, quiet=step_quiet), report)
+                    # Before the pull: the upload is the latency-sensitive half
+                    # (a missed session stays invisible server-side until it
+                    # lands), while a large parquet download can take minutes.
+                    _run_step("push", lambda: _step_push(report=report), report)
                     _run_step(
                         "pull",
                         lambda: _step_pull(

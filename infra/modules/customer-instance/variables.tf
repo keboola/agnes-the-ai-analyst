@@ -69,6 +69,10 @@ variable "prod_instance" {
     # dev-first rollout doesn't touch prod. Requires the module-level
     # dispatcher_* variables to be set — see their docs.
     dispatcher_enabled = optional(bool, false)
+    # Opt-in hosted data apps on this VM. Per-VM (like dispatcher_enabled) so a
+    # dev-first rollout doesn't touch prod. Brings up the apps-runner sidecar +
+    # the AGNES_DATA_APPS_ENABLED env override on that VM's .env only.
+    data_apps_enabled = optional(bool, false)
   })
 }
 
@@ -107,6 +111,8 @@ variable "dev_instances" {
     app_cpus            = optional(string, "2.0")
     scheduler_cpus      = optional(string, "1.0")
     dispatcher_enabled  = optional(bool, false)
+    # Per-VM hosted data apps — see prod_instance for the rationale.
+    data_apps_enabled = optional(bool, false)
     # See prod_instance for the rationale; same default.
     upgrade_schedule = optional(string, "*/5 * * * *")
   }))
@@ -331,4 +337,14 @@ variable "alert_webhook_url" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+# data_apps_enabled is a PER-VM field on prod_instance / dev_instances[*]
+# (like dispatcher_enabled), not a module-global — enabling it here would flip
+# every VM including prod. See those object types above.
+
+variable "data_apps_runtime_image" {
+  description = "Full runtime image (with tag) the data-app containers run, instance-wide. The registry prefix (everything before the last `:`) is also handed to the apps-runner as APPS_RUNNER_IMAGE_PREFIX to gate which images it may pull. Only consulted on VMs with data_apps_enabled = true."
+  type        = string
+  default     = "keboolapublic.azurecr.io/data-app-python-js:1.6.2_python-3.13_node-24"
 }

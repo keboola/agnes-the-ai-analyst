@@ -12,7 +12,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin, can_access, can_access_session
-from app.auth.session_principal import SessionPrincipal
+from app.auth.session_principal import PRINCIPAL_TYPES
 
 from src.repositories import (
     audit_repo,
@@ -83,10 +83,11 @@ def _is_privileged_viewer(user, conn: duckdb.DuckDBPyConnection) -> bool:
     ``ResourceType.CORPORATE_MEMORY_ADMIN`` resource type and gate with
     ``require_resource_access`` instead of extending this helper.
 
-    A SessionPrincipal is NEVER a privileged viewer — co-sessions never
-    hold admin authority.
+    A restricted principal is NEVER a privileged viewer — neither a
+    co-session nor an agent-session holds admin authority, even when the
+    agent's owner is an admin.
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         return False
     user_id = user.get("id")
     if not user_id:
@@ -103,12 +104,13 @@ def _effective_groups(user, conn: duckdb.DuckDBPyConnection) -> Optional[List[st
     and the membership is now materialized in ``user_group_members`` with a
     ``source`` discriminator (admin / google_sync / system_seed).
 
-    For a SessionPrincipal the result is always a non-None list (never admin)
-    and audience-filtering is skipped (empty list → no audience filter applied,
-    which is safe because MEMORY_DOMAIN grants gate the actual domain access).
+    For a restricted principal the result is always a non-None list (never
+    admin) and audience-filtering is skipped (empty list → no audience filter
+    applied, which is safe because MEMORY_DOMAIN grants gate the actual domain
+    access).
     """
-    if isinstance(user, SessionPrincipal):
-        # Co-sessions are never admins; use no audience restriction
+    if isinstance(user, PRINCIPAL_TYPES):
+        # Restricted principals are never admins; use no audience restriction
         # (items are already filtered by granted_domains from the intersection).
         return []
     if _is_privileged_viewer(user, conn):
@@ -137,10 +139,10 @@ def _caller_granted_memory_domains(
     empty list when the caller has no grants — the SQL EXISTS-join collapses
     in that case, preserving pre-RBAC behaviour.
 
-    For a SessionPrincipal, returns the intersection's memory_domain set
-    (never None — co-sessions never receive admin god-mode).
+    For a restricted principal, returns the intersection's memory_domain set
+    (never None — no principal receives admin god-mode).
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         from app.resource_types import ResourceType
 
         return list(user.intersection.get(ResourceType.MEMORY_DOMAIN.value, frozenset()))
@@ -703,17 +705,21 @@ def _get_item_or_404(repo, item_id: str) -> dict:
     return item
 
 
-def _audit_action(conn, admin_email: str, action: str, item_id: str, details: dict = None):
+def _audit_action(conn, admin: dict, action: str, item_id: str, details: dict = None):
     """Write an admin governance audit row.
 
     Action names use the ``corporate_memory.<action>`` namespace as advertised
     in the 0.15.0 CHANGELOG. Pre-#62 the code wrote ``km_<action>`` — the
     audit-tab filter (see ``admin_audit`` below) accepts both prefixes so
     historical rows still surface.
+
+    ``user_id`` records ``users.id`` (email only as a fallback for synthetic
+    callers) so the Activity Center facets don't split one person into an
+    email row and a UUID row.
     """
     audit = audit_repo()
     audit.log(
-        user_id=admin_email,
+        user_id=admin.get("id") or admin.get("email"),
         action=f"corporate_memory.{action}",
         resource=item_id,
         params=details,
@@ -729,7 +735,7 @@ async def admin_approve(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "approved")
-    _audit_action(conn, user["email"], "approve", item_id)
+    _audit_action(conn, user, "approve", item_id)
     return {"id": item_id, "status": "approved"}
 
 
@@ -743,7 +749,7 @@ async def admin_reject(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "rejected")
-    _audit_action(conn, user["email"], "reject", item_id, {"reason": request.reason})
+    _audit_action(conn, user, "reject", item_id, {"reason": request.reason})
     return {"id": item_id, "status": "rejected"}
 
 
@@ -766,7 +772,7 @@ async def admin_mandate(
         repo.update(item_id, audience=request.audience)
     _audit_action(
         conn,
-        user["email"],
+        user,
         "mandate",
         item_id,
         {
@@ -779,7 +785,7 @@ async def admin_mandate(
     # with a boolean payload so audit consumers can stop splitting on path.
     try:
         audit_repo().log(
-            user_id=user["email"],
+            user_id=user["id"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
             params={"new_value": True},
@@ -807,7 +813,7 @@ async def mark_mandatory(
     # committed; an audit hiccup must not surface as a 500.
     try:
         audit_repo().log(
-            user_id=user["email"],
+            user_id=user["id"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
             params={"new_value": True},
@@ -835,7 +841,7 @@ async def mark_unmandatory(
     # Best-effort like the sibling /admin/mandate.
     try:
         audit_repo().log(
-            user_id=user["email"],
+            user_id=user["id"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
             params={"new_value": False},
@@ -855,7 +861,7 @@ async def admin_revoke(
     repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "revoked")
-    _audit_action(conn, user["email"], "revoke", item_id, {"reason": request.reason})
+    _audit_action(conn, user, "revoke", item_id, {"reason": request.reason})
     return {"id": item_id, "status": "revoked"}
 
 
@@ -875,7 +881,7 @@ async def admin_edit(
         updates["content"] = request.content
     if updates:
         repo.update(item_id, **updates)
-    _audit_action(conn, user["email"], "edit", item_id, updates)
+    _audit_action(conn, user, "edit", item_id, updates)
     return {"id": item_id, "updated": list(updates.keys())}
 
 
@@ -915,7 +921,7 @@ async def admin_batch(
             repo.update_status(item_id, status_actions[request.action])
         _audit_action(
             conn,
-            user["email"],
+            user,
             request.action,
             item_id,
             {
@@ -1051,7 +1057,7 @@ async def admin_resolve_contradiction(
     repo.resolve_contradiction(contradiction_id, user["email"], request.resolution)
     _audit_action(
         conn,
-        user["email"],
+        user,
         "resolve_contradiction",
         contradiction_id,
         {
@@ -1149,7 +1155,7 @@ async def admin_resolve_duplicate_candidate(
     a, b = sorted([item_a_id, item_b_id])
     _audit_action(
         conn,
-        user["email"],
+        user,
         "resolve_duplicate",
         f"{a}::{b}",
         {"resolution": request.resolution, "item_a_id": a, "item_b_id": b},
@@ -1260,7 +1266,7 @@ async def admin_patch_item(
         audit_keys.append("domain_ids")
     _audit_action(
         conn,
-        user["email"],
+        user,
         "update_item",
         item_id,
         {"updated_fields": audit_keys},
@@ -1313,7 +1319,7 @@ async def admin_bulk_update(
             updated.append(item_id)
             _audit_action(
                 conn,
-                user["email"],
+                user,
                 "bulk_update",
                 item_id,
                 {"updated_fields": audited_fields, "batch": True},
@@ -1546,7 +1552,7 @@ def _build_per_domain_markdown(slug: str, user: dict, conn: duckdb.DuckDBPyConne
     dom = repo.get_by_slug(slug)
     if not dom:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         allowed = can_access_session(user, "memory_domain", dom["id"])
     else:
         allowed = can_access(user["id"], "memory_domain", dom["id"], conn)
@@ -1637,9 +1643,10 @@ async def get_bundle(
     # items are exempted by the EXISTS subquery's status guard inside
     # ``list_items``; the user's dismissal row for a then-approved item is
     # silently ignored if/when the item is later mandated.
-    # A SessionPrincipal has no dict .get("id"); use None so no user-specific
-    # dismissal is applied (co-sessions don't track per-user dismissals).
-    dismissed_by_user_id = None if isinstance(user, SessionPrincipal) else user["id"]
+    # A Principal has no dict .get("id"); use None so no user-specific
+    # dismissal is applied (neither co-sessions nor agent sessions track
+    # per-user dismissals).
+    dismissed_by_user_id = None if isinstance(user, PRINCIPAL_TYPES) else user["id"]
     # v49: Required tier rides on is_required boolean. Was statuses=['mandatory'].
     mandatory = repo.list_items(
         is_required=True,

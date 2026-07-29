@@ -1,6 +1,6 @@
 # Agnes — AI Harness
 
-Source-available, self-hosted AI harness for organizations — governed data access, skills marketplace, corporate memory, and agent surfaces (web chat, Slack, Telegram, MCP, CLI). The data engine extracts data from sources into DuckDB, serves via FastAPI, and distributes parquets to analysts who use Claude Code for local analysis.
+Source-available, self-hosted AI harness for organizations — governed data access, agent profiles with a public agent API, skills marketplace, corporate memory, hosted data apps, and agent surfaces (web chat, Slack, Telegram, MCP, CLI). The data engine extracts data from sources into DuckDB, serves via FastAPI, and distributes parquets to analysts who use Claude Code for local analysis; app-state runs on DuckDB or Postgres, single-process or role-split (api/gateway/worker).
 
 Full documentation index: [`docs/README.md`](docs/README.md).
 
@@ -89,6 +89,25 @@ Extractors with `query_mode='remote'` tables include a `_remote_attach` table in
 
 Deeper architecture notes: [`docs/architecture.md`](docs/architecture.md).
 
+### Agent profiles & agent-as-API
+
+Named, scoped agents layered over a user's own stack — CRUD/scope/PAT issuance
+at `/api/v1/agents*` (`agnes agent …` CLI, `/agents` builder page) and a
+one-shot runtime call at `POST /api/v1/agents/{slug}/responses`. A
+`'selected'`-scoped agent's effective authority (owner grants ∩ agent scope)
+is enforced live at every brokered request via a restricted `AgentPrincipal`
+— never merely computed/audit-recorded — so an agent (or its PAT) can never
+reach beyond its declared scope or inherit its owner's admin authority. The secret
+broker enforces each agent's pinned model and `token_budget_monthly`
+(`429 budget_exhausted`) before forwarding to the LLM. Each agent also keeps
+a private memory notebook (`memory_write_mode`: `off`/`propose`/`auto`)
+materialized into its sandbox pre-spawn; owners inspect/approve/archive/
+delete via `/api/v1/agents/{id}/memories`, `agnes agent memory …`, or the
+`/agents` builder panel. `agnes chat <slug>` is a streaming terminal client
+over the multi-turn session API (AG-UI SSE) — a pure `/api/v1` caller, no
+privileged backchannel. Design:
+[`docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md`](docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
+
 ## Configuration
 
 Instance-specific config: `config/instance.yaml` (see example).
@@ -153,12 +172,12 @@ git branch -d <branch-name>
 
 `agnes init` writes Claude Code hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → one detached `agnes update --quiet` — the unified convergence: self-upgrade the CLI, apply the workspace template, re-assert the Agnes-owned hooks/statusLine/commands, refresh marketplace plugins, and `agnes pull` fresh parquets. Run in the background (`( nohup … & )`) so it never blocks session start; a freshly-installed CLI binary activates next session.
+- `SessionStart` → one detached `agnes update --quiet` — the unified convergence: self-upgrade the CLI, apply the workspace template, re-assert the Agnes-owned hooks/statusLine/commands, refresh marketplace plugins, `agnes push` whatever the last SessionEnd hook missed, and `agnes pull` fresh parquets. Run in the background (`( nohup … & )`) so it never blocks session start; a freshly-installed CLI binary activates next session.
 - `SessionEnd`   → `agnes push --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
 
 Both trail with `; true` and run detached (`( nohup … & )`) so a server outage or slow sync never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace. `agnes update` is also the recommended manual command to repair a broken install or pick up a new release; it holds a single-instance lock so only one runs at a time.
 
-Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `agnes pull` downloads it. No per-user sync config; the admin layer is the single source of truth.
+Admin RBAC for auto-sync flows through data packages (per-table `resource_grants` no longer surface tables in analyst manifests): the admin adds `query_mode IN ('local', 'materialized')` tables to a data package and grants the package to one of the analyst's groups; the package then appears in the analyst's stack — automatically when the grant is marked required, otherwise once the analyst subscribes (`agnes stack browse` / `agnes stack add data_package <id>`) — and its tables land in their manifest for `agnes pull` to download. No per-user sync config; the admin layer plus the user's stack are the source of truth.
 
 ## Business Metrics
 
@@ -380,6 +399,7 @@ the right tool:
 
 | Need | Use | How |
 |---|---|---|
+| Verify a change before claiming it's done | `verify-agnes-change` | cheapest-first loop: `scripts/verify_syncmap.py` (instant, the sync-map rows no test guards) → the guards your diff touches → full suite → `/agnes-review`. Fix and re-run each gate until it passes. |
 | Review a change before merge | `/agnes-review` | scope-gated review **team** (rules / architecture / rbac / parity — only the in-scope subset fires) + `agnes-review-consolidator` → one advisory report (`file:line` + severity, ≤15 findings). Read-only working tree; optional comment-only PR post. |
 | Implement a whole plan in parallel | `/agnes-build` | decomposes a plan into independent tasks (sync-map coupling), builds each in its own git worktree via `agnes-builder`, integrates (migration serialized last), then runs `/agnes-review`. |
 | Implement a feature (connector / endpoint / web page / repo method / migration) | `agnes-builder` | disciplined implementer (TDD-first, DuckDB↔PG parity in the same change, migration-ladder sync, CHANGELOG, vendor-agnostic, scope discipline). Routes to the `agnes-conventions` playbooks. |
@@ -396,7 +416,8 @@ the right tool:
 
 **Skills** (`.claude/skills/`): knowledge — `agnes-orchestrator`, `agnes-rbac`,
 `agnes-connectors`, `agnes-release-process`; implementation playbooks —
-`agnes-conventions` (`SKILL.md` + `references/{connector,repo-parity,migration,endpoint-rbac,web-page}.md`).
+`agnes-conventions` (`SKILL.md` + `references/{connector,repo-parity,migration,endpoint-rbac,web-page}.md`);
+verification — `verify-agnes-change` (the pre-merge loop).
 Read the relevant one before editing that part of the codebase.
 
 **Invariants & guards:** the change-safety **sync-map** lives in `CONTRIBUTING.md`
@@ -409,6 +430,24 @@ Design rationale: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`,
 `docs/superpowers/specs/2026-06-05-agnes-dev-agent-kit-design.md`.
 
 ## Project conventions
+
+### Security invariants (untrusted input)
+Any code touching untrusted input — HTTP requests, uploaded files, a connector's
+`extract.duckdb`, a curated-marketplace repo, Slack/Telegram messages, or URLs —
+must follow the security playbook: `.claude/skills/agnes-conventions/references/security.md`.
+Read it before writing or reviewing such code. The non-negotiables, each a real
+prior finding: escape SQL identifiers (`quote_ident`, never bare `f'"{name}"'`);
+no file paths in `FROM`/`JOIN` on `/api/query`; sanitize before `innerHTML`
+(`renderMarkdownSafe`, never raw `marked.parse`); render authored templates with
+Jinja2 `SandboxedEnvironment`; keep regexes over untrusted text linear-time;
+validate **and** realpath-contain filesystem paths built from untrusted names;
+never put secrets on argv or in URL query strings (git credential helper +
+hidden prompts + `Authorization: Bearer`); gate credential egress with a host
+allowlist (`is_attach_host_allowed`); derive client IP from trusted proxy hops
+(`app.auth.client_ip.trusted_client_ip`), never leftmost XFF; require a CSRF
+token on state-changing web POSTs and never mutate on GET; scope infra exposure
+per-instance, never fleet-wide. `agnes-reviewer-rules` runs the reviewer
+quick-scan from that playbook on every PR.
 
 ### Vendor-agnostic public repo — no customer-specific content
 This repo is the public source-available distribution. **Nothing customer-specific belongs in code, config defaults, comments, docs, commit messages, or PR titles/bodies** — no specific deployments or brands, cloud project IDs, internal hostnames, runbook paths, internal SA emails, or cross-references to private repos. Frame motivations abstractly ("behind a TLS-terminating reverse proxy"); use placeholders in examples (`example.com`, `<your-host>`, `<install-dir>`). Customer-specific automation lives in the private infra repos that *consume* this repo. Before opening a PR, scan the diff and PR body for customer-specific tokens.

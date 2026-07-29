@@ -55,11 +55,14 @@ Working on the Agnes codebase.
 - [`architecture.md`](architecture.md) — detailed architecture reference (module map, extract.duckdb contract, components)
 - [`../CLAUDE.md`](../CLAUDE.md) — project instructions for AI agents working in this repo
 - [`development.md`](development.md) — logging, request correlation, debug toolbar
+- [`feature-flags.md`](feature-flags.md) — canonical feature-flag convention (`feature_enabled`, the `FEATURE_FLAGS` registry, admin inventory)
 - [`local-development.md`](local-development.md) — `LOCAL_DEV_MODE` setup (what's mocked vs. real)
 - [`RELEASING.md`](RELEASING.md) — release process, deploy workflows, CI quirks
 - [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) — pre-merge checks for bootstrap-path changes
 - [`testing/`](testing/) — test plans (clean-analyst bootstrap, VM test)
 - [`marketplace.md`](marketplace.md) — Claude Code marketplace ingestion + re-serving internals
+- [`superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md`](superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md) — design: agent profiles + agent-as-API (sessions, memory, webhooks, budgets)
+- [`superpowers/specs/2026-07-21-data-apps-design.md`](superpowers/specs/2026-07-21-data-apps-design.md) — design: hosted data apps (push-to-deploy, apps-runner sidecar)
 - [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) — flea-market upload guardrails (static checks + LLM review)
 - [`corporate-memory-governance.md`](corporate-memory-governance.md) — knowledge-distribution governance design
 - [`ADR-corporate-memory-v1.md`](ADR-corporate-memory-v1.md) — ADR: corporate-memory v1 decisions

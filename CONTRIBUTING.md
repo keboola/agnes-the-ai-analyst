@@ -14,6 +14,23 @@ too. Full design: `docs/superpowers/specs/2026-06-05-agnes-dev-agent-kit-design.
 4. Run the full suite before pushing: `.venv/bin/pytest tests/ --tb=short -n auto -q`.
 5. Add a `## [Unreleased]` CHANGELOG bullet for any user-visible behavior change.
 
+## Verification loop
+
+Before claiming a change is done, run the checks cheapest-first and fix what
+fails until each passes:
+
+```bash
+python3 scripts/verify_syncmap.py          # instant, no venv — the sync-map rows below
+.venv/bin/pytest tests/ --tb=short -n auto -q
+/agnes-review                              # judgment only, once the above are green
+```
+
+`scripts/verify_syncmap.py` covers the sync-map rows that have no test guard.
+The ordering is the point: anything a script can decide should never cost an LLM
+reviewer a finding. The step-by-step loop (which guards to run for which diff,
+how to treat WARN findings, when to add a new check) is
+`.claude/skills/verify-agnes-change/SKILL.md`.
+
 ## Sync-map
 
 Surfaces that must change together — and that CI does **not** fully guard. When
@@ -28,15 +45,16 @@ mirror is missing.
 | New callsite reading app-state | go through a `*_repo()` factory fn — never direct repo instantiation or raw `get_system_db()` | BLOCKING | `tests/test_backend_split_guard.py` (static) + `tests/db_pg/_parity_sweep_util.py` (dynamic) |
 | New repo method | extend the matching `tests/db_pg/test_<cluster>_contract.py` | BLOCKING | partial |
 | Alembic migration (PG) | matching `_vN_to_v(N+1)` in `src/db.py`; both ladders reach the same `SCHEMA_VERSION` | BLOCKING | `tests/test_db_schema_version.py` |
-| New `ResourceType` enum value | `ResourceTypeSpec` in `app/resource_types.py` `RESOURCE_TYPES` | BLOCKING | NO |
-| New entity-scoped endpoint | `Depends(require_admin)` or `require_resource_access(...)` from `app/auth/access.py` | BLOCKING | NO |
+| New `ResourceType` enum value | `ResourceTypeSpec` in `app/resource_types.py` `RESOURCE_TYPES` | BLOCKING | `scripts/verify_syncmap.py` (full sweep) |
+| New entity-scoped endpoint | `Depends(require_admin)` or `require_resource_access(...)` from `app/auth/access.py` | BLOCKING | `tests/test_route_auth_guard.py` (proves *some* auth) + `scripts/verify_syncmap.py` (WARN on authn-only entity routes) |
 | New REST `/api/*` endpoint | a CLI command + an MCP tool that reach it (see "API coverage" below) | BLOCKING | `tests/test_documentation_api_triple_surface.py` (triple-surface ratchet) + `tests/test_api_docs_coverage.py` (docs) |
-| User-visible behavior change | `## [Unreleased]` bullet in `CHANGELOG.md` | BLOCKING | NO |
+| User-visible behavior change | `## [Unreleased]` bullet in `CHANGELOG.md` | BLOCKING | `scripts/verify_syncmap.py` (skipped on a release-cut) |
 | New connector extractor | `_meta` table contract (`table_name, description, rows, size_bytes, extracted_at, query_mode`); see `connectors/keboola/extractor.py` as canonical example | BLOCKING | partial |
-| `query_mode='remote'` table | `_remote_attach` row in `extract.duckdb` | BLOCKING | NO |
+| `query_mode='remote'` table | `_remote_attach` row in `extract.duckdb` | BLOCKING | `scripts/verify_syncmap.py` (connector must mention `_remote_attach`) |
 | New web page | extends `base_ds.html` / `base_page.html` (never `base.html`); CSS in `head_extra` | BLOCKING | `tests/test_design_system_contract.py` (partial) |
-| New/changed CLI or MCP read/find command | command-UX standard (`.claude/skills/agnes-conventions/references/command-ux.md`): default scope = auto/everywhere, origin labeled, `--scope` (never a new boolean scope flag), positional term + `--limit` + `--json`, "not found" hints the next step | BLOCKING | NO |
+| New/changed CLI or MCP read/find command | command-UX standard (`.claude/skills/agnes-conventions/references/command-ux.md`): default scope = auto/everywhere, origin labeled, `--scope` (never a new boolean scope flag), positional term + `--limit` + `--json`, "not found" hints the next step | BLOCKING | `scripts/verify_syncmap.py` (new boolean scope flag only — the rest is review) |
 | New MCP foundation tool | defined in `app/api/mcp/foundation_tools.py` + name appended to `FOUNDATION_TOOL_NAMES` — never hand-added to a single transport module | BLOCKING | `tests/test_mcp_tool_parity.py` |
+| New user-visible feature flag | gate via `app.instance_config.feature_enabled` + a `FEATURE_FLAGS` registry entry + a row in `docs/feature-flags.md` (see that doc's "How to add a flag") | BLOCKING | review only |
 | PR landing the only `[Unreleased]` content | release-cut commit (version bump + CHANGELOG rename) in the same merge | per release rules | NO |
 
 ### Parity enforcement reality

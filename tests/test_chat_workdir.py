@@ -228,3 +228,20 @@ def test_run_init_git_template_keeps_repo_claude_md_not_rendered(tmp_path: Path)
     )
     ws = mgr.ensure_user_workdir("u@x")
     assert (ws / "CLAUDE.md").read_text() == "# FROM GIT REPO"
+
+
+def test_regular_session_symlinks_scaffolds(workdir_mgr: WorkdirManager):
+    """Wave 3C: the data-apps starter templates under <workspace>/scaffolds/
+    must reach the session dir (and therefore the sandbox's /work), or the
+    agnes-data-apps-extras skill's `cp -R scaffolds/...` first step fails
+    (Devin review finding)."""
+    workdir_mgr.ensure_user_workdir("u@x")
+    ws = workdir_mgr.user_workspace("u@x")
+    (ws / "scaffolds" / "nodejs-dashboard").mkdir(parents=True)
+    (ws / "scaffolds" / "nodejs-dashboard" / "app.js").write_text("// starter\n")
+
+    sdir = workdir_mgr.prepare_session_dir("u@x", "chat_scaffold")
+
+    link = sdir / "scaffolds"
+    assert link.exists(), "session dir must include scaffolds/"
+    assert (link / "nodejs-dashboard" / "app.js").exists()

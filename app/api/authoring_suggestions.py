@@ -180,7 +180,7 @@ async def submit_suggestion(
         raise HTTPException(status_code=400, detail={"kind": "empty_payload"})
     sid = authoring_suggestions_repo().create(domain=body.domain, payload=body.payload, created_by=user["email"])
     audit_repo().log(
-        user_id=user["email"],
+        user_id=user["id"],
         action="authoring_suggestion.submit",
         resource=sid,
         params={"domain": body.domain},
@@ -237,7 +237,7 @@ async def approve_suggestion(
             raise HTTPException(status_code=409, detail={"kind": "create_failed", "hint": str(exc)})
         repo.set_created_resource_id(sid, created_resource_id)
     audit_repo().log(
-        user_id=admin["email"],
+        user_id=admin["id"],
         action="authoring_suggestion.approved",
         resource=sid,
         params={"note": body.note, "created_resource_id": created_resource_id},
@@ -275,7 +275,7 @@ def _resolve(
     if not flipped:
         raise HTTPException(status_code=409, detail={"kind": "already_resolved"})
     audit_repo().log(
-        user_id=admin["email"],
+        user_id=admin["id"],
         action=f"authoring_suggestion.{status}",
         resource=sid,
         params={"note": note, "created_resource_id": created_resource_id},

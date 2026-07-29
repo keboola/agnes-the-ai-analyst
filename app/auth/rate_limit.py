@@ -8,9 +8,13 @@ and ``/auth/email/send-link`` open to SMTP/SendGrid email-bombing
 
 How: slowapi installs a starlette middleware that rejects with 429 when
 the per-route ``@limiter.limit("N/period")`` decorator is exceeded. The
-key is the client IP, taken from the leftmost X-Forwarded-For hop (Caddy
-in front of the app strips client-supplied XFF and sets its own — same
-trust model as ``app.auth.dependencies._client_ip``).
+key is the client IP, derived via ``app.auth.client_ip.trusted_client_ip``
+— which trusts only the ``AGNES_TRUSTED_PROXY_HOPS`` (default 1) RIGHTMOST
+X-Forwarded-For hops, not the fully client-controllable leftmost hop
+(security audit F9). Keying on the leftmost hop let an attacker rotate a
+fresh bucket per request and defeat the throttle; do not revert to
+``xff.split(",")[0]``. The shipped Caddyfile also overwrites
+X-Forwarded-For with the real peer as defense in depth.
 
 Operator override: set ``AGNES_AUTH_RATELIMIT_ENABLED=0`` and restart
 the process (no image rebuild needed — flip the env in the compose
@@ -63,19 +67,20 @@ from app.coordination.factory import resolve_backend_name, resolve_redis_url
 
 
 def _client_ip_key(request: Request) -> str:
-    """IP key, preferring leftmost X-Forwarded-For hop.
+    """Per-IP rate-limit bucket key (security audit F9).
 
-    Mirrors ``app.auth.dependencies._client_ip`` — same Caddy-in-front
-    trust model. If the app is ever exposed directly to the internet
-    without a proxy, the XFF header becomes client-settable and an
-    attacker can rotate the per-IP bucket trivially. Document that
-    deployment shape in the runbook before flipping it on.
+    Uses ``app.auth.client_ip.trusted_client_ip``, which trusts only the
+    ``AGNES_TRUSTED_PROXY_HOPS`` rightmost X-Forwarded-For hops instead of the
+    fully client-controllable leftmost hop. Keying on the leftmost hop let an
+    attacker rotate a fresh bucket per request and defeat the auth throttles
+    (the exact threat this module exists to stop). Falls back to the connection
+    peer when there is no XFF.
     """
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        ip = xff.split(",", 1)[0].strip()
-        if ip:
-            return ip
+    from app.auth.client_ip import trusted_client_ip
+
+    ip = trusted_client_ip(request)
+    if ip:
+        return ip
     return get_remote_address(request)
 
 
@@ -136,11 +141,14 @@ class SlowAPIMiddleware(_SlowAPIMiddleware):
 
     BaseHTTPMiddleware buffers the full response body, which breaks SSE
     streaming (Python 3.13 raises AssertionError on the second
-    http.response.start). Bypass for /api/mcp so MCP SSE connections work.
+    http.response.start). Bypass every SSE path (MCP, broker LLM proxy) so
+    streamed responses pass through untouched.
     """
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope.get("type") == "http" and scope.get("path", "").startswith("/api/mcp"):
+        from app.middleware import SSE_BYPASS_PREFIXES
+
+        if scope.get("type") == "http" and scope.get("path", "").startswith(SSE_BYPASS_PREFIXES):
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)

@@ -861,3 +861,180 @@ def test_materialize_query_untyped_storage_client_skips_typing_safely(tmp_path, 
     # assertion here is that the call above didn't raise.
     table = pq.read_table(output_dir / "example_subset.parquet")
     assert table.num_rows == 2
+
+
+# ---- streaming retype (OOM fix for the typed-parquet path) ----------------
+#
+# The original typed-parquet fix loaded the whole materialized parquet into
+# one pyarrow.Table (pq.read_table) before casting — peak memory scaled with
+# the materialized result size and OOM-killed syncs of large tables. The
+# retype must stream through DuckDB (bounded by the consolidation memory
+# cap) while keeping the coerce-to-NULL semantics of the pandas fallback.
+
+
+def _make_untyped_client(columns):
+    """Fake KeboolaStorageClient whose native-parquet export writes the
+    given ``{name: [str values]}`` columns ALL string-typed — the shape
+    Storage API's Snowflake UNLOAD produces."""
+    n_rows = len(next(iter(columns.values())))
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 100,
+            "file_id": 200,
+            "rows": n_rows,
+            "file_info": {"id": 200, "url": "https://fake/x", "isSliced": False},
+            "file_type": "parquet",
+        }
+
+    def fake_download(file_info, dest_path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table({k: pa.array(v, type=pa.string()) for k, v in columns.items()}), dest)
+        return dest
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file.side_effect = fake_download
+    client.token = "fake-token"
+    client.base = "https://connection.keboola.com/v2/storage"
+    return client
+
+
+@_needs_kbcstorage
+def test_materialize_typed_retype_streams_instead_of_full_read(
+    tmp_path, monkeypatch, fake_storage_client_parquet_untyped
+):
+    """The retype must NOT load the whole parquet via pq.read_table —
+    with a poisoned read_table the columns must still come out typed
+    (streamed through DuckDB, not read into one pyarrow.Table)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    fake_schema = pa.schema([pa.field("id", pa.int64()), pa.field("amount", pa.int64())])
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+
+    def boom(*a, **kw):
+        raise AssertionError("retype must not pq.read_table the full parquet")
+
+    monkeypatch.setattr("pyarrow.parquet.read_table", boom)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    kbe.materialize_query(
+        table_id="streamed_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client_parquet_untyped,
+        output_dir=output_dir,
+    )
+
+    monkeypatch.undo()
+    table = pq.read_table(output_dir / "streamed_subset.parquet")
+    assert table.schema.field("id").type == pa.int64()
+    assert table.schema.field("amount").type == pa.int64()
+    assert table.column("amount").to_pylist() == [100, 250]
+
+
+@_needs_kbcstorage
+def test_materialize_typed_retype_coerces_lossy_values_to_null(tmp_path, monkeypatch):
+    """Uncastable values coerce to NULL (the pandas-fallback semantics the
+    in-memory retype had); castable columns and values are unaffected."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    client = _make_untyped_client({"id": ["1", "2"], "amount": ["100", "abc"]})
+    fake_schema = pa.schema([pa.field("id", pa.int64()), pa.field("amount", pa.int64())])
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    kbe.materialize_query(
+        table_id="lossy_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    table = pq.read_table(output_dir / "lossy_subset.parquet")
+    assert table.schema.field("id").type == pa.int64()
+    assert table.schema.field("amount").type == pa.int64()
+    assert table.column("id").to_pylist() == [1, 2]
+    assert table.column("amount").to_pylist() == [100, None]
+
+
+@_needs_kbcstorage
+def test_materialize_typed_retype_handles_dates_timestamps_and_empties(tmp_path, monkeypatch):
+    """DATE and TIMESTAMP targets cast from their string forms; empty
+    strings coerce to NULL instead of poisoning the whole column."""
+    import datetime
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from connectors.keboola.client import KeboolaClient
+
+    client = _make_untyped_client(
+        {
+            "ts": ["2026-01-02 03:04:05", ""],
+            "d": ["2026-01-02", ""],
+        }
+    )
+    fake_schema = pa.schema([pa.field("ts", pa.timestamp("us")), pa.field("d", pa.date32())])
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    kbe.materialize_query(
+        table_id="temporal_subset",
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    table = pq.read_table(output_dir / "temporal_subset.parquet")
+    assert table.schema.field("ts").type == pa.timestamp("us")
+    assert table.schema.field("d").type == pa.date32()
+    assert table.column("ts").to_pylist() == [
+        datetime.datetime(2026, 1, 2, 3, 4, 5),
+        None,
+    ]
+    assert table.column("d").to_pylist() == [datetime.date(2026, 1, 2), None]
+
+
+def test_retype_preserves_row_order_across_row_groups(tmp_path):
+    """The materialized parquet's MD5 is the change-detection key for
+    `agnes pull` — the retype must preserve input row order (byte-stable
+    output for identical input), even across many row groups where
+    `preserve_insertion_order=false` could legally reorder."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    src = tmp_path / "ordered.parquet"
+    n = 5000
+    pq.write_table(
+        pa.table({"id": pa.array([str(i) for i in range(n)], type=pa.string())}),
+        src,
+        row_group_size=500,
+    )
+
+    kbe._retype_parquet_streaming(src, pa.schema([pa.field("id", pa.int64())]))
+
+    table = pq.read_table(src)
+    assert table.schema.field("id").type == pa.int64()
+    assert table.column("id").to_pylist() == list(range(n))

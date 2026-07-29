@@ -164,6 +164,35 @@ def test_list_messages_and_after_id(sessions, messages):
     assert [m.content for m in after] == ["two"]
 
 
+def test_list_recent_messages_returns_newest_first(sessions, messages):
+    """The counterpart to ``list_messages``'s oldest-first ``LIMIT`` —
+    ``_redeliver_pending_question``/``_build_restore_context`` need the
+    actual tail of a long conversation, not whatever ``list_messages``'s
+    default 500-row ``ORDER BY created_at ASC LIMIT`` happens to return
+    (Devin review on #1030)."""
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
+    messages.append_message(session_id=s.id, role="user", content="one")
+    messages.append_message(session_id=s.id, role="assistant", content="two")
+    messages.append_message(session_id=s.id, role="user", content="three")
+    recent = messages.list_recent_messages(s.id)
+    assert [m.content for m in recent] == ["three", "two", "one"]
+
+
+def test_list_recent_messages_respects_limit_past_default(sessions, messages):
+    """The actual bug this repro guards: with a conversation longer than
+    ``list_messages``'s default 500-row window, the true latest message
+    must still be reachable via ``list_recent_messages(limit=1)`` — this
+    uses a small limit to keep the test fast rather than seeding 500+ rows,
+    but pins the same ``ORDER BY ... DESC`` contract that makes it work at
+    any conversation length."""
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
+    for i in range(5):
+        messages.append_message(session_id=s.id, role="user", content=f"msg-{i}")
+    newest = messages.list_recent_messages(s.id, limit=1)
+    assert len(newest) == 1
+    assert newest[0].content == "msg-4"
+
+
 def test_tool_calls_round_trip(sessions, messages):
     s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
     payload = [{"name": "query", "args": {"sql": "SELECT 1"}}]
@@ -261,6 +290,28 @@ def test_session_flags_default_false(sessions):
     assert s.is_co_session is False
     assert s.ephemeral is False
     assert sessions.get_session(s.id).is_co_session is False
+
+
+def test_agent_id_round_trip(sessions):
+    """Task 6: agent_id persists on create and survives a re-fetch; a
+    session created without one hydrates to None."""
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB, agent_id="a1")
+    assert s.agent_id == "a1"
+    fetched = sessions.get_session(s.id)
+    assert fetched.agent_id == "a1"
+
+    s2 = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
+    assert s2.agent_id is None
+    assert sessions.get_session(s2.id).agent_id is None
+
+
+def test_surface_api_round_trip(sessions):
+    """Task 6: Surface.API sessions persist and hydrate correctly."""
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.API, agent_id="a2")
+    assert s.surface == Surface.API
+    fetched = sessions.get_session(s.id)
+    assert fetched.surface == Surface.API
+    assert fetched.agent_id == "a2"
 
 
 def test_sender_email_round_trip(sessions, messages):
