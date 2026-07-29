@@ -329,9 +329,10 @@ def _step_agnes_owned(workspace: Path, *, report: list[dict]) -> None:
 # --------------------------------------------------------------------------- #
 # Step 4 — marketplace plugins (bootstrap if missing; full reconcile on drift)
 # --------------------------------------------------------------------------- #
-def _reassert_enabled_plugins() -> list[str]:
+def _reassert_enabled_plugins() -> dict[str, list[str]]:
     """Ensure the workspace `settings.json` enables every plugin in the LOCAL
-    marketplace manifest; return the names newly flipped on.
+    marketplace manifest; return `{"enabled": [...], "settings_pruned": [...]}`
+    — the names newly flipped on and the stale entries dropped.
 
     Runs on the no-drift path: the marketplace content is current, but step 2's
     template merge (or a manual edit) may have reset `settings.json` and dropped
@@ -348,10 +349,10 @@ def _reassert_enabled_plugins() -> list[str]:
 
     manifest = _read_marketplace_plugin_versions()
     if not manifest:
-        return []
+        return {"enabled": [], "settings_pruned": []}
     ev: dict[str, list[str]] = {"installed": [], "updated": [], "enabled": []}
     _enable_plugins_in_workspace_settings(manifest, events=ev)
-    return ev["enabled"]
+    return {"enabled": ev["enabled"], "settings_pruned": ev.get("settings_pruned", [])}
 
 
 # --------------------------------------------------------------------------- #
@@ -412,13 +413,31 @@ def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
         # reset since the last reconcile (step 2's template merge drops the
         # stack's enabledPlugins). Reassert them from the local manifest so
         # installed stack plugins stay ENABLED; cheap (no fetch) and idempotent.
-        enabled = _reassert_enabled_plugins()
-        if enabled:
+        # Same sink as _invoke: _enable_plugins_in_workspace_settings echoes
+        # its enable/drop notices, and this call sits OUTSIDE the wrapped
+        # refresh_marketplace invocation, so under --json/--quiet the lines
+        # would leak to raw stdout and break the single-JSON / silent-hook
+        # contract (Devin Review on #1105). The outcome reaches the caller
+        # via the run report below instead.
+        sink = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
+        with sink:
+            reassert = _reassert_enabled_plugins()
+        enabled = reassert["enabled"]
+        pruned = reassert["settings_pruned"]
+        if enabled or pruned:
+            parts = []
+            if enabled:
+                parts.append(f"re-enabled {len(enabled)} stack plugin(s) in settings.json: " + ", ".join(enabled))
+            if pruned:
+                parts.append(
+                    f"dropped {len(pruned)} stale settings entr{'y' if len(pruned) == 1 else 'ies'}: "
+                    + ", ".join(pruned)
+                )
             report.append(
                 {
                     "stage": "marketplace",
-                    "status": "enabled",
-                    "detail": f"re-enabled {len(enabled)} stack plugin(s) in settings.json: " + ", ".join(enabled),
+                    "status": "enabled" if enabled else "pruned",
+                    "detail": "; ".join(parts),
                 }
             )
         else:
