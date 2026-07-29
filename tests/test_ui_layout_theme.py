@@ -185,19 +185,57 @@ class TestRailOptIn:
         rows = re.findall(r"<tr[^>]*\bdata-item-id=[^>]*>", text)
         top_level = [r for r in rows if "data-parent-id=" not in r]
         in_stack = [r for r in top_level if 'data-stack="in_stack"' in r]
-        rendered = 'data-facet="stack" value="in_stack"' in text
+        rendered = 'id="lib-stack-toggle"' in text
         assert rendered == (0 < len(in_stack) < len(top_level)), (
             f"stack toggle rendered={rendered} with {len(in_stack)}/{len(top_level)} rows in stack — "
             "it must render exactly when flipping it would change the list"
         )
-        if rendered:
-            assert "In stack only" in text
+        if not rendered:
+            return
+
+        # It is a toolbar button, NOT a row inside the Filter menu: the condition
+        # is consequential enough to be visible at rest.
+        assert "In stack only" in text
+        assert 'data-facet="stack" data-facet-value="in_stack"' in text
+        assert 'aria-pressed="false"' in text
+        menu = text.split('id="lib-filter-menu"', 1)[1].split("</div>", 1)[0]
+        assert "In stack only" not in menu, "the stack toggle must not also sit in the Filter menu"
+        assert "fbar-menu__toggle" not in text, "retired in-menu toggle markup"
+
+        # Order on the bar: Filter · In stack only · Sort. The toggle narrows the
+        # list like Filter does, so it reads before the ordering control.
+        positions = [
+            text.index('id="lib-filter-btn"'),
+            text.index('id="lib-stack-toggle"'),
+            text.index('id="lib-sort"'),
+        ]
+        assert positions == sorted(positions), "stack toggle must sit between Filter and Sort"
+
+    def test_stack_toggle_is_wired_as_an_external_facet(self, web_client, admin_cookie, monkeypatch):
+        """The toolbar button is driven by the shared engine as an ordinary
+        facet with `control`, not by page-local click handlers — so clearing and
+        resetting keep working. Because the button shows its own state, the
+        engine must leave it out of the Filter badge count and the chip row;
+        those two exclusions are the whole reason the move is not a regression
+        in discoverability."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        text = web_client.get("/library", cookies=admin_cookie).text
+        assert "control: '#lib-stack-toggle'" in text
+
+        js = web_client.get("/static/js/filter_toolbar.js").text
+        # Excluded from the Filter button's badge...
+        assert "return f.control ? n : n + facetState[f.key].size;" in js
+        # ...and from the chip row.
+        assert "if (f.control) return;" in js
+        # State is pushed back onto the button from the one funnel every
+        # mutation goes through, so Clear all / reset can't desync it.
+        assert "syncExternalControls" in js
 
     def test_rail_has_no_studio_or_marketplace_entry(self, web_client, admin_cookie, monkeypatch):
         """Studio is retired from the rail and Marketplace is no longer a rail
         entry. Studio was a hover dropdown holding Agents (now its own top-level
         item), the Skill and Plugin builders (now reached from the Library
-        header's "+ New" menu) and a non-interactive "Corporate Memory builder"
+        header's "+ Add" menu) and a non-interactive "Corporate Memory builder"
         concept label. Both the trigger markup and the dead .rail-studio-*
         styling must be gone, not merely hidden."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")

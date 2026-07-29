@@ -86,20 +86,28 @@
 .fbar-menu__opt:hover { background: color-mix(in srgb, var(--ds-text-primary) 5%, transparent); }
 .fbar-menu__opt input { accent-color: var(--ds-primary); width: 15px; height: 15px; flex-shrink: 0; }
 .fbar-menu__opt-n { margin-left: auto; font-size: 11.5px; color: var(--ds-text-muted); }
-/* A BINARY refinement ("In stack only") lives directly in the menu instead of
-   behind a category popover: its two states are complementary, so a submenu
-   offering both would only ever be a longer way to say the same thing. Same
-   checkbox row as .fbar-menu__opt, one weight heavier because it reads as a
-   statement rather than as one option among several, and separated from the
-   categories below it so the two kinds of control never blur together. */
-.fbar-menu__toggle { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; font-size: 13.5px; font-weight: 500; color: var(--ds-text-primary); cursor: pointer; }
-.fbar-menu__toggle:hover { background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); }
-.fbar-menu__toggle input { accent-color: var(--ds-primary); width: 15px; height: 15px; flex-shrink: 0; }
-.fbar-menu__toggle:has(input:checked) { color: var(--ds-primary); }
-/* Ring on the ROW, since the 15px checkbox is a small focus target — but only
-   for :focus-visible, so a mouse click doesn't leave one behind. */
-.fbar-menu__toggle:has(input:focus-visible) { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
-.fbar-menu__toggle + .fbar-cat { border-top: 1px solid var(--ds-border); margin-top: 4px; padding-top: 4px; }
+/* A BINARY refinement worth seeing at rest ("In stack only") is a toolbar
+   BUTTON, not a menu row: its two states are complementary, so a category
+   popover offering both would only ever be a longer way to say the same thing —
+   and the condition is consequential enough that it should not need a click to
+   discover, nor a chip to report. Matches .fbar-filter__btn's metrics exactly
+   (38px, 9px radius, same border and type) so the bar keeps one control height,
+   and lights up in the primary colour when engaged — the same "on" vocabulary
+   .fbar-filter__btn.is-active and .fbar-view__btn.is-active already speak. */
+.fbar-toggle { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 600; color: var(--ds-text-primary); background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 9px; cursor: pointer; white-space: nowrap; }
+.fbar-toggle:hover { border-color: var(--ds-text-muted); }
+.fbar-toggle svg { width: 15px; height: 15px; color: var(--ds-text-secondary); }
+.fbar-toggle:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+/* Engaged. The tinted fill (not just a coloured border) is what separates a
+   latched switch from the momentary Filter button beside it — .fbar-view__btn
+   marks its active state the same way. */
+.fbar-toggle.is-active { color: var(--ds-primary); border-color: var(--ds-primary); background: var(--ds-primary-light); }
+.fbar-toggle.is-active svg { color: var(--ds-primary); }
+/* The tally rides along muted at rest and inherits the primary colour when
+   engaged — it is a detail OF the button, never a second badge competing with
+   .fbar-filter__n (which is a count of hidden state; this one is visible). */
+.fbar-toggle__n { font-size: 11.5px; font-weight: 700; color: var(--ds-text-muted); }
+.fbar-toggle.is-active .fbar-toggle__n { color: var(--ds-primary); }
 
 .fbar-menu__foot { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 6px 2px; margin-top: 4px; border-top: 1px solid var(--ds-border); }
 .fbar-menu__foot button { border: none; background: none; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ds-text-secondary); cursor: pointer; padding: 4px 8px; border-radius: 7px; }

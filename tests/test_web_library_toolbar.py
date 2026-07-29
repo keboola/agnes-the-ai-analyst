@@ -155,21 +155,23 @@ def _add_to_stack(seeded_app, collection_id: str, token: str):
 
 
 def test_stack_filter_is_a_single_in_stack_only_toggle(seeded_app):
-    """The Library's Filter menu leads with an "In stack only" toggle so the
-    caller can ask "what can my agent actually use?" in one click — the axis the
-    table also acts on via "+ Add to Stack". The two-option Available/In Stack
-    category is retired: the states are complementary, so a submenu offering
-    both was a longer way to say "everything"."""
+    """ "In stack only" answers "what can my agent actually use?" in one click —
+    the axis the table also acts on via "+ Add to Stack". Two things are
+    deliberate. The two-option Available/In Stack category is retired: the
+    states are complementary, so a submenu offering both was a longer way to
+    say "everything". And the survivor is a BUTTON on the bar, not a row inside
+    the Filter menu — the condition is consequential enough that it should not
+    need a click to discover, nor a chip to report."""
     tok = seeded_app["admin_token"]
     added = _create(seeded_app, "Stack Added", tok)
     _create(seeded_app, "Stack Not Added", tok)
     assert _add_to_stack(seeded_app, added["id"], tok).status_code == 200
 
     text = seeded_app["client"].get("/library", headers=_auth(tok)).text
-    # One checkbox, directly in the menu — not a category with a popover.
-    assert "fbar-menu__toggle" in text
-    assert 'data-facet="stack" value="in_stack"' in text
+    assert 'id="lib-stack-toggle"' in text
+    assert 'data-facet="stack" data-facet-value="in_stack"' in text
     assert ">In stack only<" in text
+    assert "fbar-menu__toggle" not in text, "retired in-menu toggle markup"
     assert 'data-cat="stack"' not in text
     assert 'data-facet="stack" value="available"' not in text
     # Row attribute the toggle slices on, in both states.
@@ -189,7 +191,7 @@ def test_stack_toggle_shows_the_matching_item_count(seeded_app):
             assert _add_to_stack(seeded_app, col["id"], tok).status_code == 200
 
     text = seeded_app["client"].get("/library", headers=_auth(tok)).text
-    badge = re.search(r'<span class="fbar-menu__opt-n" data-stack-count>(\d+)</span>', text)
+    badge = re.search(r'<span class="fbar-toggle__n">(\d+)</span>', text)
     assert badge, "the In-stack-only toggle rendered no count"
     rendered = int(badge.group(1))
     # Every row carrying the in-Stack state is counted — the two just added plus
@@ -240,7 +242,7 @@ def test_stack_toggle_absent_when_it_would_change_nothing(seeded_app):
     tok = seeded_app["analyst_token"]
     text = seeded_app["client"].get("/library", headers=_auth(tok)).text
     if 'data-stack="in_stack"' not in text:
-        assert "fbar-menu__toggle" not in text
+        assert 'id="lib-stack-toggle"' not in text
 
 
 def test_stack_state_is_visible_on_every_row(seeded_app):

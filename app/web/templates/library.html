@@ -1095,6 +1095,33 @@
       </div>
     </div>
 
+    {# "In stack only" — a binary condition, and the single most consequential
+       one on this page ("what can my default agent actually use?"), so it rides
+       the bar as a pressed-state button rather than hiding one level deep in the
+       Filter menu. It sits between Filter and Sort: still reading left-to-right
+       as narrow-the-list controls, but never collapsed behind a click.
+
+       filter_toolbar.js owns it as an ordinary facet via `control` (see the
+       FilterToolbar.init config below) — `data-facet-value` carries the value an
+       in-menu checkbox would have carried in `value=`, and the engine drives
+       aria-pressed. Because the button shows its own state, the engine
+       deliberately leaves this facet out of the Filter badge count and the chip
+       row; "Clear all" and reset still clear it and sync the button back.
+
+       The count is every in-Stack item — the unfiltered tally, matching what the
+       category options in the menu show. Rendered only when flipping it would
+       change the list (`library_stack_toggle`: something is in the Stack and
+       something isn't), so it never sits there as a no-op. #}
+    {% if library_stack_toggle %}
+    <button type="button" class="fbar-toggle" id="lib-stack-toggle"
+            data-facet="stack" data-facet-value="in_stack" aria-pressed="false"
+            title="Show only what your default agent can use">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+      <span>In stack only</span>
+      <span class="fbar-toggle__n">{{ library_in_stack_count }}</span>
+    </button>
+    {% endif %}
+
     {# Sorting for GRID view. In table view the column headers own it (see the
        <thead> below) and this control hides — two live readouts of one order
        would be one too many. It must cover EVERY order a header can produce,
@@ -1634,9 +1661,13 @@
       rows: '[data-lib-sec] tr[data-item-id]:not([data-parent-id])',
       search: { el: '#lib-search', attr: 'data-search' },
       facets: [
-        // Toggle, not a category: one checkbox in the menu itself, on = keep
-        // only `data-stack="in_stack"` rows. Its chip reads "In stack only".
-        { key: 'stack', attr: 'data-stack', label: 'In stack only', toggle: true },
+        // Toggle, not a category, and it lives ON the bar rather than in the
+        // menu: `control` points at the pressed-state button between Filter and
+        // Sort, on = keep only `data-stack="in_stack"` rows. The button is its
+        // own readout, so the engine keeps this facet out of the Filter badge
+        // and the chip row (see filter_toolbar.js).
+        { key: 'stack', attr: 'data-stack', label: 'In stack only', toggle: true,
+          control: '#lib-stack-toggle' },
         { key: 'requirement', attr: 'data-requirement', label: 'Access' },
         { key: 'tag', attr: 'data-tag', label: 'Tag', multi: true },
         { key: 'owner', attr: 'data-owner', label: 'Owner' },
