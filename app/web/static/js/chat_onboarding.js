@@ -260,6 +260,7 @@ function renderJourneyPanel() {
   if (restartBtn) {
     restartBtn.addEventListener("click", () => {
       patchJourney({
+        onboarded: false, // re-arm the "Hi, I'm Agnes 👋" greeting too
         first_asked: false,
         stack_setup_done: false,
         explored_stack: false,
