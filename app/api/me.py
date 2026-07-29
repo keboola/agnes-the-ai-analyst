@@ -89,7 +89,7 @@ async def patch_display_name(
         user_id=user["id"],
         action="user_display_name_updated",
         params={"name": stripped},
-        result="ok",
+        result="success",
     )
     return {"status": "ok", "name": stripped}
 

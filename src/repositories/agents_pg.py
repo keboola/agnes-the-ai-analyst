@@ -161,6 +161,22 @@ class AgentsPgRepository:
             )
         return [dict(r) for r in rows]
 
+    def list(self, *, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """All live (non-soft-deleted) agents across owners, ordered by name.
+
+        Used by the ``/admin/access`` AGENT grant projection (see
+        ``app/resource_types.py``) so an admin can see and correct agent
+        grants that owners usually write through the Library's Share action.
+        """
+        sql = "SELECT * FROM agents WHERE deleted_at IS NULL ORDER BY name"
+        params: Dict[str, Any] = {}
+        if limit is not None:
+            sql += " LIMIT :limit"
+            params["limit"] = limit
+        with self._engine.connect() as conn:
+            rows = conn.execute(sa.text(sql), params).mappings().all()
+        return [dict(r) for r in rows]
+
     def update(self, agent_id: str, **fields: Any) -> None:
         bad = set(fields) - _UPDATABLE
         if bad:

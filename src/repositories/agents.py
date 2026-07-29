@@ -141,6 +141,21 @@ class AgentsRepository:
         ).fetchall()
         return self._rows_to_dicts(rows)
 
+    def list(self, *, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """All live (non-soft-deleted) agents across owners, ordered by name.
+
+        Used by the ``/admin/access`` AGENT grant projection (see
+        ``app/resource_types.py``) so an admin can see and correct agent
+        grants that owners usually write through the Library's Share action.
+        """
+        sql = "SELECT * FROM agents WHERE deleted_at IS NULL ORDER BY name"
+        params: List[Any] = []
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        return self._rows_to_dicts(rows)
+
     def update(self, agent_id: str, **fields: Any) -> None:
         bad = set(fields) - _UPDATABLE
         if bad:

@@ -37,7 +37,7 @@ import duckdb
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.dependencies import _get_db, get_current_user
-from app.auth.session_principal import PRINCIPAL_TYPES, Principal
+from app.auth.session_principal import PRINCIPAL_TYPES, Principal, SessionPrincipal
 from app.resource_types import ResourceType
 from src.db import SYSTEM_ADMIN_GROUP
 
@@ -458,7 +458,6 @@ def accessible_collection_ids(user, conn=None):
     every collection (admin). The list-surface counterpart to
     :func:`can_access_collection` (My Stack uploads, /library, search)."""
     from src.rbac import get_accessible_ids
-    from app.auth.session_principal import SessionPrincipal
 
     granted = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)
     if granted is None:
