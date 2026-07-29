@@ -220,3 +220,91 @@ def test_admin_required_grant_is_locked_in_stack(seeded_app):
     # No control: neither Add nor Remove is the caller's to press.
     assert "data-add-to-stack=" not in row
     assert "data-remove-from-stack=" not in row
+
+
+# ---------------------------------------------------------------------------
+# Trust chip — opt-in 3-state (org / verified / unverified)
+# ---------------------------------------------------------------------------
+
+
+def _set_verification(entity_id: str, state: str) -> None:
+    from src.db import get_system_db
+    from src.repositories.store_entities import StoreEntitiesRepository
+
+    StoreEntitiesRepository(get_system_db()).set_verification(entity_id, state, by_user_id="admin")
+
+
+def _set_publisher_kind(entity_id: str, kind: str) -> None:
+    from src.db import get_system_db
+
+    get_system_db().execute(
+        "UPDATE store_entities SET publisher_kind = ? WHERE id = ?",
+        [kind, entity_id],
+    )
+
+
+def test_unverified_chip_absent_when_flag_off(seeded_app):
+    """Default behavior (flag off): no unverified chip ever renders — absence of
+    a chip is the neutral default and the existing instance look is unchanged."""
+    _entity(owner="admin", owner_name="admin", etype="skill", name="Flag Off Skill", status="approved")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row(text, "Flag Off Skill")
+    assert row, "approved skill must appear in library"
+    assert "lib-trust--unverified" not in row
+    assert "Community" not in row
+
+
+def test_unverified_chip_renders_when_flag_on(seeded_app, monkeypatch):
+    """With the flag enabled, a user-authored unverified Store entity renders the
+    amber 'Community' chip."""
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
+    _entity(owner="admin", owner_name="admin", etype="skill", name="Community Skill", status="approved")
+    # verification_state defaults to 'none' on create — unverified by definition.
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row(text, "Community Skill")
+    assert row, "approved skill must appear in library"
+    assert "lib-trust--unverified" in row
+    assert "Community" in row
+    assert "Community-contributed, not yet verified" in row
+
+
+def test_verified_chip_renders_green_when_flag_on(seeded_app, monkeypatch):
+    """A verified Store entity always renders the green chip regardless of the
+    unverified flag — the flag only gates the amber branch."""
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
+    eid = _entity(owner="admin", owner_name="admin", etype="skill", name="Verified Skill", status="approved")
+    _set_verification(eid, "verified")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row(text, "Verified Skill")
+    assert row, "approved skill must appear in library"
+    assert "lib-trust--verified" in row
+    assert "lib-trust--unverified" not in row
+
+
+def test_org_chip_renders_gray_regardless_of_flag(seeded_app, monkeypatch):
+    """An organization-published item always renders the gray 'Organization'
+    chip — the unverified flag does not affect it."""
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "false")
+    eid = _entity(owner="admin", owner_name="admin", etype="skill", name="Org Skill", status="approved")
+    _set_publisher_kind(eid, "organization")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row(text, "Org Skill")
+    assert row, "approved org skill must appear in library"
+    assert "lib-trust--org" in row
+    assert "lib-trust--unverified" not in row
+
+
+def test_verified_chip_renders_green_when_flag_off(seeded_app):
+    """The verified (green) chip is NOT gated by the unverified flag — it renders
+    regardless, as it always has."""
+    eid = _entity(owner="admin", owner_name="admin", etype="skill", name="Always Verified", status="approved")
+    _set_verification(eid, "verified")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row(text, "Always Verified")
+    assert row
+    assert "lib-trust--verified" in row

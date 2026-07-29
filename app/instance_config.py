@@ -262,6 +262,13 @@ FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
         default=False,
         description="Hosted user web apps (data apps). New feature — off by default.",
     ),
+    FeatureFlag(
+        name="library_show_unverified_trust",
+        config_keys=("library", "show_unverified_trust"),
+        env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
+        default=False,
+        description="Show amber 'Community' trust chip for unverified Store items in the Library. Off by default — absence of a chip is the neutral default.",
+    ),
 )
 
 
