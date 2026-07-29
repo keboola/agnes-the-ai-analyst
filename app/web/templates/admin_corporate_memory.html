@@ -2220,9 +2220,19 @@
                     + '  </div>'
                     + '  <a class="btn btn-secondary" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
                     + '  <button class="btn btn-secondary" onclick="openEditMemoryDomainModal(\'' + esc(d.id) + '\')" style="font-size:12px;">Edit</button>'
-                    + '  <button class="btn btn-danger" onclick="deleteMemoryDomain(\'' + esc(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
+                    + '  <button class="btn btn-danger" data-del-domain '
+                    +           'data-domain-id="' + esc(d.id) + '" '
+                    // Raw (unescaped) name in the data attribute — deleteMemoryDomain
+                    // renders it via textContent (confirmModal + undo toast), so an
+                    // HTML-escaped copy would double-escape. `esc` keeps the attribute
+                    // safe; reading .dataset decodes it back to the raw string.
+                    +           'data-domain-name="' + esc(d.name || d.slug || '') + '" '
+                    +           'style="font-size:12px;">Delete</button>'
                     + '</div>';
             }).join('');
+            wrap.querySelectorAll('[data-del-domain]').forEach(b =>
+                b.addEventListener('click', () =>
+                    deleteMemoryDomain(b.dataset.domainId, b.dataset.domainName)));
         } catch (e) {
             wrap.innerHTML = '<div class="empty-state" style="color:var(--error);">Failed to load domains: ' + e.message + '</div>';
         }
