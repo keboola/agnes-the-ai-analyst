@@ -3154,9 +3154,9 @@
     // /admin/corporate-memory re-trigger loadAllItems() on every switch;
     // without this, flicking between Review / All / Browse forced a
     // server round-trip each time even when the underlying data hadn't
-    // changed. 30 s window — short enough that admin edits land fast
-    // (most mutations call refreshCurrentTab via the explicit
-    // _apiMemoryInvalidate() hook below).
+    // changed. 30 s window as a backstop; every mutation path funnels
+    // through refreshCurrentTab(), which clears this cache first, so
+    // post-mutation views are always fresh.
     const _apiMemoryCache = new Map();   // url → { data, expiresAt }
     const _API_MEMORY_TTL_MS = 30000;
     async function _apiMemoryCached(url) {
@@ -3171,9 +3171,9 @@
         _apiMemoryCache.set(url, { data, expiresAt: now + _API_MEMORY_TTL_MS });
         return data;
     }
-    // Called by edit / approve / reject / bulk-update handlers after
-    // they mutate items, so the next list-fetch picks up the change
-    // instead of serving stale cache.
+    // Cleared centrally by refreshCurrentTab() — the shared post-mutation
+    // refresh path — so the next list-fetch picks up the change instead
+    // of serving stale cache.
     function _apiMemoryInvalidate() { _apiMemoryCache.clear(); }
     window._apiMemoryInvalidate = _apiMemoryInvalidate;
 
@@ -3773,7 +3773,6 @@
                 let msg = `${successCount} item${successCount !== 1 ? 's' : ''} ${doneLabel}`;
                 if (failCount > 0) msg += `, ${failCount} failed`;
                 showToast(msg, failCount > 0 ? 'error' : 'success');
-                _apiMemoryInvalidate();
                 refreshCurrentTab();
             } else {
                 showToast(result.error || `Batch ${action} failed`, 'error');
@@ -3812,6 +3811,12 @@
     // ─────────────────────────────────────────────────────────────
 
     function refreshCurrentTab() {
+        // Every call site is a post-mutation refresh (edit, per-row and
+        // batch moderation, bulk-update, create) — tab switching goes
+        // straight to the load* functions and keeps its cache hits. Clear
+        // the list cache here so no mutation path can serve a stale All
+        // Items page for the 30 s TTL (Devin review on #1103).
+        _apiMemoryInvalidate();
         if (currentTab === 'review') loadReviewQueue(reviewPage);
         else if (currentTab === 'all') loadAllItems(allPage);
         else if (currentTab === 'audit') loadAuditLog(auditPage);
