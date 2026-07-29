@@ -64,12 +64,21 @@ class DataAppsRepository:
         "parent_app_id",
         "is_draft",
         "draft_branch",
+        "external_url",
+        "source_ref",
+        "managed",
+        "description_override",
         "last_request_at",
         "last_deploy_at",
         "created_at",
         "updated_at",
     ]
     _SELECT = ", ".join(_COLS)
+
+    @staticmethod
+    def effective_description(row: Dict[str, Any]) -> str:
+        """Admin override wins over the synced description (linked apps)."""
+        return row.get("description_override") or row.get("description") or ""
 
     def create(
         self,
@@ -228,3 +237,119 @@ class DataAppsRepository:
         existed = self.get(app_id) is not None
         self.conn.execute("DELETE FROM data_apps WHERE id = ?", [app_id])
         return existed
+
+    # ── linked (externally-hosted) apps — v108 ─────────────────────────────
+
+    def get_by_source_ref(self, source_ref: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(f"SELECT {self._SELECT} FROM data_apps WHERE source_ref = ?", [source_ref]).fetchone()
+        return dict(zip(self._COLS, row)) if row else None
+
+    def create_linked(
+        self,
+        *,
+        slug: str,
+        name: str,
+        external_url: str,
+        source_ref: str,
+        description: str = "",
+        owner_user_id: str = "system",
+    ) -> str:
+        """Insert a ``repo_mode='linked'`` row (no git repo / runtime).
+
+        ``managed=TRUE`` marks it sync-owned; ``state='linked'`` is fixed (linked
+        apps have no deploy lifecycle). Returns the generated ``app_<uuid12>`` id.
+        """
+        app_id = "app_" + uuid4().hex[:12]
+        self.conn.execute(
+            "INSERT INTO data_apps"
+            "(id, slug, name, description, owner_user_id, repo_mode, state, managed,"
+            " external_url, source_ref) "
+            "VALUES (?, ?, ?, ?, ?, 'linked', 'linked', TRUE, ?, ?)",
+            [app_id, slug, name, description, owner_user_id, external_url, source_ref],
+        )
+        return app_id
+
+    def upsert_linked(
+        self,
+        *,
+        slug: str,
+        source_ref: str,
+        name: str,
+        external_url: str,
+        description: str = "",
+        owner_user_id: str = "system",
+    ) -> Dict[str, Any]:
+        """Insert-or-update a linked app keyed by ``source_ref``.
+
+        On update: refresh ``name``/``description``/``external_url`` and
+        reactivate (``state='linked'``) a previously-hidden row; NEVER touch
+        ``description_override`` (admin's edit wins) or the app's grants.
+        """
+        if self.get_by_source_ref(source_ref) is not None:
+            self.conn.execute(
+                "UPDATE data_apps SET name = ?, description = ?, external_url = ?, "
+                "state = 'linked', updated_at = now() WHERE source_ref = ?",
+                [name, description, external_url, source_ref],
+            )
+        else:
+            self.create_linked(
+                slug=slug,
+                name=name,
+                description=description,
+                external_url=external_url,
+                source_ref=source_ref,
+                owner_user_id=owner_user_id,
+            )
+        row = self.get_by_source_ref(source_ref)
+        assert row is not None  # just upserted
+        return row
+
+    def list_linked(
+        self,
+        *,
+        source_ref_prefix: Optional[str] = None,
+        include_hidden: bool = False,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        clauses = ["repo_mode = 'linked'"]
+        params: List[Any] = []
+        if not include_hidden:
+            clauses.append("state = 'linked'")
+        if source_ref_prefix is not None:
+            clauses.append("source_ref LIKE ?")
+            params.append(source_ref_prefix + "%")
+        where = "WHERE " + " AND ".join(clauses)
+        params.append(limit)
+        rows = self.conn.execute(
+            f"SELECT {self._SELECT} FROM data_apps {where} ORDER BY created_at DESC LIMIT ?", params
+        ).fetchall()
+        return [dict(zip(self._COLS, r)) for r in rows]
+
+    def soft_delete_missing_linked(self, *, source_ref_prefix: str, keep_source_refs: List[str]) -> int:
+        """Hide active linked rows for one connection whose ``source_ref`` is not
+        in ``keep_source_refs`` (i.e. the app disappeared upstream). Scoped by
+        ``source_ref_prefix`` so one connection's reconcile never touches
+        another's rows. Returns the number hidden."""
+        active = self.conn.execute(
+            "SELECT source_ref FROM data_apps WHERE repo_mode = 'linked' AND state = 'linked' AND source_ref LIKE ?",
+            [source_ref_prefix + "%"],
+        ).fetchall()
+        keep = set(keep_source_refs)
+        to_hide = [r[0] for r in active if r[0] not in keep]
+        for sr in to_hide:
+            self.conn.execute(
+                "UPDATE data_apps SET state = 'linked_hidden', updated_at = now() WHERE source_ref = ?",
+                [sr],
+            )
+        return len(to_hide)
+
+    def set_description_override(self, slug: str, text: Optional[str]) -> bool:
+        """Set (or clear, with ``None``) the admin description override on a
+        managed row. Returns False if the slug does not exist."""
+        if self.get_by_slug(slug) is None:
+            return False
+        self.conn.execute(
+            "UPDATE data_apps SET description_override = ?, updated_at = now() WHERE slug = ?",
+            [text, slug],
+        )
+        return True
