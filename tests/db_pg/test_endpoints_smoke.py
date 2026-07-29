@@ -1721,6 +1721,9 @@ KNOWN_UNTESTED = {
     "GET /admin/datasource-credentials",
     # Admin data-sources page (#755) — tested in test_admin_data_sources_page.py
     "GET /admin/data-sources",
+    # Admin semantic-layer sources page (multi-project sync) — tested in
+    # tests/test_admin_semantic_layer_page.py.
+    "GET /admin/semantic-layer",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",
     "POST /api/admin/keboola/test",
