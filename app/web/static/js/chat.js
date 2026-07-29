@@ -709,6 +709,52 @@ const _COPY_ICON_SVG =
   '<path d="M2.75 11V3.25C2.75 2.7 3.2 2.25 3.75 2.25H10"/>' +
   "</svg>";
 
+// Copy text to the clipboard, resolving true on success. The async
+// Clipboard API is the preferred path but is unavailable or rejects in
+// several deployed setups even over HTTPS — a restrictive
+// Permissions-Policy, an <iframe> without `clipboard-write`, a
+// not-fully-trusted cert behind a TLS-terminating proxy, or simply a
+// browser that gates it. When it's missing or throws, fall back to a
+// throwaway off-screen <textarea> + document.execCommand("copy"), which
+// works synchronously from the click gesture in those contexts. Without
+// this fallback the copy buttons just showed "Couldn't copy to clipboard".
+async function copyTextToClipboard(text) {
+  const value = text || "";
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch (_) {
+      /* blocked despite a secure context — fall through to execCommand */
+    }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    // Off-screen but still rendered — execCommand("copy") can't read from a
+    // display:none element, so park it out of view instead of hiding it.
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.left = "0";
+    document.body.appendChild(ta);
+    const sel = document.getSelection();
+    const prevRange = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    ta.select();
+    ta.setSelectionRange(0, value.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    // Restore any pre-existing user selection we clobbered.
+    if (prevRange && sel) {
+      sel.removeAllRanges();
+      sel.addRange(prevRange);
+    }
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
+
 // Tracks the most recent user message text so the "↻ Ask again"
 // button on the latest assistant turn can re-fire it. Updated by
 // submitUserMessage() on every send.
@@ -759,13 +805,11 @@ function attachMessageActions(article, copyText) {
   copy.innerHTML = _COPY_ICON_SVG;
   copy.onclick = async (e) => {
     e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(copyText || "");
+    if (await copyTextToClipboard(copyText || "")) {
       copy.classList.add("is-copied");
       setTimeout(() => copy.classList.remove("is-copied"), 1400);
       showToast("Message copied", "ok");
-    } catch (err) {
-      console.warn("clipboard write failed", err);
+    } else {
       showToast("Couldn't copy to clipboard", "error");
     }
   };
@@ -1008,13 +1052,11 @@ function enhanceCodeBlocks(root) {
     btn.innerHTML = _COPY_ICON_SVG;
     btn.onclick = async (e) => {
       e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(code.innerText);
+      if (await copyTextToClipboard(code.innerText)) {
         btn.classList.add("is-copied");
         setTimeout(() => btn.classList.remove("is-copied"), 1400);
         showToast("Code copied", "ok");
-      } catch (err) {
-        console.warn("clipboard write failed", err);
+      } else {
         showToast("Couldn't copy code", "error");
       }
     };
