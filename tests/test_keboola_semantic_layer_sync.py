@@ -653,6 +653,352 @@ class TestSyncSemanticLayerGlossary:
         assert row["sql"] == 'SELECT SUM("amount") FROM "crm_orders" AS t'
 
 
+# ---------------------------------------------------------------------------
+# Multi-source sync (per-connection master tokens, source_ref provenance)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def vault_key(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+
+
+def _make_master_connection(conn_id: str, *, stack_url: str, token: str, is_default: bool = False) -> str:
+    from app.api.admin_source_connections import master_secret_key
+    from src.repositories import connection_secrets_repo, source_connections_repo
+
+    source_connections_repo().create(
+        id=conn_id,
+        name=f"name-{conn_id}",
+        source_type="keboola",
+        config={"stack_url": stack_url},
+        is_default=is_default,
+        created_by="test",
+    )
+    connection_secrets_repo().upsert(master_secret_key(conn_id), token)
+    return conn_id
+
+
+def _fake_clients(projects: dict):
+    """Build (storage_factory, metastore_factory) patch targets keyed by token.
+
+    ``projects`` maps token -> {"owner_id", "model_uuid", "metrics", "glossary"}.
+    """
+
+    def storage_factory(url, token):
+        client = MagicMock()
+        client.verify_token.return_value = {
+            "isMasterToken": True,
+            "owner": {"id": projects[token]["owner_id"]},
+        }
+        return client
+
+    def metastore_factory(url, token):
+        project = projects[token]
+        client = MagicMock()
+        client.list_items.side_effect = lambda item_type, model_uuid=None: {
+            "semantic-model": [_model_item(project["model_uuid"])],
+            "semantic-dataset": [],
+            "semantic-metric": project.get("metrics", []),
+            "semantic-constraint": [],
+            "semantic-relationship": [],
+            "semantic-glossary": project.get("glossary", []),
+        }[item_type]
+        return client
+
+    return storage_factory, metastore_factory
+
+
+def _run_sync(projects: dict):
+    from connectors.keboola.semantic_layer import sync_semantic_layer
+
+    storage_factory, metastore_factory = _fake_clients(projects)
+    with (
+        patch("connectors.keboola.storage_api.KeboolaStorageClient", side_effect=storage_factory),
+        patch("connectors.keboola.metastore_client.MetastoreClient", side_effect=metastore_factory),
+    ):
+        return sync_semantic_layer()
+
+
+class TestSyncSemanticLayerMultiSource:
+    @pytest.fixture(autouse=True)
+    def _no_legacy_env(self, monkeypatch):
+        """These tests resolve credentials from connections, never the legacy
+        env pair — clear it so an ambient value can't shadow the source loop."""
+        monkeypatch.delenv("KEBOOLA_STACK_URL", raising=False)
+        monkeypatch.delenv("KEBOOLA_STORAGE_TOKEN", raising=False)
+
+    def test_multi_source_syncs_all_master_connections(self, e2e_env, vault_key):
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        conn_a = _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+        conn_b = _make_master_connection("conn-b", stack_url="https://b.keboola.com", token="tok-b")
+
+        result = _run_sync(
+            {
+                "tok-a": {
+                    "owner_id": 111,
+                    "model_uuid": "model-a",
+                    "metrics": [_metric_item("a1", 'SUM("amount")', "in.c-example_source.orders")],
+                },
+                "tok-b": {
+                    "owner_id": 222,
+                    "model_uuid": "model-b",
+                    "metrics": [_metric_item("b1", "COUNT(*)", "in.c-example_source.orders")],
+                },
+            }
+        )
+
+        assert result["status"] == "ok"
+        assert result["created_or_updated"] == 2
+        assert [s["connection_id"] for s in result["sources"]] == [conn_a, conn_b]
+        assert all(s["status"] == "ok" for s in result["sources"])
+
+        row_a = metric_repo().get("keboola/model-a/a1")
+        row_b = metric_repo().get("keboola/model-b/b1")
+        assert row_a["source_ref"] == conn_a
+        assert row_b["source_ref"] == conn_b
+
+    def test_prune_is_scoped_per_source(self, e2e_env, vault_key):
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://b.keboola.com", token="tok-b")
+
+        first = {
+            "tok-a": {
+                "owner_id": 111,
+                "model_uuid": "model-a",
+                "metrics": [
+                    _metric_item("a1", 'SUM("amount")', "in.c-example_source.orders"),
+                    _metric_item("a2", "COUNT(*)", "in.c-example_source.orders"),
+                ],
+            },
+            "tok-b": {
+                "owner_id": 222,
+                "model_uuid": "model-b",
+                "metrics": [_metric_item("b1", "COUNT(*)", "in.c-example_source.orders")],
+            },
+        }
+        _run_sync(first)
+        assert metric_repo().get("keboola/model-a/a2") is not None
+
+        # Source A drops one metric upstream; source B is unchanged.
+        second = {**first, "tok-a": {**first["tok-a"], "metrics": first["tok-a"]["metrics"][:1]}}
+        result = _run_sync(second)
+
+        assert result["pruned"] == 1
+        assert metric_repo().get("keboola/model-a/a1") is not None
+        assert metric_repo().get("keboola/model-a/a2") is None
+        assert metric_repo().get("keboola/model-b/b1") is not None
+
+    def test_null_ref_adoption_by_default_connection(self, e2e_env, vault_key):
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        conn_a = _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+
+        # Legacy rows from a pre-multi-source sync: source_ref IS NULL.
+        metric_repo().create(
+            id="keboola/model-a/legacy",
+            name="legacy",
+            display_name="legacy",
+            category="keboola",
+            sql='SELECT 1 FROM "crm_orders" AS t',
+            source="keboola_semantic_layer",
+        )
+        metric_repo().create(
+            id="keboola/model-a/gone_upstream",
+            name="gone_upstream",
+            display_name="gone_upstream",
+            category="keboola",
+            sql='SELECT 1 FROM "crm_orders" AS t',
+            source="keboola_semantic_layer",
+        )
+
+        result = _run_sync(
+            {
+                "tok-a": {
+                    "owner_id": 111,
+                    "model_uuid": "model-a",
+                    "metrics": [_metric_item("legacy", 'SUM("amount")', "in.c-example_source.orders")],
+                }
+            }
+        )
+
+        assert result["skipped_conflict"] == 0
+        adopted = metric_repo().get("keboola/model-a/legacy")
+        assert adopted["source_ref"] == conn_a
+        assert len([m for m in metric_repo().list() if m["name"] == "legacy"]) == 1
+        # NULL-ref rows are inside the default connection's prune scope.
+        assert result["pruned"] == 1
+        assert metric_repo().get("keboola/model-a/gone_upstream") is None
+
+    def test_safety_valve_scoped_per_source(self, e2e_env, vault_key):
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://b.keboola.com", token="tok-b")
+
+        first = {
+            "tok-a": {
+                "owner_id": 111,
+                "model_uuid": "model-a",
+                "metrics": [_metric_item("a1", 'SUM("amount")', "in.c-example_source.orders")],
+            },
+            "tok-b": {
+                "owner_id": 222,
+                "model_uuid": "model-b",
+                "metrics": [
+                    _metric_item("b1", "COUNT(*)", "in.c-example_source.orders"),
+                    _metric_item("b2", "COUNT(*)", "in.c-example_source.orders"),
+                ],
+            },
+        }
+        _run_sync(first)
+
+        # A returns zero usable metrics (its prune must be skipped) while B
+        # legitimately drops one metric (its prune must still run).
+        second = {
+            "tok-a": {**first["tok-a"], "metrics": []},
+            "tok-b": {**first["tok-b"], "metrics": first["tok-b"]["metrics"][:1]},
+        }
+        result = _run_sync(second)
+
+        assert metric_repo().get("keboola/model-a/a1") is not None
+        assert metric_repo().get("keboola/model-b/b2") is None
+        assert result["pruned"] == 1
+
+    def test_name_conflict_skipped_sticky(self, e2e_env, vault_key, monkeypatch):
+        from connectors.keboola import semantic_layer
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        conn_a = _make_master_connection("conn-a", stack_url="https://a.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://b.keboola.com", token="tok-b")
+
+        projects = {
+            "tok-a": {
+                "owner_id": 111,
+                "model_uuid": "model-a",
+                "metrics": [_metric_item("shared", 'SUM("amount")', "in.c-example_source.orders")],
+            },
+            "tok-b": {
+                "owner_id": 222,
+                "model_uuid": "model-b",
+                "metrics": [_metric_item("shared", "COUNT(*)", "in.c-example_source.orders")],
+            },
+        }
+        result = _run_sync(projects)
+
+        assert result["created_or_updated"] == 1
+        assert result["skipped_conflict"] == 1
+        assert metric_repo().get("keboola/model-a/shared")["source_ref"] == conn_a
+        assert metric_repo().get("keboola/model-b/shared") is None
+
+        # Rerun with the discovery order reversed: ownership is sticky, so the
+        # first claim must NOT flip to the other source.
+        original = semantic_layer._enumerate_master_sources
+        monkeypatch.setattr(
+            semantic_layer,
+            "_enumerate_master_sources",
+            lambda: list(reversed(original())),
+        )
+        result = _run_sync(projects)
+
+        assert result["skipped_conflict"] == 1
+        assert metric_repo().get("keboola/model-a/shared")["source_ref"] == conn_a
+        assert metric_repo().get("keboola/model-b/shared") is None
+
+    def test_duplicate_project_deduped(self, e2e_env, vault_key):
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        conn_a = _make_master_connection("conn-a", stack_url="https://dup.keboola.com", token="tok-a", is_default=True)
+        _make_master_connection("conn-b", stack_url="https://dup.keboola.com", token="tok-b")
+
+        # Both connections point at the SAME upstream project (same host, same
+        # token owner id) — the second must be skipped, not re-stamp the rows.
+        projects = {
+            "tok-a": {
+                "owner_id": 777,
+                "model_uuid": "model-dup",
+                "metrics": [_metric_item("dup_metric", 'SUM("amount")', "in.c-example_source.orders")],
+            },
+            "tok-b": {
+                "owner_id": 777,
+                "model_uuid": "model-dup",
+                "metrics": [_metric_item("dup_metric", 'SUM("amount")', "in.c-example_source.orders")],
+            },
+        }
+        result = _run_sync(projects)
+
+        assert result["skipped_duplicate_project"] == 1
+        assert result["created_or_updated"] == 1
+        assert metric_repo().get("keboola/model-dup/dup_metric")["source_ref"] == conn_a
+        by_conn = {s["connection_id"]: s for s in result["sources"]}
+        assert by_conn["conn-b"]["status"] == "skipped"
+        assert by_conn["conn-b"]["skipped_duplicate_project"] == 1
+
+        # Second run: still no flip-flop, and nothing gets pruned.
+        result = _run_sync(projects)
+        assert result["pruned"] == 0
+        assert metric_repo().get("keboola/model-dup/dup_metric")["source_ref"] == conn_a
+
+    def test_fallback_no_master_tokens_preserves_foreign_rows(self, e2e_env, monkeypatch):
+        """No master tokens at all: the legacy single-source path runs, and
+        its prune scope covers only NULL-ref / default-connection rows —
+        rows stamped by another connection are left orphaned-but-intact."""
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        monkeypatch.setenv("KEBOOLA_STACK_URL", "https://connection.keboola.com")
+        monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "legacy-tok")
+
+        metric_repo().create(
+            id="keboola/model-x/foreign",
+            name="foreign",
+            display_name="foreign",
+            category="keboola",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+            source_ref="other-conn",
+        )
+        metric_repo().create(
+            id="keboola/model-1/stale",
+            name="stale",
+            display_name="stale",
+            category="keboola",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+        )
+
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {"isMasterToken": True, "owner": {"id": 1}}
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = _metastore_side_effect(
+            metric_items=[_metric_item("a", 'SUM("amount")', "in.c-example_source.orders")]
+        )
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = sync_semantic_layer()
+
+        assert result["status"] == "ok"
+        assert result["pruned"] == 1
+        assert metric_repo().get("keboola/model-1/stale") is None
+        assert metric_repo().get("keboola/model-x/foreign") is not None
+        assert metric_repo().get("keboola/model-1/a") is not None
+
+
 def test_metric_definitions_has_source_ref_column(tmp_path):
     """v106: metric_definitions + glossary_terms grow a nullable
     ``source_ref`` column — per-connection provenance for the multi-project
