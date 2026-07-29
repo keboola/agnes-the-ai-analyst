@@ -1760,3 +1760,123 @@ def test_origin_mismatch_guard_skips_local_path_origins(
     result = runner.invoke(refresh_marketplace_app, [])
     assert result.exit_code == 0, result.output
     assert [c for c in recorder.calls if "fetch" in c.cmd]
+
+
+# --- prune of unsubscribed plugins ----------------------------------------------
+#
+# Stack-as-source-of-truth: an @agnes plugin installed in this workspace that
+# a successfully-read, NON-EMPTY manifest no longer serves gets uninstalled
+# (`claude plugin uninstall <name>@agnes --scope project`) and its
+# `enabledPlugins` entry dropped. The transient-empty guard stays: an empty
+# manifest never prunes anything.
+
+
+def test_reconcile_prunes_plugins_missing_from_manifest(
+    with_clone,
+    with_token,
+    claude_in_path,
+    recorder,
+    monkeypatch,
+    tmp_path,
+):
+    """Installed @agnes plugin absent from a non-empty manifest → uninstall."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(
+        with_clone,
+        [{"name": "grpn-eng", "version": "1.0.0"}],
+    )
+    recorder.script(
+        ("claude", "plugin", "list", "--json"),
+        stdout=_plugin_list_json(
+            [
+                {"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)},
+                {"id": "old-team@agnes", "version": "0.9.0", "projectPath": str(workspace)},
+            ]
+        ),
+    )
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    uninstall_targets = [c.cmd[3] for c in recorder.calls if c.cmd[:3] == ["claude", "plugin", "uninstall"]]
+    assert uninstall_targets == [f"old-team@{rm_module.MARKETPLACE_NAME}"]
+    assert "--scope" in next(c.cmd for c in recorder.calls if c.cmd[:3] == ["claude", "plugin", "uninstall"])
+    # In-manifest plugin untouched.
+    assert not any(c.cmd[:3] == ["claude", "plugin", "install"] for c in recorder.calls)
+    assert not any(c.cmd[:3] == ["claude", "plugin", "update"] for c in recorder.calls)
+
+
+def test_reconcile_never_prunes_on_empty_manifest(
+    with_clone,
+    with_token,
+    claude_in_path,
+    recorder,
+    monkeypatch,
+    tmp_path,
+):
+    """Transient-empty guard: empty manifest → the reconcile early-returns,
+    so installed plugins survive even when the manifest lists nothing."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    # with_clone seeds an empty manifest by default.
+    recorder.script(
+        ("claude", "plugin", "list", "--json"),
+        stdout=_plugin_list_json(
+            [{"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)}]
+        ),
+    )
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+    assert not any(c.cmd[:3] == ["claude", "plugin", "uninstall"] for c in recorder.calls)
+
+
+def test_prune_drops_stale_enabled_entry_but_keeps_other_marketplaces(
+    with_clone,
+    with_token,
+    claude_in_path,
+    recorder,
+    monkeypatch,
+    tmp_path,
+):
+    """Settings cleanup: pruned plugin's `@agnes` enabledPlugins entry is
+    removed; entries from other marketplaces are never touched."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "enabledPlugins": {
+                    "grpn-eng@agnes": True,
+                    "old-team@agnes": True,
+                    "superpowers@claude-plugins-official": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _set_marketplace_manifest(
+        with_clone,
+        [{"name": "grpn-eng", "version": "1.0.0"}],
+    )
+    recorder.script(
+        ("claude", "plugin", "list", "--json"),
+        stdout=_plugin_list_json(
+            [
+                {"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)},
+                {"id": "old-team@agnes", "version": "0.9.0", "projectPath": str(workspace)},
+            ]
+        ),
+    )
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["enabledPlugins"] == {
+        "grpn-eng@agnes": True,
+        "superpowers@claude-plugins-official": True,
+    }
