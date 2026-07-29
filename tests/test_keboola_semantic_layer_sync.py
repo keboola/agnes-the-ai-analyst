@@ -1308,3 +1308,44 @@ def test_metric_definitions_has_source_ref_column(tmp_path):
     conn.close()
     assert "source_ref" in cols
     assert "source_ref" in gcols
+
+
+class TestIsOwnedBySource:
+    """Unit coverage for the ownership gate — notably the id-collision case:
+    ids are (model_uuid, name)-derived with no connection component, so a
+    cloned/restored project under a second connection can produce the SAME id.
+    That must NOT grant takeover of another source's row (review on #1096)."""
+
+    def _gate(self, existing, incoming_id="keboola/model-x/revenue", scope=("conn_a",), adopt_null=False):
+        from connectors.keboola.semantic_layer import _is_owned_by_source
+
+        return _is_owned_by_source(existing, incoming_id, set(scope), adopt_null)
+
+    def test_id_collision_from_foreign_source_is_not_owned(self):
+        foreign = {
+            "id": "keboola/model-x/revenue",
+            "source": "keboola_semantic_layer",
+            "source_ref": "conn_b",
+        }
+        assert self._gate(foreign) is False
+
+    def test_id_match_on_own_row_is_owned(self):
+        own = {
+            "id": "keboola/model-x/revenue",
+            "source": "keboola_semantic_layer",
+            "source_ref": "conn_a",
+        }
+        assert self._gate(own) is True
+
+    def test_id_match_on_legacy_null_ref_row_is_claimable(self):
+        """Pre-v107 rows carry no source_ref; an id-matching source may claim
+        them even without adopt_null (first writer wins, then stickiness)."""
+        legacy = {
+            "id": "keboola/model-x/revenue",
+            "source": "keboola_semantic_layer",
+            "source_ref": None,
+        }
+        assert self._gate(legacy, adopt_null=False) is True
+
+    def test_no_existing_row_is_owned(self):
+        assert self._gate(None) is True

@@ -513,7 +513,19 @@ def _is_owned_by_source(
     if existing is None:
         return True
     if existing.get("id") == incoming_id:
-        return True
+        # Same row id ≠ same source: ids are built from (model_uuid, name)
+        # with no connection component, and a cloned/restored Keboola project
+        # can carry the SAME Metastore model UUID under a different
+        # connection. An unconditional id match would let that second source
+        # silently re-stamp source_ref on the first source's row (the writer
+        # is ON CONFLICT(id) DO UPDATE), putting the row outside the first
+        # source's prune scope — the exact cross-wipe this gate exists to
+        # prevent. Allow the id shortcut only for rows this source already
+        # owns or un-stamped legacy rows (pre-v107 NULL source_ref, which any
+        # colliding source may claim — first writer wins, then stickiness
+        # applies).
+        ref = existing.get("source_ref")
+        return ref is None or ref in scope_refs
     return _in_scope(existing, scope_refs, adopt_null)
 
 
