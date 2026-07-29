@@ -340,8 +340,10 @@ html[data-ui-layout="rail"] body.detail-page footer {
    contrast and disappeared. Tint the current surface with the Agnes green
    instead, the same idiom `.ag-pv-bubble` (agents.html) already uses for this
    exact reason, so the fill follows the theme and the text tokens stay legible
-   on it. Dark-scoped: the light + paper themes keep the flat -soft fill. */
-:root[data-theme="dark"] .cbn {
+   on it. Dark-scoped: the light + paper themes keep the flat -soft fill.
+   `.cbn--bar` opts out — it paints the Knowledge Layer hero's gradient (see
+   the shared fill rule below), which already follows --ds-surface. */
+:root[data-theme="dark"] .cbn:not(.cbn--bar) {
     background: color-mix(in srgb, var(--ds-agnes) 18%, var(--ds-surface));
 }
 .cbn-title { color: var(--ds-text-primary); font-weight: 750; letter-spacing: -0.02em; }
@@ -514,9 +516,19 @@ html[data-ui-layout="rail"] body.detail-page footer {
     overflow: hidden;
     border-radius: 24px;
     padding: 38px 46px;
-    /* Almost-white base with a whisper of mint on the left, a very light
-       purple on the right, and subtle radial blues — an expensive-SaaS
-       gradient, no hard edges. Kept faint so it reads as near-white. */
+}
+
+/* Shared knowledge-surface fill — the near-white layered gradient + soft lift.
+   Both banners that speak for the Knowledge Layer paint the SAME surface: the
+   full hero (`.klb`, chat landing) and the compact connect bar (`.cbn--bar`,
+   Library / Workspace). One rule, so the two can only differ in geometry.
+   Almost-white base with a whisper of mint on the left, a very light purple on
+   the right, and subtle radial blues — an expensive-SaaS gradient, no hard
+   edges. Kept faint so it reads as near-white. Every layer rides --ds-surface
+   or a color-mix into it, so the fill follows every palette theme (which is
+   why `.cbn--bar` needs no dark-theme override of its own). */
+.klb,
+.cbn--bar {
     background:
         radial-gradient(60% 120% at 84% 12%, color-mix(in srgb, var(--ds-kind-agent) 7%, transparent), transparent 60%),
         radial-gradient(58% 120% at 6% 92%, color-mix(in srgb, var(--ds-primary) 9%, transparent), transparent 60%),

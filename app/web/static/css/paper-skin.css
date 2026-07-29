@@ -184,8 +184,12 @@
    the Knowledge Layer hero's "Connect your tools" CTA, and the whole AI
    Connector page — keep the emerald brand green. Scope-override the primary
    trio on those containers so their CTAs/accents stay green without touching
-   the app. (Backgrounds/orbit already ride --ds-agnes, which stays emerald.) */
-[data-theme="paper"] .cbn,
+   the app. (Backgrounds/orbit already ride --ds-agnes, which stays emerald.)
+   Scoped to the connect banner's CTA rather than the whole `.cbn` container —
+   the same shape as `.klb-cta` below — so the shared knowledge-surface fill it
+   now paints (style-custom.css) resolves --ds-primary to the app sky, pixel-for-
+   pixel identical to the Knowledge Layer hero it matches. */
+[data-theme="paper"] .cbn-cta,
 [data-theme="paper"] .klb-cta,
 [data-theme="paper"] .aic-flow {
     --ds-primary: #10b981;
