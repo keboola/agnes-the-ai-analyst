@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from app.logging_config import setup_logging
+from app.utils import local_md_filename, uploaded_local_md_dir
 from connectors.llm.exceptions import LLMError
 
 from .prompts import (
@@ -58,7 +59,14 @@ CORPORATE_MEMORY_DIR = Path(os.environ.get("CORPORATE_MEMORY_DIR", "/data/corpor
 KNOWLEDGE_FILE = CORPORATE_MEMORY_DIR / "knowledge.json"
 COLLECTION_LOG = CORPORATE_MEMORY_DIR / "collection.log"
 USER_HASHES_FILE = CORPORATE_MEMORY_DIR / "user_hashes.json"
-HOME_BASE = Path("/home")
+# Root of the per-user home directories in the bare-VM layout, where analysts
+# work on the server itself and their CLAUDE.local.md is simply on disk. Env
+# override so a deployment that lays homes out elsewhere isn't forced to patch
+# the module (the sibling constants above have always been overridable; this one
+# was hardcoded, which is part of why the Docker layout had no working input
+# path at all). The laptop layout is served by `uploaded_local_md_dir()` and
+# needs no setting.
+HOME_BASE = Path(os.environ.get("CORPORATE_MEMORY_HOME_BASE", "/home"))
 
 # Configure logging
 setup_logging(__name__)
@@ -162,26 +170,107 @@ def _generate_id(content: str) -> str:
     return f"km_{h}"
 
 
-def _find_claude_local_files() -> list[tuple[str, Path]]:
-    """Find all CLAUDE.local.md files in user home directories.
+def _known_user_emails() -> list[str]:
+    """Emails of all known users, or ``[]`` when the user store is unreachable.
 
-    Returns list of (username, path) tuples.
+    Needed because the uploaded layout stores files under a HASH of the email
+    (see ``app.utils.local_md_filename``), which cannot be reversed — so the
+    only way to enumerate uploaded files is to hash forward from every known
+    user. Best-effort by design: the collector must degrade to the on-disk
+    layout rather than crash when it runs without a reachable app DB.
     """
-    files = []
+    try:
+        from src.repositories import users_repo
 
-    if not HOME_BASE.exists():
-        logger.warning(f"Home base directory {HOME_BASE} does not exist")
-        return files
+        return [u["email"] for u in users_repo().list_all() if u.get("email")]
+    except Exception as e:  # noqa: BLE001 — best-effort, mirrors the rest of this module
+        logger.warning(f"Cannot enumerate users for uploaded CLAUDE.local.md scan: {e}")
+        return []
 
-    for user_dir in HOME_BASE.iterdir():
-        if not user_dir.is_dir():
-            continue
 
-        claude_local = user_dir / "CLAUDE.local.md"
-        if claude_local.exists() and claude_local.is_file():
-            username = user_dir.name
-            files.append((username, claude_local))
-            logger.info(f"Found CLAUDE.local.md for user: {username}")
+def _home_dir_owner_email(dir_name: str) -> str | None:
+    """Resolve a ``<HOME_BASE>/<dir_name>`` owner to their email, if known.
+
+    Same convention as ``services/session_pipeline/runner.resolve_user_identity``:
+    the home-directory name is the email local-part in the deployments that use
+    this layout. Used ONLY to suppress a duplicate uploaded file for a user
+    whose home directory was already picked up — never to rename the emitted
+    username, so hash keys and ``source_user`` values on existing bare-VM
+    instances stay exactly as they are.
+    """
+    try:
+        from src.repositories import users_repo
+
+        row = users_repo().get_by_email_prefix(dir_name)
+        return row["email"] if row else None
+    except Exception:  # noqa: BLE001 — best-effort; absence just means no dedup
+        return None
+
+
+def _find_claude_local_files() -> list[tuple[str, Path]]:
+    """Find every analyst's CLAUDE.local.md across BOTH deployment layouts.
+
+    Returns a list of ``(username, path)`` tuples, where ``username`` is the key
+    for ``user_hashes.json`` and the ``source_user`` recorded on extracted items.
+
+    Two layouts exist, and an instance can have either or both:
+
+    * **bare VM** — analysts work on the server, so the file is simply at
+      ``<HOME_BASE>/<name>/CLAUDE.local.md``. Emitted with ``username = <name>``,
+      unchanged from before this function learned about the second layout.
+    * **laptop + upload** — analysts work locally and ``agnes push`` uploads the
+      file to ``POST /api/upload/local-md``, which stores it under
+      ``${DATA_DIR}/user_local_md/`` (``app.utils.uploaded_local_md_dir``).
+      Emitted with ``username = <email>``, the same canonical identity the
+      session pipeline uses.
+
+    Scanning only ``HOME_BASE`` meant that on any deployment which does not
+    populate ``/home`` — Docker Compose, where analysts run Claude Code on their
+    own laptops — the collector found zero files and returned ``skipped`` on
+    every run indefinitely. The upload arrived and was never read, so corporate
+    memory silently had no ``claude_local_md`` input at all.
+
+    A user present in BOTH layouts is emitted once: the ``HOME_BASE`` copy wins
+    (it is the layout where the analyst is actually working), mirroring the
+    dual-layout precedence in ``app/api/admin_user_sessions._user_session_dirs``.
+    """
+    files: list[tuple[str, Path]] = []
+    home_owner_emails: set[str] = set()
+
+    # --- Layout 1: home directories on the server ---------------------------
+    if HOME_BASE.exists():
+        for user_dir in sorted(HOME_BASE.iterdir()):
+            if not user_dir.is_dir():
+                continue
+
+            claude_local = user_dir / "CLAUDE.local.md"
+            if claude_local.exists() and claude_local.is_file():
+                username = user_dir.name
+                files.append((username, claude_local))
+                logger.info(f"Found CLAUDE.local.md for user: {username}")
+    else:
+        # Expected on Docker deployments; the uploaded layout below is the
+        # input path there, so this is debug-level rather than a per-run
+        # WARNING that operators learned to ignore.
+        logger.debug(f"Home base directory {HOME_BASE} does not exist")
+
+    # --- Layout 2: files uploaded by `agnes push` ---------------------------
+    uploaded_dir = uploaded_local_md_dir()
+    if uploaded_dir.is_dir():
+        if files:
+            # Only pay for the resolution when there is something to dedup
+            # against.
+            home_owner_emails = {email for email in (_home_dir_owner_email(name) for name, _ in files) if email}
+        for email in sorted(_known_user_emails()):
+            if email in home_owner_emails:
+                logger.debug(f"Skipping uploaded CLAUDE.local.md for {email}; home-directory copy wins")
+                continue
+            path = uploaded_dir / local_md_filename(email)
+            if path.is_file():
+                files.append((email, path))
+                logger.info(f"Found uploaded CLAUDE.local.md for user: {email}")
+    else:
+        logger.debug(f"Uploaded CLAUDE.local.md directory {uploaded_dir} does not exist")
 
     return files
 

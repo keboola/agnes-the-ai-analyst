@@ -1,4 +1,6 @@
 """Shared utilities for the FastAPI application."""
+
+import hashlib
 import os
 from pathlib import Path
 
@@ -6,6 +8,34 @@ from pathlib import Path
 def get_data_dir() -> Path:
     """Return the configured data directory path."""
     return Path(os.environ.get("DATA_DIR", "./data"))
+
+
+def uploaded_local_md_dir() -> Path:
+    """``${DATA_DIR}/user_local_md`` — where ``POST /api/upload/local-md``
+    deposits each analyst's ``CLAUDE.local.md``.
+
+    Resolved per call rather than at import so it follows ``DATA_DIR`` for
+    every caller (the corporate-memory collector runs in a different process
+    than the upload endpoint).
+    """
+    return get_data_dir() / "user_local_md"
+
+
+def local_md_filename(user_email: str) -> str:
+    """Stable per-user filename for an uploaded ``CLAUDE.local.md``.
+
+    Hashed rather than raw so no charset surprises from an email reach the
+    filesystem; truncated to 24 hex chars, which is ample against collision
+    for a single tenant's user set.
+
+    Defined here — not inline at the write site — because BOTH the writer
+    (``app/api/upload.py``) and the reader (``services/corporate_memory/
+    collector.py``) must derive the identical name. They previously did not
+    agree on the *directory*, which silently starved corporate memory of its
+    input on every Docker deployment; one shared helper is what keeps the
+    name from drifting the same way.
+    """
+    return hashlib.sha256(user_email.encode()).hexdigest()[:24] + ".md"
 
 
 def resolve_local_parquet(table_id: str, source_type: str | None = None) -> Path | None:

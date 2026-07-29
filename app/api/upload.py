@@ -1,6 +1,5 @@
 """Upload endpoints — sessions, artifacts, CLAUDE.local.md."""
 
-import hashlib
 import logging
 import re
 import shutil
@@ -14,6 +13,8 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.utils import get_data_dir as _get_data_dir
+from app.utils import local_md_filename as _local_md_filename
+from app.utils import uploaded_local_md_dir as _uploaded_local_md_dir
 from src.audit_helpers import client_kind_from_user
 
 from src.repositories import (
@@ -222,12 +223,14 @@ async def upload_local_md(
 ):
     """Upload CLAUDE.local.md content for corporate memory processing."""
     user_email = user["email"]
-    md_dir = _get_data_dir() / "user_local_md"
+    md_dir = _uploaded_local_md_dir()
     md_dir.mkdir(parents=True, exist_ok=True)
 
-    # Hashed filename — stable per user, no charset surprises from email
-    safe_name = hashlib.sha256(user_email.encode()).hexdigest()[:24] + ".md"
-    target = md_dir / safe_name
+    # Hashed filename — stable per user, no charset surprises from email.
+    # Derived via the shared helper so the corporate-memory collector, which
+    # reads these files back in another process, cannot drift from the name
+    # (or the directory) written here.
+    target = md_dir / _local_md_filename(user_email)
     target.write_text(request.content, encoding="utf-8")
     return {
         "status": "ok",
