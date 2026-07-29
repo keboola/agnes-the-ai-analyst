@@ -16,6 +16,7 @@ Implementation differences vs. DuckDB:
     PG-specific FTS upgrade, see the "future improvements" section in
     docs/migrations.md.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -24,6 +25,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+from src.audit_context import auto_duration_ms
+from src.audit_helpers import (
+    AUDIT_SOURCE_CASE_SQL,
+    RESULT_CLASS_CASE_SQL,
+    SCHEDULER_ACTION_SQL,
+)
 
 
 class AuditPgRepository:
@@ -47,6 +55,8 @@ class AuditPgRepository:
         client_kind: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> str:
+        if duration_ms is None:
+            duration_ms = auto_duration_ms()
         entry_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -83,9 +93,11 @@ class AuditPgRepository:
         return entry_id
 
     # -----------------------------------------------------------------
-    # read — filtered query with cursor pagination
+    # shared filter surface — query/facets/kpis build the same WHERE from
+    # the same kwargs (named-param mirror of the DuckDB sibling's
+    # _filters_where) so KPI cards, facets and timeline always agree.
     # -----------------------------------------------------------------
-    def query(
+    def _filters_where(
         self,
         *,
         since: Optional[datetime] = None,
@@ -97,14 +109,14 @@ class AuditPgRepository:
         resource: Optional[str] = None,
         resource_prefix: Optional[str] = None,
         result_pattern: Optional[str] = None,
+        result_class: Optional[str] = None,
         correlation_id: Optional[str] = None,
         q: Optional[str] = None,
-        cursor: Optional[Tuple[datetime, str]] = None,
-        limit: int = 100,
-    ) -> Tuple[List[Dict[str, Any]], Optional[Tuple[datetime, str]]]:
+        source: Optional[str] = None,
+        include_self_reads: bool = True,
+    ) -> Tuple[List[str], Dict[str, Any]]:
         where: List[str] = []
         params: Dict[str, Any] = {}
-
         if since is not None:
             where.append("timestamp >= :since")
             params["since"] = since
@@ -136,25 +148,69 @@ class AuditPgRepository:
         if result_pattern is not None:
             where.append("result LIKE :result_pattern")
             params["result_pattern"] = result_pattern
+        if result_class is not None:
+            where.append(f"{RESULT_CLASS_CASE_SQL} = :result_class")
+            params["result_class"] = result_class
         if correlation_id is not None:
             where.append("correlation_id = :correlation_id")
             params["correlation_id"] = correlation_id
+        if source is not None:
+            where.append(f"{AUDIT_SOURCE_CASE_SQL} = :source_filter")
+            params["source_filter"] = source
+        if not include_self_reads:
+            # Mirror of the DuckDB sibling: the Activity Center hides its
+            # own read-audit noise by default (2026-07-28 consistency spec).
+            where.append("action != 'activity.read'")
         if q:
             # Free-text scan over the JSON params blob. Mirror the DuckDB
             # impl's 7-day cap when caller hasn't passed `since`.
             if since is None:
-                since = datetime.now(timezone.utc) - timedelta(days=7)
                 where.append("timestamp >= :since")
-                params["since"] = since
+                params["since"] = datetime.now(timezone.utc) - timedelta(days=7)
             where.append("CAST(params AS TEXT) LIKE :q")
             params["q"] = f"%{q}%"
+        return where, params
+
+    # -----------------------------------------------------------------
+    # read — filtered query with cursor pagination
+    # -----------------------------------------------------------------
+    def query(
+        self,
+        *,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        user_id: Optional[str] = None,
+        action: Optional[str] = None,
+        action_prefix: Optional[str] = None,
+        action_in: Optional[List[str]] = None,
+        resource: Optional[str] = None,
+        resource_prefix: Optional[str] = None,
+        result_pattern: Optional[str] = None,
+        result_class: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        q: Optional[str] = None,
+        source: Optional[str] = None,
+        include_self_reads: bool = True,
+        cursor: Optional[Tuple[datetime, str]] = None,
+        limit: int = 100,
+    ) -> Tuple[List[Dict[str, Any]], Optional[Tuple[datetime, str]]]:
+        where, params = self._filters_where(
+            since=since, until=until, user_id=user_id, action=action,
+            action_prefix=action_prefix, action_in=action_in,
+            resource=resource, resource_prefix=resource_prefix,
+            result_pattern=result_pattern, result_class=result_class,
+            correlation_id=correlation_id, q=q, source=source,
+            include_self_reads=include_self_reads,
+        )
         if cursor is not None:
             ts, cid = cursor
             where.append("(timestamp, id) < (:cursor_ts, :cursor_id)")
             params["cursor_ts"] = ts
             params["cursor_id"] = cid
 
-        sql = "SELECT * FROM audit_log"
+        # `source` is computed server-side (same rule as the DuckDB sibling)
+        # so every consumer classifies rows identically.
+        sql = f"SELECT *, {AUDIT_SOURCE_CASE_SQL} AS source FROM audit_log"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY timestamp DESC, id DESC LIMIT :limit_plus_one"
@@ -190,10 +246,7 @@ class AuditPgRepository:
             k = f"action_{i}"
             in_keys.append(f":{k}")
             params[k] = a
-        sql = (
-            f"SELECT * FROM audit_log WHERE action IN ({','.join(in_keys)}) "
-            f"ORDER BY timestamp DESC LIMIT :limit"
-        )
+        sql = f"SELECT * FROM audit_log WHERE action IN ({','.join(in_keys)}) ORDER BY timestamp DESC LIMIT :limit"
         with self._engine.connect() as conn:
             result = conn.execute(sa.text(sql), params)
             return [dict(r._mapping) for r in result]
@@ -211,10 +264,7 @@ class AuditPgRepository:
             k = f"resource_{i}"
             in_keys.append(f":{k}")
             params[k] = r
-        sql = (
-            f"SELECT * FROM audit_log WHERE resource IN ({','.join(in_keys)}) "
-            f"ORDER BY timestamp DESC LIMIT :limit"
-        )
+        sql = f"SELECT * FROM audit_log WHERE resource IN ({','.join(in_keys)}) ORDER BY timestamp DESC LIMIT :limit"
         with self._engine.connect() as conn:
             result = conn.execute(sa.text(sql), params)
             return [dict(r._mapping) for r in result]
@@ -270,76 +320,75 @@ class AuditPgRepository:
         self,
         *,
         since: datetime,
-        scheduler_actions: list[str],
         limit: int = 50,
+        **filters: Any,
     ) -> "dict[str, list[dict]]":
+        """Mirror of the DuckDB sibling: filter-aware facet buckets
+        (users/actions/results/result_classes/resources/sources)."""
+        where, params = self._filters_where(since=since, **filters)
+        w = ("WHERE " + " AND ".join(where)) if where else ""
+        out: dict = {}
         with self._engine.connect() as conn:
-            users = conn.execute(
-                sa.text(
-                    "SELECT user_id AS id, COUNT(*) AS n FROM audit_log "
-                    "WHERE timestamp >= :since AND user_id IS NOT NULL "
-                    "GROUP BY user_id ORDER BY n DESC LIMIT :limit"
-                ),
-                {"since": since, "limit": limit},
-            ).fetchall()
-            actions = conn.execute(
-                sa.text(
-                    "SELECT action AS label, COUNT(*) AS n FROM audit_log "
-                    "WHERE timestamp >= :since AND action IS NOT NULL "
-                    "GROUP BY action ORDER BY n DESC LIMIT :limit"
-                ),
-                {"since": since, "limit": limit},
-            ).fetchall()
-            results = conn.execute(
-                sa.text(
-                    "SELECT COALESCE(result, '—') AS label, COUNT(*) AS n "
-                    "FROM audit_log WHERE timestamp >= :since "
-                    "GROUP BY result ORDER BY n DESC LIMIT :limit"
-                ),
-                {"since": since, "limit": limit},
-            ).fetchall()
-            resources = conn.execute(
-                sa.text(
-                    "SELECT resource AS label, COUNT(*) AS n FROM audit_log "
-                    "WHERE timestamp >= :since AND resource IS NOT NULL "
-                    "GROUP BY resource ORDER BY n DESC LIMIT :limit"
-                ),
-                {"since": since, "limit": limit},
-            ).fetchall()
-            source_rows = conn.execute(
-                sa.text(
-                    """
-                    SELECT
-                      CASE
-                        WHEN client_kind IS NOT NULL AND client_kind != '' THEN client_kind
-                        WHEN action IN :sched THEN 'scheduler'
-                        WHEN user_id IS NULL THEN 'system'
-                        ELSE 'other'
-                      END AS src,
-                      COUNT(*) AS n
-                    FROM audit_log WHERE timestamp >= :since
-                    GROUP BY src ORDER BY n DESC LIMIT :limit
-                    """
-                ).bindparams(sa.bindparam("sched", expanding=True)),
-                {"since": since, "limit": limit, "sched": list(scheduler_actions)},
-            ).fetchall()
-        return {
-            "users":     [{"id": r[0], "count": r[1]} for r in users],
-            "actions":   [{"value": r[0], "count": r[1]} for r in actions],
-            "results":   [{"value": r[0], "count": r[1]} for r in results],
+            def _bucket(select: str, extra: str = "", group: str = "1") -> list:
+                clause = w + (f" AND {extra}" if (w and extra) else (f"WHERE {extra}" if extra else ""))
+                return conn.execute(
+                    sa.text(
+                        f"SELECT {select}, COUNT(*) AS n FROM audit_log {clause} "
+                        f"GROUP BY {group} ORDER BY n DESC LIMIT :facet_limit"
+                    ),
+                    {**params, "facet_limit": limit},
+                ).fetchall()
+
+            users = _bucket("user_id AS id", "user_id IS NOT NULL")
+            actions = _bucket("action AS label", "action IS NOT NULL")
+            results = _bucket("COALESCE(result, '—') AS label", group="result")
+            result_classes = _bucket(f"{RESULT_CLASS_CASE_SQL} AS label")
+            resources = _bucket("resource AS label", "resource IS NOT NULL")
+            source_rows = _bucket(f"{AUDIT_SOURCE_CASE_SQL} AS src")
+        out = {
+            "users": [{"id": r[0], "count": r[1]} for r in users],
+            "actions": [{"value": r[0], "count": r[1]} for r in actions],
+            "results": [{"value": r[0], "count": r[1]} for r in results],
+            "result_classes": [{"value": r[0], "count": r[1]} for r in result_classes],
             "resources": [{"value": r[0], "count": r[1]} for r in resources],
-            "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
+            "sources": [{"value": r[0], "count": r[1]} for r in source_rows],
         }
+        return out
 
     def last_scheduler_tick(self) -> "datetime | None":
         """Mirrors ``AuditRepository.last_scheduler_tick``."""
         with self._engine.connect() as conn:
             row = conn.execute(
                 sa.text(
-                    "SELECT MAX(timestamp) FROM audit_log WHERE action LIKE 'run_%' OR action='marketplace.sync_all'"
+                    f"SELECT MAX(timestamp) FROM audit_log WHERE {SCHEDULER_ACTION_SQL}"
                 )
             ).first()
         return row[0] if row else None
+
+    def upload_filenames_since(self, since: datetime) -> "list[str]":
+        """Mirror of ``AuditRepository.upload_filenames_since``."""
+        import json as _json
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT params FROM audit_log "
+                    "WHERE action = 'session.upload' AND timestamp >= :since"
+                ),
+                {"since": since},
+            ).fetchall()
+        out: set[str] = set()
+        for (p,) in rows:
+            d = p if isinstance(p, dict) else None
+            if d is None:
+                try:
+                    d = _json.loads(p) if p else {}
+                except (TypeError, ValueError):
+                    continue
+            fn = (d or {}).get("filename")
+            if fn:
+                out.add(fn)
+        return sorted(out)
 
     def active_users_since(self, since: datetime) -> int:
         """Mirrors ``AuditRepository.active_users_since``."""
@@ -352,35 +401,45 @@ class AuditPgRepository:
             ).first()
         return int(row[0] or 0) if row else 0
 
-    def kpis(self, *, since: datetime) -> "dict[str, Any]":
-        """Headline KPIs over the window: events, active users, errors, p95.
-
-        ``p95`` uses Postgres' exact ``percentile_cont`` (the DuckDB sibling
-        uses ``approx_quantile`` — ``approx_quantile`` does not exist on PG, so
-        results may differ within tolerance). The error-rate ratio is left to
-        the caller.
-        """
+    def kpis(self, *, since: datetime, **filters: Any) -> "dict[str, Any]":
+        """Mirror of the DuckDB sibling — same filter kwargs, same output
+        keys. ``p95`` uses Postgres' exact ``percentile_cont`` (DuckDB uses
+        ``approx_quantile``; results may differ within tolerance).
+        ``active_users`` counts people (source ∉ scheduler/system);
+        ``errors`` counts ``result_class = 'error'``."""
+        where, params = self._filters_where(since=since, **filters)
+        w = ("WHERE " + " AND ".join(where)) if where else ""
         with self._engine.connect() as conn:
             row = conn.execute(
                 sa.text(
-                    """
+                    f"""
                     SELECT
                       COUNT(*) AS events_total,
-                      COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS active_users,
-                      COUNT(*) FILTER (WHERE result IS NOT NULL AND result LIKE 'error%') AS errors,
-                      CAST(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS INTEGER) AS p95
-                    FROM audit_log WHERE timestamp >= :since
+                      COUNT(DISTINCT user_id) FILTER (
+                        WHERE user_id IS NOT NULL
+                          AND {AUDIT_SOURCE_CASE_SQL} NOT IN ('scheduler', 'system')
+                      ) AS active_users,
+                      COUNT(*) FILTER (WHERE {RESULT_CLASS_CASE_SQL} = 'error') AS errors,
+                      CAST(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS INTEGER) AS p95,
+                      COUNT(duration_ms) AS measured,
+                      COUNT(*) AS total
+                    FROM audit_log {w}
                     """
                 ),
-                {"since": since},
-            ).fetchone()
+                params,
+            ).first()
         if row is None:
-            return {"events_total": 0, "active_users": 0, "errors": 0, "p95": None}
+            return {
+                "events_total": 0, "active_users": 0, "errors": 0,
+                "p95": None, "duration_coverage": 0.0,
+            }
+        total = int(row[5] or 0)
         return {
             "events_total": int(row[0] or 0),
             "active_users": int(row[1] or 0),
             "errors": int(row[2] or 0),
             "p95": int(row[3]) if row[3] is not None else None,
+            "duration_coverage": round((int(row[4] or 0) / total), 4) if total else 0.0,
         }
 
 
@@ -393,4 +452,5 @@ def _json_param(v: Optional[dict]) -> Optional[str]:
     if v is None:
         return None
     import json
+
     return json.dumps(v)

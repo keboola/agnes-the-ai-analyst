@@ -339,6 +339,47 @@ def test_shutdown_drain_waits_for_in_flight_handler_and_finalizes(worker_db, mon
     assert row["finished_at"] is not None
 
 
+def test_shutdown_drain_notifies_webhooks_for_agent_response(worker_db, monkeypatch):
+    """A job handed off to the shutdown drain (see
+    ``test_shutdown_drain_waits_for_in_flight_handler_and_finalizes``) still
+    reaches a terminal state via ``_drain_in_flight``, not ``_run_one`` —
+    the webhook notify must fire from THAT path too (`_InFlightJob` carries
+    no ``payload_json``, so ``_drain_in_flight`` re-fetches the row before
+    delegating; see ``_notify_in_flight_agent_response``)."""
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    monkeypatch.setenv("AGNES_WORKER_DRAIN_TIMEOUT_S", "5")
+    calls = _patch_webhook_notify(monkeypatch)
+
+    started = threading.Event()
+
+    def slow_handler(payload: dict) -> dict:
+        started.set()
+        time.sleep(0.4)
+        return {"answer": "hi"}
+
+    register_kind(JobKind(name="agent_response", handler=slow_handler, lane=LIGHT_LANE, lease_seconds=30))
+    repo = jobs_repo()
+    job = repo.enqueue("agent_response", {"agent_id": "agent-1"})
+
+    async def _drive() -> None:
+        task = asyncio.create_task(worker_loop(worker_id="test-worker", poll_interval_s=0.05))
+        deadline = time.monotonic() + 2.0
+        while not started.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "handler never started"
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_drive())
+
+    assert repo.get(job["id"])["status"] == "done"
+    assert calls == [("agent-1", job["id"], "completed")]
+
+
 def test_shutdown_drain_times_out_and_abandons_slow_handler(worker_db, monkeypatch):
     """If the in-flight handler doesn't finish within
     ``AGNES_WORKER_DRAIN_TIMEOUT_S``, the drain gives up (logs, doesn't
@@ -603,6 +644,199 @@ def test_worker_loop_records_duration_and_failed_outcome(worker_db):
     after_failures = _metric_value("agnes_job_failures_total", kind="metrics_duration_fail", reason="RuntimeError")
     assert after_duration == before_duration + 1.0
     assert after_failures == before_failures + 1.0
+
+
+# ---------------------------------------------------------------------------
+# agent_response webhook notification (V1b Task 6)
+# ---------------------------------------------------------------------------
+
+
+def _patch_webhook_notify(monkeypatch):
+    """Records `(agent_id, job_id, status)` calls instead of touching the
+    real `app.chat.webhook_delivery` module (that module's own behavior —
+    SSRF guard, HMAC signing, fan-out — is covered by
+    `tests/test_webhook_delivery.py` / `tests/test_agent_webhooks_api.py`;
+    these tests cover only whether `app/worker/runtime.py` calls it at the
+    right time, for the right kind, with the right status)."""
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_enqueue(*, agent_id, job_id, status):
+        calls.append((agent_id, job_id, status))
+
+    import app.chat.webhook_delivery as webhook_delivery
+
+    monkeypatch.setattr(webhook_delivery, "enqueue_job_event_webhooks", fake_enqueue)
+    return calls
+
+
+def test_agent_response_completion_notifies_webhooks(worker_db, monkeypatch):
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    calls = _patch_webhook_notify(monkeypatch)
+    register_kind(JobKind(name="agent_response", handler=lambda payload: {"answer": "hi"}, lane=LIGHT_LANE))
+    job = jobs_repo().enqueue("agent_response", {"agent_id": "agent-1"})
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    assert calls == [("agent-1", job["id"], "completed")]
+
+
+def test_agent_response_terminal_failure_notifies_webhooks(worker_db, monkeypatch):
+    """`agent_response` never retries (`retry_in_seconds=None` in the real
+    registration, mirrored here) — `.fail()` finalizes straight to
+    `'failed'`, so the notify must fire."""
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    def boom(payload: dict) -> None:
+        raise RuntimeError("turn failed")
+
+    calls = _patch_webhook_notify(monkeypatch)
+    register_kind(JobKind(name="agent_response", handler=boom, lane=LIGHT_LANE, retry_in_seconds=None))
+    job = jobs_repo().enqueue("agent_response", {"agent_id": "agent-1"}, max_attempts=5)
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    assert jobs_repo().get(job["id"])["status"] == "failed"
+    assert calls == [("agent-1", job["id"], "failed")]
+
+
+def test_agent_response_requeued_failure_does_not_notify_yet(worker_db, monkeypatch):
+    """A failure with `retry_in_seconds` set requeues instead of
+    finalizing — must NOT fire a premature `job.failed` webhook for a job
+    that may still succeed on a later attempt."""
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    def boom(payload: dict) -> None:
+        raise RuntimeError("transient")
+
+    calls = _patch_webhook_notify(monkeypatch)
+    register_kind(JobKind(name="agent_response", handler=boom, lane=LIGHT_LANE, retry_in_seconds=300))
+    jobs_repo().enqueue("agent_response", {"agent_id": "agent-1"}, max_attempts=5)
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    assert calls == []
+
+
+def test_other_job_kinds_do_not_notify_webhooks(worker_db, monkeypatch):
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    calls = _patch_webhook_notify(monkeypatch)
+    register_kind(JobKind(name="unrelated_kind", handler=lambda payload: None, lane=LIGHT_LANE))
+    jobs_repo().enqueue("unrelated_kind", {"agent_id": "agent-1"})
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    assert calls == []
+
+
+def test_agent_response_missing_agent_id_does_not_notify(worker_db, monkeypatch):
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    calls = _patch_webhook_notify(monkeypatch)
+    register_kind(JobKind(name="agent_response", handler=lambda payload: {"answer": "hi"}, lane=LIGHT_LANE))
+    jobs_repo().enqueue("agent_response", {})  # no agent_id in payload
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    assert calls == []
+
+
+def test_stale_lease_complete_does_not_notify_webhooks(worker_db, monkeypatch):
+    """MEDIUM 1: `complete()`/`fail()` are documented raise-free NO-OPS
+    once the lease token no longer matches (the job was reclaimed by
+    another worker/slot while this handler was still running) — the
+    webhook notify must be gated on the finalize call actually having
+    mutated the row, not fired unconditionally just because the handler
+    itself ran to completion under a now-stale claim."""
+    import app.worker.runtime as runtime_mod
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    real_repo = jobs_repo()
+    calls = _patch_webhook_notify(monkeypatch)
+
+    class StaleOnCompleteRepo:
+        def __getattr__(self, name):
+            return getattr(real_repo, name)
+
+        def complete(self, job_id, worker_id, lease_token, result=None):
+            # Simulate a reclaim landing between the handler finishing and
+            # this finalize call: another (fake) claimant now owns the
+            # row under a different lease_token, so this call's token is
+            # stale — exactly the no-op path `complete()`'s docstring
+            # describes.
+            real_repo.conn.execute(
+                "UPDATE jobs SET lease_token = 'someone-elses-token' WHERE id = ?",
+                [job_id],
+            )
+            return real_repo.complete(job_id, worker_id, lease_token, result)
+
+    monkeypatch.setattr(runtime_mod, "_jobs_repo", lambda: StaleOnCompleteRepo())
+
+    register_kind(JobKind(name="agent_response", handler=lambda payload: {"answer": "hi"}, lane=LIGHT_LANE))
+    job = real_repo.enqueue("agent_response", {"agent_id": "agent-1"})
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    row = real_repo.get(job["id"])
+    assert row["status"] == "running", "stale complete() call must not have flipped the row to done"
+    assert calls == [], "no webhook should fire for a complete() call that was a stale no-op"
+
+
+def test_reap_exhausted_notifies_failed_webhook(worker_db, monkeypatch):
+    """MEDIUM 2a: a job whose worker crashed on its LAST attempt is
+    finalized to 'failed' by the reap sweep (`reap_exhausted()`), not by a
+    live `fail()` call — the terminal `job.failed` webhook must still
+    fire from that path, or a receiver waits forever after a worker
+    crash."""
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    calls = _patch_webhook_notify(monkeypatch)
+    repo = jobs_repo()
+    job = repo.enqueue("agent_response", {"agent_id": "agent-1"}, max_attempts=1)
+    claimed = repo.claim_next(kinds=["agent_response"], worker_id="dead-worker", lease_seconds=-5)
+    assert claimed is not None
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.3))
+
+    row = repo.get(job["id"])
+    assert row["status"] == "failed"
+    assert calls == [("agent-1", job["id"], "failed")]
+
+
+def test_agent_response_fail_notifies_despite_retry_config_when_attempts_exhausted(worker_db, monkeypatch):
+    """MEDIUM 2b: `fail()` finalizes to 'failed' whenever attempts are
+    exhausted, REGARDLESS of the kind's static `retry_in_seconds` config —
+    gating the notify on `kind.retry_in_seconds is None` (the old code)
+    would wrongly skip it here, since this kind IS configured to retry."""
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+    from src.repositories import jobs_repo
+
+    def boom(payload: dict) -> None:
+        raise RuntimeError("boom")
+
+    calls = _patch_webhook_notify(monkeypatch)
+    register_kind(JobKind(name="agent_response", handler=boom, lane=LIGHT_LANE, retry_in_seconds=300))
+    job = jobs_repo().enqueue("agent_response", {"agent_id": "agent-1"}, max_attempts=1)
+
+    asyncio.run(_run_and_cancel(worker_loop(worker_id="test-worker", poll_interval_s=0.05), 0.4))
+
+    assert jobs_repo().get(job["id"])["status"] == "failed"
+    assert calls == [("agent-1", job["id"], "failed")]
 
 
 def test_worker_loop_lane_active_reflects_busy_heavy_lane(worker_db):

@@ -54,6 +54,7 @@ class MetricRepository(MetricYamlMixin):
         sql_variants: Optional[Dict[str, Any]] = None,
         validation: Optional[Dict[str, Any]] = None,
         source: str = "manual",
+        source_ref: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc)
@@ -61,9 +62,9 @@ class MetricRepository(MetricYamlMixin):
             """INSERT INTO metric_definitions (
                 id, name, display_name, category, description, type, unit, grain,
                 table_name, tables, expression, time_column, dimensions, filters,
-                synonyms, notes, sql, sql_variants, validation, source,
+                synonyms, notes, sql, sql_variants, validation, source, source_ref,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 display_name = excluded.display_name,
@@ -84,21 +85,38 @@ class MetricRepository(MetricYamlMixin):
                 sql_variants = excluded.sql_variants,
                 validation = excluded.validation,
                 source = excluded.source,
+                source_ref = excluded.source_ref,
                 updated_at = excluded.updated_at""",
             [
-                id, name, display_name, category, description, type, unit, grain,
-                table_name, tables, expression, time_column, dimensions, filters,
-                synonyms, notes, sql,
-                json_dumps(sql_variants), json_dumps(validation), source,
-                now, now,
+                id,
+                name,
+                display_name,
+                category,
+                description,
+                type,
+                unit,
+                grain,
+                table_name,
+                tables,
+                expression,
+                time_column,
+                dimensions,
+                filters,
+                synonyms,
+                notes,
+                sql,
+                json_dumps(sql_variants),
+                json_dumps(validation),
+                source,
+                source_ref,
+                now,
+                now,
             ],
         )
         return self.get(id)
 
     def get(self, metric_id: str) -> Optional[Dict[str, Any]]:
-        result = self.conn.execute(
-            "SELECT * FROM metric_definitions WHERE id = ?", [metric_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM metric_definitions WHERE id = ?", [metric_id]).fetchone()
         return self._row_to_dict(result)
 
     def list(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -108,9 +126,7 @@ class MetricRepository(MetricYamlMixin):
                 [category],
             ).fetchall()
         else:
-            rows = self.conn.execute(
-                "SELECT * FROM metric_definitions ORDER BY name"
-            ).fetchall()
+            rows = self.conn.execute("SELECT * FROM metric_definitions ORDER BY name").fetchall()
         return self._rows_to_dicts(rows)
 
     def update(self, metric_id: str, **kwargs) -> Optional[Dict[str, Any]]:
@@ -120,10 +136,26 @@ class MetricRepository(MetricYamlMixin):
             return None
 
         allowed = {
-            "name", "display_name", "category", "description", "type", "unit",
-            "grain", "table_name", "tables", "expression", "time_column",
-            "dimensions", "filters", "synonyms", "notes", "sql",
-            "sql_variants", "validation", "source",
+            "name",
+            "display_name",
+            "category",
+            "description",
+            "type",
+            "unit",
+            "grain",
+            "table_name",
+            "tables",
+            "expression",
+            "time_column",
+            "dimensions",
+            "filters",
+            "synonyms",
+            "notes",
+            "sql",
+            "sql_variants",
+            "validation",
+            "source",
+            "source_ref",
         }
         # JSON fields that need serialization
         json_fields = {"sql_variants", "validation"}
@@ -142,9 +174,7 @@ class MetricRepository(MetricYamlMixin):
         updates["updated_at"] = datetime.now(timezone.utc)
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [metric_id]
-        self.conn.execute(
-            f"UPDATE metric_definitions SET {set_clause} WHERE id = ?", values
-        )
+        self.conn.execute(f"UPDATE metric_definitions SET {set_clause} WHERE id = ?", values)
         return self.get(metric_id)
 
     def delete(self, metric_id: str) -> bool:
@@ -160,6 +190,12 @@ class MetricRepository(MetricYamlMixin):
             [table_name, table_name],
         ).fetchall()
         return self._rows_to_dicts(rows)
+
+    def find_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM metric_definitions WHERE name = ? ORDER BY id LIMIT 1", [name]
+        ).fetchone()
+        return self._row_to_dict(row)
 
     def find_by_synonym(self, term: str) -> List[Dict[str, Any]]:
         rows = self.conn.execute(

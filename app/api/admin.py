@@ -33,6 +33,7 @@ from src.repositories import (
     usage_repo,
     user_store_installs_repo,
 )
+from src.audit_helpers import client_kind_from_user
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
 
@@ -1207,6 +1208,80 @@ def _ensure_bq_optional_fields(sections: Dict[str, Any]) -> None:
         bq.setdefault(key, default)
 
 
+_UNSET = object()
+
+
+def _feature_flags_inventory() -> List[Dict[str, Any]]:
+    """Read-only snapshot of every registered feature flag (#1022).
+
+    ``source`` tells the operator where the effective value came from:
+    ``"env"`` when the flag's env var is present in the process environment
+    (wins regardless of instance.yaml), ``"config"`` when instance.yaml (the
+    static base or the admin server-config overlay, deep-merged — see
+    ``load_instance_config``) sets the key explicitly, or ``"default"`` when
+    neither is set and the flag's hardcoded default applies. The
+    ``config``-vs-``default`` distinction is resolved with a sentinel probe
+    through ``get_value`` rather than re-deciding truthiness here, so this
+    stays a thin read of ``feature_enabled``'s own resolution.
+
+    ``chat`` is the one flag whose runtime does NOT read the merged config:
+    ``app/main.py`` loads it via ``load_chat_config(DATA_DIR/state/
+    instance.yaml)`` — the writable overlay file alone, never the static
+    ``config/instance.yaml`` base. To keep this panel honest (an operator
+    setting ``chat.enabled`` only in the static base would otherwise see
+    "on" here while the running app has chat off), the chat row resolves
+    from the same overlay-only source the runtime uses.
+    """
+    from app.instance_config import FEATURE_FLAGS, feature_enabled, get_value
+
+    out = []
+    for flag in FEATURE_FLAGS:
+        if flag.name == "chat":
+            effective, source = _chat_flag_runtime_view(flag)
+        else:
+            effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
+            if os.environ.get(flag.env_var) is not None:
+                source = "env"
+            else:
+                probe = get_value(*flag.config_keys, default=_UNSET)
+                source = "default" if probe is _UNSET else "config"
+        out.append(
+            {
+                "name": flag.name,
+                "effective": effective,
+                "source": source,
+                "default": flag.default,
+                "env_var": flag.env_var,
+                "description": flag.description,
+            }
+        )
+    return out
+
+
+def _chat_flag_runtime_view(flag) -> tuple:
+    """(effective, source) for the ``chat`` flag, resolved from the same
+    overlay-only yaml source the runtime uses (see ``_feature_flags_inventory``
+    docstring). ``load_chat_config`` already applies the ``AGNES_CHAT_ENABLED``
+    env override, so ``effective`` matches what a restart would produce; the
+    source label probes the overlay file for an explicit ``chat.enabled`` key.
+    """
+    import yaml
+
+    from app.chat.config import load_chat_config
+    from app.secrets import _state_dir
+
+    overlay_path = _state_dir() / "instance.yaml"
+    effective = load_chat_config(overlay_path).enabled
+    if os.environ.get(flag.env_var) is not None:
+        return effective, "env"
+    try:
+        raw = yaml.safe_load(overlay_path.read_text()) or {}
+        has_key = "enabled" in ((raw.get("chat") or {}) if isinstance(raw, dict) else {})
+    except Exception:
+        has_key = False
+    return effective, ("config" if has_key else "default")
+
+
 @router.get("/server-config")
 async def get_server_config(
     user: dict = Depends(require_admin),
@@ -1239,6 +1314,11 @@ async def get_server_config(
         # mechanism is wired end-to-end and adding entries is purely a
         # data-edit in `_KNOWN_FIELDS` above.
         "known_fields": _KNOWN_FIELDS,
+        # Read-only feature-flag inventory (#1022 canonicalization) — every
+        # flag registered in app.instance_config.FEATURE_FLAGS, its effective
+        # value, and where it resolved from. Toggling still happens through
+        # the per-section editors above (or an env var); this is display-only.
+        "feature_flags": _feature_flags_inventory(),
     }
 
 
@@ -4163,6 +4243,7 @@ def run_session_collector(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_session_collector",
         resource="job:session-collector",
         params=audit_params,
@@ -4288,6 +4369,7 @@ def run_session_processor(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action=f"run_session_processor:{processor}",
         resource=f"job:session-processor:{processor}",
         params=audit_params,
@@ -4342,6 +4424,7 @@ def run_corporate_memory(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_corporate_memory",
         resource="job:corporate-memory",
         params=audit_params,
@@ -4390,6 +4473,7 @@ def run_knowledge_packaging(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_knowledge_packaging",
         resource="job:knowledge-packaging",
         params=audit_params,
@@ -4436,6 +4520,7 @@ def run_knowledge_digests(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_knowledge_digests",
         resource="job:knowledge-digests",
         params=audit_params,
@@ -4509,6 +4594,7 @@ def run_knowledge_migration(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_knowledge_migration",
         resource="job:knowledge-migration",
         params={"knowledge_imported": count},
@@ -4559,6 +4645,7 @@ def run_jira_sla_poll(
         # operator sees the no-op in audit_log without alert noise.
         audit_repo().log(
             user_id=user.get("id"),
+            client_kind=client_kind_from_user(user),
             action="run_jira_sla_poll",
             resource="job:jira-sla-poll",
             params={"status": "skipped", "reason": str(e)[:200]},
@@ -4586,6 +4673,7 @@ def run_jira_sla_poll(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_jira_sla_poll",
         resource="job:jira-sla-poll",
         params=audit_params,
@@ -4624,6 +4712,7 @@ def run_jira_consistency_check(
     except (ValueError, KeyError) as e:
         audit_repo().log(
             user_id=user.get("id"),
+            client_kind=client_kind_from_user(user),
             action="run_jira_consistency_check",
             resource="job:jira-consistency-check",
             params={"status": "skipped", "reason": str(e)[:200]},
@@ -4658,6 +4747,7 @@ def run_jira_consistency_check(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_jira_consistency_check",
         resource="job:jira-consistency-check",
         params=audit_params,
@@ -4869,7 +4959,7 @@ async def admin_override_store_submission(
             "prior_inline": sub.get("inline_checks"),
             "promoted_to_version_no": promoted_to,
         },
-        result="ok",
+        result="success",
     )
     return {"ok": True, "submission_id": submission_id, "entity_id": entity_id}
 
@@ -5254,6 +5344,7 @@ async def run_blocked_purge(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_blocked_purge",
         resource="job:store-blocked-purge",
         params={"ttl_days": ttl, "purged": result.get("purged", 0), "skipped": result.get("skipped", False)},
@@ -5287,6 +5378,7 @@ async def run_reap_stuck_reviews(
 
     audit_repo().log(
         user_id=user.get("id"),
+        client_kind=client_kind_from_user(user),
         action="run_reap_stuck_reviews",
         resource="job:store-reap-stuck-reviews",
         params={"grace_seconds": grace, "reaped": result.get("reaped", 0), "skipped": result.get("skipped", False)},

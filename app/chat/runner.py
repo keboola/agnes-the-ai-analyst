@@ -71,6 +71,16 @@ _WHEEL_WAIT_SECONDS = 60
 # incomplete workspace beats no agent). Module-level so tests can zero it.
 _WORKSPACE_WAIT_SECONDS = 180
 
+# Restored-conversation transcript uploaded by the manager when this runner
+# is a FRESH sandbox for a chat that already has history (crash respawn,
+# post-restart spawn, cross-gateway takeover). Appended to the agent's
+# system prompt at boot so the conversation stays coherent — including the
+# assistant's own earlier answers. Mirrors
+# app/chat/e2b_workspace_sync.SANDBOX_CONTEXT_RESTORE (this file runs
+# standalone inside the sandbox, so the path is duplicated by design, like
+# _SANDBOX_WHEEL_DIR above). Module-level so tests can point it elsewhere.
+_CONTEXT_RESTORE_PATH = "/tmp/agnes-context.md"
+
 
 def _emit(frame: dict) -> None:
     sys.stdout.write(json.dumps(frame) + "\n")
@@ -292,14 +302,14 @@ async def _dispatch_frame(frame: dict, queue: "asyncio.Queue[dict]") -> None:
     """Route one parsed inbound stdin frame.
 
     ``ticket_push`` frames (``{"type": "ticket_push", "main": ..., "mcp":
-    ...}``) update the module-level relay's in-memory tickets and are never
-    enqueued for the agent loop — the agent must never see a ticket. Every
-    other frame type (``user_msg``, ``cancel``, ``_eof``) is queued
-    unchanged, exactly as it always has been.
+    ..., "data_apps": ...}``) update the module-level relay's in-memory
+    tickets and are never enqueued for the agent loop — the agent must never
+    see a ticket. Every other frame type (``user_msg``, ``cancel``, ``_eof``)
+    is queued unchanged, exactly as it always has been.
     """
     if frame.get("type") == "ticket_push":
         if _relay is not None:
-            _relay.set_tickets(frame.get("main", ""), frame.get("mcp", ""))
+            _relay.set_tickets(frame.get("main", ""), frame.get("mcp", ""), frame.get("data_apps", ""))
         return
     await queue.put(frame)
 
@@ -502,6 +512,24 @@ async def _real_agent_loop(
     )
     if partial_streaming:
         options_kwargs["include_partial_messages"] = True
+
+    # Restored-conversation transcript (fresh sandbox for a chat with
+    # history): appended to the CLI's default system prompt via the
+    # ``claude_code`` preset + ``append`` shape (the SDK maps it to
+    # ``--append-system-prompt``, keeping the stock preset intact). Read
+    # best-effort — an unreadable file degrades to a context-free session.
+    try:
+        _ctx_path = Path(_CONTEXT_RESTORE_PATH)
+        restore_ctx = _ctx_path.read_text(encoding="utf-8", errors="replace").strip() if _ctx_path.exists() else ""
+    except OSError as exc:
+        print(f"context restore read failed: {exc}", file=sys.stderr, flush=True)
+        restore_ctx = ""
+    if restore_ctx:
+        options_kwargs["system_prompt"] = {
+            "type": "preset",
+            "preset": "claude_code",
+            "append": restore_ctx,
+        }
 
     async def _interrupt(client) -> None:
         # interrupt() is a coroutine — an un-awaited call never reaches the

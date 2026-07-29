@@ -66,6 +66,20 @@ from src.marketplace_asset_validation import (
 
 logger = logging.getLogger(__name__)
 
+# Security audit F6: the plugin ``name`` comes from a curated marketplace's
+# ``.claude-plugin/marketplace.json`` — curator/supply-chain controlled, treated
+# as adversarial. It flows into the on-disk relpath, so ``../`` (or a name that
+# is literally ``..``) would escape the per-slug cache dir when bytes are
+# written. Mirror the strict serve-time rule in ``app/api/marketplace.py``
+# (``_SAFE_SEGMENT_RE`` + explicit ``..`` reject) BEFORE building any path.
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _is_safe_plugin_name(plugin_name: str) -> bool:
+    """True iff ``plugin_name`` is a single safe path segment (no traversal)."""
+    return isinstance(plugin_name, str) and plugin_name not in ("..", ".") and bool(_SAFE_SEGMENT_RE.match(plugin_name))
+
+
 # Hardcoded operational caps. The plan deferred making these configurable —
 # the comment in `instance.yaml` would be one line if/when an operator hits
 # a real limit (today nothing in our org has cover images > 10 MB).
@@ -81,10 +95,7 @@ value. Operators can still cap a runaway curator by trimming
 MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_CONCURRENT_FETCHES = 4
 
-USER_AGENT = (
-    "Agnes-Marketplace-Mirror/1.0 "
-    "(+https://github.com/keboola/agnes-the-ai-analyst; agnes-mirror)"
-)
+USER_AGENT = "Agnes-Marketplace-Mirror/1.0 (+https://github.com/keboola/agnes-the-ai-analyst; agnes-mirror)"
 """HTTP User-Agent for outgoing mirror fetches.
 
 Wikipedia / Wikimedia commons strictly enforces a User-Agent policy and
@@ -100,16 +111,17 @@ MANIFEST_FILENAME = "manifest.json"
 @dataclass
 class MirrorEntry:
     """One row in ``manifest.json`` — keyed by external URL."""
+
     url: str
-    kind: str              # "cover" | "doc"
+    kind: str  # "cover" | "doc"
     plugin_name: str
-    local: str             # relative path inside the marketplace cache dir
+    local: str  # relative path inside the marketplace cache dir
     etag: str = ""
     last_modified: str = ""
     sha256: str = ""
-    fetched_at: str = ""   # ISO timestamp of last successful body write
+    fetched_at: str = ""  # ISO timestamp of last successful body write
     last_checked_at: str = ""  # ISO timestamp of last fetch attempt
-    status: str = "unknown"   # "ok" | "failed_recent" | "failed_first" | "rejected"
+    status: str = "unknown"  # "ok" | "failed_recent" | "failed_first" | "rejected"
     error: str = ""
 
     def to_json(self) -> dict:
@@ -135,6 +147,7 @@ class MirrorEntry:
 @dataclass
 class MirrorReport:
     """Per-sync summary returned to the caller."""
+
     requested: int = 0
     fetched: int = 0
     not_modified: int = 0
@@ -389,7 +402,7 @@ def _write_manifest(
 
 @dataclass
 class FetchOutcome:
-    status: str            # "ok" | "not_modified" | "failed" | "rejected"
+    status: str  # "ok" | "not_modified" | "failed" | "rejected"
     body: bytes = b""
     content_type: str = ""
     etag: str = ""
@@ -509,12 +522,47 @@ def _local_relpath(plugin_name: str, kind: str, fname: str) -> str:
 
 
 def _write_body(cache_dir: Path, relpath: str, body: bytes) -> None:
-    """Write ``body`` to ``cache_dir/relpath`` atomically (tmp + rename)."""
+    """Write ``body`` to ``cache_dir/relpath`` atomically (tmp + rename).
+
+    Security audit F6: defense-in-depth backstop. Even though ``sync_assets``
+    already rejects traversal-bearing plugin names, re-assert here that the
+    resolved target stays under ``cache_dir`` (mirrors ``_safe_join`` in
+    ``app/api/marketplace.py``) so no future caller can smuggle a ``..`` into
+    ``relpath`` and write outside the cache root.
+
+    Raises ``OSError`` (not ``ValueError``) on a containment violation so it
+    satisfies ``sync_assets``' documented contract — the write call site catches
+    ``OSError`` and skips just the offending asset (``report.failed += 1``)
+    rather than aborting the whole sync. A refused write IS a failed write.
+    """
     full = cache_dir / relpath
+    cache_root = cache_dir.resolve()
+    try:
+        full.parent.resolve().relative_to(cache_root)
+    except ValueError:
+        raise OSError(f"refusing to write outside cache root: {relpath!r}")
     full.parent.mkdir(parents=True, exist_ok=True)
     tmp = full.with_suffix(full.suffix + ".tmp")
     tmp.write_bytes(body)
     tmp.replace(full)
+
+
+def _contained_cache_path(cache_dir: Path, relpath: str) -> Optional[Path]:
+    """Resolve ``cache_dir/relpath`` only if it stays under ``cache_dir``.
+
+    Security audit F6 (read side): manifest ``local`` values are read straight
+    off disk, and a manifest written by pre-fix vulnerable code could carry a
+    ``../`` in ``local``. Guard every unlink of a manifest-supplied path the
+    same way :func:`_write_body` guards writes, so cleanup can never delete a
+    file outside the cache root. Returns None (and logs) on an escaping path.
+    """
+    candidate = cache_dir / relpath
+    try:
+        candidate.resolve().relative_to(cache_dir.resolve())
+    except ValueError:
+        logger.warning("mirror refusing to unlink outside cache root: %r", relpath)
+        return None
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +589,24 @@ def sync_assets(
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest = _load_manifest(cache_dir)
+
+    # Security audit F6: drop any request whose curator-controlled plugin name
+    # is not a single safe path segment BEFORE it is used to build an on-disk
+    # relpath. A name like ``../../../../srv/attacker`` would otherwise escape
+    # the per-slug cache root when the fetched bytes are written.
+    safe_requests: List[Tuple[str, str, str]] = []
+    for plugin_name, kind, url in requests:
+        if _is_safe_plugin_name(plugin_name):
+            safe_requests.append((plugin_name, kind, url))
+        else:
+            logger.warning(
+                "mirror skipping unsafe plugin name=%r (kind=%s url=%s) — refusing to build cache path",
+                plugin_name,
+                kind,
+                url,
+            )
+    requests = safe_requests
+
     report = MirrorReport(requested=len(requests))
     requested_keys = {(plugin_name, url) for plugin_name, _, url in requests}
 
@@ -562,9 +628,7 @@ def sync_assets(
         return url, _fetch_url(url, prior=prior, expect_kind=kind)
 
     outcome_by_url: Dict[str, FetchOutcome] = {}
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=MAX_CONCURRENT_FETCHES
-    ) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FETCHES) as pool:
         for url, outcome in pool.map(_do_one, list(fetch_inputs.items())):
             outcome_by_url[url] = outcome
 
@@ -591,7 +655,10 @@ def sync_assets(
             report.rejected += 1
             logger.warning(
                 "mirror rejected plugin=%s url=%s kind=%s reason=%s",
-                plugin_name, url, kind, outcome.error,
+                plugin_name,
+                url,
+                kind,
+                outcome.error,
             )
             continue
         if outcome.status == "failed":
@@ -604,7 +671,11 @@ def sync_assets(
             report.failed += 1
             logger.warning(
                 "mirror fetch failed plugin=%s url=%s kind=%s reason=%s (keep_prior=%s)",
-                plugin_name, url, kind, outcome.error, bool(prior and prior.local),
+                plugin_name,
+                url,
+                kind,
+                outcome.error,
+                bool(prior and prior.local),
             )
             continue
         # outcome.status == "ok" — body present
@@ -651,7 +722,9 @@ def sync_assets(
             report.rejected += 1
             logger.warning(
                 "mirror body rejected plugin=%s url=%s reason=%s",
-                plugin_name, url, validation.reason,
+                plugin_name,
+                url,
+                validation.reason,
             )
             continue
         new_sha = hashlib.sha256(outcome.body).hexdigest()
@@ -694,16 +767,20 @@ def sync_assets(
                 # references it, and serving a stale-but-existing file
                 # beats serving a 404.
                 logger.warning(
-                    "mirror manifest persist failed mid-batch url=%s: %s", url, e,
+                    "mirror manifest persist failed mid-batch url=%s: %s",
+                    url,
+                    e,
                 )
                 report.failed += 1
                 continue
             # If the previous local file lived at a different path, drop it.
             if prior and prior.local and prior.local != relpath:
-                try:
-                    (cache_dir / prior.local).unlink(missing_ok=True)
-                except OSError:
-                    pass
+                old = _contained_cache_path(cache_dir, prior.local)
+                if old is not None:
+                    try:
+                        old.unlink(missing_ok=True)
+                    except OSError:
+                        pass
         else:
             prior.etag = outcome.etag or prior.etag
             prior.last_modified = outcome.last_modified or prior.last_modified
@@ -733,8 +810,11 @@ def sync_assets(
     _write_manifest(cache_dir, manifest)
 
     for relpath in removed_paths:
+        target = _contained_cache_path(cache_dir, relpath)
+        if target is None:
+            continue
         try:
-            (cache_dir / relpath).unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
         except OSError:
             pass
 

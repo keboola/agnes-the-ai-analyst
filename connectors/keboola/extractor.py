@@ -66,6 +66,161 @@ def _open_consolidation_conn(db_path: Optional[str] = None):
     return conn
 
 
+def _duckdb_type_for(pa_type) -> Optional[str]:
+    """Map a pyarrow target type to the DuckDB type name used in the
+    streaming retype cast, or None when no cast is needed/possible
+    (string targets keep Storage API's native VARCHAR; unmapped types
+    keep the native column untouched)."""
+    import pyarrow as pa
+
+    if pa.types.is_string(pa_type) or pa.types.is_large_string(pa_type):
+        return None
+    if pa.types.is_int8(pa_type):
+        return "TINYINT"
+    if pa.types.is_int16(pa_type):
+        return "SMALLINT"
+    if pa.types.is_int32(pa_type):
+        return "INTEGER"
+    if pa.types.is_integer(pa_type):
+        return "BIGINT"
+    if pa.types.is_float32(pa_type):
+        return "FLOAT"
+    if pa.types.is_floating(pa_type):
+        return "DOUBLE"
+    if pa.types.is_boolean(pa_type):
+        return "BOOLEAN"
+    if pa.types.is_date(pa_type):
+        return "DATE"
+    if pa.types.is_timestamp(pa_type):
+        return "TIMESTAMPTZ" if pa_type.tz else "TIMESTAMP"
+    return None
+
+
+def _warn_on_coerced_nulls(src_parquet: Path, typed_parquet: str, cast_columns) -> None:
+    """Log a warning per retyped column whose NULL count grew — those are
+    values TRY_CAST coerced to NULL (mirrors the old pandas-fallback
+    ``errors='coerce'`` warnings). Reads only parquet footers, never data;
+    best-effort — footer stats may be absent, and logging must never fail
+    the retype."""
+    try:
+        import pyarrow.parquet as pq
+
+        def null_counts(path: str) -> Dict[str, Optional[int]]:
+            md = pq.read_metadata(path)
+            counts: Dict[str, Optional[int]] = {}
+            for rg in range(md.num_row_groups):
+                group = md.row_group(rg)
+                for ci in range(group.num_columns):
+                    col = group.column(ci)
+                    stats = col.statistics
+                    name = col.path_in_schema
+                    if stats is None or not stats.has_null_count or counts.get(name, 0) is None:
+                        counts[name] = None
+                    else:
+                        counts[name] = counts.get(name, 0) + stats.null_count
+            return counts
+
+        before = null_counts(str(src_parquet))
+        after = null_counts(typed_parquet)
+        for name in cast_columns:
+            if before.get(name) is None or after.get(name) is None:
+                continue
+            coerced = after[name] - before[name]
+            if coerced > 0:
+                logger.warning(
+                    "Column %r: %d value(s) not castable to %s → NULL in typed parquet",
+                    name,
+                    coerced,
+                    cast_columns[name],
+                )
+    except Exception:  # pragma: no cover - stats logging is best-effort
+        logger.debug("Coerced-NULL stats logging skipped", exc_info=True)
+
+
+def _retype_parquet_streaming(tmp_parquet: Path, target_schema) -> None:
+    """Retype ``tmp_parquet`` in place to ``target_schema`` by streaming it
+    through a memory-capped DuckDB ``COPY`` — peak memory is bounded by
+    ``_CONSOLIDATION_MEMORY_LIMIT`` regardless of table size, unlike the
+    previous ``pq.read_table`` + ``apply_schema_to_table`` retype whose
+    peak scaled 2-3× with the materialized result and OOM-killed syncs of
+    large tables.
+
+    Cast semantics match the old pyarrow/pandas mechanism where it
+    matters: uncastable values (including empty strings) coerce to NULL
+    (``TRY_CAST``, the pandas ``errors='coerce'`` equivalent, with a
+    footer-stats warning per affected column), columns absent from
+    ``target_schema`` and columns already matching keep their native
+    type. Known divergences, both strictly better: DATE targets now cast
+    (the pandas fallback only handled timestamp/numeric, so one bad value
+    used to leave the whole column VARCHAR), and a wholesale-uncastable
+    column degrades per-value instead of wholesale.
+
+    Raises on failure — the caller degrades to the native (untyped)
+    parquet. Cleans up its own partial ``.typed`` sibling on the way out.
+    """
+    import pyarrow.parquet as pq  # footer-only read, never data
+
+    source_schema = pq.read_schema(str(tmp_parquet))
+    target_types = {f.name: f.type for f in target_schema}
+
+    casts: Dict[str, str] = {}
+    for field in source_schema:
+        target = target_types.get(field.name)
+        if target is None or field.type == target:
+            continue
+        duck_type = _duckdb_type_for(target)
+        if duck_type is not None:
+            casts[field.name] = duck_type
+    if not casts:
+        return  # nothing to retype — skip the rewrite entirely
+
+    def quoted(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    select_parts = []
+    for field in source_schema:
+        q = quoted(field.name)
+        if field.name in casts:
+            select_parts.append(f"TRY_CAST({q} AS {casts[field.name]}) AS {q}")
+        else:
+            select_parts.append(q)
+
+    typed_tmp = f"{tmp_parquet}.typed"
+    safe_src = str(tmp_parquet).replace("'", "''")
+    safe_dst = typed_tmp.replace("'", "''")
+    try:
+        conn = _open_consolidation_conn()
+        try:
+            # Override the consolidation default: the materialized parquet's
+            # MD5 is the change-detection key for `agnes pull`, so the retype
+            # must be byte-stable for identical input — with
+            # preserve_insertion_order=false DuckDB reorders rows across row
+            # groups (empirically, ~10 groups suffice). Unlike the CSV
+            # consolidation path that motivated the false default, this
+            # parquet→parquet projection streams fine with order preserved.
+            conn.execute("SET preserve_insertion_order=true")
+            try:
+                # Naive strings cast to TIMESTAMPTZ should be read as UTC
+                # (the old pandas path's `utc=True`). Best-effort: named-zone
+                # support may need the icu extension; without it the session
+                # default applies.
+                conn.execute("SET TimeZone='UTC'")
+            except Exception:
+                pass
+            conn.execute(
+                f"COPY (SELECT {', '.join(select_parts)} FROM read_parquet('{safe_src}')) "
+                f"TO '{safe_dst}' (FORMAT PARQUET, COMPRESSION SNAPPY)"
+            )
+        finally:
+            conn.close()
+        _warn_on_coerced_nulls(tmp_parquet, typed_tmp, casts)
+        os.replace(typed_tmp, tmp_parquet)
+    except BaseException:
+        if os.path.exists(typed_tmp):
+            os.remove(typed_tmp)
+        raise
+
+
 def materialize_query(
     table_id: str,
     *,
@@ -288,7 +443,6 @@ def materialize_query(
                         getattr(storage_client, "base", None), str
                     ):
                         from connectors.keboola.client import KeboolaClient
-                        from connectors.keboola.parquet_io import apply_schema_to_table
 
                         try:
                             metadata_client = KeboolaClient(
@@ -306,34 +460,21 @@ def materialize_query(
                             pyarrow_schema = None
 
                     if pyarrow_schema is not None:
-                        # Memory tradeoff: this retype reads the whole consolidated
-                        # parquet into one pyarrow.Table and rewrites it, so peak
-                        # memory scales with the materialized result size — unlike
-                        # the streaming DuckDB consolidation above. It mirrors the
-                        # legacy CSV path's established v27 mechanism; a streaming
-                        # DuckDB retype would be preferable for very large
-                        # materialized tables (future perf work).
-                        import pyarrow.parquet as pq
-
-                        # Retype into a sibling temp then atomically replace, and
-                        # degrade gracefully: a failure in this local read/rewrite
-                        # (I/O error, or an unexpected apply_schema_to_table failure)
-                        # must not turn an otherwise-successful materialize into a
-                        # hard failure — keep the native (untyped) parquet, matching
-                        # the schema-fetch fallback above.
-                        typed_tmp = f"{tmp_parquet}.typed"
+                        # Streaming retype (sibling temp + atomic replace inside
+                        # the helper): peak memory is bounded by the consolidation
+                        # cap regardless of table size. Degrade gracefully — a
+                        # retype failure must not turn an otherwise-successful
+                        # materialize into a hard failure; keep the native
+                        # (untyped) parquet, matching the schema-fetch fallback
+                        # above.
                         try:
-                            typed_table = apply_schema_to_table(pq.read_table(tmp_parquet), pyarrow_schema)
-                            pq.write_table(typed_table, typed_tmp, compression="snappy")
-                            os.replace(typed_tmp, tmp_parquet)
+                            _retype_parquet_streaming(tmp_parquet, pyarrow_schema)
                         except Exception as e:
                             logger.warning(
                                 "Keboola typed-parquet retype failed for %s (%s); keeping native (untyped) parquet",
                                 full_table_id,
                                 e,
                             )
-                            if os.path.exists(typed_tmp):
-                                os.remove(typed_tmp)
             else:
                 # Legacy CSV path. Kept for the explicit `{"file_type":"csv"}`
                 # opt-in. Slower (CSV parse + parquet rewrite) and

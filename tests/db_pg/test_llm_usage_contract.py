@@ -1,0 +1,251 @@
+"""Cross-engine contract tests for the llm_usage ledger repository."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _make_duckdb_repo(tmp_path):
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+    from src.repositories.llm_usage import LlmUsageRepository
+
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
+    _ensure_schema(conn)
+    return LlmUsageRepository(conn), conn
+
+
+def _make_pg_repo(pg_engine, monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
+    command.upgrade(cfg, "head")
+
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+    import src.db_pg as db_pg
+
+    db_pg.dispose()
+    db_pg.get_engine()
+
+    from src.repositories.llm_usage_pg import LlmUsagePgRepository
+
+    return LlmUsagePgRepository(db_pg.get_engine()), None
+
+
+@pytest.fixture(params=["duckdb", "pg"])
+def repo(request, tmp_path, pg_engine, monkeypatch):
+    if request.param == "duckdb":
+        r, conn = _make_duckdb_repo(tmp_path)
+        yield r
+        conn.close()
+    else:
+        r, _ = _make_pg_repo(pg_engine, monkeypatch)
+        yield r
+
+
+def test_batch_and_month_total(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": "r1",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_tokens": 10,
+                "cache_creation_tokens": 5,
+            },
+            {
+                "id": "r2",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-haiku-4-5-20251001",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+        ]
+    )
+    ym = datetime.now(timezone.utc).strftime("%Y-%m")
+    assert repo.month_total_tokens("a1", ym) == 100 + 50 + 5 + 10 + 5
+    assert repo.month_total_tokens("a2", ym) == 0
+    assert len(repo.list_for_agent("a1")) == 2
+
+
+def test_usage_breakdown_for_month(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": "r1",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_tokens": 10,
+                "cache_creation_tokens": 5,
+            },
+            {
+                "id": "r2",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-haiku-4-5-20251001",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+        ]
+    )
+    ym = datetime.now(timezone.utc).strftime("%Y-%m")
+    breakdown = repo.usage_breakdown_for_month("a1", ym)
+    assert breakdown == {
+        "input_tokens": 110,
+        "output_tokens": 55,
+        "cache_read_tokens": 10,
+        "cache_creation_tokens": 5,
+        # excludes cache_read_tokens — mirrors month_total_tokens.
+        "total_tokens": 110 + 55 + 5,
+    }
+    assert breakdown["total_tokens"] == repo.month_total_tokens("a1", ym)
+
+
+def test_usage_breakdown_for_month_no_rows_returns_zeros(repo):
+    breakdown = repo.usage_breakdown_for_month("a-none", "2020-01")
+    assert breakdown == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "total_tokens": 0,
+    }
+
+
+def test_usage_breakdown_for_month_out_of_range_period_excludes_rows(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": "r1",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 100,
+                "output_tokens": 100,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+        ]
+    )
+    breakdown = repo.usage_breakdown_for_month("a1", "2019-01")
+    assert breakdown["total_tokens"] == 0
+
+
+def test_empty_batch_noop(repo):
+    repo.insert_batch([])
+
+
+def test_list_for_agent_limit(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": f"r{i}",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "c1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+            for i in range(3)
+        ]
+    )
+    assert len(repo.list_for_agent("a1", limit=2)) == 2
+    assert repo.list_for_agent("a-none") == []
+
+
+def test_list_for_session_filters_by_session_id_exactly(repo):
+    """Review carry-over (Task 9): `usage_for_session` used to scan only
+    the agent's most recent `limit` rows via `list_for_agent` and filter by
+    `session_id` in Python — `list_for_session` filters in SQL instead, so
+    it stays exact regardless of how many OTHER rows the agent (or a
+    different agent entirely) has accumulated."""
+    repo.insert_batch(
+        [
+            {
+                "id": "s1",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "session-x",
+                "model": "claude-sonnet-5",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+            {
+                "id": "s2",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "session-x",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+            {
+                # Same agent, DIFFERENT session — must not leak into the
+                # "session-x" result.
+                "id": "s3",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "session-y",
+                "model": "claude-sonnet-5",
+                "input_tokens": 999,
+                "output_tokens": 999,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+        ]
+    )
+    rows = repo.list_for_session("session-x")
+    assert len(rows) == 2
+    assert {r["id"] for r in rows} == {"s1", "s2"}
+    assert repo.list_for_session("session-none") == []
+
+
+def test_list_for_session_limit(repo):
+    repo.insert_batch(
+        [
+            {
+                "id": f"r{i}",
+                "agent_id": "a1",
+                "user_id": "u1",
+                "session_id": "session-limit",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+            for i in range(3)
+        ]
+    )
+    assert len(repo.list_for_session("session-limit", limit=2)) == 2

@@ -54,15 +54,18 @@ def list_sessions(
     model: Optional[str] = None,
     only_errors: bool = False,
     q: Optional[str] = None,
+    anchor: str = Query(default="uploaded", pattern="^(started|uploaded)$"),
     sort: str = Query(default="started_at:desc"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0, le=50000),
     _user: dict = Depends(require_admin),
 ):
     since = _window_since(since_minutes)
+    # anchor=uploaded (default) windows on ARRIVAL, so late queue catch-ups
+    # stay visible in recent windows; anchor=started restores the old view.
     filters = {
         "since": since, "username": username, "model": model,
-        "only_errors": only_errors, "q": q,
+        "only_errors": only_errors, "q": q, "anchor": anchor,
     }
     sort_col, _, sort_dir = sort.partition(":")
     direction = "ASC" if (sort_dir or "desc").lower() == "asc" else "DESC"
@@ -108,12 +111,13 @@ def kpis(
     model: Optional[str] = None,
     only_errors: bool = False,
     q: Optional[str] = None,
+    anchor: str = Query(default="uploaded", pattern="^(started|uploaded)$"),
     _user: dict = Depends(require_admin),
 ):
     since = _window_since(since_minutes)
     k = usage_repo().sessions_kpis({
         "since": since, "username": username, "model": model,
-        "only_errors": only_errors, "q": q,
+        "only_errors": only_errors, "q": q, "anchor": anchor,
     })
     tool_calls_total = k["tool_calls_total"]
     error_rate = (k["tool_errors_total"] / tool_calls_total) if tool_calls_total else 0.0

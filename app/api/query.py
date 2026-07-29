@@ -13,7 +13,7 @@ import duckdb
 
 from app.auth.access import is_user_admin
 from app.auth.dependencies import get_current_user, _get_db
-from app.auth.session_principal import SessionPrincipal
+from app.auth.session_principal import PRINCIPAL_TYPES
 from app.instance_config import get_value
 from connectors.internal.access import (
     InternalAccessError,
@@ -294,6 +294,27 @@ def _assert_no_ungranted_catalog_ref(sql_lower_masked: str, conn) -> None:
             )
 
 
+def _identity_for_audit(user) -> tuple:
+    """``(user_id, email)`` for audit-log rows / BQ-quota-key bookkeeping
+    only — NEVER for an authorization decision (see the admin-check note in
+    ``_bq_guardrail_inputs``, which deliberately does not use this helper).
+
+    A restricted principal (co-session / agent-session, V1d) is a frozen
+    dataclass with no ``.get`` and no single caller identity of its own: an
+    ``AgentPrincipal`` reports its owner (the request legitimately runs on
+    the owner's behalf, just intersection-narrowed — same call
+    ``app.marketplace_server.packager._diag_identity`` makes for
+    ``/marketplace/info``); a ``SessionPrincipal`` reports neither, since a
+    co-session has several live participants and naming one would
+    misattribute the others' actions.
+    """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        return getattr(user, "owner_user_id", None), getattr(user, "owner_email", None)
+    return user.get("id"), user.get("email")
+
+
 def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     """Non-admin SQL RBAC deny checks shared by ``/api/query`` (``execute_query``)
     and the snapshot ``run_remote_select_to_arrow`` path — previously duplicated
@@ -418,7 +439,7 @@ def _run_internal_query(
     system_db_path = str(_get_state_dir() / "system.duckdb")
     # is_user_admin takes (user_id, conn) — passing the dict raises
     # TypeError, which is exactly the regression review #278/1 caught.
-    # A SessionPrincipal has no .get("id") — treat co-session as non-admin
+    # A Principal has no .get("id") — treat co-session / agent-session as non-admin
     # for internal row-level filter. build_filter_clause expects a dict
     # so pass a shim when user is a principal (mirrors v2_sample.py:131-137).
     # The shim id "session.none" passes the safe-identifier regex but never
@@ -426,7 +447,7 @@ def _run_internal_query(
     # passes the username regex but matches no real session. Together the
     # filter yields zero rows for every internal table — correct behaviour
     # (co-sessions should not see any single user's internal rows).
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         is_admin = False
         user = {"id": "session.none", "email": "session.none@internal"}
     else:
@@ -556,12 +577,88 @@ _BLOCKED_SQL_TOKENS = [
 ]
 
 
+# Security audit F8: DuckDB resolves a quoted string in table position as a
+# file to scan (a "replacement scan"), so ``SELECT * FROM 'data/extracts/…'``
+# reads a file with NO ``read_parquet()`` call and slips past the function
+# denylist above. The existing ``'/`` / ``'../`` tokens only catch absolute or
+# dot-dot paths — a bare relative path like ``'data/…parquet'`` has neither.
+#
+# We detect file table sources by inspecting TABLE SOURCES precisely via
+# sqlglot: a real table/view is a SQL identifier (optionally schema-qualified)
+# and never contains a path separator, glob metacharacter, or data-file
+# extension, whereas a DuckDB replacement scan (``FROM 'file.parquet'`` — direct,
+# comma-list, or glob) parses as a Table whose NAME carries exactly those.
+# Inspecting names — not arbitrary literals — is what makes this precise: a
+# legitimate value literal in SELECT/WHERE position (``WHERE f = 'report.csv'``),
+# or a functional ``FROM`` such as ``TRIM(' ' FROM x)`` / ``EXTRACT(day FROM
+# ts)``, is never a Table and so is not flagged. The external-access boundary on
+# the analytics connection stays ON because local views need ``read_parquet`` —
+# this parse-level guard is the file-access boundary.
+_FILE_TABLE_EXTS = frozenset({"parquet", "parq", "csv", "tsv", "json", "ndjson", "arrow", "duckdb", "xlsx"})
+
+# Fallback ONLY for when sqlglot cannot parse the SQL at all: a quoted string
+# literal directly after ``FROM`` / ``JOIN``. This is deliberately not used on
+# parseable SQL because it over-matches functional FROM clauses like
+# ``TRIM(' ' FROM 'abc')`` — sqlglot models those correctly, so the primary
+# path never sees the false positive; an unparseable query is almost certainly
+# invalid anyway, so a conservative reject there is acceptable.
+_FROM_STRING_LITERAL_RE = re.compile(r"\b(?:from|join)\s*\(*\s*'")
+
+
+def _name_looks_like_file(name: str) -> bool:
+    if not name:
+        return False
+    if any(c in name for c in "/\\*?"):
+        return True
+    return "." in name and name.rsplit(".", 1)[-1].lower() in _FILE_TABLE_EXTS
+
+
+def _has_file_table_source(sql: str) -> bool:
+    """True if any FROM/JOIN table source is a file path (a DuckDB replacement
+    scan), inspected precisely via sqlglot. This is the PRIMARY and only F8
+    check on parseable SQL — it covers the direct ``FROM 'file'``, comma-list
+    (``FROM v, 'file'``), and glob forms uniformly, without the false positives
+    a position regex has on functional FROM clauses (TRIM/EXTRACT/SUBSTRING).
+    Falls back to the position-based regex only when the SQL can't be parsed as
+    DuckDB, so the direct/comma ``FROM 'file'`` form is still caught there.
+
+    Depends on sqlglot (pinned ``sqlglot>=30.0.0`` in pyproject) modeling a
+    quoted FROM source as an ``exp.Table`` whose ``.name`` carries the path.
+    That behavioral assumption has dedicated tripwire tests
+    (``test_f8_sqlglot_models_file_table_source_as_table`` covers direct AND
+    comma-list) so a future sqlglot upgrade that changes it fails loudly rather
+    than silently regressing detection."""
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        statements = sqlglot.parse(sql, read="duckdb")
+    except Exception:
+        return bool(_FROM_STRING_LITERAL_RE.search(sql.lower()))
+    for statement in statements:
+        if statement is None:
+            continue
+        for table in statement.find_all(exp.Table):
+            if _name_looks_like_file(table.name):
+                return True
+    return False
+
+
 def _assert_select_only(sql_lower: str) -> None:
     """Raise HTTPException(400) unless ``sql_lower`` is a single SELECT/WITH
     query free of the blocked keywords/functions. ``sql_lower`` MUST already
     be ``.strip().lower()``-ed by the caller."""
     if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
+    # File-path table source anywhere in the FROM graph (direct / comma-list /
+    # glob), detected precisely via sqlglot — the position regex is used only as
+    # the parse-failure fallback inside _has_file_table_source, so functional
+    # FROM clauses (TRIM/EXTRACT/SUBSTRING) don't false-positive.
+    if _has_file_table_source(sql_lower):
+        raise HTTPException(
+            status_code=400,
+            detail="File-path table sources are not allowed; query registered views by name",
+        )
     # Accept any whitespace (newline, tab, space) after the keyword so
     # multi-line SQL doesn't 400 on `SELECT\n  col, ...`. Strip leading `--`
     # / `/* */` comments first so a query whose stored SQL opens with a header
@@ -666,7 +763,12 @@ def execute_query(
         # vs email for /api/v2/scan — the per-user daily cap was effectively
         # doubled because the two paths tracked under different keys.
         # Devin Review #2 caught this on PR #168.
-        user_id = user.get("email") or user.get("id") or "anon"
+        # A restricted principal (co-session / agent-session) has no
+        # ".get" — resolve via _identity_for_audit (owner identity for an
+        # AgentPrincipal, "anon" for a SessionPrincipal's shared bucket;
+        # this is bookkeeping, not an authorization decision).
+        _audit_uid, _audit_email = _identity_for_audit(user)
+        user_id = _audit_email or _audit_uid or "anon"
         guard = (
             _bq_quota_and_cap_guard(
                 user_id=user_id,
@@ -785,7 +887,7 @@ def execute_query(
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=_identity_for_audit(user)[0],
                 action=_action,
                 resource=_resource,
                 params={
@@ -812,7 +914,7 @@ def execute_query(
         _action_err = "query.remote" if _dry_run_set else "query.local"
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=_identity_for_audit(user)[0],
                 action=_action_err,
                 resource=_resource,
                 params={
@@ -844,7 +946,7 @@ def execute_query(
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=_identity_for_audit(user)[0],
                 action="query.local",
                 resource=_resource,
                 params={
@@ -1058,7 +1160,31 @@ def _bq_guardrail_inputs(
 
     # 2. Direct bq.<ds>.<tbl> pass: every match must point at a registered
     # row. Run BEFORE adding to dry_run so unregistered paths fail-fast.
-    is_admin = is_user_admin(user.get("id") or user.get("email") or "", sys_conn)
+    # A restricted principal (co-session / agent-session) is NEVER admin,
+    # even when its owner is — resolving the owner's id here and calling
+    # is_user_admin would reintroduce exactly the admin-inheritance bug the
+    # AgentPrincipal design forbids (this is the "no admin short-circuit"
+    # invariant, not an audit-identity question — do not route this through
+    # _identity_for_audit). Mirrors the same PRINCIPAL_TYPES guard in
+    # _run_internal_query / v2_sample.py.
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        is_admin = False
+    else:
+        # v106: the admin bypass below skips the per-id grant check, so it
+        # must honor the credential's data-read surface exactly like
+        # get_accessible_tables/can_access_table do — otherwise an admin on
+        # a surface='stack' PAT could read out-of-stack tables via a direct
+        # bq.* / full-backtick path while the bare-name pass (which uses
+        # `accessible_set`) correctly stack-scopes them. A stack-surface
+        # admin falls through to the grant check against `accessible_set`,
+        # which for them is the concrete stack-derived id set.
+        from src.rbac import _credential_surface
+
+        is_admin = (
+            is_user_admin(user.get("id") or user.get("email") or "", sys_conn) and _credential_surface(user) == "all"
+        )
     for m in BQ_PATH.finditer(sql):
         bucket_raw = m.group(1).strip('"')
         source_table_raw = m.group(2).strip('"')
@@ -1878,7 +2004,9 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
         if blocked_bq_path is not None:
             raise HTTPException(status_code=403, detail=blocked_bq_path)
 
-        user_id = user.get("email") or user.get("id") or "anon"
+        # See _identity_for_audit — a restricted principal has no ".get".
+        _audit_uid, _audit_email = _identity_for_audit(user)
+        user_id = _audit_email or _audit_uid or "anon"
         quota.check_daily_budget(user=user_id)
         with quota.acquire(user=user_id):
             # Dry-run the rewritten SQL purely to bill the user's daily byte

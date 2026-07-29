@@ -230,10 +230,15 @@ resource "google_secret_manager_secret_iam_member" "vm_oauth" {
 # Web firewall: 80/443 for Caddy (TLS), 8000 only when TLS is disabled (direct HTTP).
 # Separate rule for SSH (port 22) — default restricted to IAP tunnel range.
 locals {
-  # Expose raw :8000 only when any instance has tls_mode != "caddy".
-  # If Caddy handles TLS, customers should hit 80/443, not bypass to 8000.
-  expose_raw_http_port = anytrue([for inst in local.all_instances : inst.tls_mode != "caddy"])
-  web_ports            = local.expose_raw_http_port ? ["80", "443", "8000"] : ["80", "443"]
+  # Security audit F12: raw :8000 must be exposed PER-INSTANCE, gated on THAT
+  # VM's own tls_mode — never fleet-wide. The previous `anytrue(...)` over a
+  # shared tag opened :8000 on the TLS-fronted prod VM as soon as any dev VM
+  # defaulted to tls_mode="none", letting an on-path attacker reach the prod
+  # app in cleartext on :8000. The shared web rule now only carries 80/443; a
+  # separate rule opens 8000 solely for VMs tagged raw-http (see below).
+  raw_http_instance_names = [for inst in local.all_instances : inst.name if inst.tls_mode != "caddy"]
+  expose_raw_http_port    = length(local.raw_http_instance_names) > 0
+  raw_http_tag            = "agnes-${var.customer_name}-rawhttp"
 }
 
 resource "google_compute_firewall" "web" {
@@ -243,11 +248,29 @@ resource "google_compute_firewall" "web" {
 
   allow {
     protocol = "tcp"
-    ports    = local.web_ports
+    ports    = ["80", "443"]
   }
 
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["agnes-${var.customer_name}"]
+}
+
+# Raw :8000 — only VMs whose OWN tls_mode != "caddy" carry the raw-http tag, so
+# a TLS-fronted (caddy) VM never exposes plaintext :8000 even when a sibling dev
+# VM does. Created only when at least one instance needs it.
+resource "google_compute_firewall" "web_raw" {
+  count   = local.expose_raw_http_port ? 1 : 0
+  name    = "agnes-${var.customer_name}-allow-web-raw"
+  project = var.gcp_project_id
+  network = "default"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["8000"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = [local.raw_http_tag]
 }
 
 resource "google_compute_firewall" "ssh" {
@@ -329,7 +352,12 @@ resource "google_compute_instance" "vm" {
   project      = var.gcp_project_id
   machine_type = each.value.machine_type
   zone         = var.zone
-  tags         = ["agnes-${var.customer_name}"]
+  # F12: the raw-http tag (opens :8000) is attached ONLY to VMs whose own
+  # tls_mode != "caddy", so a caddy/TLS VM never exposes plaintext :8000.
+  tags = concat(
+    ["agnes-${var.customer_name}"],
+    each.value.tls_mode != "caddy" ? [local.raw_http_tag] : [],
+  )
 
   # Without this, a `machine_type` change in TF triggers a full
   # ForceNew (destroy + recreate) of the VM. The data disk would
@@ -388,6 +416,8 @@ resource "google_compute_instance" "vm" {
     runtime_secret_env              = var.runtime_secret_env
     home_route                      = var.home_route
     studio_enabled                  = var.studio_enabled
+    data_apps_enabled               = each.value.data_apps_enabled
+    data_apps_runtime_image         = var.data_apps_runtime_image
     enable_watchdog                 = var.enable_watchdog
     alert_webhook_url               = var.alert_webhook_url
     watchdog_files_b64              = local.watchdog_files_b64

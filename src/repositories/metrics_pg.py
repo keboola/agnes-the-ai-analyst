@@ -8,6 +8,7 @@ around ``create()`` / ``list()`` — are provided by the shared
 ``MetricYamlMixin`` so DuckDB and PG share one implementation (see #499/#513
 drift class).
 """
+
 from __future__ import annotations
 
 import json
@@ -50,6 +51,7 @@ class MetricPgRepository(MetricYamlMixin):
         sql_variants: Optional[Dict[str, Any]] = None,
         validation: Optional[Dict[str, Any]] = None,
         source: str = "manual",
+        source_ref: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc)
@@ -59,13 +61,13 @@ class MetricPgRepository(MetricYamlMixin):
                     """INSERT INTO metric_definitions (
                         id, name, display_name, category, description, type, unit, grain,
                         table_name, tables, expression, time_column, dimensions, filters,
-                        synonyms, notes, sql, sql_variants, validation, source,
+                        synonyms, notes, sql, sql_variants, validation, source, source_ref,
                         created_at, updated_at
                     ) VALUES (
                         :id, :name, :display_name, :category, :description, :type, :unit, :grain,
                         :table_name, :tables, :expression, :time_column, :dimensions, :filters,
                         :synonyms, :notes, :sql,
-                        CAST(:sql_variants AS JSONB), CAST(:validation AS JSONB), :source,
+                        CAST(:sql_variants AS JSONB), CAST(:validation AS JSONB), :source, :source_ref,
                         :now, :now
                     )
                     ON CONFLICT (id) DO UPDATE SET
@@ -88,43 +90,61 @@ class MetricPgRepository(MetricYamlMixin):
                         sql_variants = EXCLUDED.sql_variants,
                         validation = EXCLUDED.validation,
                         source = EXCLUDED.source,
+                        source_ref = EXCLUDED.source_ref,
                         updated_at = EXCLUDED.updated_at"""
                 ),
                 {
-                    "id": id, "name": name, "display_name": display_name,
-                    "category": category, "description": description, "type": type,
-                    "unit": unit, "grain": grain, "table_name": table_name,
-                    "tables": tables, "expression": expression, "time_column": time_column,
-                    "dimensions": dimensions, "filters": filters,
-                    "synonyms": synonyms, "notes": notes, "sql": sql,
+                    "id": id,
+                    "name": name,
+                    "display_name": display_name,
+                    "category": category,
+                    "description": description,
+                    "type": type,
+                    "unit": unit,
+                    "grain": grain,
+                    "table_name": table_name,
+                    "tables": tables,
+                    "expression": expression,
+                    "time_column": time_column,
+                    "dimensions": dimensions,
+                    "filters": filters,
+                    "synonyms": synonyms,
+                    "notes": notes,
+                    "sql": sql,
                     "sql_variants": _json_dumps(sql_variants),
                     "validation": _json_dumps(validation),
-                    "source": source, "now": now,
+                    "source": source,
+                    "source_ref": source_ref,
+                    "now": now,
                 },
             )
         return self.get(id)  # type: ignore[return-value]
 
     def get(self, metric_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM metric_definitions WHERE id = :id"),
-                {"id": metric_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM metric_definitions WHERE id = :id"),
+                    {"id": metric_id},
+                )
+                .mappings()
+                .first()
+            )
         return dict(row) if row else None
 
     def list(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             if category is not None:
-                rows = conn.execute(
-                    sa.text(
-                        "SELECT * FROM metric_definitions WHERE category = :c ORDER BY name"
-                    ),
-                    {"c": category},
-                ).mappings().all()
+                rows = (
+                    conn.execute(
+                        sa.text("SELECT * FROM metric_definitions WHERE category = :c ORDER BY name"),
+                        {"c": category},
+                    )
+                    .mappings()
+                    .all()
+                )
             else:
-                rows = conn.execute(
-                    sa.text("SELECT * FROM metric_definitions ORDER BY name")
-                ).mappings().all()
+                rows = conn.execute(sa.text("SELECT * FROM metric_definitions ORDER BY name")).mappings().all()
         return [dict(r) for r in rows]
 
     def update(self, metric_id: str, **kwargs) -> Optional[Dict[str, Any]]:
@@ -132,10 +152,26 @@ class MetricPgRepository(MetricYamlMixin):
         if existing is None:
             return None
         allowed = {
-            "name", "display_name", "category", "description", "type", "unit",
-            "grain", "table_name", "tables", "expression", "time_column",
-            "dimensions", "filters", "synonyms", "notes", "sql",
-            "sql_variants", "validation", "source",
+            "name",
+            "display_name",
+            "category",
+            "description",
+            "type",
+            "unit",
+            "grain",
+            "table_name",
+            "tables",
+            "expression",
+            "time_column",
+            "dimensions",
+            "filters",
+            "synonyms",
+            "notes",
+            "sql",
+            "sql_variants",
+            "validation",
+            "source",
+            "source_ref",
         }
         json_fields = {"sql_variants", "validation"}
         updates = {}
@@ -145,10 +181,7 @@ class MetricPgRepository(MetricYamlMixin):
         if not updates:
             return existing
         updates["updated_at"] = datetime.now(timezone.utc)
-        set_clause = ", ".join(
-            f"{k} = CAST(:{k} AS JSONB)" if k in json_fields else f"{k} = :{k}"
-            for k in updates
-        )
+        set_clause = ", ".join(f"{k} = CAST(:{k} AS JSONB)" if k in json_fields else f"{k} = :{k}" for k in updates)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(f"UPDATE metric_definitions SET {set_clause} WHERE id = :metric_id"),
@@ -169,24 +202,42 @@ class MetricPgRepository(MetricYamlMixin):
 
     def find_by_table(self, table_name: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """SELECT * FROM metric_definitions
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """SELECT * FROM metric_definitions
                        WHERE table_name = :tname OR :tname = ANY(tables)
                        ORDER BY name"""
-                ),
-                {"tname": table_name},
-            ).mappings().all()
+                    ),
+                    {"tname": table_name},
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]
+
+    def find_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM metric_definitions WHERE name = :name ORDER BY id LIMIT 1"),
+                    {"name": name},
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row else None
 
     def find_by_synonym(self, term: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    "SELECT * FROM metric_definitions WHERE :term = ANY(synonyms) ORDER BY name"
-                ),
-                {"term": term},
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM metric_definitions WHERE :term = ANY(synonyms) ORDER BY name"),
+                    {"term": term},
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]
 
     def get_table_map(self) -> Dict[str, List[str]]:
@@ -201,10 +252,7 @@ class MetricPgRepository(MetricYamlMixin):
             for tn, mn in rows:
                 result.setdefault(tn, []).append(mn)
             rows2 = conn.execute(
-                sa.text(
-                    "SELECT unnest(tables) AS tbl, name FROM metric_definitions "
-                    "WHERE tables IS NOT NULL"
-                )
+                sa.text("SELECT unnest(tables) AS tbl, name FROM metric_definitions WHERE tables IS NOT NULL")
             ).all()
             for tbl, mn in rows2:
                 result.setdefault(tbl, []).append(mn)

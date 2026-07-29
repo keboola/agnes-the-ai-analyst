@@ -14,10 +14,10 @@ Passthrough-mode tools are NOT materialized — they live in ``tool_registry``
 and are invoked live at query time by the outbound MCP server's passthrough
 handler (see RFC #461 §7).
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import duckdb
 import pandas as pd
 
-from connectors.mcp.client import call_tool
 from src.duckdb_conn import _open_duckdb
 from src.repositories.mcp_sources import MCPSourceRepository
 from src.repositories.tool_registry import MATERIALIZE, ToolRegistryRepository
@@ -67,6 +66,7 @@ def _tools_repo(system_conn: duckdb.DuckDBPyConnection) -> Any:
 
 # ── result parsing ──────────────────────────────────────────────────────────
 
+
 def _find_data_array(payload: Any) -> Optional[List[Dict[str, Any]]]:
     """Heuristic — find the first list-of-dicts inside an MCP tool's JSON payload.
 
@@ -90,6 +90,7 @@ def _find_data_array(payload: Any) -> Optional[List[Dict[str, Any]]]:
 
 # ── output paths ────────────────────────────────────────────────────────────
 
+
 def _data_dir() -> Path:
     """Resolve the extracts root. Honors AGNES_DATA_DIR; defaults to ./data."""
     root = os.environ.get("AGNES_DATA_DIR") or os.environ.get("DATA_DIR") or "data"
@@ -101,6 +102,7 @@ def output_dir_for_source(source_name: str) -> Path:
 
 
 # ── _meta + extract.duckdb writers ──────────────────────────────────────────
+
 
 def _create_meta(conn: duckdb.DuckDBPyConnection) -> None:
     """Create the _meta table required by the extract.duckdb contract."""
@@ -139,12 +141,11 @@ def _create_view(conn: duckdb.DuckDBPyConnection, table_name: str, parquet_path:
     # exposed_name we control — no user-supplied path components.
     safe_name = table_name.replace('"', '""')
     safe_path = str(parquet_path).replace("'", "''")
-    conn.execute(
-        f'CREATE OR REPLACE VIEW "{safe_name}" AS SELECT * FROM read_parquet(\'{safe_path}\')'
-    )
+    conn.execute(f"CREATE OR REPLACE VIEW \"{safe_name}\" AS SELECT * FROM read_parquet('{safe_path}')")
 
 
 # ── extraction ──────────────────────────────────────────────────────────────
+
 
 async def _materialize_one_tool_async(
     *,
@@ -159,6 +160,7 @@ async def _materialize_one_tool_async(
     used ``asyncio.run`` which blows up in that case.
     """
     from connectors.mcp.client import call_tool_async
+
     original_name = tool["original_name"]
     logger.info("materialize: calling %s.%s", source["name"], original_name)
     result = await call_tool_async(source, original_name, arguments=None)
@@ -172,8 +174,7 @@ async def _materialize_one_tool_async(
     rows = _find_data_array(result.data)
     if rows is None:
         raise ValueError(
-            f"tool {original_name} response has no list-of-dicts; "
-            f"either reclassify as passthrough or wrap the response"
+            f"tool {original_name} response has no list-of-dicts; either reclassify as passthrough or wrap the response"
         )
     df = pd.DataFrame(rows)
     parquet_path = output_path / "data" / f"{tool['exposed_name']}.parquet"
@@ -192,9 +193,13 @@ def _materialize_one_tool(
     """Sync wrapper around ``_materialize_one_tool_async`` — only for the
     scheduler / CLI paths that run outside an event loop. FastAPI handlers
     MUST call the async variant directly."""
-    return asyncio.run(_materialize_one_tool_async(
-        source=source, tool=tool, output_path=output_path,
-    ))
+    return asyncio.run(
+        _materialize_one_tool_async(
+            source=source,
+            tool=tool,
+            output_path=output_path,
+        )
+    )
 
 
 async def extract_source_async(
@@ -246,9 +251,7 @@ async def extract_source_async(
         for tool in tools:
             extracted_at = datetime.now(timezone.utc)
             try:
-                rows, size_bytes = await _materialize_one_tool_async(
-                    source=source, tool=tool, output_path=output_root
-                )
+                rows, size_bytes = await _materialize_one_tool_async(source=source, tool=tool, output_path=output_root)
                 _insert_meta(
                     out_conn,
                     table_name=tool["exposed_name"],
@@ -334,9 +337,7 @@ def extract_source(
         for tool in tools:
             extracted_at = datetime.now(timezone.utc)
             try:
-                rows, size_bytes = _materialize_one_tool(
-                    source=source, tool=tool, output_path=output_root
-                )
+                rows, size_bytes = _materialize_one_tool(source=source, tool=tool, output_path=output_root)
                 _insert_meta(
                     out_conn,
                     table_name=tool["exposed_name"],
@@ -368,6 +369,7 @@ def extract_source(
 
 # ── introspect (used at source registration time) ───────────────────────────
 
+
 def introspect_source(source: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Connect to the source and return discovered tools (as plain dicts).
 
@@ -379,18 +381,21 @@ def introspect_source(source: Dict[str, Any]) -> List[Dict[str, Any]]:
     ``asyncio.run`` internally.
     """
     from connectors.mcp.client import list_tools  # local import keeps duckdb-free
-    return [
-        {"name": t.name, "description": t.description, "input_schema": t.input_schema}
-        for t in list_tools(source)
-    ]
+
+    return [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in list_tools(source)]
 
 
-async def introspect_source_async(source: Dict[str, Any]) -> List[Dict[str, Any]]:
+async def introspect_source_async(
+    source: Dict[str, Any],
+    *,
+    caller_user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Async-safe variant of ``introspect_source`` — call from FastAPI
-    handlers (and any code already inside a running event loop)."""
+    handlers (and any code already inside a running event loop).
+
+    ``caller_user_id`` is threaded to the secret lookup so a ``per_user``
+    source can be probed under the caller's own credential."""
     from connectors.mcp.client import list_tools_async  # local import keeps duckdb-free
-    tools = await list_tools_async(source)
-    return [
-        {"name": t.name, "description": t.description, "input_schema": t.input_schema}
-        for t in tools
-    ]
+
+    tools = await list_tools_async(source, caller_user_id=caller_user_id)
+    return [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools]

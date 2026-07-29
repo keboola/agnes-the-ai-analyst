@@ -25,19 +25,19 @@ class AccessTokenRepository:
         prefix: str,
         expires_at: Optional[datetime] = None,
         scopes: Optional[str] = None,
+        *,
+        agent_id: Optional[str] = None,
+        surface: str = "all",
     ) -> None:
         self.conn.execute(
             """INSERT INTO personal_access_tokens
-            (id, user_id, name, token_hash, prefix, scopes, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            [id, user_id, name, token_hash, prefix, scopes,
-             datetime.now(timezone.utc), expires_at],
+            (id, user_id, name, token_hash, prefix, scopes, created_at, expires_at, agent_id, surface)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [id, user_id, name, token_hash, prefix, scopes, datetime.now(timezone.utc), expires_at, agent_id, surface],
         )
 
     def get_by_id(self, token_id: str) -> Optional[Dict[str, Any]]:
-        result = self.conn.execute(
-            "SELECT * FROM personal_access_tokens WHERE id = ?", [token_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM personal_access_tokens WHERE id = ?", [token_id]).fetchone()
         return self._row_to_dict(result)
 
     def list_for_user(self, user_id: str, include_revoked: bool = True) -> List[Dict[str, Any]]:
@@ -52,9 +52,7 @@ class AccessTokenRepository:
         return [dict(zip(columns, r)) for r in rows]
 
     def list_all(self) -> List[Dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM personal_access_tokens ORDER BY created_at DESC"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM personal_access_tokens ORDER BY created_at DESC").fetchall()
         if not rows:
             return []
         columns = [desc[0] for desc in self.conn.description]
@@ -82,10 +80,27 @@ class AccessTokenRepository:
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, r)) for r in rows]
 
+    def list_for_agent(self, agent_id: str, include_revoked: bool = True) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM personal_access_tokens WHERE agent_id = ?"
+        if not include_revoked:
+            sql += " AND revoked_at IS NULL"
+        sql += " ORDER BY created_at DESC"
+        rows = self.conn.execute(sql, [agent_id]).fetchall()
+        if not rows:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, r)) for r in rows]
+
     def revoke(self, token_id: str) -> None:
         self.conn.execute(
             "UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?",
             [datetime.now(timezone.utc), token_id],
+        )
+
+    def revoke_for_agent(self, agent_id: str) -> None:
+        self.conn.execute(
+            "UPDATE personal_access_tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL",
+            [datetime.now(timezone.utc), agent_id],
         )
 
     def delete(self, token_id: str) -> None:

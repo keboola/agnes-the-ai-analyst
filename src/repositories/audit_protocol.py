@@ -12,6 +12,7 @@ Postgres. Add a new repo by:
   2. Write contract tests parametrised across [duckdb_impl, pg_impl].
   3. Build the PG impl until contract tests pass.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -35,7 +36,12 @@ class AuditRepositoryProtocol(Protocol):
         client_kind: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> str:
-        """Record one audit event; return the new row's id."""
+        """Record one audit event; return the new row's id.
+
+        ``duration_ms=None`` auto-fills from the request-timing contextvar
+        (``src.audit_context.auto_duration_ms``) in both implementations —
+        NULL is written only outside an HTTP request scope.
+        """
         ...
 
     def query(
@@ -48,13 +54,22 @@ class AuditRepositoryProtocol(Protocol):
         action_prefix: Optional[str] = None,
         action_in: Optional[List[str]] = None,
         resource: Optional[str] = None,
+        resource_prefix: Optional[str] = None,
         result_pattern: Optional[str] = None,
+        result_class: Optional[str] = None,
         correlation_id: Optional[str] = None,
         q: Optional[str] = None,
+        source: Optional[str] = None,
+        include_self_reads: bool = True,
         cursor: Optional[Tuple[datetime, str]] = None,
         limit: int = 100,
     ) -> Tuple[List[Dict[str, Any]], Optional[Tuple[datetime, str]]]:
-        """Filtered list of audit rows + next-page cursor."""
+        """Filtered list of audit rows + next-page cursor.
+
+        Rows carry a computed ``source`` key (``AUDIT_SOURCE_CASE_SQL``).
+        ``result_class`` filters via ``RESULT_CLASS_CASE_SQL``;
+        ``include_self_reads=False`` hides ``activity.read`` rows.
+        """
         ...
 
     def query_actions(
@@ -88,20 +103,43 @@ class AuditRepositoryProtocol(Protocol):
         """Governance audit feed: corporate_memory.* + legacy km_* rows."""
         ...
 
+    def upload_filenames_since(self, since: datetime) -> List[str]:
+        """Distinct ``session.upload`` filenames at/after *since* — the
+        health pulse's ingest-reconciliation source (joined against
+        summary FILE basenames, never session_id)."""
+        ...
+
+    def last_scheduler_tick(self) -> Optional[datetime]:
+        """Most recent scheduler-classified audit row timestamp."""
+        ...
+
+    def active_users_since(self, since: datetime) -> int:
+        """Distinct non-NULL user_id count at/after *since*."""
+        ...
+
     def facets(
         self,
         *,
         since: datetime,
-        scheduler_actions: List[str],
         limit: int = 50,
+        **filters: Any,
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Distinct facet buckets (users/actions/results/resources/sources)."""
+        """Distinct facet buckets (users/actions/results/result_classes/
+        resources/sources) under the SAME filter kwargs as :meth:`query`,
+        so dropdown counts always describe rows the timeline can show.
+
+        Source classification is rule-based (``AUDIT_SOURCE_CASE_SQL``) —
+        no caller-supplied scheduler action list.
+        """
         ...
 
     def kpis(
         self,
         *,
         since: datetime,
+        **filters: Any,
     ) -> Dict[str, Any]:
-        """Headline KPIs: events_total, active_users, errors, p95."""
+        """Headline KPIs under the same filter kwargs as :meth:`query`:
+        events_total, active_users (people — scheduler/system excluded),
+        errors (result_class='error'), p95, duration_coverage."""
         ...

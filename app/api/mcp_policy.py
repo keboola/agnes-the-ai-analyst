@@ -30,6 +30,7 @@ import json
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.instance_config import get_public_url
@@ -65,7 +66,83 @@ class GrantDenied(Exception):
     """Raised when the caller's groups have no ``tool_grants`` row for a tool."""
 
 
-def enforce_passthrough_access(tool: Dict[str, Any], caller_user_id: Optional[str]) -> None:
+class ConnectionNotInScope(GrantDenied):
+    """Raised when an agent whose ``connections_mode='selected'`` reaches a
+    tool belonging to an MCP source outside its ``connection`` scope.
+
+    Subclasses ``GrantDenied`` so every existing handler (REST → 403, MCP
+    transports → tool error) maps it correctly without a new except-arm; the
+    distinct type + message keep the *reason* diagnosable.
+    """
+
+
+@dataclass(frozen=True)
+class CallerAuthority:
+    """Who a passthrough call runs as, normalized across caller shapes.
+
+    ``enforce_passthrough_access`` and ``_visible_passthrough_tools`` both
+    accept a bare user id (transports), a user dict (REST), or a restricted
+    ``Principal`` (co-session / agent-session token). This collapses all three
+    into the three facts the gates need, so the listing and the call seam can
+    never disagree about who the caller is.
+    """
+
+    #: Whose group memberships authorize the call. For an ``AgentPrincipal``
+    #: this is the OWNER — an agent's authority is a restriction of its
+    #: owner's, so the owner's ``tool_grants`` are the ceiling.
+    user_id: Optional[str]
+    #: NEVER true for a restricted principal, even when the resolved
+    #: ``user_id`` belongs to an admin: an admin-owned agent must not inherit
+    #: the tool-grant / mutating short-circuit.
+    is_admin: bool = False
+    #: Set only for an ``AgentPrincipal`` — triggers the connection-scope gate.
+    agent_id: Optional[str] = None
+    #: True for any ``Principal``; a restricted caller with no resolvable
+    #: ``user_id`` (co-session: several owners, none authoritative) fails
+    #: closed everywhere.
+    restricted: bool = False
+
+
+def caller_authority(caller: Any) -> CallerAuthority:
+    """Normalize a caller (user id / user dict / ``Principal`` / ``None``)
+    into a :class:`CallerAuthority`. See that class for the semantics."""
+    from app.auth.access import is_user_admin
+    from app.auth.session_principal import AgentPrincipal, PRINCIPAL_TYPES
+
+    if caller is None:
+        return CallerAuthority(user_id=None)
+    if isinstance(caller, PRINCIPAL_TYPES):
+        if isinstance(caller, AgentPrincipal):
+            return CallerAuthority(
+                user_id=caller.owner_user_id or None,
+                is_admin=False,
+                agent_id=caller.agent_id,
+                restricted=True,
+            )
+        # Co-session: no single owner whose per-user MCP credentials or tool
+        # grants could stand in for the session. Fail closed.
+        return CallerAuthority(user_id=None, restricted=True)
+    user_id = caller.get("id") if isinstance(caller, dict) else caller
+    user_id = str(user_id) if user_id else None
+    return CallerAuthority(user_id=user_id, is_admin=bool(user_id) and is_user_admin(user_id))
+
+
+def connection_scope_ids(authority: CallerAuthority) -> Optional[frozenset]:
+    """The MCP source ids this caller may reach, or ``None`` for no filter.
+
+    ``None`` for every non-agent caller and for an agent that leaves
+    ``connections_mode='all'``; otherwise the agent's declared ``connection``
+    scope (possibly empty). One helper for both the listing and the call seam
+    so discovery and authorization cannot drift.
+    """
+    if not authority.agent_id:
+        return None
+    from src.agent_scope_intersection import agent_scope_filter
+
+    return agent_scope_filter(authority.agent_id, "connections_mode", "connection")
+
+
+def enforce_passthrough_access(tool: Dict[str, Any], caller: Any) -> None:
     """Full authorization gate for a single passthrough invocation.
 
     The one gate stack shared by the REST endpoint
@@ -76,31 +153,46 @@ def enforce_passthrough_access(tool: Dict[str, Any], caller_user_id: Optional[st
     1. **grant** — admin short-circuits; otherwise the caller must be in a group
        listed in ``tool_grants`` for this tool (``GrantDenied`` on miss);
     2. **mutating** — a ``mutating`` tool is admin-only (``MutatingNotAllowed``);
-    3. **rate limit** — per-(tool, user) token bucket (``RateLimited``).
+    3. **connection scope** — an agent whose ``connections_mode='selected'``
+       may only reach tools on an MCP source it declared
+       (``ConnectionNotInScope``). This is the *call* seam of the same filter
+       the listing applies: hiding a tool from ``tools/list`` is discovery,
+       not authorization, so an agent that names an unlisted tool directly is
+       refused here;
+    4. **rate limit** — per-(tool, user) token bucket (``RateLimited``).
 
-    ``caller_user_id`` is ``None`` when the transport could not resolve an
-    identity from the request (absent / invalid token). That is treated as a
-    non-admin caller with no groups, so the grant check **fails closed** — an
-    unauthenticated forward is never allowed.
+    ``caller`` is a bare user id (transports), a user dict (REST), a restricted
+    ``Principal``, or ``None`` when the transport could not resolve an identity
+    from the request (absent / invalid token). ``None`` — and a co-session
+    principal, which has no single owner — is treated as a non-admin caller
+    with no groups, so the grant check **fails closed**; an unauthenticated
+    forward is never allowed. An ``AgentPrincipal`` resolves to its owner's
+    groups with ``is_admin`` forced false, so an admin-owned agent gets the
+    owner's grants and nothing more.
 
     Callers map the typed exceptions onto their transport's error surface (REST:
     403/429 HTTP; MCP transports: a tool error). Backend-aware: resolves RBAC
     through the repo factory (``tool_registry_repo``) + ``app.auth.access`` so it
     reads the active state backend (DuckDB or Postgres).
     """
-    from app.auth.access import _user_group_ids, is_user_admin
+    from app.auth.access import _user_group_ids
     from src.repositories import tool_registry_repo
 
+    authority = caller_authority(caller)
     tool_id = tool.get("tool_id")
-    is_admin = bool(caller_user_id) and is_user_admin(caller_user_id)
-    if not is_admin:
-        group_ids = list(_user_group_ids(caller_user_id)) if caller_user_id else []
+    if not authority.is_admin:
+        group_ids = list(_user_group_ids(authority.user_id)) if authority.user_id else []
         if not tool_registry_repo().is_granted_to_groups(tool_id, group_ids):
             raise GrantDenied(f"no grant on tool {tool_id!r} for your groups")
-    check_mutating(tool, is_admin=is_admin)
+    check_mutating(tool, is_admin=authority.is_admin)
+    allowed_sources = connection_scope_ids(authority)
+    if allowed_sources is not None and tool.get("source_id") not in allowed_sources:
+        raise ConnectionNotInScope(
+            f"tool {tool_id!r} belongs to a connection outside this agent's scope",
+        )
     # An unresolved caller never reaches here (fails closed on grant above), so
     # the rate-bucket key always carries a real user id for identified callers.
-    check_rate_limit(tool_id, caller_user_id or "", tool.get("rate_limit_pm"))
+    check_rate_limit(tool_id, authority.user_id or "", tool.get("rate_limit_pm"))
 
 
 # Remedy message templates. Web-first when a public URL is configured so a

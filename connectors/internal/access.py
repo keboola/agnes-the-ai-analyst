@@ -223,7 +223,15 @@ _SQL_DOLLAR_QUOTE_RE = re.compile(r"\$(\w*)\$[\s\S]*?\$\1\$")
 # non-admin queries is allowlist-by-construction (see
 # _materialized_internal_duckdb_from_duckdb) — this keeps the routing scan and
 # the denylist honest as defense-in-depth.
-_SQL_ESCAPE_STRING_RE = re.compile(r"(?<![A-Za-z0-9_])[eE]'(?:\\.|''|[^'])*'")
+#
+# ReDoS note (security audit F5): the body alternation MUST keep its branches
+# mutually exclusive so the regex engine has exactly one way to tokenise every
+# character. The earlier form `(?:\\.|''|[^'])*` let a lone backslash match
+# BOTH `\\.` and `[^']`, so a long run of backslashes produced exponential
+# backtracking and pinned a CPU (single-worker DoS). The `[^'\\]` first branch
+# below can never match a backslash, so `\\.` is the only path for one — linear
+# time. Keep the branches disjoint if you ever edit this.
+_SQL_ESCAPE_STRING_RE = re.compile(r"(?<![A-Za-z0-9_])[eE]'(?:[^'\\]|\\.|'')*'")
 
 # Single-quoted SQL string literals (with `''` escape handling). Stripped
 # before reference detection so a non-admin can't trigger the internal

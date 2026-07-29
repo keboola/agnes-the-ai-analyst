@@ -17,6 +17,7 @@ from src.repositories import (
     access_token_repo,
     audit_repo,
 )
+
 router = APIRouter(prefix="/auth/tokens", tags=["tokens"])
 admin_router = APIRouter(prefix="/auth/admin/tokens", tags=["tokens-admin"])
 
@@ -32,6 +33,11 @@ class CreateTokenRequest(BaseModel):
     # If set, wins over expires_in_days. Mirrors the same 10-year cap as
     # expires_in_days (3650 days * 86400 = 315_360_000 seconds).
     ttl_seconds: Optional[int] = None
+    # v106: credential data-read surface — 'all' (default here: self-service
+    # PATs back CI/automation, so no silent narrowing on upgrade) or 'stack'
+    # (catalog/query follow the owner's stack even for admins; the value is
+    # inert for non-admins, whose read surface is stack-scoped regardless).
+    surface: str = "all"
 
 
 class CreateTokenResponse(BaseModel):
@@ -51,10 +57,14 @@ class TokenListItem(BaseModel):
     expires_at: Optional[str]
     last_used_at: Optional[str]
     revoked_at: Optional[str]
+    # v106: 'all' | 'stack' — lets owners/admins audit which tokens still
+    # carry the full (god-mode-capable) read surface.
+    surface: Optional[str] = "all"
 
 
 class AdminTokenItem(TokenListItem):
     """Admin list row: adds owner identity + last IP for incident response."""
+
     user_id: str
     user_email: Optional[str] = None
     last_used_ip: Optional[str] = None
@@ -62,25 +72,29 @@ class AdminTokenItem(TokenListItem):
 
 def _audit(conn, actor: str, action: str, target: str, params=None):
     try:
-        audit_repo().log(user_id=actor, action=action,
-                                  resource=f"token:{target}", params=params)
+        audit_repo().log(user_id=actor, action=action, resource=f"token:{target}", params=params)
     except Exception:
         pass
 
 
 def _row_to_item(row: dict) -> TokenListItem:
     return TokenListItem(
-        id=row["id"], name=row["name"], prefix=row["prefix"],
+        id=row["id"],
+        name=row["name"],
+        prefix=row["prefix"],
         created_at=str(row.get("created_at") or ""),
         expires_at=str(row["expires_at"]) if row.get("expires_at") else None,
         last_used_at=str(row["last_used_at"]) if row.get("last_used_at") else None,
         revoked_at=str(row["revoked_at"]) if row.get("revoked_at") else None,
+        surface=row.get("surface") or "all",
     )
 
 
 def _row_to_admin_item(row: dict) -> AdminTokenItem:
     return AdminTokenItem(
-        id=row["id"], name=row["name"], prefix=row["prefix"],
+        id=row["id"],
+        name=row["name"],
+        prefix=row["prefix"],
         created_at=str(row.get("created_at") or ""),
         expires_at=str(row["expires_at"]) if row.get("expires_at") else None,
         last_used_at=str(row["last_used_at"]) if row.get("last_used_at") else None,
@@ -88,6 +102,7 @@ def _row_to_admin_item(row: dict) -> AdminTokenItem:
         user_id=row.get("user_id") or "",
         user_email=row.get("user_email"),
         last_used_ip=row.get("last_used_ip"),
+        surface=row.get("surface") or "all",
     )
 
 
@@ -99,6 +114,8 @@ async def create_token(
 ):
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="name is required")
+    if payload.surface not in ("all", "stack"):
+        raise HTTPException(status_code=400, detail="surface must be 'all' or 'stack'")
     if payload.expires_in_days is not None and payload.expires_in_days <= 0:
         raise HTTPException(status_code=400, detail="expires_in_days must be a positive integer")
     # Cap at 10 years — larger values overflow datetime.max during the
@@ -142,9 +159,12 @@ async def create_token(
     token_id = str(uuid.uuid4())
     # Build the JWT that embeds jti=token_id and typ=pat
     jwt_token = create_access_token(
-        user_id=user["id"], email=user["email"],
-        token_id=token_id, typ="pat",
-        expires_delta=expires_delta, omit_exp=omit_exp,
+        user_id=user["id"],
+        email=user["email"],
+        token_id=token_id,
+        typ="pat",
+        expires_delta=expires_delta,
+        omit_exp=omit_exp,
         extra_claims={"scope": payload.scope},
     )
     # Prefix: first 8 chars of the jti (UUID) — uniquely identifies the token in UI
@@ -154,13 +174,25 @@ async def create_token(
     # token_hash = sha256(raw JWT). Used in verify_token as defense-in-depth.
     token_hash = hashlib.sha256(jwt_token.encode()).hexdigest()
     repo.create(
-        id=token_id, user_id=user["id"], name=payload.name.strip(),
-        token_hash=token_hash, prefix=prefix, expires_at=expires_at,
+        id=token_id,
+        user_id=user["id"],
+        name=payload.name.strip(),
+        token_hash=token_hash,
+        prefix=prefix,
+        expires_at=expires_at,
+        surface=payload.surface,
     )
-    _audit(conn, user["id"], "token.create", token_id,
-           {"name": payload.name, "scope": payload.scope})
+    _audit(
+        conn,
+        user["id"],
+        "token.create",
+        token_id,
+        {"name": payload.name, "scope": payload.scope, "surface": payload.surface},
+    )
     return CreateTokenResponse(
-        id=token_id, name=payload.name.strip(), prefix=prefix,
+        id=token_id,
+        name=payload.name.strip(),
+        prefix=prefix,
         token=jwt_token,  # returned EXACTLY ONCE; never retrievable again
         expires_at=str(expires_at) if expires_at else None,
         created_at=str(datetime.now(timezone.utc)),
@@ -206,6 +238,7 @@ async def revoke_token(
 
 
 # Admin — list & revoke tokens across users (for incident response)
+
 
 @admin_router.get("", response_model=List[AdminTokenItem])
 async def admin_list_tokens(

@@ -135,7 +135,7 @@ def put_draft(
         user_id=user["id"],
         action="news_draft_saved",
         params={"version": row["version"], "by": user["email"]},
-        result="ok",
+        result="success",
     )
     return _serialize(row)
 
@@ -172,7 +172,7 @@ def post_publish(
         user_id=user["id"],
         action="news_published",
         params={"version": row["version"], "by": user["email"]},
-        result="ok",
+        result="success",
     )
     return _serialize(row)
 
@@ -194,7 +194,7 @@ def post_unpublish(
         user_id=user["id"],
         action="news_unpublished",
         params={"version": row["version"], "by": user["email"]},
-        result="ok",
+        result="success",
     )
     return _serialize(row)
 

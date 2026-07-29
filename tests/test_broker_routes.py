@@ -14,6 +14,7 @@ pattern).
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import httpx
 import pytest
@@ -21,8 +22,50 @@ import pytest
 from app.auth.jwt import create_access_token
 from app.chat.types import Surface
 from src.db import get_system_db
-from src.repositories import chat_session_repo, ticket_repo
+from src.repositories import agents_repo, chat_session_repo, ticket_repo
 from src.repositories.users import UserRepository
+
+
+def _shim_response(resp):
+    """Give a canned fake response the async surface the broker's stream-open
+    forward now uses (``aread``/``aclose``); a no-op for responses that
+    already have it (the real httpx ones)."""
+    if not hasattr(resp, "aread"):
+
+        async def _aread():
+            return resp.content
+
+        resp.aread = _aread
+    if not hasattr(resp, "aclose"):
+
+        async def _aclose():
+            return None
+
+        resp.aclose = _aclose
+    return resp
+
+
+class _StreamShimMixin:
+    """Bridge the broker's stream-open call shape (``build_request`` +
+    ``send(stream=True)`` + ``aclose``) back onto the fakes' legacy
+    ``request()`` capture methods, so every existing capture/stub keeps
+    working unchanged against the streaming forward."""
+
+    def build_request(self, method, url, *, content=None, headers=None, params=None):
+        return {"method": method, "url": url, "content": content, "headers": headers, "params": params}
+
+    async def send(self, req, stream=False):
+        resp = await self.request(
+            req["method"],
+            req["url"],
+            content=req["content"],
+            headers=req["headers"],
+            params=req["params"],
+        )
+        return _shim_response(resp)
+
+    async def aclose(self):
+        return None
 
 
 @pytest.fixture
@@ -42,6 +85,38 @@ def broker_app(e2e_env):
     from app.main import create_app
 
     return create_app()
+
+
+@pytest.fixture
+def broker_agent_session(e2e_env):
+    """Factory for a seeded user + agent (with a pinned model / budget) +
+    chat session bound to that agent — standing in for a spawned sandbox
+    running under an agent profile with model-policy/budget enforcement
+    active (Task 8, agent-profiles V1a)."""
+
+    def _make(*, model="claude-opus-4-7", token_budget_monthly=None):
+        tag = uuid.uuid4().hex[:8]
+        email = f"broker_agent_{tag}@test.com"
+        user_id = f"broker_agent_user_{tag}"
+        agent_id = str(uuid.uuid4())
+
+        conn = get_system_db()
+        UserRepository(conn).create(id=user_id, email=email, name="Broker Agent User")
+        conn.close()
+
+        agents_repo().create(
+            id=agent_id,
+            owner_user_id=user_id,
+            name="Broker Agent",
+            slug=f"broker-agent-{tag}",
+            model=model,
+            token_budget_monthly=token_budget_monthly,
+        )
+        session = chat_session_repo().create_session(user_email=email, surface=Surface.WEB, agent_id=agent_id)
+        tok = ticket_repo().mint(session.id, "main", ttl_seconds=60)
+        return {"session_id": session.id, "agent_id": agent_id, "tok": tok, "user_id": user_id}
+
+    return _make
 
 
 def test_expired_ticket_401(broker_app):
@@ -177,7 +252,7 @@ def test_anthropic_proxy_uses_generous_read_timeout(broker_app, monkeypatch):
         headers = {"content-type": "application/json"}
         content = b"{}"
 
-    class _FakeClient:
+    class _FakeClient(_StreamShimMixin):
         """Delegates to the real client for the test harness's own
         transport-backed client; fakes only the broker's outbound anthropic
         client (constructed with ``timeout=`` and no transport)."""
@@ -222,7 +297,7 @@ def test_anthropic_proxy_uses_generous_read_timeout(broker_app, monkeypatch):
     assert t.read is not None and t.read >= 60.0, t
 
 
-class _HeaderCapturingClient:
+class _HeaderCapturingClient(_StreamShimMixin):
     """Fake httpx.AsyncClient that delegates the harness's transport-backed
     client to the real one and captures the headers the broker's outbound
     anthropic client sends. Shared by the auth-mode tests below."""
@@ -352,7 +427,7 @@ def test_anthropic_proxy_wif_failure_returns_generic_detail(broker_app, monkeypa
     assert "workload_identity token exchange failed" in body
 
 
-class _StubResponseClient:
+class _StubResponseClient(_StreamShimMixin):
     """Fake httpx.AsyncClient whose outbound forward returns a canned upstream
     response, so we can drive the broker's LLM-credential health signal (#884).
 
@@ -419,7 +494,9 @@ def test_anthropic_proxy_records_credit_diagnostic(broker_app, monkeypatch):
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
     _StubResponseClient.status_code = 400
-    _StubResponseClient.body = b'{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}'
+    _StubResponseClient.body = (
+        b'{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}'
+    )
     monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _StubResponseClient)
     tok = ticket_repo().mint("chat_credit", "main", ttl_seconds=60)
 
@@ -479,6 +556,21 @@ def test_normalize_broker_path_rejects_smuggling():
             _normalize_broker_path(bad)
         assert ei.value.status_code == 400, bad
         assert ei.value.detail == "broker_path_must_be_local", bad
+
+
+def test_normalize_upstream_path_strips_trailing_and_collapses_duplicate_slashes():
+    """Unit: the model-policy/ledger gate and the `use_dispatcher` check in
+    ``anthropic_proxy`` must agree on the SAME normalized upstream path — a
+    literal `== "/v1/messages"` against the `{subpath:path}` wildcard
+    diverges for trailing/duplicate-slash variants."""
+    from app.api.broker import _normalize_upstream_path
+
+    assert _normalize_upstream_path("/v1/messages") == "/v1/messages"
+    assert _normalize_upstream_path("/v1/messages/") == "/v1/messages"
+    assert _normalize_upstream_path("//v1//messages") == "/v1/messages"
+    assert _normalize_upstream_path("/v1/messages/count_tokens") == "/v1/messages/count_tokens"
+    assert _normalize_upstream_path("/") == "/"
+    assert _normalize_upstream_path("") == "/"
 
 
 def test_admin_route_path_smuggling_rejected(broker_app, e2e_env):
@@ -556,6 +648,13 @@ def test_cosession_ticket_mints_cosession_jwt(broker_app, e2e_env):
     # the co-session JWT carries no real user identity (synthetic sub), only the session
     assert co_payload.get("sub") == f"session:{co.id}"
     assert co_payload.get("chat_session_id") == co.id
+    # The solo mint must ALSO carry chat_session_id bound to the resolved
+    # session — this is the claim `app.api.agent_memory` compares against the
+    # path {session_id} (C2 binding). A refactor that drops it from the solo
+    # mint would keep every scope-only assertion green while silently
+    # degrading the memory-write endpoint's session binding to "trust the
+    # URL path" (M1).
+    assert solo_payload.get("chat_session_id") == solo.id
     # BOTH broker mints must carry scope="chat" so the per-session BigQuery
     # scan-budget stash (`_stash_chat_session_id_from_token`) fires — it ignores
     # the chat_session_id claim without that scope, silently disabling the cap
@@ -630,9 +729,7 @@ def test_dispatcher_optin_other_subpaths_stay_on_anthropic(broker_app, monkeypat
 
     r = _post_broker_anthropic(broker_app, "/v1/messages/count_tokens", "chat_disp2")
     assert r.status_code == 200
-    assert _UrlCapturingClient._captured_url == (
-        "https://api.anthropic.com/v1/messages/count_tokens"
-    )
+    assert _UrlCapturingClient._captured_url == ("https://api.anthropic.com/v1/messages/count_tokens")
     h = _lower_keys(_UrlCapturingClient._captured)
     assert h.get("x-api-key") == "sk-ant-static-KEY"
 
@@ -696,3 +793,474 @@ def test_dispatcher_optin_empty_key_logs_warning(broker_app, monkeypatch, caplog
     assert r.status_code == 200
     assert _UrlCapturingClient._captured_url == "http://127.0.0.1:8600/v1/messages"
     assert any("LLM_DISPATCHER_API_KEY is empty" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Task 8 wiring: per-agent model policy / usage ledger / budget, exercised
+# end-to-end through anthropic_proxy (not just the pure-logic unit tests in
+# tests/test_broker_agent_policy.py).
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_proxy_pinned_model_rejects_foreign_model(broker_app, broker_agent_session):
+    """(a) A pinned-model agent's session posting a body with a foreign
+    model gets 403 model_not_allowed, BEFORE any upstream call — and the
+    budget headers are present because this agent has a budget configured."""
+    ctx = broker_agent_session(model="claude-opus-4-7", token_budget_monthly=100_000)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {ctx['tok']}"},
+                json={"model": "some-other-vendor-model", "messages": []},
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "model_not_allowed"
+    assert r.headers.get("x-agnes-budget-limit") == "100000"
+    assert r.headers.get("x-agnes-budget-used") == "0"
+
+
+def test_anthropic_proxy_budget_exhausted_no_retry_after(broker_app, broker_agent_session):
+    """(b) An agent with a tiny monthly budget, already over it per the
+    llm_usage ledger, gets 429 budget_exhausted with NO Retry-After header
+    (SDKs must not auto-retry a budget exhaustion) but WITH the budget
+    headers — raised before any upstream call."""
+    from src.repositories import llm_usage_repo
+
+    ctx = broker_agent_session(model="claude-opus-4-7", token_budget_monthly=10)
+
+    llm_usage_repo().insert_batch(
+        [
+            {
+                "id": str(uuid.uuid4()),
+                "agent_id": ctx["agent_id"],
+                "user_id": ctx["user_id"],
+                "session_id": ctx["session_id"],
+                "model": "claude-opus-4-7",
+                "input_tokens": 50,
+                "output_tokens": 50,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+        ]
+    )
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {ctx['tok']}"},
+                json={"model": "claude-opus-4-7", "messages": []},
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 429, r.text
+    assert r.json()["detail"]["code"] == "budget_exhausted"
+    assert "retry-after" not in {k.lower() for k in r.headers.keys()}
+    assert r.headers.get("x-agnes-budget-limit") == "10"
+    assert r.headers.get("x-agnes-budget-used") == "100"
+
+
+def test_anthropic_proxy_happy_path_records_usage_and_budget_headers(broker_app, broker_agent_session, monkeypatch):
+    """(c) A pinned-model agent's matching-model request forwards to the
+    (mocked) upstream, returns 200 with x-agnes-budget-* headers, and the
+    usage row lands in the llm_usage ledger once the accumulator is
+    flushed. Mirrors the existing _StubResponseClient fake-upstream pattern
+    used by the credit/health-diagnostic tests above."""
+    import json
+
+    import app.api.broker as broker_mod
+    from app.api.broker_agent_policy import usage_accumulator
+    from src.repositories import llm_usage_repo
+
+    ctx = broker_agent_session(model="claude-opus-4-7", token_budget_monthly=100_000)
+
+    _StubResponseClient.status_code = 200
+    _StubResponseClient.body = json.dumps(
+        {
+            "id": "msg_happy",
+            "model": "claude-opus-4-7",
+            "usage": {"input_tokens": 11, "output_tokens": 7},
+        }
+    ).encode()
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _StubResponseClient)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {ctx['tok']}"},
+                json={"model": "claude-opus-4-7", "messages": []},
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 200, r.text
+    assert r.headers.get("x-agnes-budget-limit") == "100000"
+    assert r.headers.get("x-agnes-budget-used") == "0"
+
+    usage_accumulator.flush()
+    rows = llm_usage_repo().list_for_agent(ctx["agent_id"])
+    assert len(rows) == 1
+    assert rows[0]["input_tokens"] == 11
+    assert rows[0]["output_tokens"] == 7
+# --- POST /api/broker/data-apps (Task 7, wave 3B) ---------------------------
+#
+# Mirrors the `agnes-api`/`agnes-mcp` twin-endpoint pattern: a `data_apps`
+# scoped ticket, minted at chat spawn, lets the sandboxed authoring agent
+# replay `/api/data-apps/*` requests under its resolved identity instead of
+# carrying a raw PAT. The route additionally confines the replayed path to
+# the `/api/data-apps` prefix — every other path (even a non-admin one) is
+# rejected with `path_not_allowed`, on top of (not instead of) the generic
+# `_replay` admin-route gate.
+
+
+@pytest.fixture
+def broker_env(e2e_env):
+    """A seeded user + chat session with a data_apps-scoped ticket, data_apps
+    feature enabled, and a real TestClient(app) — standing in for the
+    sandboxed authoring agent's broker call."""
+    import yaml
+    from fastapi.testclient import TestClient
+
+    import app.instance_config as instance_config
+    from app.main import create_app
+
+    data_dir = e2e_env["data_dir"]
+    state = data_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "instance.yaml").write_text(yaml.dump({"data_apps": {"enabled": True}}))
+    instance_config._instance_config = None
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="broker_da_user1", email="broker_da@test.com", name="Broker DA User")
+    conn.close()
+
+    session = chat_session_repo().create_session(user_email="broker_da@test.com", surface=Surface.WEB)
+    tok = ticket_repo().mint(session.id, "data_apps")
+
+    client = TestClient(create_app())
+    return client, tok
+
+
+@pytest.fixture
+def broker_env_main_scope(e2e_env):
+    """Same as `broker_env`, but the ticket is minted with the `main` scope —
+    used to prove a wrong-scope ticket cannot authenticate the data-apps
+    broker route."""
+    import yaml
+    from fastapi.testclient import TestClient
+
+    import app.instance_config as instance_config
+    from app.main import create_app
+
+    data_dir = e2e_env["data_dir"]
+    state = data_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "instance.yaml").write_text(yaml.dump({"data_apps": {"enabled": True}}))
+    instance_config._instance_config = None
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="broker_da_user2", email="broker_da_main@test.com", name="Broker DA Main User")
+    conn.close()
+
+    session = chat_session_repo().create_session(user_email="broker_da_main@test.com", surface=Surface.WEB)
+    tok = ticket_repo().mint(session.id, "main")
+
+    client = TestClient(create_app())
+    return client, tok
+
+
+def test_broker_data_apps_scope(broker_env):
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/data-apps", "method": "GET"},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_broker_data_apps_wrong_scope_rejected(broker_env_main_scope):
+    client, ticket = broker_env_main_scope
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/data-apps", "method": "GET"},
+    )
+    assert r.status_code == 401 and r.json()["detail"] == "ticket_scope_mismatch"
+
+
+def test_broker_data_apps_path_confined(broker_env):
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/admin/users", "method": "GET"},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
+
+
+def test_broker_data_apps_dot_segment_traversal_rejected(broker_env):
+    """A literal `..` segment collapses (via the same `_normalize_broker_path`
+    canonicalizer `_replay` uses) to a real, non-admin, out-of-prefix route —
+    `/api/data-apps/../catalog` resolves to `/api/catalog`. A raw-string
+    prefix check on the agent-supplied path would pass this through; the gate
+    must decide on the canonicalized path instead (mirrors the admin-route
+    gate hardening on #849)."""
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/data-apps/../catalog", "method": "GET"},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
+
+
+@pytest.mark.parametrize(
+    "evil_path",
+    [
+        "/api/data-apps/%2e%2e/catalog",
+        "/api/data-apps/..%2fcatalog",
+    ],
+)
+def test_broker_data_apps_percent_encoded_traversal_rejected(broker_env, evil_path):
+    """Percent-encoded dot-segments survive `_normalize_broker_path`'s decode
+    without being collapsed (httpx only collapses *literal* `..` at URL
+    construction time), so the canonicalized path still starts with
+    `/api/data-apps/` while carrying a literal `..` segment. No legitimate
+    `/api/data-apps/*` call needs a `..` segment, so these are rejected
+    outright rather than trusted to 404 harmlessly."""
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": evil_path, "method": "GET"},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
+
+
+def test_broker_data_apps_prefix_boundary_rejected(broker_env):
+    """`/api/data-apps-evil` shares the `/api/data-apps` string prefix but is
+    a different (hypothetical) route, not a sub-path — the confinement check
+    must be an exact-or-slash-boundary match, not a bare `str.startswith`."""
+    client, ticket = broker_env
+    r = client.post(
+        "/api/broker/data-apps",
+        headers={"Authorization": f"Bearer {ticket}"},
+        json={"path": "/api/data-apps-evil", "method": "GET"},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == "path_not_allowed"
+
+
+def test_anthropic_sse_streams_through_without_buffering(broker_app, monkeypatch):
+    """A 2xx ``text/event-stream`` completion must flow through the broker as
+    a stream: the outbound forward opens with ``stream=True``, the body is
+    NEVER buffered server-side (``aread`` not called — buffering here
+    collapsed every token delta into one end-of-turn burst), the SSE
+    content-type reaches the caller, and the upstream response + client are
+    closed once the stream is consumed."""
+    import app.api.broker as broker_mod
+
+    calls: dict = {}
+    real_cls = httpx.AsyncClient
+
+    class _SSEClient(_StreamShimMixin):
+        def __init__(self, *a, **k):
+            self._real = real_cls(*a, **k) if "transport" in k else None
+
+        async def __aenter__(self):
+            return await self._real.__aenter__() if self._real else self
+
+        async def __aexit__(self, *a):
+            return await self._real.__aexit__(*a) if self._real else False
+
+        async def send(self, req, stream=False):
+            calls["stream"] = stream
+
+            class _R:
+                status_code = 200
+                headers = {"content-type": "text/event-stream"}
+
+                async def aiter_bytes(self):
+                    yield b"event: message_start\n\n"
+                    yield b"event: content_block_delta\n\n"
+
+                async def aread(self):
+                    calls["aread"] = True
+                    return b""
+
+                async def aclose(self):
+                    calls["closed"] = True
+
+            return _R()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _SSEClient)
+    tok = ticket_repo().mint("chat_sse", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {tok}"},
+                content=b'{"model":"x","stream":true}',
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert b"message_start" in r.content and b"content_block_delta" in r.content
+    assert calls["stream"] is True, "outbound forward must open with stream=True"
+    assert "aread" not in calls, "SSE body must not be buffered server-side"
+    assert calls.get("closed") is True, "upstream must be closed after the stream drains"
+
+
+def test_anthropic_sse_upstream_closed_even_when_stream_breaks(broker_app, monkeypatch):
+    """Regression (RBAC review on #1020): Starlette's ``background=`` callback
+    only runs on the happy path — if the SSE body iterator raises mid-stream
+    (upstream drop) or the client walks away, a background-task cleanup never
+    fires and the upstream response + per-request client leak. Cleanup lives
+    in the pass-through iterator's ``finally``, which runs even when the
+    stream breaks."""
+    import app.api.broker as broker_mod
+
+    calls: dict = {}
+    real_cls = httpx.AsyncClient
+
+    class _BreakingSSEClient(_StreamShimMixin):
+        def __init__(self, *a, **k):
+            self._real = real_cls(*a, **k) if "transport" in k else None
+
+        async def __aenter__(self):
+            return await self._real.__aenter__() if self._real else self
+
+        async def __aexit__(self, *a):
+            return await self._real.__aexit__(*a) if self._real else False
+
+        async def send(self, req, stream=False):
+            class _R:
+                status_code = 200
+                headers = {"content-type": "text/event-stream"}
+
+                async def aiter_bytes(self):
+                    yield b"event: message_start\n\n"
+                    raise RuntimeError("simulated upstream drop mid-stream")
+
+                async def aread(self):
+                    return b""
+
+                async def aclose(self):
+                    calls["resp_closed"] = True
+
+            return _R()
+
+        async def aclose(self):
+            calls["client_closed"] = True
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _BreakingSSEClient)
+    tok = ticket_repo().mint("chat_sse_break", "main", ttl_seconds=60)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            try:
+                await c.post(
+                    "/api/broker/anthropic/v1/messages",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    content=b'{"model":"x","stream":true}',
+                )
+            except Exception:
+                # The mid-stream break propagates through the ASGI transport —
+                # expected; the assertion is about cleanup, not the error.
+                pass
+
+    asyncio.run(_run())
+    assert calls.get("resp_closed") is True, "upstream response must close when the stream breaks"
+    assert calls.get("client_closed") is True, "per-request client must close when the stream breaks"
+
+
+def test_anthropic_sse_stream_records_agent_usage(broker_app, broker_agent_session, monkeypatch):
+    """Streaming counterpart of the buffered happy-path usage test: a 2xx
+    ``text/event-stream`` completion for an agent-attributed session must
+    land in the llm_usage ledger once the stream drains — the buffered
+    recording branch never runs for SSE, so the passthrough iterator's
+    finally-block mirror does the recording (Devin review: budgets never
+    fired for ordinary streamed turns)."""
+    import app.api.broker as broker_mod
+    from app.api.broker_agent_policy import usage_accumulator
+    from src.repositories import llm_usage_repo
+
+    ctx = broker_agent_session(model="claude-opus-4-7", token_budget_monthly=100_000)
+
+    real_cls = httpx.AsyncClient
+
+    class _SSEUsageClient(_StreamShimMixin):
+        def __init__(self, *a, **k):
+            self._real = real_cls(*a, **k) if "transport" in k else None
+
+        async def __aenter__(self):
+            return await self._real.__aenter__() if self._real else self
+
+        async def __aexit__(self, *a):
+            return await self._real.__aexit__(*a) if self._real else False
+
+        async def send(self, req, stream=False):
+            class _R:
+                status_code = 200
+                headers = {"content-type": "text/event-stream"}
+
+                async def aiter_bytes(self):
+                    yield (
+                        b'event: message_start\n'
+                        b'data: {"type":"message_start","message":{"model":"claude-opus-4-7",'
+                        b'"usage":{"input_tokens":11,"output_tokens":0}}}\n\n'
+                    )
+                    yield b'event: content_block_delta\ndata: {"type":"content_block_delta"}\n\n'
+                    yield (
+                        b'event: message_delta\n'
+                        b'data: {"type":"message_delta","usage":{"output_tokens":7}}\n\n'
+                    )
+
+                async def aclose(self):
+                    pass
+
+            return _R()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(broker_mod.httpx, "AsyncClient", _SSEUsageClient)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-static")
+
+    async def _run():
+        transport = httpx.ASGITransport(app=broker_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post(
+                "/api/broker/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {ctx['tok']}"},
+                json={"model": "claude-opus-4-7", "messages": [], "stream": True},
+            )
+
+    r = asyncio.run(_run())
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert b"message_delta" in r.content
+
+    usage_accumulator.flush()
+    rows = llm_usage_repo().list_for_agent(ctx["agent_id"])
+    assert len(rows) == 1
+    assert rows[0]["input_tokens"] == 11
+    assert rows[0]["output_tokens"] == 7

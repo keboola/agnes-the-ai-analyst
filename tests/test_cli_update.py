@@ -278,6 +278,16 @@ def test_default_mode_converges_and_writes_report(monkeypatch, tmp_path):
     monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "no-clone")
     monkeypatch.setattr(rm, "refresh_marketplace", lambda *, check, bootstrap: None)
 
+    # Step 4b: session catch-up push stub (real `_step_push` still runs, so the
+    # JSON-summary → report-line path is covered here too).
+    import cli.commands.push as push_cmd
+
+    monkeypatch.setattr(
+        push_cmd,
+        "push",
+        lambda **k: typer.echo(json.dumps({"sessions": 2, "local_md": True, "errors": []})),
+    )
+
     # Step 5: pull stub.
     import cli.lib.pull as pull
 
@@ -297,9 +307,11 @@ def test_default_mode_converges_and_writes_report(monkeypatch, tmp_path):
     assert log.exists()
     entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
     stages = {s["stage"] for s in entry["steps"]}
-    assert {"cli", "workspace", "agnes-owned", "marketplace", "pull"} <= stages
+    assert {"cli", "workspace", "agnes-owned", "marketplace", "push", "pull"} <= stages
     ws_step = next(s for s in entry["steps"] if s["stage"] == "workspace")
     assert ws_step["status"] == "refreshed"
+    push_step = next(s for s in entry["steps"] if s["stage"] == "push")
+    assert push_step == {"stage": "push", "status": "ok", "detail": "2 session(s) + CLAUDE.local.md"}
 
 
 def test_update_backfills_workspace_root_for_legacy_workspace(monkeypatch, tmp_path):
@@ -362,6 +374,13 @@ def test_json_output_is_single_object_despite_step_noise(monkeypatch, tmp_path):
     monkeypatch.setattr(
         rm, "refresh_marketplace", lambda *, check, bootstrap: _typer.echo("NOISE that would break json.loads")
     )
+    import cli.commands.push as push_cmd
+
+    monkeypatch.setattr(
+        push_cmd,
+        "push",
+        lambda **k: _typer.echo("PUSH NOISE\n" + json.dumps({"sessions": 0, "local_md": False, "errors": []})),
+    )
     import cli.lib.pull as pull
 
     monkeypatch.setattr(pull, "run_pull", lambda *a, **k: _FakePull())
@@ -371,7 +390,7 @@ def test_json_output_is_single_object_despite_step_noise(monkeypatch, tmp_path):
     # Whole stdout parses as ONE json object — no leaked step noise.
     entry = json.loads(result.stdout.strip())
     assert "NOISE" not in result.stdout
-    assert "marketplace" in {s["stage"] for s in entry["steps"]}
+    assert {"marketplace", "push"} <= {s["stage"] for s in entry["steps"]}
 
 
 def test_update_exits_zero_when_config_dir_unwritable(monkeypatch):
@@ -850,3 +869,155 @@ def test_step_launcher_noop_without_evidence(monkeypatch, tmp_path):
 
     assert report == [{"stage": "launcher", "status": "ok", "detail": "absent"}]
     assert not (home / ".local" / "bin").exists()
+
+
+# --- _step_push (SessionStart catch-up) -----------------------------------------
+
+
+def _stub_push(monkeypatch, *lines: str):
+    """Replace the `push` command callback with one that echoes *lines*.
+
+    `_step_push` imports `push` from the module at call time, so patching the
+    module attribute is what the real code resolves.
+    """
+    import cli.commands.push as push_cmd
+
+    calls: list[dict] = []
+
+    def fake_push(**kwargs):
+        calls.append(kwargs)
+        for line in lines:
+            typer.echo(line)
+
+    monkeypatch.setattr(push_cmd, "push", fake_push)
+    return calls
+
+
+def test_step_push_reports_uploaded_counts(monkeypatch):
+    calls = _stub_push(
+        monkeypatch,
+        json.dumps({"sessions": 3, "local_md": True, "errors": [], "private_skipped": 1}),
+    )
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert report == [{"stage": "push", "status": "ok", "detail": "3 session(s) + CLAUDE.local.md, 1 private skipped"}]
+    # Machine-readable mode is what the report line is parsed from.
+    assert calls == [{"quiet": False, "as_json": True, "dry_run": False}]
+
+
+def test_step_push_omits_local_md_when_not_uploaded(monkeypatch):
+    _stub_push(monkeypatch, json.dumps({"sessions": 0, "local_md": False, "errors": []}))
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert report == [{"stage": "push", "status": "ok", "detail": "0 session(s)"}]
+
+
+def test_step_push_skipped_when_another_push_holds_lock(monkeypatch):
+    """push returns WITHOUT emitting JSON when the per-workspace lock is held
+    (typically the previous session's still-running detached SessionEnd push,
+    doing this very same folder scan). That is a success, not an error."""
+    _stub_push(monkeypatch)  # emits nothing
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert report == [{"stage": "push", "status": "skipped", "detail": "another push already running"}]
+
+
+def test_step_push_reports_upload_errors(monkeypatch):
+    _stub_push(
+        monkeypatch,
+        json.dumps({"sessions": 1, "local_md": False, "errors": [{"file": "a.jsonl", "status": 413}]}),
+    )
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert len(report) == 1
+    assert report[0]["stage"] == "push"
+    assert report[0]["status"] == "error"
+    assert "413" in report[0]["detail"]
+
+
+def test_step_push_survives_unparseable_output(monkeypatch):
+    _stub_push(monkeypatch, "not json at all")
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert report[0]["status"] == "error"
+    assert "unparseable push output" in report[0]["detail"]
+
+
+def test_step_push_captures_push_stdout(monkeypatch, capsys):
+    """push's stdout must never reach the terminal: `agnes update --json` emits
+    exactly one object and the `--quiet` SessionStart hook emits nothing. The
+    JSON is read from the LAST line, so leading noise is tolerated."""
+    _stub_push(monkeypatch, "progress noise", json.dumps({"sessions": 2, "local_md": False, "errors": []}))
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert capsys.readouterr().out == ""
+    assert report[0]["detail"] == "2 session(s)"
+
+
+def test_push_step_runs_before_pull(monkeypatch, tmp_path):
+    """Ordering is load-bearing: a missed session stays invisible server-side
+    until it lands, while a parquet download can take minutes."""
+    workspace = tmp_path / "ws"
+    (workspace / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
+    monkeypatch.setattr(upd, "_config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(upd, "get_server_url", lambda: "http://s")
+    monkeypatch.setattr(upd, "get_token", lambda: "tok")
+
+    ran: list[str] = []
+    monkeypatch.setattr(upd, "_step_cli", lambda **k: ran.append("cli"))
+    monkeypatch.setattr(upd, "_step_workspace", lambda *a, **k: ran.append("workspace"))
+    monkeypatch.setattr(upd, "_step_agnes_owned", lambda *a, **k: ran.append("agnes-owned"))
+    monkeypatch.setattr(upd, "_step_launcher", lambda *a, **k: ran.append("launcher"))
+    monkeypatch.setattr(upd, "_step_marketplace", lambda *a, **k: ran.append("marketplace"))
+    monkeypatch.setattr(upd, "_step_push", lambda *a, **k: ran.append("push"))
+    monkeypatch.setattr(upd, "_step_pull", lambda *a, **k: ran.append("pull"))
+
+    result = runner.invoke(update_app, ["--json"])
+    assert result.exit_code == 0, result.output
+    assert "push" in ran and "pull" in ran
+    assert ran.index("push") < ran.index("pull"), ran
+
+
+def test_step_push_skip_matches_real_push_lock_behavior(monkeypatch, tmp_path):
+    """Integration guard for the assumption behind the "skipped" branch: the
+    REAL push callback returns without emitting its `--json` object when the
+    per-workspace lock is held. If push ever starts emitting a summary on that
+    path, this fails and `_step_push` needs a different signal."""
+    from contextlib import contextmanager as _contextmanager
+
+    workspace = tmp_path / "ws"
+    (workspace / ".claude").mkdir(parents=True)
+
+    monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
+    monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
+    monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: str(workspace))
+
+    @_contextmanager
+    def _lock_held(_workspace):
+        yield None
+
+    monkeypatch.setattr("cli.commands.push.acquire_or_skip", _lock_held)
+
+    def _no_network(*a, **k):
+        raise AssertionError("push must not touch the network when the lock is held")
+
+    monkeypatch.setattr("cli.commands.push.api_get", _no_network)
+    monkeypatch.setattr("cli.commands.push.api_post", _no_network)
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert report == [{"stage": "push", "status": "skipped", "detail": "another push already running"}]

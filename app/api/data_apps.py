@@ -11,16 +11,26 @@ Endpoints (see ``docs/superpowers/plans/2026-07-21-data-apps-platform.md``
 Task 7 for the full design rationale):
 
   - ``GET    /api/data-apps``                — list apps the caller can see
+    (drafts excluded — see the ``{slug}`` detail's inlined ``drafts`` field)
   - ``POST   /api/data-apps``                — create (quota + slug checks)
-  - ``GET    /api/data-apps/{slug}``          — detail (RBAC-gated)
+  - ``GET    /api/data-apps/{slug}``          — detail (RBAC-gated); prod
+    apps carry an inlined ``drafts: [...]`` list
   - ``POST   /api/data-apps/{slug}/deploy``   — fast-forward + mint service
     token + build spec + hand to the runner sidecar
   - ``POST   /api/data-apps/{slug}/stop``     — runner stop, state -> stopped
   - ``DELETE /api/data-apps/{slug}``          — runner stop + token revoke +
-    row delete (repo directory intentionally left on disk)
+    row delete (repo directory intentionally left on disk); cascades to any
+    live drafts
+  - ``POST   /api/data-apps/{slug}/drafts``   — create a draft copy on a
+    branch (owner/Admin of the parent)
+  - ``DELETE /api/data-apps/{slug}/drafts/{draft_slug}`` — tear down one
+    draft (owner/Admin of the parent)
   - ``PUT    /api/data-apps/{slug}/secrets``  — encrypt + store secrets
   - ``GET    /api/data-apps/{slug}/logs``     — runner logs (owner/Admin)
   - ``GET    /api/data-apps/{slug}/readiness``— any RBAC-passing caller
+  - ``POST   /api/data-apps/{slug}/preview-grant`` — mint a short-TTL
+    ``data-app-preview:<slug>`` cookie for the in-chat preview iframe (wave
+    3C, spec §7); any RBAC-passing caller (view access is enough)
   - ``POST   /api/data-apps/reap-idle``       — admin-only idle sweep
 
 RBAC: owner of the app, Admin (god-mode), or a group holding a
@@ -34,24 +44,30 @@ seam the whole feature's tests rely on.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
+import re as _re
 import shutil
+import subprocess
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy import exc as sa_exc
 
 from app.auth.access import can_access, is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.jwt import create_access_token
-from app.instance_config import get_data_apps_config, get_public_url
+from app.auth.pat_resolver import DATA_APP_PREVIEW_SCOPE_PREFIX
+from app.instance_config import feature_enabled, get_data_apps_config, get_public_url
 from app.resource_types import ResourceType
 from app.secrets_vault import VaultKeyNotConfiguredError, decrypt_secret, encrypt_secret
 from src.data_apps.git_repos import fast_forward_live, init_app_repo
@@ -62,6 +78,32 @@ from src.repositories import access_token_repo, audit_repo, data_apps_repo, user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data-apps", tags=["data-apps"])
+
+# Branch names accepted by `POST /{slug}/drafts` — a conservative git
+# ref-component charset (lowercase alnum + `.` `_` `/` `-`), not the full
+# git-check-ref-format grammar; good enough to reject shell/path-hostile
+# input before it reaches `ensure_branch`'s `update-ref` call. This charset
+# check alone still admits several forms `git-check-ref-format` refuses
+# (`a..b`, `a//b`, a trailing `/` or `.`, an `x.lock` suffix) — those are
+# rejected by `_is_git_valid_branch` below, checked alongside this regex.
+_BRANCH_RE = _re.compile(r"^[a-z0-9][a-z0-9._/-]{0,60}$")
+
+
+def _is_git_valid_branch(branch: str) -> bool:
+    """Reject branch names `_BRANCH_RE`'s charset check lets through but
+    `git update-ref` itself refuses (``man git-check-ref-format``, abridged
+    to the rules a lowercase-alnum-`.`-`_`-`/`-`-` charset can still hit):
+    a ``..`` component separator, a ``//`` empty path component, a
+    trailing ``/`` or ``.``, and an ``x.lock`` suffix (reserved for git's
+    own lockfiles). Checked *before* `ensure_branch` runs so a git-invalid
+    name never reaches `subprocess.run(..., check=True)` and surfaces as an
+    unhandled `CalledProcessError` (belt-and-braces: `create_draft` also
+    catches that exception, in case some other git-invalid form slips past
+    this check)."""
+    return not (
+        ".." in branch or "//" in branch or branch.endswith("/") or branch.endswith(".") or branch.endswith(".lock")
+    )
+
 
 # idle_timeout_s clamp — 5 minutes .. 24 hours. Prevents an accidental 0/huge
 # value from either reaping an app instantly or never reaping it at all.
@@ -250,7 +292,7 @@ def _audit(
 
 
 def _feature_gate() -> None:
-    if not get_data_apps_config().get("enabled"):
+    if not feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
         raise HTTPException(status_code=404, detail="data_apps_disabled")
 
 
@@ -321,6 +363,22 @@ def _revoke_service_token(row: dict) -> None:
         logger.warning("failed to revoke previous service token %s for data app %s", token_id, row["slug"])
 
 
+def _rmtree_config_dir(slug: str) -> None:
+    """Best-effort removal of the RUNTIME config dir (``${DATA_DIR}/apps/<slug>``,
+    holding the ``config.json`` apps-runner wrote — see ``_resolve_host_path``
+    in ``services/apps_runner/api.py``). It carries the now-revoked service
+    JWT in plaintext, so it's removed as hygiene on both a full app delete
+    (``delete_data_app``) and a single draft delete/cascade
+    (``_teardown_draft``). Shared so the two call sites can't drift."""
+    config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
+    try:
+        shutil.rmtree(config_dir, ignore_errors=False)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("failed to remove config dir %s (continuing)", config_dir)
+
+
 def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
     """Mint a PAT for this app's owner, store it via `access_token_repo().create`,
     and return the new token id.
@@ -359,6 +417,150 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
     return token_id, jwt_token
 
 
+_GIT_CREDENTIAL_TTL = timedelta(hours=24)
+
+
+def _mint_git_credential(row: dict) -> str:
+    """Mint a PAT scoped `data-app-git:<slug>` for this app's owner and
+    return a clone URL with it embedded as `agnes:<jwt>@` basic-auth.
+
+    This is the *agent's* push credential for working on the app's repo —
+    independent of (and never stored as) the container's own
+    `service_token_id` runtime credential minted by `_mint_service_token`.
+    Unlike that one (deliberately unbounded, mirrors upstream's "unlimited
+    per-app credentials"), this credential is scoped to a single authoring
+    session — it expires after `_GIT_CREDENTIAL_TTL` (24h), stored on both
+    the JWT's `exp` claim (via `expires_delta`) and the DB row's
+    `expires_at`, kept in sync so neither outlives the other.
+
+    The base URL is `get_public_url()` (same helper `create_data_app` uses
+    for its own `git_url`) so the clone URL works from an analyst laptop,
+    the MCP tool, or a remote sandbox — none of which can resolve
+    `AGNES_INTERNAL_URL` (the in-cluster hostname). Unlike `create_data_app`,
+    which falls back to a root-relative path when no public URL is
+    configured, this credential must embed `agnes:<jwt>@` into an absolute
+    URL with a scheme+host to put the basic-auth in, so an unconfigured
+    public URL falls back to `AGNES_INTERNAL_URL` instead (the previous,
+    always-internal behavior) rather than a schemeless path. This is
+    unrelated to `redeploy_current`'s own `clone_url`, which stays on
+    `AGNES_INTERNAL_URL` unconditionally — that one is used *inside* the
+    container's config.json, which only ever runs in-cluster.
+    """
+    owner = users_repo().get_by_id(row["owner_user_id"])
+    if not owner:
+        raise OwnerNotFoundError(row["owner_user_id"])
+    slug = row["slug"]
+    token_id = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + _GIT_CREDENTIAL_TTL
+    jwt_token = create_access_token(
+        user_id=owner["id"],
+        email=owner["email"],
+        token_id=token_id,
+        typ="pat",
+        expires_delta=_GIT_CREDENTIAL_TTL,
+        extra_claims={"scope": f"data-app-git:{slug}"},
+    )
+    access_token_repo().create(
+        id=token_id,
+        user_id=owner["id"],
+        name=f"data-app-git:{slug}",
+        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+        prefix=token_id.replace("-", "")[:8],
+        expires_at=expires_at,
+    )
+    base = get_public_url() or AGNES_INTERNAL_URL
+    return f"{base.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
+
+
+# Cookie carrying a `data-app-preview:<slug>` token — see `_mint_preview_token`.
+# One name reused across every app: `Path=/apps/<slug>/` (set per-mint) keeps
+# two different apps' cookies from ever colliding in the browser jar, since
+# their paths never overlap.
+_PREVIEW_COOKIE_NAME = "adp_preview"
+
+# Q4 (spec §7/§11): 30-minute default TTL, renewed on every
+# `agnes_data_app_preview` call, hard-capped by SessionEnd's best-effort
+# revoke (`revoke_preview_tokens_for_user`, called from `app/chat/manager.py`).
+_PREVIEW_TOKEN_TTL_S = 1800
+
+
+def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOKEN_TTL_S) -> tuple[str, str]:
+    """Mint a short-TTL `data-app-preview:<slug>` scoped token for the
+    ``requester`` (the RBAC-approved caller who asked for the grant — owner,
+    Admin, or a granted viewer, NOT necessarily the app owner) and return
+    `(jwt, set_cookie_header)`. Minting under the caller — not the app owner —
+    is what lets the SessionEnd revoke (keyed on the chat session's user) find
+    and tear down the grant, and keeps proxy-side attribution honest.
+
+    Migration-free by design (Q4): reuses the existing `access_tokens` table
+    (`scopes`/`expires_at` already exist) rather than adding TTL state to the
+    durable `resource_grants` model. Mirrors `_mint_git_credential` almost
+    exactly — same mint-then-persist shape, same JWT `exp` / DB `expires_at`
+    pairing so neither outlives the other — except the credential here is a
+    view-only capability accepted ONLY by the ingress proxy's serving path
+    (`app/api/data_apps_proxy.py`), never the JSON control-plane API (see
+    `DATA_APP_PREVIEW_SCOPE_PREFIX`'s fail-closed default in
+    `app.auth.pat_resolver.resolve_token_to_user`).
+
+    The cookie is delivered to the browser, never a URL query parameter (an
+    iframe `src`'s history/referrer would leak it) — `Path=/apps/<slug>/`
+    scopes it to exactly the app it authorizes; `HttpOnly` keeps it out of
+    the hosted app's own (less-trusted) JS; `SameSite=Lax` is enough since
+    the iframe navigation that sends it is a plain top-level-adjacent GET,
+    not a cross-site POST.
+    """
+    slug = row["slug"]
+    token_id = str(uuid.uuid4())
+    ttl = timedelta(seconds=ttl_s)
+    expires_at = datetime.now(timezone.utc) + ttl
+    jwt_token = create_access_token(
+        user_id=requester["id"],
+        email=requester["email"],
+        token_id=token_id,
+        typ="pat",
+        expires_delta=ttl,
+        extra_claims={"scope": f"{DATA_APP_PREVIEW_SCOPE_PREFIX}{slug}"},
+    )
+    access_token_repo().create(
+        id=token_id,
+        user_id=requester["id"],
+        name=f"{DATA_APP_PREVIEW_SCOPE_PREFIX}{slug}",
+        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+        prefix=token_id.replace("-", "")[:8],
+        expires_at=expires_at,
+    )
+    # `Path=/apps/<slug>/` assumes path-prefix ingress (the verified default;
+    # `data_apps.subdomain_base` unset). In subdomain mode the app is served at
+    # `<slug>.<subdomain_base>/` — a different origin whose paths start at `/` —
+    # so the preview loop (same-origin fetch + this cookie) is path-prefix-only
+    # for now; subdomain-mode preview is a follow-up (needs a cross-origin
+    # cookie set on the subdomain, which the same-origin fetch can't do).
+    cookie = f"{_PREVIEW_COOKIE_NAME}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/apps/{slug}/; SameSite=Lax; HttpOnly"
+    return jwt_token, cookie
+
+
+def revoke_preview_tokens_for_user(user_id: str) -> None:
+    """Best-effort revoke of every live `data-app-preview:*` token belonging
+    to ``user_id`` — the SessionEnd hard cap alongside
+    ``ticket_repo().revoke_session`` (Q4). The 30-minute ``expires_at`` is
+    the real backstop (this only tightens the window a chat session's
+    preview grants stay usable after the session ends); a failure here must
+    never block the caller's own teardown, so every exception is swallowed.
+
+    Reuses ``access_token_repo().list_for_user`` + ``.revoke`` — both
+    already dual-backend (DuckDB/Postgres) via the repo factory — so no new
+    repository method is needed for this task.
+    """
+    try:
+        repo = access_token_repo()
+        for tok in repo.list_for_user(user_id, include_revoked=False):
+            if (tok.get("name") or "").startswith(DATA_APP_PREVIEW_SCOPE_PREFIX):
+                with contextlib.suppress(Exception):
+                    repo.revoke(tok["id"])
+    except Exception:
+        logger.warning("revoke_preview_tokens_for_user: best-effort revoke failed for user %s", user_id)
+
+
 def _handle_runner_failure(repo, app_id: str, exc: Exception) -> None:
     detail = getattr(exc, "detail", None) or str(exc)
     repo.set_state(app_id, "error", str(detail))
@@ -370,6 +572,15 @@ class OwnerNotFoundError(Exception):
     (spec-build failures) so callers can tell "deploy target row is
     internally inconsistent" (500) apart from "spec inputs are invalid"
     (400) without string-matching the exception message."""
+
+
+class DraftParentMissingError(Exception):
+    """Raised by :func:`redeploy_current` when a draft row's
+    ``parent_app_id`` no longer resolves to a live parent row (the parent
+    app was deleted out from under a still-live draft). Without this
+    check, ``redeploy_current`` would silently fall back to cloning the
+    draft's own (nonexistent) repo slug and the deploy would appear to
+    succeed. ``deploy_data_app`` maps this to HTTP 409 ``parent_not_found``."""
 
 
 def _rollback_new_service_token(repo, app_id: str, new_token_id: str, previous_token_id: str) -> None:
@@ -418,16 +629,23 @@ def redeploy_current(row: dict) -> None:
     side effect on success) once the runner has actually accepted the
     deploy.
 
-    Raises `OwnerNotFoundError`, `ValueError`, `RunnerUnavailable`, or
-    `RunnerError` on failure; each already left the row in "error" state
-    (via `_handle_runner_failure`) for the runner-call case, or with an
-    untouched state for the owner/spec-build cases — callers decide how to
-    surface that (HTTP response for `deploy_data_app`, `set_state("error",
-    ...)` for `_trigger_wake`) without this function taking an opinion on
-    HTTP status codes or wake-vs-deploy framing.
+    Raises `OwnerNotFoundError`, `DraftParentMissingError`, `ValueError`,
+    `RunnerUnavailable`, or `RunnerError` on failure; each already left the
+    row in "error" state (via `_handle_runner_failure`) for the runner-call
+    case, or with an untouched state for the owner/parent/spec-build cases —
+    callers decide how to surface that (HTTP response for `deploy_data_app`,
+    `set_state("error", ...)` for `_trigger_wake`) without this function
+    taking an opinion on HTTP status codes or wake-vs-deploy framing.
     """
     slug = row["slug"]
     repo = data_apps_repo()
+
+    # A draft whose parent has since been deleted must fail loudly rather
+    # than silently falling back (below) to cloning the draft's own
+    # (nonexistent) repo slug — checked before any side effect (token mint)
+    # so there's nothing to roll back on this path.
+    if row.get("is_draft") and row.get("parent_app_id") and not repo.get(row["parent_app_id"]):
+        raise DraftParentMissingError(row["parent_app_id"])
 
     owner = users_repo().get_by_id(row["owner_user_id"])
     if not owner:
@@ -439,7 +657,17 @@ def redeploy_current(row: dict) -> None:
     row = repo.get(row["id"])  # refresh — carries the new (tentative) service_token_id
 
     secrets = _decrypt_secrets(row)
-    clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{slug}"
+    # Drafts share the parent app's git repo (they never get one of their
+    # own — see `create_draft`'s docstring), so the clone URL must point at
+    # the PARENT's slug, not the draft's own. `build_config_json` already
+    # selects the draft's pinned `draft_branch` off `row` via `is_draft`;
+    # this only fixes which repo that branch is cloned from.
+    repo_slug = slug
+    if row.get("is_draft") and row.get("parent_app_id"):
+        parent = repo.get(row["parent_app_id"])
+        if parent:
+            repo_slug = parent["slug"]
+    clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{repo_slug}"
 
     try:
         config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=jwt_token)
@@ -480,17 +708,44 @@ class CreateDataAppRequest(BaseModel):
 
 class DeployRequest(BaseModel):
     sha: Optional[str] = None
+    mode: Optional[str] = None
 
 
 class SecretsRequest(BaseModel):
     secrets: dict[str, str] = {}
 
 
+class CreateDraftRequest(BaseModel):
+    branch: str = "init"
+
+
+def _draft_slug(parent_slug: str, branch: str) -> str:
+    """Derive the draft's own slug from its parent + branch:
+    ``<parent>--<branch>``, lowercased, non-``SLUG_RE`` characters folded to
+    ``-``, truncated to 40 chars. Raises 400 ``invalid_slug`` if the result
+    still fails ``SLUG_RE`` (e.g. an all-symbol branch name collapsing to
+    nothing usable, or a leading/trailing ``-`` after truncation) — or if it
+    collapses to the parent's own slug, which the 40-char truncation can do
+    for near-max-length parent slugs (a 38-40 char parent leaves no room for
+    ``--<branch>`` before truncation cuts it back down to just the parent).
+    That case must not fall through to ``create_draft``'s UNIQUE constraint:
+    it would surface as a misleading 409 ``slug_exists`` that has nothing to
+    do with an actual name collision and is the same for every branch."""
+    raw = f"{parent_slug}--{branch}".lower()
+    cleaned = _re.sub(r"[^a-z0-9-]", "-", raw)[:40].strip("-")
+    if not SLUG_RE.match(cleaned) or cleaned == parent_slug:
+        raise HTTPException(status_code=400, detail="invalid_slug")
+    return cleaned
+
+
 @router.get("")
 async def list_data_apps(user: dict = Depends(get_current_user)):
     _feature_gate()
     cfg = _effective_config()
-    rows = data_apps_repo().list()
+    # Drafts are working copies layered on a parent app, not independent
+    # apps a caller should stumble onto in the human-facing/CLI list —
+    # they're reached via `GET /{slug}`'s inlined `drafts` field instead.
+    rows = data_apps_repo().list(include_drafts=False)
     return [_serialize(r, cfg) for r in rows if _can_view(user, r)]
 
 
@@ -522,7 +777,7 @@ async def create_data_app(
     try:
         if not is_admin:
             max_apps = cfg["max_apps_per_user"]
-            existing = data_apps_repo().list(owner_user_id=user["id"])
+            existing = data_apps_repo().list(owner_user_id=user["id"], include_drafts=False)
             if len(existing) >= max_apps:
                 raise HTTPException(status_code=403, detail="app_quota_exceeded")
 
@@ -541,7 +796,7 @@ async def create_data_app(
 
         try:
             app_id = repo.create(**kwargs)
-        except duckdb.ConstraintException:
+        except (duckdb.ConstraintException, sa_exc.IntegrityError):
             raise HTTPException(status_code=409, detail="slug_exists")
 
         if payload.repo_mode == "internal":
@@ -563,7 +818,26 @@ async def get_data_app(slug: str, user: dict = Depends(get_current_user)):
     row = _get_row_or_404(slug)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
-    return _serialize(row)
+    out = _serialize(row)
+    # Drafts are hidden from the list endpoint (`include_drafts=False`);
+    # this is where they surface instead — inlined on their PROD parent's
+    # detail response. Empty for a draft's own detail (drafts don't have
+    # drafts — `create_draft` rejects `parent_is_draft`). Gated the same as
+    # the draft-mutating endpoints (owner/Admin only, not any grantee that
+    # merely passed `_can_view`) — a read grant on the parent app is not
+    # meant to expose in-progress draft branch/state/URL metadata.
+    if not row.get("is_draft") and (user["id"] == row["owner_user_id"] or is_user_admin(user["id"])):
+        out["drafts"] = [
+            {
+                "id": d["id"],
+                "slug": d["slug"],
+                "branch": d["draft_branch"],
+                "state": d["state"],
+                "url": _app_url(d["slug"], _effective_config()),
+            }
+            for d in data_apps_repo().list_drafts(row["id"])
+        ]
+    return out
 
 
 @router.post("/{slug}/deploy")
@@ -580,7 +854,20 @@ async def deploy_data_app(
     holder = require_op_lease(slug)
     try:
         repo = data_apps_repo()
-        if row["repo_mode"] == "external":
+        if payload.mode == "dev":
+            # Dev-mode deploys serve the draft's pinned `draft_branch` straight
+            # from the parent's repo — `build_config_json` already selects it
+            # (`is_draft`) and `redeploy_current` already clones from the
+            # parent's slug for draft rows, so there is no ref to fast-forward
+            # here at all (drafts never advance `agnes-live`).
+            if not row.get("is_draft"):
+                raise HTTPException(status_code=400, detail="dev_requires_draft")
+            sha = ""
+        elif row.get("is_draft"):
+            # A draft has no `agnes-live` ref of its own to fast-forward to —
+            # only `mode="dev"` deploys are valid for a draft row.
+            raise HTTPException(status_code=400, detail="prod_on_draft")
+        elif row["repo_mode"] == "external":
             # External repos have no internal bare repo (`init_app_repo` is
             # internal-only at create) — nothing for `fast_forward_live` to
             # fast-forward. The runtime clones HEAD of `repo_branch` at boot
@@ -601,6 +888,8 @@ async def deploy_data_app(
             redeploy_current(row)
         except OwnerNotFoundError:
             raise HTTPException(status_code=500, detail="owner_not_found")
+        except DraftParentMissingError:
+            raise HTTPException(status_code=409, detail="parent_not_found")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except (RunnerUnavailable, RunnerError):
@@ -613,6 +902,220 @@ async def deploy_data_app(
         return {"state": "running", "deployed_sha": sha}
     finally:
         release_op_lease(slug, holder)
+
+
+@router.post("/{slug}/git-credential")
+async def mint_git_credential(
+    slug: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    _feature_gate()
+    row = _get_row_or_404(slug)
+    _require_owner_or_admin(user, row)
+    try:
+        url = _mint_git_credential(row)
+    except OwnerNotFoundError:
+        raise HTTPException(status_code=500, detail="owner_not_found")
+    _audit(conn, user["id"], "data_app.git_credential", f"data_app:{slug}", {})
+    return {"git_clone_url": url}
+
+
+@router.post("/{slug}/preview-grant")
+async def create_preview_grant(
+    slug: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Mint a short-TTL `data-app-preview:<slug>` cookie for the in-chat
+    preview iframe (wave 3C, spec §7 / Q4).
+
+    Chat-surface-internal: this is what `agnes_data_app_preview`'s live-URL
+    call hits server-side to hand the iframe a same-origin cookie so it can
+    load `/apps/<slug>/` without a cross-origin login. Any caller who can
+    already *view* the app (owner, Admin, or a group grant — same predicate
+    as `GET /{slug}`) may request one; unlike `git-credential`, this is not
+    owner/Admin-only, since a granted viewer previewing a draft is a normal
+    part of the review loop. No REST/CLI analogue is expected — see
+    `_EXEMPT` in `tests/test_documentation_api_triple_surface.py`.
+    """
+    _feature_gate()
+    row = _get_row_or_404(slug)
+    if not _can_view(user, row):
+        raise HTTPException(status_code=403, detail="forbidden")
+    _token, cookie = _mint_preview_token(row, user)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
+    _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
+    # Install the cookie via a real Set-Cookie response header, not just the JSON
+    # body: the cookie is `HttpOnly`, and a browser silently discards an HttpOnly
+    # cookie set through `document.cookie` (RFC 6265bis). The chat frontend makes
+    # a same-origin `fetch()` to this endpoint (the browser is already the chat
+    # user), so this header lands the cookie on the app origin for the iframe to
+    # send — HttpOnly intact. `preview_cookie` stays in the body for callers/tests.
+    resp = JSONResponse({"preview_cookie": cookie, "expires_at": expires_at.isoformat()})
+    resp.headers.append("set-cookie", cookie)
+    return resp
+
+
+@router.post("/{slug}/drafts", status_code=201)
+async def create_draft(
+    slug: str,
+    payload: CreateDraftRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Create a draft copy of the prod app ``slug`` on ``payload.branch``.
+
+    The draft row (Task 1's ``create_draft``) is a full ``data_apps`` row
+    with ``is_draft=True`` and ``parent_app_id`` pointing at the prod app —
+    it is deployed/stopped/deleted like any other app, just excluded from
+    the default list (Task 6). ``ensure_branch`` (Task 2) creates the
+    branch on the *prod* app's git repo (drafts don't get their own repo —
+    they're a ref + a registry row layered on top of the parent's); the
+    git credential handed back is likewise minted against the parent
+    (``_mint_git_credential(parent)``), since that's the repo the branch —
+    and thus any push — actually lives in.
+
+    Ordering is deliberate: the registry row is inserted BEFORE the git
+    branch is created. Doing it the other way round would leave an orphaned
+    branch on the parent's repo whenever ``create_draft`` hits a slug
+    collision (409 ``slug_exists``) — a git side effect with no
+    corresponding row, invisible to any registry-driven cleanup. With the
+    row created first, a slug collision has no git side effect at all; if
+    ``ensure_branch`` then fails (409 ``parent_has_no_main``), the
+    just-inserted row is deleted so a failed create-draft call never leaves
+    a dangling draft behind either.
+    """
+    _feature_gate()
+    parent = _get_row_or_404(slug)
+    _require_owner_or_admin(user, parent)
+    if parent.get("is_draft"):
+        raise HTTPException(status_code=400, detail="parent_is_draft")
+    if not _BRANCH_RE.match(payload.branch) or not _is_git_valid_branch(payload.branch):
+        raise HTTPException(status_code=400, detail="invalid_branch")
+    draft_slug = _draft_slug(slug, payload.branch)
+
+    repo = data_apps_repo()
+    try:
+        draft_id = repo.create_draft(
+            parent_app_id=parent["id"],
+            slug=draft_slug,
+            branch=payload.branch,
+            owner_user_id=parent["owner_user_id"],
+        )
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
+        raise HTTPException(status_code=409, detail="slug_exists")
+
+    from src.data_apps.git_repos import delete_branch, ensure_branch
+
+    try:
+        ensure_branch(slug, payload.branch, base="main")
+    except ValueError:
+        repo.delete(draft_id)
+        raise HTTPException(status_code=409, detail="parent_has_no_main")
+    except subprocess.CalledProcessError:
+        # Belt-and-braces: `_is_git_valid_branch` should already reject
+        # everything `git update-ref` refuses, but if some other
+        # git-invalid form ever slips past it, fail the same way (400
+        # `invalid_branch`, draft row rolled back) rather than surfacing an
+        # unhandled 500 and leaving an orphaned draft row that would turn a
+        # retry into a misleading 409 `slug_exists`.
+        repo.delete(draft_id)
+        raise HTTPException(status_code=400, detail="invalid_branch")
+
+    try:
+        git_url = _mint_git_credential(parent)  # push credential is against the PROD repo
+    except OwnerNotFoundError:
+        # Same rollback contract as the two failure paths above — a failed
+        # create-draft call must never leave the row or the branch behind,
+        # or a retry gets a misleading 409 `slug_exists`.
+        repo.delete(draft_id)
+        with contextlib.suppress(ValueError):
+            delete_branch(slug, payload.branch)
+        raise HTTPException(status_code=500, detail="owner_not_found")
+
+    _audit(
+        conn,
+        user["id"],
+        "data_app.draft_create",
+        f"data_app:{draft_slug}",
+        {"parent": slug, "branch": payload.branch},
+    )
+    return {"id": draft_id, "slug": draft_slug, "branch": payload.branch, "git_clone_url": git_url}
+
+
+def _teardown_draft(repo, parent_slug: str, draft: dict, conn: duckdb.DuckDBPyConnection, actor_id: str) -> None:
+    """Shared draft-teardown body: best-effort container stop, service-token
+    revoke, draft-branch delete on the PARENT repo, registry row delete,
+    and config-dir cleanup. Used by both ``delete_draft`` (single draft) and
+    ``delete_data_app``'s cascade (all drafts of a deleted parent) so the two
+    call sites can't drift on what "delete a draft" actually tears down.
+
+    A deployed draft has its own slug and container reachable via
+    ``/apps/<draft_slug>/``, so the container-stop step takes the SAME
+    ``dataapp:op:{draft_slug}`` lease every other runner-mutating operation
+    serializes on (``deploy_data_app``/``stop_data_app``/``delete_data_app``/
+    the ingress proxy's wake path) — without it, a concurrent wake-on-request
+    for the draft could race ``runner.up()`` against this teardown's
+    ``runner.stop()``, the exact unlocked check-then-act corruption the
+    lease exists to prevent (see CHANGELOG 0.76.23).
+    """
+    draft_slug = draft["slug"]
+    holder = require_op_lease(draft_slug)
+    try:
+        _runner().stop(draft_slug, mode="recreate")
+    except (RunnerUnavailable, RunnerError):
+        logger.warning("_teardown_draft: runner stop failed for %s (continuing)", draft_slug)
+    finally:
+        release_op_lease(draft_slug, holder)
+
+    _revoke_service_token(draft)
+
+    from src.data_apps.git_repos import delete_branch
+
+    try:
+        delete_branch(parent_slug, draft["draft_branch"])
+    except ValueError:
+        pass
+
+    repo.delete(draft["id"])
+    _rmtree_config_dir(draft_slug)
+
+    _audit(
+        conn,
+        actor_id,
+        "data_app.draft_delete",
+        f"data_app:{draft_slug}",
+        {"parent": parent_slug},
+    )
+
+
+@router.delete("/{slug}/drafts/{draft_slug}", status_code=204)
+async def delete_draft(
+    slug: str,
+    draft_slug: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Tear down a single draft: owner/Admin of the PARENT app; 400
+    ``not_a_draft`` if ``draft_slug`` isn't a draft of ``slug`` (including
+    ``draft_slug == slug`` itself); 404 if ``draft_slug`` doesn't exist at
+    all. Mirrors ``delete_data_app``'s teardown via the shared
+    ``_teardown_draft`` helper — container stop, token revoke, branch
+    delete, row delete, config-dir cleanup.
+    """
+    _feature_gate()
+    parent = _get_row_or_404(slug)
+    _require_owner_or_admin(user, parent)
+
+    repo = data_apps_repo()
+    draft = repo.get_by_slug(draft_slug)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="data_app_not_found")
+    if not draft.get("is_draft") or draft.get("parent_app_id") != parent["id"]:
+        raise HTTPException(status_code=400, detail="not_a_draft")
+
+    _teardown_draft(repo, slug, draft, conn, user["id"])
 
 
 @router.post("/{slug}/stop")
@@ -665,10 +1168,34 @@ async def delete_data_app(
     ``services/apps_runner/api.py``) is different: it carries the
     now-revoked service JWT in plaintext, so it's removed best-effort as
     hygiene rather than kept like the git repo.
+
+    Cascades to any live drafts: a prod app's drafts share its git repo and
+    reference its id as ``parent_app_id``, so deleting the parent without
+    tearing them down first would leave orphaned draft rows/branches/
+    containers behind. Each draft is torn down via the same
+    ``_teardown_draft`` helper ``delete_draft`` uses, BEFORE this app's own
+    teardown. (Drafts can't themselves have drafts — ``create_draft``
+    rejects ``parent_is_draft`` — so this loop is a no-op when ``row`` is
+    itself a draft — which can't happen anyway, see below.)
+
+    A draft ``slug`` is rejected outright (400 ``use_draft_delete_route``)
+    rather than falling through to this function's own teardown below,
+    which — unlike ``_teardown_draft`` — never deletes the draft's branch
+    on the PARENT's repo; going through here would silently orphan it.
+    ``DELETE /{slug}/drafts/{draft_slug}`` is the only path that tears a
+    draft down correctly.
     """
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
+    if row.get("is_draft"):
+        raise HTTPException(status_code=400, detail="use_draft_delete_route")
+
+    repo = data_apps_repo()
+    # Drafts live on the parent's repo and have their own containers/branches;
+    # tear them down first so deleting a prod app can't strand them.
+    for draft in repo.list_drafts(row["id"]):
+        _teardown_draft(repo, slug, draft, conn, user["id"])
 
     holder = require_op_lease(slug)
     try:
@@ -681,15 +1208,9 @@ async def delete_data_app(
             logger.warning("delete_data_app: runner stop failed for %s (continuing)", slug)
 
         _revoke_service_token(row)
-        data_apps_repo().delete(row["id"])
+        repo.delete(row["id"])
 
-        config_dir = os.path.join(os.environ.get("DATA_DIR", "/data"), "apps", slug)
-        try:
-            shutil.rmtree(config_dir, ignore_errors=False)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            logger.warning("delete_data_app: failed to remove config dir %s (continuing)", config_dir)
+        _rmtree_config_dir(slug)
 
         _audit(
             conn,

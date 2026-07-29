@@ -259,7 +259,7 @@ def _data_app_blocks() -> List[Block]:
     """Project ``data_apps`` into grant-picker blocks (resource_id = slug)."""
     from src.repositories import data_apps_repo
 
-    rows = data_apps_repo().list(limit=_GRANT_PROJECTION_LIMIT)
+    rows = data_apps_repo().list(include_drafts=False, limit=_GRANT_PROJECTION_LIMIT)
     if not rows:
         return []
     return [

@@ -1,7 +1,7 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.76.28"
-description = "Agnes — self-hosted AI harness for organizations: governed data access, skills marketplace, corporate memory, and agent workspaces"
+version = "0.77.22"
+description = "Agnes — self-hosted AI harness for organizations: governed data access, agents as an API, skills marketplace, corporate memory, hosted data apps, and agent surfaces (web chat, Slack, MCP, CLI)"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
 readme = "README.md"
@@ -180,6 +180,14 @@ dependencies = [
     # below, which is PostHog-only) so /metrics is always served with zero
     # extra config, mirroring the always-on /healthz probe.
     "prometheus_client>=0.20.0",
+    # JSON Schema validation. Core dep (not dev-only) because
+    # app/chat/structured_output.py validates `response_format:
+    # {"type": "json_schema", ...}` agent answers against a caller-supplied
+    # schema at request time — `app/api/agent_runtime.py` and
+    # `app/api/agent_sessions.py` import it unconditionally and `app/main.py`
+    # imports both at module scope, so a missing jsonschema fails app boot,
+    # not just a code path. Pure-Python, no compiled extensions.
+    "jsonschema>=4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -253,10 +261,11 @@ dev = [
     # Balanced by the committed `.test_durations` file.
     "pytest-split>=0.9.0",
     "faker>=24.0.0",
-    # jsonschema validates the corporate-memory extraction-tool golden fixtures
-    # under tests/test_corporate_memory_v1.py (extraction.json, correction.json,
-    # confidence_calibration.json). Production code does not depend on it.
-    "jsonschema>=4.0.0",
+    # jsonschema is a core dependency now (see [project].dependencies —
+    # app/chat/structured_output.py needs it in production), so no separate
+    # dev-extra entry here. It also covers the corporate-memory
+    # extraction-tool golden fixtures under tests/test_corporate_memory_v1.py
+    # (extraction.json, correction.json, confidence_calibration.json).
     # NOTE: fastapi-debug-toolbar moved to the `server` extra (build-once —
     # ships in the production image, inert unless DEBUG=1). See `server` above.
     # Browser automation for the cloud-chat E2E suite (tests/e2e/test_chat_web.py).
@@ -329,6 +338,12 @@ target-version = "py313"
 # router.py registers Jinja globals and filters between import blocks;
 # the mid-file import json + onboarding import are intentional ordering.
 "app/web/router.py" = ["E402"]
+# authoring_suggestions.py imports the repo factory after its router/env
+# setup block — pre-existing ordering, same pattern as router.py.
+"app/api/authoring_suggestions.py" = ["E402"]
+# admin_sessions.py has a deliberate mid-file `import re as _re` next to the
+# username-allowlist regex it powers — pre-existing ordering.
+"app/api/admin_sessions.py" = ["E402"]
 # Fixture-style spec builder from the apps-runner test brief — a lambda
 # reads better than a def for a one-line dict factory used only in this file.
 "tests/test_apps_runner.py" = ["E731"]

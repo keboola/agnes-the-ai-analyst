@@ -234,7 +234,8 @@ PAT verification, `agnes pull` of parquets + corporate-memory rules,
 - Hand-rolling `settings.json` SessionStart entries — unnecessary and
   discouraged. Agnes installs and re-asserts its own SessionStart (one
   detached `agnes update`, which converges the CLI, workspace template,
-  Agnes-owned hooks/statusLine/commands, marketplace plugins, and data pull),
+  Agnes-owned hooks/statusLine/commands, marketplace plugins, the session push
+  catch-up, and data pull),
   SessionEnd (detached `agnes push`), statusLine, and managed slash-commands
   on every `agnes init` and `agnes update`, in both default and override
   modes. Ship only the parts you control; see

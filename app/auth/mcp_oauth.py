@@ -290,6 +290,14 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
             expires_delta=timedelta(seconds=_ACCESS_TOKEN_TTL),
             token_id=jti,
             typ="session",
+            # v106 follow-up: mark MCP-OAuth access tokens so
+            # resolve_token_to_user can stamp the stack data-read surface —
+            # a remote MCP connector (Claude Desktop / claude.ai) is an
+            # AGENT surface, so an admin's connector follows their stack
+            # like the CLI workspace, instead of inheriting catalog
+            # god-mode. Browser session JWTs carry no scope claim and are
+            # unaffected.
+            extra_claims={"scope": "mcp-oauth"},
         )
 
         oauth_clients_repo().save_access_token(
@@ -386,6 +394,14 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
             expires_delta=timedelta(seconds=_ACCESS_TOKEN_TTL),
             token_id=jti,
             typ="session",
+            # v106 follow-up: mark MCP-OAuth access tokens so
+            # resolve_token_to_user can stamp the stack data-read surface —
+            # a remote MCP connector (Claude Desktop / claude.ai) is an
+            # AGENT surface, so an admin's connector follows their stack
+            # like the CLI workspace, instead of inheriting catalog
+            # god-mode. Browser session JWTs carry no scope claim and are
+            # unaffected.
+            extra_claims={"scope": "mcp-oauth"},
         )
         oauth_clients_repo().save_access_token(
             token=access_jwt,

@@ -373,9 +373,13 @@ class TestMigrationSafety:
         materialized — but the version row stays put."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
-        from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
+        from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
+        # Derived from the live SCHEMA_VERSION, never a hardcoded literal: a
+        # pinned number silently stops testing anything once the ladder grows
+        # past it (and then fails outright once it is overtaken).
         future = SCHEMA_VERSION + 1
+
         db_path = tmp_path / "state" / "system.duckdb"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = _duckdb.connect(str(db_path))
@@ -410,17 +414,21 @@ class TestMigrationSafety:
         ``conn.execute(_SYSTEM_SCHEMA)`` call (run when ``current >=
         SCHEMA_VERSION``) materializes any missing tables *and* leaves
         the future-version ``schema_version`` row untouched. We
-        synthesize a future-version DB (``SCHEMA_VERSION + 1``) whose only
-        table is ``schema_version``, then assert that running
-        ``_ensure_schema`` creates the v13-era core tables that the binary
-        needs (``user_groups``, ``user_group_members``, ``resource_grants``,
-        ``users``) while keeping the future version untouched.
+        synthesize a ``SCHEMA_VERSION + 1`` DB whose only table is
+        ``schema_version``, then assert that running ``_ensure_schema``
+        creates the v13-era core tables that the binary needs
+        (``user_groups``, ``user_group_members``, ``resource_grants``,
+        ``users``) while keeping the version at that future value.
         """
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
-        from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
+        from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
+        # Derived from the live SCHEMA_VERSION, never a hardcoded literal: a
+        # pinned number silently stops testing anything once the ladder grows
+        # past it (and then fails outright once it is overtaken).
         future = SCHEMA_VERSION + 1
+
         db_path = tmp_path / "state" / "system.duckdb"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = _duckdb.connect(str(db_path))
@@ -474,6 +482,70 @@ class TestMigrationSafety:
 
             # The future-version contract still holds: version row untouched.
             assert get_schema_version(conn) == future
+        finally:
+            conn.close()
+
+    def test_upgrade_from_legacy_corpus_files_without_path_column(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression: ``_SYSTEM_SCHEMA`` must be safe against historical
+        table shapes, because it executes *before* the migration ladder.
+
+        ``corpus_files`` is created at v82 without a ``path`` column; ``path``
+        is ALTER-added at v97. Declaring the ``(corpus_id, path)`` UNIQUE INDEX
+        inside ``_SYSTEM_SCHEMA`` meant that on any v82..v96 DB the CREATE TABLE
+        was a no-op (table already there, no ``path``) and the index statement
+        then raised ``BinderException`` — aborting the entire schema pass before
+        the ALTER that would have added the column could run. Every upgrade from
+        such a DB crashed on startup.
+
+        This pins the upgrade path: a legacy-shaped ``corpus_files`` must
+        migrate cleanly to the current SCHEMA_VERSION and end up with both the
+        column and the index.
+        """
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            # Synthesize the v96-era shape: corpus_files exists, no `path`.
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (96);"
+                "CREATE TABLE corpus_files ("
+                "  id VARCHAR PRIMARY KEY,"
+                "  corpus_id VARCHAR NOT NULL,"
+                "  filename VARCHAR NOT NULL,"
+                "  sha256 VARCHAR NOT NULL,"
+                "  parent_file_id VARCHAR,"
+                "  processing_status VARCHAR NOT NULL DEFAULT 'pending',"
+                "  updated_at TIMESTAMP DEFAULT current_timestamp"
+                ");"
+            )
+            cols_before = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+            assert "path" not in cols_before, "fixture must start without the path column"
+
+            # Must not raise.
+            _ensure_schema(conn)
+
+            assert get_schema_version(conn) == SCHEMA_VERSION
+            cols_after = {r[1] for r in conn.execute("PRAGMA table_info('corpus_files')").fetchall()}
+            assert "path" in cols_after, "v96→v97 must ALTER in the path column"
+            indexes = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT index_name FROM duckdb_indexes() WHERE index_name = ?",
+                    ["idx_corpus_files_corpus_path"],
+                ).fetchall()
+            }
+            assert "idx_corpus_files_corpus_path" in indexes, (
+                "the (corpus_id, path) UNIQUE INDEX must exist after the upgrade"
+            )
         finally:
             conn.close()
 

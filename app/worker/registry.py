@@ -10,7 +10,7 @@ Empty by default; this task's tests register fake kinds only.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional
 
 #: Lane identifiers. Plain string constants matching
 #: ``JobsRepository.HEAVY_LANE`` / ``.LIGHT_LANE`` (`src/repositories/jobs.py`)
@@ -31,13 +31,17 @@ class JobKind:
     ``handler`` is a plain synchronous callable — the worker loop runs it
     via ``asyncio.to_thread`` so a slow/blocking implementation (DB call,
     HTTP request, subprocess) never stalls the event loop. It receives the
-    job's decoded ``payload_json`` dict and returns ``None`` on success;
-    any raised exception is caught by the loop and turned into a
+    job's decoded ``payload_json`` dict and returns ``None`` on success, OR
+    (Task 9) an optional result ``dict`` that ``app/worker/runtime.py``
+    passes straight through to ``jobs_repo().complete(..., result=...)`` —
+    see that method's docstring for where it lands (``payload_json
+    ["result"]``, since the ``jobs`` table has no dedicated result column).
+    Any raised exception is caught by the loop and turned into a
     ``fail(..., retry_in_seconds=kind.retry_in_seconds)`` call.
     """
 
     name: str
-    handler: Callable[[dict], None]
+    handler: Callable[[dict], Optional[dict]]
     lane: str
     lease_seconds: int = 120
     retry_in_seconds: int | None = 300

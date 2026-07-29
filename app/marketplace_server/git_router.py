@@ -349,10 +349,22 @@ async def _marketplace_git(path: str, request: Request):
         user, _reason = resolve_token_to_user(conn, token)
         if not user:
             return None, None
+        # Restricted principals (co-session / agent-session) have no
+        # marketplace-git surface: reject them outright instead of letting
+        # ``ensure_repo_for_user`` or the ``user.get(...)`` calls below
+        # AttributeError into a 500. Mirrors the agent-PAT rejection this
+        # route already performs.
+        from app.auth.session_principal import PRINCIPAL_TYPES
+
+        if isinstance(user, PRINCIPAL_TYPES):
+            return None, None
         try:
             repo_path = git_backend.ensure_repo_for_user(conn, user)
         except Exception:
-            logger.exception("Failed to build repo for user %r", user.get("email") or user.get("id"))
+            # ``user`` may be a restricted principal (frozen dataclass, no
+            # ``.get``) — never let the diagnostic label raise inside except.
+            label = user.get("email") or user.get("id") if isinstance(user, dict) else type(user).__name__
+            logger.exception("Failed to build repo for user %r", label)
             return user, None
         return user, repo_path
 

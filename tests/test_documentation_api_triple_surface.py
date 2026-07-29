@@ -99,6 +99,17 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/jobs/{job_id}": ("admin jobs show", "admin_job_get"),
     # DuckLake analytics-backend migration (wave-2G Task 6).
     "/api/admin/analytics/migrate": ("admin analytics migrate", "admin_analytics_migrate"),
+    # Agent profiles (agent-api V1a, Task 12) — management list surface.
+    # CLI `agnes agent list` + MCP `agent_list` both map to this GET.
+    "/api/v1/agents": ("agent list", "agent_list"),
+    # Agent-as-API one-shot runtime (agent-api V1a, Task 9/12). CLI
+    # `agnes agent ask` + MCP `agent_ask` both map to this POST — the MCP
+    # tool is sync-only (see its docstring); background mode + job polling
+    # has no MCP tool by design.
+    "/api/v1/agents/{slug}/responses": ("agent ask", "agent_ask"),
+    # Agent-as-API monthly usage (agent-api V1b, Task 8). CLI
+    # `agnes agent usage` + MCP `agent_usage` both map to this GET.
+    "/api/v1/agents/{slug}/usage": ("agent usage", "agent_usage"),
     # Hosted data apps control-plane (data-apps platform plan, Task 7/10/11) —
     # list/get are any-authenticated-user (RBAC-filtered by view access);
     # deploy/logs are owner-or-Admin. CLI landed in Task 10 (`agnes app …`),
@@ -114,6 +125,13 @@ _COHORT: dict[str, tuple[str, str]] = {
     # PUT/DELETE row above.
     "/api/stack/artefacts/candidates": ("stack artefacts list", "stack_artefacts_candidates"),
     "/api/stack/artefacts/{corpus_id}": ("stack artefacts add", "stack_artefact_add"),
+    # Wave 3B draft-iteration model (Task 8) — CLI (`agnes app draft
+    # create/delete`, `agnes app git-credential`) and MCP tools
+    # (`data_app_create_draft`/`data_app_delete_draft`/`data_app_git_credential`)
+    # landed together; all three surfaces now agree.
+    "/api/data-apps/{slug}/drafts": ("app draft create", "data_app_create_draft"),
+    "/api/data-apps/{slug}/drafts/{draft_slug}": ("app draft delete", "data_app_delete_draft"),
+    "/api/data-apps/{slug}/git-credential": ("app git-credential", "data_app_git_credential"),
 }
 
 
@@ -285,6 +303,122 @@ _BROKER_REASON = (
     "sandbox->server routes, ticket-gated (not user auth); the in-sandbox "
     "loopback relay is the only caller. No analyst CLI/MCP analogue."
 )
+_AGENT_DETAIL_REASON = (
+    "single-agent detail/update/delete (agent-api V1a) — DELETE is reachable "
+    "via `agnes agent delete`; GET/PUT have no dedicated CLI verb (`agnes "
+    "agent show` reads from the list response, `/api/v1/agents` in _COHORT, "
+    "rather than this id route, and there is no `agent update` subcommand "
+    "yet). No MCP analogue by design: `agent_list` already covers read, and "
+    "updating/deleting one's own agent profile is a deliberate, low-frequency "
+    "admin action better done interactively (CLI/web) than via an "
+    "agent-callable tool."
+)
+_AGENT_SCOPE_REASON = (
+    "agent resource-scope grant (agent-api V1a) — reachable via `agnes agent "
+    "scope set`. No MCP analogue by design: scope is a permission grant (what "
+    "data/plugins/connections/memory the agent may touch), and widening an "
+    "agent's own access must stay an interactive, human-witnessed action, "
+    "never something reachable through a tool call."
+)
+_AGENT_TOKENS_REASON = (
+    "agent PAT issuance (agent-api V1a) — reachable via `agnes agent token`. "
+    "No MCP analogue by design (per the agent-api V1a spec): minting a "
+    "long-lived credential must stay an interactive, human-witnessed action — "
+    "an agent must never be able to mint its own (or another agent's) PAT "
+    "through a tool call."
+)
+_AGENT_JOBS_REASON = (
+    "agent-runtime background-job poll (agent-api V1a) — reachable via "
+    "`agnes agent ask`'s own polling loop after a 202 degrade, not a "
+    "standalone CLI subcommand. No MCP analogue by design: `agent_ask` is "
+    "deliberately sync-only (see its docstring) and never polls jobs itself — "
+    "a tool call blocking on a poll loop is a poor fit for a chat turn."
+)
+_AGENT_SESSION_REASON = (
+    "agent-as-API multi-turn sessions (agent-api V1b Task 4) — session "
+    "create/history/cancel/delete around a Server-Sent Events turn stream. "
+    "No MCP analogue by design: the `/messages` turn is an open SSE response "
+    "(AG-UI event vocabulary), not a request/response tool call an MCP "
+    "client can await, and cancel/delete are lifecycle controls over that "
+    "same long-lived stream rather than a discrete query or action. "
+    "`agnes chat <slug>` (agent-api V1c) IS a CLI surface for three of these "
+    "four routes: it POSTs `/api/v1/agents/{slug}/sessions` to open a "
+    "session, streams every turn through `/messages`' SSE, calls `/cancel` "
+    "on Ctrl-C, and best-effort `DELETE`s the session on exit — so this "
+    "group is not `_COHORT`-eligible for a different reason than 'no CLI': "
+    "`_COHORT` models a discrete one-shot subcommand per route (like `agnes "
+    "agent ask` for `/responses`), and `agnes chat` is a REPL wrapping this "
+    "whole stream, not four separate commands — plus there is still no MCP "
+    "analogue for any of them, and `_COHORT` requires both. The one route in "
+    "this group `agnes chat` genuinely never calls is `GET "
+    "/api/v1/sessions/{session_id}` (read back state + full history) — the "
+    "REPL renders its own live transcript from the SSE stream as it "
+    "arrives and never re-fetches history from the server, so that leg "
+    "really is CLI-unreached, unlike its three siblings above."
+)
+_AGENT_WEBHOOKS_REASON = (
+    "outbound agent webhook registration (agent-api V1b Task 6) — owner-scoped "
+    "standing-config CRUD (register/list/revoke an HTTPS callback URL + HMAC "
+    "secret for job.completed/job.failed notifications), explicitly named in "
+    "CONTRIBUTING.md's API-coverage exemption list alongside health checks and "
+    "OAuth callbacks ('health checks, webhooks, OAuth callbacks, and internal/"
+    "SSE routes'). Reachable via `agnes agent webhooks list/add/delete` "
+    "(Task 8). No MCP analogue BY DESIGN, permanently: minting a webhook "
+    "secret and pointing this server's outbound network identity at an "
+    "arbitrary URL is an SSRF-sensitive, human-witnessed action, never "
+    "something an agent tool call should be able to trigger on its own "
+    "registration — this is a standing-config exemption, not a landed-later "
+    "gap."
+)
+_AGENT_ARTIFACTS_REASON = (
+    "agent-as-API sandbox artifact harvest/download (agent-api V1b Task 5). "
+    "No MCP analogue by design: the download route is a binary byte-stream "
+    "response (arbitrary file content + Content-Disposition), not a "
+    "JSON-shaped tool result an MCP client can consume — mirrors the "
+    "existing `/api/knowledge/artifacts/{corpus_id}/download` exemption. No "
+    "CLI subcommand: unlike the create/messages/cancel legs of "
+    "`/api/v1/sessions/{id}/*` (see _AGENT_SESSION_REASON — `agnes chat` "
+    "does drive those), `agnes chat` never harvests or downloads sandbox "
+    "artifacts through the terminal REPL — this route genuinely has no CLI "
+    "caller."
+)
+_AGENT_MEMORY_WRITE_REASON = (
+    "the 'remember' tool (agent-api V1c Task 4) — an in-sandbox agent's own "
+    "write into its private memory notebook, called by the agent itself "
+    "against ITS OWN running session, never by an interactive human caller "
+    "choosing among agents/sessions. No CLI subcommand: there is no "
+    "analyst-facing 'write a memory for my agent' workflow (memory "
+    "management for owners is the separate admin surface at "
+    "_AGENT_MEMORY_ADMIN_REASON below, not this runtime write path). No MCP "
+    "analogue either, permanently: this route's "
+    "auth model binds the write to `request.state.chat_session_id` (the "
+    "broker-minted claim identifying the CALLING session) and explicitly "
+    "REJECTS a path `{id}` that differs from it (`403 session_mismatch`) — "
+    "an MCP tool invoked by a human operator against an arbitrary session id "
+    "would never carry that claim, so exposing this as a generic MCP tool "
+    "would either be unusable (always 403) or require a different, weaker "
+    "auth path that reopens the exact cross-agent-same-owner memory-"
+    "poisoning gap this design closes. No CLI subcommand: unlike the "
+    "create/messages/cancel legs of `/api/v1/sessions/{id}/*` (see "
+    "_AGENT_SESSION_REASON — `agnes chat` does drive those), the in-sandbox "
+    "agent calls this route itself; there is nothing for a human-facing CLI "
+    "command to do here."
+)
+_AGENT_MEMORY_ADMIN_REASON = (
+    "owner-facing memory management (agent-api V1c Task 5) — inspect/"
+    "approve/archive/delete over an agent's private memory notebook, the "
+    "management-surface counterpart to the 'remember' tool "
+    "(_AGENT_MEMORY_WRITE_REASON above). Reachable via `agnes agent memory "
+    "list/approve/archive/delete` (Task 7) — a CLI surface, not a _COHORT "
+    "entry: _COHORT requires BOTH a CLI command and an MCP tool, and this "
+    "route deliberately has no MCP analogue, permanently. Reviewing and "
+    "approving what an agent is allowed to 'remember' about itself must "
+    "stay an interactive, human-witnessed action — never something an "
+    "agent's own tool call (or a tool call issued on a human operator's "
+    "behalf against an arbitrary agent) can reach — mirrors the same "
+    "posture as _AGENT_SCOPE_REASON and _AGENT_TOKENS_REASON above."
+)
+
 _DATA_APPS_REASON = (
     "control-plane REST for hosted data apps (data-apps platform plan, Task 7). "
     "CLI landed in Task 10 (`agnes app list/show/create/deploy/stop/delete/logs`, "
@@ -329,6 +463,10 @@ _LIBRARY_SHARING_REASON = (
     "so a second CLI/MCP vocabulary for it would duplicate the admin one."
 )
 
+_DATA_APPS_PREVIEW_GRANT_REASON = (
+    "preview-grant mints the in-chat iframe cookie for the web chat surface; chat-only, no CLI/MCP analogue (spec §7)"
+)
+
 _EXEMPT: dict[str, str] = {
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
@@ -339,6 +477,21 @@ _EXEMPT: dict[str, str] = {
     "/api/agents/{agent_id}": _AGENTS_REGISTRY_REASON,
     "/api/sharing/groups": _LIBRARY_SHARING_REASON,
     "/api/sharing/{resource_type}/{resource_id}": _LIBRARY_SHARING_REASON,
+    "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
+    "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
+    "/api/v1/agents/{agent_id}/tokens": _AGENT_TOKENS_REASON,
+    "/api/v1/jobs/{job_id}": _AGENT_JOBS_REASON,
+    "/api/v1/agents/{slug}/sessions": _AGENT_SESSION_REASON,
+    "/api/v1/agents/{slug}/webhooks": _AGENT_WEBHOOKS_REASON,
+    "/api/v1/agents/{slug}/webhooks/{webhook_id}": _AGENT_WEBHOOKS_REASON,
+    "/api/v1/sessions/{session_id}": _AGENT_SESSION_REASON,
+    "/api/v1/sessions/{session_id}/messages": _AGENT_SESSION_REASON,
+    "/api/v1/sessions/{session_id}/cancel": _AGENT_SESSION_REASON,
+    "/api/v1/sessions/{session_id}/artifacts": _AGENT_ARTIFACTS_REASON,
+    "/api/v1/sessions/{session_id}/artifacts/{artifact_id}": _AGENT_ARTIFACTS_REASON,
+    "/api/v1/sessions/{session_id}/memories": _AGENT_MEMORY_WRITE_REASON,
+    "/api/v1/agents/{agent_id}/memories": _AGENT_MEMORY_ADMIN_REASON,
+    "/api/v1/agents/{agent_id}/memories/{memory_id}": _AGENT_MEMORY_ADMIN_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "
@@ -467,6 +620,22 @@ _EXEMPT: dict[str, str] = {
     "/api/data-apps/{slug}/stop": _DATA_APPS_REASON,
     "/api/data-apps/{slug}/secrets": _DATA_APPS_SECRETS_REASON,
     "/api/data-apps/{slug}/readiness": _DATA_APPS_READINESS_REASON,
+    # git-credential/drafts got their CLI + MCP surfaces in wave 3B Task 8 —
+    # see the /api/data-apps/{slug}/drafts* and /git-credential entries in
+    # _COHORT above.
+    # Wave 3C in-chat preview loop (Task 5) — mints the iframe cookie for the
+    # web chat surface; the 4 preview MCP tools (Task 4) are chat-only and
+    # have no REST path of their own (see FOUNDATION_TOOL_NAMES), so this is
+    # the one new REST route the preview loop adds.
+    "/api/data-apps/{slug}/preview-grant": _DATA_APPS_PREVIEW_GRANT_REASON,
+    "/api/broker/data-apps": (
+        "broker replay surface for the sandboxed authoring agent; not a "
+        "user-facing API — internal sandbox->server route confined to the "
+        "/api/data-apps control-plane prefix, ticket-gated (not user auth) "
+        "like the other /api/broker/* routes. No analyst CLI/MCP analogue: "
+        "the agent calls the real /api/data-apps* endpoints through this "
+        "relay, which already carry their own triple-surface contract."
+    ),
     # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
     # mirrors the run-knowledge-digests/run-corporate-memory exemptions
     # regardless of the CLI/MCP question above; no analyst CLI/MCP analogue.

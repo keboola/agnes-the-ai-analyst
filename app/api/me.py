@@ -50,7 +50,7 @@ async def post_onboarded(
         user_id=user["id"],
         action="user_onboarded" if target else "user_offboarded",
         params={"source": body.source},
-        result="ok",
+        result="success",
     )
     return {"status": "ok", "onboarded": target}
 

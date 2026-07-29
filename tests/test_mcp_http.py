@@ -253,6 +253,16 @@ class TestToolRegistration:
             # verifies their own stored token. Triple-surface with POST
             # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`.
             "my_secret_test",
+            # Agent profiles (agent-api V1a, Task 12) — list your own agent
+            # profiles and one-shot ask an agent without leaving the chat.
+            # Triple-surface with GET /api/v1/agents + POST
+            # /api/v1/agents/{slug}/responses + `agnes agent list`/`ask`.
+            "agent_list",
+            "agent_ask",
+            # Agent-as-API monthly usage (agent-api V1b, Task 8). Triple-
+            # surface with GET /api/v1/agents/{slug}/usage +
+            # `agnes agent usage`.
+            "agent_usage",
             # Hosted data apps (data-apps platform plan, Task 11) — list/get
             # for any authenticated user with view access, deploy/logs for
             # app owner or Admin. Triple-surface with /api/data-apps* +
@@ -266,6 +276,23 @@ class TestToolRegistration:
             "stack_artefacts_candidates",
             "stack_artefact_add",
             "stack_artefact_remove",
+            # Wave 3B draft-iteration model (Task 8) — create/delete a draft
+            # copy of a prod app on an iteration branch, and mint a fresh git
+            # push credential. Triple-surface with /api/data-apps/{slug}/drafts*
+            # and /git-credential + `agnes app draft create/delete` +
+            # `agnes app git-credential`.
+            "data_app_create_draft",
+            "data_app_delete_draft",
+            "data_app_git_credential",
+            # Wave 3C in-chat preview loop (Task 4/5) — chat-surface-only
+            # render directives for the split-pane preview iframe (spec
+            # §7/§9): no REST/CLI analogue. `agnes_data_app_preview`'s
+            # live-URL call mints a short-TTL `data-app-preview:<slug>`
+            # scoped grant via POST /api/data-apps/{slug}/preview-grant.
+            "agnes_data_app_preview",
+            "agnes_data_app_refresh",
+            "agnes_data_app_close",
+            "agnes_data_app_credentials",
         }
 
     def test_no_client_only_tools(self):

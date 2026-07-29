@@ -32,12 +32,24 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def clean_job_kinds_registry():
-    """The registry is a process-wide module dict — isolate each test."""
+    """The registry is a process-wide module dict — isolate each test.
+
+    Also resets the process-wide chat-manager singleton
+    (``app.chat.manager``'s ``_current_manager``/``_current_loop``, read by
+    ``register_all_kinds()`` to decide whether ``agent_response`` is
+    claimable on this process — see its docstring) to ``None`` around every
+    test in this module, so a real ``ChatManager`` left behind by some OTHER
+    test's full app-lifespan run (e.g. a ``with TestClient(create_app())``
+    elsewhere in the suite) can never leak in and flip which kinds a bare
+    ``register_all_kinds()`` call here registers."""
+    from app.chat.manager import set_current_chat_manager
     from app.worker.registry import JOB_KINDS
 
     JOB_KINDS.clear()
+    set_current_chat_manager(None)
     yield
     JOB_KINDS.clear()
+    set_current_chat_manager(None)
 
 
 @pytest.fixture
@@ -56,24 +68,37 @@ def jobs_db(tmp_path, monkeypatch):
 
 
 class TestRegisterAllKinds:
-    def test_registers_ten_kinds(self):
+    #: The kinds that register UNCONDITIONALLY, regardless of whether
+    #: this process has a live chat manager — everything except
+    #: ``agent_response`` (role-split review carry-over; see
+    #: ``TestAgentResponseRoleSplitRegistration`` below for that one).
+    #: ``webhook-deliver`` (V1b Task 6) joined this set because it's a plain
+    #: outbound HTTP POST with no dependency on the chat event loop.
+    _ALWAYS_REGISTERED = {
+        "data-refresh",
+        "marketplaces-sync",
+        "session-collector",
+        "corporate-memory",
+        "jira-refresh",
+        "ducklake-maintenance",
+        "analytics-migrate",
+        "distribution-mirror",
+        "analytics-rebuild",
+        "collections-purge",
+        "webhook-deliver",
+    }
+
+    def test_registers_unconditional_kinds_without_chat_manager(self):
+        """No live chat manager (the `clean_job_kinds_registry` fixture
+        already reset the singleton to `None`) — a worker-only/non-gateway
+        process. `agent_response` must NOT be in the registry."""
         from app.worker.kinds import register_all_kinds
         from app.worker.registry import JOB_KINDS
 
         register_all_kinds()
 
-        assert set(JOB_KINDS) == {
-            "data-refresh",
-            "marketplaces-sync",
-            "session-collector",
-            "corporate-memory",
-            "jira-refresh",
-            "ducklake-maintenance",
-            "analytics-migrate",
-            "distribution-mirror",
-            "analytics-rebuild",
-            "collections-purge",
-        }
+        assert set(JOB_KINDS) == self._ALWAYS_REGISTERED
+        assert "agent_response" not in JOB_KINDS
 
     def test_lanes_are_correct(self):
         from app.worker.kinds import register_all_kinds
@@ -89,6 +114,7 @@ class TestRegisterAllKinds:
         assert JOB_KINDS["ducklake-maintenance"].lane == LIGHT_LANE
         assert JOB_KINDS["analytics-migrate"].lane == HEAVY_LANE
         assert JOB_KINDS["distribution-mirror"].lane == LIGHT_LANE
+        assert JOB_KINDS["webhook-deliver"].lane == LIGHT_LANE
         assert JOB_KINDS["analytics-rebuild"].lane == HEAVY_LANE
         assert JOB_KINDS["collections-purge"].lane == HEAVY_LANE
 
@@ -101,7 +127,66 @@ class TestRegisterAllKinds:
         register_all_kinds()
         register_all_kinds()
 
-        assert len(JOB_KINDS) == 10
+        assert len(JOB_KINDS) == len(self._ALWAYS_REGISTERED)
+
+
+class TestAgentResponseRoleSplitRegistration:
+    """``agent_response`` is registered CONDITIONALLY on
+    ``get_current_chat_manager() is not None`` at call time — the fix for
+    the role-split bug where a worker-only process (no live `ChatManager`)
+    would claim, and permanently fail, a background agent-response job it
+    had no way to run. See `register_all_kinds()`'s docstring."""
+
+    def test_no_chat_manager_leaves_agent_response_unregistered(self):
+        """A non-gateway process — built the same way `register_all_kinds()`
+        is called from `app/main.py`'s lifespan on a `Role.WORKER`-only
+        replica, i.e. AFTER CHAT-INIT settled to `None` (worker-only
+        topology has no chat manager at all)."""
+        from app.chat.manager import get_current_chat_manager, set_current_chat_manager
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        set_current_chat_manager(None)
+        assert get_current_chat_manager() is None  # sanity: the case under test
+
+        register_all_kinds()
+
+        assert "agent_response" not in JOB_KINDS
+
+    def test_chat_manager_present_registers_agent_response(self):
+        """A gateway-colocated (or all-in-one, single-container) process —
+        built the same way `app/main.py`'s lifespan calls
+        `set_current_chat_manager(app.state.chat_manager)` BEFORE
+        `register_all_kinds()` once CHAT-INIT settles to a real manager."""
+        from app.chat.manager import set_current_chat_manager
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import LIGHT_LANE, JOB_KINDS
+
+        set_current_chat_manager(object())  # any non-None sentinel — only identity matters here
+        register_all_kinds()
+
+        assert "agent_response" in JOB_KINDS
+        assert JOB_KINDS["agent_response"].lane == LIGHT_LANE
+        assert JOB_KINDS["agent_response"].retry_in_seconds is None
+
+    def test_registering_then_losing_the_manager_does_not_retroactively_unregister(self):
+        """`register_all_kinds()` only ever ADDS/replaces entries — it never
+        removes one that's no longer applicable. Documents the actual
+        (idempotent, additive) behavior rather than asserting a stronger
+        "dynamic deregistration" guarantee this fix does not provide (chat
+        state is boot-time-settled in practice; this only matters for a
+        hypothetical re-init path)."""
+        from app.chat.manager import set_current_chat_manager
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        set_current_chat_manager(object())
+        register_all_kinds()
+        assert "agent_response" in JOB_KINDS
+
+        set_current_chat_manager(None)
+        register_all_kinds()
+        assert "agent_response" in JOB_KINDS  # still there — not retroactively removed
 
 
 class TestDataRefreshHandler:
@@ -280,6 +365,90 @@ class TestAnalyticsMigrateHandler:
 
         with pytest.raises(ValueError):
             JOB_KINDS["analytics-migrate"].handler({"to": "bogus"})
+
+
+class TestWebhookDeliverHandler:
+    """``webhook-deliver`` (V1b Task 6) — a thin adapter over
+    ``app.chat.webhook_delivery.deliver``; the SSRF guard / HMAC signing /
+    failure-tracking behavior of ``deliver`` itself is covered in
+    ``tests/test_webhook_delivery.py``. These tests cover only the handler's
+    own responsibilities: resolving the webhook row, skipping a
+    deleted/disabled one, and turning a failed delivery into a raised
+    exception so the worker's standard retry path engages."""
+
+    def test_missing_webhook_id_raises(self):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+
+        with pytest.raises(RuntimeError, match="webhook_id"):
+            JOB_KINDS["webhook-deliver"].handler({})
+
+    def test_deleted_webhook_is_a_clean_noop(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr("src.repositories.agent_webhooks_repo", lambda: _FakeAgentWebhooksRepo(row=None))
+
+        # Must not raise — the webhook was deleted between enqueue and claim.
+        JOB_KINDS["webhook-deliver"].handler({"webhook_id": "gone", "notification": {}})
+
+    def test_disabled_webhook_is_a_clean_noop(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr(
+            "src.repositories.agent_webhooks_repo",
+            lambda: _FakeAgentWebhooksRepo(row={"id": "w1", "active": False}),
+        )
+
+        JOB_KINDS["webhook-deliver"].handler({"webhook_id": "w1", "notification": {}})
+
+    def test_failed_delivery_raises_for_job_retry(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr(
+            "src.repositories.agent_webhooks_repo",
+            lambda: _FakeAgentWebhooksRepo(row={"id": "w1", "active": True, "url": "https://h/x", "secret": "s"}),
+        )
+        monkeypatch.setattr("app.chat.webhook_delivery.deliver", lambda webhook, payload: False)
+
+        with pytest.raises(RuntimeError, match="w1"):
+            JOB_KINDS["webhook-deliver"].handler({"webhook_id": "w1", "notification": {"event": "job.completed"}})
+
+    def test_successful_delivery_does_not_raise(self, monkeypatch):
+        from app.worker.kinds import register_all_kinds
+        from app.worker.registry import JOB_KINDS
+
+        register_all_kinds()
+        monkeypatch.setattr(
+            "src.repositories.agent_webhooks_repo",
+            lambda: _FakeAgentWebhooksRepo(row={"id": "w1", "active": True, "url": "https://h/x", "secret": "s"}),
+        )
+        delivered = []
+        monkeypatch.setattr(
+            "app.chat.webhook_delivery.deliver",
+            lambda webhook, payload: (delivered.append((webhook, payload)), True)[1],
+        )
+
+        JOB_KINDS["webhook-deliver"].handler({"webhook_id": "w1", "notification": {"event": "job.completed"}})
+
+        assert delivered == [
+            ({"id": "w1", "active": True, "url": "https://h/x", "secret": "s"}, {"event": "job.completed"})
+        ]
+
+
+class _FakeAgentWebhooksRepo:
+    def __init__(self, row):
+        self._row = row
+
+    def get(self, webhook_id):
+        return self._row
 
 
 class TestJiraWebhookEnqueues:

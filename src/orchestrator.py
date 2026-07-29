@@ -40,7 +40,9 @@ import duckdb
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
 from src.db import _open_duckdb
 from src.orchestrator_security import (
+    attach_host_allowlist_configured,
     escape_sql_string_literal,
+    is_attach_host_allowed,
     is_builtin_extension,
     is_extension_allowed,
     is_token_env_allowed,
@@ -144,6 +146,47 @@ def _atomic_swap_db(tmp_path: str, target_path: str) -> None:
 def _get_extracts_dir() -> Path:
     data_dir = Path(os.environ.get("DATA_DIR", "./data"))
     return data_dir / "extracts"
+
+
+def _hash_table_parts(table_dir: Path) -> list[dict] | None:
+    """Per-part manifest for a partitioned table stored as a *directory* of
+    parquet parts — Jira hive (``month=*/data.parquet``) and Keboola
+    partitioned (``<key>.parquet``). Returns a list of
+    ``{path, hash, size_bytes}`` sorted by relpath, where ``hash`` is the
+    full content MD5 of the part (same contract as the single-file hash
+    ``agnes pull`` re-verifies), or ``None`` when *table_dir* is not a
+    directory of parquets (i.e. a single-file table).
+    """
+    if not table_dir.is_dir():
+        return None
+    parts: list[dict] = []
+    for pq in sorted(
+        table_dir.rglob("*.parquet"),
+        key=lambda p: p.relative_to(table_dir).as_posix(),
+    ):
+        h = hashlib.md5()
+        with open(pq, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        parts.append(
+            {
+                "path": pq.relative_to(table_dir).as_posix(),
+                "hash": h.hexdigest(),
+                "size_bytes": pq.stat().st_size,
+            }
+        )
+    return parts or None
+
+
+def _parts_rollup_hash(parts: list[dict]) -> str:
+    """Deterministic whole-table hash for a partitioned table, derived from
+    the path-sorted ``(path, hash)`` pairs. Lets the manifest's top-level
+    ``hash`` / object-store mirror-index compare keep working unchanged for
+    partitioned tables. Full 32-char MD5."""
+    joined = "\n".join(
+        f"{p['path']}:{p['hash']}" for p in sorted(parts, key=lambda p: p["path"])
+    )
+    return hashlib.md5(joined.encode("utf-8")).hexdigest()
 
 
 class SyncOrchestrator:
@@ -1336,6 +1379,26 @@ class SyncOrchestrator:
                     apply_bq_session_settings(conn)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                 elif token:
+                    # #F10 — never ship a real credential to a connector-chosen
+                    # host that the operator has not approved.
+                    if not is_attach_host_allowed(url):
+                        logger.error(
+                            "Remote attach %s: url host %r is not in %s; refusing to send credential from %s.",
+                            alias,
+                            url,
+                            "AGNES_REMOTE_ATTACH_HOST_ALLOWLIST",
+                            token_env,
+                        )
+                        continue
+                    if not attach_host_allowlist_configured():
+                        logger.warning(
+                            "Remote attach %s: sending credential (%s) to connector-chosen "
+                            "url %r with no AGNES_REMOTE_ATTACH_HOST_ALLOWLIST configured — "
+                            "set it in production to pin allowed hosts.",
+                            alias,
+                            token_env,
+                            url,
+                        )
                     escaped_token = escape_sql_string_literal(token)
                     conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
                     # Apply BQ session settings on every BQ-extension attach,
@@ -1393,19 +1456,32 @@ class SyncOrchestrator:
                 if query_mode == "materialized":
                     continue
                 pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                table_dir = extracts_dir / source_name / "data" / table_name
                 file_hash = ""
+                parts = None
+                out_size = size_bytes or 0
                 if pq_path.exists():
+                    # Single-file table: full content MD5 (see docstring).
                     h = hashlib.md5()
                     with open(pq_path, "rb") as f:
                         for chunk in iter(lambda: f.read(8192), b""):
                             h.update(chunk)
                     file_hash = h.hexdigest()
+                else:
+                    # Partitioned table (no single {table}.parquet): hash each
+                    # part; the rollup keeps the whole-table hash contract, and
+                    # the summed part sizes replace the missing single-file size.
+                    parts = _hash_table_parts(table_dir)
+                    if parts:
+                        file_hash = _parts_rollup_hash(parts)
+                        out_size = sum(p["size_bytes"] for p in parts)
 
                 repo.update_sync(
                     table_id=table_name,
                     rows=rows or 0,
-                    file_size_bytes=size_bytes or 0,
+                    file_size_bytes=out_size,
                     hash=file_hash,
+                    parts=parts,
                 )
         except Exception as e:
             logger.warning("Could not update sync_state: %s", e)

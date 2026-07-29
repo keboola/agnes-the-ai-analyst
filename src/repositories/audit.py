@@ -7,6 +7,13 @@ from typing import Any, Optional, List, Dict
 
 import duckdb
 
+from src.audit_context import auto_duration_ms
+from src.audit_helpers import (
+    AUDIT_SOURCE_CASE_SQL,
+    RESULT_CLASS_CASE_SQL,
+    SCHEDULER_ACTION_SQL,
+)
+
 
 class AuditRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
@@ -35,20 +42,108 @@ class AuditRepository:
         """
         entry_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
+        if duration_ms is None:
+            duration_ms = auto_duration_ms()
         self.conn.execute(
             """INSERT INTO audit_log
                (id, timestamp, user_id, action, resource, params, result, duration_ms,
                 params_before, client_ip, client_kind, correlation_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                entry_id, now, user_id, action, resource,
+                entry_id,
+                now,
+                user_id,
+                action,
+                resource,
                 json.dumps(params) if params else None,
-                result, duration_ms,
+                result,
+                duration_ms,
                 json.dumps(params_before) if params_before else None,
-                client_ip, client_kind, correlation_id,
+                client_ip,
+                client_kind,
+                correlation_id,
             ],
         )
         return entry_id
+
+    # -----------------------------------------------------------------
+    # shared filter surface — query/facets/kpis build the same WHERE from
+    # the same kwargs so the Activity Center KPI cards, facet dropdowns and
+    # timeline can never tell different stories for one filter state.
+    # -----------------------------------------------------------------
+    def _filters_where(
+        self,
+        *,
+        since: "Optional[datetime]" = None,
+        until: "Optional[datetime]" = None,
+        user_id: "Optional[str]" = None,
+        action: "Optional[str]" = None,
+        action_prefix: "Optional[str]" = None,
+        action_in: "Optional[List[str]]" = None,
+        resource: "Optional[str]" = None,
+        resource_prefix: "Optional[str]" = None,
+        result_pattern: "Optional[str]" = None,
+        result_class: "Optional[str]" = None,
+        correlation_id: "Optional[str]" = None,
+        q: "Optional[str]" = None,
+        source: "Optional[str]" = None,
+        include_self_reads: bool = True,
+    ) -> "tuple[list[str], List[Any]]":
+        where: list[str] = []
+        params: List[Any] = []
+        if since is not None:
+            where.append("timestamp >= ?")
+            params.append(since)
+        if until is not None:
+            where.append("timestamp < ?")
+            params.append(until)
+        if user_id is not None:
+            where.append("user_id = ?")
+            params.append(user_id)
+        if action is not None:
+            where.append("action = ?")
+            params.append(action)
+        if action_prefix is not None:
+            where.append("action LIKE ?")
+            params.append(action_prefix + "%")
+        if action_in:
+            placeholders = ",".join("?" for _ in action_in)
+            where.append(f"action IN ({placeholders})")
+            params.extend(action_in)
+        if resource is not None:
+            where.append("resource = ?")
+            params.append(resource)
+        if resource_prefix is not None:
+            where.append("resource LIKE ?")
+            params.append(resource_prefix + "%")
+        if result_pattern is not None:
+            where.append("result LIKE ?")
+            params.append(result_pattern)
+        if result_class is not None:
+            where.append(f"{RESULT_CLASS_CASE_SQL} = ?")
+            params.append(result_class)
+        if correlation_id is not None:
+            where.append("correlation_id = ?")
+            params.append(correlation_id)
+        if source is not None:
+            where.append(f"{AUDIT_SOURCE_CASE_SQL} = ?")
+            params.append(source)
+        if not include_self_reads:
+            # The Activity Center audits its own reads; by default its
+            # queries hide that self-noise (decision in the 2026-07-28
+            # consistency spec) — callers pass True to see everything.
+            where.append("action != 'activity.read'")
+        if q:
+            # Full-text search is a table scan on `params` JSON cast to text.
+            # Safeguard: if caller passes `q` without a `since` filter, force a
+            # 7-day cap so we don't scan the entire audit_log. Proper FTS lands
+            # in Phase B/C (see parent spec §5.5).
+            if since is None:
+                where.append("timestamp >= ?")
+                params.append(datetime.now(timezone.utc) - timedelta(days=7))
+            where.append("CAST(params AS VARCHAR) LIKE ?")
+            params.append(f"%{q}%")
+        return where, params
 
     def query(
         self,
@@ -56,15 +151,18 @@ class AuditRepository:
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
         user_id: Optional[str] = None,
-        action: Optional[str] = None,         # legacy single-action filter
+        action: Optional[str] = None,  # legacy single-action filter
         action_prefix: Optional[str] = None,
         action_in: Optional[List[str]] = None,
         resource: Optional[str] = None,
         resource_prefix: Optional[str] = None,
         result_pattern: Optional[str] = None,
+        result_class: Optional[str] = None,
         correlation_id: Optional[str] = None,
         q: Optional[str] = None,
-        cursor: Optional[tuple] = None,        # keyset (timestamp, id)
+        source: Optional[str] = None,
+        include_self_reads: bool = True,
+        cursor: Optional[tuple] = None,  # keyset (timestamp, id)
         limit: int = 100,
     ) -> tuple[List[Dict[str, Any]], Optional[tuple]]:
         """Query audit_log with rich filters; returns (rows, next_cursor).
@@ -74,46 +172,31 @@ class AuditRepository:
         the next page. `None` cursor on input = newest page; `None` cursor
         in return = last page reached.
         """
-        where = []
-        params: List[Any] = []
-        if since is not None:
-            where.append("timestamp >= ?"); params.append(since)
-        if until is not None:
-            where.append("timestamp < ?"); params.append(until)
-        if user_id is not None:
-            where.append("user_id = ?"); params.append(user_id)
-        if action is not None:
-            where.append("action = ?"); params.append(action)
-        if action_prefix is not None:
-            where.append("action LIKE ?"); params.append(action_prefix + "%")
-        if action_in:
-            placeholders = ",".join("?" for _ in action_in)
-            where.append(f"action IN ({placeholders})")
-            params.extend(action_in)
-        if resource is not None:
-            where.append("resource = ?"); params.append(resource)
-        if resource_prefix is not None:
-            where.append("resource LIKE ?"); params.append(resource_prefix + "%")
-        if result_pattern is not None:
-            where.append("result LIKE ?"); params.append(result_pattern)
-        if correlation_id is not None:
-            where.append("correlation_id = ?"); params.append(correlation_id)
-        if q:
-            # Full-text search is a table scan on `params` JSON cast to text.
-            # Safeguard: if caller passes `q` without a `since` filter, force a
-            # 7-day cap so we don't scan the entire audit_log. Proper FTS lands
-            # in Phase B/C (see parent spec §5.5).
-            if since is None:
-                since = datetime.now(timezone.utc) - timedelta(days=7)
-                where.append("timestamp >= ?"); params.append(since)
-            where.append("CAST(params AS VARCHAR) LIKE ?"); params.append(f"%{q}%")
+        where, params = self._filters_where(
+            since=since,
+            until=until,
+            user_id=user_id,
+            action=action,
+            action_prefix=action_prefix,
+            action_in=action_in,
+            resource=resource,
+            resource_prefix=resource_prefix,
+            result_pattern=result_pattern,
+            result_class=result_class,
+            correlation_id=correlation_id,
+            q=q,
+            source=source,
+            include_self_reads=include_self_reads,
+        )
         if cursor is not None:
             ts, cid = cursor
             # Keyset: rows strictly older than the cursor, breaking ties by id desc
             where.append("(timestamp, id) < (?, ?)")
             params.extend([ts, cid])
 
-        sql = "SELECT * FROM audit_log"
+        # `source` is computed server-side so every consumer (web, CLI, MCP)
+        # classifies rows identically — no client-side re-derivation.
+        sql = f"SELECT *, {AUDIT_SOURCE_CASE_SQL} AS source FROM audit_log"
         if where:
             sql += " WHERE " + " AND ".join(where)
         # Fetch limit+1 to determine whether there's a next page
@@ -164,10 +247,7 @@ class AuditRepository:
         if not resources:
             return []
         placeholders = ",".join("?" for _ in resources)
-        sql = (
-            f"SELECT * FROM audit_log WHERE resource IN ({placeholders}) "
-            f"ORDER BY timestamp DESC LIMIT ?"
-        )
+        sql = f"SELECT * FROM audit_log WHERE resource IN ({placeholders}) ORDER BY timestamp DESC LIMIT ?"
         results = self.conn.execute(sql, list(resources) + [limit]).fetchall()
         if not results:
             return []
@@ -189,9 +269,7 @@ class AuditRepository:
     # -----------------------------------------------------------------
     def count_for_user(self, user_id: str) -> int:
         """Total audit rows recorded for one user."""
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]
-        ).fetchone()
+        row = self.conn.execute("SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]).fetchone()
         return int(row[0]) if row and row[0] is not None else 0
 
     def query_governance(
@@ -211,10 +289,7 @@ class AuditRepository:
         """
         p0, p1 = prefixes
         if action:
-            sql = (
-                "SELECT * FROM audit_log WHERE action IN (?, ?) "
-                "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
-            )
+            sql = "SELECT * FROM audit_log WHERE action IN (?, ?) ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
             params: List[Any] = [f"{p0}{action}", f"{p1}{action}", limit, offset]
         else:
             sql = (
@@ -233,61 +308,42 @@ class AuditRepository:
         self,
         *,
         since: datetime,
-        scheduler_actions: list[str],
         limit: int = 50,
+        **filters: "Any",
     ) -> "dict[str, list[dict]]":
         """Distinct facet values present in ``audit_log`` since ``since``.
 
-        Five GROUP BY COUNT(*) buckets (no users JOIN — the caller resolves
-        user emails separately): users, actions, results, resources, sources.
-        Each bucket is largest-first, capped at ``limit``.
+        Buckets: users, actions, results, result_classes, resources,
+        sources — largest-first, capped at ``limit``. Accepts the same
+        filter kwargs as :meth:`query` (via ``_filters_where``) so the
+        dropdown counts always describe the same row set the timeline
+        shows. Source classification uses the shared
+        ``AUDIT_SOURCE_CASE_SQL`` rule — no caller-supplied action list.
         """
-        users = self.conn.execute(
-            "SELECT user_id AS id, COUNT(*) AS n FROM audit_log "
-            "WHERE timestamp >= ? AND user_id IS NOT NULL "
-            "GROUP BY user_id ORDER BY n DESC LIMIT ?",
-            [since, limit],
-        ).fetchall()
-        actions = self.conn.execute(
-            "SELECT action AS label, COUNT(*) AS n FROM audit_log "
-            "WHERE timestamp >= ? AND action IS NOT NULL "
-            "GROUP BY action ORDER BY n DESC LIMIT ?",
-            [since, limit],
-        ).fetchall()
-        results = self.conn.execute(
-            "SELECT COALESCE(result, '—') AS label, COUNT(*) AS n "
-            "FROM audit_log WHERE timestamp >= ? "
-            "GROUP BY result ORDER BY n DESC LIMIT ?",
-            [since, limit],
-        ).fetchall()
-        resources = self.conn.execute(
-            "SELECT resource AS label, COUNT(*) AS n FROM audit_log "
-            "WHERE timestamp >= ? AND resource IS NOT NULL "
-            "GROUP BY resource ORDER BY n DESC LIMIT ?",
-            [since, limit],
-        ).fetchall()
-        sched_in = ",".join("?" for _ in scheduler_actions)
-        source_rows = self.conn.execute(
-            f"""
-            SELECT
-              CASE
-                WHEN client_kind IS NOT NULL AND client_kind != '' THEN client_kind
-                WHEN action IN ({sched_in}) THEN 'scheduler'
-                WHEN user_id IS NULL THEN 'system'
-                ELSE 'other'
-              END AS src,
-              COUNT(*) AS n
-            FROM audit_log WHERE timestamp >= ?
-            GROUP BY src ORDER BY n DESC LIMIT ?
-            """,
-            list(scheduler_actions) + [since, limit],
-        ).fetchall()
+        where, params = self._filters_where(since=since, **filters)
+        w = ("WHERE " + " AND ".join(where)) if where else ""
+
+        def _bucket(select: str, extra: str = "", group: str = "1") -> list:
+            clause = w + (f" AND {extra}" if (w and extra) else (f"WHERE {extra}" if extra else ""))
+            return self.conn.execute(
+                f"SELECT {select}, COUNT(*) AS n FROM audit_log {clause} "
+                f"GROUP BY {group} ORDER BY n DESC LIMIT ?",
+                params + [limit],
+            ).fetchall()
+
+        users = _bucket("user_id AS id", "user_id IS NOT NULL")
+        actions = _bucket("action AS label", "action IS NOT NULL")
+        results = _bucket("COALESCE(result, '—') AS label", group="result")
+        result_classes = _bucket(f"{RESULT_CLASS_CASE_SQL} AS label")
+        resources = _bucket("resource AS label", "resource IS NOT NULL")
+        source_rows = _bucket(f"{AUDIT_SOURCE_CASE_SQL} AS src")
         return {
-            "users":     [{"id": r[0], "count": r[1]} for r in users],
-            "actions":   [{"value": r[0], "count": r[1]} for r in actions],
-            "results":   [{"value": r[0], "count": r[1]} for r in results],
+            "users": [{"id": r[0], "count": r[1]} for r in users],
+            "actions": [{"value": r[0], "count": r[1]} for r in actions],
+            "results": [{"value": r[0], "count": r[1]} for r in results],
+            "result_classes": [{"value": r[0], "count": r[1]} for r in result_classes],
             "resources": [{"value": r[0], "count": r[1]} for r in resources],
-            "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
+            "sources": [{"value": r[0], "count": r[1]} for r in source_rows],
         }
 
     def last_scheduler_tick(self) -> "datetime | None":
@@ -295,10 +351,29 @@ class AuditRepository:
         timestamp, or ``None`` if the scheduler has never fired. Backs the
         Activity Center health pulse's "scheduler" freshness field
         (``app/api/activity.py`` ``_compute_health``)."""
-        row = self.conn.execute(
-            "SELECT MAX(timestamp) FROM audit_log WHERE action LIKE 'run_%' OR action='marketplace.sync_all'"
-        ).fetchone()
+        row = self.conn.execute(f"SELECT MAX(timestamp) FROM audit_log WHERE {SCHEDULER_ACTION_SQL}").fetchone()
         return row[0] if row else None
+
+    def upload_filenames_since(self, since: datetime) -> "list[str]":
+        """Distinct ``filename`` values from ``session.upload`` audit rows at/
+        after *since*. Parsed in Python (portable across engines). Backs the
+        health pulse's session-ingest reconciliation — joined against
+        ``usage_session_summary.session_file`` BASENAMES, never session_id
+        (resumed/forked sessions carry a different content-derived id)."""
+        rows = self.conn.execute(
+            "SELECT params FROM audit_log WHERE action = 'session.upload' AND timestamp >= ?",
+            [since],
+        ).fetchall()
+        out: set[str] = set()
+        for (p,) in rows:
+            try:
+                d = json.loads(p) if isinstance(p, str) else (p or {})
+            except (TypeError, ValueError):
+                continue
+            fn = (d or {}).get("filename")
+            if fn:
+                out.add(fn)
+        return sorted(out)
 
     def active_users_since(self, since: datetime) -> int:
         """Distinct ``user_id`` count over audit rows at/after *since*, NULL
@@ -310,29 +385,46 @@ class AuditRepository:
         ).fetchone()
         return int(row[0] or 0) if row else 0
 
-    def kpis(self, *, since: datetime) -> "dict[str, Any]":
-        """Headline KPIs over the window: events, active users, errors, p95.
+    def kpis(self, *, since: datetime, **filters: "Any") -> "dict[str, Any]":
+        """Headline KPIs over the window: events, active users, errors, p95,
+        duration coverage. Accepts the same filter kwargs as :meth:`query`
+        so the KPI cards always agree with the timeline.
 
+        ``active_users`` counts people — rows whose computed source is
+        ``scheduler``/``system`` are excluded from the distinct-user count
+        (the events total still includes them). ``errors`` counts
+        ``result_class = 'error'`` (denied/blocked are their own class).
         ``p95`` uses DuckDB's ``approx_quantile`` (the PG sibling uses an
-        exact ``percentile_cont``; results may differ within tolerance). The
-        error-rate ratio is left to the caller.
+        exact ``percentile_cont``; results may differ within tolerance).
         """
+        where, params = self._filters_where(since=since, **filters)
+        w = ("WHERE " + " AND ".join(where)) if where else ""
         row = self.conn.execute(
-            """
+            f"""
             SELECT
               COUNT(*) AS events_total,
-              COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS active_users,
-              COUNT(*) FILTER (WHERE result IS NOT NULL AND result LIKE 'error%') AS errors,
-              CAST(approx_quantile(duration_ms, 0.95) AS INTEGER) AS p95
-            FROM audit_log WHERE timestamp >= ?
+              COUNT(DISTINCT user_id) FILTER (
+                WHERE user_id IS NOT NULL
+                  AND {AUDIT_SOURCE_CASE_SQL} NOT IN ('scheduler', 'system')
+              ) AS active_users,
+              COUNT(*) FILTER (WHERE {RESULT_CLASS_CASE_SQL} = 'error') AS errors,
+              CAST(approx_quantile(duration_ms, 0.95) AS INTEGER) AS p95,
+              COUNT(duration_ms) AS measured,
+              COUNT(*) AS total
+            FROM audit_log {w}
             """,
-            [since],
+            params,
         ).fetchone()
         if row is None:
-            return {"events_total": 0, "active_users": 0, "errors": 0, "p95": None}
+            return {
+                "events_total": 0, "active_users": 0, "errors": 0,
+                "p95": None, "duration_coverage": 0.0,
+            }
+        total = int(row[5] or 0)
         return {
             "events_total": int(row[0] or 0),
             "active_users": int(row[1] or 0),
             "errors": int(row[2] or 0),
             "p95": int(row[3]) if row[3] is not None else None,
+            "duration_coverage": round((int(row[4] or 0) / total), 4) if total else 0.0,
         }

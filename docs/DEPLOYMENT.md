@@ -518,6 +518,88 @@ for the Caddy snippet to append to your reverse proxy.
   own grants are narrower (spec §10). Deactivating the owner revokes the
   app's token until an admin reassigns ownership.
 
+**Draft iteration.** A draft is a registry sibling of a prod app pinned to an
+iteration branch on the *same* git repo (no second repo, no copy) — create one
+with `agnes app draft create <slug> [--branch]`, iterate by pushing to the
+returned `git_clone_url` (or minting a fresh one with `agnes app
+git-credential <slug>`), and deploy the draft on its own branch with `agnes
+app deploy <draft_slug> --mode dev`. Drafts are hidden from `agnes app list`;
+promote one by merging its branch into `main` and deploying the prod app
+normally, then tear the draft down with `agnes app draft delete <slug>
+<draft_slug>`. This is the same lifecycle the AI-authoring flow drives end to
+end via MCP tools and the ai-kit `dataapp-development` skill — see
+[`docs/superpowers/specs/2026-07-23-data-apps-wave3-ai-authoring-design.md`](superpowers/specs/2026-07-23-data-apps-wave3-ai-authoring-design.md).
+
+#### AI authoring — marketplace registration (Path D)
+
+**The authoring flow.** With the plugin registered (below), a chat conversation
+builds a hosted data app end-to-end without shell access: the bundled
+`agnes-data-apps-extras` skill (ships in every chat sandbox, loads alongside the
+upstream `dataapp-development` skill) copies the baked `nodejs-dashboard`
+scaffold onto a draft branch, `data_app_deploy(mode=dev)` boots it, and the
+`agnes_data_app_preview` tool shows it live in a split-pane iframe (authorized by
+a short-TTL scoped preview grant). On approval the agent merges the draft into
+`main` and redeploys prod. The two most expensive pieces — the general authoring
+knowledge and the templates — are reused from `dataapp-developer`, not rewritten.
+
+The in-chat AI-authoring loop (scaffold → draft → preview → promote) leans on
+the upstream, source-available `dataapp-developer` plugin from
+[`keboola/ai-kit`](https://github.com/keboola/ai-kit) — the shared,
+harness-agnostic `dataapp-development` skill most Claude Code data-app
+authoring already uses. Agnes does not fork it; an operator registers it the
+same way as any other marketplace so it syncs nightly and is served to
+sandboxes alongside the bundled `agnes-data-apps-extras` skill (the
+Agnes-specific overlay — deploy/preview/promote tool usage, draft-branch
+discipline, the `keboola-config/` scaffold contract — that loads *next to* the
+upstream skill, never instead of it).
+
+**1. Register the marketplace** — `POST /api/marketplaces` (or the
+`/admin/marketplaces` UI form), the same admin-only, SSRF-guarded,
+nightly-synced path every other marketplace uses (see
+[`marketplace.md`](marketplace.md)):
+
+```bash
+curl -X POST https://<your-host>/api/marketplaces \
+  -H "Authorization: Bearer <admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "AI Kit",
+    "slug": "ai-kit",
+    "url": "https://github.com/keboola/ai-kit",
+    "curator_name": "<your name>",
+    "curator_email": "<your email>"
+  }'
+```
+
+`name`, `slug`, `url` (must be `https://`; the host is SSRF-checked before any
+clone), `curator_name`, and `curator_email` are required on create.
+`branch`/`ref` optionally pin a fixed ref (mutually exclusive with each
+other); `token` persists a PAT to `.env_overlay` for a private fork — not
+needed for the public repo. The first nightly sync (or a manual
+`POST /api/marketplaces/ai-kit/sync`) populates `marketplace_plugins`,
+including the `dataapp-developer` plugin.
+
+**2. Grant it to the authoring group** — a plugin only reaches an analyst's
+sandbox once a `resource_grants` row ties it to a group they belong to (the
+marketplace feed enforces RBAC with no Admin god-mode short-circuit — Admin
+curates its own view like any other group):
+
+```bash
+agnes admin grant create <group> marketplace_plugin ai-kit/dataapp-developer
+```
+
+or the same action via `/admin/access`. Grant it to whichever group should be
+allowed to author data apps — **not** a blanket `Everyone` grant unless every
+analyst on the instance should get the authoring skill.
+
+**Path D — the interim Agnes overlay.** Until `keboola/ai-kit` merges a
+"Path D — Agnes harness" section into its own shared `deployment-paths.md`
+(tracked as an external, upstream PR — outside this repo), the bundled
+`agnes-data-apps-extras` skill carries a short pointer/overlay describing how
+the shared skill's authoring flow maps onto Agnes's `data_app_*` MCP tools and
+`/apps/<slug>/` hosting. Once the upstream PR lands, the overlay shrinks to a
+one-line pointer at the shared doc.
+
 ### Metrics (Prometheus)
 
 Every role process exposes `GET /metrics` (`app/observability/metrics.py`)

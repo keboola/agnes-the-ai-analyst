@@ -32,6 +32,12 @@
 		health_interval 5s
 		fail_duration 10s
 		lb_policy round_robin
+		# Immediate flush so SSE streams (the cloud-chat LLM proxy
+		# /api/broker/anthropic and /api/mcp) — Caddy's auto-flush only
+		# triggers on an exact "text/event-stream" Content-Type, but Starlette
+		# appends "; charset=utf-8", so without this the model's token deltas
+		# are buffered into one end-of-turn burst.
+		flush_interval -1
 	}
 
 	# Spec §3.7: "the proxy never removes the last healthy upstream ...

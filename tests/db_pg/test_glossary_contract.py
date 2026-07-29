@@ -117,6 +117,20 @@ def test_search_ilike_matches_term_or_definition(repo):
     assert ids == {"a", "b"}
 
 
+def test_glossary_source_ref_roundtrip(repo):
+    repo.create(
+        id="kb/model-1/mrr",
+        term="Monthly Recurring Revenue",
+        definition="Revenue normalized to a monthly cadence.",
+        source="keboola_semantic_layer",
+        source_ref="conn-a",
+    )
+    row = repo.get("kb/model-1/mrr")
+    assert row["source_ref"] == "conn-a"
+    assert repo.find_by_term("Monthly Recurring Revenue")["id"] == "kb/model-1/mrr"
+    assert repo.find_by_term("nope") is None
+
+
 def test_search_ranks_by_bm25_when_fts_available(tmp_path):
     """DuckDB-only: BM25 should rank an exact-term match above a
     definition-only mention, even when alphabetical order disagrees."""

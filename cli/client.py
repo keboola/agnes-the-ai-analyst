@@ -2,6 +2,7 @@
 
 import atexit
 import glob
+import json as _json
 import os
 import platform
 import re
@@ -12,7 +13,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Iterator, Optional
 
 import httpx
 
@@ -82,6 +83,7 @@ def _reap_dead_pid_leftovers(target_path: str) -> None:
         except OSError:
             pass
 
+
 # Retry policy for transient failures during stream downloads. Scoped to
 # network issues and 5xx — 4xx (auth, 404, 400) is NOT retried. Tunable via
 # env for tests; defaults sit in the "one flaky network blip" window.
@@ -98,9 +100,15 @@ QUERY_TIMEOUT_S = float(os.environ.get("AGNES_QUERY_TIMEOUT", "300"))
 # but N parallel range requests scale linearly). Disabled implicitly for
 # files below the threshold or when the server doesn't advertise byte-range
 # support. Operators can hard-disable by setting parallelism to 1.
-_CHUNK_PARALLELISM = max(1, min(16, int(
-    os.environ.get("AGNES_PULL_CHUNK_PARALLELISM", "4"),
-)))
+_CHUNK_PARALLELISM = max(
+    1,
+    min(
+        16,
+        int(
+            os.environ.get("AGNES_PULL_CHUNK_PARALLELISM", "4"),
+        ),
+    ),
+)
 _CHUNK_THRESHOLD_BYTES = int(
     os.environ.get("AGNES_PULL_CHUNK_THRESHOLD_BYTES", str(50 * 1024 * 1024)),
 )
@@ -152,7 +160,10 @@ def _log_traceback(exc: BaseException, *, context: str) -> Path:
 
 
 def _translate_transport_error(
-    exc: Exception, *, context: str, timeout_s: float | None = None,
+    exc: Exception,
+    *,
+    context: str,
+    timeout_s: float | None = None,
 ) -> AgnesTransportError:
     """Map httpx transport exceptions to user-facing CLI messages. The
     mapping is intentionally pragmatic — analysts care about "what do I
@@ -179,14 +190,9 @@ def _translate_transport_error(
                 f"Full traceback: {log}"
             )
         else:
-            hint = (
-                "Server is slow or unreachable. Check `agnes status`; "
-                "re-run if transient.\n"
-                f"Full traceback: {log}"
-            )
+            hint = f"Server is slow or unreachable. Check `agnes status`; re-run if transient.\nFull traceback: {log}"
         return AgnesTransportError(
-            f"Server didn't respond within the read timeout ({wait_s:.0f}s) "
-            f"for {context}.",
+            f"Server didn't respond within the read timeout ({wait_s:.0f}s) for {context}.",
             hint=hint,
             logfile_path=log,
         )
@@ -395,10 +401,136 @@ def api_put(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
         raise _translate_transport_error(exc, context=f"PUT {path}", timeout_s=timeout) from exc
 
 
+# ── SSE streaming POST ──────────────────────────────────────────────────
+# `agnes chat` (cli/commands/chat.py) is the sole consumer today: it posts
+# one user turn to `/api/v1/sessions/{id}/messages` and reads the AG-UI
+# event stream back (`app/api/agent_sse.py`'s vocabulary — RUN_STARTED,
+# TEXT_MESSAGE_CONTENT, TOOL_CALL_START/END, RUN_FINISHED, RUN_ERROR).
+#
+# Read timeout: the server's own `_IDLE_TIMEOUT_S` (app/api/agent_sessions.py,
+# 300s) is the ceiling on how long it will go between frames before forcing
+# a terminal RUN_ERROR itself — our client-side read timeout must comfortably
+# exceed that or we'd time out first and misreport a transport error for
+# what is actually a slow-but-healthy turn. Connect timeout stays short
+# (an unreachable server should fail fast, not hang for 5 minutes).
+_SSE_CONNECT_TIMEOUT_S = 10.0
+_SSE_READ_TIMEOUT_S = 320.0
+
+
+class ApiSseError(Exception):
+    """The initial POST for an SSE stream came back non-2xx (before any
+    event was ever yielded) — e.g. `404 session_not_found`, `409
+    turn_in_flight`, `503 chat_disabled`. Carries the parsed body (falls
+    back to raw text) so the caller can render it the same way `_fail`/
+    `render_error` render any other API error."""
+
+    def __init__(self, status_code: int, body: Any) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+        self.body = body
+
+
+def api_post_sse(path: str, json: Optional[dict] = None) -> Iterator[dict]:
+    """POST ``path`` and yield each Server-Sent Event on the
+    ``text/event-stream`` response as a parsed dict.
+
+    Only ``data:`` field lines contribute to the payload; ``id:``/
+    ``event:``/comment lines are metadata the event's own ``"type"`` key
+    already carries, so they're skipped rather than reconstructed. Per the
+    SSE spec, consecutive ``data:`` lines belonging to one record are
+    buffered and joined with ``"\\n"``, and the record is only dispatched
+    (JSON-parsed + yielded) on the blank line that terminates it. Coupling
+    note: today's sole producer, ``app.api.agent_sse.sse_bytes``, always
+    emits exactly one ``data:`` line per record — this buffering exists for
+    spec-correctness (and any future producer that wraps long payloads)
+    rather than because the current server needs it. A record left
+    unterminated by a final blank line (stream cut off mid-record) is
+    dropped rather than force-parsed — that's indistinguishable from any
+    other truncated-stream case and is handled by the caller checking for a
+    terminal event (see ``cli/commands/chat.py::_send_turn``).
+
+    Malformed ``data:`` payloads (fails to parse as JSON) are counted and,
+    if any occurred, a one-line warning is written to stderr when the
+    stream ends — silently dropping them would otherwise leave no trace
+    that events were lost.
+
+    Raises:
+        ApiSseError: the response status was >= 400 — read entirely before
+            raising so the connection is released; no partial events are
+            yielded in that case.
+        AgnesTransportError: any httpx transport failure (connect refused,
+            read timeout, connection reset mid-stream), translated the same
+            way every other ``api_*`` helper does.
+
+    A generator: nothing happens until the caller starts iterating. The
+    underlying request stays open only while the caller keeps pulling
+    events — breaking out of the loop (or calling ``.close()`` on the
+    returned generator explicitly, which the caller should do from a
+    ``finally`` to guarantee it regardless of *where* an exception lands)
+    triggers ``GeneratorExit`` inside this function, unwinding the ``with
+    client.stream(...)`` block and closing the connection.
+    """
+    malformed_count = 0
+    try:
+        with get_client(
+            timeout=httpx.Timeout(
+                connect=_SSE_CONNECT_TIMEOUT_S,
+                read=_SSE_READ_TIMEOUT_S,
+                write=30.0,
+                pool=_SSE_CONNECT_TIMEOUT_S,
+            )
+        ) as client:
+            with client.stream("POST", path, json=json) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    try:
+                        body = response.json()
+                    except Exception:
+                        body = response.text
+                    raise ApiSseError(response.status_code, body)
+                data_lines: list[str] = []
+                for line in response.iter_lines():
+                    if line == "":
+                        # Blank line: record boundary. Dispatch only if we
+                        # actually buffered a data field since the last
+                        # dispatch — a stray blank line (or one between
+                        # comment/event/id-only lines) is a no-op.
+                        if data_lines:
+                            payload = "\n".join(data_lines)
+                            data_lines = []
+                            try:
+                                event = _json.loads(payload)
+                            except ValueError:
+                                malformed_count += 1
+                                continue
+                            yield event
+                        continue
+                    if not line.startswith("data:"):
+                        # event:/id:/retry:/comment lines — metadata we
+                        # don't need to reconstruct.
+                        continue
+                    value = line[len("data:") :]
+                    if value.startswith(" "):
+                        value = value[1:]
+                    data_lines.append(value)
+    except httpx.HTTPError as exc:
+        raise _translate_transport_error(
+            exc,
+            context=f"POST {path} (stream)",
+            timeout_s=_SSE_READ_TIMEOUT_S,
+        ) from exc
+    finally:
+        if malformed_count:
+            sys.stderr.write(
+                f"warning: skipped {malformed_count} malformed SSE data record(s) that failed to parse as JSON\n"
+            )
+
+
 def _is_transient(exc: Exception) -> bool:
     """Worth retrying? Network blip or 5xx — yes. Auth / 4xx — no."""
-    if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
-                        httpx.RemoteProtocolError, httpx.TimeoutException)):
+    if isinstance(
+        exc, (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError, httpx.TimeoutException)
+    ):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return 500 <= exc.response.status_code < 600
@@ -409,9 +541,12 @@ def _read_chunk_threshold_bytes() -> int:
     """Re-read threshold each call so tests / operators can flip it via
     env var without restarting the process."""
     try:
-        return int(os.environ.get(
-            "AGNES_PULL_CHUNK_THRESHOLD_BYTES", str(_CHUNK_THRESHOLD_BYTES),
-        ))
+        return int(
+            os.environ.get(
+                "AGNES_PULL_CHUNK_THRESHOLD_BYTES",
+                str(_CHUNK_THRESHOLD_BYTES),
+            )
+        )
     except ValueError:
         return _CHUNK_THRESHOLD_BYTES
 
@@ -420,9 +555,12 @@ def _read_chunk_parallelism() -> int:
     """Re-read parallelism each call (same rationale as threshold). Floor 1,
     ceiling 16."""
     try:
-        n = int(os.environ.get(
-            "AGNES_PULL_CHUNK_PARALLELISM", str(_CHUNK_PARALLELISM),
-        ))
+        n = int(
+            os.environ.get(
+                "AGNES_PULL_CHUNK_PARALLELISM",
+                str(_CHUNK_PARALLELISM),
+            )
+        )
     except ValueError:
         n = _CHUNK_PARALLELISM
     return max(1, min(16, n))
@@ -452,7 +590,7 @@ def _probe_range_support(client: httpx.Client, path: str) -> tuple[int, bool]:
         status = getattr(resp, "status_code", 200)
         if status < 400:
             size = int(resp.headers.get("content-length", "0") or 0)
-            accepts = (resp.headers.get("accept-ranges", "").lower() == "bytes")
+            accepts = resp.headers.get("accept-ranges", "").lower() == "bytes"
             if size > 0:
                 return (size, accepts)
         # HEAD failed (405 from GET-only route is the common case in
@@ -482,7 +620,7 @@ def _probe_range_support(client: httpx.Client, path: str) -> tuple[int, bool]:
             # status == 200 → server ignored Range; we can read content-length but
             # accept-ranges is False (or missing) so the caller will not chunk.
             size = int(resp.headers.get("content-length", "0") or 0)
-            accepts = (resp.headers.get("accept-ranges", "").lower() == "bytes")
+            accepts = resp.headers.get("accept-ranges", "").lower() == "bytes"
             return (size, accepts)
     except Exception:
         return (0, False)
@@ -575,7 +713,11 @@ def _download_chunked(
         for attempt in range(_RETRY_ATTEMPTS + 1):
             try:
                 _download_chunk(
-                    client, path, start, end, part_paths[i],
+                    client,
+                    path,
+                    start,
+                    end,
+                    part_paths[i],
                     progress_callback,
                 )
                 return
@@ -586,9 +728,7 @@ def _download_chunked(
                 last_exc = exc
                 if attempt == _RETRY_ATTEMPTS or not _is_transient(exc):
                     break
-                time.sleep(_RETRY_BACKOFFS_S[
-                    min(attempt, len(_RETRY_BACKOFFS_S) - 1)
-                ])
+                time.sleep(_RETRY_BACKOFFS_S[min(attempt, len(_RETRY_BACKOFFS_S) - 1)])
         assert last_exc is not None
         raise last_exc
 
@@ -748,24 +888,27 @@ def _stream_download_via(
         total_size = 0
         accepts_ranges = False
 
-    use_chunked = (
-        parallelism > 1
-        and accepts_ranges
-        and total_size > threshold
-    )
+    use_chunked = parallelism > 1 and accepts_ranges and total_size > threshold
 
     try:
         if use_chunked:
             try:
                 return _download_chunked(
-                    client, path, target_path, total_size, parallelism,
+                    client,
+                    path,
+                    target_path,
+                    total_size,
+                    parallelism,
                     progress_callback,
                 )
             except _RangeNotHonored:
                 # Server lied / proxy stripped the Range — fall through.
                 pass
         return _download_single_stream(
-            client, path, target_path, progress_callback,
+            client,
+            path,
+            target_path,
+            progress_callback,
         )
     except httpx.HTTPStatusError:
         # 4xx / 5xx response from the server — re-raise verbatim so the
@@ -774,6 +917,7 @@ def _stream_download_via(
         raise
     except httpx.HTTPError as exc:
         raise _translate_transport_error(
-            exc, context=f"GET {path} (stream → {target_path})",
+            exc,
+            context=f"GET {path} (stream → {target_path})",
             timeout_s=300.0,
         ) from exc

@@ -1,7 +1,9 @@
 """Data download endpoint — streaming parquet files."""
 
 import logging
+import re
 import time
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -9,7 +11,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
-from src.audit_helpers import client_kind_from_user
+from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.identifier_validation import _SAFE_QUOTED_IDENTIFIER
 from src.rbac import can_access_table
 
@@ -19,6 +21,42 @@ from src.repositories import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
+
+# A single path segment of a partitioned-table part relpath. Allows hive
+# partition dirs (``month=2026-06``), flat partition keys (``2025_11.parquet``)
+# and ``data.parquet`` — first char alnum/underscore, then alnum/_/./=/-.
+# Deliberately excludes ``/`` and ``\`` (segments are split on ``/`` first).
+_SAFE_PART_SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.=-]*$")
+
+
+def _resolve_part_path(extracts_dir: Path, table_id: str, part: str) -> Path | None:
+    """Map a manifest ``part`` relpath to a safe on-disk file under the
+    table's data directory, or ``None`` if it is unsafe / not found.
+
+    Partitioned tables live at ``extracts/<source>/data/<table_id>/<part>``
+    (Jira hive ``month=*/data.parquet``, Keboola flat ``<key>.parquet``).
+    Path traversal is blocked three ways: reject absolute / ``\\`` / NUL /
+    empty / ``.``|``..`` segments up front; require every segment to match
+    ``_SAFE_PART_SEGMENT``; and finally assert the resolved path stays under
+    the (resolved) table dir. Only an existing regular file is returned.
+    """
+    if not part or part.startswith("/") or "\\" in part or "\x00" in part:
+        return None
+    segments = part.split("/")
+    if any(s in ("", ".", "..") for s in segments):
+        return None
+    if not all(_SAFE_PART_SEGMENT.match(s) for s in segments):
+        return None
+    if not extracts_dir.exists():
+        return None
+    for table_dir in extracts_dir.glob(f"*/data/{table_id}"):
+        if not table_dir.is_dir():
+            continue
+        base = table_dir.resolve()
+        candidate = (base / part).resolve()
+        if (candidate == base or base in candidate.parents) and candidate.is_file():
+            return candidate
+    return None
 
 
 @router.get("/{table_id}/check-access")
@@ -49,7 +87,7 @@ async def check_access(
     if not _SAFE_QUOTED_IDENTIFIER.match(table_id):
         try:
             audit_repo().log(
-                user_id=user.get("id"),
+                user_id=identity_for_audit(user)[0],
                 action="data.access_check",
                 resource=resource,
                 params={"granted": False,
@@ -64,7 +102,7 @@ async def check_access(
     granted = can_access_table(user, table_id, conn)
     try:
         audit_repo().log(
-            user_id=user.get("id"),
+            user_id=identity_for_audit(user)[0],
             action="data.access_check",
             resource=resource,
             params={
@@ -88,6 +126,7 @@ async def check_access(
 async def download_table(
     table_id: str,
     request: Request,
+    part: str | None = None,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -115,22 +154,26 @@ async def download_table(
         )
 
     data_dir = _get_data_dir()
-
-    # Search in extracts directory (v2 extract.duckdb architecture)
     extracts_dir = data_dir / "extracts"
-    candidates = list(extracts_dir.rglob(f"data/{table_id}.parquet")) if extracts_dir.exists() else []
 
-    # Fallback to legacy path for backward compatibility
-    if not candidates:
-        parquet_dir = data_dir / "src_data" / "parquet"
-        candidates = list(parquet_dir.rglob(f"{table_id}.parquet"))
+    if part is not None:
+        # Partitioned-table part download (partitioned distribution): serve
+        # one part file under the table's data dir. `_resolve_part_path`
+        # blocks traversal and confirms the file exists.
+        file_path = _resolve_part_path(extracts_dir, table_id, part)
+        if file_path is None:
+            raise HTTPException(status_code=404, detail="Part not found")
+    else:
+        # Single-file table: v2 extract.duckdb path, then legacy layout.
+        candidates = list(extracts_dir.rglob(f"data/{table_id}.parquet")) if extracts_dir.exists() else []
         if not candidates:
-            candidates = list(parquet_dir.rglob(f"*/{table_id}.parquet"))
-
-    if not candidates:
-        raise HTTPException(status_code=404, detail=f"Table '{table_id}' not found")
-
-    file_path = candidates[0]
+            parquet_dir = data_dir / "src_data" / "parquet"
+            candidates = list(parquet_dir.rglob(f"{table_id}.parquet"))
+            if not candidates:
+                candidates = list(parquet_dir.rglob(f"*/{table_id}.parquet"))
+        if not candidates:
+            raise HTTPException(status_code=404, detail=f"Table '{table_id}' not found")
+        file_path = candidates[0]
 
     # ETag support
     stat = file_path.stat()
@@ -139,12 +182,15 @@ async def download_table(
     if if_none_match == etag:
         return Response(status_code=304)
 
+    audit_params = {"bytes": stat.st_size, "format": "parquet"}
+    if part is not None:
+        audit_params["part"] = part
     try:
         audit_repo().log(
-            user_id=user.get("id"),
+            user_id=identity_for_audit(user)[0],
             action="data.download",
             resource=f"table:{table_id}"[:256],
-            params={"bytes": stat.st_size, "format": "parquet"},
+            params=audit_params,
             result="success",
             client_kind=client_kind_from_user(user),
         )
@@ -153,7 +199,7 @@ async def download_table(
 
     return FileResponse(
         path=file_path,
-        filename=f"{table_id}.parquet",
+        filename=file_path.name if part is not None else f"{table_id}.parquet",
         media_type="application/octet-stream",
         headers={"ETag": etag},
     )

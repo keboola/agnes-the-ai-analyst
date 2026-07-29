@@ -242,14 +242,14 @@ class StackResolver:
         those self-served resources must still show up (materialized) even
         though they're not in ``required_ids``/``available_ids``.
 
-        Also accepts a ``SessionPrincipal``: returns only the resources whose
-        ids are in the co-session's intersection (no admin path, no
-        subscription lookup). Every returned entry is marked
+        Also accepts a ``Principal`` (co-session or agent-session): returns
+        only the resources whose ids are in that principal's intersection (no
+        admin path, no subscription lookup). Every returned entry is marked
         ``in_stack=True``, ``materialized=True``.
         """
-        from app.auth.session_principal import SessionPrincipal
+        from app.auth.session_principal import PRINCIPAL_TYPES
 
-        if isinstance(user_id_or_principal, SessionPrincipal):
+        if isinstance(user_id_or_principal, PRINCIPAL_TYPES):
             ids = user_id_or_principal.intersection.get(resource_type.value, frozenset())
             entries = self._fetch_entries(resource_type, set(ids), set(ids))
             for e in entries:

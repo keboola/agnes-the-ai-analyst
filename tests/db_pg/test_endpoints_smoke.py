@@ -92,6 +92,67 @@ class TestAuthSmoke:
         assert "access_token" in r.json()
 
 
+class TestCliAuthRescopeSmoke:
+    """v106 — the `agnes init --as-admin` opt-up endpoint."""
+
+    COVERED_ROUTES = {
+        "POST /cli/auth/rescope-surface",
+    }
+
+    @staticmethod
+    def _mint_pat(user_id: str, email: str, *, surface: str = "stack") -> str:
+        import hashlib
+        import uuid
+
+        from app.auth.jwt import create_access_token
+        from src.repositories import access_token_repo
+
+        tid = str(uuid.uuid4())
+        jwt = create_access_token(user_id=user_id, email=email, token_id=tid, typ="pat", omit_exp=True)
+        access_token_repo().create(
+            id=tid,
+            user_id=user_id,
+            name="smoke-rescope",
+            token_hash=hashlib.sha256(jwt.encode()).hexdigest(),
+            prefix=tid[:8],
+            surface=surface,
+        )
+        return jwt
+
+    def test_admin_pat_rescopes_to_full_surface(self, seeded_app_both):
+        pat = self._mint_pat("admin1", "admin@test.com", surface="stack")
+        r = seeded_app_both["client"].post(
+            "/cli/auth/rescope-surface",
+            headers={"Authorization": f"Bearer {pat}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["surface"] == "all"
+        assert body["token"]
+        # The minted row must be surface='all' (auditable in /auth/tokens).
+        from app.auth.jwt import verify_token
+        from src.repositories import access_token_repo
+
+        jti = (verify_token(body["token"]) or {}).get("jti")
+        assert access_token_repo().get_by_id(jti)["surface"] == "all"
+
+    def test_analyst_pat_denied(self, seeded_app_both):
+        pat = self._mint_pat("analyst1", "analyst@test.com", surface="stack")
+        r = seeded_app_both["client"].post(
+            "/cli/auth/rescope-surface",
+            headers={"Authorization": f"Bearer {pat}"},
+        )
+        assert r.status_code == 403, r.text
+
+    def test_session_token_denied(self, seeded_app_both):
+        # Admin SESSION credential must be refused — rescope is PAT-only.
+        r = seeded_app_both["client"].post(
+            "/cli/auth/rescope-surface",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 403, r.text
+
+
 # ---------------------------------------------------------------------------
 # Health / Version
 # ---------------------------------------------------------------------------
@@ -1495,6 +1556,12 @@ class TestReportsSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
+    # Agent-profile builder page (Task 10) — self-contained web page, tested
+    # in tests/test_agents_page.py (chrome/list/auth) rather than duplicated
+    # in this PG smoke harness. The management API it drives
+    # (/api/v1/agents/*) is covered separately in
+    # tests/test_agents_management_api.py.
+    "GET /agents",
     # Chat sandbox secret broker (2026-07-14 incident) — internal
     # sandbox→server routes, ticket-authed, never parameter-free (require a
     # POST body + a valid broker ticket), so they have no place in this
@@ -1505,6 +1572,9 @@ KNOWN_UNTESTED = {
     "POST /api/broker/anthropic/{subpath}",
     "POST /api/broker/agnes-api",
     "POST /api/broker/agnes-mcp",
+    # Sandboxed data-apps authoring replay (Task 7, wave 3B) — same
+    # ticket-authed, never parameter-free shape as the broker routes above.
+    "POST /api/broker/data-apps",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
     # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
@@ -1615,6 +1685,18 @@ KNOWN_UNTESTED = {
     "GET /api/data-apps/{slug}/logs",
     "GET /api/data-apps/{slug}/readiness",
     "POST /api/data-apps/reap-idle",
+    # Wave 3B AI-authoring flow (git-credential + drafts) — same "needs a
+    # real data_apps row + owner/Admin RBAC" non-goal as the rest of this
+    # block. Full coverage lives in tests/test_data_apps_api.py
+    # (TestGitCredential, TestDrafts).
+    "POST /api/data-apps/{slug}/git-credential",
+    "POST /api/data-apps/{slug}/drafts",
+    "DELETE /api/data-apps/{slug}/drafts/{draft_slug}",
+    # Wave 3C in-chat preview loop (Task 5) — same "needs a real data_apps
+    # row + owner/Admin/grant RBAC" non-goal. Full coverage lives in
+    # tests/test_data_apps_preview.py (TestPreviewGrantEndpoint) and
+    # tests/test_data_apps_proxy.py (proxy accept/reject).
+    "POST /api/data-apps/{slug}/preview-grant",
     # Data apps web UI (Task 12) — HTML pages, not part of the parameter-free
     # API smoke sweep (same convention as the other `GET /admin/*` / `GET
     # /library*` web routes above). RBAC/rendering/feature-flag/route-collision
@@ -1710,6 +1792,9 @@ KNOWN_UNTESTED = {
     "GET /admin/datasource-credentials",
     # Admin data-sources page (#755) — tested in test_admin_data_sources_page.py
     "GET /admin/data-sources",
+    # Admin semantic-layer sources page (multi-project sync) — tested in
+    # tests/test_admin_semantic_layer_page.py.
+    "GET /admin/semantic-layer",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",
     "POST /api/admin/keboola/test",
@@ -2199,12 +2284,72 @@ KNOWN_UNTESTED = {
     "POST /api/v2/metadata-cache/refresh",
     # Jira webhooks / slack bind
     "GET /slack/bind",
+    # POST /slack/bind redeems a bind code and needs a matching double-submit
+    # CSRF cookie + form (security audit F2), so it can't be a parameter-free
+    # smoke hit — behaviour is covered in tests/test_slack_magic_link_bind.py.
+    "POST /slack/bind",
     "POST /api/slack/bind",
     "POST /api/slack/commands",
     "POST /api/slack/interactivity",
     "POST /webhooks/jira",
     # My-stack curated toggle
     "PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}",
+    # Agent management (v96 agent profiles + agent-as-API, Task 5) — owner-scoped
+    # CRUD + scope + agent PAT issuance. Behaviour (ownership 404/403 matrix,
+    # slug validation/conflict, scope dedupe, PAT-issuance mode gate) covered by
+    # tests/test_agents_management_api.py; not duplicated in this PG smoke sweep.
+    "POST /api/v1/agents",
+    "GET /api/v1/agents",
+    "GET /api/v1/agents/{agent_id}",
+    "PUT /api/v1/agents/{agent_id}",
+    "DELETE /api/v1/agents/{agent_id}",
+    "PUT /api/v1/agents/{agent_id}/scope",
+    "POST /api/v1/agents/{agent_id}/tokens",
+    # Agent-as-API runtime (Task 9) — auth chain, idempotency, sync/background/
+    # timeout-degrade paths covered by tests/test_agent_responses_api.py; not
+    # duplicated in this PG smoke sweep.
+    "POST /api/v1/agents/{slug}/responses",
+    "GET /api/v1/jobs/{job_id}",
+    # Agent-as-API multi-turn sessions (V1b Task 4) — SSE turn streaming,
+    # cancel, history, delete. Auth chain (owner/agent-PAT 404 matrix),
+    # SSE framing (RUN_STARTED once/turn, id: lines), turn-in-flight 409,
+    # and the create/history/cancel/delete lifecycle are covered by
+    # tests/test_agent_sessions_api.py; not duplicated in this PG smoke
+    # sweep (an open SSE response doesn't fit this harness's
+    # parameter-free happy-path-status-code shape).
+    "POST /api/v1/agents/{slug}/sessions",
+    "POST /api/v1/sessions/{session_id}/messages",
+    "GET /api/v1/sessions/{session_id}",
+    "POST /api/v1/sessions/{session_id}/cancel",
+    "DELETE /api/v1/sessions/{session_id}",
+    # Agent usage (V1a Task 9 follow-up) — token-budget usage summary for an
+    # owner-scoped agent. Behaviour covered by tests/test_agent_usage_api.py;
+    # not duplicated in this PG smoke sweep.
+    "GET /api/v1/agents/{slug}/usage",
+    # Agent-as-API outbound webhooks (V1b Task 6) — CRUD for owner-scoped
+    # webhook subscriptions (SSRF-hardened URL validation, HMAC secret
+    # issuance, active-events set). Behaviour covered by
+    # tests/test_agent_webhooks_api.py; not duplicated in this PG smoke sweep.
+    "GET /api/v1/agents/{slug}/webhooks",
+    "POST /api/v1/agents/{slug}/webhooks",
+    "DELETE /api/v1/agents/{slug}/webhooks/{webhook_id}",
+    # Agent memory admin (V1b) — owner-scoped list/approve-or-edit/reject of
+    # an agent's candidate memories. Behaviour covered by
+    # tests/test_agent_memory_admin_api.py; not duplicated in this PG smoke
+    # sweep.
+    "GET /api/v1/agents/{agent_id}/memories",
+    "PATCH /api/v1/agents/{agent_id}/memories/{memory_id}",
+    "DELETE /api/v1/agents/{agent_id}/memories/{memory_id}",
+    # Agent memory write (V1b) — session-scoped "remember" tool write path.
+    # Behaviour covered by tests/test_agent_memory_write_api.py; not
+    # duplicated in this PG smoke sweep.
+    "POST /api/v1/sessions/{session_id}/memories",
+    # Agent session artifacts (V1c) — sandbox-harvested artifact listing/
+    # download for a multi-turn agent session. Behaviour covered by
+    # tests/test_agent_artifacts_api.py; not duplicated in this PG smoke
+    # sweep.
+    "GET /api/v1/sessions/{session_id}/artifacts",
+    "GET /api/v1/sessions/{session_id}/artifacts/{artifact_id}",
     # Data-apps ingress proxy (Task 8) — `GET /apps/{slug}` (redirect to the
     # trailing-slash form) is the only piece of this surface that still
     # appears in the OpenAPI schema: the catch-all proxy/wake/holding-page

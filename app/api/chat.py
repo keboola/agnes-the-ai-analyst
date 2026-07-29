@@ -11,6 +11,7 @@ from typing import Optional
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from sqlalchemy import exc as sa_exc
 
 from app.auth.access import require_resource_access
 from app.auth.dependencies import _get_db
@@ -24,7 +25,7 @@ from app.chat.types import Surface
 from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
 from app.resource_types import ResourceType
-from src.repositories import user_journey_repo
+from src.repositories import agents_repo, user_journey_repo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -87,6 +88,22 @@ def _get_repo(request: Request) -> ChatRepository:
     return request.app.state.chat_repo
 
 
+def _default_agent_id(owner_user_id: str) -> str:
+    """Resolve the caller's default agent id, attributing every web session
+    to it (behavior otherwise unchanged — same profile, same rails).
+
+    ``get_or_create_default`` is SELECT-then-INSERT with no transaction
+    spanning both statements, so two concurrent first-touch requests for the
+    same user can both miss the SELECT and race the INSERT; the loser hits
+    the unique constraint on the default-agent row. Retry once — the winner's
+    row now exists, so the retried SELECT finds it.
+    """
+    try:
+        return agents_repo().get_or_create_default(owner_user_id)["id"]
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
+        return agents_repo().get_or_create_default(owner_user_id)["id"]
+
+
 @router.post("/sessions", status_code=201)
 async def create_session(
     body: CreateSessionBody,
@@ -99,12 +116,14 @@ async def create_session(
             status_code=400,
             detail={"kind": "unknown_profile", "hint": body.profile},
         )
+    agent_id = _default_agent_id(user["id"])
     try:
         s = await mgr.create_session(
             user_email=user["email"],
             surface=Surface(body.surface),
             title=body.title,
             profile=body.profile,
+            agent_id=agent_id,
         )
     except ConcurrencyCapHit as exc:
         raise HTTPException(status_code=429, detail={"kind": "concurrency_cap", "hint": str(exc)})

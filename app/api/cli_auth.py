@@ -36,6 +36,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
+from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_optional_user, require_session_token
 from app.auth.jwt import create_access_token
 from app.coordination.factory import coordination, resolve_backend_name
@@ -269,13 +270,18 @@ async def exchange(
         token_hash=token_hash,
         prefix=prefix,
         expires_at=expires_at,
+        # v106: the CLI login/init path mints the ANALYST default — the
+        # workspace read surface follows the owner's stack even for admins.
+        # Admins opt up per-workspace via `agnes init --as-admin`
+        # (POST /cli/auth/rescope-surface).
+        surface="stack",
     )
     try:
         audit_repo().log(
             user_id=user_id,
             action="cli_auth.token_minted",
             resource=f"token:{token_id}",
-            params={"name": name},
+            params={"name": name, "surface": "stack"},
         )
     except Exception:
         pass
@@ -283,5 +289,79 @@ async def exchange(
     return ExchangeResponse(
         token=jwt_token,
         email=email,
+        expires_at=str(expires_at),
+    )
+
+
+class RescopeSurfaceResponse(BaseModel):
+    token: str
+    email: str
+    surface: str
+    expires_at: Optional[str]
+
+
+@router.post("/rescope-surface", response_model=RescopeSurfaceResponse)
+async def rescope_surface(
+    user=Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Mint a fresh ``surface='all'`` PAT for an ADMIN caller (v106).
+
+    The `agnes init` exchange deliberately mints ``surface='stack'`` PATs
+    (workspace read surface = the owner's stack, admins included). This is
+    the explicit opt-up behind ``agnes init --as-admin``: the CLI calls it
+    with its freshly-saved stack PAT and persists the returned full-surface
+    token instead. Requirements, both re-checked server-side per request:
+
+    - Admin-group membership NOW — ``Depends(require_admin)`` (which also
+      hard-denies agent/co-session principals before any admin lookup). A
+      later demotion doesn't matter: enforcement in ``src/rbac.py``
+      requires admin AND surface=all at every read, so a demoted owner's
+      'all' PAT reads as stack anyway.
+    - A PAT credential (not a session JWT) — this is a CLI-only surface,
+      mirroring the exchange endpoint; checked below via the
+      ``token_type`` stamp from ``get_current_user``.
+
+    The caller's current PAT is left untouched (revoking it here would
+    yank credentials out from under the very `agnes init` run that is
+    still using it; both tokens are the same user, listed side by side in
+    /auth/tokens with their surface).
+    """
+    if user.get("token_type") != "pat":
+        raise HTTPException(status_code=403, detail="rescope requires a PAT credential (run `agnes init` first)")
+
+    token_id = str(uuid.uuid4())
+    expires_delta = timedelta(days=_PAT_TTL_DAYS)
+    jwt_token = create_access_token(
+        user_id=user["id"],
+        email=user.get("email", ""),
+        token_id=token_id,
+        typ="pat",
+        expires_delta=expires_delta,
+        extra_claims={"scope": "cli-login"},
+    )
+    expires_at = datetime.now(timezone.utc) + expires_delta
+    access_token_repo().create(
+        id=token_id,
+        user_id=user["id"],
+        name="Agnes CLI (--as-admin)",
+        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+        prefix=token_id.replace("-", "")[:8],
+        expires_at=expires_at,
+        surface="all",
+    )
+    try:
+        audit_repo().log(
+            user_id=user["id"],
+            action="cli_auth.surface_rescoped",
+            resource=f"token:{token_id}",
+            params={"surface": "all"},
+        )
+    except Exception:
+        pass
+    return RescopeSurfaceResponse(
+        token=jwt_token,
+        email=user.get("email", ""),
+        surface="all",
         expires_at=str(expires_at),
     )

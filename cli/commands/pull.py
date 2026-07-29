@@ -226,18 +226,21 @@ def pull(
         typer.echo(f"  {via_signed_url} via signed URL, {via_app} via app path.")
 
     # #754 — an empty manifest with zero errors is ambiguous: it means
-    # either "nothing is registered on the server yet" or "your account
-    # has no group grants for any table" — NOT a transport/server failure
-    # (those already land in `result.errors` via the `except` in
-    # `run_pull`'s manifest-fetch step and are reported below). Pre-fix
-    # this printed only the bare "Updated 0 tables (0 total)." line above
-    # with no hint which of the two it was.
+    # either "nothing is registered on the server yet" or "your stack has
+    # no data packages" — NOT a transport/server failure (those already
+    # land in `result.errors` via the `except` in `run_pull`'s
+    # manifest-fetch step and are reported below). Since #356 only data
+    # packages in the user's stack surface tables (per-table
+    # resource_grants no longer manifest), so the actionable next step is
+    # browsing/subscribing packages, not asking for a table grant.
     if result.parquets_total == 0 and not result.errors:
         typer.echo(
             "No tables available to pull — either nothing is registered on "
-            "the server yet, or your account has no group grants for any "
-            "table. Ask your admin to register a table and/or grant your "
-            "group access (`agnes admin grant`)."
+            "the server yet, or your stack has no data packages. Browse "
+            "the packages available to you with `agnes stack browse` and "
+            "subscribe with `agnes stack add data_package <id>`; if none "
+            "are listed, ask your admin to publish a data package and "
+            "grant your group access to it."
         )
 
     # v49 (Task 8.12): per-type status block surfaced from `SyncReport`.

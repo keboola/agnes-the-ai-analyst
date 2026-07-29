@@ -105,7 +105,15 @@ def test_requires_rbac_grant(conn):
     assert r.status_code == 403
 
 
-def test_empty_when_nothing_bundled_or_granted(conn):
+def test_empty_when_nothing_bundled_or_granted(conn, tmp_path, monkeypatch):
+    """Isolated from the real bundled template — which, since the
+    ``agnes-data-apps-extras`` skill landed, is no longer empty — via an
+    empty ``BUNDLED_TEMPLATE_DIR`` override, same pattern as
+    ``test_bundled_skill_shadowed_by_same_name_marketplace_skill``."""
+    import app.api.chat as chat_module
+
+    monkeypatch.setattr(chat_module, "BUNDLED_TEMPLATE_DIR", tmp_path / "empty-bundled-template")
+
     _make_user(conn, user_id=TEST_USER["id"], email=TEST_USER["email"])
     _grant_chat_access(conn, user_id=TEST_USER["id"])
     client = _make_app(conn)
@@ -115,7 +123,13 @@ def test_empty_when_nothing_bundled_or_granted(conn):
 
 
 def test_returns_marketplace_skill_the_caller_is_granted(conn, tmp_path, monkeypatch):
+    """Isolated from the real bundled template (see the empty-list test
+    above) so this only exercises the marketplace source."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import app.api.chat as chat_module
+
+    monkeypatch.setattr(chat_module, "BUNDLED_TEMPLATE_DIR", tmp_path / "empty-bundled-template")
+
     _make_user(conn, user_id=TEST_USER["id"], email=TEST_USER["email"])
     _grant_chat_access(conn, user_id=TEST_USER["id"])
     _register_marketplace(conn, id="mkt", plugins=[{"name": "p1", "version": "1.0"}])

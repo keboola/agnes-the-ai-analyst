@@ -345,14 +345,10 @@ def _bootstrap_clone(token: str) -> bool:
             )
             return False
         # Normalize: ensure trailing slash so urljoin-style consumers don't drop the path.
+        # F7: the token is supplied via the credential helper at clone time, so we
+        # keep only the credential-free URL here — no PAT is ever embedded.
         clean_url = marketplace_base if marketplace_base.endswith("/") else marketplace_base + "/"
         scheme = parsed.scheme
-        # Re-inject the PAT into the env-supplied URL so the clone authenticates.
-        host_with_port = parsed.netloc.split("@", 1)[-1]
-        path = parsed.path if parsed.path else "/marketplace.git/"
-        if not path.endswith("/"):
-            path += "/"
-        auth_url = f"{scheme}://x:{token}@{host_with_port}{path}"
     else:
         server_url = get_server_url()
         if not server_url:
@@ -367,7 +363,6 @@ def _bootstrap_clone(token: str) -> bool:
         if parsed.port:
             server_host = f"{server_host}:{parsed.port}"
         scheme = parsed.scheme or "https"
-        auth_url = f"{scheme}://x:{token}@{server_host}/marketplace.git/"
         clean_url = f"{scheme}://{server_host}/marketplace.git/"
 
     # Stale dir without a `.git/` subdir means an interrupted prior install;
@@ -384,9 +379,21 @@ def _bootstrap_clone(token: str) -> bool:
     typer.echo(f"Cloning marketplace from {clean_url} into {CLONE_DIR}...")
 
     try:
+        # Security audit F7: never place the PAT in the clone URL — it would be
+        # readable via `ps` / `/proc/<pid>/cmdline` for the clone's lifetime and
+        # transiently written to `.git/config`. Clone the credential-free URL and
+        # feed the token through the same env-based credential helper the
+        # fetch/ls-remote paths use, so it never touches argv.
         result = subprocess.run(
-            ["git", "clone", auth_url, str(CLONE_DIR)],
-            env=_git_env(),
+            [
+                "git",
+                "-c",
+                f"credential.helper={_CREDENTIAL_HELPER}",
+                "clone",
+                clean_url,
+                str(CLONE_DIR),
+            ],
+            env=_git_env(token),
             timeout=_GIT_NETWORK_TIMEOUT_S,
             capture_output=True,
             text=True,
@@ -408,19 +415,9 @@ def _bootstrap_clone(token: str) -> bool:
             typer.echo(result.stderr.rstrip(), err=True)
         return False
 
-    set_url = subprocess.run(
-        ["git", "-C", str(CLONE_DIR), "remote", "set-url", "origin", clean_url],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if set_url.returncode != 0:
-        typer.echo(
-            f"warn: could not strip PAT from origin URL: {set_url.stderr.rstrip()}",
-            err=True,
-        )
+    # origin is already the credential-free clean_url (F7 — the token was fed via
+    # the credential helper, never embedded in the URL), so no `remote set-url`
+    # PAT-stripping step is needed.
 
     # Best-effort chmod — no-op on Windows NTFS via Git Bash, tightens 700/600
     # on POSIX so other users on the box can't read `.git/config`.

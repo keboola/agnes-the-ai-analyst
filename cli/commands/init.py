@@ -249,6 +249,19 @@ def init(
         ),
     ),
     force: bool = typer.Option(False, "--force", help="Re-initialize an existing workspace"),
+    as_admin: bool = typer.Option(
+        False,
+        "--as-admin",
+        help=(
+            "Admins only: give this workspace the FULL data-read surface "
+            "(catalog + server-side query see every registered table) "
+            "instead of the default stack-scoped one. Exchanges the saved "
+            "PAT for a surface=all token via /cli/auth/rescope-surface "
+            "(server re-checks admin membership). Parquet distribution "
+            "stays stack-scoped either way — `agnes pull` downloads only "
+            "your stack."
+        ),
+    ),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
     skip_materialize: bool = typer.Option(
         False,
@@ -622,6 +635,49 @@ def init(
     # ------------------------------------------------------------------
     save_config({"server": server_url})
     save_token(token, email="")
+
+    # ------------------------------------------------------------------
+    # Step 3.1 (v106, --as-admin): swap the stack-surface PAT for a
+    # full-surface one. Server-side is the authority: the endpoint 403s
+    # unless the caller's PAT owner is an Admin-group member right now.
+    # On success the FULL-surface token replaces the saved one, so every
+    # subsequent step (pull, hooks) and the workspace itself ride it.
+    # ------------------------------------------------------------------
+    if as_admin:
+        try:
+            from cli.client import api_post
+
+            # Same `_override_server_env` wrapping as the Step-2 verify:
+            # without it `api_post` would prefer AGNES_SERVER/AGNES_TOKEN
+            # env vars over the just-saved config, so in an env-credential
+            # context (e.g. a sandbox) the rescope could hit a different
+            # server/credential than the exchange above (Devin Review on
+            # #1090).
+            with _override_server_env(server_url, token):
+                resp = api_post("/cli/auth/rescope-surface", json={})
+            if resp.status_code == 200:
+                new_token = resp.json().get("token") or ""
+                if new_token:
+                    token = new_token
+                    save_token(token, email="")
+                    typer.echo("Workspace surface: FULL (--as-admin) — catalog/query see every registered table.")
+            elif resp.status_code == 403:
+                typer.echo(
+                    "warn: --as-admin ignored — this account is not an Admin-group member; "
+                    "continuing with the stack-scoped surface.",
+                    err=True,
+                )
+            else:
+                typer.echo(
+                    f"warn: --as-admin exchange failed (HTTP {resp.status_code}); "
+                    "continuing with the stack-scoped surface.",
+                    err=True,
+                )
+        except Exception as exc:
+            typer.echo(
+                f"warn: --as-admin exchange failed ({exc}); continuing with the stack-scoped surface.",
+                err=True,
+            )
 
     workspace.mkdir(parents=True, exist_ok=True)
 

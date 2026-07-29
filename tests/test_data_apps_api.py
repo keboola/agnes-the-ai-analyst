@@ -529,6 +529,34 @@ class TestDetailRbac:
         r = client_as_other_user.get("/api/data-apps/rbac4")
         assert r.status_code == 200
 
+    def test_granted_group_does_not_see_drafts(self, client_as_user, client_as_other_user, seeded_repo_with_commit):
+        """A read `resource_grants` row on the parent app lets a non-owner
+        view the app itself, but must not expose in-progress draft
+        branch/state/URL metadata (that's owner/Admin-only, same gate as
+        the draft-mutating endpoints) — a grantee response must omit the
+        `drafts` key entirely, not just return it empty."""
+        client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"})
+
+        from src.db import get_system_db
+        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.resource_grants import ResourceGrantsRepository
+
+        conn = get_system_db()
+        try:
+            gid = UserGroupsRepository(conn).create(name="Viewers", description="d")["id"]
+            UserGroupMembersRepository(conn).add_member("other1", gid, source="admin")
+            ResourceGrantsRepository(conn).create(group_id=gid, resource_type="data_app", resource_id="sapp")
+        finally:
+            conn.close()
+
+        r_owner = client_as_user.get("/api/data-apps/sapp")
+        assert r_owner.status_code == 200 and len(r_owner.json()["drafts"]) == 1
+
+        r_grantee = client_as_other_user.get("/api/data-apps/sapp")
+        assert r_grantee.status_code == 200
+        assert "drafts" not in r_grantee.json()
+
     def test_missing_app_404s(self, client_as_user):
         r = client_as_user.get("/api/data-apps/does-not-exist")
         assert r.status_code == 404
@@ -543,7 +571,10 @@ class TestDeploy:
         slug, spec, config_json = fake_runner.up_calls[0]
         assert slug == "sapp"
         assert "dataApp" in config_json
-        assert config_json["dataApp"]["git"]["repository"].startswith("http://app:8000/data-apps.git/")
+        # Internal host, now with the push token embedded (the runtime image
+        # won't add creds to a plain-HTTP clone URL — src/data_apps/spec.py).
+        assert config_json["dataApp"]["git"]["repository"].startswith("http://agnes:")
+        assert "@app:8000/data-apps.git/" in config_json["dataApp"]["git"]["repository"]
         assert "secrets" in config_json["dataApp"]
 
         row = client_as_user.get("/api/data-apps/sapp").json()
@@ -717,6 +748,24 @@ class TestDeploy:
         assert r.status_code == 400
         assert r.json()["detail"] == "external_repo_sha_unsupported"
         assert not fake_runner.up_calls
+
+    def test_deploy_dev_mode_on_draft(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/deploy", json={"mode": "dev"})
+        assert r.status_code == 200, r.text
+        slug, spec, cfg = fake_runner.up_calls[-1]
+        assert slug == d["slug"]
+        assert cfg["dataApp"]["git"]["branch"] == "init"  # draft branch, not agnes-live
+        assert cfg["dataApp"]["git"]["repository"].endswith("/data-apps.git/sapp")  # PARENT repo
+
+    def test_deploy_dev_requires_draft(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/deploy", json={"mode": "dev"})
+        assert r.status_code == 400 and r.json()["detail"] == "dev_requires_draft"
+
+    def test_deploy_prod_on_draft_rejected(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/deploy", json={})
+        assert r.status_code == 400 and r.json()["detail"] == "prod_on_draft"
 
 
 class TestStop:
@@ -924,6 +973,26 @@ class TestDelete:
     ):
         r = client_as_other_user.delete("/api/data-apps/sapp")
         assert r.status_code == 403
+
+    def test_delete_rejects_draft_slug(self, client_as_user, seeded_repo_with_commit):
+        """A draft is a full `data_apps` row, so `DELETE /{slug}` would
+        otherwise happily resolve and delete it — but this route's own
+        teardown never deletes the draft's branch on the PARENT's repo
+        (only `_teardown_draft`, used by the dedicated drafts route and the
+        prod-delete cascade, does). Must reject rather than silently orphan
+        the branch."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.delete(f"/api/data-apps/{d['slug']}")
+        assert r.status_code == 400 and r.json()["detail"] == "use_draft_delete_route"
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            assert DataAppsRepository(conn).get_by_slug(d["slug"]) is not None
+        finally:
+            conn.close()
 
     def test_delete_removes_config_dir(self, client_as_user, fake_runner, seeded_repo_with_commit, api_env):
         """The leftover `config.json` under `${DATA_DIR}/apps/<slug>` holds a
@@ -1191,3 +1260,364 @@ class TestReap:
         finally:
             conn.close()
         assert row["state"] == "deploying"
+
+
+class TestGitCredential:
+    def test_mint_git_credential(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/git-credential")
+        assert r.status_code == 200, r.text
+        url = r.json()["git_clone_url"]
+        assert "/data-apps.git/sapp" in url
+        assert "@" in url and url.startswith("http")
+
+    def test_git_credential_stranger_403(self, client_as_other_user, seeded_repo_with_commit):
+        assert client_as_other_user.post("/api/data-apps/sapp/git-credential").status_code == 403
+
+    def test_git_credential_feature_disabled_404s(self, api_env):
+        import app.instance_config as instance_config
+
+        original = instance_config._instance_config
+        instance_config._instance_config = {**(original or {}), "data_apps": {"enabled": False}}
+        try:
+            c = api_env["client"]
+            r = c.post("/api/data-apps/sapp/git-credential", headers=_auth(api_env["owner_pat"]))
+            assert r.status_code == 404
+            assert r.json()["detail"] == "data_apps_disabled"
+        finally:
+            instance_config._instance_config = original
+
+    def test_git_credential_has_24h_ttl(self, client_as_user, seeded_repo_with_commit):
+        """The minted PAT is for an authoring session, not a standing
+        credential — both the JWT `exp` and the DB row's `expires_at` must
+        be set to roughly 24h out (unlike the container's own service
+        token, which is deliberately unbounded)."""
+        r = client_as_user.post("/api/data-apps/sapp/git-credential")
+        assert r.status_code == 200, r.text
+
+        from datetime import datetime, timedelta, timezone
+
+        from src.db import get_system_db
+        from src.repositories.access_tokens import AccessTokenRepository
+
+        conn = get_system_db()
+        try:
+            tokens = AccessTokenRepository(conn).list_for_user("owner1")
+        finally:
+            conn.close()
+        row = next(t for t in tokens if t["name"] == "data-app-git:sapp")
+
+        expires_at = row["expires_at"]
+        assert expires_at is not None
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        now = datetime.now(timezone.utc)
+        assert now < expires_at <= now + timedelta(hours=24, minutes=1)
+
+    def test_git_credential_uses_public_url_when_configured(self, client_as_user, seeded_repo_with_commit, monkeypatch):
+        """The credential must be usable from an analyst laptop, the MCP
+        tool, or a remote sandbox -- none of which can resolve
+        AGNES_INTERNAL_URL (http://app:8000, the in-cluster hostname).
+        Mirrors create_data_app's use of get_public_url() for its own
+        git_url, keeping the embedded agnes:<jwt>@ basic-auth."""
+        monkeypatch.setenv("PUBLIC_URL", "https://analyst.example.com")
+        r = client_as_user.post("/api/data-apps/sapp/git-credential")
+        assert r.status_code == 200, r.text
+        url = r.json()["git_clone_url"]
+        assert url.startswith("https://agnes:"), url
+        assert "@analyst.example.com/data-apps.git/sapp" in url
+
+    def test_git_credential_falls_back_to_internal_url_when_public_unset(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/git-credential")
+        assert r.status_code == 200, r.text
+        url = r.json()["git_clone_url"]
+        assert url.startswith("http://agnes:"), url
+        assert "@app:8000/data-apps.git/sapp" in url
+
+    def test_deploy_config_json_still_uses_internal_url(
+        self, client_as_user, fake_runner, seeded_repo_with_commit, monkeypatch
+    ):
+        """The container-facing clone_url built by redeploy_current must
+        stay on AGNES_INTERNAL_URL regardless of PUBLIC_URL -- only the
+        credential handed back to a human/agent caller should change."""
+        monkeypatch.setenv("PUBLIC_URL", "https://analyst.example.com")
+        r = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        assert r.status_code == 200, r.text
+        _, _, config_json = fake_runner.up_calls[0]
+        # Internal host, now with the push token embedded (the runtime image
+        # won't add creds to a plain-HTTP clone URL — src/data_apps/spec.py).
+        assert config_json["dataApp"]["git"]["repository"].startswith("http://agnes:")
+        assert "@app:8000/data-apps.git/" in config_json["dataApp"]["git"]["repository"]
+
+
+def _extract_jwt_from_clone_url(url: str) -> str:
+    """Pull the JWT out of a `.../agnes:<jwt>@host/...` git clone URL."""
+    return url.split("agnes:", 1)[1].split("@", 1)[0]
+
+
+class TestGitScopeRejectedOnJsonApi:
+    """A `data-app-git:<slug>` credential is scoped to the git-over-HTTP
+    surface only (`app/api/data_apps_git.py`) — it must never authenticate
+    the JSON REST API. Without this, the credential is effectively a
+    full-privilege user PAT usable against the whole non-admin API surface,
+    escaping the sandboxed-authoring confinement it was minted for."""
+
+    def test_git_scoped_pat_rejected_on_list_data_apps(self, client_as_user, seeded_repo_with_commit):
+        mint = client_as_user.post("/api/data-apps/sapp/git-credential")
+        jwt = _extract_jwt_from_clone_url(mint.json()["git_clone_url"])
+
+        r = client_as_user.get("/api/data-apps", headers=_auth(jwt))
+        assert r.status_code == 401
+        assert r.json()["detail"] == "git_scope_token_not_allowed"
+
+    def test_git_scoped_pat_rejected_on_catalog(self, client_as_user, seeded_repo_with_commit):
+        mint = client_as_user.post("/api/data-apps/sapp/git-credential")
+        jwt = _extract_jwt_from_clone_url(mint.json()["git_clone_url"])
+
+        r = client_as_user.get("/api/catalog/tables", headers=_auth(jwt))
+        assert r.status_code == 401
+        assert r.json()["detail"] == "git_scope_token_not_allowed"
+
+    def test_normal_pat_still_works_on_json_api(self, client_as_user, seeded_repo_with_commit):
+        """Control: an ordinary (unscoped) PAT is unaffected by the new check."""
+        r = client_as_user.get("/api/data-apps")
+        assert r.status_code == 200
+
+
+class TestDrafts:
+    def test_create_draft(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"})
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["branch"] == "init"
+        assert body["slug"].startswith("sapp--")
+        assert "/data-apps.git/sapp" in body["git_clone_url"]
+
+    def test_draft_of_draft_rejected(self, client_as_user, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "a"}).json()
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/drafts", json={"branch": "b"})
+        assert r.status_code == 400 and r.json()["detail"] == "parent_is_draft"
+
+    def test_create_draft_near_max_slug_rejected(self, client_as_user, api_env):
+        """A parent slug close to the 40-char SLUG_RE cap leaves no room for
+        `--<branch>` before truncation — `_draft_slug` must reject that as
+        400 `invalid_slug` rather than silently collapsing to the parent's
+        own slug (which would surface as a misleading, branch-independent
+        409 `slug_exists`)."""
+        long_slug = "p" + "a" * 37 + "9"  # 39 chars, SLUG_RE-valid
+        assert len(long_slug) == 39
+        _seed_app_with_commit(api_env["data_dir"], slug=long_slug, owner_id="owner1")
+        r = client_as_user.post(f"/api/data-apps/{long_slug}/drafts", json={"branch": "init"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "invalid_slug"
+
+    def test_create_draft_invalid_branch_rejected(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "Bad Branch"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "invalid_branch"
+
+    @pytest.mark.parametrize(
+        "branch",
+        [
+            "a..b",  # double-dot: git rejects as a revision-range-like ref
+            "a//b",  # double slash
+            "a/",  # trailing slash
+            "a.",  # trailing dot
+            "x.lock",  # .lock suffix: reserved for git's own lockfiles
+        ],
+    )
+    def test_create_draft_git_invalid_branch_rejected(self, client_as_user, seeded_repo_with_commit, branch):
+        """These all pass `_BRANCH_RE`'s charset check but are refused by
+        `git update-ref` itself (`ensure_branch` -> `CalledProcessError`).
+        Must surface as 400 `invalid_branch`, not an unhandled 500 -- and
+        must not leave the just-inserted draft row behind (a retry would
+        otherwise hit a misleading 409 `slug_exists`)."""
+        r = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": branch})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "invalid_branch"
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            rows = DataAppsRepository(conn).list_drafts(DataAppsRepository(conn).get_by_slug("sapp")["id"])
+        finally:
+            conn.close()
+        assert rows == []
+
+    def test_create_draft_owner_not_found_500(self, admin_client, seeded_repo_with_commit):
+        """If the parent app's owner row is gone by the time the git
+        credential is minted, `_mint_git_credential` raises
+        `OwnerNotFoundError` — the handler must map that to 500
+        `owner_not_found`, same as the sibling `mint_git_credential`
+        endpoint, rather than letting it bubble up as an unhandled 500."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            UserRepository(conn).delete("owner1")
+        finally:
+            conn.close()
+
+        r = admin_client.post("/api/data-apps/sapp/drafts", json={"branch": "orphan"})
+        assert r.status_code == 500, r.text
+        assert r.json()["detail"] == "owner_not_found"
+
+    def test_get_inlines_drafts(self, client_as_user, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        detail = client_as_user.get("/api/data-apps/sapp").json()
+        assert any(x["slug"] == d["slug"] and x["branch"] == "init" for x in detail["drafts"])
+
+    def test_get_draft_detail_omits_drafts_key(self, client_as_user, seeded_repo_with_commit):
+        """A draft's own detail response has no `drafts` key at all — that
+        field is only inlined for prod apps (drafts don't have drafts;
+        `create_draft` rejects `parent_is_draft`)."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        detail = client_as_user.get(f"/api/data-apps/{d['slug']}").json()
+        assert "drafts" not in detail
+
+    def test_list_hides_drafts(self, client_as_user, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        slugs = {a["slug"] for a in client_as_user.get("/api/data-apps").json()}
+        assert "sapp" in slugs and d["slug"] not in slugs
+
+    def test_delete_draft(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 204, r.text
+        assert client_as_user.get(f"/api/data-apps/{d['slug']}").status_code == 404
+        detail = client_as_user.get("/api/data-apps/sapp").json()
+        assert detail["drafts"] == []
+
+    def test_delete_draft_stops_container_and_revokes_token(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/deploy", json={"mode": "dev"})
+        assert r.status_code == 200, r.text
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            token_id = DataAppsRepository(conn).get_by_slug(d["slug"])["service_token_id"]
+        finally:
+            conn.close()
+        assert token_id
+
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 204, r.text
+        assert (d["slug"], "recreate") in fake_runner.stop_calls
+
+        conn = get_system_db()
+        try:
+            from src.repositories.access_tokens import AccessTokenRepository
+
+            token_row = AccessTokenRepository(conn).get_by_id(token_id)
+        finally:
+            conn.close()
+        assert token_row["revoked_at"] is not None
+
+    def test_delete_draft_409s_when_draft_op_lease_held_elsewhere(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        """A deployed draft has its own `dataapp:op:{draft_slug}` lease,
+        distinct from the parent's — the same lease `deploy_data_app`/
+        `stop_data_app` take on the draft's own slug when it's addressed
+        directly. Teardown must take it too, or a concurrent wake-on-request
+        for the draft can race `runner.up()` against this delete's
+        `runner.stop()`."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+
+        from app.api.data_apps import release_op_lease, try_acquire_op_lease
+
+        acquired, holder = try_acquire_op_lease(d["slug"])
+        assert acquired
+        try:
+            r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+            assert r.status_code == 409
+            assert r.json()["detail"] == "operation_in_progress"
+            assert not fake_runner.stop_calls
+        finally:
+            release_op_lease(d["slug"], holder)
+
+    def test_delete_draft_removes_branch(self, client_as_user, seeded_repo_with_commit):
+        from src.data_apps.git_repos import resolve_ref
+
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        assert resolve_ref("sapp", "init") is not None
+
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 204, r.text
+        assert resolve_ref("sapp", "init") is None
+
+    def test_delete_draft_rejects_non_draft(self, client_as_user, seeded_repo_with_commit):
+        # deleting the prod slug through the draft route is a 400
+        r = client_as_user.delete("/api/data-apps/sapp/drafts/sapp")
+        assert r.status_code == 400 and r.json()["detail"] == "not_a_draft"
+
+    def test_delete_draft_unknown_404s(self, client_as_user, seeded_repo_with_commit):
+        r = client_as_user.delete("/api/data-apps/sapp/drafts/does-not-exist")
+        assert r.status_code == 404
+        assert r.json()["detail"] == "data_app_not_found"
+
+    def test_delete_draft_forbidden_for_stranger(self, client_as_user, client_as_other_user, seeded_repo_with_commit):
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+        r = client_as_other_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 403
+
+    def test_delete_draft_wrong_parent_rejected(self, client_as_user, seeded_repo_with_commit, api_env):
+        """A draft belonging to a DIFFERENT parent can't be deleted through
+        this parent's `/drafts/{draft_slug}` route — same 400 `not_a_draft`
+        as a non-draft slug, since it isn't a draft *of this parent*."""
+        _seed_app_with_commit(api_env["data_dir"], slug="otherapp", owner_id="owner1")
+        d = client_as_user.post("/api/data-apps/otherapp/drafts", json={"branch": "init"}).json()
+        r = client_as_user.delete(f"/api/data-apps/sapp/drafts/{d['slug']}")
+        assert r.status_code == 400 and r.json()["detail"] == "not_a_draft"
+
+    def test_deploy_dev_mode_orphaned_draft_parent_not_found(
+        self, client_as_user, fake_runner, seeded_repo_with_commit
+    ):
+        """Carried-over fix: if the draft's parent app has been deleted out
+        from under it (bypassing the normal cascade — e.g. a direct repo
+        delete), `redeploy_current` must raise loudly rather than silently
+        falling back to cloning the draft's own (nonexistent) repo."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        conn = get_system_db()
+        try:
+            parent = DataAppsRepository(conn).get_by_slug("sapp")
+            DataAppsRepository(conn).delete(parent["id"])
+        finally:
+            conn.close()
+
+        r = client_as_user.post(f"/api/data-apps/{d['slug']}/deploy", json={"mode": "dev"})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == "parent_not_found"
+        assert not fake_runner.up_calls
+
+    def test_delete_parent_cascades_drafts(self, client_as_user, fake_runner, seeded_repo_with_commit):
+        """Deleting a prod app with live drafts must delete the drafts too
+        (rows + branches + containers) — not leave them orphaned."""
+        d = client_as_user.post("/api/data-apps/sapp/drafts", json={"branch": "init"}).json()
+
+        from src.data_apps.git_repos import resolve_ref
+        from src.db import get_system_db
+        from src.repositories.data_apps import DataAppsRepository
+
+        assert resolve_ref("sapp", "init") is not None
+
+        r = client_as_user.delete("/api/data-apps/sapp")
+        assert r.status_code == 204, r.text
+
+        conn = get_system_db()
+        try:
+            assert DataAppsRepository(conn).get_by_slug("sapp") is None
+            assert DataAppsRepository(conn).get_by_slug(d["slug"]) is None
+        finally:
+            conn.close()
+        assert (d["slug"], "recreate") in fake_runner.stop_calls

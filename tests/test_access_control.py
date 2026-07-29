@@ -157,6 +157,37 @@ class TestNonAdminDeniedByDefault:
         resp = c.get("/api/data/salaries/download", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 403
 
+    def test_analyst_blocked_from_part_download_of_ungranted_table(self, seeded_app):
+        # The ?part= branch must sit behind the same table-grain gate as the
+        # whole-file download — 403 before any part path is resolved.
+        c = seeded_app["client"]
+        env = seeded_app["env"]
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "salaries", "data": [{"id": "1"}]},
+            ],
+        )
+        from src.orchestrator import SyncOrchestrator
+
+        SyncOrchestrator().rebuild()
+        c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "salaries",
+                "source_type": "keboola",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+
+        resp = c.get(
+            "/api/data/salaries/download",
+            params={"part": "month=2026-06/data.parquet"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
     def test_analyst_cannot_see_ungranted_table_in_catalog(self, seeded_app):
         c = seeded_app["client"]
         c.post("/api/admin/register-table", json={"name": "secret_data"}, headers=_auth(seeded_app["admin_token"]))

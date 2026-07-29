@@ -362,7 +362,8 @@ def test_heartbeat_false_for_unknown_or_not_running_job(repo):
 def test_complete_marks_done_for_owner(repo):
     repo.enqueue("done_kind", {})
     claimed = repo.claim_next(kinds=["done_kind"], worker_id="w1")
-    repo.complete(claimed["id"], "w1", claimed["lease_token"])
+    mutated = repo.complete(claimed["id"], "w1", claimed["lease_token"])
+    assert mutated is True, "complete() must report the row was actually mutated"
     row = repo.get(claimed["id"])
     assert row["status"] == "done"
     assert row["finished_at"] is not None
@@ -370,19 +371,59 @@ def test_complete_marks_done_for_owner(repo):
 
 
 def test_complete_is_noop_for_wrong_token(repo):
+    """MEDIUM 1: a stale-lease `complete()` call must report `False` (not
+    just avoid raising) — callers (the worker runtime's webhook notify)
+    gate side effects on this."""
     repo.enqueue("done_kind2", {})
     claimed = repo.claim_next(kinds=["done_kind2"], worker_id="w1")
-    repo.complete(claimed["id"], "w1", "wrong-token")
+    mutated = repo.complete(claimed["id"], "w1", "wrong-token")
+    assert mutated is False
     row = repo.get(claimed["id"])
     assert row["status"] == "running"
     assert row["finished_at"] is None
 
 
+def test_complete_with_result_merges_into_payload(repo):
+    """Task 9: `complete(..., result=...)` merges the handler's return value
+    into `payload_json["result"]` instead of requiring a schema column —
+    see `JobsRepository.complete`'s docstring for why."""
+    repo.enqueue("agent_response", {"prompt": "hi"})
+    claimed = repo.claim_next(kinds=["agent_response"], worker_id="w1")
+    repo.complete(claimed["id"], "w1", claimed["lease_token"], {"answer": "hello", "session_id": "s1"})
+    row = repo.get(claimed["id"])
+    assert row["status"] == "done"
+    assert row["payload_json"]["prompt"] == "hi"  # original payload preserved
+    assert row["payload_json"]["result"] == {"answer": "hello", "session_id": "s1"}
+
+
+def test_complete_without_result_does_not_touch_payload(repo):
+    """Every non-`agent_response` kind calls `complete()` with no `result`
+    (the default) — payload_json must stay byte-identical."""
+    repo.enqueue("done_kind3", {"x": 1})
+    claimed = repo.claim_next(kinds=["done_kind3"], worker_id="w1")
+    repo.complete(claimed["id"], "w1", claimed["lease_token"])
+    row = repo.get(claimed["id"])
+    assert row["payload_json"] == {"x": 1}
+
+
+def test_complete_with_result_is_noop_for_wrong_token(repo):
+    repo.enqueue("agent_response", {"prompt": "hi"})
+    claimed = repo.claim_next(kinds=["agent_response"], worker_id="w1")
+    repo.complete(claimed["id"], "w1", "wrong-token", {"answer": "should not land"})
+    row = repo.get(claimed["id"])
+    assert row["status"] == "running"
+    assert "result" not in row["payload_json"]
+
+
 def test_fail_with_retry_requeues(repo):
+    """A successful requeue is NOT terminal — `fail()` must report
+    `False` even though it mutated the row (to `'queued'`, not
+    `'failed'`), so callers don't fire a premature `job.failed` webhook."""
     repo.enqueue("retry_kind", {}, max_attempts=5)
     claimed = repo.claim_next(kinds=["retry_kind"], worker_id="w1")
     assert claimed["attempts"] == 1
-    repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom", retry_in_seconds=30)
+    finalized = repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom", retry_in_seconds=30)
+    assert finalized is False
     row = repo.get(claimed["id"])
     assert row["status"] == "queued"
     assert row["run_after"] is not None
@@ -396,7 +437,8 @@ def test_fail_at_max_attempts_finalizes(repo):
     repo.enqueue("fail_kind", {}, max_attempts=1)
     claimed = repo.claim_next(kinds=["fail_kind"], worker_id="w1")
     assert claimed["attempts"] == 1
-    repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom", retry_in_seconds=30)
+    finalized = repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom", retry_in_seconds=30)
+    assert finalized is True, "fail() must report the row was finalized to 'failed'"
     row = repo.get(claimed["id"])
     assert row["status"] == "failed"
     assert row["finished_at"] is not None
@@ -406,15 +448,18 @@ def test_fail_at_max_attempts_finalizes(repo):
 def test_fail_without_retry_in_seconds_finalizes_even_with_attempts_remaining(repo):
     repo.enqueue("no_retry_kind", {}, max_attempts=5)
     claimed = repo.claim_next(kinds=["no_retry_kind"], worker_id="w1")
-    repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom")
+    finalized = repo.fail(claimed["id"], "w1", claimed["lease_token"], "boom")
+    assert finalized is True
     row = repo.get(claimed["id"])
     assert row["status"] == "failed"
 
 
 def test_fail_is_noop_for_wrong_token(repo):
+    """MEDIUM 1: a stale-lease `fail()` call must report `False`."""
     repo.enqueue("fail_kind2", {}, max_attempts=5)
     claimed = repo.claim_next(kinds=["fail_kind2"], worker_id="w1")
-    repo.fail(claimed["id"], "w1", "wrong-token", "boom", retry_in_seconds=30)
+    finalized = repo.fail(claimed["id"], "w1", "wrong-token", "boom", retry_in_seconds=30)
+    assert finalized is False
     row = repo.get(claimed["id"])
     assert row["status"] == "running"
     assert row["error"] is None
@@ -428,15 +473,24 @@ def test_fail_is_noop_for_wrong_token(repo):
 def test_reap_exhausted_finalizes_stuck_running_job_at_max_attempts(repo):
     """A job whose lease expired on its LAST attempt is not reclaimable by
     ``claim_next()`` (attempts >= max_attempts) and would stay 'running'
-    forever without the reaper."""
-    job = repo.enqueue("stuck", {}, max_attempts=1)
+    forever without the reaper.
+
+    ``reap_exhausted()`` returns the reaped job ROWS (not just a count) —
+    see its docstring: the worker's reap sweep needs `id`/`kind`/
+    `payload_json` to fire the same terminal webhook notify a live
+    ``fail()`` call would have.
+    """
+    job = repo.enqueue("stuck", {"agent_id": "agent-1"}, max_attempts=1)
     claimed = repo.claim_next(kinds=["stuck"], worker_id="w1", lease_seconds=-5)
     assert claimed["attempts"] == 1  # == max_attempts now
     # confirm it's genuinely stuck: not reclaimable
     assert repo.claim_next(kinds=["stuck"], worker_id="w2") is None
 
     reaped = repo.reap_exhausted()
-    assert reaped == 1
+    assert len(reaped) == 1
+    assert reaped[0]["id"] == job["id"]
+    assert reaped[0]["kind"] == "stuck"
+    assert reaped[0]["payload_json"] == {"agent_id": "agent-1"}
     row = repo.get(job["id"])
     assert row["status"] == "failed"
     assert row["finished_at"] is not None
@@ -447,14 +501,14 @@ def test_reap_exhausted_finalizes_stuck_running_job_at_max_attempts(repo):
 def test_reap_exhausted_ignores_running_job_with_attempts_remaining(repo):
     job = repo.enqueue("not_stuck", {}, max_attempts=5)
     repo.claim_next(kinds=["not_stuck"], worker_id="w1", lease_seconds=-5)
-    assert repo.reap_exhausted() == 0
+    assert repo.reap_exhausted() == []
     assert repo.get(job["id"])["status"] == "running"
 
 
 def test_reap_exhausted_ignores_running_job_with_live_lease(repo):
     job = repo.enqueue("live_stuck", {}, max_attempts=1)
     repo.claim_next(kinds=["live_stuck"], worker_id="w1", lease_seconds=120)
-    assert repo.reap_exhausted() == 0
+    assert repo.reap_exhausted() == []
     assert repo.get(job["id"])["status"] == "running"
 
 
@@ -463,16 +517,17 @@ def test_reap_exhausted_ignores_queued_and_done_jobs(repo):
     done_job = repo.enqueue("done_kind3", {})
     claimed = repo.claim_next(kinds=["done_kind3"], worker_id="w1")
     repo.complete(claimed["id"], "w1", claimed["lease_token"])
-    assert repo.reap_exhausted() == 0
+    assert repo.reap_exhausted() == []
     assert repo.get(done_job["id"])["status"] == "done"
 
 
-def test_reap_exhausted_returns_count_across_multiple_stuck_jobs(repo):
+def test_reap_exhausted_returns_rows_across_multiple_stuck_jobs(repo):
     job_a = repo.enqueue("stuck_bulk", {}, max_attempts=1)
     job_b = repo.enqueue("stuck_bulk", {}, max_attempts=1)
     repo.claim_next(kinds=["stuck_bulk"], worker_id="w1", lease_seconds=-5)
     repo.claim_next(kinds=["stuck_bulk"], worker_id="w1", lease_seconds=-5)
-    assert repo.reap_exhausted() == 2
+    reaped = repo.reap_exhausted()
+    assert {r["id"] for r in reaped} == {job_a["id"], job_b["id"]}
     assert repo.get(job_a["id"])["status"] == "failed"
     assert repo.get(job_b["id"])["status"] == "failed"
 

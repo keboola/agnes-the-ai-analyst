@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, Response
 
 from app.auth.access import can_access, can_access_session, is_user_admin, require_resource_access
 from app.auth.dependencies import _get_db, get_current_user
-from app.auth.session_principal import SessionPrincipal
+from app.auth.session_principal import PRINCIPAL_TYPES
 from app.resource_types import ResourceType
 from src.audit_helpers import client_kind_from_user
 from src.rbac import get_accessible_tables
@@ -43,10 +43,11 @@ def _resolve_knowledge_grants(user) -> Tuple[Optional[List[str]], Optional[List[
     ``_caller_granted_memory_domains``: ``None``/``None`` for privileged
     viewers (no filter), ``group:<name>`` audience tokens + granted
     ``memory_domains.id`` values otherwise, ``[]``/``[]`` fail-closed for a
-    caller with no memberships. SessionPrincipal co-sessions never get admin
-    god-mode — their domain set comes from the session intersection.
+    caller with no memberships. A restricted principal (co-session or
+    agent-session) never gets admin god-mode — its domain set comes from the
+    live intersection.
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         return [], list(user.intersection.get(ResourceType.MEMORY_DOMAIN.value, frozenset()))
     user_id = user.get("id")
     if not user_id:
@@ -159,7 +160,7 @@ def _caller_can_read_digest(user, digest_id: str) -> bool:
     callers route through ``can_access_session`` instead — the
     ``_accessible_corpus_ids`` idiom (``app/api/collections.py``).
     """
-    if isinstance(user, SessionPrincipal):
+    if isinstance(user, PRINCIPAL_TYPES):
         return can_access_session(user, ResourceType.KNOWLEDGE_DIGEST.value, digest_id)
     user_id = user.get("id") if isinstance(user, dict) else None
     if not user_id:

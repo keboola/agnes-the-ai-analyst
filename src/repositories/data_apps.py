@@ -61,6 +61,9 @@ class DataAppsRepository:
         "idle_timeout_s",
         "sleep_mode",
         "service_token_id",
+        "parent_app_id",
+        "is_draft",
+        "draft_branch",
         "last_request_at",
         "last_deploy_at",
         "created_at",
@@ -118,7 +121,12 @@ class DataAppsRepository:
         return dict(zip(self._COLS, row)) if row else None
 
     def list(
-        self, *, owner_user_id: Optional[str] = None, state: Optional[str] = None, limit: int = 1000
+        self,
+        *,
+        owner_user_id: Optional[str] = None,
+        state: Optional[str] = None,
+        include_drafts: bool = True,
+        limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         clauses: List[str] = []
         params: List[Any] = []
@@ -128,10 +136,56 @@ class DataAppsRepository:
         if state is not None:
             clauses.append("state = ?")
             params.append(state)
+        if not include_drafts:
+            clauses.append("is_draft = FALSE")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         rows = self.conn.execute(
             f"SELECT {self._SELECT} FROM data_apps {where} ORDER BY created_at DESC LIMIT ?", params
+        ).fetchall()
+        return [dict(zip(self._COLS, r)) for r in rows]
+
+    def create_draft(
+        self,
+        *,
+        parent_app_id: str,
+        slug: str,
+        branch: str,
+        owner_user_id: str,
+        idle_timeout_s: int = 1800,
+        sleep_mode: str = "recreate",
+    ) -> str:
+        """Insert a draft copy of ``parent_app_id``; returns the new app id.
+
+        The draft row shares the ``app_<uuid12>`` id scheme with ``create``
+        but sets ``is_draft=True``, ``parent_app_id``, and ``draft_branch``
+        so it is excluded from ``list(include_drafts=False)`` and can be
+        looked up via ``list_drafts``.
+        """
+        app_id = "app_" + uuid4().hex[:12]
+        self.conn.execute(
+            "INSERT INTO data_apps"
+            "(id, slug, name, owner_user_id, repo_mode, parent_app_id, is_draft,"
+            " draft_branch, idle_timeout_s, sleep_mode) "
+            "VALUES (?, ?, ?, ?, 'internal', ?, TRUE, ?, ?, ?)",
+            [
+                app_id,
+                slug,
+                f"{slug} (draft)",
+                owner_user_id,
+                parent_app_id,
+                branch,
+                idle_timeout_s,
+                sleep_mode,
+            ],
+        )
+        return app_id
+
+    def list_drafts(self, parent_app_id: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            f"SELECT {self._SELECT} FROM data_apps WHERE parent_app_id = ? "
+            "AND is_draft = TRUE ORDER BY created_at DESC",
+            [parent_app_id],
         ).fetchall()
         return [dict(zip(self._COLS, r)) for r in rows]
 

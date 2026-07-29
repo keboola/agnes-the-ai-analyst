@@ -102,7 +102,29 @@ touching diff.
 
 Report each as Warning, naming the SHA.
 
-### 6. Release-cut implication
+### 6. Security quick-scan (untrusted-input handling)
+
+If the diff touches request handling, uploads, a connector's `extract.duckdb`,
+marketplace/curator content, Slack/Telegram surfaces, SQL construction,
+template rendering, client-facing HTML/JS, secrets, or infra firewall rules,
+read `.claude/skills/agnes-conventions/references/security.md` and grep the diff
+for the anti-patterns it lists (each was a real prior finding):
+
+    git diff <base>...HEAD | grep -nE \
+      'f'"'"'"\{|marked\.parse|Environment\(|split\(",".*\)\[0\]|x:\{?[a-z_]*token|\?token=|password.*typer\.Option|ATTACH .*TOKEN'
+
+Flag as Warning (with `file:line` + the specific rule number from the playbook):
+a new bare `f'"{ident}"'` around an untrusted identifier (use `quote_ident`); a
+`marked.parse()`→`innerHTML` sink (use `renderMarkdownSafe`); a plain
+`Environment(` rendering authored text (use `SandboxedEnvironment`); `xff.split(",")[0]`
+(use `trusted_client_ip`); a secret on argv or in a URL (`x:<token>@…`, `?token=`);
+a `typer.Option` named `password`; a caller-supplied path opened without realpath
+containment; a new `ATTACH … TOKEN` without `is_attach_host_allowed`; a
+state-changing GET route or a state-changing POST with no CSRF token; a
+fleet-wide (`anytrue(...)` over a shared tag) firewall/exposure rule. Skip and
+say so if the diff touches none of these surfaces.
+
+### 7. Release-cut implication
 
 Invoke `Skill(agnes-release-process)`. Then: would this PR land the only
 `[Unreleased]` content since the last tag? If yes, the release-cut commit

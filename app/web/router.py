@@ -5,10 +5,11 @@ Replicates all Flask webapp routes with DuckDB-backed data.
 
 import logging
 import os
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -41,6 +42,7 @@ from app.instance_config import (
     get_custom_scripts,
     get_data_apps_config,
     get_studio_enabled,
+    feature_enabled,
 )
 from src.repositories import (
     audit_repo,
@@ -305,7 +307,7 @@ def _data_apps_nav_enabled() -> bool:
     import time) so an admin flipping `data_apps.enabled` via
     /admin/server-config takes effect without a process restart."""
     try:
-        return bool(get_data_apps_config().get("enabled"))
+        return feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False)
     except Exception:
         return False
 
@@ -3899,11 +3901,11 @@ async def data_apps_list_page(
     from src.repositories import data_apps_repo, users_repo
 
     cfg = get_data_apps_config()
-    enabled = bool(cfg.get("enabled"))
+    enabled = feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False)
     apps: list[dict] = []
     if enabled:
         u_repo = users_repo()
-        rows = [r for r in data_apps_repo().list() if _can_view(user, r)]
+        rows = [r for r in data_apps_repo().list(include_drafts=False) if _can_view(user, r)]
         for row in rows:
             serialized = _serialize(row, cfg)
             owner = u_repo.get_by_id(row["owner_user_id"])
@@ -4225,7 +4227,9 @@ async def setup_page(
     setup_instructions.resolve_lines() is used.
     """
     from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
-    from jinja2 import Environment, StrictUndefined, TemplateError
+    from jinja2 import TemplateError
+
+    from src.prompt_render import make_prompt_env
 
     base_url = str(request.base_url).rstrip("/")
 
@@ -4244,7 +4248,15 @@ async def setup_page(
         try:
             from src.welcome_template import build_context as _build_banner_ctx
 
-            env = Environment(undefined=StrictUndefined, autoescape=False)
+            # Security audit F4: a non-sandboxed Environment lets an app-Admin's
+            # install-prompt override execute arbitrary Python at render time
+            # (SSTI → RCE on the FastAPI host). make_prompt_env() returns a
+            # SandboxedEnvironment that blocks unsafe attribute/builtin access so
+            # a payload like {{ cycler.__init__.__globals__[...] }} raises. The
+            # SAME override is rendered by src/welcome_template.py and the
+            # welcome/prompts preview endpoints — all route through the shared
+            # factory so no sibling path is left unsandboxed.
+            env = make_prompt_env()
             template = env.from_string(override_content)
             ctx_vars = _build_banner_ctx(user=user, server_url=base_url)
             setup_script_text = _sanitize_banner_html(template.render(**ctx_vars))
@@ -4280,6 +4292,9 @@ async def setup_page(
     return templates.TemplateResponse(request, "install.html", ctx)
 
 
+_SLACK_BIND_CSRF_COOKIE = "slack_bind_csrf"
+
+
 @router.get("/slack/bind", response_class=HTMLResponse)
 async def slack_bind(
     request: Request,
@@ -4287,38 +4302,95 @@ async def slack_bind(
     user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """One-click Slack identity binding — the magic-link Agnes DMs an unbound
-    user. Opening ``/slack/bind?code=<code>`` while signed in to Agnes redeems
-    the code server-side and stamps ``users.slack_user_id`` (no copy-paste).
+    """Render the Slack-identity binding CONFIRMATION page (no state change).
 
-    The code in the URL is inert on its own: this route is auth-gated, so the
-    bind only completes for the signed-in Agnes account — proving the same
-    person controls both the Slack identity (the code was DM'd to them) and the
-    Agnes account (they're logged in). An unauthenticated visitor is bounced to
-    sign-in and lands back here afterwards (``next=``).
+    Security audit F2: the actual bind used to happen on this GET, gated only by
+    a ``SameSite=Lax`` auth cookie — a classic CSRF sink. An attacker who owns a
+    Slack identity could DM the bot for a code, then send a logged-in victim
+    ``/slack/bind?code=<attacker_code>``; the top-level GET rode the victim's
+    cookie and bound the ATTACKER's Slack to the VICTIM's Agnes account
+    (cross-user impersonation). This GET now only shows a confirm button that
+    POSTs back with a per-request double-submit CSRF token; the redeem lives in
+    :func:`slack_bind_confirm`.
+
+    An unauthenticated visitor is bounced to sign-in and lands back here (``next=``).
     """
     if user is None:
         nxt = quote(f"/slack/bind?code={code}", safe="")
         return RedirectResponse(url=f"/login?next={nxt}", status_code=302)
 
-    status = "missing"
-    if code:
-        from services.slack_bot.binding import (
-            BindingThrottled,
-            redeem_verification_code,
-        )
+    if not code:
+        ctx = _build_context(request, user=user, conn=conn, bind_status="missing")
+        return templates.TemplateResponse(request, "slack_bind.html", ctx)
 
-        try:
-            ok = redeem_verification_code(conn, user_email=user["email"], code=code.strip())
-            status = "ok" if ok else "invalid"
-        except BindingThrottled:
-            status = "throttled"
-        except Exception:
-            logger.exception("slack bind redeem failed")
-            status = "error"
+    # Mint a double-submit CSRF token: same value in a cookie and the form. A
+    # cross-site attacker cannot read the cookie, so cannot forge a matching
+    # form field. The cookie is short-lived + SameSite=Strict.
+    csrf_token = secrets.token_urlsafe(32)
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        bind_status="confirm",
+        bind_code=code.strip(),
+        csrf_token=csrf_token,
+    )
+    response = templates.TemplateResponse(request, "slack_bind.html", ctx)
+    response.set_cookie(
+        _SLACK_BIND_CSRF_COOKIE,
+        csrf_token,
+        max_age=600,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/slack/bind",
+    )
+    return response
+
+
+@router.post("/slack/bind", response_class=HTMLResponse)
+async def slack_bind_confirm(
+    request: Request,
+    code: str = Form(""),
+    csrf_token: str = Form(""),
+    user: Optional[dict] = Depends(get_optional_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Redeem a Slack binding code — the only state-changing bind path (F2).
+
+    Requires a valid double-submit CSRF token (form field must equal the
+    ``slack_bind_csrf`` cookie set by the GET confirmation page). Auth-gated so
+    the bind completes only for the signed-in Agnes account.
+    """
+    if user is None:
+        return RedirectResponse(url="/login", status_code=302)
+
+    cookie_token = request.cookies.get(_SLACK_BIND_CSRF_COOKIE, "")
+    if not code or not csrf_token or not cookie_token or not secrets.compare_digest(csrf_token, cookie_token):
+        ctx = _build_context(request, user=user, conn=conn, bind_status="csrf")
+        resp = templates.TemplateResponse(request, "slack_bind.html", ctx, status_code=400)
+        resp.delete_cookie(_SLACK_BIND_CSRF_COOKIE, path="/slack/bind")
+        return resp
+
+    from services.slack_bot.binding import (
+        BindingThrottled,
+        redeem_verification_code,
+    )
+
+    status = "missing"
+    try:
+        ok = redeem_verification_code(conn, user_email=user["email"], code=code.strip())
+        status = "ok" if ok else "invalid"
+    except BindingThrottled:
+        status = "throttled"
+    except Exception:
+        logger.exception("slack bind redeem failed")
+        status = "error"
 
     ctx = _build_context(request, user=user, conn=conn, bind_status=status)
-    return templates.TemplateResponse(request, "slack_bind.html", ctx)
+    resp = templates.TemplateResponse(request, "slack_bind.html", ctx)
+    resp.delete_cookie(_SLACK_BIND_CSRF_COOKIE, path="/slack/bind")
+    return resp
 
 
 @router.get("/install", response_class=HTMLResponse)
@@ -5078,21 +5150,116 @@ async def admin_data_sources_page(
     ctx = _build_context(request, user=user)
     ctx["vault_key_configured"] = vault_key_configured()
 
-    # Semantic-layer sync summary (#853 + #920 follow-up, #953 status
-    # visibility): metric_definitions / glossary_terms carry no
-    # per-connection column, so the counts are global — scoped to
-    # source='keboola_semantic_layer' so a manual/yaml_import/openmetadata
-    # row doesn't inflate the "synced from Keboola" figure. The card always
-    # renders — never-synced-yet / last-sync-ok / last-attempt-failed are all
-    # visible states, not just "something has successfully synced" (#953).
-    semantic_metric_count = sum(1 for m in metric_repo().list() if m.get("source") == "keboola_semantic_layer")
-    semantic_glossary_count = sum(
-        1 for t in glossary_repo().list(limit=500) if t.get("source") == "keboola_semantic_layer"
-    )
-    ctx["semantic_metric_count"] = semantic_metric_count
-    ctx["semantic_glossary_count"] = semantic_glossary_count
+    # Semantic-layer status — one-line summary only; the per-source counts
+    # and "Sync now" control moved to /admin/semantic-layer (#853 + #920
+    # follow-up, #953 status visibility, task 7 slim-down). Always renders —
+    # never-synced-yet / last-sync-ok / last-attempt-failed are all visible
+    # states, not just "something has successfully synced".
     ctx["semantic_refresh_summary"] = get_last_refresh_summary()
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
+
+
+@router.get("/admin/semantic-layer", response_class=HTMLResponse)
+async def admin_semantic_layer_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Per-source breakdown for the Keboola semantic-layer sync (#853/#920/
+    #953, task 7): one row per connection enumerated by
+    ``_enumerate_master_sources()`` (master-token Keboola projects), each
+    with its own metric/glossary counts and the last sync's per-source
+    result. NULL ``source_ref`` rows (legacy, pre-provenance) fold into the
+    default connection's row since that's the only connection legacy rows
+    can belong to. Rows whose ``source_ref`` no longer matches any
+    enumerated source (connection deleted/rotated away) surface separately
+    as "orphaned" rather than silently vanishing.
+
+    Master tokens are never put into the template context — only
+    name/id/stack_url leave ``_enumerate_master_sources()``.
+    """
+    from app.api.keboola_semantic_layer_refresh import get_last_refresh_summary
+    from connectors.keboola.semantic_layer import _default_keboola_connection, _enumerate_master_sources
+
+    ctx = _build_context(request, user=user)
+
+    metrics = metric_repo().list()
+    terms = glossary_repo().list(limit=100000)
+
+    def _counts(ref: Optional[str]) -> tuple[int, int]:
+        m = sum(1 for x in metrics if x.get("source") == "keboola_semantic_layer" and x.get("source_ref") == ref)
+        g = sum(1 for x in terms if x.get("source") == "keboola_semantic_layer" and x.get("source_ref") == ref)
+        return m, g
+
+    raw_sources = _enumerate_master_sources()  # names/ids/stack_url only — token stripped below
+    default_conn = _default_keboola_connection()
+    default_id = default_conn["id"] if default_conn else None
+
+    summary = get_last_refresh_summary()
+    last_result = summary.get("last_result")
+    last_by_ref: dict[Any, dict] = {}
+    if isinstance(last_result, dict) and isinstance(last_result.get("sources"), list):
+        for entry in last_result["sources"]:
+            last_by_ref[entry.get("connection_id")] = entry
+
+    sources = []
+    null_absorbed = False
+    for source in raw_sources:
+        connection_id = source["connection_id"]
+        metric_count, glossary_count = _counts(connection_id)
+        if connection_id == default_id:
+            null_metric_count, null_glossary_count = _counts(None)
+            metric_count += null_metric_count
+            glossary_count += null_glossary_count
+            null_absorbed = True
+        stack_url = source["stack_url"]
+        sources.append(
+            {
+                "connection_id": connection_id,
+                "label": source["name"],
+                "detail": urlsplit(stack_url).netloc or stack_url,
+                "metric_count": metric_count,
+                "glossary_count": glossary_count,
+                "last": last_by_ref.get(connection_id),
+            }
+        )
+
+    known_ids = {s["connection_id"] for s in raw_sources}
+    all_refs = {
+        m.get("source_ref") for m in metrics if m.get("source") == "keboola_semantic_layer" and m.get("source_ref")
+    }
+    all_refs |= {
+        t.get("source_ref") for t in terms if t.get("source") == "keboola_semantic_layer" and t.get("source_ref")
+    }
+    orphaned = []
+    for ref in sorted(all_refs - known_ids):
+        metric_count, glossary_count = _counts(ref)
+        orphaned.append(
+            {"source_ref": ref, "label": ref, "metric_count": metric_count, "glossary_count": glossary_count}
+        )
+
+    # NULL-source_ref rows (legacy, pre-provenance) normally fold into the
+    # default connection's row above. When the default connection has no
+    # master token — so it's never enumerated by `_enumerate_master_sources()`
+    # and never appears in `sources` — those rows would otherwise be counted
+    # nowhere: the truthy `source_ref` filter above excludes them from
+    # `all_refs` too. Surface them here instead, so they're never invisible.
+    if not null_absorbed:
+        null_metric_count, null_glossary_count = _counts(None)
+        if null_metric_count or null_glossary_count:
+            orphaned.append(
+                {
+                    "source_ref": None,
+                    "label": "legacy / unattributed",
+                    "metric_count": null_metric_count,
+                    "glossary_count": null_glossary_count,
+                }
+            )
+
+    ctx["sources"] = sources
+    ctx["orphaned"] = orphaned
+    ctx["default_connection_id"] = default_id
+    ctx["semantic_refresh_summary"] = summary
+    return templates.TemplateResponse(request, "admin_semantic_layer.html", ctx)
 
 
 @router.get("/admin/database", response_class=HTMLResponse)
