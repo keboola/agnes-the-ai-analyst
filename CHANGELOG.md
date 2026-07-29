@@ -12,8 +12,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- Admin corporate-memory page: search boxes on the Review Queue and All Items tabs (title/content, debounced; `GET /api/memory/admin/pending` gained a `search` param), and moderation actions — Approve / Reject / Revoke / Mark required — on the All Items batch bar. Previously search existed only on Browse (which has no bulk actions) and bulk moderation only on Review (which had no search), so moderating specific items in a large queue required paging through it by eye.
-
 ### Changed
 
 ### Fixed
@@ -23,6 +21,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+
+## [0.77.25] - 2026-07-29
+
+### Added
+
+- Admin corporate-memory page: search boxes on the Review Queue and All Items tabs (title/content, debounced; `GET /api/memory/admin/pending` gained a `search` param), and moderation actions — Approve / Reject / Revoke / Mark required — on the All Items batch bar. Previously search existed only on Browse (which has no bulk actions) and bulk moderation only on Review (which had no search), so moderating specific items in a large queue required paging through it by eye.
 
 ## [0.77.24] - 2026-07-29
 
