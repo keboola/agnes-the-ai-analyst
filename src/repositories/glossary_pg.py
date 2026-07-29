@@ -31,6 +31,7 @@ class GlossaryPgRepository:
         see_also: Optional[List[str]] = None,
         model_uuid: Optional[str] = None,
         source: str = "manual",
+        source_ref: Optional[str] = None,
         refresh_fts: bool = True,
     ) -> Dict[str, Any]:
         """``refresh_fts`` is accepted for call-signature compatibility with
@@ -42,10 +43,10 @@ class GlossaryPgRepository:
             conn.execute(
                 sa.text(
                     """INSERT INTO glossary_terms (
-                        id, term, definition, see_also, model_uuid, source,
+                        id, term, definition, see_also, model_uuid, source, source_ref,
                         created_at, updated_at
                     ) VALUES (
-                        :id, :term, :definition, :see_also, :model_uuid, :source,
+                        :id, :term, :definition, :see_also, :model_uuid, :source, :source_ref,
                         :now, :now
                     )
                     ON CONFLICT (id) DO UPDATE SET
@@ -54,6 +55,7 @@ class GlossaryPgRepository:
                         see_also = EXCLUDED.see_also,
                         model_uuid = EXCLUDED.model_uuid,
                         source = EXCLUDED.source,
+                        source_ref = EXCLUDED.source_ref,
                         updated_at = EXCLUDED.updated_at"""
                 ),
                 {
@@ -63,6 +65,7 @@ class GlossaryPgRepository:
                     "see_also": see_also,
                     "model_uuid": model_uuid,
                     "source": source,
+                    "source_ref": source_ref,
                     "now": now,
                 },
             )
@@ -91,6 +94,18 @@ class GlossaryPgRepository:
                 .all()
             )
         return [dict(r) for r in rows]
+
+    def find_by_term(self, term: str) -> Optional[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM glossary_terms WHERE term = :term ORDER BY id LIMIT 1"),
+                    {"term": term},
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row else None
 
     def refresh_search_index(self) -> None:
         """No-op — Postgres has no BM25 index to rebuild (``search`` computes

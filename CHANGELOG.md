@@ -22,11 +22,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.20] - 2026-07-29
+## [0.77.21] - 2026-07-29
 
 ### Added
 
 - `agnes update` now runs an `agnes push` catch-up step (step 4b, before the data pull), so the SessionStart hook uploads session transcripts + `CLAUDE.local.md` that the SessionEnd hook never got to send. SessionEnd is not a dependable trigger — closing the terminal window (or a crash / kill) can take Claude Code down before it reaches the hook, leaving the transcript on disk and invisible in the admin session views, which read the pipeline's summary table and have no filesystem fallback. SessionStart cannot be missed, because the session is being created. push is already a full folder scan with ledger dedup, so one call recovers everything earlier runs missed, including a session still open in another window whose transcript has grown; the convergence report gains a `push` stage line.
+
+## [0.77.20] - 2026-07-29
+
+### Added
+
+- Per-connection Keboola master (owner) Storage API token for the semantic-layer sync — a separate vault slot from the plain storage token, set/rotate/remove via `/admin/data-sources`'s connection card ("Master token (semantic layer)" control) or `agnes admin connection secret <connection_id> --kind master`, validated with a live `verify_token` preflight at save time (rejected if the token isn't a master token, since the Metastore API rejects non-master tokens).
+- Multi-project semantic-layer sync: every Keboola connection holding a master token now syncs independently under its own `source_ref` provenance, with metric/glossary prune scoped to that connection's own rows so one connection's sync can never wipe another's.
+- `GET /admin/semantic-layer` — per-connection view of the sync: one row per master-token project with its own metric/glossary counts and last-sync result, plus an "orphaned rows" section for rows whose recorded project no longer matches any connected source.
+
+### Changed
+
+- `/admin/data-sources`'s semantic-layer card is now a one-line status ("Semantic layer: <status> — manage at /admin/semantic-layer"); the per-project counts, "Sync now" control, and the new orphaned-rows view moved to `/admin/semantic-layer`.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+- `metric_definitions.source_ref` + `glossary_terms.source_ref` (schema v107, Alembic 0054): per-connection provenance for the multi-project semantic-layer sync.
+
+### Security
 
 ## [0.77.19] - 2026-07-29
 

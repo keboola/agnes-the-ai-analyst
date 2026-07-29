@@ -53,6 +53,15 @@ agnes admin register-table --source-type keboola --bucket "in.c-crm" --table "co
 
 All Keboola table names, bucket names, and source table identifiers are validated against `_SAFE_QUOTED_IDENTIFIER` regex before use. Invalid identifiers are skipped with error logging.
 
+### Semantic-layer sync (metrics & glossary)
+
+Separately from table sync, Agnes can import Keboola's business-semantic layer — metric definitions and glossary terms — into `metric_definitions` and `glossary_terms` (the `keboola-semantic-layer-refresh` job, `POST /api/admin/run-keboola-semantic-layer-refresh`).
+
+- **Master token requirement.** This sync calls Keboola's Metastore API, which rejects any token that isn't a master (owner) Storage API token — a regular read-scoped token 400s with an opaque error. Because of this, the master token is a *separate* vault slot from the plain storage token used for table pulls.
+- **Where to set it.** Either the "Master token (semantic layer)" control on a Keboola connection's card at `/admin/data-sources`, or `agnes admin connection secret <connection_id> --kind master` (prompts for the token; never pass it on the command line). Saving runs a live `verify_token` preflight and rejects a non-master token immediately rather than failing later during sync.
+- **Multi-project behavior.** Every Keboola connection with a master token configured syncs on its own — each connection's metric/glossary rows are stamped with that connection's `source_ref` for provenance, and each sync's prune (removing rows no longer present upstream) only touches rows carrying its own `source_ref`. One connection's sync failure or token removal never affects another connection's rows.
+- **Orphaned rows.** Removing a connection's master token (or the connection itself) stops that project from syncing, but its previously-imported rows are left in place rather than deleted — they show up as "orphaned" (a `source_ref` that no longer matches any connected source) on `GET /admin/semantic-layer`, which lists per-connection sync status/counts alongside the orphaned set so an admin can decide whether to leave them or clean them up.
+
 ## BigQuery Connector
 
 Queries BigQuery tables on-demand using the DuckDB BigQuery extension (remote attach).

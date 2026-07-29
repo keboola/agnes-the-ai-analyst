@@ -34,6 +34,63 @@ def config_engine(pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _make_duckdb_metric_repo(tmp_path):
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+    from src.repositories.metrics import MetricRepository
+
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
+    _ensure_schema(conn)
+    return MetricRepository(conn), conn
+
+
+def _make_pg_metric_repo(pg_engine, monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
+    command.upgrade(cfg, "head")
+
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+    import src.db_pg as db_pg
+
+    db_pg.dispose()
+    db_pg.get_engine()
+
+    from src.repositories.metrics_pg import MetricPgRepository
+
+    return MetricPgRepository(db_pg.get_engine()), None
+
+
+@pytest.fixture(params=["duckdb", "pg"])
+def repo(request, tmp_path, pg_engine, monkeypatch):
+    if request.param == "duckdb":
+        r, conn = _make_duckdb_metric_repo(tmp_path)
+        yield r
+        conn.close()
+    else:
+        r, _ = _make_pg_metric_repo(pg_engine, monkeypatch)
+        yield r
+
+
+def test_metric_source_ref_roundtrip(repo):
+    repo.create(
+        id="keboola/m1/mrr",
+        name="mrr",
+        display_name="MRR",
+        category="revenue",
+        sql="SELECT 1",
+        source="keboola_semantic_layer",
+        source_ref="conn-a",
+    )
+    row = repo.get("keboola/m1/mrr")
+    assert row["source_ref"] == "conn-a"
+    assert repo.find_by_name("mrr")["id"] == "keboola/m1/mrr"
+    assert repo.find_by_name("nope") is None
+
+
 def test_metrics_create_and_get(config_engine):
     from src.repositories.metrics_pg import MetricPgRepository
 
