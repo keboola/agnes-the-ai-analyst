@@ -16,6 +16,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Corporate memory now actually reads the `CLAUDE.local.md` files `agnes push` uploads. The collector scanned only `<HOME_BASE>/<user>/CLAUDE.local.md` — the bare-VM layout where analysts work on the server — while `POST /api/upload/local-md` writes to `${DATA_DIR}/user_local_md/`. On any deployment that doesn't populate `/home` (Docker Compose, i.e. analysts on laptops) the every-17-min job therefore found zero files and returned `skipped` forever: the upload arrived and was never read, so corporate memory had no `claude_local_md` input at all. It now scans both layouts; a user present in both is collected once with the home copy winning, and the bare-VM layout keeps emitting the directory name as `source_user` so existing hash keys and item provenance don't shift. `HOME_BASE` also gained a `CORPORATE_MEMORY_HOME_BASE` env override (it was hardcoded, unlike its sibling constants), and the per-run "Home base directory does not exist" WARNING that fired on every Docker run is now debug-level. The filename + directory are derived through shared helpers (`app.utils.local_md_filename` / `uploaded_local_md_dir`) used by both the writing endpoint and the reading collector, with a round-trip test asserting the two agree — that divergence is what made this silent.
+
 ### Removed
 
 ### Internal

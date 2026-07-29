@@ -468,3 +468,174 @@ class TestCollectAllDbSync:
         assert "items_db_inserted" in stats
         assert "items_db_updated" in stats
         assert "items_db_errors" in stats
+
+
+# ---------------------------------------------------------------------------
+# Dual-layout input discovery (_find_claude_local_files)
+# ---------------------------------------------------------------------------
+
+
+class TestFindClaudeLocalFiles:
+    """The collector must see BOTH deployment layouts.
+
+    Regression context: it scanned only ``HOME_BASE`` (`/home`), so on any
+    deployment that doesn't populate `/home` — Docker Compose, where analysts
+    run Claude Code on their laptops and `agnes push` uploads the file — it
+    found zero files and returned `skipped` on every run indefinitely. Corporate
+    memory silently had no `claude_local_md` input at all.
+    """
+
+    @staticmethod
+    def _uploaded(tmp_path, monkeypatch, emails_on_disk, known_emails=None):
+        """Point DATA_DIR at *tmp_path*, write an uploaded file per email in
+        *emails_on_disk*, and stub the known-user enumeration."""
+        from app.utils import local_md_filename
+        from services.corporate_memory import collector
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        upload_dir = tmp_path / "user_local_md"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        for email in emails_on_disk:
+            (upload_dir / local_md_filename(email)).write_text(f"# notes of {email}\n", encoding="utf-8")
+        emails = list(known_emails) if known_emails is not None else list(emails_on_disk)
+        monkeypatch.setattr(collector, "_known_user_emails", lambda: emails)
+        return upload_dir
+
+    def test_finds_uploaded_file_when_home_layout_absent(self, tmp_path, monkeypatch):
+        """The Docker case: no /home at all, file arrived via `agnes push`."""
+        from services.corporate_memory import collector
+
+        monkeypatch.setattr(collector, "HOME_BASE", tmp_path / "nonexistent-home")
+        self._uploaded(tmp_path, monkeypatch, ["alice@corp.example"])
+
+        found = collector._find_claude_local_files()
+
+        assert [name for name, _ in found] == ["alice@corp.example"]
+        assert found[0][1].read_text(encoding="utf-8") == "# notes of alice@corp.example\n"
+
+    def test_finds_home_layout_when_no_uploads(self, tmp_path, monkeypatch):
+        """The bare-VM case is unchanged: username stays the directory name, so
+        existing user_hashes.json keys and source_user values don't shift."""
+        from services.corporate_memory import collector
+
+        home = tmp_path / "home"
+        (home / "alice").mkdir(parents=True)
+        (home / "alice" / "CLAUDE.local.md").write_text("# home notes\n", encoding="utf-8")
+        monkeypatch.setattr(collector, "HOME_BASE", home)
+        monkeypatch.setenv("DATA_DIR", str(tmp_path / "no-data"))
+
+        found = collector._find_claude_local_files()
+
+        assert found == [("alice", home / "alice" / "CLAUDE.local.md")]
+
+    def test_both_layouts_are_merged(self, tmp_path, monkeypatch):
+        """Two different people, one per layout — both are collected."""
+        from services.corporate_memory import collector
+
+        home = tmp_path / "home"
+        (home / "bob").mkdir(parents=True)
+        (home / "bob" / "CLAUDE.local.md").write_text("# bob\n", encoding="utf-8")
+        monkeypatch.setattr(collector, "HOME_BASE", home)
+        monkeypatch.setattr(collector, "_home_dir_owner_email", lambda name: f"{name}@corp.example")
+        self._uploaded(tmp_path, monkeypatch, ["alice@corp.example"])
+
+        found = dict(collector._find_claude_local_files())
+
+        assert set(found) == {"bob", "alice@corp.example"}
+
+    def test_home_layout_wins_when_same_user_has_both(self, tmp_path, monkeypatch):
+        """A hybrid instance must not count one person's notes twice; the home
+        copy wins (that's where the analyst is actually working)."""
+        from services.corporate_memory import collector
+
+        home = tmp_path / "home"
+        (home / "alice").mkdir(parents=True)
+        (home / "alice" / "CLAUDE.local.md").write_text("# home wins\n", encoding="utf-8")
+        monkeypatch.setattr(collector, "HOME_BASE", home)
+        monkeypatch.setattr(collector, "_home_dir_owner_email", lambda name: f"{name}@corp.example")
+        self._uploaded(tmp_path, monkeypatch, ["alice@corp.example"])
+
+        found = collector._find_claude_local_files()
+
+        assert found == [("alice", home / "alice" / "CLAUDE.local.md")]
+
+    def test_uploaded_file_for_unknown_user_is_ignored(self, tmp_path, monkeypatch):
+        """Enumeration hashes FORWARD from known users, so a file whose owner
+        has no user row is unreachable by construction — documented, not a bug:
+        the hashed filename cannot be reversed to an email."""
+        from services.corporate_memory import collector
+
+        monkeypatch.setattr(collector, "HOME_BASE", tmp_path / "nonexistent-home")
+        self._uploaded(tmp_path, monkeypatch, ["ghost@corp.example"], known_emails=[])
+
+        assert collector._find_claude_local_files() == []
+
+    def test_degrades_to_home_layout_when_no_users_enumerable(self, tmp_path, monkeypatch):
+        """The collector can run standalone without a reachable app DB. The
+        enumeration then yields nothing (see
+        ``test_known_user_emails_swallows_repository_failure``) and the uploaded
+        layout is simply skipped — the home layout must still be collected."""
+        from services.corporate_memory import collector
+
+        home = tmp_path / "home"
+        (home / "carol").mkdir(parents=True)
+        (home / "carol" / "CLAUDE.local.md").write_text("# carol\n", encoding="utf-8")
+        monkeypatch.setattr(collector, "HOME_BASE", home)
+        monkeypatch.setattr(collector, "_home_dir_owner_email", lambda name: None)
+        self._uploaded(tmp_path, monkeypatch, ["alice@corp.example"], known_emails=[])
+
+        found = collector._find_claude_local_files()
+
+        assert found == [("carol", home / "carol" / "CLAUDE.local.md")]
+
+    def test_known_user_emails_swallows_repository_failure(self, monkeypatch):
+        """`_known_user_emails` itself is the best-effort boundary."""
+        from services.corporate_memory import collector
+
+        with patch("src.repositories.users_repo", side_effect=RuntimeError("no db")):
+            assert collector._known_user_emails() == []
+
+    def test_home_base_honors_env_override(self, tmp_path, monkeypatch):
+        """HOME_BASE was hardcoded to /home; a deployment laying homes out
+        elsewhere had no way to point the collector at them."""
+        import importlib
+
+        from services.corporate_memory import collector as collector_mod
+
+        custom = tmp_path / "srv" / "homes"
+        monkeypatch.setenv("CORPORATE_MEMORY_HOME_BASE", str(custom))
+        try:
+            reloaded = importlib.reload(collector_mod)
+            assert reloaded.HOME_BASE == custom
+        finally:
+            monkeypatch.delenv("CORPORATE_MEMORY_HOME_BASE", raising=False)
+            importlib.reload(collector_mod)
+
+
+class TestUploadCollectorRoundTrip:
+    """End-to-end drift guard: what `POST /api/upload/local-md` WRITES is what
+    the collector READS. This is the bug class the shared
+    `app.utils.local_md_filename` / `uploaded_local_md_dir` helpers exist to
+    prevent — the two sides previously disagreed on the directory, silently.
+    """
+
+    def test_uploaded_local_md_is_discovered_by_the_collector(self, seeded_app, tmp_path, monkeypatch):
+        from services.corporate_memory import collector
+
+        client = seeded_app["client"]
+        content = "# Team conventions\n\nRevenue excludes intra-group invoices.\n"
+        resp = client.post(
+            "/api/upload/local-md",
+            json={"content": content},
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        )
+        assert resp.status_code == 200
+
+        # Real enumeration against the seeded user store — not stubbed. DATA_DIR
+        # is already pointed at a tmp dir by the fixture, so the collector
+        # resolves the same uploaded directory the endpoint just wrote into.
+        monkeypatch.setattr(collector, "HOME_BASE", tmp_path / "nonexistent-home")
+        found = dict(collector._find_claude_local_files())
+
+        assert "admin@test.com" in found, found
+        assert found["admin@test.com"].read_text(encoding="utf-8") == content
