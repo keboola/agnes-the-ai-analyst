@@ -647,7 +647,14 @@ def init(
         try:
             from cli.client import api_post
 
-            resp = api_post("/cli/auth/rescope-surface", json={})
+            # Same `_override_server_env` wrapping as the Step-2 verify:
+            # without it `api_post` would prefer AGNES_SERVER/AGNES_TOKEN
+            # env vars over the just-saved config, so in an env-credential
+            # context (e.g. a sandbox) the rescope could hit a different
+            # server/credential than the exchange above (Devin Review on
+            # #1090).
+            with _override_server_env(server_url, token):
+                resp = api_post("/cli/auth/rescope-surface", json={})
             if resp.status_code == 200:
                 new_token = resp.json().get("token") or ""
                 if new_token:
