@@ -649,6 +649,18 @@ async def delete_mcp_source(
     pu_secrets = per_user_secrets_repo()
     for uid in pu_secrets.list_for_source(source_id):
         pu_secrets.delete(source_id, uid)
+    # OAuth trio: every user's tokens, in-flight PKCE flows, and Agnes's own
+    # client registration for this source — a deleted source must leave no
+    # orphaned credential material (Devin Review on #1124).
+    from src.repositories import (
+        mcp_oauth_flows_repo,
+        mcp_source_oauth_clients_repo,
+        mcp_user_oauth_tokens_repo,
+    )
+
+    mcp_user_oauth_tokens_repo().delete_for_source(source_id)
+    mcp_oauth_flows_repo().delete_for_source(source_id)
+    mcp_source_oauth_clients_repo().delete(source_id)
     _audit(
         conn,
         user["id"],
@@ -784,6 +796,10 @@ async def register_oauth_client(
         require_pkce_s256,
         resolve_issuer,
     )
+
+    import httpx
+
+    from src.net.ssrf_safe_client import SSRFRejected
     from src.repositories import mcp_source_oauth_clients_repo
 
     src_repo = mcp_sources_repo()
@@ -822,6 +838,13 @@ async def register_oauth_client(
                 client=http_client,
             )
     except OAuthDiscoveryError as exc:
+        raise HTTPException(status_code=502, detail=f"oauth_discovery_failed: {_exc_summary(exc)}")
+    except SSRFRejected as exc:
+        # The discovery target (or an endpoint it advertised) resolved to a
+        # blocked address — an admin-actionable configuration problem, not an
+        # internal error (Devin Review on #1124).
+        raise HTTPException(status_code=400, detail=f"oauth_endpoint_rejected: {_exc_summary(exc)}")
+    except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"oauth_discovery_failed: {_exc_summary(exc)}")
 
     clients_repo.upsert(

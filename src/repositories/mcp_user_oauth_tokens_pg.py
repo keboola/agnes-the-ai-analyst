@@ -87,6 +87,16 @@ class MCPUserOAuthTokenPgRepository:
                 {"source_id": source_id, "user_id": user_id},
             )
 
+    def delete_for_source(self, source_id: str) -> int:
+        """Drop every user's tokens for ``source_id`` (source-delete cascade).
+        Returns the deleted-row count."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text("DELETE FROM mcp_user_oauth_tokens WHERE source_id = :source_id"),
+                {"source_id": source_id},
+            )
+            return result.rowcount or 0
+
     def has(self, source_id: str, user_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(

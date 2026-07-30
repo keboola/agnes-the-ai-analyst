@@ -297,3 +297,59 @@ def test_manual_client_rejects_loopback_ip(seeded_app):
     )
     assert r.status_code == 400
     assert "authorization_endpoint" in r.json()["detail"]
+
+
+def test_source_delete_cascades_oauth_rows(seeded_app, monkeypatch):
+    """DELETE /api/admin/mcp-sources/{id} must leave no orphaned OAuth
+    material: the client registration, every user's tokens, and in-flight
+    flows all go (Devin Review on #1124)."""
+    from src.repositories import (
+        mcp_oauth_flows_repo,
+        mcp_source_oauth_clients_repo,
+        mcp_user_oauth_tokens_repo,
+    )
+
+    sid = _seed_oauth_source(source_id="src_oauth_cascade")
+    mcp_source_oauth_clients_repo().upsert(
+        sid,
+        issuer="https://as.example.com",
+        client_id="cid",
+        client_secret=None,
+        registration_access_token=None,
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+        scopes=None,
+    )
+    mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "tok", refresh_token=None, expires_at=None, scopes=None)
+    mcp_oauth_flows_repo().create("cascade-nonce", sid, "admin1", "verifier")
+
+    r = seeded_app["client"].delete(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+    )
+    assert r.status_code == 204, r.text
+    assert mcp_source_oauth_clients_repo().get(sid) is None
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
+    assert mcp_oauth_flows_repo().consume("cascade-nonce") is None
+
+
+def test_register_translates_ssrf_rejection_to_400(seeded_app, monkeypatch):
+    """A discovery target resolving to a blocked address must produce an
+    actionable 400, not an opaque 500 (Devin Review on #1124)."""
+    import connectors.mcp.oauth_client as oc
+
+    from src.net.ssrf_safe_client import SSRFRejected
+
+    async def _boom(source_url, *, client):
+        raise SSRFRejected("address_in_blocked_range: 10.0.0.5")
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    monkeypatch.setattr(oc, "discover_protected_resource_metadata", _boom)
+    sid = _seed_oauth_source(source_id="src_oauth_ssrf")
+    r = seeded_app["client"].post(
+        f"/api/admin/mcp-sources/{sid}/oauth/register",
+        headers=_hdr(seeded_app),
+    )
+    assert r.status_code == 400
+    assert "oauth_endpoint_rejected" in r.json()["detail"]
+    assert "address_in_blocked_range" in r.json()["detail"]

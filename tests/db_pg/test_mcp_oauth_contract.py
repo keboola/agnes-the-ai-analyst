@@ -296,6 +296,20 @@ def test_user_token_delete_missing_pair_is_idempotent(user_tokens_repo):
     user_tokens_repo.delete("never", "existed")
 
 
+def test_user_token_delete_for_source_drops_all_users(user_tokens_repo, monkeypatch):
+    """Source-delete cascade: EVERY user's tokens for the source go, other
+    sources' rows survive (Devin Review on #1124)."""
+    monkeypatch.setenv("AGNES_VAULT_KEY", "TWMxHbnAmXbo9lHXNfLC8_ItqIYWatKQ_rOx1Vgg1yA=")
+    user_tokens_repo.upsert("src-1", "user-1", "tok-a")
+    user_tokens_repo.upsert("src-1", "user-2", "tok-b")
+    user_tokens_repo.upsert("src-2", "user-1", "tok-c")
+    assert user_tokens_repo.delete_for_source("src-1") == 2
+    assert user_tokens_repo.has("src-1", "user-1") is False
+    assert user_tokens_repo.has("src-1", "user-2") is False
+    assert user_tokens_repo.has("src-2", "user-1") is True
+    assert user_tokens_repo.delete_for_source("src-1") == 0
+
+
 # ---------------------------------------------------------------------------
 # mcp_oauth_flows
 # ---------------------------------------------------------------------------
@@ -347,3 +361,14 @@ def test_flow_sweep_expired_returns_zero_when_nothing_stale(flows_repo, monkeypa
     monkeypatch.setenv("AGNES_VAULT_KEY", "TWMxHbnAmXbo9lHXNfLC8_ItqIYWatKQ_rOx1Vgg1yA=")
     flows_repo.create("fresh-nonce", "src-1", "user-1", "verifier-fresh")
     assert flows_repo.sweep_expired(ttl_seconds=600) == 0
+
+
+def test_flow_delete_for_source_drops_only_that_source(flows_repo, monkeypatch):
+    monkeypatch.setenv("AGNES_VAULT_KEY", "TWMxHbnAmXbo9lHXNfLC8_ItqIYWatKQ_rOx1Vgg1yA=")
+    flows_repo.create("n1", "src-1", "user-1", "v1")
+    flows_repo.create("n2", "src-1", "user-2", "v2")
+    flows_repo.create("n3", "src-2", "user-1", "v3")
+    assert flows_repo.delete_for_source("src-1") == 2
+    assert flows_repo.consume("n1") is None
+    assert flows_repo.consume("n3") is not None
+    assert flows_repo.delete_for_source("src-1") == 0
