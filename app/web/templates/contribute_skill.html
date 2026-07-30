@@ -179,7 +179,7 @@
         var text = await navigator.clipboard.readText();
         if (text) { ta.value = text; ta.focus(); }
       } catch (e) {
-        btn.textContent = 'Clipboard blocked — paste manually (⌘V / Ctrl+V)';
+        if (window.appToast) window.appToast({ kind: 'info', msg: 'Clipboard blocked — paste manually (⌘V / Ctrl+V)' });
       }
     });
     // Preferred handoff: the external button passes the skill in the URL

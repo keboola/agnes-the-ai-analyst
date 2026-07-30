@@ -211,6 +211,16 @@
         wireDropdown("navMoreTrigger", "navMorePanel");
         initPriorityNav();
         wireThemeToggle();
+        // Drain any cross-navigation flash toast written to sessionStorage
+        // before a redirect (e.g. store upload success). Written via
+        // sessionStorage.setItem('agnes.flash.toast', JSON.stringify({kind,msg})).
+        try {
+            var flash = sessionStorage.getItem("agnes.flash.toast");
+            if (flash) {
+                sessionStorage.removeItem("agnes.flash.toast");
+                appToast(JSON.parse(flash));
+            }
+        } catch (_) {}
     }
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", init);

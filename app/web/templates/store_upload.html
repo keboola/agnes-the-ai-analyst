@@ -1307,7 +1307,7 @@ finishBtn.addEventListener('click', async () => {
     const res = await fetch('/api/store/entities', {method: 'POST', body: fd});
     if (res.ok) {
       const entity = await res.json();
-      if (window.appToast) window.appToast({ kind: 'info', msg: 'Uploaded — review in progress.' });
+      try { sessionStorage.setItem('agnes.flash.toast', JSON.stringify({ kind: 'info', msg: 'Uploaded — review in progress.' })); } catch (_) {}
       window.location = `/marketplace/flea/${encodeURIComponent(entity.id)}`;
       return;
     }
