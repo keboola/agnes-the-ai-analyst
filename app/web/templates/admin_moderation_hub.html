@@ -42,7 +42,9 @@
 {% block page %}
 
 <div class="mod-summary">
-  {% call ds.panel(title='Submission review queue', href='/admin/store/submissions') %}
+  {# Link carries the same verdict set the count uses, so the queue opens on
+     the "Needs review" chip and its row total equals the number shown here. #}
+  {% call ds.panel(title='Submission review queue', href='/admin/store/submissions?status=blocked_inline,blocked_llm,review_error') %}
     <span class="mod-count">{{ pending_submissions_total }}</span> submission(s) need review.
   {% endcall %}
   {% call ds.panel(title='Curated marketplaces', href='/admin/marketplaces') %}
