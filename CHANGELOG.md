@@ -12,6 +12,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
+  behavior yet): schema v109 adds `mcp_source_oauth_clients`,
+  `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
+  with dual-backend repositories and Fernet-encrypted token columns.
+  `auth_method='oauth'` is accepted on `mcp_sources` but validated to require
+  an http/sse transport and `scope='per_user'` — at the repository AND admin
+  API layers, including partial updates. Design:
+  `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
+
 ### Changed
 
 ### Fixed
