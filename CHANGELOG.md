@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.31] - 2026-07-30
+
+### Added
+
+### Changed
+
+### Fixed
+
 - Query telemetry no longer merges physically different tables that share a name, and no longer mislabels which of them is registered. A query's table was recorded as the last segment of its path, so `proj_a.ds1.orders` and `proj_b.ds2.orders` aggregated into one `orders` row on the `/admin/usage` top-tables panel and in `agnes admin usage summary` — a row that could be marked `registered` merely because an unrelated `table_registry` id happened to be `orders`, while a registry-gated `bq."dataset"."table"` reduced to a bare `table` matching no id and rendered with the `unregistered` pill (CLI `*`) despite access having gone through the registry. The full path is now recorded and the aggregation folds it onto the registry row that owns that path — id, `bq_fqn`, the configured-data-project path `<project>.<bucket>.<source_table>` for BigQuery rows registered without a `bq_fqn`, `<alias>.<bucket>.<source_table>`, `<bucket>.<source_table>`, or display name — so one table is one row however it was spelled, and anything the registry does not own stays flagged and spelled as the query wrote it. Existing audit rows keep aggregating: a bare name still resolves through the registry id (and merges with new rows for the same table), but a pre-upgrade row for an unregistered qualified path stays under its truncated name, and one that was falsely marked registered stays so until it ages out of the window.
 
 ### Removed
