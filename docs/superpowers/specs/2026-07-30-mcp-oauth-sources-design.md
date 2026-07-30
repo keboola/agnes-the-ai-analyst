@@ -59,7 +59,7 @@ Non-goals (this iteration):
 
 ## Design
 
-### 1. Data model (schema v107 → v108, both ladders in the same PR)
+### 1. Data model (schema v108 → v109, both ladders in the same PR)
 
 New table `mcp_source_oauth_clients` — one row per OAuth source (Agnes's own
 client registration at the upstream AS). Named to avoid collision with the
@@ -115,7 +115,7 @@ Rules:
   so this coupling is what makes the fail-closed paths fire at all.
 - Repos `mcp_source_oauth_clients(_pg).py`, `mcp_user_oauth_tokens(_pg).py`,
   `mcp_oauth_flows(_pg).py` behind the factory; cross-engine contract tests;
-  `_v107_to_v108` in `src/db.py` + matching Alembic revision; update any doc
+  `_v108_to_v109` in `src/db.py` + matching Alembic revision; update any doc
   that states the current schema version.
 
 ### 2. Source registration & discovery (admin)
@@ -254,7 +254,7 @@ two flows visually separate.
 ### 7. Phasing (build plan)
 
 - **PR 1 — foundation (no UI):**
-  - schema v108 (both ladders) + three repos (+ `_pg` siblings + factory
+  - schema v109 (both ladders) + three repos (+ `_pg` siblings + factory
     entries + cross-engine contract tests + backend-split guard happy)
   - shared SSRF-safe HTTP helper extracted from `marketplace_asset_mirror`
   - `connectors/mcp/oauth_client.py` (discovery, DCR, token exchange,
