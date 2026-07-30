@@ -211,7 +211,11 @@ class UsagePgRepository:
         """
         # ``table:<id>[:as:<name>]`` → <id>: strip the 6-char "table:" prefix,
         # then cut any ":as:" suffix. PG substring is 1-indexed (from 7).
-        table_id_expr = "split_part(substring(resource from 7), ':as:', 1)"
+        # lower(): registry ids are lowercased at registration, and rows
+        # written before the parser lowercased its output can carry mixed
+        # case — fold both so a table is one row and the registry join
+        # is not a byte comparison (Devin Review on #1121).
+        table_id_expr = "lower(split_part(substring(resource from 7), ':as:', 1))"
         # JSONB text extraction → numeric. NULLIF guards empty strings.
         bytes_expr = "NULLIF(params->>'bytes_scanned', '')::bigint"
         # `result` is 'success' or an 'error.<code>' string; NULL on rows
@@ -241,7 +245,7 @@ class UsagePgRepository:
                               AND resource LIKE 'table:%'
                             GROUP BY {table_id_expr}
                         ) agg
-                        LEFT JOIN table_registry reg ON reg.id = agg.table_id
+                        LEFT JOIN table_registry reg ON lower(reg.id) = agg.table_id
                         ORDER BY (agg.queries - agg.failed) DESC,
                                  agg.queries DESC,
                                  agg.scan_bytes DESC

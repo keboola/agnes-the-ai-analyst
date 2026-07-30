@@ -174,7 +174,11 @@ class UsageRepository:
         """
         # ``table:<id>`` or ``table:<id>:as:<name>`` → <id>. split_part on the
         # 4-char-stripped tail (drop the leading "table:") then cut any ":as:".
-        table_id_expr = "split_part(substr(resource, 7), ':as:', 1)"
+        # lower(): registry ids are lowercased at registration, and rows
+        # written before the parser lowercased its output can carry mixed
+        # case — fold both so a table is one row and the registry join
+        # is not a byte comparison (Devin Review on #1121).
+        table_id_expr = "lower(split_part(substr(resource, 7), ':as:', 1))"
         bytes_expr = "TRY_CAST(json_extract_string(params, '$.bytes_scanned') AS BIGINT)"
         # `result` is 'success' or an 'error.<code>' string; NULL on rows
         # written before the column existed, which count as neither.
@@ -202,7 +206,7 @@ class UsageRepository:
                       AND resource LIKE 'table:%'
                     GROUP BY table_id
                 ) agg
-                LEFT JOIN table_registry reg ON reg.id = agg.table_id
+                LEFT JOIN table_registry reg ON lower(reg.id) = agg.table_id
                 ORDER BY (agg.queries - agg.failed) DESC,
                          agg.queries DESC,
                          agg.scan_bytes DESC

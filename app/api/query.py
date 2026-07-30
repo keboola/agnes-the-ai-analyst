@@ -510,7 +510,7 @@ _SQL_IDENT_PATH = re.compile(
 )
 
 
-def _mask_sql_noise(sql: str) -> str:
+def _mask_sql_noise(sql: str, *, double_quoted_is_literal: bool = False) -> str:
     """Blank string literals and comments, preserving length and offsets.
 
     Paren counting and the FROM/JOIN scan must not see brackets or keywords
@@ -525,10 +525,17 @@ def _mask_sql_noise(sql: str) -> str:
     i, n = 0, len(sql)
     while i < n:
         ch = sql[i]
-        if ch in ('"', "`"):
+        if ch == "`" or (ch == '"' and not double_quoted_is_literal):
             # Quoted identifier — step over it without blanking.
             close = sql.find(ch, i + 1)
             i = n if close == -1 else close + 1
+        elif ch == '"':
+            # BigQuery: a double-quoted string literal — blank it like '...'.
+            close = sql.find('"', i + 1)
+            end = n if close == -1 else close + 1
+            for k in range(i, end):
+                out[k] = " "
+            i = end
         elif ch == "'":
             j = i + 1
             while j < n:
@@ -616,7 +623,7 @@ def _normalize_table_path(raw: str) -> Optional[str]:
     return parts[-1] if len(parts) >= 3 else ".".join(parts)
 
 
-def _first_table_from_sql(sql: str) -> Optional[str]:
+def _first_table_from_sql(sql: str, *, double_quoted_is_literal: bool = False) -> Optional[str]:
     """Extract the first table reference after FROM or JOIN, for audit tagging.
 
     Regex-based and still best-effort, but the result is the group-by key of
@@ -638,7 +645,7 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
     # Scan the masked text so a FROM inside a literal or comment is not a
     # match at all, then read the identifier back out of the ORIGINAL sql
     # (masking preserves offsets, and identifier spans are never masked).
-    masked = _mask_sql_noise(sql)
+    masked = _mask_sql_noise(sql, double_quoted_is_literal=double_quoted_is_literal)
     matches = list(_SQL_IDENT_PATH.finditer(masked))
     if not matches:
         return None
@@ -652,7 +659,10 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
             continue
         table = _normalize_table_path(sql[match.start(1):match.end(1)])
         if table:
-            return table[:200]
+            # Lowercase: registry ids are lowercased at registration, so
+            # `from Orders` must not tag `table:Orders` and then read as
+            # unregistered (and group apart) — Devin Review on #1121.
+            return table.lower()[:200]
     return None
 
 
@@ -1033,7 +1043,7 @@ def execute_query(
         # Determine action: remote when BQ tables were involved (_dry_run_set non-empty),
         # local otherwise.
         _action = "query.remote" if _dry_run_set else "query.local"
-        _first_table = _first_table_from_sql(request.sql)
+        _first_table = _first_table_from_sql(request.sql, double_quoted_is_literal=bool(_dry_run_set))
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
             audit_repo().log(
@@ -1059,7 +1069,7 @@ def execute_query(
             logger.exception("audit_log write failed for %s; continuing", _action)
         return response
     except HTTPException as exc:
-        _first_table = _first_table_from_sql(request.sql)
+        _first_table = _first_table_from_sql(request.sql, double_quoted_is_literal=bool(_dry_run_set))
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         _action_err = "query.remote" if _dry_run_set else "query.local"
         try:
@@ -1092,7 +1102,7 @@ def execute_query(
         # instead of DuckDB's bare error.
         msg = str(e)
         helpful = _materialized_hint_for_query_error(conn, request.sql, msg)
-        _first_table = _first_table_from_sql(request.sql)
+        _first_table = _first_table_from_sql(request.sql, double_quoted_is_literal=bool(_dry_run_set))
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
             audit_repo().log(

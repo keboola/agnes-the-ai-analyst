@@ -177,3 +177,24 @@ def test_labelling_a_long_query_stays_linear():
     # Quadratic would be ~64x; allow generous headroom for timer noise while
     # still failing loudly if the quadratic walk comes back.
     assert large < max(small * 20, 0.5), f"{small=} {large=}"
+
+
+def test_double_quotes_are_literals_on_the_bigquery_path():
+    """`"..."` is an identifier in DuckDB but a string literal in BigQuery
+    Standard SQL, so the caller's dialect decides (Devin Review on #1121)."""
+    from app.api.query import _first_table_from_sql
+
+    sql = 'SELECT "FROM x" AS s FROM t'
+    # local (DuckDB): "FROM x" is an identifier — historical behaviour kept
+    assert _first_table_from_sql(sql) == "x"
+    # remote (BigQuery): it's a literal, so the real table wins
+    assert _first_table_from_sql(sql, double_quoted_is_literal=True) == "t"
+
+
+def test_tagged_id_is_lowercased_to_match_registry_ids():
+    """Registry ids are lowercased at registration; a tag that preserved the
+    SQL's casing never matched and grouped as its own row."""
+    from app.api.query import _first_table_from_sql
+
+    assert _first_table_from_sql("select * from Orders") == "orders"
+    assert _first_table_from_sql("SELECT * FROM MySchema.MyTable") == "myschema.mytable"
