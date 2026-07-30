@@ -160,11 +160,15 @@ class UsageRepository:
         count toward totals but not the per-table ranking. ``scan_bytes`` is
         summed from ``params.$.bytes_scanned`` (NULL on the local path).
 
-        The parsed id comes from a best-effort SQL regex, so it is not
-        guaranteed to name a real table. Rows are therefore joined against
-        ``table_registry`` (``registered``) and split by outcome (``failed``),
-        and the ranking is by *successful* queries: an id that never resolved
-        cannot outrank a table with genuine usage just by being retried.
+        The recorded value is the full path the SQL named, parsed by a
+        best-effort regex, so it is neither guaranteed to name a real table nor
+        to be spelled as the registry id. Paths are grouped as recorded in SQL
+        and then folded onto the registry id that owns them
+        (``_registry_identity_keys``): a resolved path is reported under that
+        id and marked ``registered``, an unresolved one is reported verbatim
+        and marked unregistered. Rows are split by outcome (``failed``) and
+        ranked by *successful* queries: an id that never resolved cannot
+        outrank a table with genuine usage just by being retried.
 
         Returns:
             top_tables: [{table_id, queries, failed, registered, scan_bytes,
@@ -184,47 +188,46 @@ class UsageRepository:
         # written before the column existed, which count as neither.
         failed_expr = "SUM(CASE WHEN result LIKE 'error%' THEN 1 ELSE 0 END)"
 
-        # Per-table ranking (only rows that carry a table resource).
+        # Every spelling a registered table can appear under in query SQL.
+        # Oldest-registered-first so a spelling two rows claim resolves to the
+        # same row the RBAC gate picks.
+        identity_keys = _registry_identity_keys(
+            [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "source_type": r[2],
+                    "bucket": r[3],
+                    "source_table": r[4],
+                    "bq_fqn": r[5],
+                }
+                for r in self.conn.execute(
+                    """SELECT id, name, source_type, bucket, source_table, bq_fqn
+                       FROM table_registry
+                       ORDER BY registered_at, id"""
+                ).fetchall()
+            ]
+        )
+
+        # Per-table ranking (only rows that carry a table resource). Grouped by
+        # the recorded path and ranked AFTER the fold onto registry ids, so a
+        # table queried under two spellings ranks on its combined volume — the
+        # LIMIT therefore cannot be pushed into SQL.
         top_rows = self.conn.execute(
-            f"""SELECT agg.table_id,
-                       agg.queries,
-                       agg.failed,
-                       agg.scan_bytes,
-                       agg.remote,
-                       agg.local,
-                       CASE WHEN reg.id IS NULL THEN false ELSE true END AS registered
-                FROM (
-                    SELECT {table_id_expr} AS table_id,
-                           COUNT(*) AS queries,
-                           {failed_expr} AS failed,
-                           COALESCE(SUM({bytes_expr}), 0) AS scan_bytes,
-                           SUM(CASE WHEN action = 'query.remote' THEN 1 ELSE 0 END) AS remote,
-                           SUM(CASE WHEN action = 'query.local'  THEN 1 ELSE 0 END) AS local
-                    FROM audit_log
-                    WHERE timestamp >= ?
-                      AND action IN ('query.remote', 'query.local', 'snapshot.create')
-                      AND resource LIKE 'table:%'
-                    GROUP BY table_id
-                ) agg
-                LEFT JOIN table_registry reg ON lower(reg.id) = agg.table_id
-                ORDER BY (agg.queries - agg.failed) DESC,
-                         agg.queries DESC,
-                         agg.scan_bytes DESC
-                LIMIT ?""",
-            [cutoff, limit],
+            f"""SELECT {table_id_expr} AS table_id,
+                       COUNT(*) AS queries,
+                       {failed_expr} AS failed,
+                       COALESCE(SUM({bytes_expr}), 0) AS scan_bytes,
+                       SUM(CASE WHEN action = 'query.remote' THEN 1 ELSE 0 END) AS remote,
+                       SUM(CASE WHEN action = 'query.local'  THEN 1 ELSE 0 END) AS local
+                FROM audit_log
+                WHERE timestamp >= ?
+                  AND action IN ('query.remote', 'query.local', 'snapshot.create')
+                  AND resource LIKE 'table:%'
+                GROUP BY table_id""",
+            [cutoff],
         ).fetchall()
-        top_tables = [
-            {
-                "table_id": r[0],
-                "queries": int(r[1]),
-                "failed": int(r[2] or 0),
-                "scan_bytes": int(r[3] or 0),
-                "remote": int(r[4] or 0),
-                "local": int(r[5] or 0),
-                "registered": bool(r[6]),
-            }
-            for r in top_rows
-        ]
+        top_tables = _merge_top_tables(top_rows, identity_keys, limit)
 
         # Per-day per-table remote/local frequency (table rows only).
         freq_rows = self.conn.execute(
@@ -240,15 +243,7 @@ class UsageRepository:
                 ORDER BY day DESC, (remote + local) DESC""",
             [cutoff],
         ).fetchall()
-        frequency = [
-            {
-                "day": r[0].isoformat() if r[0] else None,
-                "table_id": r[1],
-                "remote": int(r[2] or 0),
-                "local": int(r[3] or 0),
-            }
-            for r in freq_rows
-        ]
+        frequency = _merge_frequency(freq_rows, identity_keys)
 
         # Window totals across all query-telemetry rows (incl. adhoc).
         totals = self.conn.execute(
@@ -1677,6 +1672,175 @@ def _percentile(values: list[float], p: float) -> float:
     lo, hi = int(idx), min(int(idx) + 1, n - 1)
     frac = idx - lo
     return s[lo] + frac * (s[hi] - s[lo])
+
+
+# ---------------------------------------------------------------------------
+# Query-telemetry table identity (shared by the DuckDB + PG usage repos)
+# ---------------------------------------------------------------------------
+#
+# `app/api/query.py` records the table a query targeted as the FULL path the
+# SQL named — `orders`, `analytics.orders`, `bq.finance.ledger`,
+# `my-project.analytics.orders`. One physical table therefore has several
+# spellings in `audit_log`, and none of them is guaranteed to be its registry
+# id. Aggregating on the raw string alone would split a table across rows;
+# collapsing every path to its tail segment (the pre-0.77.30 write path) merged
+# unrelated same-named tables instead, and mis-reported `registered` in both
+# directions.
+#
+# The identity used for grouping is therefore resolved at read time: a path
+# that a registry row owns becomes that row's id (and counts as registered),
+# any other path stays exactly as recorded (and counts as unregistered).
+# Resolving here rather than at write time also means the mapping applies to
+# audit rows already on disk, including bare-name rows written before the
+# write path kept full paths.
+
+# Registry key precedence — lower number wins when two rows claim one spelling
+# (ids are unique, `name` and `bucket`/`source_table` are not).
+_KEY_ID = 0
+_KEY_BQ_FQN = 1
+_KEY_ALIAS_PATH = 2
+_KEY_BUCKET_PATH = 3
+_KEY_NAME = 4
+
+
+def _registry_identity_keys(registry_rows: list) -> Dict[str, str]:
+    """Map every SQL spelling of a registered table to its registry id.
+
+    ``registry_rows`` are dicts (or row tuples in ``id, name, source_type,
+    bucket, source_table, bq_fqn`` order) ordered oldest-registered-first, so
+    that when two rows claim the same spelling the older one wins — the same
+    tie-break `TableRegistryRepository.find_by_bq_path` uses for the RBAC gate,
+    so the dashboard attributes a shared path to the row the gate charged.
+
+    The spellings, all lowercased:
+
+    * ``id`` — what a bare `FROM <id>` local query records;
+    * ``bq_fqn`` — the full `project.dataset.table` backtick path (v51/#343);
+    * ``<alias>.<bucket>.<source_table>`` — the ATTACH-catalog form users are
+      told to write (`bq."dataset"."table"`, `kbc."bucket"."table"`), and the
+      form the registry gate accepts for direct BigQuery references;
+    * ``<bucket>.<source_table>`` — the same path without the catalog alias;
+    * ``name`` — the display name from `agnes catalog`, which is what analysts
+      actually type and which may differ from the id (e.g. id
+      ``bq.finance.ue`` / name ``ue``).
+    """
+    keys: Dict[str, tuple] = {}
+
+    def claim(key: Optional[str], priority: int, table_id: str) -> None:
+        if not key:
+            return
+        key = key.strip().lower()
+        if not key:
+            return
+        current = keys.get(key)
+        # First writer wins at equal priority: rows arrive oldest-first.
+        if current is None or priority < current[0]:
+            keys[key] = (priority, table_id)
+
+    for raw in registry_rows:
+        row = (
+            raw
+            if isinstance(raw, dict)
+            else dict(zip(("id", "name", "source_type", "bucket", "source_table", "bq_fqn"), raw))
+        )
+        table_id = (row.get("id") or "").strip()
+        if not table_id:
+            continue
+        claim(table_id, _KEY_ID, table_id)
+        claim(row.get("bq_fqn"), _KEY_BQ_FQN, table_id)
+        bucket = (row.get("bucket") or "").strip()
+        source_table = (row.get("source_table") or "").strip()
+        if bucket and source_table:
+            alias = "bq" if (row.get("source_type") or "") == "bigquery" else "kbc"
+            claim(f"{alias}.{bucket}.{source_table}", _KEY_ALIAS_PATH, table_id)
+            claim(f"{bucket}.{source_table}", _KEY_BUCKET_PATH, table_id)
+        claim(row.get("name"), _KEY_NAME, table_id)
+
+    return {key: table_id for key, (_prio, table_id) in keys.items()}
+
+
+def _resolve_table_identity(recorded: Optional[str], identity_keys: Dict[str, str]) -> tuple:
+    """``(display_id, registered)`` for one recorded audit path.
+
+    An unresolved path is NOT reduced to its tail segment: guessing that
+    `proj_b.ds2.orders` means the registered `orders` is what produced the
+    false `registered=true` this replaces.
+    """
+    key = (recorded or "").strip().lower()
+    resolved = identity_keys.get(key)
+    if resolved is not None:
+        return resolved, True
+    return key, False
+
+
+def _merge_top_tables(raw_groups: list, identity_keys: Dict[str, str], limit: int) -> list[dict]:
+    """Fold per-path aggregates onto resolved identities, rank, and cap.
+
+    ``raw_groups`` are ``(recorded_path, queries, failed, scan_bytes, remote,
+    local)`` tuples. Ranking is by successful queries (#1121), then attempts,
+    then bytes, then id — the last leg only so equal rows order the same way
+    on both backends.
+    """
+    merged: Dict[str, dict] = {}
+    for path, queries, failed, scan_bytes, remote, local in raw_groups:
+        table_id, registered = _resolve_table_identity(path, identity_keys)
+        row = merged.setdefault(
+            table_id,
+            {
+                "table_id": table_id,
+                "queries": 0,
+                "failed": 0,
+                "scan_bytes": 0,
+                "remote": 0,
+                "local": 0,
+                "registered": registered,
+            },
+        )
+        row["queries"] += int(queries or 0)
+        row["failed"] += int(failed or 0)
+        row["scan_bytes"] += int(scan_bytes or 0)
+        row["remote"] += int(remote or 0)
+        row["local"] += int(local or 0)
+    out = sorted(
+        merged.values(),
+        key=lambda r: (
+            -(r["queries"] - r["failed"]),
+            -r["queries"],
+            -r["scan_bytes"],
+            r["table_id"],
+        ),
+    )
+    return out[:limit] if limit and limit > 0 else out
+
+
+def _merge_frequency(raw_rows: list, identity_keys: Dict[str, str]) -> list[dict]:
+    """Fold the per-day series onto resolved identities.
+
+    ``raw_rows`` are ``(day, recorded_path, remote, local)`` tuples; days
+    arrive newest-first and stay that way.
+    """
+    merged: Dict[tuple, dict] = {}
+    order: list = []
+    for day, path, remote, local in raw_rows:
+        table_id, _registered = _resolve_table_identity(path, identity_keys)
+        key = (day, table_id)
+        row = merged.get(key)
+        if row is None:
+            row = {
+                "day": day.isoformat() if hasattr(day, "isoformat") else day,
+                "table_id": table_id,
+                "remote": 0,
+                "local": 0,
+            }
+            merged[key] = row
+            order.append(key)
+        row["remote"] += int(remote or 0)
+        row["local"] += int(local or 0)
+    rows = [merged[k] for k in order]
+    # Re-sort within a day: merging two paths can change which table leads.
+    rows.sort(key=lambda r: r["remote"] + r["local"], reverse=True)
+    rows.sort(key=lambda r: r["day"] or "", reverse=True)
+    return rows
 
 
 def _slow_actions_from_raw(raw_rows: list, limit: int) -> list[dict]:

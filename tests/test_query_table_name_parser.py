@@ -39,30 +39,43 @@ class TestPlainTableReferences:
         assert _first_table_from_sql("") is None
 
 
-class TestQualifiedPathsAreNotTruncated:
-    """A dash in a fully-qualified path must not cut the identifier short.
+class TestQualifiedPathsAreKeptWhole:
+    """A qualified path is recorded in full, dashes and all.
 
-    Observed: 105 queries in a 30-day window tagged `prj`, because the
-    character class excluded `-` and a backticked BigQuery FQN terminated at
-    the first dash.
+    Two prior bugs, one after the other. First the character class excluded
+    `-`, so a backticked BigQuery FQN terminated at the first dash and 105
+    queries in a 30-day window were tagged `prj`. Then the path was collapsed
+    to its tail segment, which merged physically different tables that share a
+    name and mis-reported `registered` in both directions (Devin Review on
+    #1121, thread "Fully-qualified paths collapse to the bare table name").
+    Resolving a path to a registry id is the aggregation's job, and it needs
+    the path to still be there.
     """
 
-    def test_backticked_bq_fqn_yields_the_table_not_the_project(self):
+    def test_backticked_bq_fqn_keeps_project_and_dataset(self):
         sql = "SELECT a FROM `my-project-123.analytics.orders` WHERE x = 1"
-        assert _first_table_from_sql(sql) == "orders"
+        assert _first_table_from_sql(sql) == "my-project-123.analytics.orders"
 
     def test_unquoted_dashed_project_is_not_truncated(self):
         sql = "SELECT a FROM my-project-123.analytics.orders"
-        assert _first_table_from_sql(sql) == "orders"
+        assert _first_table_from_sql(sql) == "my-project-123.analytics.orders"
 
-    def test_mixed_quoting_path_yields_the_table(self):
+    def test_mixed_quoting_path_keeps_every_segment(self):
         """Observed as `bq.` — the quote terminated the match immediately."""
         sql = 'SELECT a FROM bq."finance"."ledger" WHERE x = 1'
-        assert _first_table_from_sql(sql) == "ledger"
+        assert _first_table_from_sql(sql) == "bq.finance.ledger"
 
     def test_two_part_qualified_name_is_preserved(self):
-        """Schema-qualified names stay qualified — only the FQN head is dropped."""
         assert _first_table_from_sql("SELECT a FROM analytics.orders") == "analytics.orders"
+
+    def test_same_table_name_in_two_projects_stays_distinct(self):
+        """The whole point: these are different tables and must not share a
+        telemetry row."""
+        a = _first_table_from_sql("SELECT 1 FROM `proj_a.ds1.orders`")
+        b = _first_table_from_sql("SELECT 1 FROM `proj_b.ds2.orders`")
+        assert a == "proj_a.ds1.orders"
+        assert b == "proj_b.ds2.orders"
+        assert a != b
 
 
 class TestExtractDoesNotLeakColumnNames:
@@ -186,7 +199,7 @@ def test_quoted_remote_catalog_path_keeps_its_table():
     row `table:bq` instead (Devin Review on #1121)."""
     from app.api.query import _first_table_from_sql
 
-    assert _first_table_from_sql('SELECT * FROM bq."finance"."ledger"') == "ledger"
+    assert _first_table_from_sql('SELECT * FROM bq."finance"."ledger"') == "bq.finance.ledger"
     assert _first_table_from_sql('SELECT * FROM "orders"') == "orders"
 
 

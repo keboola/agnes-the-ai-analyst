@@ -1200,18 +1200,51 @@ def _seed_query_audit(repo, backend, conn, rows):
                 c.execute(sa.text(stmt), r)
 
 
-def _seed_registered_table(repo, backend, conn, table_id):
+def _seed_registered_table(
+    repo,
+    backend,
+    conn,
+    table_id,
+    *,
+    name=None,
+    bucket=None,
+    source_table=None,
+    bq_fqn=None,
+):
+    """Register one BigQuery row. `bucket`/`source_table`/`bq_fqn` are the
+    columns that make a `bq."<dataset>"."<table>"` path resolvable back to
+    this id — the registry gate accepts direct references on exactly that
+    (bucket, source_table) pair."""
+    params = {
+        "id": table_id,
+        "name": name or table_id,
+        "bucket": bucket,
+        "source_table": source_table,
+        "bq_fqn": bq_fqn,
+    }
     stmt = (
-        "INSERT INTO table_registry (id, name, source_type, query_mode) "
-        "VALUES (:id, :name, 'bigquery', 'remote')"
+        "INSERT INTO table_registry "
+        "(id, name, source_type, query_mode, bucket, source_table, bq_fqn) "
+        "VALUES (:id, :name, 'bigquery', 'remote', :bucket, :source_table, :bq_fqn)"
     )
     if backend == "duckdb":
         conn.execute(
-            stmt.replace(":id", "?").replace(":name", "?"), [table_id, table_id]
+            stmt.replace(":id", "?")
+            .replace(":name", "?")
+            .replace(":bucket", "?")
+            .replace(":source_table", "?")
+            .replace(":bq_fqn", "?"),
+            [
+                params["id"],
+                params["name"],
+                params["bucket"],
+                params["source_table"],
+                params["bq_fqn"],
+            ],
         )
     else:
         with repo._engine.begin() as c:
-            c.execute(sa.text(stmt), {"id": table_id, "name": table_id})
+            c.execute(sa.text(stmt), params)
 
 
 def test_query_telemetry_flags_unregistered_table_names(usage_repo):
@@ -1222,12 +1255,15 @@ def test_query_telemetry_flags_unregistered_table_names(usage_repo):
     repo, conn, backend = usage_repo
     now = datetime.now(timezone.utc)
     _seed_registered_table(repo, backend, conn, "orders")
-    _seed_query_audit(repo, backend, conn, [
-        {"id": "q1", "ts": now, "action": "query.remote",
-         "resource": "table:orders", "result": "success"},
-        {"id": "q2", "ts": now, "action": "query.remote",
-         "resource": "table:not_a_table", "result": "success"},
-    ])
+    _seed_query_audit(
+        repo,
+        backend,
+        conn,
+        [
+            {"id": "q1", "ts": now, "action": "query.remote", "resource": "table:orders", "result": "success"},
+            {"id": "q2", "ts": now, "action": "query.remote", "resource": "table:not_a_table", "result": "success"},
+        ],
+    )
 
     out = repo.summary_query_telemetry(cutoff=now - timedelta(days=1))
     by_id = {r["table_id"]: r for r in out["top_tables"]}
@@ -1243,14 +1279,16 @@ def test_query_telemetry_counts_failures_per_table(usage_repo):
 
     repo, conn, backend = usage_repo
     now = datetime.now(timezone.utc)
-    _seed_query_audit(repo, backend, conn, [
-        {"id": "f1", "ts": now, "action": "query.local",
-         "resource": "table:ghost", "result": "error.400"},
-        {"id": "f2", "ts": now, "action": "query.local",
-         "resource": "table:ghost", "result": "error.400"},
-        {"id": "s1", "ts": now, "action": "query.local",
-         "resource": "table:real_one", "result": "success"},
-    ])
+    _seed_query_audit(
+        repo,
+        backend,
+        conn,
+        [
+            {"id": "f1", "ts": now, "action": "query.local", "resource": "table:ghost", "result": "error.400"},
+            {"id": "f2", "ts": now, "action": "query.local", "resource": "table:ghost", "result": "error.400"},
+            {"id": "s1", "ts": now, "action": "query.local", "resource": "table:real_one", "result": "success"},
+        ],
+    )
 
     out = repo.summary_query_telemetry(cutoff=now - timedelta(days=1))
     by_id = {r["table_id"]: r for r in out["top_tables"]}
@@ -1274,15 +1312,178 @@ def test_query_telemetry_ranks_by_successful_queries(usage_repo):
     repo, conn, backend = usage_repo
     now = datetime.now(timezone.utc)
     rows = [
-        {"id": f"g{i}", "ts": now, "action": "query.local",
-         "resource": "table:ghost", "result": "error.400"}
+        {"id": f"g{i}", "ts": now, "action": "query.local", "resource": "table:ghost", "result": "error.400"}
         for i in range(3)
     ]
-    rows.append({"id": "r1", "ts": now, "action": "query.local",
-                 "resource": "table:real_one", "result": "success"})
+    rows.append({"id": "r1", "ts": now, "action": "query.local", "resource": "table:real_one", "result": "success"})
     _seed_query_audit(repo, backend, conn, rows)
 
     out = repo.summary_query_telemetry(cutoff=now - timedelta(days=1))
     ranked = [r["table_id"] for r in out["top_tables"]]
 
     assert ranked.index("real_one") < ranked.index("ghost")
+
+
+# ---------------------------------------------------------------------------
+# query telemetry: fully-qualified path identity
+#
+# The recorded resource is the whole path the SQL named. The aggregation folds
+# a path onto the registry id that owns it and leaves any other path verbatim,
+# so physically different tables that share a name stay apart and a gated path
+# is not reported as unregistered (Devin Review on #1121, thread
+# "Fully-qualified paths collapse to the bare table name").
+# ---------------------------------------------------------------------------
+
+
+def test_query_telemetry_keeps_same_named_tables_in_different_projects_distinct(usage_repo):
+    """`proj_a.ds1.orders` and `proj_b.ds2.orders` are different tables. They
+    must not share a row, and neither may inherit `registered` from an
+    unrelated registry id that happens to be `orders`. Both backends."""
+    from datetime import datetime, timedelta, timezone
+
+    repo, conn, backend = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_registered_table(repo, backend, conn, "orders")
+    _seed_query_audit(
+        repo,
+        backend,
+        conn,
+        [
+            {
+                "id": "a1",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:proj_a.ds1.orders",
+                "result": "success",
+            },
+            {
+                "id": "a2",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:proj_a.ds1.orders",
+                "result": "success",
+            },
+            {
+                "id": "b1",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:proj_b.ds2.orders",
+                "result": "success",
+            },
+        ],
+    )
+
+    out = repo.summary_query_telemetry(cutoff=now - timedelta(days=1))
+    by_id = {r["table_id"]: r for r in out["top_tables"]}
+
+    assert by_id["proj_a.ds1.orders"]["queries"] == 2
+    assert by_id["proj_b.ds2.orders"]["queries"] == 1
+    assert by_id["proj_a.ds1.orders"]["registered"] is False
+    assert by_id["proj_b.ds2.orders"]["registered"] is False
+    # The registry row itself saw no traffic, so it is not in the ranking.
+    assert "orders" not in by_id
+
+
+def test_query_telemetry_marks_a_registry_gated_bq_path_registered(usage_repo):
+    """A direct `bq."dataset"."table"` reference only executes because the
+    registry gate resolved it, so it must report as the registered table it
+    reached — under the registry id, not the path. Both backends."""
+    from datetime import datetime, timedelta, timezone
+
+    repo, conn, backend = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_registered_table(
+        repo,
+        backend,
+        conn,
+        "ledger",
+        bucket="finance",
+        source_table="gl_entries",
+        bq_fqn="my-project-123.finance.gl_entries",
+    )
+    _seed_query_audit(
+        repo,
+        backend,
+        conn,
+        [
+            # The ATTACH-catalog spelling…
+            {
+                "id": "p1",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:bq.finance.gl_entries",
+                "result": "success",
+            },
+            # …the full backtick FQN…
+            {
+                "id": "p2",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:my-project-123.finance.gl_entries",
+                "result": "success",
+            },
+            # …and the bare registered name, which is also what pre-0.77.30 rows
+            # carry for this table.
+            {"id": "p3", "ts": now, "action": "query.local", "resource": "table:ledger", "result": "success"},
+        ],
+    )
+
+    out = repo.summary_query_telemetry(cutoff=now - timedelta(days=1))
+    by_id = {r["table_id"]: r for r in out["top_tables"]}
+
+    assert by_id["ledger"]["registered"] is True
+    # All three spellings are one table: one row carrying the full volume.
+    assert by_id["ledger"]["queries"] == 3
+    assert by_id["ledger"]["remote"] == 2
+    assert by_id["ledger"]["local"] == 1
+    assert set(by_id) == {"ledger"}
+    freq = [r for r in out["frequency"] if r["table_id"] == "ledger"]
+    assert len(freq) == 1
+    assert (freq[0]["remote"], freq[0]["local"]) == (2, 1)
+
+
+def test_query_telemetry_still_flags_a_genuinely_unregistered_qualified_path(usage_repo):
+    """Resolution must not become a rubber stamp: a path no registry row owns
+    stays flagged, and stays spelled the way the query wrote it. Both
+    backends."""
+    from datetime import datetime, timedelta, timezone
+
+    repo, conn, backend = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_registered_table(
+        repo,
+        backend,
+        conn,
+        "ledger",
+        bucket="finance",
+        source_table="gl_entries",
+    )
+    _seed_query_audit(
+        repo,
+        backend,
+        conn,
+        [
+            {
+                "id": "u1",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:bq.finance.gl_entries",
+                "result": "success",
+            },
+            {
+                "id": "u2",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:other-project.finance.gl_entries",
+                "result": "success",
+            },
+            {"id": "u3", "ts": now, "action": "query.local", "resource": "table:not_a_table", "result": "success"},
+        ],
+    )
+
+    out = repo.summary_query_telemetry(cutoff=now - timedelta(days=1))
+    by_id = {r["table_id"]: r for r in out["top_tables"]}
+
+    assert by_id["ledger"]["registered"] is True
+    assert by_id["other-project.finance.gl_entries"]["registered"] is False
+    assert by_id["not_a_table"]["registered"] is False

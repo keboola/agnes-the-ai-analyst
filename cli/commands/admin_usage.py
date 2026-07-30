@@ -134,17 +134,19 @@ def summary(
         return
     typer.echo("")
     typer.echo(
-        f"  {'table':<40} {'queries':>8} {'failed':>7} {'remote':>7} "
+        f"  {'table':<52} {'queries':>8} {'failed':>7} {'remote':>7} "
         f"{'local':>6} {'scan_bytes':>14}"
     )
     for t in tables:
         # A `*` marks an id that is not in the table registry: it was parsed
-        # out of query SQL and may not name a real table.
-        label = str(t.get("table_id", ""))[:39]
+        # out of query SQL and may not name a real table. The column is wide
+        # enough for a qualified `project.dataset.table` path, which is how an
+        # unresolved id is now spelled.
+        label = str(t.get("table_id", ""))[:51]
         if t.get("registered") is False:
             label = f"{label}*"
         typer.echo(
-            f"  {label:<40} "
+            f"  {label:<52} "
             f"{t.get('queries', 0):>8} {t.get('failed', 0):>7} "
             f"{t.get('remote', 0):>7} "
             f"{t.get('local', 0):>6} {t.get('scan_bytes', 0):>14,}"
