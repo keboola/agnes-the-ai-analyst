@@ -41,12 +41,16 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
-import ipaddress
 import json
 import logging
 import re
 import shutil
-import socket
+
+# ``socket`` is not called directly in this module anymore (SSRF resolution
+# moved to ``src.net.ssrf_safe_client``) but the import is kept — tests patch
+# ``src.marketplace_asset_mirror.socket.getaddrinfo`` and rely on this
+# attribute path resolving to the real (shared, singleton) ``socket`` module.
+import socket  # noqa: F401
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +66,15 @@ from src.marketplace_asset_validation import (
     accept_image_response,
     validate_doc_file,
     validate_image_file,
+)
+from src.net.ssrf_safe_client import (
+    SSRFGuardTransport as _BaseSSRFGuardTransport,
+)
+from src.net.ssrf_safe_client import (
+    SSRFRejected as _SSRFRejected,
+)
+from src.net.ssrf_safe_client import (
+    resolve_safe as _resolve_safe,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,67 +172,18 @@ class MirrorReport:
 
 # ---------------------------------------------------------------------------
 # SSRF / safety helpers
+#
+# The DNS-resolve-and-pin logic (``resolve_safe``) and the redirect-
+# revalidating httpx transport (``SSRFGuardTransport``) now live in
+# ``src.net.ssrf_safe_client`` — shared with other outbound-fetch callers
+# (e.g. the outbound MCP OAuth client's discovery/DCR/token traffic). The
+# names below stay bound at THIS module's top level (re-exports / a thin
+# subclass) so existing tests that monkeypatch
+# ``src.marketplace_asset_mirror._resolve_safe`` /
+# ``...socket.getaddrinfo`` keep working unchanged — ``_fetch_url`` and
+# ``_SSRFGuardTransport._resolve`` below do a plain global-name lookup, which
+# a monkeypatch on this module's namespace intercepts.
 # ---------------------------------------------------------------------------
-
-
-def _resolve_safe(url: str) -> Tuple[bool, str, str]:
-    """Reject URLs we shouldn't follow and return the IP the caller MUST connect to.
-
-    Returns ``(ok, reason, pinned_ip)``. On rejection ``pinned_ip`` is empty.
-
-    Why the pinned IP matters: ``urllib`` would otherwise re-resolve the
-    hostname at connection time, and an attacker-controlled DNS server can
-    return a public IP for the validation lookup and ``127.0.0.1`` /
-    ``169.254.169.254`` for the connection lookup (DNS rebinding). Resolving
-    once here and connecting to that exact IP defeats the rebind. ALL
-    addresses returned by ``getaddrinfo`` are validated — round-robin DNS
-    that mixes public + private IPs is treated as unsafe regardless of which
-    one we'd have picked first.
-    """
-    try:
-        parts = urlparse(url)
-    except ValueError as e:
-        return False, f"bad_url: {e}", ""
-    if parts.scheme not in ("http", "https"):
-        return False, f"unsupported_scheme: {parts.scheme}", ""
-    host = parts.hostname or ""
-    if not host:
-        return False, "missing_host", ""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror as e:
-        return False, f"dns_failure: {e}", ""
-
-    chosen_ip = ""
-    for info in infos:
-        sockaddr = info[4]
-        ip_str = sockaddr[0]
-        try:
-            addr = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False, f"unparseable_address: {ip_str}", ""
-        if (
-            addr.is_private
-            or addr.is_loopback
-            or addr.is_link_local
-            or addr.is_multicast
-            or addr.is_reserved
-            or addr.is_unspecified
-        ):
-            return False, f"address_in_blocked_range: {ip_str}", ""
-        # AWS / GCP / Azure metadata endpoints fall under is_link_local
-        # (169.254.169.254) above — explicit additional check for IPv6
-        # ULA + the broad metadata-style catchall would be belt-and-
-        # suspenders only.
-        # Prefer the first IPv4 result for connection pinning (broader CDN
-        # compatibility); fall back to the first record otherwise.
-        if not chosen_ip and info[0] == socket.AF_INET:
-            chosen_ip = ip_str
-    if not chosen_ip and infos:
-        chosen_ip = infos[0][4][0]
-    if not chosen_ip:
-        return False, "no_address", ""
-    return True, "", chosen_ip
 
 
 def _is_safe_url(url: str) -> Tuple[bool, str]:
@@ -234,67 +198,16 @@ def _is_safe_url(url: str) -> Tuple[bool, str]:
     return ok, reason
 
 
-# ---------------------------------------------------------------------------
-# SSRF-aware httpx transport + shared client
-#
-# Two threats against the simple "validate URL, then GET" pattern:
-#   1. Redirect bypass — without revalidation, an attacker 302s to
-#      http://169.254.169.254/... and we mirror cloud metadata.
-#   2. DNS rebinding — without IP pinning, the connect-time DNS lookup
-#      can return a different IP than the validation lookup.
-#
-# httpx makes both defences collapse into a single custom Transport:
-# httpx invokes ``handle_request()`` on EVERY outgoing request — including
-# every redirect hop — so re-running SSRF validation in the transport
-# closes the redirect bypass for free. Within ``handle_request`` we also
-# rewrite the URL host to the IP we just validated and stash the original
-# hostname in the ``Host`` header + the ``sni_hostname`` extension so TLS
-# SNI / cert verification still bind to the curator-supplied hostname.
-# ---------------------------------------------------------------------------
-
-
-class _SSRFRejected(Exception):
-    """Raised inside ``_SSRFGuardTransport`` when the SSRF allowlist rejects
-    the (initial or redirected) URL.
-
-    Distinct from ``httpx.RequestError`` so ``_fetch_url`` maps this to
-    ``status='rejected'`` (terminal — security decision, never retry).
+class _SSRFGuardTransport(_BaseSSRFGuardTransport):
+    """Thin subclass over :class:`~src.net.ssrf_safe_client.SSRFGuardTransport`
+    whose resolve step goes through THIS module's ``_resolve_safe`` global
+    (rather than the shared module's own) — preserves the pre-extraction
+    test seam (``patch("src.marketplace_asset_mirror._resolve_safe", ...)``)
+    without re-implementing the transport.
     """
 
-    def __init__(self, reason: str) -> None:
-        self.reason = reason
-        super().__init__(reason)
-
-
-class _SSRFGuardTransport(httpx.HTTPTransport):
-    """Transport that re-validates SSRF rules on every outgoing request and
-    pins the connection to the IP we just resolved.
-
-    Redirect re-validation comes for free because httpx invokes
-    ``handle_request()`` once per redirect hop (when the client is
-    configured with ``follow_redirects=True``). DNS-rebinding defence
-    comes from rewriting the URL host to the validated IP — httpcore
-    no longer re-resolves the hostname at connect time.
-    """
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        ok, reason, ip = _resolve_safe(str(request.url))
-        if not ok:
-            raise _SSRFRejected(reason)
-        original_host = request.url.host
-        # Rewrite the URL host to the validated IP. httpcore opens the
-        # connection to whatever ``request.url.host`` says, so this is what
-        # actually pins the connection.
-        request.url = request.url.copy_with(host=ip)
-        # Preserve the original hostname for vhost routing + TLS SNI / cert
-        # verification. ``sni_hostname`` is a documented httpx extension
-        # honored by the TLS layer in 0.24+.
-        request.headers["Host"] = original_host
-        request.extensions = {
-            **request.extensions,
-            "sni_hostname": original_host,
-        }
-        return super().handle_request(request)
+    def _resolve(self, url: str) -> Tuple[bool, str, str]:
+        return _resolve_safe(url)
 
 
 _CLIENT: Optional[httpx.Client] = None
