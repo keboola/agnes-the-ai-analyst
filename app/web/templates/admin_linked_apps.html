@@ -42,7 +42,9 @@
   <div class="wiz-step ds-card" id="wiz-step-2" hidden>
     <h3><span class="step-num">2</span>Fetch the apps</h3>
     <p class="wiz-note">Pick the tool that lists this source's data apps. It'll be set to
-      <code>materialize</code> mode (so it syncs on a schedule) and run now.</p>
+      <code>materialize</code> mode and run now — re-run from this page (or the
+      MCP source's Materialize button) whenever you want a refresh; there is no
+      background sync yet.</p>
     <div class="wiz-row">
       <select id="wiz-tool" aria-label="Lister tool"><option value="">Loading tools…</option></select>
       {{ ds.button('Fetch apps now', variant='primary', id='wiz-fetch') }}
@@ -232,7 +234,7 @@
 
   async function loadGroups() {
     try {
-      const groups = await jget("/api/access/groups");
+      const groups = await jget("/api/admin/groups");
       fillSelect($("wiz-group"), groups, (g) => g.id, (g) => g.name);
     } catch (e) {
       placeholderOption($("wiz-group"), "Failed to load groups");
@@ -254,7 +256,7 @@
     const errors = [];
     for (const slug of slugs) {
       try {
-        await jsend("/api/access/grants", "POST",
+        await jsend("/api/admin/grants", "POST",
           { group_id: groupId, resource_type: "data_app", resource_id: slug, requirement: "available" });
         ok++;
       } catch (e) {

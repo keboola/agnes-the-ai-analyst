@@ -760,14 +760,22 @@ async def materialize_mcp_source(
     except Exception as exc:
         logger.exception("materialize failed for source %s", source_id)
         raise HTTPException(status_code=500, detail=f"materialize_failed: {exc}")
-    # Linked data apps: if this source materialized a `keboola_data_apps` table,
-    # project it into the data_apps registry as grantable `linked` rows. No-op
-    # for any other source (the projection guards on the table's presence).
-    # Best-effort — a projection failure must not fail the materialize call.
+    # Linked data apps: if this run FRESHLY materialized a `keboola_data_apps`
+    # table, project it into the data_apps registry as grantable `linked` rows.
+    # Keyed off `result["tables"]` (what this run actually wrote), not mere
+    # table presence in the persistent extract file — an `only_tool_id` run
+    # targeting an unrelated tool would otherwise re-project an arbitrarily
+    # stale lister table and re-activate rows a previous reconcile had hidden
+    # (Devin Review on #1116). Best-effort — a projection failure must not
+    # fail the materialize call.
     try:
+        from src.data_apps.keboola_adapter import MATERIALIZED_TABLE
         from src.data_apps.linked_projection import project_from_extract
 
-        proj = project_from_extract(source_id, result.get("extract_duckdb"))
+        freshly_written = {t.get("table") for t in result.get("tables") or []}
+        proj = None
+        if MATERIALIZED_TABLE in freshly_written:
+            proj = project_from_extract(source_id, result.get("extract_duckdb"))
         if proj is not None:
             result["linked_projection"] = {
                 "created": proj.created,

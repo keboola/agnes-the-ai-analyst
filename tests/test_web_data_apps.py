@@ -369,3 +369,46 @@ def test_admin_linked_apps_wizard_forbidden_for_non_admin(web_env):
     c = web_env["client"]
     resp = c.get("/admin/linked-apps", headers=_auth(web_env["owner_pat"]), follow_redirects=False)
     assert resp.status_code in (302, 307, 401, 403)
+
+
+def _hide_linked_row(slug: str) -> None:
+    """Flip an existing linked row to the soft-deleted state the reconciler
+    uses when the app disappears upstream."""
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    try:
+        conn.execute("UPDATE data_apps SET state = 'linked_hidden' WHERE slug = ?", [slug])
+    finally:
+        conn.close()
+
+
+def test_list_page_hides_soft_deleted_linked_apps(web_env):
+    """`linked_hidden` rows (gone upstream, kept for lossless re-link) are
+    excluded by the API list/detail/PATCH — the web /apps page must not be
+    the one surface still showing an Open link onto a dead external URL
+    (Devin Review on #1116)."""
+    _create_linked_row(slug="kbc-gone-abc123", name="Gone")
+    _hide_linked_row("kbc-gone-abc123")
+    c = web_env["client"]
+    resp = c.get("/apps", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 200
+    assert "kbc-gone-abc123" not in resp.text
+
+
+def test_detail_page_404s_soft_deleted_linked_app(web_env):
+    _create_linked_row(slug="kbc-gone-def456", name="Gone2")
+    _hide_linked_row("kbc-gone-def456")
+    c = web_env["client"]
+    resp = c.get("/apps/detail/kbc-gone-def456", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 404
+
+
+def test_linked_apps_wizard_calls_real_access_endpoints():
+    """The wizard's group/grant calls must hit the mounted /api/admin router —
+    /api/access/* does not exist and 404s silently in the UI (Devin Review on
+    #1116)."""
+    src = open("app/web/templates/admin_linked_apps.html").read()
+    assert "/api/admin/groups" in src
+    assert "/api/admin/grants" in src
+    assert "/api/access/" not in src

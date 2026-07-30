@@ -2167,7 +2167,15 @@ async def data_apps_list_page(
     apps: list[dict] = []
     if enabled:
         u_repo = users_repo()
-        rows = [r for r in data_apps_repo().list(include_drafts=False) if _can_view(user, r)]
+        # `linked_hidden` = a linked app that disappeared upstream (row +
+        # grants kept for lossless re-link). The API list/detail/PATCH
+        # surfaces already exclude it — mirror that here so a granted user
+        # doesn't keep seeing an "Open ↗" onto a dead external URL.
+        rows = [
+            r
+            for r in data_apps_repo().list(include_drafts=False)
+            if r.get("state") != "linked_hidden" and _can_view(user, r)
+        ]
         for row in rows:
             serialized = _serialize(row, cfg)
             owner = u_repo.get_by_id(row["owner_user_id"])
@@ -2201,7 +2209,10 @@ async def data_app_detail_page(
     from src.repositories import data_apps_repo, users_repo
 
     row = data_apps_repo().get_by_slug(slug)
-    if not row:
+    # Same hidden-state 404 as the API's _get_row_or_404: a soft-deleted
+    # linked row (gone upstream) must not render a detail page with a live
+    # link onto a dead external URL.
+    if not row or row.get("state") == "linked_hidden":
         raise HTTPException(status_code=404, detail="data_app_not_found")
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
