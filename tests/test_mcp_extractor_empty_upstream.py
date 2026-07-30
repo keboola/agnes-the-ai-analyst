@@ -367,6 +367,11 @@ class TestEmptyDetection:
             {"items": [], "meta": {"took_ms": 4}},
             {"accounts": [], "nested": {"empty_too": []}},
             {"accounts": [], "page_size": 100, "limit": 50},  # request params, not counts
+            # exhausted / absent continuation markers are the honest end of results
+            {"items": [], "next_cursor": None},
+            {"items": [], "next_cursor": ""},
+            {"items": [], "has_more": False},
+            {"items": [], "next_offset": 0},
         ],
     )
     def test_empty_shapes(self, payload):
@@ -421,6 +426,12 @@ class TestEmptyDetection:
             {"items": [], "total_count": 7},
             {"items": [], "totalCount": 7},
             {"accounts": [], "pagination": {"page": 1, "total": 5}},
+            # An empty page that still advertises more pages contradicts itself —
+            # materialize always requests the FIRST page.
+            {"items": [], "next_cursor": "abc"},
+            {"items": [], "has_more": True},
+            {"items": [], "nextPageToken": "tok"},
+            {"accounts": [], "paging": {"next": "https://example.com/p2"}},
         ],
     )
     def test_not_empty_shapes(self, payload):

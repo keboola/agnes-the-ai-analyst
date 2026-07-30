@@ -167,6 +167,30 @@ def _is_keyed_record_map(value: Any) -> bool:
 _COUNT_KEYS = frozenset(
     {"total", "count", "totalcount", "totalresults", "numresults", "recordcount", "rowcount", "numrows", "totalrows"}
 )
+# Pagination continuation markers. An empty page that still advertises more
+# pages is the same self-contradiction as a positive total: materialize always
+# calls the tool with no arguments, so this is the FIRST page — nothing legitimate
+# says "no rows here, but keep going". Only `next*`-style keys and explicit
+# more-flags; a bare `cursor`/`page_token` may be the request echoed back.
+_CONTINUATION_KEYS = frozenset(
+    {
+        "next",
+        "nextcursor",
+        "nextpage",
+        "nextpagetoken",
+        "nextpageurl",
+        "nextlink",
+        "nexttoken",
+        "nexturl",
+        "nextoffset",
+        "continuationtoken",
+        "hasmore",
+        "hasnext",
+        "hasnextpage",
+        "morepages",
+        "more",
+    }
+)
 # Traversal budget for the nested scan. A payload big or deep enough to exhaust
 # it is not a clean empty response, so exhaustion reads as "do not reset".
 # Iterative (explicit stack) so adversarially deep JSON cannot blow the stack.
@@ -186,7 +210,11 @@ def _contradicts_empty(payload: Dict[str, Any]) -> bool:
     * a positive count sibling — ``{"accounts": [], "total": 2}`` is a paginated
       or cursor glitch, not an empty table. Materialize always calls the tool
       with no arguments, so an empty first page next to a positive total is a
-      contradiction rather than a legitimate past-the-end page.
+      contradiction rather than a legitimate past-the-end page;
+    * a live continuation marker — ``{"items": [], "next_cursor": "abc"}`` or
+      ``{"items": [], "has_more": true}`` says "no rows here, but keep going",
+      which nothing legitimate says about a first page. ``next_cursor: null``
+      is the honest end-of-results and still resets.
 
     Both the nested scan and the count check came from Devin Review on this
     change. Plain metadata objects still pass: ``{"pagination": {"page": 1,
@@ -208,16 +236,31 @@ def _contradicts_empty(payload: Dict[str, Any]) -> bool:
         if node is not payload and _is_keyed_record_map(node):
             return True
         for key, value in node.items():
-            if (
-                isinstance(key, str)
-                and key.lower().replace("_", "") in _COUNT_KEYS
-                and isinstance(value, int)
-                and not isinstance(value, bool)
-                and value > 0
-            ):
+            name = key.lower().replace("_", "") if isinstance(key, str) else ""
+            if name in _COUNT_KEYS and isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return True
+            if name in _CONTINUATION_KEYS and _is_truthy_marker(value):
                 return True
             if isinstance(value, (list, dict)):
                 stack.append(value)
+    return False
+
+
+def _is_truthy_marker(value: Any) -> bool:
+    """True for a continuation marker that actually points somewhere.
+
+    ``next_cursor: null`` / ``""`` / ``false`` / ``0`` are all "no more pages";
+    a non-empty string, ``true``, or a positive number means there is more.
+    A dict/list value counts when non-empty (``next: {"href": "..."}``).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, int):
+        return value > 0
+    if isinstance(value, (dict, list)):
+        return bool(value)
     return False
 
 
