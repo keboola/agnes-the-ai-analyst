@@ -179,16 +179,15 @@ def test_labelling_a_long_query_stays_linear():
     assert large < max(small * 20, 0.5), f"{small=} {large=}"
 
 
-def test_double_quotes_are_literals_on_the_bigquery_path():
-    """`"..."` is an identifier in DuckDB but a string literal in BigQuery
-    Standard SQL, so the caller's dialect decides (Devin Review on #1121)."""
+def test_quoted_remote_catalog_path_keeps_its_table():
+    """`/api/query` executes DuckDB SQL even for BigQuery — remote access is
+    the ATTACH-catalog form `bq."dataset"."table"` — so double quotes are
+    identifiers on every path. Blanking them as BigQuery literals tagged the
+    row `table:bq` instead (Devin Review on #1121)."""
     from app.api.query import _first_table_from_sql
 
-    sql = 'SELECT "FROM x" AS s FROM t'
-    # local (DuckDB): "FROM x" is an identifier — historical behaviour kept
-    assert _first_table_from_sql(sql) == "x"
-    # remote (BigQuery): it's a literal, so the real table wins
-    assert _first_table_from_sql(sql, double_quoted_is_literal=True) == "t"
+    assert _first_table_from_sql('SELECT * FROM bq."finance"."ledger"') == "ledger"
+    assert _first_table_from_sql('SELECT * FROM "orders"') == "orders"
 
 
 def test_tagged_id_is_lowercased_to_match_registry_ids():
