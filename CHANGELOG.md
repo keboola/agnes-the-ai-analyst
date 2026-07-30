@@ -40,6 +40,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   runs keep replace semantics, so disabled/removed tools still drop out — but a
   tool whose upstream call fails there also keeps its last-known-good table
   rather than being vaporized by one flaky call.
+  keeps that tool's last-known-good table instead of vaporizing it. Tables
+  whose tool was renamed, disabled, or deleted since the last run are pruned
+  rather than carried, and full-source runs keep replace semantics.
 
 ### Removed
 
