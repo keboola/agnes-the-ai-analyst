@@ -976,7 +976,26 @@ document.getElementById("registered-tbody").addEventListener("click", async (e) 
         body: JSON.stringify({ tool_id: id }),
       });
       if (r.ok) {
-        toast("Materialize triggered", "success");
+        // 200 does not mean the tool produced rows: per-tool outcomes live in
+        // the body (`tables` / `errors`), so report the actual result. An
+        // emptied table and an upstream failure look identical otherwise.
+        let msg = "Materialize triggered", kind = "success";
+        try {
+          const res = await r.json();
+          const t = (res.tables || [])[0];
+          const err = (res.errors || [])[0];
+          if (err) {
+            kind = "error";
+            msg = err.code === "empty_upstream"
+              ? `${err.tool}: upstream returned no rows and there is no previous snapshot — nothing materialized`
+              : `Materialize failed: ${err.error}`;
+          } else if (t) {
+            msg = t.empty_upstream
+              ? `${t.table}: upstream returned no rows — table reset to 0 rows`
+              : `${t.table}: ${t.rows} rows materialized`;
+          }
+        } catch (_) {}
+        toast(msg, kind);
       } else {
         let detail = r.statusText;
         try { detail = (await r.json()).detail || detail; } catch (_) {}

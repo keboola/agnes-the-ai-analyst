@@ -810,6 +810,12 @@ async def materialize_mcp_source(
     except Exception:
         logger.exception("linked-app projection failed for source %s", source_id)
 
+    # Counts alone hid the two outcomes an operator actually needs to see: a
+    # table whose upstream went empty (its rows just left analytics) and a tool
+    # that produced nothing because it has no rows AND no previous snapshot.
+    # Record both by name, not just as a tally.
+    run_tables = result.get("tables") or []
+    run_errors = result.get("errors") or []
     _audit(
         conn,
         user["id"],
@@ -817,8 +823,10 @@ async def materialize_mcp_source(
         f"mcp_source:{source_id}",
         {
             "only_tool_id": only_tool_id,
-            "table_count": len(result.get("tables", [])),
-            "error_count": len(result.get("errors", [])),
+            "table_count": len(run_tables),
+            "emptied_tables": [t.get("table") for t in run_tables if t.get("empty_upstream")],
+            "error_count": len(run_errors),
+            "empty_upstream_tools": [e.get("tool") for e in run_errors if e.get("code") == "empty_upstream"],
         },
     )
     return result

@@ -68,6 +68,16 @@ def _tools_repo(system_conn: duckdb.DuckDBPyConnection) -> Any:
 # ── result parsing ──────────────────────────────────────────────────────────
 
 
+class EmptyUpstreamError(ValueError):
+    """The tool answered successfully with an empty collection, and there is no
+    previous snapshot whose schema a zero-row parquet could be written from.
+
+    Distinct from a plain ``ValueError`` (upstream failure / not table-shaped)
+    because the two want opposite handling: a failure keeps the last-known-good
+    table, an empty upstream must not.
+    """
+
+
 def _find_data_array(payload: Any) -> Optional[List[Dict[str, Any]]]:
     """Heuristic — find the first list-of-dicts inside an MCP tool's JSON payload.
 
@@ -87,6 +97,67 @@ def _find_data_array(payload: Any) -> Optional[List[Dict[str, Any]]]:
             if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
                 return v
     return None
+
+
+def _upstream_is_empty(payload: Any) -> bool:
+    """True when a SUCCESSFUL response carries a legitimately empty collection.
+
+    ``_find_data_array`` returns None for two situations that need opposite
+    handling: the upstream has no rows right now (``[]``,
+    ``{"accounts": [], "total": 0}``) — a real, materializable state — and the
+    response is simply not table-shaped (``{"status": "degraded"}``,
+    ``{"names": ["a"]}``) — a classification or upstream problem where the
+    safest move is to keep the last-known-good table.
+
+    A dict qualifies only when it has at least one list value and *every* list
+    value is empty. A mixed payload (``{"items": [], "rows": ["a"]}``) stays a
+    hard error: something non-empty is in there that we failed to interpret, so
+    "the table is empty" is not a safe conclusion.
+    """
+    if isinstance(payload, list):
+        return not payload
+    if isinstance(payload, dict):
+        lists = [v for v in payload.values() if isinstance(v, list)]
+        return bool(lists) and all(not v for v in lists)
+    return False
+
+
+def _write_zero_row_parquet_like(parquet_path: Path) -> Optional[int]:
+    """Rewrite ``parquet_path`` as a zero-row file with its own schema.
+
+    An empty JSON list carries no column information, so the snapshot being
+    replaced is the only schema source available (the registry stores each
+    tool's *input* schema; MCP ``outputSchema`` is optional and almost never
+    populated by the servers we ingest). Returns the new size in bytes, or
+    None when there is no readable previous file to take a schema from.
+    """
+    if not parquet_path.exists():
+        return None
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    try:
+        schema = pq.read_schema(parquet_path)  # footer-only read, never data
+    except Exception:
+        logger.warning(
+            "empty upstream: previous parquet %s is unreadable; cannot write a zero-row table",
+            parquet_path,
+            exc_info=True,
+        )
+        return None
+    # Write-then-rename: this is the one path that overwrites a parquet whose
+    # content we still depend on (its schema), and a torn write would take the
+    # last-known-good snapshot with it — carry-forward would then drop the
+    # table as unreadable on the next run. from_batches([]) rather than
+    # Schema.empty_table(): the latter needs pyarrow >= 14, the floor is 12.
+    tmp_path = parquet_path.with_suffix(parquet_path.suffix + ".tmp")
+    try:
+        pq.write_table(pa.Table.from_batches([], schema=schema), tmp_path)
+        os.replace(tmp_path, parquet_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return parquet_path.stat().st_size
 
 
 # ── output paths ────────────────────────────────────────────────────────────
@@ -133,6 +204,32 @@ def _insert_meta(
         "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
         [table_name, description, rows, size_bytes, extracted_at],
     )
+
+
+def _table_summary(table_name: str, rows: int, size_bytes: int) -> Dict[str, Any]:
+    """Build one ``tables[]`` entry of the extractor's summary.
+
+    ``rows == 0`` is reachable only through the empty-upstream reset in
+    ``_materialize_one_tool_async`` (a normal write needs a non-empty
+    list-of-dicts), so flag it: the table exists and is genuinely empty, which
+    is a different story from "the tool did not run".
+    """
+    entry: Dict[str, Any] = {"table": table_name, "rows": rows, "size_bytes": size_bytes}
+    if rows == 0:
+        entry["empty_upstream"] = True
+    return entry
+
+
+def _error_entry(table_name: str, exc: Exception) -> Dict[str, Any]:
+    """Build one ``errors[]`` entry, tagged so callers can branch on the kind.
+
+    ``empty_upstream`` — the tool answered fine but has no rows and no previous
+    snapshot to take a schema from (nothing was materialized, nothing is
+    stale). ``materialize_failed`` — everything else; the table keeps its
+    last-known-good snapshot via carry-forward.
+    """
+    code = "empty_upstream" if isinstance(exc, EmptyUpstreamError) else "materialize_failed"
+    return {"tool": table_name, "error": str(exc), "code": code}
 
 
 def _carry_forward_untouched(
@@ -246,6 +343,12 @@ async def _materialize_one_tool_async(
     Async-only because the parent extract path may run inside FastAPI's
     event loop (admin /materialize endpoint). The sync wrapper around it
     used ``asyncio.run`` which blows up in that case.
+
+    A legitimately empty upstream collection writes a zero-row parquet (rows=0)
+    rather than raising; see ``_upstream_is_empty``. Raises
+    ``EmptyUpstreamError`` when there is no previous snapshot to take the schema
+    from, and ``ValueError`` / ``RuntimeError`` for responses that are not
+    table-shaped or that failed outright.
     """
     from connectors.mcp.client import call_tool_async
 
@@ -259,13 +362,33 @@ async def _materialize_one_tool_async(
             f"tool {original_name} did not return parseable JSON; "
             f"materialize mode requires a JSON response with a list-of-dicts"
         )
+    parquet_path = output_path / "data" / f"{tool['exposed_name']}.parquet"
     rows = _find_data_array(result.data)
     if rows is None:
+        if _upstream_is_empty(result.data):
+            # The upstream legitimately has no rows. Writing a zero-row parquet
+            # is the only way analytics stop serving the last non-empty
+            # snapshot: the carry-forward merge would otherwise keep the
+            # previous _meta row + view alive on every subsequent run, forever
+            # (Devin Review on #1119), so all-rows-deleted-upstream would be
+            # indistinguishable from a transient failure.
+            size_bytes = _write_zero_row_parquet_like(parquet_path)
+            if size_bytes is None:
+                raise EmptyUpstreamError(
+                    f"tool {original_name} returned an empty collection and has no previous snapshot "
+                    f"to take a schema from; nothing was materialized. Re-run once the tool has rows, "
+                    f"or reclassify it as passthrough."
+                )
+            logger.info(
+                "materialize: %s.%s returned an empty collection; table reset to zero rows",
+                source["name"],
+                original_name,
+            )
+            return (0, size_bytes)
         raise ValueError(
             f"tool {original_name} response has no list-of-dicts; either reclassify as passthrough or wrap the response"
         )
     df = pd.DataFrame(rows)
-    parquet_path = output_path / "data" / f"{tool['exposed_name']}.parquet"
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(parquet_path, index=False)
     size_bytes = parquet_path.stat().st_size
@@ -357,10 +480,16 @@ async def extract_source_async(
                     extracted_at=extracted_at,
                 )
                 _create_view(out_conn, tool["exposed_name"], output_root / "data" / f"{tool['exposed_name']}.parquet")
-                summary_tables.append({"table": tool["exposed_name"], "rows": rows, "size_bytes": size_bytes})
+                summary_tables.append(_table_summary(tool["exposed_name"], rows, size_bytes))
+            except EmptyUpstreamError as exc:
+                # Not a failure — the tool works, it just has nothing to show
+                # yet and no schema to write. Reported with its own code so the
+                # admin surface can tell it apart from a broken upstream.
+                logger.warning("materialize: %s.%s %s", source["name"], tool["original_name"], exc)
+                errors.append(_error_entry(tool["exposed_name"], exc))
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
-                errors.append({"tool": tool["exposed_name"], "error": str(exc)})
+                errors.append(_error_entry(tool["exposed_name"], exc))
         # Merge semantics: keep every previously materialized table this run
         # didn't (re-)write — the tools a targeted run skipped, plus the
         # last-known-good snapshot of any tool whose upstream call failed
@@ -466,10 +595,16 @@ def extract_source(
                     extracted_at=extracted_at,
                 )
                 _create_view(out_conn, tool["exposed_name"], output_root / "data" / f"{tool['exposed_name']}.parquet")
-                summary_tables.append({"table": tool["exposed_name"], "rows": rows, "size_bytes": size_bytes})
+                summary_tables.append(_table_summary(tool["exposed_name"], rows, size_bytes))
+            except EmptyUpstreamError as exc:
+                # Not a failure — the tool works, it just has nothing to show
+                # yet and no schema to write. Reported with its own code so the
+                # admin surface can tell it apart from a broken upstream.
+                logger.warning("materialize: %s.%s %s", source["name"], tool["original_name"], exc)
+                errors.append(_error_entry(tool["exposed_name"], exc))
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
-                errors.append({"tool": tool["exposed_name"], "error": str(exc)})
+                errors.append(_error_entry(tool["exposed_name"], exc))
         # Merge semantics (see extract_source_async).
         carried = _carry_forward_untouched(
             out_conn,
