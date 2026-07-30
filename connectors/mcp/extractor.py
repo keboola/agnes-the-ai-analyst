@@ -160,6 +160,67 @@ def _is_keyed_record_map(value: Any) -> bool:
     return isinstance(value, dict) and bool(value) and all(isinstance(v, dict) for v in value.values())
 
 
+# Sibling counters that contradict "the table is empty" when positive. Compared
+# on a normalized key (lowercased, underscores stripped), so total_count /
+# totalCount / TotalCount all match. `size`/`limit`/`page` are excluded on
+# purpose — they describe the request, not the result.
+_COUNT_KEYS = frozenset(
+    {"total", "count", "totalcount", "totalresults", "numresults", "recordcount", "rowcount", "numrows", "totalrows"}
+)
+# Traversal budget for the nested scan. A payload big or deep enough to exhaust
+# it is not a clean empty response, so exhaustion reads as "do not reset".
+# Iterative (explicit stack) so adversarially deep JSON cannot blow the stack.
+_SCAN_NODE_BUDGET = 10_000
+
+
+def _contradicts_empty(payload: Dict[str, Any]) -> bool:
+    """True when something in the payload argues against "the table is empty".
+
+    Runs *after* every top-level list has been found empty, and looks for the
+    three ways a response can still be carrying data:
+
+    * a non-empty list at any depth — ``{"errors": [], "result": {"rows":
+      [{...}]}}`` has its rows one level below where ``_find_data_array`` looks,
+      and resetting there would wipe a table whose upstream *did* return data;
+    * an id → record map (see ``_is_keyed_record_map``);
+    * a positive count sibling — ``{"accounts": [], "total": 2}`` is a paginated
+      or cursor glitch, not an empty table. Materialize always calls the tool
+      with no arguments, so an empty first page next to a positive total is a
+      contradiction rather than a legitimate past-the-end page.
+
+    Both the nested scan and the count check came from Devin Review on this
+    change. Plain metadata objects still pass: ``{"pagination": {"page": 1,
+    "total": 0}}`` contains no list, no record map and no positive count.
+    """
+    stack: List[Any] = [payload]
+    budget = _SCAN_NODE_BUDGET
+    while stack:
+        if budget <= 0:
+            return True  # too big to reason about — stay conservative
+        budget -= 1
+        node = stack.pop()
+        if isinstance(node, list):
+            if node:
+                return True
+            continue
+        if not isinstance(node, dict):
+            continue
+        if node is not payload and _is_keyed_record_map(node):
+            return True
+        for key, value in node.items():
+            if (
+                isinstance(key, str)
+                and key.lower().replace("_", "") in _COUNT_KEYS
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and value > 0
+            ):
+                return True
+            if isinstance(value, (list, dict)):
+                stack.append(value)
+    return False
+
+
 def _upstream_is_empty(payload: Any) -> bool:
     """True when a SUCCESSFUL response carries a legitimately empty collection.
 
@@ -171,20 +232,22 @@ def _upstream_is_empty(payload: Any) -> bool:
     safest move is to keep the last-known-good table.
 
     A dict qualifies only when it has at least one list value, *every* list
-    value is empty, no value carries an in-band failure signal, and no value is
-    an id → record map. The last two exclusions matter because this function
-    decides whether to overwrite a parquet we still depend on:
+    value is empty, nothing in it contradicts "empty" (``_contradicts_empty``),
+    and no value carries an in-band failure signal
+    (``_looks_like_soft_failure``). Those two exclusions matter because this
+    function decides whether to overwrite a parquet we still depend on:
 
     * ``{"error": "quota exceeded", "accounts": []}`` — a soft-failed 200 would
       otherwise wipe the table on a rate limit;
-    * ``{"accounts": {"a1": {...}}, "warnings": []}`` — the real content sits in
-      a container we failed to interpret, so "empty" is not a safe conclusion
-      (same reasoning as a mixed ``{"items": [], "rows": ["a"]}``).
+    * ``{"accounts": {"a1": {...}}, "warnings": []}`` and ``{"errors": [],
+      "result": {"rows": [{...}]}}`` — the real content sits in a container we
+      failed to interpret, so "empty" is not a safe conclusion (same reasoning
+      as a mixed ``{"items": [], "rows": ["a"]}``).
 
-    Sibling *metadata* objects do not disqualify a payload:
+    Plain metadata objects do not disqualify a payload:
     ``{"accounts": [], "pagination": {"page": 1, "total": 0}}`` is an ordinary
-    empty page and resets the table. Both boundaries came from Devin Review on
-    this change.
+    empty page and resets the table. Every one of these boundaries came from
+    Devin Review on this change.
     """
     if isinstance(payload, list):
         return not payload
@@ -192,7 +255,7 @@ def _upstream_is_empty(payload: Any) -> bool:
         lists = [v for v in payload.values() if isinstance(v, list)]
         if not lists or any(v for v in lists):
             return False
-        if any(_is_keyed_record_map(v) for v in payload.values()):
+        if _contradicts_empty(payload):
             return False
         return not _looks_like_soft_failure(payload)
     return False

@@ -365,11 +365,22 @@ class TestEmptyDetection:
             # page must still reset the table
             {"accounts": [], "pagination": {"page": 1, "total": 0}},
             {"items": [], "meta": {"took_ms": 4}},
+            {"accounts": [], "nested": {"empty_too": []}},
+            {"accounts": [], "page_size": 100, "limit": 50},  # request params, not counts
         ],
     )
     def test_empty_shapes(self, payload):
         assert mcp_extractor._find_data_array(payload) is None
         assert mcp_extractor._upstream_is_empty(payload) is True
+
+    def test_oversized_payload_is_not_treated_as_empty(self):
+        """The nested scan is budgeted and iterative — a payload too big or too
+        deep to reason about must read as "do not reset", and must not recurse."""
+        deep: Any = []
+        for _ in range(20_000):
+            deep = {"next": deep}
+        assert mcp_extractor._find_data_array({"items": [], "deep": deep}) is None
+        assert mcp_extractor._upstream_is_empty({"items": [], "deep": deep}) is False
 
     @pytest.mark.parametrize(
         "payload",
@@ -398,6 +409,18 @@ class TestEmptyDetection:
             # Real content in a container we failed to interpret: an id → record
             # map could itself be the table.
             {"accounts": {"a1": {"id": 1}}, "warnings": []},
+            # …or rows one level below where _find_data_array looks. Resetting
+            # here would wipe a table whose upstream DID return data.
+            {"errors": [], "result": {"rows": [{"id": 1}, {"id": 2}]}},
+            {"accounts": [], "meta": {"tags": ["a", "b"]}},
+            {"accounts": [], "data": {"page": {"items": [{"id": 1}]}}},
+            # A positive count next to an empty page is a contradiction, not an
+            # empty table (materialize always calls the tool with no arguments,
+            # so this is never a legitimate past-the-end page).
+            {"accounts": [], "total": 2},
+            {"items": [], "total_count": 7},
+            {"items": [], "totalCount": 7},
+            {"accounts": [], "pagination": {"page": 1, "total": 5}},
         ],
     )
     def test_not_empty_shapes(self, payload):
