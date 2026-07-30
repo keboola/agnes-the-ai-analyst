@@ -141,6 +141,7 @@ def _carry_forward_untouched(
     prev_db_path: Path,
     output_root: Path,
     exclude: set,
+    only_tables: Optional[set] = None,
 ) -> List[str]:
     """Merge the previous extract's untouched tables into the fresh one.
 
@@ -176,6 +177,12 @@ def _carry_forward_untouched(
     carried: List[str] = []
     for table_name, description, rows, size_bytes, extracted_at, query_mode in prev_rows:
         if table_name in exclude:
+            continue
+        # `only_tables` (full-run use) restricts carry-forward to an explicit
+        # allowlist — the tables of tools that FAILED this run. Without it a
+        # full run would also resurrect tools removed/disabled in the
+        # registry, which must still drop out.
+        if only_tables is not None and table_name not in only_tables:
             continue
         # validate_quoted_identifier, NOT the strict variant: the write path
         # (_create_view / _insert_meta) accepts any name and just escapes the
@@ -309,6 +316,7 @@ async def extract_source_async(
     summary_tables: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     carried: List[str] = []
+    failed_tables: set = set()
 
     out_conn = _open_duckdb(str(tmp_db_path))
     try:
@@ -330,17 +338,31 @@ async def extract_source_async(
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
                 errors.append({"tool": tool["exposed_name"], "error": str(exc)})
+                failed_tables.add(tool["exposed_name"])
         if only_tool_id:
             # Targeted run → merge semantics: keep every previously
             # materialized table this run didn't (re-)write, including the
             # targeted tool's last-known-good snapshot if its upstream call
-            # failed above. Full runs keep replace semantics so removed /
-            # disabled tools drop out.
+            # failed above.
             carried = _carry_forward_untouched(
                 out_conn,
                 prev_db_path=db_path,
                 output_root=output_root,
                 exclude={t["table"] for t in summary_tables},
+            )
+        elif failed_tables:
+            # Full run → replace semantics (removed/disabled tools must drop
+            # out), EXCEPT that a tool whose upstream call failed keeps its
+            # last-known-good table instead of being vaporized by one flaky
+            # call: its parquet is intact on disk, so dropping the _meta row
+            # would only cost the orchestrator its master view (Devin Review
+            # on #1119). Allowlisted to the failed tools alone.
+            carried = _carry_forward_untouched(
+                out_conn,
+                prev_db_path=db_path,
+                output_root=output_root,
+                exclude={t["table"] for t in summary_tables},
+                only_tables=failed_tables,
             )
     finally:
         out_conn.close()
@@ -411,6 +433,7 @@ def extract_source(
     summary_tables: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     carried: List[str] = []
+    failed_tables: set = set()
 
     out_conn = _open_duckdb(str(tmp_db_path))
     try:
@@ -432,6 +455,7 @@ def extract_source(
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
                 errors.append({"tool": tool["exposed_name"], "error": str(exc)})
+                failed_tables.add(tool["exposed_name"])
         if only_tool_id:
             # Targeted run → merge semantics (see extract_source_async).
             carried = _carry_forward_untouched(
@@ -439,6 +463,20 @@ def extract_source(
                 prev_db_path=db_path,
                 output_root=output_root,
                 exclude={t["table"] for t in summary_tables},
+            )
+        elif failed_tables:
+            # Full run → replace semantics (removed/disabled tools must drop
+            # out), EXCEPT that a tool whose upstream call failed keeps its
+            # last-known-good table instead of being vaporized by one flaky
+            # call: its parquet is intact on disk, so dropping the _meta row
+            # would only cost the orchestrator its master view (Devin Review
+            # on #1119). Allowlisted to the failed tools alone.
+            carried = _carry_forward_untouched(
+                out_conn,
+                prev_db_path=db_path,
+                output_root=output_root,
+                exclude={t["table"] for t in summary_tables},
+                only_tables=failed_tables,
             )
     finally:
         out_conn.close()

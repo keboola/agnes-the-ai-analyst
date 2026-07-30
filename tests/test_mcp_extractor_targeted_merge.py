@@ -268,3 +268,48 @@ def test_carry_forward_keeps_dashed_table_names(tmp_path, monkeypatch):
     out_conn.close()
 
     assert set(carried) == {"crm_get-library-docs", "plain_table"}
+
+
+def test_full_run_keeps_last_known_good_for_a_failed_tool(tmp_path, monkeypatch):
+    """A full run must not vaporize a healthy table because one tool's
+    upstream call was flaky — the failed tool keeps its last-known-good
+    _meta/view, while a tool removed from the registry still drops out
+    (Devin Review on #1119)."""
+    import duckdb
+
+    from connectors.mcp.extractor import _carry_forward_untouched
+
+    output_root = tmp_path / "out"
+    (output_root / "data").mkdir(parents=True)
+    for name in ("tool_ok", "tool_flaky", "tool_removed"):
+        duckdb.connect().execute(
+            f"COPY (SELECT 1 AS x) TO '{output_root / 'data' / (name + '.parquet')}' (FORMAT PARQUET)"
+        )
+
+    prev_db = tmp_path / "prev.duckdb"
+    prev = duckdb.connect(str(prev_db))
+    prev.execute(
+        "CREATE TABLE _meta (table_name VARCHAR, description VARCHAR, rows BIGINT, "
+        "size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR)"
+    )
+    for name in ("tool_ok", "tool_flaky", "tool_removed"):
+        prev.execute("INSERT INTO _meta VALUES (?, '', 1, 10, now(), 'local')", [name])
+    prev.close()
+
+    out_conn = duckdb.connect(str(tmp_path / "new.duckdb"))
+    out_conn.execute(
+        "CREATE TABLE _meta (table_name VARCHAR, description VARCHAR, rows BIGINT, "
+        "size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR)"
+    )
+    # This run wrote tool_ok; tool_flaky raised; tool_removed left the registry.
+    carried = _carry_forward_untouched(
+        out_conn,
+        prev_db_path=prev_db,
+        output_root=output_root,
+        exclude={"tool_ok"},
+        only_tables={"tool_flaky"},
+    )
+    out_conn.close()
+
+    assert carried == ["tool_flaky"]
+    assert "tool_removed" not in carried
