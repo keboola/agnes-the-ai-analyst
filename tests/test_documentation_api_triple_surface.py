@@ -435,6 +435,21 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/sessions/{session_id}/memories": _AGENT_MEMORY_WRITE_REASON,
     "/api/v1/agents/{agent_id}/memories": _AGENT_MEMORY_ADMIN_REASON,
     "/api/v1/agents/{agent_id}/memories/{memory_id}": _AGENT_MEMORY_ADMIN_REASON,
+    # Outbound MCP OAuth sources (2026-07-30 spec §2, PR 1): CLI-reachable
+    # (`agnes admin mcp source oauth-register` / `oauth-client`) but no MCP
+    # analogue — one-time admin provisioning of Agnes's own OAuth client at
+    # an upstream source's authorization server, not an agent-facing
+    # data/tool operation. Mirrors the grandfathered …/secret vault-write
+    # endpoint on this same router (also CLI-only by the same reasoning).
+    "/api/admin/mcp-sources/{source_id}/oauth/register": (
+        "CLI-reachable (`agnes admin mcp source oauth-register`) — RFC 7591 dynamic "
+        "client registration against the source's own AS; no MCP analogue (one-time "
+        "admin provisioning action, mirrors the grandfathered …/secret vault-write path)"
+    ),
+    "/api/admin/mcp-sources/{source_id}/oauth/client": (
+        "CLI-reachable (`agnes admin mcp source oauth-client`) — manual OAuth client "
+        "config escape hatch; same no-MCP-analogue reasoning as …/oauth/register"
+    ),
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "

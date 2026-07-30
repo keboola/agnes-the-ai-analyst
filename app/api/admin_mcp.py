@@ -248,6 +248,61 @@ class AddGrantRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Request / response models — outbound OAuth client (2026-07-30 spec §2)
+# ---------------------------------------------------------------------------
+
+
+class OAuthRegisterRequest(BaseModel):
+    """Body for ``POST …/oauth/register`` — RFC 7591 dynamic registration.
+
+    Everything else (issuer, endpoints, PKCE support) is discovered live
+    from the source's own ``url``; ``scopes`` is the one admin override the
+    spec calls out (default empty — AS/resource defaults apply)."""
+
+    scopes: Optional[str] = None
+
+
+class OAuthClientConfigRequest(BaseModel):
+    """Body for ``PUT …/oauth/client`` — the manual escape hatch for an AS
+    without dynamic client registration.
+
+    ``issuer`` is optional: when omitted it defaults to the
+    ``authorization_endpoint``'s origin — the schema's ``issuer`` column is
+    NOT NULL but the spec's manual-config shape doesn't call out a separate
+    issuer field, so this keeps the escape hatch a 4-field form in the
+    common case (same-origin AS) while still accepting an explicit value
+    when the issuer differs from the endpoint host."""
+
+    client_id: str
+    client_secret: Optional[str] = None
+    authorization_endpoint: str
+    token_endpoint: str
+    issuer: Optional[str] = None
+    scopes: Optional[str] = None
+
+
+def _serialize_oauth_client(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Project an ``mcp_source_oauth_clients`` row to the API shape.
+
+    Write-only fields (``client_secret``, ``registration_access_token``) are
+    NEVER echoed back — same contract as the vault secret endpoints
+    (``has_vault_secret`` flag, never the value). ``has_client_secret``
+    mirrors that pattern here.
+    """
+    return {
+        "source_id": row.get("source_id"),
+        "issuer": row.get("issuer"),
+        "client_id": row.get("client_id"),
+        "has_client_secret": bool(row.get("client_secret")),
+        "authorization_endpoint": row.get("authorization_endpoint"),
+        "token_endpoint": row.get("token_endpoint"),
+        "scopes": row.get("scopes"),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -667,6 +722,188 @@ async def delete_mcp_source_secret(
         f"mcp_source:{source_id}",
         {},
     )
+
+
+# ---------------------------------------------------------------------------
+# Outbound OAuth client registration (2026-07-30 spec §2)
+# ---------------------------------------------------------------------------
+
+
+def _url_origin(url: str) -> str:
+    """``scheme://netloc`` of ``url`` — used as the default ``issuer`` for a
+    manually-configured OAuth client when the admin omits it."""
+    from urllib.parse import urlparse
+
+    parts = urlparse(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _require_oauth_source(src: Dict[str, Any]) -> None:
+    if (src.get("auth_method") or "").lower() != "oauth":
+        raise HTTPException(
+            status_code=400,
+            detail="source is not configured with auth_method='oauth'",
+        )
+
+
+def _oauth_redirect_uri() -> str:
+    """``{server_url}/api/mcp/oauth-client/callback`` — the outbound
+    client's callback path, deliberately distinct from the inbound issuer's
+    ``/api/mcp/oauth/*`` (spec §3 routing note)."""
+    from app.instance_config import get_public_url
+
+    base = get_public_url()
+    if not base:
+        raise HTTPException(
+            status_code=409,
+            detail="server.public_url is not configured — required to build the OAuth redirect_uri",
+        )
+    return f"{base}/api/mcp/oauth-client/callback"
+
+
+@router.post("/mcp-sources/{source_id}/oauth/register")
+async def register_oauth_client(
+    source_id: str,
+    payload: Optional[OAuthRegisterRequest] = None,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """RFC 9728 + RFC 8414 discovery, PKCE-S256 fail-closed check, RFC 7591
+    dynamic client registration against the source's own authorization
+    server. Idempotent — a second call replaces the row, best-effort
+    revoking the OLD registration first (spec §2 step 5).
+    """
+    from connectors.mcp.oauth_client import (
+        OAuthDiscoveryError,
+        best_effort_revoke_registration,
+        build_oauth_http_client,
+        discover_as_metadata,
+        discover_protected_resource_metadata,
+        register_dynamic_client,
+        require_https_endpoints,
+        require_pkce_s256,
+        resolve_issuer,
+    )
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    src_repo = mcp_sources_repo()
+    src = src_repo.get(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_oauth_source(src)
+    if not src.get("url"):
+        raise HTTPException(status_code=400, detail="source has no 'url' to discover OAuth metadata from")
+
+    redirect_uri = _oauth_redirect_uri()
+    scopes = payload.scopes if payload else None
+    clients_repo = mcp_source_oauth_clients_repo()
+    existing = clients_repo.get(source_id)
+
+    try:
+        async with build_oauth_http_client() as http_client:
+            resource_meta = await discover_protected_resource_metadata(src["url"], client=http_client)
+            issuer = resolve_issuer(resource_meta)
+            as_metadata = await discover_as_metadata(issuer, client=http_client)
+            require_https_endpoints(as_metadata)
+            require_pkce_s256(as_metadata)
+
+            if existing:
+                await best_effort_revoke_registration(
+                    registration_endpoint=as_metadata.get("registration_endpoint"),
+                    client_id=existing["client_id"],
+                    registration_access_token=existing.get("registration_access_token"),
+                    client=http_client,
+                )
+
+            registered = await register_dynamic_client(
+                as_metadata,
+                redirect_uri=redirect_uri,
+                scopes=scopes,
+                client=http_client,
+            )
+    except OAuthDiscoveryError as exc:
+        raise HTTPException(status_code=502, detail=f"oauth_discovery_failed: {_exc_summary(exc)}")
+
+    clients_repo.upsert(
+        source_id,
+        issuer=registered.issuer,
+        client_id=registered.client_id,
+        authorization_endpoint=registered.authorization_endpoint,
+        token_endpoint=registered.token_endpoint,
+        client_secret=registered.client_secret,
+        registration_access_token=registered.registration_access_token,
+        scopes=registered.scopes,
+    )
+    _audit(
+        conn,
+        user["id"],
+        "mcp_oauth.client_register",
+        f"mcp_source:{source_id}",
+        {
+            "method": "dcr",
+            "issuer": registered.issuer,
+            "client_id": registered.client_id,
+            "re_registered": bool(existing),
+        },
+    )
+    fresh = clients_repo.get(source_id)
+    return _serialize_oauth_client(fresh) if fresh else {"source_id": source_id}
+
+
+@router.put("/mcp-sources/{source_id}/oauth/client")
+async def set_oauth_client_config(
+    source_id: str,
+    payload: OAuthClientConfigRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Manual OAuth client configuration — the escape hatch for an
+    authorization server without dynamic client registration (spec §2).
+
+    Same https + SSRF-safe validation as the discovered path, even though
+    no outbound call happens here: these endpoint URLs get dialed for real
+    at token exchange/refresh time, so a bad (internal/metadata) URL must
+    be rejected at configuration time, not silently accepted and only
+    caught when a real caller triggers a forward.
+    """
+    from src.net.ssrf_safe_client import resolve_safe
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    src_repo = mcp_sources_repo()
+    src = src_repo.get(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_oauth_source(src)
+
+    for field, url in (
+        ("authorization_endpoint", payload.authorization_endpoint),
+        ("token_endpoint", payload.token_endpoint),
+    ):
+        ok, reason, _ip = resolve_safe(url, https_only=True)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"{field} failed SSRF/https validation: {reason}")
+
+    issuer = payload.issuer or _url_origin(payload.authorization_endpoint)
+
+    clients_repo = mcp_source_oauth_clients_repo()
+    clients_repo.upsert(
+        source_id,
+        issuer=issuer,
+        client_id=payload.client_id,
+        authorization_endpoint=payload.authorization_endpoint,
+        token_endpoint=payload.token_endpoint,
+        client_secret=payload.client_secret,
+        scopes=payload.scopes,
+    )
+    _audit(
+        conn,
+        user["id"],
+        "mcp_oauth.client_register",
+        f"mcp_source:{source_id}",
+        {"method": "manual", "issuer": issuer, "client_id": payload.client_id},
+    )
+    fresh = clients_repo.get(source_id)
+    return _serialize_oauth_client(fresh) if fresh else {"source_id": source_id}
 
 
 # ---------------------------------------------------------------------------

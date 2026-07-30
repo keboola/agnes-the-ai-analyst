@@ -18,7 +18,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   with dual-backend repositories and Fernet-encrypted token columns.
   `auth_method='oauth'` is accepted on `mcp_sources` but validated to require
   an http/sse transport and `scope='per_user'` — at the repository AND admin
-  API layers, including partial updates. Design:
+  API layers, including partial updates.
+  Service half (still no user-facing connect UI — that's PR 2): a shared
+  SSRF-safe HTTP client (`src/net/ssrf_safe_client.py`, extracted from the
+  marketplace asset mirror) backs a new outbound OAuth client
+  (`connectors/mcp/oauth_client.py`) doing RFC 9728 protected-resource
+  discovery, RFC 8414 AS metadata discovery, PKCE-S256 fail-closed dynamic
+  client registration (RFC 7591), and authorization-code token
+  exchange/refresh. `connectors/mcp/client.py` resolves and transparently
+  refreshes a caller's OAuth token (single-flight via an in-process lock
+  plus a coordination-backend lease, so multi-process deployments never
+  double-refresh); `enforce_per_user_credential` and the admin connect
+  probes now recognize oauth sources the same way they recognize
+  secret-backed per_user sources. New admin endpoints
+  `POST …/mcp-sources/{id}/oauth/register` (discovery + DCR, idempotent) and
+  `PUT …/mcp-sources/{id}/oauth/client` (manual client config) plus CLI
+  verbs `agnes admin mcp source oauth-register` / `oauth-client`. Design:
   `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
 
 ### Changed

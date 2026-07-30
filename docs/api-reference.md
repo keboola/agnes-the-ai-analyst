@@ -719,6 +719,8 @@ section for the full operator flow. CLI: `agnes admin analytics migrate
 - /api/admin/mcp-sources/{source_id}/classify
 - /api/admin/mcp-sources/{source_id}/introspect
 - /api/admin/mcp-sources/{source_id}/materialize
+- /api/admin/mcp-sources/{source_id}/oauth/client
+- /api/admin/mcp-sources/{source_id}/oauth/register
 - /api/admin/mcp-sources/{source_id}/secret
 - /api/admin/mcp-sources/{source_id}/test
 
