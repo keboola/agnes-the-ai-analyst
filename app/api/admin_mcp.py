@@ -847,16 +847,25 @@ async def register_oauth_client(
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"oauth_discovery_failed: {_exc_summary(exc)}")
 
-    clients_repo.upsert(
-        source_id,
-        issuer=registered.issuer,
-        client_id=registered.client_id,
-        authorization_endpoint=registered.authorization_endpoint,
-        token_endpoint=registered.token_endpoint,
-        client_secret=registered.client_secret,
-        registration_access_token=registered.registration_access_token,
-        scopes=registered.scopes,
-    )
+    try:
+        clients_repo.upsert(
+            source_id,
+            issuer=registered.issuer,
+            client_id=registered.client_id,
+            authorization_endpoint=registered.authorization_endpoint,
+            token_endpoint=registered.token_endpoint,
+            client_secret=registered.client_secret,
+            registration_access_token=registered.registration_access_token,
+            scopes=registered.scopes,
+        )
+    except VaultKeyNotConfiguredError as exc:
+        # The DCR registration already happened upstream; the next successful
+        # register re-registers and best-effort revokes it. Same actionable
+        # 409 the other credential endpoints give (Devin Review on #1124).
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
     _audit(
         conn,
         user["id"],
@@ -909,15 +918,21 @@ async def set_oauth_client_config(
     issuer = payload.issuer or _url_origin(payload.authorization_endpoint)
 
     clients_repo = mcp_source_oauth_clients_repo()
-    clients_repo.upsert(
-        source_id,
-        issuer=issuer,
-        client_id=payload.client_id,
-        authorization_endpoint=payload.authorization_endpoint,
-        token_endpoint=payload.token_endpoint,
-        client_secret=payload.client_secret,
-        scopes=payload.scopes,
-    )
+    try:
+        clients_repo.upsert(
+            source_id,
+            issuer=issuer,
+            client_id=payload.client_id,
+            authorization_endpoint=payload.authorization_endpoint,
+            token_endpoint=payload.token_endpoint,
+            client_secret=payload.client_secret,
+            scopes=payload.scopes,
+        )
+    except VaultKeyNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
     _audit(
         conn,
         user["id"],

@@ -353,3 +353,49 @@ def test_register_translates_ssrf_rejection_to_400(seeded_app, monkeypatch):
     assert r.status_code == 400
     assert "oauth_endpoint_rejected" in r.json()["detail"]
     assert "address_in_blocked_range" in r.json()["detail"]
+
+
+def test_register_returns_409_without_vault_key(seeded_app, monkeypatch):
+    """Missing encryption key must give the same actionable 409 as the other
+    credential endpoints, not a generic 500 (Devin Review on #1124)."""
+    from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    _patch_discovery_success(monkeypatch)
+    sid = _seed_oauth_source(source_id="src_oauth_novault")
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    _reset_ephemeral_key_for_tests()
+    try:
+        r = seeded_app["client"].post(
+            f"/api/admin/mcp-sources/{sid}/oauth/register",
+            headers=_hdr(seeded_app),
+        )
+    finally:
+        _reset_ephemeral_key_for_tests()
+    assert r.status_code == 409, r.text
+    assert "vault_key_not_configured" in r.json()["detail"]
+
+
+def test_manual_client_returns_409_without_vault_key(seeded_app, monkeypatch):
+    from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+    sid = _seed_oauth_source(source_id="src_oauth_novault2")
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    _reset_ephemeral_key_for_tests()
+    try:
+        r = seeded_app["client"].put(
+            f"/api/admin/mcp-sources/{sid}/oauth/client",
+            headers=_hdr(seeded_app),
+            json={
+                "client_id": "cid",
+                "client_secret": "sek",
+                "authorization_endpoint": "https://as.example.com/authorize",
+                "token_endpoint": "https://as.example.com/token",
+            },
+        )
+    finally:
+        _reset_ephemeral_key_for_tests()
+    assert r.status_code == 409, r.text
+    assert "vault_key_not_configured" in r.json()["detail"]
