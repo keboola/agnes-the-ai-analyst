@@ -324,6 +324,23 @@ def _get_row_or_404(slug: str) -> dict:
     return row
 
 
+def _reject_linked(row: dict) -> None:
+    """400 for hosted-only lifecycle actions on an externally-hosted row.
+
+    `state` doubles as the reconciler's scope filter (`state='linked'`), so a
+    stop/deploy that rewrote it would knock the row out of the sync's control
+    permanently — the app could never be retired (`linked_hidden`) again after
+    disappearing upstream, leaving users a dead Open link (Devin Review on
+    #1116). Agnes hosts nothing for a linked app anyway; the runner has no
+    container to act on.
+    """
+    if row.get("repo_mode") == "linked":
+        raise HTTPException(
+            status_code=400,
+            detail="linked_app_not_hosted: this app runs outside Agnes — deploy/stop/logs do not apply",
+        )
+
+
 def _app_url(slug: str, cfg: dict) -> str:
     base = (cfg.get("subdomain_base") or "").strip()
     if base:
@@ -914,6 +931,7 @@ async def deploy_data_app(
 ):
     _feature_gate()
     row = _get_row_or_404(slug)
+    _reject_linked(row)
     _require_owner_or_admin(user, row)
 
     holder = require_op_lease(slug)
@@ -1191,6 +1209,7 @@ async def stop_data_app(
 ):
     _feature_gate()
     row = _get_row_or_404(slug)
+    _reject_linked(row)
     _require_owner_or_admin(user, row)
 
     holder = require_op_lease(slug)
@@ -1316,6 +1335,7 @@ async def set_data_app_secrets(
 async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get_current_user)):
     _feature_gate()
     row = _get_row_or_404(slug)
+    _reject_linked(row)
     _require_owner_or_admin(user, row)
 
     try:
@@ -1338,6 +1358,7 @@ async def get_data_app_readiness(slug: str, user: dict = Depends(get_current_use
     """
     _feature_gate()
     row = _get_row_or_404(slug)
+    _reject_linked(row)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
 

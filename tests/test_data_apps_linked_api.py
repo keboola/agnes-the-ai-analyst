@@ -205,3 +205,24 @@ def test_hidden_linked_app_404_on_detail_and_patch(linked_env):
     assert (
         c.patch("/api/data-apps/kbc-sales", json={"description": "x"}, headers=_auth(pats["admin1"])).status_code == 404
     )
+
+
+def test_hosted_lifecycle_actions_reject_linked_apps(linked_env):
+    """deploy/stop/logs/readiness are hosted-only: `state` doubles as the
+    reconciler's scope filter, so a stop that rewrote it would knock the row
+    out of the sync's control permanently (Devin Review on #1116)."""
+    c, pats = linked_env["client"], linked_env["pats"]
+    admin = _auth(pats["admin1"])
+    for method, path in (
+        ("post", "/api/data-apps/kbc-sales/deploy"),
+        ("post", "/api/data-apps/kbc-sales/stop"),
+        ("get", "/api/data-apps/kbc-sales/logs"),
+        ("get", "/api/data-apps/kbc-sales/readiness"),
+    ):
+        kwargs = {"json": {"mode": "stable"}} if path.endswith("/deploy") else {}
+        resp = getattr(c, method)(path, headers=admin, **kwargs)
+        assert resp.status_code == 400, (path, resp.status_code, resp.text)
+        assert "linked_app_not_hosted" in resp.text
+    # State untouched — the reconciler still owns the row.
+    detail = c.get("/api/data-apps/kbc-sales", headers=admin)
+    assert detail.status_code == 200
