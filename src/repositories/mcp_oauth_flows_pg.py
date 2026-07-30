@@ -67,6 +67,15 @@ class MCPOAuthFlowPgRepository:
             "created_at": row["created_at"],
         }
 
+    def delete_for_source(self, source_id: str) -> int:
+        """Drop in-flight flows for ``source_id`` (source-delete cascade)."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text("DELETE FROM mcp_oauth_flows WHERE source_id = :source_id"),
+                {"source_id": source_id},
+            )
+            return result.rowcount or 0
+
     def sweep_expired(self, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> int:
         threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
         with self._engine.begin() as conn:

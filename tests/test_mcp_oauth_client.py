@@ -70,9 +70,12 @@ def test_build_oauth_http_client_uses_ssrf_guard_transport():
 # ---------------------------------------------------------------------------
 
 
-def test_discover_protected_resource_primary_hop():
+def test_discover_protected_resource_primary_hop_is_rfc9728_path_insertion():
+    """RFC 9728 §3.1: the well-known segment goes between the authority and
+    the resource path — that form is tried FIRST (Devin Review on #1124)."""
+
     def handler(request):
-        assert str(request.url) == "https://mcp.example.com/mcp/.well-known/oauth-protected-resource"
+        assert str(request.url) == "https://mcp.example.com/.well-known/oauth-protected-resource/mcp"
         return httpx.Response(
             200, json={"resource": "https://mcp.example.com", "authorization_servers": ["https://as.example.com"]}
         )
@@ -83,6 +86,42 @@ def test_discover_protected_resource_primary_hop():
 
     meta = run(_impl())
     assert meta["authorization_servers"] == ["https://as.example.com"]
+
+
+def test_discover_protected_resource_falls_back_to_suffix_form():
+    """Servers publishing only the lenient suffix form ({url}/.well-known/…)
+    still discover — second candidate after the RFC 9728 location."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if str(request.url) == "https://mcp.example.com/mcp/.well-known/oauth-protected-resource":
+            return httpx.Response(200, json={"authorization_servers": ["https://as.example.com"]})
+        return httpx.Response(404)
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await discover_protected_resource_metadata("https://mcp.example.com/mcp", client=client)
+
+    meta = run(_impl())
+    assert meta["authorization_servers"] == ["https://as.example.com"]
+    assert calls[0] == "https://mcp.example.com/.well-known/oauth-protected-resource/mcp"
+    assert calls[1] == "https://mcp.example.com/mcp/.well-known/oauth-protected-resource"
+
+
+def test_discovery_junk_json_is_translated():
+    """A 200 with a non-JSON body must raise OAuthDiscoveryError, not a raw
+    ValueError that would surface as a 500 (Devin Review on #1124)."""
+
+    def handler(request):
+        return httpx.Response(200, text="<html>not json</html>")
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await discover_protected_resource_metadata("https://mcp.example.com/mcp", client=client)
+
+    with pytest.raises(OAuthDiscoveryError, match="not valid JSON"):
+        run(_impl())
 
 
 def test_discover_protected_resource_falls_back_to_401_challenge():
