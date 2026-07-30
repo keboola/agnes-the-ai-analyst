@@ -640,6 +640,7 @@ class TestRailDashboard:
             'id="rdb-actions-list"',  # suggested-actions list
             "css/chat_dashboard.css",  # dashboard styles
             'id="chat-input"',  # the REAL composer serves the dashboard
+            'href="/catalog/semantics"',  # semantic-layer browse link (#1108)
         ):
             assert anchor in text, f"rail chat dashboard is missing {anchor}"
         # The retired three-panel layout is gone (one actions list instead).

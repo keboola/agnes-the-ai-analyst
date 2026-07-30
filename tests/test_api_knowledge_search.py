@@ -35,7 +35,7 @@ def test_admin_gets_typed_results_shape(seeded_app):
     assert isinstance(body["results"], list)
     assert body["results"], "expected at least the uploaded chunk to match"
     for hit in body["results"]:
-        assert hit["type"] in ("chunk", "knowledge", "table")
+        assert hit["type"] in ("chunk", "knowledge", "table", "metric", "glossary")
         assert "score" in hit
     chunk_hits = [h for h in body["results"] if h["type"] == "chunk"]
     assert any(h["filename"] == "billing.md" for h in chunk_hits)

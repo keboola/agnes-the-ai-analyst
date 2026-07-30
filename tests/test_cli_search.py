@@ -38,6 +38,22 @@ _BODY = {
             "name": "orders",
             "pivot_hint": "structured data — query with SQL via `agnes query`, table id: t_orders",
         },
+        {
+            "type": "metric",
+            "score": 0.7,
+            "id": "revenue/mrr",
+            "name": "mrr",
+            "display_name": "Monthly Recurring Revenue",
+            "category": "revenue",
+            "description": "Total MRR from active subscriptions.",
+        },
+        {
+            "type": "glossary",
+            "score": 0.5,
+            "id": "kb/m/churn",
+            "term": "Churn Rate",
+            "definition": "Percent of customers lost in a period.",
+        },
     ],
 }
 
@@ -50,6 +66,24 @@ def test_search_renders_all_three_types():
     assert "billing.md" in r.output
     assert "Billing policy" in r.output
     assert "agnes query" in r.output
+
+
+def test_search_renders_metric_type():
+    with patch("cli.commands.search.api_get_json", return_value=_BODY):
+        r = runner.invoke(search_app, ["invoices"])
+    assert r.exit_code == 0, r.output
+    assert "mtrc" in r.output
+    assert "Monthly Recurring Revenue" in r.output
+    assert "Total MRR from active subscriptions." in r.output
+
+
+def test_search_renders_glossary_type():
+    with patch("cli.commands.search.api_get_json", return_value=_BODY):
+        r = runner.invoke(search_app, ["invoices"])
+    assert r.exit_code == 0, r.output
+    assert "term" in r.output
+    assert "Churn Rate" in r.output
+    assert "Percent of customers lost" in r.output
 
 
 def test_search_json_output():
@@ -88,7 +122,7 @@ def test_search_server_prints_sources_line():
     with patch("cli.commands.search.api_get_json", return_value=_BODY):
         r = runner.invoke(search_app, ["invoices"])
     assert r.exit_code == 0, r.output
-    assert "sources: documents + knowledge + catalog (server)" in r.output
+    assert "sources: documents + knowledge + catalog + metrics + glossary (server)" in r.output
 
 
 def test_search_no_matches_still_prints_sources_line():
@@ -96,7 +130,7 @@ def test_search_no_matches_still_prints_sources_line():
         r = runner.invoke(search_app, ["x"])
     assert r.exit_code == 0
     assert "No matches." in r.output
-    assert "sources: documents + knowledge + catalog (server)" in r.output
+    assert "sources: documents + knowledge + catalog + metrics + glossary (server)" in r.output
 
 
 def test_search_local_and_explicit_scope_server_conflict_exits_1():

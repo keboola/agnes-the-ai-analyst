@@ -283,6 +283,10 @@
      of their own under the title. */
   .lib-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px 20px; flex-wrap: wrap; margin: 8px 0 0; }
   .lib-head__titles { flex: 1 1 320px; min-width: 0; }
+  /* #1108 — browse door to /catalog/semantics, below the +Add button. */
+  .lib-actions-col { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
+  .lib-browse-semantics { color: var(--ds-text-secondary); text-decoration: none; font-size: 13px; white-space: nowrap; }
+  .lib-browse-semantics:hover { color: var(--ds-primary); }
   /* Page-level notes close the head: this banner, then the two `.pnote`
      caveats. The gap BELOW comes from padding, not margin — the first notice
      has no top margin of its own, and margin here would collapse-adjoin it.
@@ -308,6 +312,7 @@
      grow-to-fill. It goes full-width once the actions wrap to their own row. */
   .lib-head__search { flex: 0 1 280px; }
   @media (max-width: 760px) {
+    .lib-actions-col { width: 100%; }
     .lib-actions { width: 100%; }
     .lib-head__search { flex: 1 1 auto; max-width: none; }
   }
@@ -1146,6 +1151,7 @@
     <h1>Library</h1>
     <p class="lede">Knowledge shared by your organization, plus everything you upload or generate — all in one place. Share it with your team and make it searchable by your agents.</p>
   </div>
+  <div class="lib-actions-col">
   <div class="lib-actions">
     {# Same `.fbar__search` control the toolbar used, carrying its own
        `role="search"` landmark now that it no longer sits inside the bar's. #}
@@ -1182,6 +1188,8 @@
         </button>
       </div>
     </div>
+  </div>
+  <a class="lib-browse-semantics" href="/catalog/semantics">Metrics &amp; glossary →</a>
   </div>
 </div>
 
