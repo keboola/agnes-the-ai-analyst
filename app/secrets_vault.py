@@ -131,6 +131,28 @@ def decrypt_secret(token: bytes) -> str:
     return _get_fernet().decrypt(token).decode("utf-8")
 
 
+def decrypt_optional(token: object, *, context: str = "secret") -> Optional[str]:
+    """Decrypt a possibly-``None``/possibly-junk Fernet token column.
+
+    Shared by every repo that stores an OPTIONAL encrypted column (client
+    secrets, refresh tokens, PKCE verifiers, ...) — factors out the
+    bytes-coercion + ``InvalidToken``-swallow logic that used to be
+    hand-duplicated in each of ``SharedSecretsRepository`` /
+    ``PerUserSecretsRepository`` / ``ConnectionSecretsRepository``. Returns
+    ``None`` for a NULL column or an undecryptable value (vault key
+    rotated) — never raises.
+    """
+    if token is None:
+        return None
+    if not isinstance(token, (bytes, bytearray, memoryview)):
+        return None
+    try:
+        return decrypt_secret(bytes(token))
+    except InvalidToken:
+        logger.warning("%s failed to decrypt — vault key rotated?", context)
+        return None
+
+
 def _reset_ephemeral_key_for_tests() -> None:
     """Test-only: reset the module-level ephemeral key so each test that
     relies on the unset-env-var fallback starts from a fresh state."""
