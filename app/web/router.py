@@ -3622,6 +3622,20 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
+@router.get("/admin/linked-apps", response_class=HTMLResponse)
+async def admin_linked_apps_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Guided admin flow for linking externally-hosted (Keboola) data apps:
+    pick an MCP source → materialize its data-app lister → select the ingested
+    apps and grant them to a group. Wires existing admin APIs (mcp-sources,
+    mcp-tools, materialize, data-apps ?kind=linked, access/grants) — no new
+    control-plane surface beyond the page itself."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_linked_apps.html", ctx)
+
+
 @router.get("/admin/contribute-skill", response_class=HTMLResponse)
 async def admin_contribute_skill_page(
     request: Request,

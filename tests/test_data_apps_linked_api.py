@@ -130,6 +130,29 @@ def test_invalid_kind_400s(linked_env):
     assert r.status_code == 400
 
 
+def test_source_filter_scopes_to_one_connection(linked_env):
+    c, pats = linked_env["client"], linked_env["pats"]
+    # add a second linked app under a different connection
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        DataAppsRepository(conn).upsert_linked(
+            slug="kbc-other",
+            source_ref="conn2:other",
+            name="Other",
+            description="",
+            external_url="https://example.com/apps/other",
+        )
+    finally:
+        conn.close()
+    r = c.get("/api/data-apps?kind=linked&source=conn1", headers=_auth(pats["admin1"]))
+    assert r.status_code == 200
+    slugs = {a["slug"] for a in r.json()}
+    assert slugs == {"kbc-sales"}  # conn1 only; conn2's kbc-other excluded
+
+
 def test_admin_sets_description_override(linked_env):
     c, pats = linked_env["client"], linked_env["pats"]
     r = c.patch("/api/data-apps/kbc-sales", json={"description": "admin desc"}, headers=_auth(pats["admin1"]))

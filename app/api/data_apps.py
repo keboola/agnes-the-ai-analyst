@@ -759,6 +759,7 @@ def _draft_slug(parent_slug: str, branch: str) -> str:
 async def list_data_apps(
     user: dict = Depends(get_current_user),
     kind: Optional[str] = None,
+    source: Optional[str] = None,
 ):
     _feature_gate()
     if kind is not None and kind not in ("hosted", "linked"):
@@ -779,6 +780,11 @@ async def list_data_apps(
             continue
         serialized = _serialize(r, cfg)
         if kind is not None and serialized["kind"] != kind:
+            continue
+        # Filter to one ingest connection (the linked-apps admin wizard uses this
+        # to show only the pool from the source it just materialized). source_ref
+        # is "<connection_id>:<external_app_id>".
+        if source is not None and not str(r.get("source_ref") or "").startswith(f"{source}:"):
             continue
         out.append(serialized)
     return out
