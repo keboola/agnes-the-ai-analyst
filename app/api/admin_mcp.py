@@ -380,11 +380,25 @@ def _probe_caller_user_id(src: Dict[str, Any], user: dict) -> Optional[str]:
     preserving the pre-existing fallback behavior. The client's fail-closed
     rule (an identified caller never borrows the shared credential) is why
     this pre-check lives here rather than passing ``user["id"]`` blindly.
+
+    ``auth_method='oauth'`` sources have no ``mcp_user_secrets`` row at all
+    — the probe instead checks ``mcp_user_oauth_tokens`` for the calling
+    admin's own OAuth connection (2026-07-30 outbound MCP OAuth sources spec
+    §5), so an admin who has connected their own account gets probed under
+    it; otherwise the probe stays caller-less exactly like every other
+    per_user source with no stored credential.
     """
     if (src.get("scope") or "shared") != "per_user":
         return None
     try:
         if per_user_secrets_repo().get(src["id"], user["id"]):
+            return user["id"]
+    except Exception:  # vault/db unavailable — keep the legacy path
+        pass
+    try:
+        from src.repositories import mcp_user_oauth_tokens_repo
+
+        if mcp_user_oauth_tokens_repo().has(src["id"], user["id"]):
             return user["id"]
     except Exception:  # vault/db unavailable — keep the legacy path
         pass
