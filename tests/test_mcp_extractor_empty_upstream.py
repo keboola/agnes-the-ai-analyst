@@ -264,6 +264,22 @@ class TestFailuresStillCarryForward:
         assert cols == ["id", "name"]
         assert ids == ["a-v1-1", "a-v1-2"]
 
+    def test_soft_failed_200_keeps_the_parquet_on_disk(self, system_conn, e2e_env, monkeypatch):
+        """An upstream that answers 200-with-an-error and an empty collection
+        (a rate limit, typically) must not be read as "the table is empty" — the
+        reset overwrites the parquet in place, so the previous rows would be
+        gone from disk, not just from extract.duckdb (Devin Review)."""
+        _fake_upstream(monkeypatch, _payload("v1"))
+        _run(system_conn, e2e_env)
+
+        _fake_upstream(monkeypatch, {"error": "quota exceeded", "accounts": []})
+        result = _run(system_conn, e2e_env)
+
+        assert [e["code"] for e in result["errors"]] == ["materialize_failed"]
+        assert result["carried_forward"] == [TABLE]
+        _, _, ids = _table_state(e2e_env["extracts_dir"] / SOURCE_NAME / "extract.duckdb")
+        assert ids == ["a-v1-1", "a-v1-2"]
+
     def test_non_table_shaped_response_keeps_last_known_good(self, system_conn, e2e_env, monkeypatch):
         """A response with no collection at all is a classification/upstream
         problem, not an empty table — stay conservative and carry forward."""
@@ -288,6 +304,11 @@ class TestEmptyDetection:
             [],
             {"accounts": [], "total": 0},
             {"items": [], "next_cursor": None},
+            # a success-valued status must not read as a failure signal
+            {"accounts": [], "status": "ok"},
+            # keys that ride along with successful responses stay allowed, or a
+            # genuinely empty table would go back to being pinned to stale data
+            {"accounts": [], "message": "no results", "detail": "0 of 0"},
         ],
     )
     def test_empty_shapes(self, payload):
@@ -304,6 +325,16 @@ class TestEmptyDetection:
             "just text",
             None,
             42,
+            # Soft-failed 200s — resetting the table on a rate limit would wipe
+            # the last-known-good parquet (Devin Review on this change).
+            {"error": "quota exceeded", "accounts": []},
+            {"status": "degraded", "details": []},
+            {"errors": "boom", "accounts": []},
+            {"error": True, "accounts": []},
+            {"error": {"code": 429}, "accounts": []},
+            {"state": "throttled", "items": []},
+            # Real content in a container we failed to interpret.
+            {"accounts": {"a1": {"id": 1}}, "warnings": []},
         ],
     )
     def test_not_empty_shapes(self, payload):
