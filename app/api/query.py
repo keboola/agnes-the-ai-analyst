@@ -494,15 +494,168 @@ def _run_internal_query(
     )
 
 
-def _first_table_from_sql(sql: str) -> Optional[str]:
-    """Extract the first identifier after FROM or JOIN for audit resource tagging.
+# Functions that take `FROM` as an *argument separator* rather than a clause
+# keyword: `EXTRACT(YEAR FROM ts)`, `SUBSTRING(s FROM 2)`, `TRIM(… FROM s)`.
+# The identifier following that FROM is a column, not a table.
+_FROM_AS_ARGUMENT_FUNCS = frozenset({
+    "extract", "substring", "substr", "trim", "overlay", "position",
+})
 
-    Regex-based; best-effort. Returns None when no table reference is found.
-    Does not need to be accurate — it's only for audit diagnostics.
+# One dotted-path segment: bare, double-quoted, or backticked. A backticked
+# segment may itself contain dots, since a whole quoted FQN is a single token.
+_SQL_IDENT_SEGMENT = r'(?:"[^"]+"|`[^`]+`|[A-Za-z_][\w$-]*)'
+_SQL_IDENT_PATH = re.compile(
+    rf"\b(?:from|join)\s+({_SQL_IDENT_SEGMENT}(?:\s*\.\s*{_SQL_IDENT_SEGMENT})*)",
+    re.IGNORECASE,
+)
+
+
+def _mask_sql_noise(sql: str) -> str:
+    """Blank string literals and comments, preserving length and offsets.
+
+    Paren counting and the FROM/JOIN scan must not see brackets or keywords
+    that live inside quoted values or comments — `SELECT 'extract(' AS tag,
+    x FROM orders` used to read that literal `(` as a function-argument list
+    and drop the genuine `FROM orders` (Devin Review on #1121). Double-quoted
+    and backticked spans are identifiers, not literals, so they are skipped
+    over intact: their contents stay matchable as part of a table path, and a
+    quote inside them can't open a phantom literal.
     """
-    m = re.search(r'\b(?:from|join)\s+(["\`]?[\w.]+["\`]?)', sql, re.IGNORECASE)
-    if m:
-        return m.group(1).strip("\"'`")[:200]
+    out = list(sql)
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in ('"', "`"):
+            # Quoted identifier — step over it without blanking.
+            close = sql.find(ch, i + 1)
+            i = n if close == -1 else close + 1
+        elif ch == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":  # '' escape
+                        j += 2
+                        continue
+                    break
+                j += 1
+            for k in range(i, min(j + 1, n)):
+                out[k] = " "
+            i = j + 1
+        elif ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            j = sql.find("\n", i)
+            j = n if j == -1 else j
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        elif ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            j = sql.find("*/", i + 2)
+            j = n if j == -1 else j + 2
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _enclosing_calls(masked: str, positions: list) -> dict:
+    """Map each position to the name of the function call enclosing it.
+
+    ONE left-to-right pass with a paren stack, instead of walking left from
+    every match: the old per-match walk plus a tail slice made labelling cost
+    grow with the square of the query length, so one oversized query could
+    tie up a worker far beyond the query itself (Devin Review on #1121).
+    """
+    result: dict = {}
+    stack: list = []
+    pending = sorted(positions)
+    p = 0
+    for i, ch in enumerate(masked):
+        while p < len(pending) and pending[p] <= i:
+            result[pending[p]] = stack[-1] if stack else None
+            p += 1
+        if ch == "(":
+            end = i
+            while end > 0 and masked[end - 1].isspace():
+                end -= 1
+            start = end
+            while start > 0 and (masked[start - 1].isalnum() or masked[start - 1] == "_"):
+                start -= 1
+            stack.append(masked[start:end].lower() or None)
+        elif ch == ")":
+            if stack:
+                stack.pop()
+    while p < len(pending):
+        result[pending[p]] = stack[-1] if stack else None
+        p += 1
+    return result
+
+
+def _next_nonspace(s: str, idx: int) -> str:
+    """First non-space character at/after ``idx`` — without copying the tail."""
+    n = len(s)
+    while idx < n and s[idx].isspace():
+        idx += 1
+    return s[idx] if idx < n else ""
+
+
+def _normalize_table_path(raw: str) -> Optional[str]:
+    """Reduce a matched identifier path to the table id used for tagging.
+
+    Quotes are stripped per segment. Three or more segments means a fully
+    qualified reference (`project.dataset.table`, `catalog.schema.table`)
+    whose leading segments name the *source* rather than the table, so only
+    the tail is kept. Two-part `schema.table` names stay qualified.
+    """
+    parts: list[str] = []
+    for segment in re.findall(_SQL_IDENT_SEGMENT, raw):
+        inner = segment.strip('`"')
+        parts.extend(piece for piece in inner.split(".") if piece)
+    if not parts:
+        return None
+    return parts[-1] if len(parts) >= 3 else ".".join(parts)
+
+
+def _first_table_from_sql(sql: str) -> Optional[str]:
+    """Extract the first table reference after FROM or JOIN, for audit tagging.
+
+    Regex-based and still best-effort, but the result is the group-by key of
+    the query-telemetry top-tables ranking, so a non-table identifier does not
+    merely pollute one audit row — it surfaces on a dashboard as usage of a
+    table that does not exist. Three classes are therefore filtered out
+    rather than tolerated:
+
+    * `FROM` used as a function argument separator (`EXTRACT(… FROM col)`),
+      which would otherwise tag the *column*;
+    * table-valued functions (`FROM UNNEST([…])`), which are inline values;
+    * the leading segments of a qualified path, which name the source rather
+      than the table (and previously truncated the id at the first `-`).
+
+    Returns None when no table reference is found.
+    """
+    if not sql:
+        return None
+    # Scan the masked text so a FROM inside a literal or comment is not a
+    # match at all, then read the identifier back out of the ORIGINAL sql
+    # (masking preserves offsets, and identifier spans are never masked).
+    masked = _mask_sql_noise(sql)
+    matches = list(_SQL_IDENT_PATH.finditer(masked))
+    if not matches:
+        return None
+    enclosing = _enclosing_calls(masked, [m.start() for m in matches])
+    for match in matches:
+        if enclosing.get(match.start()) in _FROM_AS_ARGUMENT_FUNCS:
+            continue
+        if _next_nonspace(masked, match.end()) == "(":
+            # `FROM unnest(...)` / `FROM generate_series(...)`: a function
+            # call producing inline rows, not a relation.
+            continue
+        table = _normalize_table_path(sql[match.start(1):match.end(1)])
+        if table:
+            # Lowercase: registry ids are lowercased at registration, so
+            # `from Orders` must not tag `table:Orders` and then read as
+            # unregistered (and group apart) — Devin Review on #1121.
+            return table.lower()[:200]
     return None
 
 

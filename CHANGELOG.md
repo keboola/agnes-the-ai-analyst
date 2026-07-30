@@ -22,6 +22,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.30] - 2026-07-30
+
+### Added
+
+- Query telemetry now reports `failed` (queries that errored) and `registered` (whether the id exists in `table_registry`) per table, on both the `/admin/usage` top-tables panel and `agnes admin usage summary` (unregistered ids marked `*`). An id parsed out of SQL is not proof a table exists, and the dashboard now says so instead of implying it.
+
+### Changed
+
+- Top-tables is ranked by *successful* queries rather than raw attempt count, so a name that never resolved cannot outrank a table with genuine usage merely by being retried. Previously a deleted local snapshot retried by a stuck script could sit at the top of the ranking.
+
+### Fixed
+
+- Audit table-name parsing no longer emits identifiers that are not tables. `EXTRACT(YEAR FROM ts)` tagged the *column* rather than the table; `FROM UNNEST([...])` tagged `UNNEST`; and a qualified path was truncated at the first `-`, so `` `proj-name-1.dataset.table` `` was recorded as `proj`. Qualified paths now resolve to the table, function-argument `FROM` and table-valued functions are skipped. These ids are the group-by key of the top-tables ranking, so the effect was visible on the usage dashboard, not only in audit rows.
+- Audit table labelling is also linear in query length and aware of quoting: the parser made one left-to-right pass instead of re-walking the text per `FROM`/`JOIN` (an oversized query could otherwise tie up a worker), and masks string literals and comments so a bracket or keyword inside a quoted value no longer discards the real table.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.77.29] - 2026-07-30
 
 ### Added
