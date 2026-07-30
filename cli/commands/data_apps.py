@@ -174,10 +174,14 @@ def show_app(
 
     typer.echo(f"Slug:        {a.get('slug', slug)}")
     typer.echo(f"Name:        {a.get('name', '')}")
+    if a.get("kind"):
+        typer.echo(f"Kind:        {a['kind']}")
     typer.echo(f"State:       {a.get('state', '')}")
     typer.echo(f"URL:         {a.get('url', '')}")
-    if a.get("description"):
-        typer.echo(f"Description: {a['description']}")
+    # effective_description = admin-pinned override where present, synced text
+    # otherwise — same value every other surface (list, web, MCP) shows.
+    if a.get("effective_description") or a.get("description"):
+        typer.echo(f"Description: {a.get('effective_description') or a['description']}")
     if a.get("deployed_sha"):
         typer.echo(f"Deployed:    {a['deployed_sha']}")
 
