@@ -5718,10 +5718,12 @@ async def admin_moderation_hub_page(
             limit=200,
         )
 
-    # "Needs review" count for the submission queue — verdict states that
-    # still require an admin decision (mirrors the queue's pending chips).
+    # "Needs review" count — the exact verdict set the submission queue's
+    # "Needs review" chip uses (admin_store_submissions.html), so this number
+    # matches what the admin sees after clicking through. `blocked_inline`
+    # (the Rescan-flow state) MUST be included — dropping it undercounts.
     _, pending_submissions_total = store_submissions_repo().list_for_admin(
-        status=["pending_inline", "pending_llm", "blocked_llm", "review_error"],
+        status=["blocked_inline", "blocked_llm", "review_error"],
         limit=1,
     )
 
