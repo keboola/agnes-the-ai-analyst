@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.31] - 2026-07-30
+
+### Added
+
 - Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
   behavior yet): schema v109 adds `mcp_source_oauth_clients`,
   `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
@@ -35,16 +49,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `PUT …/mcp-sources/{id}/oauth/client` (manual client config) plus CLI
   verbs `agnes admin mcp source oauth-register` / `oauth-client`. Design:
   `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
-
-### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
 
 ## [0.77.30] - 2026-07-30
 
