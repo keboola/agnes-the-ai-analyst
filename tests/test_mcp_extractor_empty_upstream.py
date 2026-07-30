@@ -159,6 +159,29 @@ class TestEmptyUpstream:
         meta, _, _ = _table_state(e2e_env["extracts_dir"] / SOURCE_NAME / "extract.duckdb")
         assert meta == {TABLE: 0}
 
+    def test_second_empty_run_does_not_clobber_the_retained_rows(self, system_conn, e2e_env, monkeypatch):
+        """`.prev` means "the last non-empty snapshot", not "the previous file".
+
+        Copying unconditionally would overwrite it with the already-zero-row live
+        parquet on the second empty run — destroying the backup in exactly the
+        repeated-misclassification case it exists for (Devin Review)."""
+        _fake_upstream(monkeypatch, _payload("v1"))
+        _run(system_conn, e2e_env)
+        _fake_upstream(monkeypatch, EMPTY_PAYLOAD)
+        _run(system_conn, e2e_env)
+        _run(system_conn, e2e_env)  # still empty
+        _run(system_conn, e2e_env)  # and again
+
+        prev = e2e_env["extracts_dir"] / SOURCE_NAME / "data" / f"{TABLE}.parquet.prev"
+        assert sorted(pd.read_parquet(prev)["id"]) == ["a-v1-1", "a-v1-2"]
+
+        # a fresh non-empty run followed by an empty one rolls it forward
+        _fake_upstream(monkeypatch, _payload("v5"))
+        _run(system_conn, e2e_env)
+        _fake_upstream(monkeypatch, EMPTY_PAYLOAD)
+        _run(system_conn, e2e_env)
+        assert sorted(pd.read_parquet(prev)["id"]) == ["a-v5-1", "a-v5-2"]
+
     def test_sync_path_resets_too(self, system_conn, e2e_env, monkeypatch):
         """The scheduler/CLI wrapper shares the contract with the async one."""
         _fake_upstream(monkeypatch, _payload("v1"))
