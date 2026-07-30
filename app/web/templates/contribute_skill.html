@@ -60,28 +60,6 @@
     align-items: center;
     flex-wrap: wrap;
   }
-  .contrib-btn-primary {
-    padding: 10px 18px;
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 13px;
-    border: 1px solid var(--ds-primary);
-    background: var(--ds-primary);
-    color: #fff;
-    cursor: pointer;
-    transition: filter 0.12s ease;
-  }
-  .contrib-btn-primary:hover { filter: brightness(1.05); }
-  .contrib-btn-ghost {
-    padding: 9px 14px;
-    border-radius: 8px;
-    font-weight: 500;
-    font-size: 13px;
-    border: 1px solid var(--border, #e5e7eb);
-    background: var(--surface, #fff);
-    color: var(--text-primary, #111827);
-    cursor: pointer;
-  }
   .contrib-field {
     display: flex;
     align-items: center;
@@ -107,16 +85,7 @@
   }
   .contrib-result { background: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46; }
   .contrib-error { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
-  .contrib-result a.deep {
-    display: inline-block;
-    margin-top: 10px;
-    padding: 9px 16px;
-    border-radius: 8px;
-    background: var(--ds-primary);
-    color: #fff;
-    text-decoration: none;
-    font-weight: 600;
-  }
+  .contrib-result .contrib-result-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
   .contrib-pitch {
     margin-top: 24px;
@@ -152,11 +121,12 @@
   <div class="contrib-result" role="status">
     <strong>Published.</strong> &ldquo;{{ result.skill_name }}&rdquo; is now in your
     marketplace{% if result.granted_group %}, visible to <strong>{{ result.granted_group }}</strong>{% endif %}.
-    <br>
-    <a class="deep" href="{{ result.detail_url }}">Open &ldquo;{{ result.plugin_name }}&rdquo; in Agnes &rarr;</a>
-    <form method="post" action="/admin/contribute-skill/{{ result.plugin_name }}/delete" style="margin-top:0.75rem">
-      <button type="submit" class="contrib-btn-ghost">Remove this skill</button>
-    </form>
+    <div class="contrib-result-actions">
+      {{ ds.button('Open in Agnes →', variant='primary', href=result.detail_url) }}
+      <form method="post" action="/admin/contribute-skill/{{ result.plugin_name }}/delete" style="margin:0">
+        {{ ds.button('Remove this skill', variant='secondary', type='submit') }}
+      </form>
+    </div>
   </div>
   {% endif %}
   {% if error %}
@@ -170,7 +140,7 @@
       frontmatter. Agnes derives the plugin from the skill&rsquo;s <code>name:</code>.
     </p>
     <div class="contrib-toolbar">
-      <button type="button" class="contrib-btn-ghost" id="paste-btn">Paste from clipboard</button>
+      {{ ds.button('Paste from clipboard', variant='secondary', type='button', id='paste-btn') }}
       <span class="contrib-field">
         <label for="grant_group">Visible to</label>
         <select name="grant_group" id="grant_group">
@@ -186,7 +156,7 @@
     <textarea name="skill_md" id="skill_md" required
       placeholder="---&#10;name: my-skill&#10;description: ...&#10;---&#10;&#10;# My skill ...">{{ skill_md or '' }}</textarea>
     <div class="contrib-actions">
-      <button type="submit" class="contrib-btn-primary">Publish to Agnes</button>
+      {{ ds.button('Publish to Agnes', variant='primary', type='submit') }}
     </div>
   </form>
 
