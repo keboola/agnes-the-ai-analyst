@@ -28,7 +28,7 @@ import duckdb
 import pandas as pd
 
 from src.duckdb_conn import _open_duckdb
-from src.identifier_validation import validate_identifier
+from src.identifier_validation import validate_quoted_identifier
 from src.repositories.mcp_sources import MCPSourceRepository
 from src.repositories.tool_registry import MATERIALIZE, ToolRegistryRepository
 
@@ -177,7 +177,13 @@ def _carry_forward_untouched(
     for table_name, description, rows, size_bytes, extracted_at, query_mode in prev_rows:
         if table_name in exclude:
             continue
-        if not validate_identifier(table_name, "carry-forward table_name"):
+        # validate_quoted_identifier, NOT the strict variant: the write path
+        # (_create_view / _insert_meta) accepts any name and just escapes the
+        # quotes, and MCP tool names routinely carry dashes/dots (an exposed
+        # name like `crm_get-library-docs`). Gating carry-forward on the
+        # strict [A-Za-z_][A-Za-z0-9_]* rule would silently drop exactly the
+        # tables a full run wrote fine (Devin Review on #1119).
+        if not validate_quoted_identifier(table_name, "carry-forward table_name"):
             continue
         parquet_path = output_root / "data" / f"{table_name}.parquet"
         if not parquet_path.exists():
