@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.32] - 2026-07-30
+
+### Added
+
+### Changed
+
+### Fixed
+
 - A materialize-mode MCP tool whose upstream collection legitimately becomes empty (all rows deleted upstream) now resets its table to zero rows instead of serving its last non-empty snapshot forever. "No rows upstream" was reported as the same hard error as "response is not table-shaped", and since the carry-forward merge landed in 0.77.29 that error path keeps the previous `_meta` row and view alive — so analytics silently kept showing deleted rows on every subsequent run, with only an entry in `errors` to say otherwise. The zero-row parquet reuses the schema of the snapshot it replaces (an empty JSON list carries no columns); when there is no previous snapshot there is no schema to write, so the run reports a distinct `empty_upstream` error code and materializes nothing. Genuine failures — transport errors, `isError` responses, payloads with no collection at all, and 200s carrying an in-band failure signal next to an empty collection (`{"error": "quota exceeded", "accounts": []}`, `{"status": 429, "items": []}`, `{"success": false, "data": []}` — all typical of a rate limit) — still carry the last-known-good table forward, now tagged `materialize_failed`. The rows a reset drops are retained as a single `<table>.parquet.prev` sibling in the extract's `data/` dir (bounded to one copy per table, overwritten by the next reset) so a misclassified soft-failure is recoverable by hand.
 - The admin materialize response and its audit entry name the affected tables instead of only counting them (`emptied_tables`, `empty_upstream_tools`), and the per-tool "Materialize now" toast on /admin sources reports what the run actually produced — rows written, table reset to zero rows, or the failure — rather than a blanket "Materialize triggered" on any 200.
 
