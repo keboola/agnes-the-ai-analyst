@@ -15,6 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **`SECURITY.md` — public threat model and vulnerability-reporting process.** States the deployment/trust model (single-org per instance; the agent sandbox is never trusted to make authorization decisions), documents the controls that carry the most weight (the secret broker keeping credential material out of the sandbox, live per-request agent scope intersection, server-side data-access checks on every read surface, VM-level sandbox egress, the untrusted-input controls, the Fernet secret vault), and lists known limitations honestly — unscreened prompt injection, `bypassPermissions` inside the sandbox, admin god-mode, non-revocable 30-day session cookies, `SameSite`-only CSRF, coarse data-app isolation, non-tamper-evident audit, unencrypted data at rest, and the unsigned-artifact/unpinned-marketplace supply chain. Closes with an operator security checklist. Linked from `README.md` and `docs/README.md`; reports go through GitHub private vulnerability reporting.
 
+- Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
+  behavior yet): schema v109 adds `mcp_source_oauth_clients`,
+  `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
+  with dual-backend repositories and Fernet-encrypted token columns.
+  `auth_method='oauth'` is accepted on `mcp_sources` but validated to require
+  an http/sse transport and `scope='per_user'` — at the repository AND admin
+  API layers, including partial updates. Design:
+  `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
+
 ### Changed
 - MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
 - **MCP tool parameter schemas tightened.** `stack_browse`/`stack_subscribe`/`stack_unsubscribe` (`resource_type`), `admin_analytics_migrate` (`to`), `data_apps_list` (`kind`) and `data_app_deploy` (`mode`) declare their valid values as `Literal[…]`, so the constraint reaches `tools/list` as a JSON-schema enum instead of living only in the `Args:` prose the trimmed description drops; `store_rate` (`vote`) uses a bounded `int` rather than a literal union, because a literal would stop accepting the string `"1"` that models commonly emit for numbers. Applied on both MCP surfaces, so the HTTP and stdio copies of a tool keep advertising the same contract.
