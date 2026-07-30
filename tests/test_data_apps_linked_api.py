@@ -222,7 +222,6 @@ def test_hosted_lifecycle_actions_reject_linked_apps(linked_env):
         ("post", "/api/data-apps/kbc-sales/preview-grant", None),
         ("post", "/api/data-apps/kbc-sales/drafts", {"branch": "dev"}),
         ("put", "/api/data-apps/kbc-sales/secrets", {"secrets": {}}),
-        ("delete", "/api/data-apps/kbc-sales", None),
     ):
         kwargs = {"json": body} if body is not None else {}
         resp = getattr(c, method)(path, headers=admin, **kwargs)
@@ -231,3 +230,25 @@ def test_hosted_lifecycle_actions_reject_linked_apps(linked_env):
     # State untouched — the reconciler still owns the row.
     detail = c.get("/api/data-apps/kbc-sales", headers=admin)
     assert detail.status_code == 200
+
+
+def test_lifecycle_guard_does_not_leak_kind_to_strangers(linked_env):
+    """Authorization runs BEFORE the hosted-only guard: a caller with no
+    rights gets a plain 403, not the distinctive linked_app_not_hosted 400
+    that would confirm the slug exists and is externally hosted."""
+    c, pats = linked_env["client"], linked_env["pats"]
+    resp = c.post("/api/data-apps/kbc-sales/stop", headers=_auth(pats["stranger1"]))
+    assert resp.status_code == 403, resp.text
+    assert "linked_app_not_hosted" not in resp.text
+
+
+def test_delete_linked_is_registry_only_retire_path(linked_env):
+    """DELETE on a linked row is the admin's orphan-cleanup path (a source
+    unregistered without a final reconcile leaves rows the sync can never
+    hide): registry-only removal, no hosted teardown (Devin Review on
+    #1116)."""
+    c, pats = linked_env["client"], linked_env["pats"]
+    admin = _auth(pats["admin1"])
+    resp = c.delete("/api/data-apps/kbc-sales", headers=admin)
+    assert resp.status_code == 204, resp.text
+    assert c.get("/api/data-apps/kbc-sales", headers=admin).status_code == 404

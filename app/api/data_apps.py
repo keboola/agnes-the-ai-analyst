@@ -931,8 +931,10 @@ async def deploy_data_app(
 ):
     _feature_gate()
     row = _get_row_or_404(slug)
-    _reject_linked(row)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
 
     holder = require_op_lease(slug)
     try:
@@ -995,8 +997,10 @@ async def mint_git_credential(
 ):
     _feature_gate()
     row = _get_row_or_404(slug)
-    _reject_linked(row)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
     try:
         url = _mint_git_credential(row)
     except OwnerNotFoundError:
@@ -1025,9 +1029,9 @@ async def create_preview_grant(
     """
     _feature_gate()
     row = _get_row_or_404(slug)
-    _reject_linked(row)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
+    _reject_linked(row)
     _token, cookie = _mint_preview_token(row, user)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
     _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
@@ -1073,8 +1077,8 @@ async def create_draft(
     """
     _feature_gate()
     parent = _get_row_or_404(slug)
-    _reject_linked(parent)
     _require_owner_or_admin(user, parent)
+    _reject_linked(parent)
     if parent.get("is_draft"):
         raise HTTPException(status_code=400, detail="parent_is_draft")
     if not _BRANCH_RE.match(payload.branch) or not _is_git_valid_branch(payload.branch):
@@ -1212,8 +1216,10 @@ async def stop_data_app(
 ):
     _feature_gate()
     row = _get_row_or_404(slug)
-    _reject_linked(row)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
 
     holder = require_op_lease(slug)
     try:
@@ -1274,12 +1280,29 @@ async def delete_data_app(
     """
     _feature_gate()
     row = _get_row_or_404(slug)
-    _reject_linked(row)
     _require_owner_or_admin(user, row)
     if row.get("is_draft"):
         raise HTTPException(status_code=400, detail="use_draft_delete_route")
 
     repo = data_apps_repo()
+    # Linked rows: registry-only removal — Agnes hosts nothing for them, so
+    # there is no runner container, service token, git repo, or config dir to
+    # tear down, and running the hosted teardown would 500 on the synthetic
+    # 'system' owner. This is the admin's ONLY retire path for a row orphaned
+    # by unregistering its MCP source/lister (the reconciler can no longer
+    # hide it); on a still-syncing source the next lister run recreates the
+    # row under the same deterministic slug, grants intact — a harmless no-op
+    # loop rather than data loss (Devin Review on #1116).
+    if row.get("repo_mode") == "linked":
+        repo.delete(row["id"])
+        _audit(
+            conn,
+            user["id"],
+            "data_app.delete",
+            f"data_app:{slug}",
+            {"linked": True, "source_ref": row.get("source_ref")},
+        )
+        return
     # Drafts live on the parent's repo and have their own containers/branches;
     # tear them down first so deleting a prod app can't strand them.
     for draft in repo.list_drafts(row["id"]):
@@ -1320,8 +1343,10 @@ async def set_data_app_secrets(
 ):
     _feature_gate()
     row = _get_row_or_404(slug)
-    _reject_linked(row)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
 
     try:
         enc = encrypt_secret(json.dumps(payload.secrets))
@@ -1340,8 +1365,10 @@ async def set_data_app_secrets(
 async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get_current_user)):
     _feature_gate()
     row = _get_row_or_404(slug)
-    _reject_linked(row)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
 
     try:
         logs = _runner().logs(slug, tail=tail)
@@ -1363,9 +1390,9 @@ async def get_data_app_readiness(slug: str, user: dict = Depends(get_current_use
     """
     _feature_gate()
     row = _get_row_or_404(slug)
-    _reject_linked(row)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
+    _reject_linked(row)
 
     state = row["state"]
     ready = False

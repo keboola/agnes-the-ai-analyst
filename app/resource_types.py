@@ -256,9 +256,8 @@ def _data_app_blocks() -> List[Block]:
     """Project ``data_apps`` into grant-picker blocks (resource_id = slug)."""
     from src.repositories import data_apps_repo
 
-    from src.repositories.data_apps import DataAppsRepository
-
-    rows = data_apps_repo().list(include_drafts=False, limit=_GRANT_PROJECTION_LIMIT)
+    repo = data_apps_repo()
+    rows = repo.list(include_drafts=False, limit=_GRANT_PROJECTION_LIMIT)
     # `linked_hidden` = a linked app gone upstream (soft-deleted; row + grants
     # kept for lossless re-link). Every read surface 404s/omits it — the grant
     # picker must not offer apps that cannot be seen anywhere. Show the
@@ -275,7 +274,7 @@ def _data_app_blocks() -> List[Block]:
                     "resource_id": r["slug"],
                     "name": r["name"],
                     "category": "data_app",
-                    "description": DataAppsRepository.effective_description(r),
+                    "description": repo.effective_description(r),
                     "slug": r["slug"],
                 }
                 for r in rows
