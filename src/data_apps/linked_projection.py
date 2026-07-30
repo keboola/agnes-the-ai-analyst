@@ -83,25 +83,34 @@ def project_from_extract(
     extract_duckdb_path: Optional[str],
     *,
     repo: Optional[Any] = None,
+    table_name: Optional[str] = None,
 ) -> Optional[ProjectionResult]:
     """Project linked apps from an MCP source's freshly-materialized
     ``extract.duckdb``.
 
-    No-op (returns ``None``) unless the extract actually carries the
-    ``keboola_data_apps`` materialized table — so MCP sources that don't run the
-    data-app lister are unaffected. Rows missing an id or URL (can't be linked)
-    are skipped. Called right after ``extract_source_async`` in the materialize
+    ``table_name`` names the lister's output table — the extractor names
+    tables after the tool's ``exposed_name``, so the caller passes it for a
+    targeted (``only_tool_id``) run where the admin designated the lister
+    explicitly; it defaults to the documented ``keboola_data_apps`` contract
+    for full-source runs. No-op (returns ``None``) unless the extract
+    actually carries that table — so MCP sources that don't run the data-app
+    lister are unaffected. Rows missing an id or URL (can't be linked) are
+    skipped. Called right after ``extract_source_async`` in the materialize
     path; ``source_id`` is the connection id used for provenance/scoping.
     """
     from src.duckdb_conn import _open_duckdb
+    from src.profiler import quote_ident
 
+    target = table_name or adapter.MATERIALIZED_TABLE
     if not extract_duckdb_path or not os.path.exists(str(extract_duckdb_path)):
         return None
     with _open_duckdb(str(extract_duckdb_path), read_only=True) as conn:
         tables = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
-        if adapter.MATERIALIZED_TABLE not in tables:
+        if target not in tables:
             return None
-        cur = conn.execute(f"SELECT * FROM {adapter.MATERIALIZED_TABLE}")
+        # quote_ident: `target` can be a tool's exposed_name (admin-authored
+        # registry data), never interpolate it bare into SQL.
+        cur = conn.execute(f"SELECT * FROM {quote_ident(target)}")
         cols = [d[0] for d in cur.description]
         raw_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 

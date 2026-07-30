@@ -180,3 +180,24 @@ def test_v107_to_v108_alter_path_on_migrated_db(tmp_path):
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 108
 
     _v107_to_v108(conn)  # idempotent re-run must not raise
+
+
+def test_project_from_extract_custom_table_name(tmp_path, repo):
+    """The extractor names tables after the tool's exposed_name — a targeted
+    (only_tool_id) materialize passes that name explicitly, so the projection
+    must read it instead of the literal keboola_data_apps (Devin Review on
+    #1116)."""
+    from src.data_apps.linked_projection import project_from_extract
+
+    path = tmp_path / "extract.duckdb"
+    c = duckdb.connect(str(path))
+    c.execute("CREATE TABLE keboola_list_data_apps (id VARCHAR, name VARCHAR, url VARCHAR)")
+    c.execute("INSERT INTO keboola_list_data_apps VALUES ('10', 'Sales', 'https://example.com/10')")
+    c.close()
+
+    # Default contract name absent -> no-op...
+    assert project_from_extract("srcX", str(path), repo=repo) is None
+    # ...but the designated table projects.
+    res = project_from_extract("srcX", str(path), repo=repo, table_name="keboola_list_data_apps")
+    assert res is not None and res.created == 1
+    assert {r["name"] for r in repo.list_linked()} == {"Sales"}
