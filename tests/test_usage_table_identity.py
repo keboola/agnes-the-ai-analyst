@@ -97,6 +97,34 @@ class TestRegistryIdentityKeys:
         )
         assert "my-project-123.in.c-main.orders" not in keys
 
+    def test_a_newer_bq_fqn_does_not_steal_an_older_rows_path(self):
+        """The gate resolves a full path via find_by_bq_path — oldest row,
+        bq_fqn never consulted — so telemetry must credit the same row the
+        gate charged, not whichever registration happens to spell the path
+        out in bq_fqn (Devin Review on #1122)."""
+        keys = _registry_identity_keys(
+            [
+                {
+                    "id": "legacy",  # older, no bq_fqn: claims via project path
+                    "name": "legacy",
+                    "source_type": "bigquery",
+                    "bucket": "finance",
+                    "source_table": "gl",
+                    "bq_fqn": None,
+                },
+                {
+                    "id": "newer",  # newer, pins the very same path in bq_fqn
+                    "name": "newer",
+                    "source_type": "bigquery",
+                    "bucket": "finance",
+                    "source_table": "gl",
+                    "bq_fqn": "my-project-123.finance.gl",
+                },
+            ],
+            "my-project-123",
+        )
+        assert keys["my-project-123.finance.gl"] == "legacy"
+
     def test_bq_fqn_outranks_the_configured_project_path(self):
         """A row that pins its own project must not be attributed to another
         row's configured-project spelling."""

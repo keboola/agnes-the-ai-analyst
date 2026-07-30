@@ -1693,8 +1693,12 @@ def _percentile(values: list[float], p: float) -> float:
 # Registry key precedence — lower number wins when two rows claim one spelling
 # (ids are unique, `name` and `bucket`/`source_table` are not).
 _KEY_ID = 0
+# bq_fqn and the configured-project path are the SAME strength: the RBAC gate
+# resolves a full backtick path via find_by_bq_path(bucket, source_table) and
+# never consults bq_fqn, so neither spelling outranks the other — a collision
+# between them is broken by registration order, like the gate does.
 _KEY_BQ_FQN = 1
-_KEY_PROJECT_PATH = 2
+_KEY_PROJECT_PATH = 1
 _KEY_ALIAS_PATH = 3
 _KEY_BUCKET_PATH = 4
 _KEY_NAME = 5
@@ -1749,20 +1753,30 @@ def _registry_identity_keys(registry_rows: list, bq_data_project: Optional[str] 
       ``bq.finance.ue`` / name ``ue``).
     """
     project = (bq_data_project or "").strip()
-    keys: Dict[str, tuple] = {}
+    keys: Dict[str, tuple] = {}  # key -> (spelling priority, row order, table id)
 
-    def claim(key: Optional[str], priority: int, table_id: str) -> None:
+    def claim(key: Optional[str], priority: int, table_id: str, order: int) -> None:
+        """Claim ``key`` for ``table_id``: stronger spelling first, then older row.
+
+        Strength first keeps a row's own ``id`` from being shadowed by another
+        row's display ``name``. Registration order breaks ties WITHIN a
+        strength class, which is what aligns the two full-path spellings with
+        the RBAC gate: `find_by_bq_path` resolves such a path to the OLDEST
+        registration and never consults ``bq_fqn``, so a newer row's
+        ``bq_fqn`` must not outrank an older row's project-path claim and
+        credit the dashboard to a row the gate never charged (Devin Review on
+        #1122).
+        """
         if not key:
             return
         key = key.strip().lower()
         if not key:
             return
         current = keys.get(key)
-        # First writer wins at equal priority: rows arrive oldest-first.
-        if current is None or priority < current[0]:
-            keys[key] = (priority, table_id)
+        if current is None or (priority, order) < (current[0], current[1]):
+            keys[key] = (priority, order, table_id)
 
-    for raw in registry_rows:
+    for order, raw in enumerate(registry_rows):
         row = (
             raw
             if isinstance(raw, dict)
@@ -1771,20 +1785,20 @@ def _registry_identity_keys(registry_rows: list, bq_data_project: Optional[str] 
         table_id = (row.get("id") or "").strip()
         if not table_id:
             continue
-        claim(table_id, _KEY_ID, table_id)
-        claim(row.get("bq_fqn"), _KEY_BQ_FQN, table_id)
+        claim(table_id, _KEY_ID, table_id, order)
+        claim(row.get("bq_fqn"), _KEY_BQ_FQN, table_id, order)
         bucket = (row.get("bucket") or "").strip()
         source_table = (row.get("source_table") or "").strip()
         if bucket and source_table:
             is_bq = (row.get("source_type") or "") == "bigquery"
             alias = "bq" if is_bq else "kbc"
             if is_bq and project:
-                claim(f"{project}.{bucket}.{source_table}", _KEY_PROJECT_PATH, table_id)
-            claim(f"{alias}.{bucket}.{source_table}", _KEY_ALIAS_PATH, table_id)
-            claim(f"{bucket}.{source_table}", _KEY_BUCKET_PATH, table_id)
-        claim(row.get("name"), _KEY_NAME, table_id)
+                claim(f"{project}.{bucket}.{source_table}", _KEY_PROJECT_PATH, table_id, order)
+            claim(f"{alias}.{bucket}.{source_table}", _KEY_ALIAS_PATH, table_id, order)
+            claim(f"{bucket}.{source_table}", _KEY_BUCKET_PATH, table_id, order)
+        claim(row.get("name"), _KEY_NAME, table_id, order)
 
-    return {key: table_id for key, (_prio, table_id) in keys.items()}
+    return {key: table_id for key, (_prio, _order, table_id) in keys.items()}
 
 
 def _resolve_table_identity(recorded: Optional[str], identity_keys: Dict[str, str]) -> tuple:
