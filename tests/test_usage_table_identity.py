@@ -235,6 +235,38 @@ class TestResolveTableIdentity:
             True,
         )
 
+    def test_pre_upgrade_truncated_row_stays_unresolved_when_only_source_table_matches(self):
+        """Pins the documented "ages out of the window" trade-off.
+
+        A row written before 0.77.31 kept only the tail of a qualified path,
+        so `bq.finance.gl_entries` was recorded as `gl_entries`. The identity
+        keys claim the id, the bq_fqn, both catalog spellings and the display
+        `name` — but never a bare `source_table`. When the admin registered
+        the table under a display name that differs from its source_table,
+        that historical row therefore cannot be recovered and stays under its
+        truncated name until it leaves the window. The CHANGELOG says exactly
+        this; assert it rather than leaving it to drift silently into either
+        a fix or a regression (parity review on #1122).
+        """
+        keys = _registry_identity_keys(
+            [
+                {
+                    "id": "bq.finance.gl",
+                    "name": "ledger",  # display name != source_table
+                    "source_type": "bigquery",
+                    "bucket": "finance",
+                    "source_table": "gl_entries",
+                    "bq_fqn": "proj.finance.gl_entries",
+                }
+            ]
+        )
+        # Every full spelling resolves...
+        assert _resolve_table_identity("bq.finance.gl_entries", keys) == ("bq.finance.gl", True)
+        assert _resolve_table_identity("proj.finance.gl_entries", keys) == ("bq.finance.gl", True)
+        assert _resolve_table_identity("ledger", keys) == ("bq.finance.gl", True)
+        # ...but the pre-upgrade truncated tail does not, by design.
+        assert _resolve_table_identity("gl_entries", keys) == ("gl_entries", False)
+
 
 class TestMergeTopTables:
     def test_same_name_different_projects_stay_two_rows(self):
