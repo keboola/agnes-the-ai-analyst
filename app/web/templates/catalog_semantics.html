@@ -452,7 +452,7 @@
             <span class="sl-cat-n">{{ metric_count }}</span>
           </button>
           {% for cat in metric_categories %}
-          <button type="button" class="sl-cat-btn" data-cat="{{ cat.name | lower | replace(' ', '_') }}">
+          <button type="button" class="sl-cat-btn" data-cat="{{ cat.name | lower }}">
             <span>{{ cat.name }}</span>
             <span class="sl-cat-n">{{ cat.metrics | length }}</span>
           </button>
@@ -481,11 +481,11 @@
       <div class="sl-scroll" id="metrics-list">
         {% if metric_categories %}
           {% for cat in metric_categories %}
-          <div class="sl-cat-group" data-cat="{{ cat.name | lower | replace(' ', '_') }}">
+          <div class="sl-cat-group" data-cat="{{ cat.name | lower }}">
             {% for m in cat.metrics %}
             <div class="sl-item"
                  data-ft="{{ ((m.name or '') ~ ' ' ~ (m.display_name or '') ~ ' ' ~ (m.description_text or '') ~ ' ' ~ ((m.synonyms or []) | join(' '))) | lower }}"
-                 data-cat="{{ cat.name | lower | replace(' ', '_') }}">
+                 data-cat="{{ cat.name | lower }}">
               <button type="button" class="sl-row">
                 <span class="sl-row__dot"></span>
                 <div class="sl-row__main">
