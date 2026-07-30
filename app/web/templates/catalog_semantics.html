@@ -674,8 +674,12 @@
     }
 
     // Initial tab from hash
-    const h = (window.location.hash || '').replace('#', '');
-    activateTab(h === 'glossary' ? 'glossary' : 'metrics');
+    function tabFromHash() {
+        const h = (window.location.hash || '').replace('#', '');
+        activateTab(h === 'glossary' ? 'glossary' : 'metrics');
+    }
+    window.addEventListener('hashchange', tabFromHash);
+    tabFromHash();
 })();
 </script>
 {% endblock %}
