@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
@@ -107,6 +107,19 @@ def _validate_scope(v: Optional[str]) -> str:
     return v
 
 
+def _validate_oauth_scope_coupling(auth_method: Optional[str], transport: Optional[str], scope: Optional[str]) -> None:
+    """``auth_method='oauth'`` is only valid with a network transport AND
+    ``scope='per_user'`` (2026-07-30 outbound MCP OAuth spec §1) — the same
+    rule ``MCPSourceRepository.upsert()`` enforces at the data layer.
+    Mirrored here so a bad combo 400s with a clear message before ever
+    reaching the repo (and again, defense-in-depth, when it does)."""
+    if (auth_method or "").strip().lower() == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
+        raise ValueError(
+            "auth_method='oauth' requires transport in ('http', 'sse') and scope='per_user' "
+            f"(got transport={transport!r}, scope={scope!r})"
+        )
+
+
 class CreateMCPSourceRequest(BaseModel):
     name: str
     transport: str
@@ -129,6 +142,11 @@ class CreateMCPSourceRequest(BaseModel):
     @classmethod
     def _check_scope(cls, v: Optional[str]) -> Optional[str]:
         return _validate_scope(v) if v is not None else None
+
+    @model_validator(mode="after")
+    def _check_oauth_scope_coupling(self) -> "CreateMCPSourceRequest":
+        _validate_oauth_scope_coupling(self.auth_method, self.transport, self.scope or "shared")
+        return self
 
 
 class UpdateMCPSourceRequest(BaseModel):
@@ -511,6 +529,11 @@ async def update_mcp_source(
         merged["name"] = new_name
     before = {k: existing.get(k) for k in ("name", "transport", "command", "url", "enabled")}
     try:
+        # A partial update can flip auth_method to 'oauth' (or transport/
+        # scope away from what oauth requires) without ever mentioning the
+        # other two fields — validate the MERGED combo explicitly rather
+        # than relying solely on the repo raising mid-write.
+        _validate_oauth_scope_coupling(merged.get("auth_method"), merged.get("transport"), merged.get("scope"))
         repo.upsert(**merged)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
