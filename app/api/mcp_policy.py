@@ -250,7 +250,15 @@ def _oauth_credential_missing(source_id: str, caller_user_id: str) -> bool:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at > datetime.now(timezone.utc):
         return False  # not expired yet
-    return not row.get("refresh_token")
+    if not row.get("refresh_token"):
+        return True
+    # Expired WITH a refresh token — renewable only if the source still has
+    # an OAuth client registration to refresh against. Without one the client
+    # would forward the stale token and surface an opaque upstream 401
+    # instead of this remedy (Devin Review on #1124).
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    return mcp_source_oauth_clients_repo().get(source_id) is None
 
 
 def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional[str]) -> None:

@@ -314,9 +314,15 @@ async def _refresh_oauth_token_with_lease(
 
     if not acquired:
         # Another process holds the lease and is refreshing right now.
-        # Re-read once — if it already landed the new token, use it;
-        # otherwise hand back what's on file (never double-refresh).
-        fresh = tokens_repo.get(source_id, user_id)
+        # Poll briefly for the winner's write to land instead of instantly
+        # handing back the stale token (which would surface as an opaque
+        # upstream 401 — Devin Review on #1124); never double-refresh.
+        fresh = None
+        for _ in range(10):
+            await asyncio.sleep(0.2)
+            fresh = tokens_repo.get(source_id, user_id)
+            if fresh is None or not _needs_refresh(fresh):
+                break
         return fresh["access_token"] if fresh else None
 
     try:
