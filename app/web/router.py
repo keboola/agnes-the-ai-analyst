@@ -5710,12 +5710,16 @@ async def admin_moderation_hub_page(
 
     verification_enabled = get_store_verification_enabled()
     verification_requests: list = []
+    verification_total = 0
+    verification_limit = 200
     if verification_enabled:
         # Admin view: no visibility_status filter, so a requested entity
-        # surfaces regardless of its lifecycle state.
-        verification_requests, _ = store_entities_repo().list(
+        # surfaces regardless of its lifecycle state. Keep the repo's real
+        # total (not len(rows)) so the page can flag when more are waiting
+        # than the page shows.
+        verification_requests, verification_total = store_entities_repo().list(
             verification_state=["requested"],
-            limit=200,
+            limit=verification_limit,
         )
 
     # "Needs review" count — the exact verdict set the submission queue's
@@ -5731,7 +5735,8 @@ async def admin_moderation_hub_page(
         request,
         user=user,
         verification_requests=verification_requests,
-        verification_total=len(verification_requests),
+        verification_total=verification_total,
+        verification_limit=verification_limit,
         pending_submissions_total=pending_submissions_total,
         store_verification_enabled=verification_enabled,
     )

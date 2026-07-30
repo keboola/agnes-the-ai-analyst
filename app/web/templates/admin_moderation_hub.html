@@ -22,6 +22,11 @@
   }
   .mod-count { font-weight: 700; color: var(--ds-text-primary); }
   .mod-owner { color: var(--ds-text-secondary); }
+  .mod-more {
+    margin-top: var(--space-3);
+    font-size: var(--text-13, 13px);
+    color: var(--ds-text-secondary);
+  }
   .mod-type {
     display: inline-block;
     padding: 1px 8px;
@@ -79,6 +84,9 @@
       {% endfor %}
     </tbody>
   </table>
+  {% if verification_total > verification_requests|length %}
+  <p class="mod-more">Showing the first {{ verification_requests|length }} of {{ verification_total }} requests — resolve some to reveal the rest.</p>
+  {% endif %}
 {% else %}
   <div class="empty-state">No verification requests waiting.</div>
 {% endif %}
