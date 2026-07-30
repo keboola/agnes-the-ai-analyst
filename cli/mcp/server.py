@@ -36,7 +36,7 @@ from mcp.server.fastmcp import FastMCP
 from cli.client import api_get
 from cli.config import get_server_url, get_token
 from cli.query_hints import missing_table, remote_table_hint
-from cli.v2_client import V2ClientError, api_delete, api_get_json, api_post_json
+from cli.v2_client import V2ClientError, api_delete, api_get_json, api_patch_json, api_post_json
 from src.duckdb_conn import _open_duckdb
 
 mcp = FastMCP(
@@ -427,16 +427,24 @@ def _is_data_apps_disabled(exc: V2ClientError) -> bool:
 
 
 @mcp.tool()
-def data_apps_list() -> dict:
-    """List hosted data apps you can see (RBAC-filtered).
+def data_apps_list(kind: str = "") -> dict:
+    """List data apps you can see (RBAC-filtered).
 
     Visible to any authenticated user: apps you own, apps a group you're in has
-    a ``resource_grants`` row for, or (Admin) all apps. Returns a list of app
-    summaries — ``slug``, ``name``, ``state``, ``url``, metadata; secrets are
-    never included. Mirrors ``GET /api/data-apps`` and ``agnes app list``.
+    a ``resource_grants`` row for, or (Admin) all apps. Each entry has a
+    ``kind`` — ``hosted`` (an app Agnes runs) or ``linked`` (an externally-hosted
+    app, e.g. on Keboola, whose ``url`` opens the remote app directly). Returns a
+    list of app summaries — ``slug``, ``name``, ``kind``, ``state``, ``url``,
+    ``effective_description``, metadata; secrets are never included.
+
+    Args:
+        kind: Optional filter — ``"hosted"`` or ``"linked"``; empty (default)
+              lists both.
+
+    Mirrors ``GET /api/data-apps[?kind=]`` and ``agnes app list [--linked]``.
     """
     try:
-        return api_get_json("/api/data-apps")
+        return api_get_json("/api/data-apps", **({"kind": kind} if kind else {}))
     except V2ClientError as exc:
         raise ValueError(_mcp_error("data_apps_list", exc)) from exc
 
@@ -570,6 +578,27 @@ def data_app_logs(slug: str, tail: int = 200) -> dict:
         return api_get_json(f"/api/data-apps/{slug}/logs", tail=tail)
     except V2ClientError as exc:
         raise ValueError(_mcp_error(f"data_app_logs({slug})", exc)) from exc
+
+
+@mcp.tool()
+def data_app_set_description(slug: str, description: str) -> dict:
+    """Set the admin description override on a managed (linked) data app.
+
+    Linked apps are org resources whose ``description`` the ingest sync
+    refreshes; this pins a human-authored description the sync won't clobber.
+    Owner/Admin only; managed rows only (a 409 comes back for a hosted app).
+
+    Args:
+        slug:        The app's slug.
+        description: The description to pin (empty string clears it).
+
+    Returns the updated app dict. Mirrors ``PATCH /api/data-apps/{slug}`` and
+    ``agnes app set-description``.
+    """
+    try:
+        return api_patch_json(f"/api/data-apps/{slug}", {"description": description})
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_set_description({slug})", exc)) from exc
 
 
 @mcp.tool()

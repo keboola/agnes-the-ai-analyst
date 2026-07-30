@@ -46,6 +46,13 @@ class DataApp(Base):
     parent_app_id: Mapped[str | None] = mapped_column(String, server_default=text("''"), nullable=True)
     is_draft: Mapped[bool | None] = mapped_column(Boolean, server_default=text("false"), nullable=True)
     draft_branch: Mapped[str | None] = mapped_column(String, server_default=text("''"), nullable=True)
+    # v108: linked (externally-hosted) apps — external_url/source_ref/
+    # description_override carry no server default in the migration (mirror that
+    # exactly so autogenerate sees no drift); managed is NOT NULL DEFAULT FALSE.
+    external_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    managed: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
+    description_override: Mapped[str | None] = mapped_column(Text, nullable=True)
     # NULL until the app's first (re)deploy / request — no DuckDB default either.
     last_request_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_deploy_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

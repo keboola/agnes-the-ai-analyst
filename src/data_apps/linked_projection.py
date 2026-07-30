@@ -1,0 +1,155 @@
+"""Generic projection: a materialized MCP-entity table → Agnes resource rows.
+
+For linked data apps this upserts one ``data_apps`` ``linked`` row per external
+app and soft-deletes rows whose app has disappeared upstream — scoped to one
+connection so concurrent connections never clobber each other. The Keboola
+specifics live in ``keboola_adapter``; this module is entity-agnostic apart from
+importing that adapter's record shape, so a future entity reuses the pattern.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+from typing import Any, List, Optional, Sequence
+
+from src.data_apps import keboola_adapter as adapter
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProjectionResult:
+    created: int
+    updated: int
+    hidden: int
+
+
+def project(
+    connection_id: str,
+    records: Sequence[adapter.LinkedAppRecord],
+    *,
+    repo: Optional[Any] = None,
+    keep_external_ids: Sequence[str] = (),
+) -> ProjectionResult:
+    """Reconcile ``data_apps`` linked rows for ``connection_id`` to ``records``.
+
+    Upserts each record (keyed by ``source_ref``), then hides any active linked
+    row of this connection not present this round. Preserves ``description_override``
+    and grants (the repo's ``upsert_linked``/``soft_delete_missing_linked``
+    guarantee it). ``repo`` is injectable for tests; defaults to the factory.
+
+    ``keep_external_ids`` are app ids the caller saw upstream but could not turn
+    into a record (e.g. a missing URL). They are exempt from the prune — present
+    upstream is present, even when one metadata field is unusable — but nothing
+    is upserted for them, so a genuinely absent app still gets hidden.
+    """
+    if repo is None:
+        from src.repositories import data_apps_repo
+
+        repo = data_apps_repo()
+
+    # Empty-result safety valve: a lister run that yields ZERO linkable rows
+    # (upstream API hiccup, permission change, schema drift dropping the
+    # id/url columns, or a non-lister table routed here by mistake) must not
+    # mass-hide the connection's whole linked set in one pass. Skip the prune
+    # and report a no-op; genuinely-removed apps get hidden by the next
+    # NON-empty sync. (Devin Review on #1116.)
+    if not records and repo.list_linked(source_ref_prefix=adapter.source_ref_prefix(connection_id)):
+        logger.warning(
+            "linked projection [%s]: lister returned no rows while active linked apps exist — skipping prune",
+            connection_id,
+        )
+        return ProjectionResult(created=0, updated=0, hidden=0)
+
+    created = 0
+    updated = 0
+    # Seed the keep-list with the present-but-unlinkable ids (see the
+    # `keep_external_ids` docstring) so a metadata gap never reads as a delete.
+    keep: List[str] = [adapter.source_ref(connection_id, app_id) for app_id in keep_external_ids]
+    for rec in records:
+        ref = adapter.source_ref(connection_id, rec.external_app_id)
+        keep.append(ref)
+        existed = repo.get_by_source_ref(ref) is not None
+        repo.upsert_linked(
+            slug=adapter.slug_for(connection_id, rec.external_app_id),
+            source_ref=ref,
+            name=rec.name,
+            description=rec.description,
+            external_url=rec.external_url,
+        )
+        if existed:
+            updated += 1
+        else:
+            created += 1
+
+    hidden = repo.soft_delete_missing_linked(
+        source_ref_prefix=adapter.source_ref_prefix(connection_id),
+        keep_source_refs=keep,
+    )
+    if hidden:
+        logger.info(
+            "linked projection [%s]: %d created, %d updated, hid %d apps no longer present upstream",
+            connection_id,
+            created,
+            updated,
+            hidden,
+        )
+    return ProjectionResult(created=created, updated=updated, hidden=hidden)
+
+
+def project_from_extract(
+    source_id: str,
+    extract_duckdb_path: Optional[str],
+    *,
+    repo: Optional[Any] = None,
+    table_name: Optional[str] = None,
+) -> Optional[ProjectionResult]:
+    """Project linked apps from an MCP source's freshly-materialized
+    ``extract.duckdb``.
+
+    ``table_name`` names the lister's output table — the extractor names
+    tables after the tool's ``exposed_name``, so the caller passes it for a
+    targeted (``only_tool_id``) run where the admin designated the lister
+    explicitly; it defaults to the documented ``keboola_data_apps`` contract
+    for full-source runs. No-op (returns ``None``) unless the extract
+    actually carries that table — so MCP sources that don't run the data-app
+    lister are unaffected. Rows missing an id or URL (can't be linked) are
+    skipped. Called right after ``extract_source_async`` in the materialize
+    path; ``source_id`` is the connection id used for provenance/scoping.
+    """
+    from src.duckdb_conn import _open_duckdb
+    from src.profiler import quote_ident
+
+    target = table_name or adapter.MATERIALIZED_TABLE
+    if not extract_duckdb_path or not os.path.exists(str(extract_duckdb_path)):
+        return None
+    with _open_duckdb(str(extract_duckdb_path), read_only=True) as conn:
+        tables = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+        if target not in tables:
+            return None
+        # quote_ident: `target` can be a tool's exposed_name (admin-authored
+        # registry data), never interpolate it bare into SQL.
+        cur = conn.execute(f"SELECT * FROM {quote_ident(target)}")
+        cols = [d[0] for d in cur.description]
+        raw_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    records = [adapter.map_row(r) for r in raw_rows]
+    linkable = [rec for rec in records if rec.external_app_id and rec.external_url]
+    # Present-but-unlinkable rows (blank/renamed URL column, a scheme the
+    # adapter rejects) are STILL present upstream — passing only `linkable` to
+    # the reconciler would prune them as if the app had been deleted, so a
+    # one-field metadata glitch would yank a live app away from every granted
+    # user. Keep them (identity is the id, which they do have); only a row
+    # genuinely absent from the listing gets hidden (Devin Review on #1116).
+    unlinkable_ids = [rec.external_app_id for rec in records if rec.external_app_id and not rec.external_url]
+    skipped = len(records) - len(linkable)
+    if skipped:
+        logger.info(
+            "linked projection [%s]: skipped %d row(s) missing id/url (%d kept from prune)",
+            source_id,
+            skipped,
+            len(unlinkable_ids),
+        )
+    return project(source_id, linkable, repo=repo, keep_external_ids=unlinkable_ids)

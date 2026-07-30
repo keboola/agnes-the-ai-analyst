@@ -312,3 +312,106 @@ def test_apps_detail_anything_hits_web_route_404_not_proxy(web_env):
     resp = c.get("/apps/detail/anything", headers=_auth(web_env["owner_pat"]))
     assert resp.status_code == 404
     assert resp.json()["detail"] == "data_app_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Linked apps (v108)
+# ---------------------------------------------------------------------------
+
+
+def _create_linked_row(slug="kbc-sales", name="Sales", url="https://example.com/apps/sales", desc="synced"):
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        DataAppsRepository(conn).upsert_linked(
+            slug=slug, source_ref=f"conn1:{slug}", name=name, description=desc, external_url=url
+        )
+    finally:
+        conn.close()
+
+
+def test_list_page_shows_linked_row_with_external_open(web_env):
+    c = web_env["client"]
+    _create_linked_row()
+    resp = c.get("/apps", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 200
+    assert "kbc-sales" in resp.text
+    assert "https://example.com/apps/sales" in resp.text  # Open → external URL
+    assert ">linked<" in resp.text  # linked badge
+
+
+def test_detail_linked_hides_deploy_shows_override_form(web_env):
+    c = web_env["client"]
+    _create_linked_row()
+    resp = c.get("/apps/detail/kbc-sales", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 200
+    # linked apps have no deploy lifecycle
+    assert "dda-deploy-btn" not in resp.text
+    # admin gets the description-override affordance
+    assert "dda-desc-form" in resp.text
+    # opens at the external URL
+    assert "https://example.com/apps/sales" in resp.text
+
+
+def test_admin_linked_apps_wizard_renders_for_admin(web_env):
+    c = web_env["client"]
+    resp = c.get("/admin/linked-apps", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 200
+    assert "Link Keboola apps" in resp.text
+    # the three wizard steps are present
+    assert 'id="wiz-step-1"' in resp.text
+    assert 'id="wiz-step-3"' in resp.text
+
+
+def test_admin_linked_apps_wizard_forbidden_for_non_admin(web_env):
+    c = web_env["client"]
+    resp = c.get("/admin/linked-apps", headers=_auth(web_env["owner_pat"]), follow_redirects=False)
+    assert resp.status_code in (302, 307, 401, 403)
+
+
+def _hide_linked_row(slug: str) -> None:
+    """Flip an existing linked row to the soft-deleted state the reconciler
+    uses when the app disappears upstream."""
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    try:
+        conn.execute("UPDATE data_apps SET state = 'linked_hidden' WHERE slug = ?", [slug])
+    finally:
+        conn.close()
+
+
+def test_list_page_hides_soft_deleted_linked_apps(web_env):
+    """`linked_hidden` rows (gone upstream, kept for lossless re-link) are
+    excluded by the API list/detail/PATCH — the web /apps page must not be
+    the one surface still showing an Open link onto a dead external URL
+    (Devin Review on #1116)."""
+    _create_linked_row(slug="kbc-gone-abc123", name="Gone")
+    _hide_linked_row("kbc-gone-abc123")
+    c = web_env["client"]
+    resp = c.get("/apps", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 200
+    assert "kbc-gone-abc123" not in resp.text
+
+
+def test_detail_page_404s_soft_deleted_linked_app(web_env):
+    _create_linked_row(slug="kbc-gone-def456", name="Gone2")
+    _hide_linked_row("kbc-gone-def456")
+    c = web_env["client"]
+    resp = c.get("/apps/detail/kbc-gone-def456", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 404
+
+
+def test_linked_apps_wizard_calls_real_access_endpoints():
+    """The wizard's group/grant calls must hit the mounted /api/admin router —
+    /api/access/* does not exist and 404s silently in the UI (Devin Review on
+    #1116)."""
+    src = open("app/web/templates/admin_linked_apps.html").read()
+    assert "/api/admin/groups" in src
+    assert "/api/admin/grants" in src
+    assert "/api/access/" not in src
+    # The wizard is the ONE caller that designates its tool as the data-app
+    # lister — without the flag the server never projects a targeted run.
+    assert "lister: true" in src

@@ -166,6 +166,13 @@ class UpdateMCPSourceRequest(BaseModel):
 
 class MaterializeRequest(BaseModel):
     tool_id: Optional[str] = None
+    # Linked data apps: ONLY when the caller explicitly designates the
+    # targeted tool as the data-app lister (the /admin/linked-apps wizard
+    # does) is its output table projected into `data_apps`. Without this,
+    # every targeted run — e.g. the per-tool "Materialize now" button on the
+    # source detail page — would be treated as the lister and could fabricate
+    # linked rows from an unrelated table (Devin Review on #1116).
+    lister: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +767,49 @@ async def materialize_mcp_source(
     except Exception as exc:
         logger.exception("materialize failed for source %s", source_id)
         raise HTTPException(status_code=500, detail=f"materialize_failed: {exc}")
+    # Linked data apps: project the lister's FRESHLY materialized table into
+    # the data_apps registry as grantable `linked` rows. Two gates, both from
+    # `result["tables"]` (what this run actually wrote) rather than mere table
+    # presence in the persistent extract file — an `only_tool_id` run for an
+    # unrelated tool would otherwise re-project an arbitrarily stale lister
+    # table and re-activate rows a previous reconcile had hidden:
+    #  * targeted run (`only_tool_id` — the wizard's path): the admin has
+    #    explicitly designated THAT tool as the data-app lister, so project
+    #    from the table it wrote under its own exposed_name (the extractor
+    #    names tables by exposed_name, which is almost never the literal
+    #    `keboola_data_apps` — Devin Review on #1116);
+    #  * full-source run: no tool is designated, so keep the conservative
+    #    documented contract — only a table literally named
+    #    `keboola_data_apps` projects.
+    # Best-effort — a projection failure must not fail the materialize call.
+    try:
+        from src.data_apps.keboola_adapter import MATERIALIZED_TABLE
+        from src.data_apps.linked_projection import project_from_extract
+
+        freshly_written = {t.get("table") for t in result.get("tables") or []}
+        lister_table = None
+        if only_tool_id and payload is not None and payload.lister:
+            # Explicit designation only (the wizard's path) — see the
+            # MaterializeRequest.lister comment. A targeted run WITHOUT the
+            # flag (per-tool "Materialize now") never projects.
+            tool = tool_registry_repo().get(only_tool_id)
+            exposed = (tool or {}).get("exposed_name") or ""
+            if exposed in freshly_written:
+                lister_table = exposed
+        elif not only_tool_id and MATERIALIZED_TABLE in freshly_written:
+            lister_table = MATERIALIZED_TABLE
+        proj = None
+        if lister_table:
+            proj = project_from_extract(source_id, result.get("extract_duckdb"), table_name=lister_table)
+        if proj is not None:
+            result["linked_projection"] = {
+                "created": proj.created,
+                "updated": proj.updated,
+                "hidden": proj.hidden,
+            }
+    except Exception:
+        logger.exception("linked-app projection failed for source %s", source_id)
+
     _audit(
         conn,
         user["id"],

@@ -267,3 +267,166 @@ class DataAppsPgRepository:
                 {"id": app_id},
             )
             return (result.rowcount or 0) > 0
+
+    # ── linked (externally-hosted) apps — v108 ─────────────────────────────
+
+    @staticmethod
+    def effective_description(row: Dict[str, Any]) -> str:
+        """Admin override wins over the synced description (linked apps)."""
+        return row.get("description_override") or row.get("description") or ""
+
+    def get_by_source_ref(self, source_ref: str) -> Optional[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM data_apps WHERE source_ref = :sr"),
+                    {"sr": source_ref},
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row else None
+
+    def create_linked(
+        self,
+        *,
+        slug: str,
+        name: str,
+        external_url: str,
+        source_ref: str,
+        description: str = "",
+        owner_user_id: str = "system",
+    ) -> str:
+        """Insert a ``repo_mode='linked'`` row (no git repo / runtime).
+
+        Mirrors ``DataAppsRepository.create_linked``.
+        """
+        app_id = "app_" + uuid4().hex[:12]
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO data_apps
+                      (id, slug, name, description, owner_user_id, repo_mode, state,
+                       managed, external_url, source_ref)
+                    VALUES
+                      (:id, :slug, :name, :description, :owner_user_id, 'linked', 'linked',
+                       true, :external_url, :source_ref)
+                    """
+                ),
+                {
+                    "id": app_id,
+                    "slug": slug,
+                    "name": name,
+                    "description": description,
+                    "owner_user_id": owner_user_id,
+                    "external_url": external_url,
+                    "source_ref": source_ref,
+                },
+            )
+        return app_id
+
+    def upsert_linked(
+        self,
+        *,
+        slug: str,
+        source_ref: str,
+        name: str,
+        external_url: str,
+        description: str = "",
+        owner_user_id: str = "system",
+    ) -> Dict[str, Any]:
+        """Insert-or-update a linked app keyed by ``source_ref``. Mirrors
+        ``DataAppsRepository.upsert_linked`` (never touches
+        ``description_override``)."""
+        if self.get_by_source_ref(source_ref) is not None:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    sa.text(
+                        "UPDATE data_apps SET name = :name, description = :description, "
+                        "external_url = :external_url, state = 'linked', updated_at = now() "
+                        "WHERE source_ref = :sr"
+                    ),
+                    {
+                        "name": name,
+                        "description": description,
+                        "external_url": external_url,
+                        "sr": source_ref,
+                    },
+                )
+        else:
+            self.create_linked(
+                slug=slug,
+                name=name,
+                description=description,
+                external_url=external_url,
+                source_ref=source_ref,
+                owner_user_id=owner_user_id,
+            )
+        row = self.get_by_source_ref(source_ref)
+        assert row is not None  # just upserted
+        return row
+
+    def list_linked(
+        self,
+        *,
+        source_ref_prefix: Optional[str] = None,
+        include_hidden: bool = False,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        clauses = ["repo_mode = 'linked'"]
+        params: Dict[str, Any] = {"limit": limit}
+        if not include_hidden:
+            clauses.append("state = 'linked'")
+        if source_ref_prefix is not None:
+            clauses.append("source_ref LIKE :prefix")
+            params["prefix"] = source_ref_prefix + "%"
+        where = "WHERE " + " AND ".join(clauses)
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(f"SELECT * FROM data_apps {where} ORDER BY created_at DESC LIMIT :limit"),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
+    def soft_delete_missing_linked(self, *, source_ref_prefix: str, keep_source_refs: List[str]) -> int:
+        """Hide active linked rows for one connection whose ``source_ref`` is not
+        kept. Mirrors ``DataAppsRepository.soft_delete_missing_linked``."""
+        with self._engine.connect() as conn:
+            active = (
+                conn.execute(
+                    sa.text(
+                        "SELECT source_ref FROM data_apps WHERE repo_mode = 'linked' "
+                        "AND state = 'linked' AND source_ref LIKE :prefix"
+                    ),
+                    {"prefix": source_ref_prefix + "%"},
+                )
+                .scalars()
+                .all()
+            )
+        keep = set(keep_source_refs)
+        to_hide = [sr for sr in active if sr not in keep]
+        if to_hide:
+            with self._engine.begin() as conn:
+                for sr in to_hide:
+                    conn.execute(
+                        sa.text(
+                            "UPDATE data_apps SET state = 'linked_hidden', updated_at = now() WHERE source_ref = :sr"
+                        ),
+                        {"sr": sr},
+                    )
+        return len(to_hide)
+
+    def set_description_override(self, slug: str, text: Optional[str]) -> bool:
+        """Set (or clear) the admin description override on a managed row.
+        Returns False if the slug does not exist."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text("UPDATE data_apps SET description_override = :t, updated_at = now() WHERE slug = :slug"),
+                {"t": text, "slug": slug},
+            )
+            return (result.rowcount or 0) > 0
