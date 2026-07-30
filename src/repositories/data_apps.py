@@ -337,9 +337,10 @@ class DataAppsRepository:
         keep = set(keep_source_refs)
         to_hide = [r[0] for r in active if r[0] not in keep]
         if to_hide:
-            # One statement so the batch is all-or-nothing (matches the PG
-            # sibling's transaction): a mid-hide failure never leaves the
-            # connection's linked set partially reconciled.
+            # One statement so the batch is all-or-nothing (same atomicity
+            # guarantee as the PG sibling, which loops per-row inside one
+            # engine.begin() transaction): a mid-hide failure never leaves
+            # the connection's linked set partially reconciled.
             placeholders = ",".join("?" for _ in to_hide)
             self.conn.execute(
                 f"UPDATE data_apps SET state = 'linked_hidden', updated_at = now() "

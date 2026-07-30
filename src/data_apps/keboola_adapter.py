@@ -62,6 +62,25 @@ def slug_for(connection_id: str, external_app_id: str) -> str:
     return f"kbc-{_sanitize(external_app_id)}-{short}"
 
 
+def _safe_url(value: str) -> str:
+    """Keep only http(s) URLs; anything else becomes '' (row gets skipped).
+
+    The materialized table is UNTRUSTED upstream data (same trust class as
+    connector output), and the stored ``external_url`` is rendered as a raw
+    ``href`` on the web pages and returned verbatim by the API/MCP/CLI
+    surfaces — Jinja2 autoescaping does not neutralize a ``javascript:``
+    scheme inside an href. This ingest point is the ONLY writer of
+    ``external_url``, so scheme-gating here covers every render path
+    (review team on #1116; security playbook: validate untrusted input).
+    """
+    from urllib.parse import urlparse
+
+    v = value.strip()
+    if not v:
+        return ""
+    return v if urlparse(v).scheme.lower() in ("http", "https") else ""
+
+
 def map_row(raw: Dict[str, Any]) -> LinkedAppRecord:
     """Map one materialized ``keboola_data_apps`` row to a ``LinkedAppRecord``.
 
@@ -80,5 +99,5 @@ def map_row(raw: Dict[str, Any]) -> LinkedAppRecord:
         external_app_id=pick("external_app_id", "id", "app_id", "config_id"),
         name=pick("name", "app_name", "title"),
         description=pick("description", "desc"),
-        external_url=pick("external_url", "url", "app_url", "deployment_url"),
+        external_url=_safe_url(pick("external_url", "url", "app_url", "deployment_url")),
     )

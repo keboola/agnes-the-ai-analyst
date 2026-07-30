@@ -143,3 +143,15 @@ def test_project_reappearance_relinks_same_row(repo):
     row = repo.get_by_slug(slug)
     assert row["id"] == original_id
     assert row["state"] == "linked"
+
+
+def test_map_row_rejects_non_http_url_schemes():
+    """external_url is untrusted upstream data rendered as a raw href — only
+    http(s) may survive ingest; anything else empties the field so the row is
+    skipped by the linkable filter (review team on #1116)."""
+    from src.data_apps.keboola_adapter import map_row
+
+    for bad in ("javascript:alert(1)", "data:text/html,x", "vbscript:x", "file:///etc/passwd"):
+        assert map_row({"id": "a1", "name": "x", "url": bad}).external_url == ""
+    assert map_row({"id": "a1", "url": "https://example.com/app"}).external_url == "https://example.com/app"
+    assert map_row({"id": "a1", "url": "  http://example.com  "}).external_url == "http://example.com"
