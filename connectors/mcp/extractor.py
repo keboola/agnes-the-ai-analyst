@@ -145,25 +145,19 @@ def _carry_forward_untouched(
 ) -> List[str]:
     """Merge the previous extract's untouched tables into the fresh one.
 
-    A targeted (``only_tool_id``) run rebuilds ``extract.duckdb`` from
-    scratch; without this, the ``_meta`` rows + views of every OTHER
-    materialize-mode tool of the source would vanish until the next
+    Every run rebuilds ``extract.duckdb`` from scratch; without this, the
+    ``_meta`` rows + views of every table the run didn't (re-)write — the
+    tools a targeted (``only_tool_id``) run skipped, or a tool whose
+    upstream call failed — would vanish until the next successful
     full-source run (their parquets stay on disk but the orchestrator's
     rebuild loses the views). Re-inserts each previous ``_meta`` row whose
-    table was not (re-)written in this run and recreates its view over the
+    table was not written in this run and recreates its view over the
     existing parquet. Returns the carried table names.
 
-    ``keep`` is the allowlist of table names eligible to be carried, and its
-    shape says which semantics the caller wants:
-
-    * targeted run → the exposed_names of the source's currently registered,
-      enabled materialize-mode tools, so a table whose tool was renamed,
-      disabled, or deleted since the last run is pruned rather than
-      surviving indefinitely under repeated targeted runs;
-    * full run → only the tools that FAILED this pass, so a flaky upstream
-      call can't vaporize an otherwise healthy table while removed/disabled
-      tools still drop out under the usual replace semantics.
-
+    ``keep`` is the set of exposed_names of the source's currently
+    registered, enabled materialize-mode tools: previous tables outside it
+    (tool renamed, disabled, or deleted since the last run) are pruned
+    rather than carried, so stale tables can't survive indefinitely.
     ``exclude`` is what this run already wrote.
     """
     if not prev_db_path.exists():
@@ -191,12 +185,10 @@ def _carry_forward_untouched(
     for table_name, description, rows, size_bytes, extracted_at, query_mode in prev_rows:
         if table_name in exclude or table_name not in keep:
             continue
-        # validate_quoted_identifier, NOT the strict variant: the write path
-        # (_create_view / _insert_meta) accepts any name and just escapes the
-        # quotes, and MCP tool names routinely carry dashes/dots (an exposed
-        # name like `crm_get-library-docs`). Gating carry-forward on the
-        # strict [A-Za-z_][A-Za-z0-9_]* rule would silently drop exactly the
-        # tables a full run wrote fine (Devin Review on #1119).
+        # Relaxed check on purpose: the write path accepts dashed/dotted
+        # exposed_names (common for MCP tool names), so the carry-forward
+        # gate must not be stricter than what a full run writes. Still
+        # refuses quote-breakout, path separators, and control chars.
         if not validate_quoted_identifier(table_name, "carry-forward table_name"):
             continue
         parquet_path = output_root / "data" / f"{table_name}.parquet"
@@ -324,7 +316,6 @@ async def extract_source_async(
     summary_tables: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     carried: List[str] = []
-    failed_tables: set = set()
 
     out_conn = _open_duckdb(str(tmp_db_path))
     try:
@@ -346,33 +337,18 @@ async def extract_source_async(
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
                 errors.append({"tool": tool["exposed_name"], "error": str(exc)})
-                failed_tables.add(tool["exposed_name"])
-        if only_tool_id:
-            # Targeted run → merge semantics: keep every previously
-            # materialized table this run didn't (re-)write, including the
-            # targeted tool's last-known-good snapshot if its upstream call
-            # failed above.
-            carried = _carry_forward_untouched(
-                out_conn,
-                prev_db_path=db_path,
-                output_root=output_root,
-                keep=registered_names,
-                exclude={t["table"] for t in summary_tables},
-            )
-        elif failed_tables:
-            # Full run → replace semantics (removed/disabled tools must drop
-            # out), EXCEPT that a tool whose upstream call failed keeps its
-            # last-known-good table instead of being vaporized by one flaky
-            # call: its parquet is intact on disk, so dropping the _meta row
-            # would only cost the orchestrator its master view (Devin Review
-            # on #1119). Allowlisted to the failed tools alone.
-            carried = _carry_forward_untouched(
-                out_conn,
-                prev_db_path=db_path,
-                output_root=output_root,
-                keep=failed_tables,
-                exclude={t["table"] for t in summary_tables},
-            )
+        # Merge semantics: keep every previously materialized table this run
+        # didn't (re-)write — the tools a targeted run skipped, plus the
+        # last-known-good snapshot of any tool whose upstream call failed
+        # above. Tables whose tool left the registry (renamed / disabled /
+        # deleted) are not in ``registered_names`` and drop out.
+        carried = _carry_forward_untouched(
+            out_conn,
+            prev_db_path=db_path,
+            output_root=output_root,
+            keep=registered_names,
+            exclude={t["table"] for t in summary_tables},
+        )
     finally:
         out_conn.close()
 
@@ -443,7 +419,6 @@ def extract_source(
     summary_tables: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     carried: List[str] = []
-    failed_tables: set = set()
 
     out_conn = _open_duckdb(str(tmp_db_path))
     try:
@@ -465,30 +440,14 @@ def extract_source(
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
                 errors.append({"tool": tool["exposed_name"], "error": str(exc)})
-                failed_tables.add(tool["exposed_name"])
-        if only_tool_id:
-            # Targeted run → merge semantics (see extract_source_async).
-            carried = _carry_forward_untouched(
-                out_conn,
-                prev_db_path=db_path,
-                output_root=output_root,
-                keep=registered_names,
-                exclude={t["table"] for t in summary_tables},
-            )
-        elif failed_tables:
-            # Full run → replace semantics (removed/disabled tools must drop
-            # out), EXCEPT that a tool whose upstream call failed keeps its
-            # last-known-good table instead of being vaporized by one flaky
-            # call: its parquet is intact on disk, so dropping the _meta row
-            # would only cost the orchestrator its master view (Devin Review
-            # on #1119). Allowlisted to the failed tools alone.
-            carried = _carry_forward_untouched(
-                out_conn,
-                prev_db_path=db_path,
-                output_root=output_root,
-                keep=failed_tables,
-                exclude={t["table"] for t in summary_tables},
-            )
+        # Merge semantics (see extract_source_async).
+        carried = _carry_forward_untouched(
+            out_conn,
+            prev_db_path=db_path,
+            output_root=output_root,
+            keep=registered_names,
+            exclude={t["table"] for t in summary_tables},
+        )
     finally:
         out_conn.close()
 
