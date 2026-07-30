@@ -76,6 +76,14 @@ The parity reviewer flags exactly what these guards cannot see.
 Every new REST `/api/*` endpoint — except health checks, webhooks, OAuth
 callbacks, and internal/SSE routes — must also be:
 
+> **Standing exemption — admin credential-provisioning writes.** Endpoints
+> whose request body carries or reconfigures upstream credential trust (vault
+> secret writes, OAuth client registration/config) are CLI-reachable but
+> deliberately **never** MCP-exposed: an agent-invokable tool that can
+> re-point which upstream a credential authenticates against is a
+> privilege-escalation seam, not a convenience. Classify them `_EXEMPT` with
+> a pointer to this paragraph.
+
 - **CLI-reachable:** a command under `cli/commands/` that calls the endpoint over
   HTTP via `cli/client.py`. State-changing endpoints also get a parity case in
   `tests/test_cli_api_parity.py`.
