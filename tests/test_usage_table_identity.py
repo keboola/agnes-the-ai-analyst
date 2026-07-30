@@ -125,9 +125,13 @@ class TestRegistryIdentityKeys:
         )
         assert keys["my-project-123.finance.gl"] == "legacy"
 
-    def test_bq_fqn_outranks_the_configured_project_path(self):
-        """A row that pins its own project must not be attributed to another
-        row's configured-project spelling."""
+    def test_an_older_bq_fqn_row_keeps_the_path_against_a_newer_one(self):
+        """Mirror image of the test above: with both full-path spellings in
+        one strength class, the OLDER row wins whichever spelling it used.
+        Here the bq_fqn row is registered first and keeps the path; there the
+        project-path row is first and keeps it. Neither spelling outranks the
+        other — that is the point, and it is what the gate does (Devin Review
+        on #1122 caught this test's old name asserting the opposite)."""
         keys = _registry_identity_keys(
             [
                 {
