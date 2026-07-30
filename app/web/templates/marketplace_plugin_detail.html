@@ -657,7 +657,10 @@
      actions strip (previously it rendered after them, landing mid-page).
      Rail browses via the unified Catalog; topnav keeps the classic per-tab
      marketplace link; ?from=skills returns to the Skill builder. #}
-  {% if from_source == 'skills' %}
+  {% if from_source == 'admin-moderation' %}
+    {% set _back = '/admin/store' %}
+    {% set _back_label = 'Moderation & Trust' %}
+  {% elif from_source == 'skills' %}
     {% set _back = '/skills' %}
     {% set _back_label = 'Skill builder' %}
   {% elif (ui_layout | default('topnav')) == 'rail' %}

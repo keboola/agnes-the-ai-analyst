@@ -587,7 +587,10 @@
   {# Back link — pinned to the very top, above the hero.
      Layout-aware target; when the visitor arrived from the Skill builder
      (`?from=skills`) it returns there instead of the generic marketplace. #}
-  {% if from_source == 'skills' %}
+  {% if from_source == 'admin-moderation' %}
+    {% set _back = '/admin/store' %}
+    {% set _back_label = 'Moderation & Trust' %}
+  {% elif from_source == 'skills' %}
     {% set _back = '/skills' %}
     {% set _back_label = 'Skill builder' %}
   {% elif (ui_layout | default('topnav')) == 'rail' %}

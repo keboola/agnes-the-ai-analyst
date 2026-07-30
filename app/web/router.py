@@ -5690,6 +5690,59 @@ SCHEDULER_AUDIT_ACTIONS = [
 ]
 
 
+@router.get("/admin/store", response_class=HTMLResponse)
+async def admin_moderation_hub_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Moderation & Trust — one admin surface for entity verification,
+    submission review, and marketplace curation.
+
+    Lists Store entities awaiting verification (``verification_state='requested'``)
+    with a direct link to each entity's detail page, where the Verify /
+    Request changes / Archive / Override actions live. The pre-publish
+    submission queue and marketplace curation are surfaced as links (count +
+    jump-off), not rebuilt here. ``/admin/store`` is the natural parent of the
+    ``/admin/store/submissions`` review queue.
+    """
+    from app.instance_config import get_store_verification_enabled
+
+    verification_enabled = get_store_verification_enabled()
+    verification_requests: list = []
+    verification_total = 0
+    verification_limit = 200
+    if verification_enabled:
+        # Admin view: no visibility_status filter, so a requested entity
+        # surfaces regardless of its lifecycle state. Keep the repo's real
+        # total (not len(rows)) so the page can flag when more are waiting
+        # than the page shows.
+        verification_requests, verification_total = store_entities_repo().list(
+            verification_state=["requested"],
+            limit=verification_limit,
+        )
+
+    # "Needs review" count — the exact verdict set the submission queue's
+    # "Needs review" chip uses (admin_store_submissions.html), so this number
+    # matches what the admin sees after clicking through. `blocked_inline`
+    # (the Rescan-flow state) MUST be included — dropping it undercounts.
+    _, pending_submissions_total = store_submissions_repo().list_for_admin(
+        status=["blocked_inline", "blocked_llm", "review_error"],
+        limit=1,
+    )
+
+    ctx = _build_context(
+        request,
+        user=user,
+        verification_requests=verification_requests,
+        verification_total=verification_total,
+        verification_limit=verification_limit,
+        pending_submissions_total=pending_submissions_total,
+        store_verification_enabled=verification_enabled,
+    )
+    return templates.TemplateResponse(request, "admin_moderation_hub.html", ctx)
+
+
 @router.get("/admin/store/submissions", response_class=HTMLResponse)
 async def admin_store_submissions_page(
     request: Request,
