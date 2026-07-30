@@ -131,3 +131,49 @@ class TestOutputContract:
     def test_no_surrounding_quotes_survive(self):
         for sql in ['SELECT a FROM "orders"', "SELECT a FROM `orders`"]:
             assert _first_table_from_sql(sql) == "orders"
+
+
+def test_paren_inside_a_string_literal_does_not_hide_the_table():
+    """Walking left counting brackets used to read a `(` inside a quoted
+    value as a function-argument list, dropping the genuine FROM and
+    recording the query as untargeted (Devin Review on #1121)."""
+    from app.api.query import _first_table_from_sql
+
+    assert _first_table_from_sql("SELECT 'extract(' AS tag, x FROM orders") == "orders"
+    assert _first_table_from_sql("SELECT 'a(b(c' AS t FROM sales JOIN x ON 1=1") == "sales"
+    # ...and the real EXTRACT(... FROM col) case still skips the column.
+    assert _first_table_from_sql("SELECT EXTRACT(YEAR FROM ts) FROM events") == "events"
+
+
+def test_from_inside_a_comment_or_literal_is_not_a_match():
+    from app.api.query import _first_table_from_sql
+
+    assert _first_table_from_sql("SELECT 1 -- FROM commented_out\nFROM real_table") == "real_table"
+    assert _first_table_from_sql("SELECT /* FROM blocked */ 1 FROM real_table") == "real_table"
+    assert _first_table_from_sql("SELECT 'FROM literal_table' AS s FROM real_table") == "real_table"
+
+
+def test_quoted_identifier_containing_a_quote_char_is_not_treated_as_a_literal():
+    from app.api.query import _first_table_from_sql
+
+    assert _first_table_from_sql('SELECT * FROM "odd\'name"') == "odd'name"
+
+
+def test_labelling_a_long_query_stays_linear():
+    """The per-match left-walk plus tail slice made cost grow with the square
+    of the query length, so one oversized query could tie up a worker."""
+    import time
+
+    from app.api.query import _first_table_from_sql
+
+    def elapsed(joins: int) -> float:
+        sql = "SELECT * FROM t0 " + " ".join(f"JOIN t{i} ON t{i}.a = t0.a" for i in range(1, joins))
+        start = time.perf_counter()
+        _first_table_from_sql(sql)
+        return time.perf_counter() - start
+
+    small = elapsed(200)
+    large = elapsed(1600)  # 8x the input
+    # Quadratic would be ~64x; allow generous headroom for timer noise while
+    # still failing loudly if the quadratic walk comes back.
+    assert large < max(small * 20, 0.5), f"{small=} {large=}"

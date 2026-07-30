@@ -510,30 +510,93 @@ _SQL_IDENT_PATH = re.compile(
 )
 
 
-def _enclosing_call_name(sql: str, pos: int) -> Optional[str]:
-    """Name of the function whose argument list encloses `pos`, if any.
+def _mask_sql_noise(sql: str) -> str:
+    """Blank string literals and comments, preserving length and offsets.
 
-    Walks left counting parens; on the first unmatched `(` it reads the
-    identifier immediately preceding it. Returns None at top level.
+    Paren counting and the FROM/JOIN scan must not see brackets or keywords
+    that live inside quoted values or comments — `SELECT 'extract(' AS tag,
+    x FROM orders` used to read that literal `(` as a function-argument list
+    and drop the genuine `FROM orders` (Devin Review on #1121). Double-quoted
+    and backticked spans are identifiers, not literals, so they are skipped
+    over intact: their contents stay matchable as part of a table path, and a
+    quote inside them can't open a phantom literal.
     """
-    depth = 0
-    i = pos - 1
-    while i >= 0:
-        char = sql[i]
-        if char == ")":
-            depth += 1
-        elif char == "(":
-            if depth == 0:
-                end = i
-                while end > 0 and sql[end - 1].isspace():
-                    end -= 1
-                start = end
-                while start > 0 and (sql[start - 1].isalnum() or sql[start - 1] == "_"):
-                    start -= 1
-                return sql[start:end].lower() or None
-            depth -= 1
-        i -= 1
-    return None
+    out = list(sql)
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in ('"', "`"):
+            # Quoted identifier — step over it without blanking.
+            close = sql.find(ch, i + 1)
+            i = n if close == -1 else close + 1
+        elif ch == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":  # '' escape
+                        j += 2
+                        continue
+                    break
+                j += 1
+            for k in range(i, min(j + 1, n)):
+                out[k] = " "
+            i = j + 1
+        elif ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            j = sql.find("\n", i)
+            j = n if j == -1 else j
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        elif ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            j = sql.find("*/", i + 2)
+            j = n if j == -1 else j + 2
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _enclosing_calls(masked: str, positions: list) -> dict:
+    """Map each position to the name of the function call enclosing it.
+
+    ONE left-to-right pass with a paren stack, instead of walking left from
+    every match: the old per-match walk plus a tail slice made labelling cost
+    grow with the square of the query length, so one oversized query could
+    tie up a worker far beyond the query itself (Devin Review on #1121).
+    """
+    result: dict = {}
+    stack: list = []
+    pending = sorted(positions)
+    p = 0
+    for i, ch in enumerate(masked):
+        while p < len(pending) and pending[p] <= i:
+            result[pending[p]] = stack[-1] if stack else None
+            p += 1
+        if ch == "(":
+            end = i
+            while end > 0 and masked[end - 1].isspace():
+                end -= 1
+            start = end
+            while start > 0 and (masked[start - 1].isalnum() or masked[start - 1] == "_"):
+                start -= 1
+            stack.append(masked[start:end].lower() or None)
+        elif ch == ")":
+            if stack:
+                stack.pop()
+    while p < len(pending):
+        result[pending[p]] = stack[-1] if stack else None
+        p += 1
+    return result
+
+
+def _next_nonspace(s: str, idx: int) -> str:
+    """First non-space character at/after ``idx`` — without copying the tail."""
+    n = len(s)
+    while idx < n and s[idx].isspace():
+        idx += 1
+    return s[idx] if idx < n else ""
 
 
 def _normalize_table_path(raw: str) -> Optional[str]:
@@ -572,14 +635,22 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
     """
     if not sql:
         return None
-    for match in _SQL_IDENT_PATH.finditer(sql):
-        if _enclosing_call_name(sql, match.start()) in _FROM_AS_ARGUMENT_FUNCS:
+    # Scan the masked text so a FROM inside a literal or comment is not a
+    # match at all, then read the identifier back out of the ORIGINAL sql
+    # (masking preserves offsets, and identifier spans are never masked).
+    masked = _mask_sql_noise(sql)
+    matches = list(_SQL_IDENT_PATH.finditer(masked))
+    if not matches:
+        return None
+    enclosing = _enclosing_calls(masked, [m.start() for m in matches])
+    for match in matches:
+        if enclosing.get(match.start()) in _FROM_AS_ARGUMENT_FUNCS:
             continue
-        if sql[match.end():].lstrip().startswith("("):
+        if _next_nonspace(masked, match.end()) == "(":
             # `FROM unnest(...)` / `FROM generate_series(...)`: a function
             # call producing inline rows, not a relation.
             continue
-        table = _normalize_table_path(match.group(1))
+        table = _normalize_table_path(sql[match.start(1):match.end(1)])
         if table:
             return table[:200]
     return None
