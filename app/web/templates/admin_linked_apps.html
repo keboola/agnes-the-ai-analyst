@@ -173,8 +173,11 @@
         await jsend(`/api/admin/mcp-tools/${encodeURIComponent(toolId)}`, "PUT",
           { mode: "materialize", schedule: "daily 03:00" });
       }
+      // `lister: true` = the admin is explicitly designating this tool as the
+      // data-app lister — only then does the server project its output table
+      // into linked data_apps rows (a plain per-tool materialize never does).
       const res = await jsend(`/api/admin/mcp-sources/${encodeURIComponent(sourceId)}/materialize`, "POST",
-        { tool_id: toolId });
+        { tool_id: toolId, lister: true });
       const proj = res.linked_projection;
       out.textContent = proj
         ? `Fetched: ${proj.created} new, ${proj.updated} updated, ${proj.hidden} hidden.`

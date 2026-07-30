@@ -132,11 +132,13 @@ def test_project_from_extract_missing_file_noop(repo):
 
 
 def test_project_reappearance_relinks_same_row(repo):
-    project("c", [_rec("a", "A")], repo=repo)
+    project("c", [_rec("a", "A"), _rec("keep", "Keep")], repo=repo)
     slug = adapter.slug_for("c", "a")
     original_id = repo.get_by_slug(slug)["id"]
-    project("c", [], repo=repo)  # disappears → hidden
-    assert repo.list_linked() == []
+    # `a` disappears from a NON-empty sync → hidden (an empty sync is a
+    # no-op by design — see the empty-result safety valve in project()).
+    project("c", [_rec("keep", "Keep")], repo=repo)
+    assert {r["slug"] for r in repo.list_linked()} == {adapter.slug_for("c", "keep")}
 
     r = project("c", [_rec("a", "A back")], repo=repo)  # returns
     assert (r.created, r.updated) == (0, 1)  # reactivated, not a new row

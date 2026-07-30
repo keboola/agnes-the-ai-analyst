@@ -412,3 +412,6 @@ def test_linked_apps_wizard_calls_real_access_endpoints():
     assert "/api/admin/groups" in src
     assert "/api/admin/grants" in src
     assert "/api/access/" not in src
+    # The wizard is the ONE caller that designates its tool as the data-app
+    # lister — without the flag the server never projects a targeted run.
+    assert "lister: true" in src

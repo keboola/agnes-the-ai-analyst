@@ -44,6 +44,19 @@ def project(
 
         repo = data_apps_repo()
 
+    # Empty-result safety valve: a lister run that yields ZERO linkable rows
+    # (upstream API hiccup, permission change, schema drift dropping the
+    # id/url columns, or a non-lister table routed here by mistake) must not
+    # mass-hide the connection's whole linked set in one pass. Skip the prune
+    # and report a no-op; genuinely-removed apps get hidden by the next
+    # NON-empty sync. (Devin Review on #1116.)
+    if not records and repo.list_linked(source_ref_prefix=adapter.source_ref_prefix(connection_id)):
+        logger.warning(
+            "linked projection [%s]: lister returned no rows while active linked apps exist — skipping prune",
+            connection_id,
+        )
+        return ProjectionResult(created=0, updated=0, hidden=0)
+
     created = 0
     updated = 0
     keep: List[str] = []

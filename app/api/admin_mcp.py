@@ -166,6 +166,13 @@ class UpdateMCPSourceRequest(BaseModel):
 
 class MaterializeRequest(BaseModel):
     tool_id: Optional[str] = None
+    # Linked data apps: ONLY when the caller explicitly designates the
+    # targeted tool as the data-app lister (the /admin/linked-apps wizard
+    # does) is its output table projected into `data_apps`. Without this,
+    # every targeted run — e.g. the per-tool "Materialize now" button on the
+    # source detail page — would be treated as the lister and could fabricate
+    # linked rows from an unrelated table (Devin Review on #1116).
+    lister: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -781,12 +788,15 @@ async def materialize_mcp_source(
 
         freshly_written = {t.get("table") for t in result.get("tables") or []}
         lister_table = None
-        if only_tool_id:
+        if only_tool_id and payload is not None and payload.lister:
+            # Explicit designation only (the wizard's path) — see the
+            # MaterializeRequest.lister comment. A targeted run WITHOUT the
+            # flag (per-tool "Materialize now") never projects.
             tool = tool_registry_repo().get(only_tool_id)
             exposed = (tool or {}).get("exposed_name") or ""
             if exposed in freshly_written:
                 lister_table = exposed
-        elif MATERIALIZED_TABLE in freshly_written:
+        elif not only_tool_id and MATERIALIZED_TABLE in freshly_written:
             lister_table = MATERIALIZED_TABLE
         proj = None
         if lister_table:
