@@ -47,6 +47,20 @@ def _oauth_conn():
            )"""
     )
     conn.execute(
+        """CREATE TABLE mcp_source_oauth_clients (
+              source_id                     VARCHAR PRIMARY KEY,
+              issuer                        VARCHAR NOT NULL,
+              client_id                     VARCHAR NOT NULL,
+              client_secret_enc             BLOB,
+              registration_access_token_enc BLOB,
+              authorization_endpoint        VARCHAR NOT NULL,
+              token_endpoint                VARCHAR NOT NULL,
+              scopes                        VARCHAR,
+              created_at                    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+              updated_at                    TIMESTAMP NOT NULL DEFAULT current_timestamp
+           )"""
+    )
+    conn.execute(
         """CREATE TABLE mcp_user_secrets (
               source_id        VARCHAR NOT NULL,
               user_id          VARCHAR NOT NULL,
@@ -86,8 +100,21 @@ def test_non_expiring_row_is_not_missing(oauth_db):
     enforce_per_user_credential(_SOURCE, "user1")  # no raise
 
 
-def test_expired_with_refresh_token_is_not_missing(oauth_db):
+def _seed_client_row(conn, source_id="src_oauth1"):
+    from src.repositories.mcp_source_oauth_clients import MCPSourceOAuthClientRepository
+
+    MCPSourceOAuthClientRepository(conn).upsert(
+        source_id,
+        issuer="https://as.example.com",
+        client_id="cid",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+    )
+
+
+def test_expired_with_refresh_token_and_client_row_is_not_missing(oauth_db):
     """Still refreshable at call time — not a dead end, so not 'missing'."""
+    _seed_client_row(oauth_db)
     MCPUserOAuthTokenRepository(oauth_db).upsert(
         "src_oauth1",
         "user1",
@@ -96,6 +123,21 @@ def test_expired_with_refresh_token_is_not_missing(oauth_db):
         expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
     )
     enforce_per_user_credential(_SOURCE, "user1")  # no raise
+
+
+def test_expired_with_refresh_token_but_no_client_row_is_missing(oauth_db):
+    """A refresh token with no OAuth client registration to refresh against
+    is a dead end — the client would forward the stale token and surface an
+    opaque upstream 401 instead of this remedy (Devin Review on #1124)."""
+    MCPUserOAuthTokenRepository(oauth_db).upsert(
+        "src_oauth1",
+        "user1",
+        "at-1",
+        refresh_token="rt-1",
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    with pytest.raises(PerUserCredentialMissing):
+        enforce_per_user_credential(_SOURCE, "user1")
 
 
 def test_expired_without_refresh_token_is_missing(oauth_db):
