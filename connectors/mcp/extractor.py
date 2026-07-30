@@ -222,7 +222,8 @@ def _write_zero_row_parquet_like(parquet_path: Path) -> Optional[int]:
     import pyarrow.parquet as pq
 
     try:
-        schema = pq.read_schema(parquet_path)  # footer-only read, never data
+        prev_meta = pq.read_metadata(parquet_path)  # footer-only read, never data
+        schema = prev_meta.schema.to_arrow_schema()
     except Exception:
         logger.warning(
             "empty upstream: previous parquet %s is unreadable; cannot write a zero-row table",
@@ -239,26 +240,36 @@ def _write_zero_row_parquet_like(parquet_path: Path) -> Optional[int]:
     prev_path = parquet_path.with_suffix(parquet_path.suffix + ".prev")
     try:
         pq.write_table(pa.Table.from_batches([], schema=schema), tmp_path)
+        # Only when the file being replaced actually HOLDS rows. On a second
+        # consecutive empty run the live parquet is already the zero-row file,
+        # and copying it would overwrite the one recoverable snapshot with
+        # nothing — destroying the backup in exactly the repeated-
+        # misclassification case it exists for (Devin Review). So `.prev` means
+        # "the last non-empty snapshot", not "the previous file".
+        #
         # copy, not rename: the original must stay in place until the atomic
         # replace below, or a failure between the two steps would leave the
         # table with no parquet at all (carry-forward drops such a table).
-        # Bounded to one copy per table — each emptying overwrites it.
-        try:
-            shutil.copy2(parquet_path, prev_path)
-        except Exception:
-            logger.warning(
-                "empty upstream: could not retain %s; the dropped rows will not be recoverable",
-                prev_path,
-                exc_info=True,
-            )
+        # Bounded to one copy per table — a later non-empty→empty cycle
+        # overwrites it.
+        if prev_meta.num_rows:
+            try:
+                shutil.copy2(parquet_path, prev_path)
+            except Exception:
+                logger.warning(
+                    "empty upstream: could not retain %s; the dropped rows will not be recoverable",
+                    prev_path,
+                    exc_info=True,
+                )
         os.replace(tmp_path, parquet_path)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
     logger.warning(
-        "empty upstream: %s reset to zero rows; previous rows retained at %s",
+        "empty upstream: %s reset to zero rows (%d dropped); last non-empty snapshot %s",
         parquet_path.name,
-        prev_path,
+        prev_meta.num_rows,
+        f"retained at {prev_path}" if prev_path.exists() else "not retained",
     )
     return parquet_path.stat().st_size
 
