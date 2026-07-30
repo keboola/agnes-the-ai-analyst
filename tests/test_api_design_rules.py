@@ -111,6 +111,13 @@ _VERB_PATH_ALLOWLIST = frozenset(
         "/api/admin/discover-tables",
         "/api/admin/register-table",
         "/api/admin/register-table/precheck",
+        # Outbound MCP OAuth client registration (2026-07-30 spec §2) — RFC
+        # 9728/8414 discovery + PKCE-S256 check + RFC 7591 dynamic client
+        # registration in one call; same "discovery + registration,
+        # multi-step, no single resource" shape as discover-and-register
+        # above. The manual-config sibling PUT …/oauth/client has no verb
+        # ("client" isn't in _VERBS) and needs no allowlist entry.
+        "/api/admin/mcp-sources/{source_id}/oauth/register",
         "/api/admin/metadata/{table_id}/push",
         "/api/admin/metrics/import",
         # Profile refresh — triggers async re-profiling of table metadata
