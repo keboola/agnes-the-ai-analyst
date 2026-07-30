@@ -23,8 +23,8 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 16px;
-    padding: 28px 0 20px;
+    gap: var(--space-4);
+    padding: var(--space-7) 0 var(--space-5);
     flex-wrap: wrap;
 }
 .sl-page-head__left { min-width: 0; }
@@ -51,7 +51,7 @@
 }
 .sl-page-head__stats {
     display: flex;
-    gap: 20px;
+    gap: var(--space-5);
     flex-shrink: 0;
     align-items: center;
     padding-top: 4px;
@@ -81,7 +81,7 @@
     overflow: hidden;
     background: var(--ds-surface);
     min-height: 480px;
-    margin-bottom: 40px;
+    margin-bottom: var(--space-9);
 }
 @media (max-width: 660px) {
     .sl-shell { grid-template-columns: 1fr; }
@@ -172,7 +172,7 @@
     font-size: 10px;
     background: var(--ds-surface);
     border: 1px solid var(--ds-border);
-    border-radius: 20px;
+    border-radius: var(--radius-full);
     padding: 1px 6px;
     color: var(--ds-text-muted);
     flex-shrink: 0;
@@ -189,7 +189,7 @@
 .sl-main-panel.is-active { display: flex; }
 
 .sl-main-bar {
-    padding: 12px 18px;
+    padding: var(--space-3) var(--space-4);
     border-bottom: 1px solid var(--ds-border);
     display: flex;
     align-items: center;
@@ -201,7 +201,7 @@
     font-size: 11px;
     background: var(--ds-surface-dim);
     border: 1px solid var(--ds-border);
-    border-radius: 20px;
+    border-radius: var(--radius-full);
     padding: 2px 8px;
     color: var(--ds-text-muted);
 }
@@ -306,10 +306,12 @@
     border: 1px solid var(--ds-border);
     line-height: 1.5;
 }
-.sl-detail__desc { margin: 0 0 10px; }
+.sl-detail__desc { margin: 0 0 10px; overflow-x: auto; }
 .sl-detail__desc h2, .sl-detail__desc h3 {
     font-size: 13px; font-weight: 600; color: var(--ds-text-primary); margin: 8px 0 4px;
 }
+.sl-detail__desc table { border-collapse: collapse; margin: 0 0 8px; }
+.sl-detail__desc th, .sl-detail__desc td { border: 1px solid var(--ds-border); padding: 2px 8px; font-size: 12px; }
 .sl-detail__desc code { background: var(--ds-surface); padding: 0 4px; border-radius: var(--radius-sm); font-size: 11px; }
 
 /* ── Glossary grid ───────────────────────────────────────────────────── */
@@ -394,6 +396,12 @@
     border-radius: var(--radius-sm);
     font-size: 12px;
     border: 1px solid var(--ds-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sl-tab, .sl-cat-btn, .sl-row, .sl-row__dot, .sl-row__chev, .sl-term {
+        transition: none;
+    }
 }
 </style>
 {% endblock %}
