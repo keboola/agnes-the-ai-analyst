@@ -180,6 +180,62 @@ class TestTargetedRunMerges:
         assert views["accounts"] == ["accounts-v1-1", "accounts-v1-2"]
         assert views["orders"] == ["orders-v1-1", "orders-v1-2"]
 
+    def test_targeted_run_carries_dashed_table_names(self, system_conn, e2e_env, monkeypatch):
+        """MCP tool names commonly contain dashes (`get-library-docs`) and the
+        write path accepts them as exposed_names — the carry-forward gate must
+        not be stricter, or a targeted run of another tool silently drops the
+        dashed table (the exact loss this change prevents)."""
+        ToolRegistryRepository(system_conn).upsert(
+            tool_id="tool_c",
+            source_id=SOURCE_ID,
+            original_name="get-library-docs",
+            exposed_name="crm_get-library-docs",
+            mode="materialize",
+            schedule="0 * * * *",
+        )
+        _run_full(system_conn, e2e_env, monkeypatch, batch="v1")
+
+        monkeypatch.setattr(mcp_extractor, "_materialize_one_tool", _make_fake_materialize("v2"))
+        result = mcp_extractor.extract_source(
+            system_conn=system_conn,
+            source_id=SOURCE_ID,
+            only_tool_id="tool_a",
+            output_root=e2e_env["extracts_dir"] / SOURCE_NAME,
+        )
+        assert sorted(result["carried_forward"]) == ["crm_get-library-docs", "orders"]
+
+        meta, views = _extract_state(e2e_env["extracts_dir"] / SOURCE_NAME / "extract.duckdb")
+        assert meta == {"accounts", "orders", "crm_get-library-docs"}
+        assert views["crm_get-library-docs"] == [
+            "crm_get-library-docs-v1-1",
+            "crm_get-library-docs-v1-2",
+        ]
+
+    def test_full_run_failure_keeps_last_known_good(self, system_conn, e2e_env, monkeypatch):
+        """A full-source run where one tool's upstream flakes must not
+        vaporize that tool's healthy table either — same last-known-good
+        stance as targeted runs."""
+        _run_full(system_conn, e2e_env, monkeypatch, batch="v1")
+
+        monkeypatch.setattr(
+            mcp_extractor,
+            "_materialize_one_tool",
+            _make_fake_materialize("v2", fail_tools={"accounts"}),
+        )
+        result = mcp_extractor.extract_source(
+            system_conn=system_conn,
+            source_id=SOURCE_ID,
+            output_root=e2e_env["extracts_dir"] / SOURCE_NAME,
+        )
+        assert [t["table"] for t in result["tables"]] == ["orders"]
+        assert [e["tool"] for e in result["errors"]] == ["accounts"]
+        assert result["carried_forward"] == ["accounts"]
+
+        meta, views = _extract_state(e2e_env["extracts_dir"] / SOURCE_NAME / "extract.duckdb")
+        assert meta == {"accounts", "orders"}
+        assert views["accounts"] == ["accounts-v1-1", "accounts-v1-2"]
+        assert views["orders"] == ["orders-v2-1", "orders-v2-2"]
+
     def test_targeted_run_prunes_unregistered_tables(self, system_conn, e2e_env, monkeypatch):
         """A previous table whose tool was renamed (or disabled/deleted) since
         the last run must NOT be carried forward — otherwise the stale

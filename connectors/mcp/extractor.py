@@ -28,7 +28,7 @@ import duckdb
 import pandas as pd
 
 from src.duckdb_conn import _open_duckdb
-from src.identifier_validation import validate_identifier
+from src.identifier_validation import validate_quoted_identifier
 from src.repositories.mcp_sources import MCPSourceRepository
 from src.repositories.tool_registry import MATERIALIZE, ToolRegistryRepository
 
@@ -145,19 +145,20 @@ def _carry_forward_untouched(
 ) -> List[str]:
     """Merge the previous extract's untouched tables into the fresh one.
 
-    A targeted (``only_tool_id``) run rebuilds ``extract.duckdb`` from
-    scratch; without this, the ``_meta`` rows + views of every OTHER
-    materialize-mode tool of the source would vanish until the next
+    Every run rebuilds ``extract.duckdb`` from scratch; without this, the
+    ``_meta`` rows + views of every table the run didn't (re-)write — the
+    tools a targeted (``only_tool_id``) run skipped, or a tool whose
+    upstream call failed — would vanish until the next successful
     full-source run (their parquets stay on disk but the orchestrator's
     rebuild loses the views). Re-inserts each previous ``_meta`` row whose
-    table was not (re-)written in this run and recreates its view over the
+    table was not written in this run and recreates its view over the
     existing parquet. Returns the carried table names.
 
     ``keep`` is the set of exposed_names of the source's currently
     registered, enabled materialize-mode tools: previous tables outside it
     (tool renamed, disabled, or deleted since the last run) are pruned
-    rather than carried, so stale tables can't survive indefinitely under
-    repeated targeted runs. ``exclude`` is what this run already wrote.
+    rather than carried, so stale tables can't survive indefinitely.
+    ``exclude`` is what this run already wrote.
     """
     if not prev_db_path.exists():
         return []
@@ -184,7 +185,11 @@ def _carry_forward_untouched(
     for table_name, description, rows, size_bytes, extracted_at, query_mode in prev_rows:
         if table_name in exclude or table_name not in keep:
             continue
-        if not validate_identifier(table_name, "carry-forward table_name"):
+        # Relaxed check on purpose: the write path accepts dashed/dotted
+        # exposed_names (common for MCP tool names), so the carry-forward
+        # gate must not be stricter than what a full run writes. Still
+        # refuses quote-breakout, path separators, and control chars.
+        if not validate_quoted_identifier(table_name, "carry-forward table_name"):
             continue
         parquet_path = output_root / "data" / f"{table_name}.parquet"
         if not parquet_path.exists():
@@ -332,19 +337,18 @@ async def extract_source_async(
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
                 errors.append({"tool": tool["exposed_name"], "error": str(exc)})
-        if only_tool_id:
-            # Targeted run → merge semantics: keep every previously
-            # materialized table this run didn't (re-)write, including the
-            # targeted tool's last-known-good snapshot if its upstream call
-            # failed above. Full runs keep replace semantics so removed /
-            # disabled tools drop out.
-            carried = _carry_forward_untouched(
-                out_conn,
-                prev_db_path=db_path,
-                output_root=output_root,
-                keep=registered_names,
-                exclude={t["table"] for t in summary_tables},
-            )
+        # Merge semantics: keep every previously materialized table this run
+        # didn't (re-)write — the tools a targeted run skipped, plus the
+        # last-known-good snapshot of any tool whose upstream call failed
+        # above. Tables whose tool left the registry (renamed / disabled /
+        # deleted) are not in ``registered_names`` and drop out.
+        carried = _carry_forward_untouched(
+            out_conn,
+            prev_db_path=db_path,
+            output_root=output_root,
+            keep=registered_names,
+            exclude={t["table"] for t in summary_tables},
+        )
     finally:
         out_conn.close()
 
@@ -436,15 +440,14 @@ def extract_source(
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
                 errors.append({"tool": tool["exposed_name"], "error": str(exc)})
-        if only_tool_id:
-            # Targeted run → merge semantics (see extract_source_async).
-            carried = _carry_forward_untouched(
-                out_conn,
-                prev_db_path=db_path,
-                output_root=output_root,
-                keep=registered_names,
-                exclude={t["table"] for t in summary_tables},
-            )
+        # Merge semantics (see extract_source_async).
+        carried = _carry_forward_untouched(
+            out_conn,
+            prev_db_path=db_path,
+            output_root=output_root,
+            keep=registered_names,
+            exclude={t["table"] for t in summary_tables},
+        )
     finally:
         out_conn.close()
 
