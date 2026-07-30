@@ -196,6 +196,14 @@
          Agnes anything" heading directly above the composer. #}
       <div class="klb-hub-label klb-hub-label--lead">{{ knowledge_hub_label(show_title=False) }}</div>
       <h2 class="rdb-ask-heading">Ask {{ instance_brand_short or 'Agnes' }} anything</h2>
+      {# Semantic layer entry (#1108) — the only in-page path to
+         /catalog/semantics in the rail chrome (no rail nav item by design,
+         see _app_rail.html). Browse the metrics + glossary list. #}
+      <p class="rdb-semantic-links">
+        <a class="btn btn-secondary btn-sm" href="/catalog/semantics">
+          {{ ico.icon('rows', 16) }} Browse metrics &amp; glossary
+        </a>
+      </p>
     </aside>
     {% else %}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">

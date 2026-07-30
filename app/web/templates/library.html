@@ -283,6 +283,11 @@
      of their own under the title. */
   .lib-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px 20px; flex-wrap: wrap; margin: 8px 0 0; }
   .lib-head__titles { flex: 1 1 320px; min-width: 0; }
+  /* #1108 — browse door to /catalog/semantics, under the lede, separate from
+     the create-oriented "+ Add" menu. */
+  .lib-lede-action { margin-top: 8px; }
+  .lib-browse-cta { color: var(--ds-primary); text-decoration: none; font-weight: 600; font-size: 14px; }
+  .lib-browse-cta:hover { text-decoration: underline; }
   /* Page-level notes close the head: this banner, then the two `.pnote`
      caveats. The gap BELOW comes from padding, not margin — the first notice
      has no top margin of its own, and margin here would collapse-adjoin it.
@@ -1145,6 +1150,12 @@
   <div class="lib-head__titles">
     <h1>Library</h1>
     <p class="lede">Knowledge shared by your organization, plus everything you upload or generate — all in one place. Share it with your team and make it searchable by your agents.</p>
+    {# Browse the semantic layer (#1108) — the metrics + glossary list lives at
+       /catalog/semantics; a read/scan door, distinct from the create-oriented
+       "+ Add" menu. #}
+    <div class="lib-lede-action">
+      <a class="lib-browse-cta" href="/catalog/semantics">Browse metrics &amp; glossary →</a>
+    </div>
   </div>
   <div class="lib-actions">
     {# Same `.fbar__search` control the toolbar used, carrying its own

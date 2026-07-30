@@ -218,3 +218,13 @@ class TestChatEmptyStatePill:
         resp = c.get("/chat", follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["location"].startswith("/login")
+
+    def test_rail_empty_state_has_semantic_layer_link(self, seeded_app, monkeypatch):
+        """Rail chat empty state exposes a 'Browse metrics & glossary' link to
+        /catalog/semantics (#1108) — the only in-page path to that page in the
+        rail chrome (no rail nav item by design)."""
+        _enable_rail_chat(seeded_app, monkeypatch)
+        c = seeded_app["client"]
+        resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
+        assert 'href="/catalog/semantics"' in resp.text
