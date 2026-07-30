@@ -5690,6 +5690,52 @@ SCHEDULER_AUDIT_ACTIONS = [
 ]
 
 
+@router.get("/admin/store", response_class=HTMLResponse)
+async def admin_moderation_hub_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Moderation & Trust — one admin surface for entity verification,
+    submission review, and marketplace curation.
+
+    Lists Store entities awaiting verification (``verification_state='requested'``)
+    with a direct link to each entity's detail page, where the Verify /
+    Request changes / Archive / Override actions live. The pre-publish
+    submission queue and marketplace curation are surfaced as links (count +
+    jump-off), not rebuilt here. ``/admin/store`` is the natural parent of the
+    ``/admin/store/submissions`` review queue.
+    """
+    from app.instance_config import get_store_verification_enabled
+
+    verification_enabled = get_store_verification_enabled()
+    verification_requests: list = []
+    if verification_enabled:
+        # Admin view: no visibility_status filter, so a requested entity
+        # surfaces regardless of its lifecycle state.
+        verification_requests, _ = store_entities_repo().list(
+            verification_state=["requested"],
+            limit=200,
+        )
+
+    # "Needs review" count for the submission queue — verdict states that
+    # still require an admin decision (mirrors the queue's pending chips).
+    _, pending_submissions_total = store_submissions_repo().list_for_admin(
+        status=["pending_inline", "pending_llm", "blocked_llm", "review_error"],
+        limit=1,
+    )
+
+    ctx = _build_context(
+        request,
+        user=user,
+        verification_requests=verification_requests,
+        verification_total=len(verification_requests),
+        pending_submissions_total=pending_submissions_total,
+        store_verification_enabled=verification_enabled,
+    )
+    return templates.TemplateResponse(request, "admin_moderation_hub.html", ctx)
+
+
 @router.get("/admin/store/submissions", response_class=HTMLResponse)
 async def admin_store_submissions_page(
     request: Request,

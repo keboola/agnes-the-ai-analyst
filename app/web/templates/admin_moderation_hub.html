@@ -1,0 +1,86 @@
+{% extends "base_page.html" %}
+{% block title %}Moderation &amp; Trust — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--full{% endblock %}
+
+{% set page_hero_eyebrow = "Moderation" %}
+{% set page_hero_title = "Moderation & Trust" %}
+{% set page_hero_subtitle = "Verification requests, submission review, and marketplace curation in one place." %}
+
+{% block head_extra %}
+<style>
+  .mod-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: var(--space-4);
+    margin: var(--space-5) 0 var(--space-6);
+  }
+  .mod-section-title {
+    font-size: var(--text-15);
+    font-weight: 700;
+    color: var(--ds-text-primary);
+    margin: 0 0 var(--space-3);
+  }
+  .mod-count { font-weight: 700; color: var(--ds-text-primary); }
+  .mod-owner { color: var(--ds-text-secondary); }
+  .mod-type {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--ds-border);
+    font-size: var(--text-13);
+    color: var(--ds-text-secondary);
+    text-transform: capitalize;
+  }
+</style>
+{% endblock %}
+
+{% block page %}
+
+<div class="mod-summary">
+  {% call ds.panel(title='Submission review queue', href='/admin/store/submissions') %}
+    <span class="mod-count">{{ pending_submissions_total }}</span> submission(s) awaiting review.
+  {% endcall %}
+  {% call ds.panel(title='Curated marketplaces', href='/admin/marketplaces') %}
+    Register marketplace repos, sync them, and mark plugins system / disabled.
+  {% endcall %}
+</div>
+
+<h2 class="mod-section-title">Verification requests</h2>
+
+{% if not store_verification_enabled %}
+  <div class="empty-state">
+    Verification is not enabled on this instance. Turn it on with
+    <code>store.verification_enabled</code> to let authors request an
+    organization review.
+  </div>
+{% elif verification_requests %}
+  <table class="ds-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th>Owner</th>
+        <th>Submitted</th>
+        <th class="num">Review</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in verification_requests %}
+      <tr>
+        <td>{{ e.title or e.name }}</td>
+        <td><span class="mod-type">{{ e.type }}</span></td>
+        <td class="mod-owner">{{ e.owner_username or '—' }}</td>
+        <td class="mod-owner">{{ e.created_at }}</td>
+        <td class="num">
+          <a class="btn btn-secondary btn-sm"
+             href="/marketplace/flea/{{ e.id }}?from=admin-moderation">Review →</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <div class="empty-state">No verification requests waiting.</div>
+{% endif %}
+
+{% endblock %}
