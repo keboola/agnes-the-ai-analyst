@@ -200,6 +200,55 @@ def test_metric_scoring_prefers_term_overlap():
     assert syn and syn[0]["id"] == "product/wau"
 
 
+def test_semantic_buckets_capped_so_legacy_types_not_displaced():
+    """Metric + glossary buckets are capped at max(2, k//5) so their top-1
+    _minmax score of 1.0 cannot crowd out legacy chunk/knowledge/table hits."""
+    from src.search.unified import unified_search
+
+    # Build many matching metrics and glossary terms to stress the cap.
+    many_metrics = [
+        {
+            "id": f"cat/m{i}",
+            "name": f"metric{i}",
+            "display_name": f"Metric {i}",
+            "description": "revenue orders",
+            "synonyms": [],
+            "category": "cat",
+        }
+        for i in range(10)
+    ]
+
+    def many_glossary(query, limit=10):
+        return [{"id": f"g{i}", "term": f"Term {i}", "definition": "revenue"} for i in range(limit)]
+
+    with (
+        patch("src.search.unified._chunk_search", _fake_chunks),
+        patch("src.search.unified._knowledge_search", _fake_knowledge),
+        patch("src.search.unified._glossary_search", many_glossary),
+    ):
+        hits = unified_search(
+            "revenue orders",
+            corpus_ids=["c1"],
+            user_groups=["g"],
+            granted_domains=["d"],
+            tables=TABLES,
+            metrics=many_metrics,
+            k=10,
+        )
+
+    by_type: dict = {}
+    for h in hits:
+        by_type.setdefault(h["type"], 0)
+        by_type[h["type"]] += 1
+
+    # Cap is max(2, 10//5) = 2 — neither new bucket may take more than 2 slots.
+    assert by_type.get("metric", 0) <= 2
+    assert by_type.get("glossary", 0) <= 2
+    # Legacy types must still appear.
+    assert by_type.get("chunk", 0) >= 1
+    assert by_type.get("table", 0) >= 1
+
+
 def test_none_grants_mean_unfiltered_privileged_viewer():
     """None (admin) must NOT be treated as fail-closed — repo gets None filters."""
     from src.search.unified import unified_search

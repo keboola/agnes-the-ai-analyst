@@ -185,12 +185,18 @@ def unified_search(
             )
     buckets.append(knowledge_hits)
     buckets.append(_table_scores(query, tables)[:k] if tables else [])
-    buckets.append(_metric_scores(query, metrics or [])[:k] if metrics else [])
+
+    # Cap the new semantic buckets so their _minmax-normalized top-1 hit
+    # (score=1.0) cannot crowd out more than a proportional share of the
+    # final k slots.  max(2, k//5) gives 2 slots at k=10 and scales up
+    # with larger k values.  The three legacy buckets keep their [:k] cap.
+    _sem_cap = max(2, k // 5)
+    buckets.append(_metric_scores(query, metrics or [])[:_sem_cap] if metrics else [])
 
     # Glossary is public — fetched inside, not caller-prefiltered. BM25 score is
     # NULL in the ILIKE fallback, so decay by rank like the knowledge bucket.
     glossary_hits: List[Dict[str, Any]] = []
-    for rank, g in enumerate(_glossary_search(query, limit=k)):
+    for rank, g in enumerate(_glossary_search(query, limit=_sem_cap)):
         glossary_hits.append(
             {
                 "type": "glossary",
