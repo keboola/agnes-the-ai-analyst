@@ -99,26 +99,66 @@ def _find_data_array(payload: Any) -> Optional[List[Dict[str, Any]]]:
     return None
 
 
+# Keys whose truthy value says the request did not fully succeed. An upstream
+# that answers HTTP-200-with-a-soft-error (``{"error": "quota exceeded",
+# "accounts": []}``, ``{"status": "degraded", "details": []}``) must never be
+# read as "the table is empty" — that would overwrite the last-known-good
+# parquet on a rate limit. Deliberately narrow: keys that routinely ride along
+# with a successful response (``message``, ``detail``, ``warning``) are NOT
+# here, because treating those as failures would re-pin genuinely empty tables
+# to stale data — the bug this whole path exists to fix.
+_FAILURE_SIGNAL_KEYS = frozenset({"error", "errors", "err", "exception", "failure", "fault", "status", "state"})
+_SUCCESS_VALUES = frozenset(
+    {"ok", "okay", "success", "successful", "succeeded", "healthy", "complete", "completed", "done"}
+)
+
+
+def _looks_like_soft_failure(payload: Dict[str, Any]) -> bool:
+    """True when a 200 response carries an in-band failure signal."""
+    for key, value in payload.items():
+        if not isinstance(key, str) or key.lower() not in _FAILURE_SIGNAL_KEYS:
+            continue
+        if value is True:  # {"error": true}
+            return True
+        if isinstance(value, dict) and value:  # {"error": {"code": 429}}
+            return True
+        if isinstance(value, str) and value.strip() and value.strip().lower() not in _SUCCESS_VALUES:
+            return True
+    return False
+
+
 def _upstream_is_empty(payload: Any) -> bool:
     """True when a SUCCESSFUL response carries a legitimately empty collection.
 
     ``_find_data_array`` returns None for two situations that need opposite
     handling: the upstream has no rows right now (``[]``,
     ``{"accounts": [], "total": 0}``) — a real, materializable state — and the
-    response is simply not table-shaped (``{"status": "degraded"}``,
+    response does not describe an empty table at all (``{"status": "degraded"}``,
     ``{"names": ["a"]}``) — a classification or upstream problem where the
     safest move is to keep the last-known-good table.
 
-    A dict qualifies only when it has at least one list value and *every* list
-    value is empty. A mixed payload (``{"items": [], "rows": ["a"]}``) stays a
-    hard error: something non-empty is in there that we failed to interpret, so
-    "the table is empty" is not a safe conclusion.
+    A dict qualifies only when it has at least one list value, *every* list
+    value is empty, no value carries an in-band failure signal, and no value is
+    a non-empty dict. The last two exclusions matter because this function
+    decides whether to overwrite a parquet we still depend on:
+
+    * ``{"error": "quota exceeded", "accounts": []}`` — a soft-failed 200 would
+      otherwise wipe the table on a rate limit;
+    * ``{"accounts": {"a1": {...}}, "warnings": []}`` — the real content sits in
+      a container we failed to interpret, so "empty" is not a safe conclusion
+      (same reasoning as a mixed ``{"items": [], "rows": ["a"]}``).
+
+    Both were raised by Devin Review on this change.
     """
     if isinstance(payload, list):
         return not payload
     if isinstance(payload, dict):
         lists = [v for v in payload.values() if isinstance(v, list)]
-        return bool(lists) and all(not v for v in lists)
+        if not lists or any(v for v in lists):
+            return False
+        if any(isinstance(v, dict) and v for v in payload.values()):
+            return False
+        return not _looks_like_soft_failure(payload)
     return False
 
 
