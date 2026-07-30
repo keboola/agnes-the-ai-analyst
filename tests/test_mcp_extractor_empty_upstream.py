@@ -24,6 +24,7 @@ import json
 from typing import Any, Dict
 
 import duckdb
+import pandas as pd
 import pytest
 
 import connectors.mcp.client as mcp_client
@@ -132,6 +133,31 @@ class TestEmptyUpstream:
         assert meta == {TABLE: 0}
         assert cols == ["id", "name"]  # schema reused from the previous snapshot
         assert ids == []  # stale rows gone
+
+    def test_dropped_rows_are_retained_for_recovery(self, system_conn, e2e_env, monkeypatch):
+        """The reset is the extractor's one destructive step and no in-band
+        failure heuristic is perfect, so the rows it drops stay on disk as a
+        single `.parquet.prev` sibling (Devin Review). Bounded to one copy —
+        a second emptying overwrites it, it never accumulates per run."""
+        _fake_upstream(monkeypatch, _payload("v1"))
+        _run(system_conn, e2e_env)
+        _fake_upstream(monkeypatch, EMPTY_PAYLOAD)
+        _run(system_conn, e2e_env)
+
+        data_dir = e2e_env["extracts_dir"] / SOURCE_NAME / "data"
+        prev = data_dir / f"{TABLE}.parquet.prev"
+        assert prev.exists()
+        assert sorted(pd.read_parquet(prev)["id"]) == ["a-v1-1", "a-v1-2"]
+        # the live parquet is the zero-row one, and no .tmp is left behind
+        assert len(pd.read_parquet(data_dir / f"{TABLE}.parquet")) == 0
+        assert not (data_dir / f"{TABLE}.parquet.tmp").exists()
+
+        # a .prev sibling must not be mistaken for a table by carry-forward
+        _fake_upstream(monkeypatch, RuntimeError("upstream flaked"))
+        result = _run(system_conn, e2e_env)
+        assert result["carried_forward"] == [TABLE]
+        meta, _, _ = _table_state(e2e_env["extracts_dir"] / SOURCE_NAME / "extract.duckdb")
+        assert meta == {TABLE: 0}
 
     def test_sync_path_resets_too(self, system_conn, e2e_env, monkeypatch):
         """The scheduler/CLI wrapper shares the contract with the async one."""
