@@ -602,10 +602,24 @@ def _next_nonspace(s: str, idx: int) -> str:
 def _normalize_table_path(raw: str) -> Optional[str]:
     """Reduce a matched identifier path to the table id used for tagging.
 
-    Quotes are stripped per segment. Three or more segments means a fully
-    qualified reference (`project.dataset.table`, `catalog.schema.table`)
-    whose leading segments name the *source* rather than the table, so only
-    the tail is kept. Two-part `schema.table` names stay qualified.
+    Quotes are stripped per segment and the segments are re-joined with dots,
+    so the recorded id keeps the WHOLE path the query named
+    (`project.dataset.table`, `bq.dataset.table`, `schema.table`).
+
+    Keeping only the tail segment was ambiguous in both directions, and the
+    id is the group-by key of the top-tables ranking:
+
+    * two physically different tables that share a name
+      (`proj_a.ds1.orders`, `proj_b.ds2.orders`) aggregated into one row, and
+      that row could read as `registered` merely because an unrelated
+      registry id happened to be `orders`;
+    * a registry-gated `bq."dataset"."table"` reduced to a bare `table`,
+      which usually matches no registry id, so a legitimately gated query
+      rendered as `unregistered`.
+
+    Mapping a path onto the registry id it refers to is the aggregation's job
+    (``_registry_identity_keys`` in ``src/repositories/usage.py``), which can
+    do it *without* first discarding what the query actually referenced.
     """
     parts: list[str] = []
     for segment in re.findall(_SQL_IDENT_SEGMENT, raw):
@@ -613,7 +627,7 @@ def _normalize_table_path(raw: str) -> Optional[str]:
         parts.extend(piece for piece in inner.split(".") if piece)
     if not parts:
         return None
-    return parts[-1] if len(parts) >= 3 else ".".join(parts)
+    return ".".join(parts)
 
 
 def _first_table_from_sql(sql: str) -> Optional[str]:
@@ -622,14 +636,15 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
     Regex-based and still best-effort, but the result is the group-by key of
     the query-telemetry top-tables ranking, so a non-table identifier does not
     merely pollute one audit row — it surfaces on a dashboard as usage of a
-    table that does not exist. Three classes are therefore filtered out
+    table that does not exist. Two classes are therefore filtered out
     rather than tolerated:
 
     * `FROM` used as a function argument separator (`EXTRACT(… FROM col)`),
       which would otherwise tag the *column*;
-    * table-valued functions (`FROM UNNEST([…])`), which are inline values;
-    * the leading segments of a qualified path, which name the source rather
-      than the table (and previously truncated the id at the first `-`).
+    * table-valued functions (`FROM UNNEST([…])`), which are inline values.
+
+    A qualified path is recorded in full (see `_normalize_table_path`); the
+    aggregation resolves it to a registry id when one owns that path.
 
     Returns None when no table reference is found.
     """
