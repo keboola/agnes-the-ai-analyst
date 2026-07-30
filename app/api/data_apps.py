@@ -995,6 +995,7 @@ async def mint_git_credential(
 ):
     _feature_gate()
     row = _get_row_or_404(slug)
+    _reject_linked(row)
     _require_owner_or_admin(user, row)
     try:
         url = _mint_git_credential(row)
@@ -1024,6 +1025,7 @@ async def create_preview_grant(
     """
     _feature_gate()
     row = _get_row_or_404(slug)
+    _reject_linked(row)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
     _token, cookie = _mint_preview_token(row, user)
@@ -1071,6 +1073,7 @@ async def create_draft(
     """
     _feature_gate()
     parent = _get_row_or_404(slug)
+    _reject_linked(parent)
     _require_owner_or_admin(user, parent)
     if parent.get("is_draft"):
         raise HTTPException(status_code=400, detail="parent_is_draft")
@@ -1271,6 +1274,7 @@ async def delete_data_app(
     """
     _feature_gate()
     row = _get_row_or_404(slug)
+    _reject_linked(row)
     _require_owner_or_admin(user, row)
     if row.get("is_draft"):
         raise HTTPException(status_code=400, detail="use_draft_delete_route")
@@ -1316,6 +1320,7 @@ async def set_data_app_secrets(
 ):
     _feature_gate()
     row = _get_row_or_404(slug)
+    _reject_linked(row)
     _require_owner_or_admin(user, row)
 
     try:

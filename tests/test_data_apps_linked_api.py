@@ -213,13 +213,18 @@ def test_hosted_lifecycle_actions_reject_linked_apps(linked_env):
     out of the sync's control permanently (Devin Review on #1116)."""
     c, pats = linked_env["client"], linked_env["pats"]
     admin = _auth(pats["admin1"])
-    for method, path in (
-        ("post", "/api/data-apps/kbc-sales/deploy"),
-        ("post", "/api/data-apps/kbc-sales/stop"),
-        ("get", "/api/data-apps/kbc-sales/logs"),
-        ("get", "/api/data-apps/kbc-sales/readiness"),
+    for method, path, body in (
+        ("post", "/api/data-apps/kbc-sales/deploy", {"mode": "stable"}),
+        ("post", "/api/data-apps/kbc-sales/stop", None),
+        ("get", "/api/data-apps/kbc-sales/logs", None),
+        ("get", "/api/data-apps/kbc-sales/readiness", None),
+        ("post", "/api/data-apps/kbc-sales/git-credential", None),
+        ("post", "/api/data-apps/kbc-sales/preview-grant", None),
+        ("post", "/api/data-apps/kbc-sales/drafts", {"branch": "dev"}),
+        ("put", "/api/data-apps/kbc-sales/secrets", {"secrets": {}}),
+        ("delete", "/api/data-apps/kbc-sales", None),
     ):
-        kwargs = {"json": {"mode": "stable"}} if path.endswith("/deploy") else {}
+        kwargs = {"json": body} if body is not None else {}
         resp = getattr(c, method)(path, headers=admin, **kwargs)
         assert resp.status_code == 400, (path, resp.status_code, resp.text)
         assert "linked_app_not_hosted" in resp.text
