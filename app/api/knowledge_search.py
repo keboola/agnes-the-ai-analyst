@@ -93,13 +93,19 @@ async def knowledge_search(
     tables = [t for t in table_registry_repo().list_all() if allowed is None or t["id"] in allowed]
 
     # Metrics are RBAC-gated by table access (#953): a metric is visible only if
-    # every table it references is accessible. Reuse the metrics endpoint's
-    # helper against the already-resolved `allowed` set (admins short-circuit
-    # with zero lookups). Local import avoids an app.api.metrics import cycle.
-    from app.api.metrics import _first_inaccessible_table
+    # every table it references is accessible. We already have the full
+    # accessible-table list in `tables` — build a name-set from it so the
+    # per-metric check is an O(1) dict lookup instead of one get_by_name DB
+    # call per referenced table name (avoids N×M DB hits on every keystroke for
+    # non-admin callers). Admins short-circuit via allowed=None as before.
+    from app.api.metrics import _metric_table_names
     from src.repositories import metric_repo
 
-    metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
+    if allowed is None:
+        metrics = metric_repo().list()
+    else:
+        _accessible_names: set[str] = {t["name"] for t in tables}
+        metrics = [m for m in metric_repo().list() if all(n in _accessible_names for n in _metric_table_names(m))]
 
     results = unified_search(
         q,
