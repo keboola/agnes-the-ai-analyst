@@ -316,3 +316,58 @@ class TestOrchestratorRebuildAfterTargetedRun:
             conn.close()
         assert accounts == {"accounts-v2-1", "accounts-v2-2"}
         assert orders == {"orders-v1-1", "orders-v1-2"}
+
+
+def test_carry_forward_skips_an_unreadable_parquet(tmp_path):
+    """One corrupt leftover must not fail the whole run — carry-forward is
+    best-effort housekeeping for tables this run didn't touch, and the raise
+    lands outside the per-tool try/except (Devin Review on #1119)."""
+    import duckdb
+
+    from connectors.mcp.extractor import _carry_forward_untouched
+
+    output_root = tmp_path / "out"
+    (output_root / "data").mkdir(parents=True)
+    duckdb.connect().execute(f"COPY (SELECT 1 AS x) TO '{output_root / 'data' / 'good.parquet'}' (FORMAT PARQUET)")
+    # zero-byte file, as left by an interrupted write
+    (output_root / "data" / "corrupt.parquet").write_bytes(b"")
+
+    prev_db = tmp_path / "prev.duckdb"
+    prev = duckdb.connect(str(prev_db))
+    prev.execute(
+        "CREATE TABLE _meta (table_name VARCHAR, description VARCHAR, rows BIGINT, "
+        "size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR)"
+    )
+    for name in ("corrupt", "good"):
+        prev.execute("INSERT INTO _meta VALUES (?, '', 1, 10, now(), 'local')", [name])
+    prev.close()
+
+    out_conn = duckdb.connect(str(tmp_path / "new.duckdb"))
+    out_conn.execute(
+        "CREATE TABLE _meta (table_name VARCHAR, description VARCHAR, rows BIGINT, "
+        "size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR)"
+    )
+    carried = _carry_forward_untouched(
+        out_conn,
+        prev_db_path=prev_db,
+        output_root=output_root,
+        keep={"corrupt", "good"},
+        exclude=set(),
+    )
+    meta_rows = {r[0] for r in out_conn.execute("SELECT table_name FROM _meta").fetchall()}
+    out_conn.close()
+
+    assert carried == ["good"]  # the healthy table survives
+    assert "corrupt" not in meta_rows  # and the bad one leaves no half-row
+
+
+def test_nothing_to_materialize_returns_the_same_shape():
+    """The early exit must carry `carried_forward` like every other exit, so
+    callers reading it don't break depending on which path ran."""
+    import inspect
+
+    from connectors.mcp import extractor
+
+    src = inspect.getsource(extractor)
+    assert src.count('"note": "no materialize tools to run"') == 2
+    assert src.count('"carried_forward": [],') == 2

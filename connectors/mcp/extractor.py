@@ -195,11 +195,29 @@ def _carry_forward_untouched(
         if not parquet_path.exists():
             logger.warning("carry-forward: parquet missing for %s; dropping its stale _meta row", table_name)
             continue
-        out_conn.execute(
-            "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, ?)",
-            [table_name, description, rows, size_bytes, extracted_at, query_mode],
-        )
-        _create_view(out_conn, table_name, parquet_path)
+        # Per-row guard: carry-forward is best-effort housekeeping for tables
+        # this run didn't touch, so one unreadable leftover parquet (zero-byte
+        # from an interrupted write, truncated, a directory) must not fail the
+        # whole materialize request and throw away the data just fetched.
+        # DuckDB binds read_parquet at CREATE VIEW time, so the raise lands
+        # here, outside the per-tool try/except (Devin Review on #1119).
+        # View first, _meta second: DuckDB binds read_parquet at CREATE VIEW
+        # time, so an unreadable file raises there — doing the INSERT first
+        # would leave a _meta row describing a table with no view behind it.
+        try:
+            _create_view(out_conn, table_name, parquet_path)
+            out_conn.execute(
+                "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, ?)",
+                [table_name, description, rows, size_bytes, extracted_at, query_mode],
+            )
+        except Exception:
+            logger.warning(
+                "carry-forward: could not re-attach %s from %s; skipping it this run",
+                table_name,
+                parquet_path,
+                exc_info=True,
+            )
+            continue
         carried.append(table_name)
     return carried
 
@@ -301,7 +319,13 @@ async def extract_source_async(
     if only_tool_id:
         tools = [t for t in tools if t["tool_id"] == only_tool_id]
     if not tools:
-        return {"source_name": source["name"], "tables": [], "errors": [], "note": "no materialize tools to run"}
+        return {
+            "source_name": source["name"],
+            "tables": [],
+            "errors": [],
+            "carried_forward": [],
+            "note": "no materialize tools to run",
+        }
 
     if output_root is None:
         output_root = output_dir_for_source(source["name"])
@@ -404,7 +428,13 @@ def extract_source(
     if only_tool_id:
         tools = [t for t in tools if t["tool_id"] == only_tool_id]
     if not tools:
-        return {"source_name": source["name"], "tables": [], "errors": [], "note": "no materialize tools to run"}
+        return {
+            "source_name": source["name"],
+            "tables": [],
+            "errors": [],
+            "carried_forward": [],
+            "note": "no materialize tools to run",
+        }
 
     if output_root is None:
         output_root = output_dir_for_source(source["name"])
