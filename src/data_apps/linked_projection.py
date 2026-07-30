@@ -31,6 +31,7 @@ def project(
     records: Sequence[adapter.LinkedAppRecord],
     *,
     repo: Optional[Any] = None,
+    keep_external_ids: Sequence[str] = (),
 ) -> ProjectionResult:
     """Reconcile ``data_apps`` linked rows for ``connection_id`` to ``records``.
 
@@ -38,6 +39,11 @@ def project(
     row of this connection not present this round. Preserves ``description_override``
     and grants (the repo's ``upsert_linked``/``soft_delete_missing_linked``
     guarantee it). ``repo`` is injectable for tests; defaults to the factory.
+
+    ``keep_external_ids`` are app ids the caller saw upstream but could not turn
+    into a record (e.g. a missing URL). They are exempt from the prune — present
+    upstream is present, even when one metadata field is unusable — but nothing
+    is upserted for them, so a genuinely absent app still gets hidden.
     """
     if repo is None:
         from src.repositories import data_apps_repo
@@ -59,7 +65,9 @@ def project(
 
     created = 0
     updated = 0
-    keep: List[str] = []
+    # Seed the keep-list with the present-but-unlinkable ids (see the
+    # `keep_external_ids` docstring) so a metadata gap never reads as a delete.
+    keep: List[str] = [adapter.source_ref(connection_id, app_id) for app_id in keep_external_ids]
     for rec in records:
         ref = adapter.source_ref(connection_id, rec.external_app_id)
         keep.append(ref)
@@ -129,7 +137,19 @@ def project_from_extract(
 
     records = [adapter.map_row(r) for r in raw_rows]
     linkable = [rec for rec in records if rec.external_app_id and rec.external_url]
+    # Present-but-unlinkable rows (blank/renamed URL column, a scheme the
+    # adapter rejects) are STILL present upstream — passing only `linkable` to
+    # the reconciler would prune them as if the app had been deleted, so a
+    # one-field metadata glitch would yank a live app away from every granted
+    # user. Keep them (identity is the id, which they do have); only a row
+    # genuinely absent from the listing gets hidden (Devin Review on #1116).
+    unlinkable_ids = [rec.external_app_id for rec in records if rec.external_app_id and not rec.external_url]
     skipped = len(records) - len(linkable)
     if skipped:
-        logger.info("linked projection [%s]: skipped %d row(s) missing id/url", source_id, skipped)
-    return project(source_id, linkable, repo=repo)
+        logger.info(
+            "linked projection [%s]: skipped %d row(s) missing id/url (%d kept from prune)",
+            source_id,
+            skipped,
+            len(unlinkable_ids),
+        )
+    return project(source_id, linkable, repo=repo, keep_external_ids=unlinkable_ids)

@@ -203,3 +203,57 @@ def test_project_from_extract_custom_table_name(tmp_path, repo):
     res = project_from_extract("srcX", str(path), repo=repo, table_name="keboola_list_data_apps")
     assert res is not None and res.created == 1
     assert {r["name"] for r in repo.list_linked()} == {"Sales"}
+
+
+def test_project_keeps_present_but_unlinkable_rows(repo):
+    """A row present upstream whose URL went missing/unusable in one sync must
+    NOT be pruned — present upstream is present, even with one broken field.
+    Only genuinely absent apps get hidden (Devin Review on #1116)."""
+    project("c", [_rec("a", "A"), _rec("b", "B")], repo=repo)
+    assert {r["slug"] for r in repo.list_linked()} == {
+        adapter.slug_for("c", "a"),
+        adapter.slug_for("c", "b"),
+    }
+
+    # `b` still listed upstream but its URL column came back blank this round;
+    # `a` is fine. Nothing is dropped.
+    r = project("c", [_rec("a", "A")], repo=repo, keep_external_ids=["b"])
+    assert r.hidden == 0
+    assert {x["slug"] for x in repo.list_linked()} == {
+        adapter.slug_for("c", "a"),
+        adapter.slug_for("c", "b"),
+    }
+
+    # ...but a genuinely absent `b` (not in the listing at all) still hides.
+    r2 = project("c", [_rec("a", "A")], repo=repo)
+    assert r2.hidden == 1
+    assert {x["slug"] for x in repo.list_linked()} == {adapter.slug_for("c", "a")}
+
+
+def test_project_from_extract_keeps_row_with_blank_url(tmp_path, repo):
+    """End-to-end: the blank-URL row is skipped for upsert but exempt from the
+    prune, so a live app doesn't vanish over a one-field glitch."""
+    from src.data_apps.linked_projection import project_from_extract
+
+    path = tmp_path / "extract.duckdb"
+    _seed_extract(
+        path,
+        [
+            {"id": "10", "name": "Sales", "url": "https://example.com/10"},
+            {"id": "11", "name": "Ops", "url": "https://example.com/11"},
+        ],
+    )
+    project_from_extract("srcX", str(path), repo=repo)
+    assert len(repo.list_linked()) == 2
+
+    path2 = tmp_path / "extract2.duckdb"
+    _seed_extract(
+        path2,
+        [
+            {"id": "10", "name": "Sales", "url": "https://example.com/10"},
+            {"id": "11", "name": "Ops", "url": ""},  # URL glitched away
+        ],
+    )
+    res = project_from_extract("srcX", str(path2), repo=repo)
+    assert res is not None and res.hidden == 0
+    assert len(repo.list_linked()) == 2

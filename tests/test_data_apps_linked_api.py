@@ -266,3 +266,23 @@ def test_kind_linked_filters_in_sql_not_post_fetch(linked_env, monkeypatch):
     r = c.get("/api/data-apps?kind=linked", headers=_auth(pats["admin1"]))
     assert r.status_code == 200, r.text
     assert "kbc-sales" in {a["slug"] for a in r.json()}
+
+
+def test_admin_can_delete_a_hidden_linked_row(linked_env):
+    """A retired (soft-deleted) linked row must stay deletable — otherwise it
+    and its grants linger forever, since every read surface 404s it and the
+    reconciler can no longer touch it (Devin Review on #1116)."""
+    c, pats = linked_env["client"], linked_env["pats"]
+    admin = _auth(pats["admin1"])
+    _hide_linked()
+    assert c.get("/api/data-apps/kbc-sales", headers=admin).status_code == 404
+    assert c.delete("/api/data-apps/kbc-sales", headers=admin).status_code == 204
+
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        assert DataAppsRepository(conn).get_by_slug("kbc-sales") is None
+    finally:
+        conn.close()

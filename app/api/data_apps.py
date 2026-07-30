@@ -310,7 +310,7 @@ def _require_owner_or_admin(user: dict, row: dict) -> None:
     raise HTTPException(status_code=403, detail="forbidden")
 
 
-def _get_row_or_404(slug: str) -> dict:
+def _get_row_or_404(slug: str, *, allow_hidden: bool = False) -> dict:
     row = data_apps_repo().get_by_slug(slug)
     if not row:
         raise HTTPException(status_code=404, detail="data_app_not_found")
@@ -319,7 +319,12 @@ def _get_row_or_404(slug: str) -> dict:
     # and the hosted-only op endpoints, which linked rows never reach anyway),
     # so a stale grant can't still read/operate on a gone app. Its row + grants
     # persist for a lossless re-link when the upstream app reappears.
-    if row.get("state") == "linked_hidden":
+    #
+    # `allow_hidden` is for DELETE alone: purging a retired row (and its
+    # lingering grants) is exactly what an admin needs to do to a hidden app,
+    # so the read-side 404 must not make it permanently undeletable (Devin
+    # Review on #1116).
+    if row.get("state") == "linked_hidden" and not allow_hidden:
         raise HTTPException(status_code=404, detail="data_app_not_found")
     return row
 
@@ -1289,7 +1294,9 @@ async def delete_data_app(
     draft down correctly.
     """
     _feature_gate()
-    row = _get_row_or_404(slug)
+    # allow_hidden: a retired linked row (and its lingering grants) is exactly
+    # what an admin needs to purge — see _get_row_or_404.
+    row = _get_row_or_404(slug, allow_hidden=True)
     _require_owner_or_admin(user, row)
     if row.get("is_draft"):
         raise HTTPException(status_code=400, detail="use_draft_delete_route")
