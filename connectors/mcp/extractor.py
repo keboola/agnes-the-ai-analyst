@@ -28,6 +28,7 @@ import duckdb
 import pandas as pd
 
 from src.duckdb_conn import _open_duckdb
+from src.identifier_validation import validate_quoted_identifier
 from src.repositories.mcp_sources import MCPSourceRepository
 from src.repositories.tool_registry import MATERIALIZE, ToolRegistryRepository
 
@@ -134,6 +135,93 @@ def _insert_meta(
     )
 
 
+def _carry_forward_untouched(
+    out_conn: duckdb.DuckDBPyConnection,
+    *,
+    prev_db_path: Path,
+    output_root: Path,
+    keep: set,
+    exclude: set,
+) -> List[str]:
+    """Merge the previous extract's untouched tables into the fresh one.
+
+    Every run rebuilds ``extract.duckdb`` from scratch; without this, the
+    ``_meta`` rows + views of every table the run didn't (re-)write — the
+    tools a targeted (``only_tool_id``) run skipped, or a tool whose
+    upstream call failed — would vanish until the next successful
+    full-source run (their parquets stay on disk but the orchestrator's
+    rebuild loses the views). Re-inserts each previous ``_meta`` row whose
+    table was not written in this run and recreates its view over the
+    existing parquet. Returns the carried table names.
+
+    ``keep`` is the set of exposed_names of the source's currently
+    registered, enabled materialize-mode tools: previous tables outside it
+    (tool renamed, disabled, or deleted since the last run) are pruned
+    rather than carried, so stale tables can't survive indefinitely.
+    ``exclude`` is what this run already wrote.
+    """
+    if not prev_db_path.exists():
+        return []
+    try:
+        prev_conn = _open_duckdb(str(prev_db_path), read_only=True)
+    except Exception:
+        logger.warning(
+            "carry-forward: cannot open previous extract %s; other tools' tables will need a full-source run",
+            prev_db_path,
+            exc_info=True,
+        )
+        return []
+    try:
+        prev_rows = prev_conn.execute(
+            "SELECT table_name, description, rows, size_bytes, extracted_at, query_mode FROM _meta"
+        ).fetchall()
+    except Exception:
+        logger.warning("carry-forward: previous extract %s has no readable _meta", prev_db_path, exc_info=True)
+        prev_rows = []
+    finally:
+        prev_conn.close()
+
+    carried: List[str] = []
+    for table_name, description, rows, size_bytes, extracted_at, query_mode in prev_rows:
+        if table_name in exclude or table_name not in keep:
+            continue
+        # Relaxed check on purpose: the write path accepts dashed/dotted
+        # exposed_names (common for MCP tool names), so the carry-forward
+        # gate must not be stricter than what a full run writes. Still
+        # refuses quote-breakout, path separators, and control chars.
+        if not validate_quoted_identifier(table_name, "carry-forward table_name"):
+            continue
+        parquet_path = output_root / "data" / f"{table_name}.parquet"
+        if not parquet_path.exists():
+            logger.warning("carry-forward: parquet missing for %s; dropping its stale _meta row", table_name)
+            continue
+        # Per-row guard: carry-forward is best-effort housekeeping for tables
+        # this run didn't touch, so one unreadable leftover parquet (zero-byte
+        # from an interrupted write, truncated, a directory) must not fail the
+        # whole materialize request and throw away the data just fetched.
+        # DuckDB binds read_parquet at CREATE VIEW time, so the raise lands
+        # here, outside the per-tool try/except (Devin Review on #1119).
+        # View first, _meta second: DuckDB binds read_parquet at CREATE VIEW
+        # time, so an unreadable file raises there — doing the INSERT first
+        # would leave a _meta row describing a table with no view behind it.
+        try:
+            _create_view(out_conn, table_name, parquet_path)
+            out_conn.execute(
+                "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, ?)",
+                [table_name, description, rows, size_bytes, extracted_at, query_mode],
+            )
+        except Exception:
+            logger.warning(
+                "carry-forward: could not re-attach %s from %s; skipping it this run",
+                table_name,
+                parquet_path,
+                exc_info=True,
+            )
+            continue
+        carried.append(table_name)
+    return carried
+
+
 def _create_view(conn: duckdb.DuckDBPyConnection, table_name: str, parquet_path: Path) -> None:
     # DuckDB does not accept prepared parameters inside read_parquet(),
     # so we inline the path. parquet_path comes from output_dir_for_source()
@@ -227,10 +315,17 @@ async def extract_source_async(
 
     all_tools = tools_repo.list_for_source(source_id)
     tools = [t for t in all_tools if t["mode"] == MATERIALIZE and t.get("enabled", True)]
+    registered_names = {t["exposed_name"] for t in tools}
     if only_tool_id:
         tools = [t for t in tools if t["tool_id"] == only_tool_id]
     if not tools:
-        return {"source_name": source["name"], "tables": [], "errors": [], "note": "no materialize tools to run"}
+        return {
+            "source_name": source["name"],
+            "tables": [],
+            "errors": [],
+            "carried_forward": [],
+            "note": "no materialize tools to run",
+        }
 
     if output_root is None:
         output_root = output_dir_for_source(source["name"])
@@ -244,6 +339,7 @@ async def extract_source_async(
 
     summary_tables: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
+    carried: List[str] = []
 
     out_conn = _open_duckdb(str(tmp_db_path))
     try:
@@ -265,6 +361,18 @@ async def extract_source_async(
             except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
                 errors.append({"tool": tool["exposed_name"], "error": str(exc)})
+        # Merge semantics: keep every previously materialized table this run
+        # didn't (re-)write — the tools a targeted run skipped, plus the
+        # last-known-good snapshot of any tool whose upstream call failed
+        # above. Tables whose tool left the registry (renamed / disabled /
+        # deleted) are not in ``registered_names`` and drop out.
+        carried = _carry_forward_untouched(
+            out_conn,
+            prev_db_path=db_path,
+            output_root=output_root,
+            keep=registered_names,
+            exclude={t["table"] for t in summary_tables},
+        )
     finally:
         out_conn.close()
 
@@ -277,6 +385,7 @@ async def extract_source_async(
         "source_name": source["name"],
         "extract_duckdb": str(db_path),
         "tables": summary_tables,
+        "carried_forward": carried,
         "errors": errors,
     }
 
@@ -297,7 +406,9 @@ def extract_source(
     Args:
         system_conn: open connection to ``system.duckdb`` (for repo reads).
         source_id:   ``mcp_sources.id`` to extract from.
-        only_tool_id: if set, only materialize this one tool (skip others).
+        only_tool_id: if set, only materialize this one tool; the other
+            tools' parquets, ``_meta`` rows and views are carried forward
+            from the previous extract (merge, not replace).
         output_root:  override the extracts root (defaults to AGNES_DATA_DIR).
 
     Returns a summary dict: ``{"source_name": ..., "tables": [...], "errors": [...]}``.
@@ -313,10 +424,17 @@ def extract_source(
 
     all_tools = tools_repo.list_for_source(source_id)
     tools = [t for t in all_tools if t["mode"] == MATERIALIZE and t.get("enabled", True)]
+    registered_names = {t["exposed_name"] for t in tools}
     if only_tool_id:
         tools = [t for t in tools if t["tool_id"] == only_tool_id]
     if not tools:
-        return {"source_name": source["name"], "tables": [], "errors": [], "note": "no materialize tools to run"}
+        return {
+            "source_name": source["name"],
+            "tables": [],
+            "errors": [],
+            "carried_forward": [],
+            "note": "no materialize tools to run",
+        }
 
     if output_root is None:
         output_root = output_dir_for_source(source["name"])
@@ -330,6 +448,7 @@ def extract_source(
 
     summary_tables: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
+    carried: List[str] = []
 
     out_conn = _open_duckdb(str(tmp_db_path))
     try:
@@ -348,9 +467,17 @@ def extract_source(
                 )
                 _create_view(out_conn, tool["exposed_name"], output_root / "data" / f"{tool['exposed_name']}.parquet")
                 summary_tables.append({"table": tool["exposed_name"], "rows": rows, "size_bytes": size_bytes})
-            except Exception as exc:  # pragma: no cover - defensive
+            except Exception as exc:
                 logger.exception("materialize failed for %s.%s", source["name"], tool["original_name"])
                 errors.append({"tool": tool["exposed_name"], "error": str(exc)})
+        # Merge semantics (see extract_source_async).
+        carried = _carry_forward_untouched(
+            out_conn,
+            prev_db_path=db_path,
+            output_root=output_root,
+            keep=registered_names,
+            exclude={t["table"] for t in summary_tables},
+        )
     finally:
         out_conn.close()
 
@@ -363,6 +490,7 @@ def extract_source(
         "source_name": source["name"],
         "extract_duckdb": str(db_path),
         "tables": summary_tables,
+        "carried_forward": carried,
         "errors": errors,
     }
 

@@ -22,6 +22,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.29] - 2026-07-30
+
+### Added
+
+### Changed
+
+### Fixed
+
+- A targeted MCP materialize run (the per-tool "Materialize now" button on
+  /admin sources and the /admin/linked-apps wizard) no longer drops the other
+  materialize-mode tools of the same source from `extract.duckdb` — the fresh
+  extract now carries forward the untouched tools' `_meta` rows and views
+  (merge instead of replace), so the orchestrator's next rebuild keeps all of
+  the source's analytics views. Any run — targeted or full — whose upstream
+  call fails for a tool also keeps that tool's last-known-good table instead
+  of vaporizing it. Tables whose tool was renamed, disabled, or deleted since
+  the last run are pruned rather than carried.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.77.28] - 2026-07-29
 
 ### Added
