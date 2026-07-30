@@ -1990,10 +1990,12 @@ KNOWN_UNTESTED = {
     "POST /api/admin/mcp-sources/{source_id}/classify",
     "POST /api/admin/mcp-sources/{source_id}/introspect",
     "POST /api/admin/mcp-sources/{source_id}/materialize",
+    "POST /api/admin/mcp-sources/{source_id}/oauth/register",
     "POST /api/admin/mcp-sources/{source_id}/test",
     "POST /api/admin/mcp-tools",
     "POST /api/admin/mcp-tools/{tool_id}/grants",
     "PUT /api/admin/mcp-sources/{source_id}",
+    "PUT /api/admin/mcp-sources/{source_id}/oauth/client",
     "PUT /api/admin/mcp-sources/{source_id}/secret",
     "PUT /api/admin/mcp-tools/{tool_id}",
     # Admin memory domains — complex admin feature
