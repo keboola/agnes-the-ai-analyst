@@ -111,12 +111,26 @@ _FAILURE_SIGNAL_KEYS = frozenset({"error", "errors", "err", "exception", "failur
 _SUCCESS_VALUES = frozenset(
     {"ok", "okay", "success", "successful", "succeeded", "healthy", "complete", "completed", "done"}
 )
+# The other half of the convention: a *negated* success flag. `{"success":
+# false, "data": []}` is as much a failure as `{"error": "..."}`.
+_SUCCESS_FLAG_KEYS = frozenset({"success", "successful", "succeeded", "ok", "okay", "isok", "is_ok"})
 
 
 def _looks_like_soft_failure(payload: Dict[str, Any]) -> bool:
-    """True when a 200 response carries an in-band failure signal."""
+    """True when a 200 response carries an in-band failure signal.
+
+    Covers the three ways upstreams encode "it didn't work" inside a 200 body:
+    a truthy failure key (``{"error": "quota exceeded"}``), a non-success status
+    — string *or* numeric (``{"status": 429}``) — and a falsified success flag
+    (``{"success": false}``).
+    """
     for key, value in payload.items():
-        if not isinstance(key, str) or key.lower() not in _FAILURE_SIGNAL_KEYS:
+        if not isinstance(key, str):
+            continue
+        name = key.lower()
+        if name in _SUCCESS_FLAG_KEYS and value is False:
+            return True
+        if name not in _FAILURE_SIGNAL_KEYS:
             continue
         if value is True:  # {"error": true}
             return True
@@ -124,7 +138,25 @@ def _looks_like_soft_failure(payload: Dict[str, Any]) -> bool:
             return True
         if isinstance(value, str) and value.strip() and value.strip().lower() not in _SUCCESS_VALUES:
             return True
+        # Numeric status: HTTP-shaped, so 2xx passes and 429/500 do not. 0 is
+        # the "no error" convention in several RPC dialects.
+        if isinstance(value, int) and not isinstance(value, bool) and not (value == 0 or 200 <= value < 300):
+            return True
     return False
+
+
+def _is_keyed_record_map(value: Any) -> bool:
+    """True when a dict value could itself be the table — an id → record map.
+
+    Distinguishes ``{"accounts": {"a1": {...}, "a2": {...}}}`` (plausibly the
+    real payload, keyed by id) from a sibling metadata object like
+    ``{"pagination": {"page": 1, "total": 0}}`` or ``{"meta": {"took_ms": 4}}``,
+    which say nothing about whether the table is empty. Getting this boundary
+    wrong is costly in both directions: too wide and every paginated empty
+    response goes back to being pinned to stale data, too narrow and a real
+    payload gets overwritten with zero rows.
+    """
+    return isinstance(value, dict) and bool(value) and all(isinstance(v, dict) for v in value.values())
 
 
 def _upstream_is_empty(payload: Any) -> bool:
@@ -139,7 +171,7 @@ def _upstream_is_empty(payload: Any) -> bool:
 
     A dict qualifies only when it has at least one list value, *every* list
     value is empty, no value carries an in-band failure signal, and no value is
-    a non-empty dict. The last two exclusions matter because this function
+    an id → record map. The last two exclusions matter because this function
     decides whether to overwrite a parquet we still depend on:
 
     * ``{"error": "quota exceeded", "accounts": []}`` — a soft-failed 200 would
@@ -148,7 +180,10 @@ def _upstream_is_empty(payload: Any) -> bool:
       a container we failed to interpret, so "empty" is not a safe conclusion
       (same reasoning as a mixed ``{"items": [], "rows": ["a"]}``).
 
-    Both were raised by Devin Review on this change.
+    Sibling *metadata* objects do not disqualify a payload:
+    ``{"accounts": [], "pagination": {"page": 1, "total": 0}}`` is an ordinary
+    empty page and resets the table. Both boundaries came from Devin Review on
+    this change.
     """
     if isinstance(payload, list):
         return not payload
@@ -156,7 +191,7 @@ def _upstream_is_empty(payload: Any) -> bool:
         lists = [v for v in payload.values() if isinstance(v, list)]
         if not lists or any(v for v in lists):
             return False
-        if any(isinstance(v, dict) and v for v in payload.values()):
+        if any(_is_keyed_record_map(v) for v in payload.values()):
             return False
         return not _looks_like_soft_failure(payload)
     return False

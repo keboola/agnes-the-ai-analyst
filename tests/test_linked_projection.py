@@ -257,3 +257,33 @@ def test_project_from_extract_keeps_row_with_blank_url(tmp_path, repo):
     res = project_from_extract("srcX", str(path2), repo=repo)
     assert res is not None and res.hidden == 0
     assert len(repo.list_linked()) == 2
+
+
+def test_zero_row_lister_table_does_not_mass_hide_apps(tmp_path, repo):
+    """An emptied lister must NOT revoke every linked app of the source.
+
+    A lister whose upstream went empty now materializes a ZERO-ROW table instead
+    of erroring, so the projection runs where it used to be skipped — but the
+    empty-result safety valve holds: zero linkable rows while active apps exist
+    skips the prune. Pinned because the empty-upstream reset newly routes traffic
+    through that valve (raised as a possible access-revoking regression by Devin
+    Review on #1123).
+    """
+    from src.data_apps.linked_projection import project_from_extract
+
+    path = tmp_path / "extract.duckdb"
+    _seed_extract(
+        path,
+        [
+            {"id": "10", "name": "Sales", "url": "https://example.com/10"},
+            {"id": "11", "name": "Ops", "url": "https://example.com/11"},
+        ],
+    )
+    project_from_extract("srcX", str(path), repo=repo)
+    assert len(repo.list_linked()) == 2
+
+    empty = tmp_path / "extract_empty.duckdb"
+    _seed_extract(empty, [])  # zero-row table, same columns
+    res = project_from_extract("srcX", str(empty), repo=repo)
+    assert res is not None and (res.created, res.updated, res.hidden) == (0, 0, 0)
+    assert {r["name"] for r in repo.list_linked()} == {"Sales", "Ops"}

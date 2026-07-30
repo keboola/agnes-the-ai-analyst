@@ -309,6 +309,13 @@ class TestEmptyDetection:
             # keys that ride along with successful responses stay allowed, or a
             # genuinely empty table would go back to being pinned to stale data
             {"accounts": [], "message": "no results", "detail": "0 of 0"},
+            {"accounts": [], "status": 200},
+            {"accounts": [], "status": 0},  # 0 = no error in several RPC dialects
+            {"accounts": [], "success": True},
+            # sibling metadata objects are not the payload — an ordinary empty
+            # page must still reset the table
+            {"accounts": [], "pagination": {"page": 1, "total": 0}},
+            {"items": [], "meta": {"took_ms": 4}},
         ],
     )
     def test_empty_shapes(self, payload):
@@ -333,7 +340,14 @@ class TestEmptyDetection:
             {"error": True, "accounts": []},
             {"error": {"code": 429}, "accounts": []},
             {"state": "throttled", "items": []},
-            # Real content in a container we failed to interpret.
+            # Numeric status and a negated success flag are the other two ways a
+            # 200 says "it didn't work".
+            {"status": 429, "items": []},
+            {"status": 500, "data": []},
+            {"success": False, "data": []},
+            {"ok": False, "items": []},
+            # Real content in a container we failed to interpret: an id → record
+            # map could itself be the table.
             {"accounts": {"a1": {"id": 1}}, "warnings": []},
         ],
     )
