@@ -353,3 +353,19 @@ def test_detail_linked_hides_deploy_shows_override_form(web_env):
     assert "dda-desc-form" in resp.text
     # opens at the external URL
     assert "https://example.com/apps/sales" in resp.text
+
+
+def test_admin_linked_apps_wizard_renders_for_admin(web_env):
+    c = web_env["client"]
+    resp = c.get("/admin/linked-apps", headers=_auth(web_env["admin_pat"]))
+    assert resp.status_code == 200
+    assert "Link Keboola apps" in resp.text
+    # the three wizard steps are present
+    assert 'id="wiz-step-1"' in resp.text
+    assert 'id="wiz-step-3"' in resp.text
+
+
+def test_admin_linked_apps_wizard_forbidden_for_non_admin(web_env):
+    c = web_env["client"]
+    resp = c.get("/admin/linked-apps", headers=_auth(web_env["owner_pat"]), follow_redirects=False)
+    assert resp.status_code in (302, 307, 401, 403)
