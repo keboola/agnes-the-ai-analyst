@@ -71,7 +71,7 @@ async def knowledge_search(
 ):
     """One query across documents, the knowledge base, and the table catalog.
 
-    Results are typed (``chunk | knowledge | table``); table hits carry a
+    Results are typed (``chunk | knowledge | table | metric | glossary``); table hits carry a
     pivot hint (query via SQL) instead of rows. Everything is filtered to the
     caller's grants, fail-closed per source.
 
@@ -92,12 +92,28 @@ async def knowledge_search(
     allowed = None if _accessible_ids is None else set(_accessible_ids)
     tables = [t for t in table_registry_repo().list_all() if allowed is None or t["id"] in allowed]
 
+    # Metrics are RBAC-gated by table access (#953): a metric is visible only if
+    # every table it references is accessible. We already have the full
+    # accessible-table list in `tables` — build a name-set from it so the
+    # per-metric check is an O(1) dict lookup instead of one get_by_name DB
+    # call per referenced table name (avoids N×M DB hits on every keystroke for
+    # non-admin callers). Admins short-circuit via allowed=None as before.
+    from app.api.metrics import _metric_table_names
+    from src.repositories import metric_repo
+
+    if allowed is None:
+        metrics = metric_repo().list()
+    else:
+        _accessible_names: set[str] = {t["name"] for t in tables}
+        metrics = [m for m in metric_repo().list() if all(n in _accessible_names for n in _metric_table_names(m))]
+
     results = unified_search(
         q,
         corpus_ids=corpus_ids,
         user_groups=groups,
         granted_domains=domains,
         tables=tables,
+        metrics=metrics,
         k=k,
     )
     return {"query": q, "results": results, "retrieval": retrieval_mode()}

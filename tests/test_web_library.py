@@ -52,6 +52,16 @@ def test_library_has_no_agent_affordance(seeded_app):
     assert 'data-kind="agent"' not in r.text
 
 
+def test_library_has_semantic_layer_browse_link(seeded_app):
+    """Library header exposes a 'Browse metrics & glossary' link to
+    /catalog/semantics (#1108) — a read/scan door separate from the
+    create-oriented '+ Add' menu."""
+    c = seeded_app["client"]
+    r = c.get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert 'href="/catalog/semantics"' in r.text
+
+
 def test_library_detail_renders_for_admin(seeded_app):
     c = seeded_app["client"]
     col = _create(seeded_app, "DetailUI Demo")

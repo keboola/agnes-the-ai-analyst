@@ -1,9 +1,11 @@
 """`agnes search` — unified knowledge search (K2, #797).
 
 One query fans out server-side over document Collections (hybrid
-lexical+vector), the corporate-memory knowledge base (fulltext), and the
-table catalog (lexical cards). Table hits carry a pivot hint — query them
-with SQL via `agnes query` instead of reading text.
+lexical+vector), the corporate-memory knowledge base (fulltext), the
+table catalog (lexical cards), business metrics, and the glossary.
+Table hits carry a pivot hint — query them with SQL via `agnes query`.
+Metric hits link to /catalog/semantics; glossary hits show the term
+definition inline.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ def search(
     scope: str | None = typer.Option(
         None,
         "--scope",
-        help="server (documents + knowledge + catalog) | local (offline, documents only)",
+        help="server (documents + knowledge + catalog + metrics + glossary) | local (offline, documents only)",
     ),
 ):
     """One query across documents, the knowledge base, and the data catalog."""
@@ -73,7 +75,7 @@ def search(
     sources_line = (
         "sources: documents (local)"
         if body.get("source") == "local"
-        else "sources: documents + knowledge + catalog (server)"
+        else "sources: documents + knowledge + catalog + metrics + glossary (server)"
     )
     results = body.get("results", [])
     if not results:
@@ -88,6 +90,11 @@ def search(
             )
         elif t == "knowledge":
             typer.echo(f"[{r.get('score')}] know {r.get('title')}: {(r.get('snippet') or '')[:110]}")
+        elif t == "metric":
+            label = r.get("display_name") or r.get("name") or r.get("id") or "?"
+            typer.echo(f"[{r.get('score')}] mtrc {label}: {(r.get('description') or '')[:110]}")
+        elif t == "glossary":
+            typer.echo(f"[{r.get('score')}] term {r.get('term')}: {(r.get('definition') or '')[:110]}")
         else:
             typer.echo(f"[{r.get('score')}] tbl  {r.get('name')} — {r.get('pivot_hint')}")
     typer.echo(sources_line)

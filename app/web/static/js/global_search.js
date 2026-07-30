@@ -3,6 +3,8 @@
    _app_header.html. Debounces input, groups results by type (Tables /
    Knowledge / Documents), and links each hit to its detail page:
      - table     -> /catalog/t/<table_id> (falls back to /catalog)
+     - metric    -> /catalog/semantics#metrics   (#1108)
+     - glossary  -> /catalog/semantics#glossary  (#1108)
      - knowledge -> /corporate-memory
      - chunk     -> /library
    All API-derived strings are set via textContent — never innerHTML — so a
@@ -20,10 +22,12 @@
 
     var GROUPS = [
         { type: "table", heading: "Tables" },
+        { type: "metric", heading: "Metrics" },
+        { type: "glossary", heading: "Glossary" },
         { type: "knowledge", heading: "Knowledge" },
         { type: "chunk", heading: "Documents" },
     ];
-    var TYPE_LABELS = { table: "Table", knowledge: "Knowledge", chunk: "Document" };
+    var TYPE_LABELS = { table: "Table", metric: "Metric", glossary: "Term", knowledge: "Knowledge", chunk: "Document" };
 
     var debounceTimer = null;
     var activeController = null;
@@ -32,6 +36,8 @@
         if (hit.type === "table") {
             return hit.table_id ? "/catalog/t/" + encodeURIComponent(hit.table_id) : "/catalog";
         }
+        if (hit.type === "metric") return "/catalog/semantics#metrics";
+        if (hit.type === "glossary") return "/catalog/semantics#glossary";
         if (hit.type === "knowledge") return "/corporate-memory";
         if (hit.type === "chunk") return "/library";
         return "#";
@@ -39,6 +45,8 @@
 
     function titleFor(hit) {
         if (hit.type === "table") return hit.name || "Untitled table";
+        if (hit.type === "metric") return hit.display_name || hit.name || "Metric";
+        if (hit.type === "glossary") return hit.term || "Term";
         if (hit.type === "knowledge") return hit.title || "Untitled";
         if (hit.type === "chunk") return hit.filename || "Document";
         return "";
