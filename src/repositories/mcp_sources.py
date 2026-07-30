@@ -49,6 +49,16 @@ class MCPSourceRepository:
             raise ValueError(f"{transport} transport requires 'url'")
         if scope not in ("shared", "per_user"):
             raise ValueError(f"unsupported scope: {scope!r}; must be 'shared' or 'per_user'")
+        if auth_method == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
+            # 2026-07-30 outbound MCP OAuth spec §1: OAuth sources are
+            # always per-user (authorization-code + PKCE ties tokens to a
+            # human) and only make sense over a network transport — stdio
+            # sources keep env-token auth. This is the ONE enforcement
+            # point every per-user fail-closed path relies on `scope` for.
+            raise ValueError(
+                "auth_method='oauth' requires transport in ('http', 'sse') and scope='per_user' "
+                f"(got transport={transport!r}, scope={scope!r})"
+            )
 
         now = datetime.now(timezone.utc)
         args_json = json.dumps(args) if args is not None else None
