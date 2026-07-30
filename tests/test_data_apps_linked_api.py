@@ -252,3 +252,17 @@ def test_delete_linked_is_registry_only_retire_path(linked_env):
     resp = c.delete("/api/data-apps/kbc-sales", headers=admin)
     assert resp.status_code == 204, resp.text
     assert c.get("/api/data-apps/kbc-sales", headers=admin).status_code == 404
+
+
+def test_kind_linked_filters_in_sql_not_post_fetch(linked_env, monkeypatch):
+    """?kind=linked must ride list_linked() (SQL-side filter) — linked-row
+    counts are upstream-data-driven and can exceed list()'s page cap, where
+    post-filtering a capped page silently drops apps (Devin Review on #1116).
+    Pinned by making list() return nothing: the linked pool must still show."""
+    from src.repositories.data_apps import DataAppsRepository
+
+    c, pats = linked_env["client"], linked_env["pats"]
+    monkeypatch.setattr(DataAppsRepository, "list", lambda self, **kw: [])
+    r = c.get("/api/data-apps?kind=linked", headers=_auth(pats["admin1"]))
+    assert r.status_code == 200, r.text
+    assert "kbc-sales" in {a["slug"] for a in r.json()}

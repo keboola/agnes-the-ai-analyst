@@ -788,7 +788,18 @@ async def list_data_apps(
     # Hidden linked rows (app removed upstream) are excluded from `list()` by
     # the `state='linked_hidden'` filter below only when filtering to linked;
     # the default list already omits them since callers key off visible state.
-    rows = data_apps_repo().list(include_drafts=False)
+    repo = data_apps_repo()
+    if kind == "linked":
+        # Filter in SQL, not post-fetch: linked rows are created per upstream
+        # app by the ingest reconciler, so their count is data-driven and can
+        # exceed list()'s page cap — post-filtering a capped page could return
+        # an incomplete (or empty) pool to the wizard/CLI/MCP even though
+        # matching rows exist (Devin Review on #1116). list_linked() already
+        # excludes linked_hidden and scopes by connection prefix; source_ref
+        # is "<connection_id>:<external_app_id>".
+        rows = repo.list_linked(source_ref_prefix=f"{source}:" if source is not None else None)
+    else:
+        rows = repo.list(include_drafts=False)
     out = []
     for r in rows:
         if r.get("state") == "linked_hidden":
@@ -798,9 +809,8 @@ async def list_data_apps(
         serialized = _serialize(r, cfg)
         if kind is not None and serialized["kind"] != kind:
             continue
-        # Filter to one ingest connection (the linked-apps admin wizard uses this
-        # to show only the pool from the source it just materialized). source_ref
-        # is "<connection_id>:<external_app_id>".
+        # Filter to one ingest connection (see above; kept for the non-linked
+        # branch and as a belt-and-braces check on the SQL-filtered rows).
         if source is not None and not str(r.get("source_ref") or "").startswith(f"{source}:"):
             continue
         out.append(serialized)
