@@ -33,6 +33,16 @@ def test_detail_form_has_env_scope_and_vault_secret_controls():
     assert "legacy" in html.lower()
 
 
+def test_materialize_toast_reports_the_run_outcome():
+    """A 200 from /materialize does not mean the tool produced rows: an emptied
+    table and a per-tool failure both come back inside the body. The toast used
+    to say "Materialize triggered" for all three."""
+    html = _read("admin_mcp_source_detail.html")
+    assert "empty_upstream" in html  # branches on the extractor's error/table code
+    assert "reset to 0 rows" in html  # upstream went empty
+    assert "rows materialized" in html  # normal run reports the row count
+
+
 def test_list_shows_secret_status():
     html = _read("admin_mcp_sources.html")
     assert "has_vault_secret" in html  # list JS reads the flag to render a badge
