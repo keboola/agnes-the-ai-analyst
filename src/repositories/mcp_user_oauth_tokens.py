@@ -85,6 +85,15 @@ class MCPUserOAuthTokenRepository:
             [source_id, user_id],
         )
 
+    def delete_for_source(self, source_id: str) -> int:
+        """Drop every user's tokens for ``source_id`` (source-delete cascade).
+        Returns the deleted-row count."""
+        rows = self.conn.execute(
+            "DELETE FROM mcp_user_oauth_tokens WHERE source_id = ? RETURNING user_id",
+            [source_id],
+        ).fetchall()
+        return len(rows)
+
     def has(self, source_id: str, user_id: str) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM mcp_user_oauth_tokens WHERE source_id = ? AND user_id = ? LIMIT 1",

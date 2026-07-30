@@ -64,6 +64,14 @@ class MCPOAuthFlowRepository:
             "created_at": created_at,
         }
 
+    def delete_for_source(self, source_id: str) -> int:
+        """Drop in-flight flows for ``source_id`` (source-delete cascade)."""
+        rows = self.conn.execute(
+            "DELETE FROM mcp_oauth_flows WHERE source_id = ? RETURNING nonce",
+            [source_id],
+        ).fetchall()
+        return len(rows)
+
     def sweep_expired(self, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> int:
         """Delete every flow older than ``ttl_seconds``. Returns the
         deleted-row count — callable opportunistically (e.g. from

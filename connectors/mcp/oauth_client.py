@@ -101,6 +101,19 @@ def _join_well_known(base_url: str, well_known_name: str) -> str:
     return urlunparse((parts.scheme, parts.netloc, path, "", "", ""))
 
 
+def _json_or_discovery_error(resp: httpx.Response, url: str) -> Dict[str, Any]:
+    """Parse a 200 discovery response as JSON, or raise a translated
+    ``OAuthDiscoveryError`` — a junk body must surface as an actionable
+    message, not an unhandled ``ValueError``/500 (Devin Review on #1124)."""
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise OAuthDiscoveryError(f"metadata document at {url!r} is not valid JSON") from exc
+    if not isinstance(body, dict):
+        raise OAuthDiscoveryError(f"metadata document at {url!r} is not a JSON object")
+    return body
+
+
 def _extract_resource_metadata_url(www_authenticate: str) -> Optional[str]:
     """Pull the ``resource_metadata`` challenge parameter out of a
     ``WWW-Authenticate`` header value, or ``None`` if absent."""
@@ -131,13 +144,26 @@ async def discover_protected_resource_metadata(
     fallback URL is attacker-influenceable (comes from a live upstream
     response) if the upstream is later compromised.
     """
-    primary_url = _simple_well_known(source_url, "oauth-protected-resource")
-    try:
-        resp = await client.get(primary_url)
-        if resp.status_code == 200:
-            return resp.json()
-    except httpx.HTTPError as exc:
-        logger.debug("protected-resource well-known fetch failed for %s: %s", primary_url, exc_summary(exc))
+    # RFC 9728 §3.1 puts the well-known segment between the authority and
+    # the resource's own path (path-insertion) — that form goes first. The
+    # suffix form ({url}/.well-known/…) is kept as a lenient fallback for
+    # servers that publish it there; the two collapse to the same URL when
+    # the resource lives at the origin root. (Devin Review on #1124.)
+    candidates: List[str] = []
+    for url in (
+        _join_well_known(source_url, "oauth-protected-resource"),
+        _simple_well_known(source_url, "oauth-protected-resource"),
+    ):
+        if url not in candidates:
+            candidates.append(url)
+    primary_url = candidates[0]
+    for candidate in candidates:
+        try:
+            resp = await client.get(candidate)
+            if resp.status_code == 200:
+                return _json_or_discovery_error(resp, candidate)
+        except httpx.HTTPError as exc:
+            logger.debug("protected-resource well-known fetch failed for %s: %s", candidate, exc_summary(exc))
 
     try:
         probe = await client.get(source_url)
@@ -163,7 +189,7 @@ async def discover_protected_resource_metadata(
         ) from exc
     if resp.status_code != 200:
         raise OAuthDiscoveryError(f"resource_metadata document fetch {meta_url!r} returned HTTP {resp.status_code}")
-    return resp.json()
+    return _json_or_discovery_error(resp, meta_url)
 
 
 def resolve_issuer(protected_resource_metadata: Dict[str, Any]) -> str:
