@@ -21,6 +21,7 @@ from services.session_processors.usage_lib import (
     _aggregate_events,
 )
 from src.repositories.usage import (
+    _configured_bq_data_project,
     _merge_frequency,
     _merge_top_tables,
     _registry_identity_keys,
@@ -297,7 +298,8 @@ class UsagePgRepository:
                     "bq_fqn": r[5],
                 }
                 for r in registry_rows
-            ]
+            ],
+            _configured_bq_data_project(),
         )
         top_tables = _merge_top_tables(top_rows, identity_keys, limit)
         frequency = _merge_frequency(freq_rows, identity_keys)

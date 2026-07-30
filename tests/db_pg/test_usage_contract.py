@@ -1442,6 +1442,66 @@ def test_query_telemetry_marks_a_registry_gated_bq_path_registered(usage_repo):
     assert (freq[0]["remote"], freq[0]["local"]) == (2, 1)
 
 
+def test_query_telemetry_resolves_the_full_path_of_a_row_without_bq_fqn(usage_repo, monkeypatch):
+    """A BigQuery row with NULL `bq_fqn` (the legacy registration shape) is
+    reachable by full backtick path only as
+    `<configured data project>.<bucket>.<source_table>` — the gate resolves it
+    via find_by_bq_path(dataset, table) and rejects any other project. That
+    spelling is therefore gated and executable, and must fold onto the registry
+    id rather than showing up as a second, unregistered row. Both backends.
+    Devin Review on this PR."""
+    from datetime import datetime, timedelta, timezone
+
+    from connectors.bigquery.access import get_bq_access
+
+    repo, conn, backend = usage_repo
+    # get_bq_access is process-cached; clear it around the call so the env var
+    # is what the resolver reads, and no cached sentinel leaks into other tests.
+    monkeypatch.setenv("BIGQUERY_PROJECT", "my-project-123")
+    get_bq_access.cache_clear()
+
+    now = datetime.now(timezone.utc)
+    _seed_registered_table(
+        repo,
+        backend,
+        conn,
+        "ledger",
+        bucket="finance",
+        source_table="gl_entries",  # bq_fqn stays NULL
+    )
+    _seed_query_audit(
+        repo,
+        backend,
+        conn,
+        [
+            {
+                "id": "n1",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:my-project-123.finance.gl_entries",
+                "result": "success",
+            },
+            {
+                "id": "n2",
+                "ts": now,
+                "action": "query.remote",
+                "resource": "table:bq.finance.gl_entries",
+                "result": "success",
+            },
+        ],
+    )
+
+    try:
+        out = repo.summary_query_telemetry(cutoff=now - timedelta(days=1))
+    finally:
+        get_bq_access.cache_clear()
+    by_id = {r["table_id"]: r for r in out["top_tables"]}
+
+    assert set(by_id) == {"ledger"}
+    assert by_id["ledger"]["registered"] is True
+    assert by_id["ledger"]["queries"] == 2
+
+
 def test_query_telemetry_still_flags_a_genuinely_unregistered_qualified_path(usage_repo):
     """Resolution must not become a rubber stamp: a path no registry row owns
     stays flagged, and stays spelled the way the query wrote it. Both

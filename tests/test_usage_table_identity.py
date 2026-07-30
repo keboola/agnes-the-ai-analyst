@@ -61,6 +61,68 @@ class TestRegistryIdentityKeys:
         assert keys["finance.gl_entries"] == "ledger"
         assert keys["my-project-123.finance.gl_entries"] == "ledger"
 
+    def test_full_backtick_path_of_a_row_without_bq_fqn_resolves(self):
+        """A BigQuery row with NULL `bq_fqn` is reachable by full path only as
+        `<configured data project>.<bucket>.<source_table>` — that is what the
+        gate resolves and executes, so it must not read as unregistered
+        (Devin Review on this PR)."""
+        rows = [
+            {
+                "id": "ledger",
+                "name": "ledger",
+                "source_type": "bigquery",
+                "bucket": "finance",
+                "source_table": "gl",
+                "bq_fqn": None,
+            },
+        ]
+        keys = _registry_identity_keys(rows, "my-project-123")
+        assert keys["my-project-123.finance.gl"] == "ledger"
+        # Without the project there is nothing to claim it with.
+        assert "my-project-123.finance.gl" not in _registry_identity_keys(rows)
+
+    def test_project_path_is_not_claimed_for_non_bigquery_rows(self):
+        keys = _registry_identity_keys(
+            [
+                {
+                    "id": "orders",
+                    "name": "orders",
+                    "source_type": "keboola",
+                    "bucket": "in.c-main",
+                    "source_table": "orders",
+                    "bq_fqn": None,
+                }
+            ],
+            "my-project-123",
+        )
+        assert "my-project-123.in.c-main.orders" not in keys
+
+    def test_bq_fqn_outranks_the_configured_project_path(self):
+        """A row that pins its own project must not be attributed to another
+        row's configured-project spelling."""
+        keys = _registry_identity_keys(
+            [
+                {
+                    "id": "pinned",
+                    "name": "pinned",
+                    "source_type": "bigquery",
+                    "bucket": "finance",
+                    "source_table": "gl",
+                    "bq_fqn": "my-project-123.finance.gl",
+                },
+                {
+                    "id": "legacy",
+                    "name": "legacy",
+                    "source_type": "bigquery",
+                    "bucket": "finance",
+                    "source_table": "gl",
+                    "bq_fqn": None,
+                },
+            ],
+            "my-project-123",
+        )
+        assert keys["my-project-123.finance.gl"] == "pinned"
+
     def test_keboola_rows_use_the_kbc_alias(self):
         keys = _registry_identity_keys(
             [

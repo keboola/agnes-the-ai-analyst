@@ -206,7 +206,8 @@ class UsageRepository:
                        FROM table_registry
                        ORDER BY registered_at, id"""
                 ).fetchall()
-            ]
+            ],
+            _configured_bq_data_project(),
         )
 
         # Per-table ranking (only rows that carry a table resource). Grouped by
@@ -537,11 +538,7 @@ class UsageRepository:
         # 'uploaded' (browser default) on when it ARRIVED — late queue
         # catch-ups stay visible in recent windows (spec Phase C).
         # COALESCE guards rows that predate the v105 backfill.
-        anchor_col = (
-            "COALESCE(uploaded_at, started_at)"
-            if filters.get("anchor") == "uploaded"
-            else "started_at"
-        )
+        anchor_col = "COALESCE(uploaded_at, started_at)" if filters.get("anchor") == "uploaded" else "started_at"
         where = [f"{anchor_col} >= ?"]
         params: list = [filters["since"]]
         if filters.get("username"):
@@ -639,8 +636,7 @@ class UsageRepository:
         (``COALESCE(uploaded_at, started_at)``) is at/after *since* — the
         ingested half of the health pulse's upload reconciliation."""
         rows = self.conn.execute(
-            "SELECT session_file FROM usage_session_summary "
-            "WHERE COALESCE(uploaded_at, started_at) >= ?",
+            "SELECT session_file FROM usage_session_summary WHERE COALESCE(uploaded_at, started_at) >= ?",
             [since],
         ).fetchall()
         return {r[0].rsplit("/", 1)[-1] for r in rows if r[0]}
@@ -1698,12 +1694,34 @@ def _percentile(values: list[float], p: float) -> float:
 # (ids are unique, `name` and `bucket`/`source_table` are not).
 _KEY_ID = 0
 _KEY_BQ_FQN = 1
-_KEY_ALIAS_PATH = 2
-_KEY_BUCKET_PATH = 3
-_KEY_NAME = 4
+_KEY_PROJECT_PATH = 2
+_KEY_ALIAS_PATH = 3
+_KEY_BUCKET_PATH = 4
+_KEY_NAME = 5
 
 
-def _registry_identity_keys(registry_rows: list) -> Dict[str, str]:
+def _configured_bq_data_project() -> Optional[str]:
+    """The BigQuery data project a full backtick path must name, or None.
+
+    A registry row without ``bq_fqn`` (the legacy shape in `src/db.py`) is
+    reachable by full path only as
+    ``<configured data project>.<bucket>.<source_table>`` — that is what
+    `app/api/query.py`'s backtick pass gates, rejecting any other project
+    outright — so the project has to come from config to claim that spelling.
+    Returns None on non-BigQuery instances (the accessor yields an
+    unconfigured sentinel with an empty project) and on any config-read
+    failure: a missing project only costs the extra spelling, and must never
+    break the usage dashboard.
+    """
+    try:
+        from connectors.bigquery.access import get_bq_access
+
+        return (get_bq_access().projects.data or "").strip() or None
+    except Exception:  # pragma: no cover - config/import edge on non-BQ instances
+        return None
+
+
+def _registry_identity_keys(registry_rows: list, bq_data_project: Optional[str] = None) -> Dict[str, str]:
     """Map every SQL spelling of a registered table to its registry id.
 
     ``registry_rows`` are dicts (or row tuples in ``id, name, source_type,
@@ -1716,6 +1734,12 @@ def _registry_identity_keys(registry_rows: list) -> Dict[str, str]:
 
     * ``id`` — what a bare `FROM <id>` local query records;
     * ``bq_fqn`` — the full `project.dataset.table` backtick path (v51/#343);
+    * ``<bq_data_project>.<bucket>.<source_table>`` — the full backtick path of
+      a BigQuery row that carries no ``bq_fqn``: the gate resolves such a path
+      as `find_by_bq_path(<dataset>, <table>)` against `bucket`/`source_table`
+      and rejects any project other than the configured one, so this spelling
+      is gated and executable and must not read as unregistered (Devin Review
+      on this PR). Claimed only when the caller passes the project;
     * ``<alias>.<bucket>.<source_table>`` — the ATTACH-catalog form users are
       told to write (`bq."dataset"."table"`, `kbc."bucket"."table"`), and the
       form the registry gate accepts for direct BigQuery references;
@@ -1724,6 +1748,7 @@ def _registry_identity_keys(registry_rows: list) -> Dict[str, str]:
       actually type and which may differ from the id (e.g. id
       ``bq.finance.ue`` / name ``ue``).
     """
+    project = (bq_data_project or "").strip()
     keys: Dict[str, tuple] = {}
 
     def claim(key: Optional[str], priority: int, table_id: str) -> None:
@@ -1751,7 +1776,10 @@ def _registry_identity_keys(registry_rows: list) -> Dict[str, str]:
         bucket = (row.get("bucket") or "").strip()
         source_table = (row.get("source_table") or "").strip()
         if bucket and source_table:
-            alias = "bq" if (row.get("source_type") or "") == "bigquery" else "kbc"
+            is_bq = (row.get("source_type") or "") == "bigquery"
+            alias = "bq" if is_bq else "kbc"
+            if is_bq and project:
+                claim(f"{project}.{bucket}.{source_table}", _KEY_PROJECT_PATH, table_id)
             claim(f"{alias}.{bucket}.{source_table}", _KEY_ALIAS_PATH, table_id)
             claim(f"{bucket}.{source_table}", _KEY_BUCKET_PATH, table_id)
         claim(row.get("name"), _KEY_NAME, table_id)
