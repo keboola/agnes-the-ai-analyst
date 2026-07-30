@@ -196,7 +196,7 @@ def unified_search(
     # Glossary is public — fetched inside, not caller-prefiltered. BM25 score is
     # NULL in the ILIKE fallback, so decay by rank like the knowledge bucket.
     glossary_hits: List[Dict[str, Any]] = []
-    for rank, g in enumerate(_glossary_search(query, limit=_sem_cap)):
+    for rank, g in enumerate(_glossary_search(query, limit=k)[:_sem_cap]):
         glossary_hits.append(
             {
                 "type": "glossary",

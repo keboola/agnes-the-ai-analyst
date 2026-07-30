@@ -71,7 +71,7 @@ async def knowledge_search(
 ):
     """One query across documents, the knowledge base, and the table catalog.
 
-    Results are typed (``chunk | knowledge | table``); table hits carry a
+    Results are typed (``chunk | knowledge | table | metric | glossary``); table hits carry a
     pivot hint (query via SQL) instead of rows. Everything is filtered to the
     caller's grants, fail-closed per source.
 

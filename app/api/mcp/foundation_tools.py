@@ -297,10 +297,13 @@ def register_foundation_tools(
         """One query across documents, the knowledge base, and the data catalog.
 
         Fans out server-side over Collections chunks (hybrid lexical+vector),
-        corporate-memory knowledge items (fulltext), and table catalog cards —
-        all RBAC-filtered. Results are typed ``chunk | knowledge | table``;
+        corporate-memory knowledge items (fulltext), table catalog cards,
+        business metrics, and the glossary — all RBAC-filtered (glossary is
+        public). Results are typed ``chunk | knowledge | table | metric | glossary``;
         a ``table`` hit means structured data: pivot to SQL via the ``query``
         tool with the hit's ``table_id`` instead of reading text chunks.
+        A ``metric`` hit links to /catalog/semantics#metrics; a ``glossary``
+        hit carries the term definition inline.
         The response's ``retrieval`` field labels the chunk engine's mode:
         ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
         mode when the server has no embedding model installed.
