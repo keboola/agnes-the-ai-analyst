@@ -1,12 +1,15 @@
 """SQLAlchemy models for the MCP / Cowork cluster.
 
 Mirrors:
-  - setup_tokens      (src/db.py v63)
-  - mcp_sources       (src/db.py v64 + v66 scope column + v92 connect_hint column)
-  - tool_registry     (src/db.py v64)
-  - tool_grants       (src/db.py v64)
-  - mcp_secrets       (src/db.py v65)
-  - mcp_user_secrets  (src/db.py v66)
+  - setup_tokens                (src/db.py v63)
+  - mcp_sources                 (src/db.py v64 + v66 scope column + v92 connect_hint column)
+  - tool_registry               (src/db.py v64)
+  - tool_grants                 (src/db.py v64)
+  - mcp_secrets                 (src/db.py v65)
+  - mcp_user_secrets            (src/db.py v66)
+  - mcp_source_oauth_clients    (src/db.py v109)
+  - mcp_user_oauth_tokens       (src/db.py v109)
+  - mcp_oauth_flows             (src/db.py v109)
 """
 
 from __future__ import annotations
@@ -162,3 +165,86 @@ class MCPUserSecret(Base):
     )
 
     __table_args__ = (PrimaryKeyConstraint("source_id", "user_id"),)
+
+
+class MCPSourceOAuthClient(Base):
+    """Agnes's own OAuth client registration at an upstream MCP source's
+    authorization server (v109). One row per OAuth ``mcp_sources`` row.
+
+    Named distinctly from ``oauth_clients`` (the INBOUND issuer's DCR
+    table, v82) — mirror-image concept, opposite direction.
+    """
+
+    __tablename__ = "mcp_source_oauth_clients"
+
+    source_id: Mapped[str] = mapped_column(String, primary_key=True)
+    issuer: Mapped[str] = mapped_column(String, nullable=False)
+    client_id: Mapped[str] = mapped_column(String, nullable=False)
+    client_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    registration_access_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    authorization_endpoint: Mapped[str] = mapped_column(String, nullable=False)
+    token_endpoint: Mapped[str] = mapped_column(String, nullable=False)
+    scopes: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class MCPUserOAuthToken(Base):
+    """Per-``(source_id, user_id)`` OAuth access/refresh token pair (v109).
+
+    Kept separate from ``mcp_user_secrets``: different lifecycle
+    (server-side refresh mutates rows here; user secrets are write-only
+    from the user) and different deletion semantics (best-effort
+    revoke-at-AS on disconnect).
+    """
+
+    __tablename__ = "mcp_user_oauth_tokens"
+
+    source_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    access_token_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    refresh_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scopes: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (PrimaryKeyConstraint("source_id", "user_id"),)
+
+
+class MCPOAuthFlow(Base):
+    """In-flight authorize-flow state — PKCE verifier + nonce (v109).
+
+    DB-backed (rather than an in-process/session store) so multi-replica
+    Postgres deployments need no sticky sessions and single-replica DuckDB
+    works identically. Rows are meant to be single-use (deleted on
+    ``consume()``) and swept opportunistically after a ~10 minute TTL.
+    """
+
+    __tablename__ = "mcp_oauth_flows"
+
+    nonce: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    pkce_verifier_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
