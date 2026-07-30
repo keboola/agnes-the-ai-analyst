@@ -22,8 +22,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   extract now carries forward the untouched tools' `_meta` rows and views
   (merge instead of replace), so the orchestrator's next rebuild keeps all of
   the source's analytics views. A targeted run whose upstream call fails also
-  keeps that tool's last-known-good table instead of vaporizing it. Full-source
-  runs keep replace semantics, so disabled/removed tools still drop out.
+  keeps that tool's last-known-good table instead of vaporizing it. Tables
+  whose tool was renamed, disabled, or deleted since the last run are pruned
+  rather than carried, and full-source runs keep replace semantics.
 
 ### Removed
 

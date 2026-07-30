@@ -140,6 +140,7 @@ def _carry_forward_untouched(
     *,
     prev_db_path: Path,
     output_root: Path,
+    keep: set,
     exclude: set,
 ) -> List[str]:
     """Merge the previous extract's untouched tables into the fresh one.
@@ -151,6 +152,12 @@ def _carry_forward_untouched(
     rebuild loses the views). Re-inserts each previous ``_meta`` row whose
     table was not (re-)written in this run and recreates its view over the
     existing parquet. Returns the carried table names.
+
+    ``keep`` is the set of exposed_names of the source's currently
+    registered, enabled materialize-mode tools: previous tables outside it
+    (tool renamed, disabled, or deleted since the last run) are pruned
+    rather than carried, so stale tables can't survive indefinitely under
+    repeated targeted runs. ``exclude`` is what this run already wrote.
     """
     if not prev_db_path.exists():
         return []
@@ -175,7 +182,7 @@ def _carry_forward_untouched(
 
     carried: List[str] = []
     for table_name, description, rows, size_bytes, extracted_at, query_mode in prev_rows:
-        if table_name in exclude:
+        if table_name in exclude or table_name not in keep:
             continue
         if not validate_identifier(table_name, "carry-forward table_name"):
             continue
@@ -285,6 +292,7 @@ async def extract_source_async(
 
     all_tools = tools_repo.list_for_source(source_id)
     tools = [t for t in all_tools if t["mode"] == MATERIALIZE and t.get("enabled", True)]
+    registered_names = {t["exposed_name"] for t in tools}
     if only_tool_id:
         tools = [t for t in tools if t["tool_id"] == only_tool_id]
     if not tools:
@@ -334,6 +342,7 @@ async def extract_source_async(
                 out_conn,
                 prev_db_path=db_path,
                 output_root=output_root,
+                keep=registered_names,
                 exclude={t["table"] for t in summary_tables},
             )
     finally:
@@ -387,6 +396,7 @@ def extract_source(
 
     all_tools = tools_repo.list_for_source(source_id)
     tools = [t for t in all_tools if t["mode"] == MATERIALIZE and t.get("enabled", True)]
+    registered_names = {t["exposed_name"] for t in tools}
     if only_tool_id:
         tools = [t for t in tools if t["tool_id"] == only_tool_id]
     if not tools:
@@ -432,6 +442,7 @@ def extract_source(
                 out_conn,
                 prev_db_path=db_path,
                 output_root=output_root,
+                keep=registered_names,
                 exclude={t["table"] for t in summary_tables},
             )
     finally:

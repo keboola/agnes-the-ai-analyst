@@ -180,6 +180,36 @@ class TestTargetedRunMerges:
         assert views["accounts"] == ["accounts-v1-1", "accounts-v1-2"]
         assert views["orders"] == ["orders-v1-1", "orders-v1-2"]
 
+    def test_targeted_run_prunes_unregistered_tables(self, system_conn, e2e_env, monkeypatch):
+        """A previous table whose tool was renamed (or disabled/deleted) since
+        the last run must NOT be carried forward — otherwise the stale
+        old-named table would survive indefinitely under repeated targeted
+        runs. Only tables of currently registered, enabled materialize tools
+        are carried."""
+        _run_full(system_conn, e2e_env, monkeypatch, batch="v1")
+
+        # rename tool_b's exposed table: orders → invoices
+        ToolRegistryRepository(system_conn).upsert(
+            tool_id="tool_b",
+            source_id=SOURCE_ID,
+            original_name="list_orders",
+            exposed_name="invoices",
+            mode="materialize",
+            schedule="0 * * * *",
+        )
+        monkeypatch.setattr(mcp_extractor, "_materialize_one_tool", _make_fake_materialize("v2"))
+        result = mcp_extractor.extract_source(
+            system_conn=system_conn,
+            source_id=SOURCE_ID,
+            only_tool_id="tool_a",
+            output_root=e2e_env["extracts_dir"] / SOURCE_NAME,
+        )
+        assert result["carried_forward"] == []
+
+        meta, views = _extract_state(e2e_env["extracts_dir"] / SOURCE_NAME / "extract.duckdb")
+        assert meta == {"accounts"}
+        assert views["accounts"] == ["accounts-v2-1", "accounts-v2-2"]
+
     def test_full_run_still_replaces(self, system_conn, e2e_env, monkeypatch):
         """No ``only_tool_id`` → replace semantics stay: tools that left the
         registry (disabled/deleted) drop out of the fresh extract."""
