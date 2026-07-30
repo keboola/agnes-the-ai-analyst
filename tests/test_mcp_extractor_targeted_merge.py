@@ -294,7 +294,13 @@ def test_carry_forward_keeps_dashed_table_names(tmp_path, monkeypatch):
         "CREATE TABLE _meta (table_name VARCHAR, description VARCHAR, rows BIGINT, "
         "size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR)"
     )
-    carried = _carry_forward_untouched(out_conn, prev_db_path=prev_db, output_root=output_root, exclude=set())
+    carried = _carry_forward_untouched(
+        out_conn,
+        prev_db_path=prev_db,
+        output_root=output_root,
+        keep={"crm_get-library-docs", "plain_table"},
+        exclude=set(),
+    )
     out_conn.close()
 
     assert set(carried) == {"crm_get-library-docs", "plain_table"}
@@ -336,8 +342,8 @@ def test_full_run_keeps_last_known_good_for_a_failed_tool(tmp_path, monkeypatch)
         out_conn,
         prev_db_path=prev_db,
         output_root=output_root,
+        keep={"tool_flaky"},
         exclude={"tool_ok"},
-        only_tables={"tool_flaky"},
     )
     out_conn.close()
 

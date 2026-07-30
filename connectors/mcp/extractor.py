@@ -142,7 +142,6 @@ def _carry_forward_untouched(
     output_root: Path,
     keep: set,
     exclude: set,
-    only_tables: Optional[set] = None,
 ) -> List[str]:
     """Merge the previous extract's untouched tables into the fresh one.
 
@@ -154,11 +153,18 @@ def _carry_forward_untouched(
     table was not (re-)written in this run and recreates its view over the
     existing parquet. Returns the carried table names.
 
-    ``keep`` is the set of exposed_names of the source's currently
-    registered, enabled materialize-mode tools: previous tables outside it
-    (tool renamed, disabled, or deleted since the last run) are pruned
-    rather than carried, so stale tables can't survive indefinitely under
-    repeated targeted runs. ``exclude`` is what this run already wrote.
+    ``keep`` is the allowlist of table names eligible to be carried, and its
+    shape says which semantics the caller wants:
+
+    * targeted run → the exposed_names of the source's currently registered,
+      enabled materialize-mode tools, so a table whose tool was renamed,
+      disabled, or deleted since the last run is pruned rather than
+      surviving indefinitely under repeated targeted runs;
+    * full run → only the tools that FAILED this pass, so a flaky upstream
+      call can't vaporize an otherwise healthy table while removed/disabled
+      tools still drop out under the usual replace semantics.
+
+    ``exclude`` is what this run already wrote.
     """
     if not prev_db_path.exists():
         return []
@@ -184,12 +190,6 @@ def _carry_forward_untouched(
     carried: List[str] = []
     for table_name, description, rows, size_bytes, extracted_at, query_mode in prev_rows:
         if table_name in exclude or table_name not in keep:
-            continue
-        # `only_tables` (full-run use) restricts carry-forward to an explicit
-        # allowlist — the tables of tools that FAILED this run. Without it a
-        # full run would also resurrect tools removed/disabled in the
-        # registry, which must still drop out.
-        if only_tables is not None and table_name not in only_tables:
             continue
         # validate_quoted_identifier, NOT the strict variant: the write path
         # (_create_view / _insert_meta) accepts any name and just escapes the
@@ -370,8 +370,8 @@ async def extract_source_async(
                 out_conn,
                 prev_db_path=db_path,
                 output_root=output_root,
+                keep=failed_tables,
                 exclude={t["table"] for t in summary_tables},
-                only_tables=failed_tables,
             )
     finally:
         out_conn.close()
@@ -486,8 +486,8 @@ def extract_source(
                 out_conn,
                 prev_db_path=db_path,
                 output_root=output_root,
+                keep=failed_tables,
                 exclude={t["table"] for t in summary_tables},
-                only_tables=failed_tables,
             )
     finally:
         out_conn.close()
