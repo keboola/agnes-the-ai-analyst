@@ -155,3 +155,28 @@ def test_map_row_rejects_non_http_url_schemes():
         assert map_row({"id": "a1", "name": "x", "url": bad}).external_url == ""
     assert map_row({"id": "a1", "url": "https://example.com/app"}).external_url == "https://example.com/app"
     assert map_row({"id": "a1", "url": "  http://example.com  "}).external_url == "http://example.com"
+
+
+def test_v107_to_v108_alter_path_on_migrated_db(tmp_path):
+    """The upgrade ladder must work on a REAL pre-v108 database — fresh
+    installs no-op (DDL already has the columns), so only this path exercises
+    the ALTERs. DuckDB rejects ADD COLUMN with a NOT NULL constraint, which a
+    fresh-DB-only CI run never notices (review team on #1116)."""
+    import duckdb
+
+    from src.db import _v107_to_v108
+
+    conn = duckdb.connect(str(tmp_path / "old.duckdb"))
+    conn.execute("CREATE TABLE data_apps (slug VARCHAR, repo_mode VARCHAR, state VARCHAR)")
+    conn.execute("CREATE TABLE schema_version (version INTEGER)")
+    conn.execute("INSERT INTO schema_version VALUES (107)")
+    conn.execute("INSERT INTO data_apps VALUES ('a', 'git', 'ready')")
+
+    _v107_to_v108(conn)
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('data_apps')").fetchall()}
+    assert {"external_url", "source_ref", "managed", "description_override"} <= cols
+    assert conn.execute("SELECT managed FROM data_apps").fetchone()[0] is False
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 108
+
+    _v107_to_v108(conn)  # idempotent re-run must not raise

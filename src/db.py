@@ -6942,7 +6942,13 @@ def _v107_to_v108(conn: duckdb.DuckDBPyConnection) -> None:
     if "source_ref" not in cols:
         conn.execute("ALTER TABLE data_apps ADD COLUMN source_ref VARCHAR")
     if "managed" not in cols:
-        conn.execute("ALTER TABLE data_apps ADD COLUMN managed BOOLEAN NOT NULL DEFAULT FALSE")
+        # DuckDB can't ADD COLUMN with a NOT NULL constraint ("Adding columns
+        # with constraints not yet supported") — add with DEFAULT only and
+        # backfill, same pattern as v106's `surface` column. Fresh installs
+        # get the NOT NULL from the snapshot DDL; migrated DBs rely on the
+        # DEFAULT + backfill (every writer passes an explicit value).
+        conn.execute("ALTER TABLE data_apps ADD COLUMN managed BOOLEAN DEFAULT FALSE")
+    conn.execute("UPDATE data_apps SET managed = FALSE WHERE managed IS NULL")
     if "description_override" not in cols:
         conn.execute("ALTER TABLE data_apps ADD COLUMN description_override TEXT")
     conn.execute("UPDATE schema_version SET version = 108")
