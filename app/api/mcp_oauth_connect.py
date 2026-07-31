@@ -117,6 +117,12 @@ async def authorize_oauth_connect(
     deny_principal(user)
     src = _get_source_or_404(source_id)
     _require_oauth_source(src)
+    # Deliberate deviation from the sync-map's `Depends(require_resource_access)`
+    # idiom (verify_syncmap WARNs here): per-source MCP access is governed by
+    # tool_registry grants, not the generic ResourceType framework, and this
+    # inline gate is the SAME one the sibling `my-secret` endpoints have used
+    # since #919 — one mechanism, no drift. Swapping to ResourceType would mean
+    # refactoring the whole passthrough authorization subsystem (out of scope).
     _require_source_grant(source_id, user)
     try:
         check_rate_limit(f"oauth-authorize:{source_id}", user["id"], _AUTHORIZE_RATE_LIMIT_PM)
@@ -246,10 +252,16 @@ async def oauth_connect_callback(
                 client=http_client,
             )
     except OAuthTokenError as exc:
+        # Operator-facing detail goes to the server log ONLY. The browser
+        # redirect gets a fixed message: the exception text can carry the
+        # AS's raw error body (`_raise_as_error`'s `resp.text` fallback) —
+        # externally controlled content that must not be replayed into a
+        # user-facing query string (RBAC review on PR 2).
         logger.warning("mcp oauth token exchange failed for source=%s: %s", source_id, _exc_summary(exc))
-        return _err_redirect(f"token exchange failed: {_exc_summary(exc)}")
+        return _err_redirect("token exchange with the authorization server failed — try again or contact your admin")
     except httpx.HTTPError as exc:
-        return _err_redirect(f"token exchange failed: {_exc_summary(exc)}")
+        logger.warning("mcp oauth token exchange transport error for source=%s: %s", source_id, _exc_summary(exc))
+        return _err_redirect("could not reach the authorization server — try again or contact your admin")
 
     expires_at = None
     if token_set.expires_in:
