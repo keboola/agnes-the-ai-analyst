@@ -305,8 +305,16 @@ async def delete_agent(agent_id: str, user: dict = Depends(get_current_user)):
 
     Grants are removed too, so a later agent can never inherit a dangling
     grant through id reuse and /admin/access shows no orphan rows.
+
+    The seeded default agent is exempt: it is infrastructure every web chat
+    session is attributed to (``app/api/chat.py::_default_agent_id``), not a
+    user artifact, so deleting it would make the agent vanish from the Library
+    and silently reappear on the next chat. `/api/v1/agents` refuses this for
+    the same reason (``agents_admin.py::delete_agent``).
     """
-    _writable(agent_id, user)
+    row = _writable(agent_id, user)
+    if row.get("is_default"):
+        raise HTTPException(status_code=400, detail="default_agent_undeletable")
     agents_repo().soft_delete(agent_id)
     try:
         resource_grants_repo().delete_by_resource(_RT, agent_id)

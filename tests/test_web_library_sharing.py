@@ -133,6 +133,37 @@ def test_agent_slug_freed_name_reuses_suffix_after_delete(seeded_app):
     assert d1["slug"] != d2["slug"]
 
 
+def test_agent_default_cannot_be_deleted(seeded_app):
+    """The seeded default agent is not deletable through the builder.
+
+    It is listed like any other agent (``list_for_user`` returns it first), so
+    the Library's delete control reaches it. Deleting it used to break web chat
+    outright: every session create resolves the default first, and that lookup
+    re-inserted a row whose ``slug='default'`` still collided with the
+    soft-deleted tombstone — a permanent 500 on ``POST /api/chat/sessions``.
+    The repository now revives the tombstone instead of raising, but the delete
+    still has no business succeeding: the agent would vanish from the Library
+    and silently reappear on the owner's next chat. `/api/v1/agents` has
+    refused this since the agent-as-API work; the builder router must match.
+    """
+    from src.repositories import agents_repo
+
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+
+    default_id = agents_repo().get_or_create_default("admin1")["id"]
+    listed = c.get("/api/agents", headers=_auth(tok)).json()["agents"]
+    assert any(x["id"] == default_id for x in listed), "default agent is reachable in the Library"
+
+    r = c.delete(f"/api/agents/{default_id}", headers=_auth(tok))
+    assert r.status_code == 400
+    assert r.json()["detail"] == "default_agent_undeletable"
+
+    # Still live, and still the default.
+    assert agents_repo().get_by_id(default_id)["deleted_at"] is None
+    assert c.get(f"/api/agents/{default_id}", headers=_auth(tok)).status_code == 200
+
+
 def test_agent_patch_cannot_reassign_ownership(seeded_app):
     """A hostile payload can't move an agent to another owner or hijack a slug."""
     tok = seeded_app["admin_token"]
