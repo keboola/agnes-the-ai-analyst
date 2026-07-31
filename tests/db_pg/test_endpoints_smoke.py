@@ -1659,6 +1659,12 @@ KNOWN_UNTESTED = {
     "POST /api/studio/memory-mining/consent",
     "POST /api/admin/memory-mining/run",
     "GET /me/memory-mining",
+    # Admin Moderation & Trust hub (#1118) — the one admin surface linking
+    # entity verification, submission review, and marketplace curation.
+    # Behaviour covered by tests/test_admin_moderation_hub.py +
+    # tests/test_web_nav_moderation_hub.py; it's an admin web page, not a fit
+    # for the parameter-free smoke sweep.
+    "GET /admin/store",
     # Skill-linter admin moderation surface (v89, #687) — findings list,
     # full-corpus audit, per-finding dismiss. Behaviour covered by
     # tests/test_store_lint_api.py + tests/test_web_store_lint.py; the audit
