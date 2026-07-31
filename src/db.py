@@ -6859,7 +6859,13 @@ def _v111_to_v112(conn: duckdb.DuckDBPyConnection) -> None:
     exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'chat_sessions'").fetchone()
     if exists:
         conn.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMP")
-    conn.execute("UPDATE schema_version SET version = 111")
+    # 112, not 111: this step was _v110_to_v111 before the agents-superset step
+    # took that number, and the stamp has to move with the rename. The upgrade
+    # branch above runs the steps unguarded with no tail stamp of its own, so
+    # whatever the LAST step writes is the version the database ends on — a
+    # stale 111 here strands every upgraded DB one short of SCHEMA_VERSION and
+    # re-runs the whole ladder on every boot.
+    conn.execute("UPDATE schema_version SET version = 112")
 
 
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
