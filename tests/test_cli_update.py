@@ -1069,3 +1069,41 @@ def test_marketplace_no_drift_prune_is_silent_under_quiet(monkeypatch, tmp_path,
     cfg = json.loads((ws / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert "ghost@agnes" not in cfg["enabledPlugins"]
     assert cfg["enabledPlugins"]["superpowers@claude-plugins-official"] is True
+
+
+# ---------------------------------------------------------------------------
+# Step `global` — user-scope convergence gating (spec §7.2)
+# ---------------------------------------------------------------------------
+
+
+def test_update_skips_global_step_when_flag_off(monkeypatch):
+    import cli.commands.update as update_module
+
+    called = []
+    monkeypatch.setattr(
+        "cli.commands.global_scope.run_convergence",
+        lambda **kw: called.append(kw),
+    )
+    monkeypatch.setattr("cli.commands.update.load_config", lambda: {"server": "http://localhost:9"})
+    report: list[dict] = []
+    update_module._step_global(report=report, quiet=True)
+    assert called == []
+    assert report and report[0]["status"] == "skipped"
+
+
+def test_update_runs_global_step_when_flag_on(monkeypatch):
+    import cli.commands.update as update_module
+
+    called = []
+    monkeypatch.setattr(
+        "cli.commands.global_scope.run_convergence",
+        lambda **kw: called.append(kw),
+    )
+    monkeypatch.setattr(
+        "cli.commands.update.load_config",
+        lambda: {"server": "http://localhost:9", "global_scope": True, "global_hook": True},
+    )
+    report: list[dict] = []
+    update_module._step_global(report=report, quiet=True)
+    assert len(called) == 1
+    assert called[0]["want_hook"] is True and called[0]["force"] is False
