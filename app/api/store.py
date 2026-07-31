@@ -17,6 +17,7 @@ display name don't collide in Claude Code's flat namespace.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import json
 import logging
@@ -24,6 +25,8 @@ import os
 import re
 import shutil
 import tempfile
+import threading
+import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
@@ -297,10 +300,69 @@ class DryRunResponse(BaseModel):
 
     inline_checks: dict
     llm_findings: Optional[dict] = None
+    llm_safe: Optional[bool] = None  # None when no LLM review was run
+    llm_error: bool = False  # True when the review call itself failed (≠ rejection)
     would_publish: bool
     # v89: skill-linter dry-run block. Only populated for type == "skill"
     # (the linter is skill-specific — agents/plugins never get a lint key).
     lint: Optional[dict] = None
+
+
+# ---------------------------------------------------------------------------
+# Pre-check verdict token store
+# ---------------------------------------------------------------------------
+# Tokens are server-generated UUIDs bound to a content hash so a verdict from
+# skill A cannot be reused for skill B. The client sends the token back in the
+# real submit; the background LLM review then skips the second Anthropic call.
+
+_VERDICT_TOKEN_TTL = 300  # seconds
+
+_verdict_token_store: Dict[str, tuple] = {}
+_verdict_token_lock = threading.Lock()
+
+_precheck_verdict_ctx: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "_precheck_verdict_ctx", default=None
+)
+
+
+def _markdown_content_hash(name: str, type_: str, description: Optional[str], skill_md: str) -> str:
+    """Stable hash of the fields sent in CreateFromMarkdownBody.
+
+    Used to bind a verdict token to exactly the content that was reviewed —
+    a token minted for skill A cannot be replayed against different content.
+    """
+    import hashlib
+
+    payload = json.dumps(
+        {"name": name, "type": type_, "description": description or "", "skill_md": skill_md},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _mint_verdict_token(verdict: dict, content_hash: str) -> str:
+    """Store a pre-check verdict bound to *content_hash* and return a token."""
+    token = uuid.uuid4().hex
+    expires_at = time.time() + _VERDICT_TOKEN_TTL
+    with _verdict_token_lock:
+        now = time.time()
+        expired = [k for k, (_, exp, _ch) in _verdict_token_store.items() if exp < now]
+        for k in expired:
+            del _verdict_token_store[k]
+        _verdict_token_store[token] = (verdict, expires_at, content_hash)
+    return token
+
+
+def _consume_verdict_token(token: str, content_hash: str) -> Optional[dict]:
+    """Pop and return the verdict for *token* iff it matches *content_hash* and is fresh."""
+    with _verdict_token_lock:
+        entry = _verdict_token_store.pop(token, None)
+    if entry is None:
+        return None
+    verdict, expires_at, stored_hash = entry
+    if time.time() > expires_at or stored_hash != content_hash:
+        return None
+    return verdict
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +505,9 @@ def _schedule_llm_review(
     fires (FastAPI yields cursors from ``_get_db`` and the cleanup runs
     on the response yield).
     """
+    # Capture at schedule time (sync context) — ContextVar doesn't propagate
+    # into background tasks, so we read it here and pass as a kwarg.
+    precheck_verdict = _precheck_verdict_ctx.get()
     background_tasks.add_task(
         run_llm_review,
         submission_id,
@@ -450,6 +515,7 @@ def _schedule_llm_review(
         conn_factory=get_system_db,
         api_key_loader=default_api_key_loader,
         model_loader=default_model_loader,
+        precheck_verdict=precheck_verdict,
     )
 
 
@@ -1963,6 +2029,13 @@ async def dryrun_entity(
         return DryRunResponse(
             inline_checks=inline_checks,
             llm_findings=verdict,
+            # None when no LLM ran (lint_only, guardrails off, or provider not
+            # configured); JS gate reads this with === false so None passes through.
+            llm_safe=safe if verdict is not None else None,
+            # Distinguish a provider/transport error from a genuine rejection so
+            # the JS gate can fall through to the real submit (→ admin queue +
+            # retry path) instead of hard-blocking with a misleading message.
+            llm_error=bool(verdict and verdict.get("error")) if verdict is not None else False,
             would_publish=inline.passed and safe,
             lint=lint_report,
         )
@@ -1997,6 +2070,15 @@ class CreateFromMarkdownBody(BaseModel):
     # short-circuits after name/frontmatter synthesis — no create_entity
     # call, no DB writes of any kind.
     dry_run: bool = False
+    # When dry_run=True and include_llm=True, run the LLM security review
+    # synchronously (same as dryrun_entity) and include the verdict + a
+    # guardrails_active flag in the response so the builder JS can gate the
+    # real save on the LLM result without a separate dryrun_entity round-trip.
+    include_llm: bool = False
+    # Token returned by a successful dry_run+include_llm pre-check. When
+    # present the background LLM review reuses the pre-check verdict instead
+    # of calling Anthropic again, halving the cost per skill publish.
+    precheck_verdict_token: Optional[str] = None
 
 
 @router.post(
@@ -2073,12 +2155,52 @@ async def create_entity_from_markdown(
                     text,
                     plugin_dir=plugin_dir,
                 )
+            # Optional LLM pre-check: runs when the caller sets include_llm=True
+            # (the builder's "Save to Library" gate). Mirrors dryrun_entity's
+            # logic — blocking Anthropic round-trip in a threadpool so it
+            # doesn't stall the event loop. guardrails_active tells the caller
+            # whether an LLM gate exists at all (false → approve on inline alone).
+            llm_verdict: Optional[dict] = None
+            guardrails_active = False
+            llm_safe = True
+            if body.include_llm:
+                guardrails_active = get_guardrails_enabled() and get_guardrails_llm_provider_ready()
+                if guardrails_active:
+                    from src.store_guardrails import llm_review
+
+                    llm_verdict = await run_in_threadpool(
+                        llm_review.review_bundle,
+                        plugin_dir,
+                        type_=body.type,
+                        name=name,
+                        version="",
+                        description=body.description,
+                        api_key=default_api_key_loader(),
+                        model=default_model_loader(),
+                    )
+                    llm_safe = llm_review.is_safe(llm_verdict)
+            # Mint a content-bound token for safe verdicts so the real submit
+            # can skip the second Anthropic call. Binding to the content hash
+            # prevents replaying a verdict from one skill onto different content.
+            verdict_token = (
+                _mint_verdict_token(
+                    llm_verdict,
+                    _markdown_content_hash(name, body.type, body.description, body.skill_md),
+                )
+                if (llm_verdict and not llm_verdict.get("error") and llm_safe)
+                else None
+            )
             return Response(
                 content=json.dumps(
                     {
                         "dry_run": True,
                         "inline": inline.to_response_dict(),
                         "lint": lint_report,
+                        "guardrails_active": guardrails_active,
+                        "llm_safe": llm_safe,
+                        "llm_error": bool(llm_verdict and llm_verdict.get("error")),
+                        "llm_findings": llm_verdict,
+                        "verdict_token": verdict_token,
                     }
                 ),
                 media_type="application/json",
@@ -2096,22 +2218,37 @@ async def create_entity_from_markdown(
             zf.writestr(f"{name}/SKILL.md", text)
     buf.seek(0)
     upload = UploadFile(file=buf, filename=f"{name}.zip")
-    created = await create_entity(
-        background_tasks,
-        file=upload,
-        type=body.type,
-        name=name,
-        description=body.description,
-        category=body.category,
-        video_url=None,
-        title=None,
-        tagline=None,
-        photo=None,
-        docs=[],
-        access=body.access,
-        user=user,
-        conn=conn,
+    # Propagate a pre-check verdict via ContextVar so _schedule_llm_review
+    # can pass it to run_llm_review, skipping the second Anthropic call.
+    # The token is bound to a content hash; mismatched content silently drops it.
+    precheck_verdict = (
+        _consume_verdict_token(
+            body.precheck_verdict_token,
+            _markdown_content_hash(name, body.type, body.description, body.skill_md),
+        )
+        if body.precheck_verdict_token
+        else None
     )
+    ctx_tok = _precheck_verdict_ctx.set(precheck_verdict)
+    try:
+        created = await create_entity(
+            background_tasks,
+            file=upload,
+            type=body.type,
+            name=name,
+            description=body.description,
+            category=body.category,
+            video_url=None,
+            title=None,
+            tagline=None,
+            photo=None,
+            docs=[],
+            access=body.access,
+            user=user,
+            conn=conn,
+        )
+    finally:
+        _precheck_verdict_ctx.reset(ctx_tok)
     return created
 
 

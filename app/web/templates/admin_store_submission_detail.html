@@ -119,12 +119,20 @@
 
   {% if sub.status in ['pending_inline','pending_llm'] %}
   <div class="pending-banner" id="pendingBanner">
+    {% if guardrails_llm_ready %}
     <div class="spinner" aria-hidden="true"></div>
     <div>
       <strong>Review in progress</strong> — checks running against the bundle.
       Page auto-refreshes when verdict lands.
     </div>
-    <span class="elapsed" id="pendingElapsed" data-since="{{ sub.updated_at.isoformat() if sub.updated_at else '' }}">0s</span>
+    <span class="elapsed" id="pendingElapsed" data-since="{{ sub.updated_at.strftime('%Y-%m-%dT%H:%M:%SZ') if sub.updated_at else '' }}">0s</span>
+    {% else %}
+    <div>
+      <strong>Waiting for admin action</strong> — no LLM provider is configured,
+      so the automated review cannot run. Override to publish manually, or configure
+      an API key and use <em>Retry review</em>.
+    </div>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -181,7 +189,7 @@
         <dd>
           {%- if sub.updated_at -%}
           <time datetime="{{ sub.updated_at.isoformat() }}">{{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>
-          <span class="relative" data-rel-since="{{ sub.updated_at.isoformat() }}"
+          <span class="relative" data-rel-since="{{ sub.updated_at.strftime('%Y-%m-%dT%H:%M:%SZ') }}"
                 style="display:block; font-size:11px; color: var(--text-secondary, #9ca3af);">just now</span>
           {%- endif -%}
         </dd>
@@ -356,7 +364,7 @@
             {% if row.params.restored_from_version_no %}<span class="actor"> · from v{{ row.params.restored_from_version_no }}</span>{% endif %}
           {% endif %}
         </span>
-        <span class="relative" data-rel-since="{{ row.timestamp.isoformat() if row.timestamp else '' }}">just now</span>
+        <span class="relative" data-rel-since="{{ row.timestamp.strftime('%Y-%m-%dT%H:%M:%SZ') if row.timestamp else '' }}">just now</span>
       </li>
       {% endfor %}
     </ul>

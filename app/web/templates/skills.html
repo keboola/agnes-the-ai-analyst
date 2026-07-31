@@ -275,6 +275,25 @@
   .sk-result:empty { display: none; }
   .sk-result.err { color: var(--ds-accent-danger-ink); }
   .sk-result.ok { color: var(--ds-accent-success-ink); font-weight: 600; }
+  .sk-result.checking { color: var(--ds-text-secondary); font-style: italic; }
+
+  /* ── Review status banner (shown above the builder form after save) ── */
+  .sk-review-banner { display: flex; align-items: flex-start; gap: 14px; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; font-size: 14px; line-height: 1.5; }
+  .sk-review-banner.pending { background: var(--ds-accent-warn-bg); border: 1px solid var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink); }
+  .sk-review-banner.ok      { background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
+  .sk-review-banner.err     { background: var(--ds-accent-danger-bg); border: 1px solid var(--ds-accent-danger-line); color: var(--ds-accent-danger-ink); }
+  .sk-review-banner-icon { font-size: 22px; line-height: 1; flex-shrink: 0; margin-top: 1px; }
+  .sk-review-banner-body { flex: 1; min-width: 0; }
+  .sk-review-banner-title { font-weight: 700; margin-bottom: 4px; }
+  .sk-review-banner-hint { font-size: 13px; opacity: 0.85; }
+  .sk-review-pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 6px; animation: sk-pulse 1.4s ease-in-out infinite; }
+  @keyframes sk-pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+  .sk-review-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .sk-review-meta { font-size: 12.5px; color: var(--ds-text-muted); margin-top: 12px; }
+  .sk-review-label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 9px; border-radius: var(--ds-radius-pill); }
+  .sk-review-label.pending { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .sk-review-label.ok      { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .sk-review-label.err     { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
 </style>
 {% endblock %}
 
@@ -310,6 +329,10 @@
 
   var CATEGORIES = JSON.parse(document.getElementById('sk-categories').textContent || '[]');
   var USER_ID = "{{ session.user.id }}";
+  // True when an LLM guardrail is active on this instance — doSave() runs a
+  // blocking pre-check and gates the real publish on the verdict.
+  var GUARDRAILS_ENABLED = {{ 'true' if guardrails_enabled else 'false' }};
+  var GUARDRAILS_LLM_READY = {{ 'true' if guardrails_llm_ready else 'false' }};
   // Drafts never touch the store — they live only in this browser, one slot
   // per type, so an in-progress plugin can't clobber a half-written skill.
   var DRAFT_KEY = 'agnes_builder_draft_v1_' + USER_ID;
@@ -422,6 +445,8 @@
   var bundle = null;      // plugin only: the attached File (never persisted)
   var check = null;       // last Check result, or null
   var inFlight = false;
+  var reviewInProgress = false;  // true while a submit is in the review queue; blocks re-save
+  var _reviewBannerHtml = null;  // saved banner HTML — re-inserted after every render()
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -460,6 +485,11 @@
   }
   function persist() {
     if (!type || !draft) return;
+    // After a successful save the review banner is shown and the entity exists
+    // in the DB. Any further edit in the still-visible form must not re-create
+    // a localStorage draft, or the next visit will offer to "resume" a skill
+    // that is already published (and a re-save would fail on a name conflict).
+    if (reviewInProgress) return;
     // Emptying the last field is a way of throwing work away too — leaving the
     // old slot behind would resurrect the removed content on the next visit,
     // which is exactly what someone who just hit Remove did not ask for.
@@ -831,8 +861,8 @@
           // away, so it has to exist somewhere.
           (drafts[type] ? '<button type="button" class="sk-draft-discard" id="sk-discard">Discard draft</button>' : '') +
           '<button type="button" class="cc-btn" id="sk-draft">Save draft</button>' +
-          '<button type="button" class="cc-btn" id="sk-check" ' + (canCheck() ? '' : 'disabled') + '>' + esc(c.checkLabel) + '</button>' +
-          '<button type="button" class="cc-btn cc-btn--primary" id="sk-save" ' + (canPublish() ? '' : 'disabled') + '>Save to Library</button>' +
+          '<button type="button" class="cc-btn" id="sk-check" ' + (canCheck() && !reviewInProgress ? '' : 'disabled') + '>' + esc(c.checkLabel) + '</button>' +
+          '<button type="button" class="cc-btn cc-btn--primary" id="sk-save" ' + (canPublish() && !reviewInProgress ? '' : 'disabled') + '>Save to Library</button>' +
         '</div>' +
       '</div>' +
       agentCalloutHtml() +
@@ -893,6 +923,22 @@
         '</div>' +
         '<aside class="sk-preview" id="sk-preview">' + previewHtml() + '</aside>' +
       '</div>';
+
+    // Re-insert the review banner if one was shown before this re-render (e.g. the
+    // author changed the access radio after saving — without this the banner disappears).
+    if (_reviewBannerHtml) {
+      var wrap = document.createElement('div');
+      wrap.id = 'sk-review-banner-wrap';
+      wrap.style.marginBottom = '16px';
+      wrap.innerHTML = _reviewBannerHtml;
+      var buildHead = view.querySelector('.sk-build-head');
+      var insertAfter = buildHead ? buildHead.nextSibling : null;
+      if (insertAfter) {
+        view.insertBefore(wrap, insertAfter);
+      } else {
+        view.appendChild(wrap);
+      }
+    }
   }
 
   /* Light-touch preview sync while typing (no re-render → keeps focus). */
@@ -907,8 +953,8 @@
     if ((el = document.getElementById('sk-pv-status'))) el.textContent = canPublish() ? 'Ready to save' : 'Draft';
     if ((el = document.getElementById('sk-build-title'))) el.textContent = draft.name || c.newTitle;
     if ((el = document.getElementById('sk-name-hint'))) { el.textContent = ns.msg; el.className = 'sk-hint' + (ns.err ? ' err' : ''); }
-    var s = document.getElementById('sk-save'); if (s) s.disabled = !canPublish();
-    var ch = document.getElementById('sk-check'); if (ch) ch.disabled = !canCheck();
+    var s = document.getElementById('sk-save'); if (s) s.disabled = !(canPublish() && !reviewInProgress);
+    var ch = document.getElementById('sk-check'); if (ch) ch.disabled = !(canCheck() && !reviewInProgress);
   }
 
   /* Choose (or switch to) a type.
@@ -935,8 +981,10 @@
     bundle = null;   // a File can't be persisted — plugin drafts resume without one
     check = null;
     typeOpen = false;
+    reviewInProgress = false; _reviewBannerHtml = null;
+    // render() must run first — it replaces view.innerHTML and creates a fresh
+    // #sk-result node; setResult() written before render() would be wiped out.
     render();
-
     // Say what happened to the work, in priority order: a restored draft is
     // the most surprising state, then a parked one.
     if (incoming && cfg().source === 'bundle') {
@@ -1048,21 +1096,203 @@
 
   function doSave() {
     if (inFlight || !canPublish()) return;
-    inFlight = true; setResult('Saving…');
+    inFlight = true;
     var access = draft.access === 'everyone' ? 'everyone' : 'private';
-    var call = cfg().source === 'bundle'
-      ? postForm('/api/store/entities', bundleForm({ access: access }))
-      : postJson('/api/store/entities/from-markdown', markdownPayload({ access: access }));
 
-    call
-      .then(function (created) {
-        // It's real now — the local-only draft copy would just be stale.
-        discardDraft(type);
-        // Straight back to the Library, which expands the new item's section,
-        // scrolls to it and flashes it (see ?new= handling in library.html).
-        window.location.href = '/library?new=' + encodeURIComponent(created.id);
+    // Plugin bundles: POST the .zip directly and redirect to the Library.
+    // Server-side async review handles content checking; no synchronous LLM
+    // pre-check is needed for ZIP uploads.
+    if (cfg().source === 'bundle') {
+      setResult('Saving…');
+      postForm('/api/store/entities', bundleForm({ access: access }))
+        .then(function (created) {
+          discardDraft(type);
+          window.location.href = '/library?new=' + encodeURIComponent(created.id);
+        })
+        .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
+      return;
+    }
+
+    // Markdown path (skill / agent): LLM pre-check gate + async review banner.
+    function showReviewPanel(created, chosenAccess) {
+      discardDraft(type);
+      var isPrivate = chosenAccess !== 'everyone';
+      // Set BEFORE render() — render() reads reviewInProgress to decide whether
+      // the Save / Check buttons are disabled.
+      reviewInProgress = true;
+      // Keep draft in memory so render() can display what the user typed.
+      render();
+
+
+      // Insert banner between the build-head and the section grid.
+      var banner = document.createElement('div');
+      banner.id = 'sk-review-banner-wrap';
+      banner.style.marginBottom = '16px';
+      var buildHead = view.querySelector('.sk-build-head');
+      var insertAfter = buildHead ? buildHead.nextSibling : null;
+      if (insertAfter) {
+        view.insertBefore(banner, insertAfter);
+      } else {
+        view.appendChild(banner);
+      }
+
+      function updateBanner(state) {
+        // Re-query the live node: render() may have detached the original element.
+        var node = document.getElementById('sk-review-banner-wrap') || banner;
+        var icon  = state.kind === 'ok' ? '✅' : state.kind === 'err' ? '❌' : '⏳';
+        var pulse = state.kind === 'pending' ? '<span class="sk-review-pulse"></span>' : '';
+        var actionsHtml = '';
+        if (state.kind === 'ok') {
+          actionsHtml =
+            '<div class="sk-review-actions">' +
+              '<a class="cc-btn cc-btn--primary" href="/library?new=' + encodeURIComponent(created.id) + '">Open in Library →</a>' +
+            '</div>';
+        } else if (state.kind === 'err') {
+          // The entity was already written to the DB (showReviewPanel is only
+          // called after a successful commitSave). Re-saving with the same name
+          // would hit a 409 conflict. Keep buttons locked and direct the user to
+          // Library where they can delete the rejected entry before retrying.
+          inFlight = false;
+          actionsHtml =
+            '<div class="sk-review-actions">' +
+              '<a class="cc-btn cc-btn--primary" href="/library">Open Library to delete &amp; retry →</a>' +
+            '</div>';
+        }
+        _reviewBannerHtml =
+          '<div class="sk-review-banner ' + state.kind + '">' +
+            '<div class="sk-review-banner-icon">' + icon + '</div>' +
+            '<div class="sk-review-banner-body">' +
+              '<div class="sk-review-banner-title">' + pulse + esc(state.title) + '</div>' +
+              '<div class="sk-review-banner-hint">' + esc(state.hint) + '</div>' +
+              actionsHtml +
+            '</div>' +
+          '</div>';
+        node.innerHTML = _reviewBannerHtml;
+      }
+
+      if (isPrivate) {
+        updateBanner({ kind: 'ok', title: 'Saved to your private Library.', hint: 'Only you can see and install this skill.' });
+        return;
+      }
+
+      if (!GUARDRAILS_ENABLED) {
+        updateBanner({ kind: 'ok', title: 'Published immediately.', hint: 'Content guardrails are disabled on this instance — the skill is live.' });
+        return;
+      }
+      if (!GUARDRAILS_LLM_READY) {
+        updateBanner({
+          kind: 'pending',
+          title: 'Saved — waiting for admin review.',
+          hint: 'No LLM provider is configured, so the skill sits in the admin queue. An admin can approve it manually or configure an API key.',
+        });
+        return;
+      }
+
+      updateBanner({ kind: 'pending', title: 'Your skill is under review.', hint: 'The automated guardrail is checking the content. This usually takes less than a minute.' });
+
+      var pollTimer = null;
+      var pollCount = 0;
+      function poll() {
+        fetch('/api/store/entities/' + encodeURIComponent(created.id) + '/status', { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (!data) return;
+            var sub = data.submission || {};
+            var vis = data.visibility_status || '';
+            var subStatus = sub.status || '';
+            if (vis === 'approved' || subStatus === 'approved') {
+              clearInterval(pollTimer);
+              updateBanner({ kind: 'ok', title: 'Published! Your skill is live.', hint: data.hint || 'The review passed — your skill is now visible to everyone in the organization.' });
+            } else if (subStatus === 'blocked_llm' || subStatus === 'blocked_inline' || vis === 'quarantined') {
+              clearInterval(pollTimer);
+              var errHint = data.hint || 'The review did not pass. Edit the skill and try saving again.';
+              if (sub.summary) errHint = sub.summary + ' — ' + errHint;
+              updateBanner({ kind: 'err', title: 'Review did not pass.', hint: errHint });
+            } else if (subStatus === 'review_error') {
+              clearInterval(pollTimer);
+              updateBanner({ kind: 'err', title: 'Automated review errored.', hint: data.hint || 'Ask an admin to retry from the admin queue.' });
+            }
+          })
+          .catch(function () { /* network blip — keep polling */ });
+
+        pollCount++;
+        if (pollCount > 75) {
+          clearInterval(pollTimer);
+          inFlight = false;
+          // Entity is in DB — keep reviewInProgress=true so buttons stay locked.
+          // Show a Library link so the user can track the outcome there.
+          _reviewBannerHtml =
+            '<div class="sk-review-banner pending">' +
+              '<div class="sk-review-banner-icon">⏳</div>' +
+              '<div class="sk-review-banner-body">' +
+                '<div class="sk-review-banner-title">Still under review.</div>' +
+                '<div class="sk-review-banner-hint">This is taking longer than usual. Track the outcome in the Library or contact your admin.</div>' +
+                '<div class="sk-review-actions">' +
+                  '<a class="cc-btn cc-btn--primary" href="/library">Open Library →</a>' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+          banner.innerHTML = _reviewBannerHtml;
+        }
+      }
+      pollTimer = setInterval(poll, 4000);
+      poll();
+    }
+
+    function commitSave(verdictToken) {
+      setResult('Saving…');
+      var body = markdownPayload({ access: access });
+      if (verdictToken) { body.precheck_verdict_token = verdictToken; }
+      postJson('/api/store/entities/from-markdown', body)
+        .then(function (created) {
+          showReviewPanel(created, access);
+          inFlight = false;
+        })
+        .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
+    }
+
+    if (!GUARDRAILS_LLM_READY || access !== 'everyone') {
+      // No LLM gate, or private save (can never auto-publish — no point reviewing).
+      commitSave(null);
+      return;
+    }
+
+    // LLM gate is active: run the pre-check synchronously before committing.
+    setResult('Reviewing with AI… (this may take up to 30 seconds)', 'checking');
+    postJson('/api/store/entities/from-markdown', markdownPayload({ dry_run: true, include_llm: true }))
+      .then(function (res) {
+        if (!res.guardrails_active || res.llm_safe || res.llm_error) {
+          // Passed, guardrails toggled off, or reviewer itself errored —
+          // pass the verdict_token so the BG review skips the Anthropic call.
+          commitSave(res.verdict_token || null);
+        } else {
+          // Genuine rejection — extract findings from the verdict.
+          var msg = 'AI review did not pass.';
+          var verdict = res.llm_findings;
+          if (verdict) {
+            var findings = verdict.findings || [];
+            var cqIssues = (verdict.content_quality && verdict.content_quality.issues) || [];
+            if (Array.isArray(findings) && findings.length) {
+              msg = 'AI review failed: ' + findings.map(function (f) {
+                return [f.explanation, f.fix_hint].filter(Boolean).join(' — ');
+              }).join(' ');
+            } else if (Array.isArray(cqIssues) && cqIssues.length) {
+              msg = 'AI review failed: ' + cqIssues.map(function (i) {
+                return typeof i === 'string' ? i : (i.issue || i.hint || JSON.stringify(i));
+              }).join(' ');
+            } else if (typeof verdict.summary === 'string') {
+              msg = 'AI review failed: ' + verdict.summary;
+            }
+          }
+          setResult(msg, 'err');
+          inFlight = false;
+        }
       })
-      .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
+      .catch(function (e) {
+        // Pre-check network error — fall through to save so a transient
+        // outage doesn't silently block publishing.
+        commitSave(null);
+      });
   }
 
   /* ── File intake — .md fills the body, .zip becomes the bundle ── */

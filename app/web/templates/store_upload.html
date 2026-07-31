@@ -1071,6 +1071,9 @@ function renderDocs() {
 // is the source of truth; this is purely UX. Floor is operator-configurable
 // via /admin/server-config (default 60).
 const DESC_MIN = {{ guardrail.min_description_chars|default(60) }};  // Live config from /admin/server-config
+// True when an LLM guardrail is configured — the finish step runs a blocking
+// pre-check and gates the real submission on the verdict.
+const GUARDRAILS_LLM_READY = {{ 'true' if guardrails_llm_ready else 'false' }};
 const descField = document.getElementById('description');
 const descCounter = document.getElementById('desc-counter');
 function updateDescCounter() {
@@ -1285,6 +1288,52 @@ finishBtn.addEventListener('click', async () => {
   const type = document.querySelector('input[name=type]:checked').value;
 
   finishBtn.disabled = true;
+
+  // Phase 1 (when LLM guardrail is active): blocking pre-check via dryrun.
+  // If it fails, show error and stay on step 2 so the user can edit + retry.
+  // On network error we fall through to the real submit (transient outage
+  // must not silently block publishing).
+  if (GUARDRAILS_LLM_READY) {
+    finishBtn.textContent = 'Reviewing with AI…';
+    try {
+      const dfd = new FormData();
+      dfd.append('file', zipFile);
+      dfd.append('type', type);
+      const descVal = document.getElementById('description').value;
+      if (descVal) dfd.append('description', descVal);
+      const dres = await fetch('/api/store/entities/dryrun', {method: 'POST', body: dfd});
+      if (dres.ok) {
+        const report = await dres.json();
+        if (report.llm_safe === false && !report.llm_error) {
+          // Genuine LLM rejection — surface the verdict and abort.
+          // Inline failures and reviewer errors fall through to the real submit
+          // (humanizeError handles inline; review_error lands in admin queue).
+          let llmMsg = 'AI review did not pass.';
+          const verdict = report.llm_findings;
+          if (verdict) {
+            const findings = verdict.findings || [];
+            const cqIssues = (verdict.content_quality && verdict.content_quality.issues) || [];
+            if (Array.isArray(findings) && findings.length) {
+              llmMsg = 'AI review failed: ' + findings.map(f => [f.explanation, f.fix_hint].filter(Boolean).join(' — ')).join(' ');
+            } else if (Array.isArray(cqIssues) && cqIssues.length) {
+              llmMsg = 'AI review failed: ' + cqIssues.join(' ');
+            } else if (typeof verdict.summary === 'string') {
+              llmMsg = 'AI review failed: ' + verdict.summary;
+            }
+          }
+          showError(llmMsg);
+          finishBtn.disabled = false;
+          finishBtn.textContent = 'Finish';
+          return;
+        }
+        // LLM passed, reviewer errored, or inline check failed — fall through.
+      }
+      // dres not ok (server error on dryrun) → fall through to real submit.
+    } catch (_) {
+      // Network error on pre-check → fall through to real submit.
+    }
+  }
+
   finishBtn.textContent = 'Uploading…';
   try {
     const fd = new FormData();
