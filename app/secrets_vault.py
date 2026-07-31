@@ -134,13 +134,17 @@ def decrypt_secret(token: bytes) -> str:
 def decrypt_optional(token: object, *, context: str = "secret") -> Optional[str]:
     """Decrypt a possibly-``None``/possibly-junk Fernet token column.
 
-    Shared by every repo that stores an OPTIONAL encrypted column (client
-    secrets, refresh tokens, PKCE verifiers, ...) — factors out the
-    bytes-coercion + ``InvalidToken``-swallow logic that used to be
-    hand-duplicated in each of ``SharedSecretsRepository`` /
-    ``PerUserSecretsRepository`` / ``ConnectionSecretsRepository``. Returns
-    ``None`` for a NULL column or an undecryptable value (vault key
-    rotated) — never raises.
+    Used by the OAuth repos that store OPTIONAL encrypted columns (client
+    secrets, refresh tokens, PKCE verifiers, ...): one place for the
+    bytes-coercion + ``InvalidToken``-swallow pattern. Returns ``None`` for
+    a NULL column or an undecryptable value (vault key rotated) — never
+    raises.
+
+    The older secret repos (``SharedSecretsRepository`` /
+    ``PerUserSecretsRepository`` / ``ConnectionSecretsRepository``) still
+    carry their own inline equivalents and have NOT been folded onto this
+    helper — a worthwhile cleanup, but out of scope where it was added
+    (parity review on #1124).
     """
     if token is None:
         return None
