@@ -985,7 +985,9 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/chat/sessions
 - /api/chat/sessions/{chat_id}
 - /api/chat/sessions/{chat_id}/messages
+- /api/chat/sessions/{chat_id}/pin
 - /api/chat/sessions/{chat_id}/ticket
+- /api/chat/sessions/{chat_id}/title
 - /api/chat/skills
 - /api/chat/uploads
 - /api/chat/{session_id}/fork
@@ -1018,12 +1020,26 @@ user.
 
 ### `/api/collections` — File collections (bring-your-files)
 
+The two **preview** endpoints back the Library's file-preview modal.
+`…/preview` answers "what should the viewer show?" — `kind` is `image` /
+`pdf` (fetch `raw_url`), `text` (source for textual uploads, otherwise the
+text ingestion extracted, capped to a glance and flagged `truncated`), or
+`none` with a `reason`. `…/raw` streams the bytes for a **closed** set of
+browser-renderable types (PNG/JPEG/GIF/WebP/PDF) with the media type pinned
+server-side plus `nosniff`; anything else — notably an uploaded `.html` — is
+`415` and previews as source text instead, so an upload can never execute
+inline on this origin. Both read-gate on the parent collection's access OR a
+grant on the `corpus_file` itself, so a file shared out of a folder stays
+viewable by the person it was shared with.
+
 - /api/collections
 - /api/collections/search
 - /api/collections/{collection_id}
 - /api/collections/{collection_id}/files
 - /api/collections/{collection_id}/files/{file_id}
 - /api/collections/{collection_id}/files/{file_id}/move
+- /api/collections/{collection_id}/files/{file_id}/preview
+- /api/collections/{collection_id}/files/{file_id}/raw
 - /api/collections/{collection_id}/files/{file_id}/reingest
 
 ### `/api/connectors` — Connector manifest
