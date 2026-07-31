@@ -44,6 +44,10 @@
   .ag-card-role { font-size: 13px; color: var(--ds-text-secondary); line-height: 1.5; min-height: 39px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .ag-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--ds-border); padding-top: 11px; margin-top: auto; }
   .ag-card-count { font-size: 12.5px; color: var(--ds-text-muted); font-weight: 500; }
+  /* Occupies the slot the delete control would hold on the seeded default
+     agent, which cannot be deleted — a label, not a disabled button, since
+     there is no state in which pressing it would work. */
+  .ag-card-locked { font-size: 12.5px; color: var(--ds-text-muted); font-weight: 500; padding: 2px 6px; }
   .ag-del { border: none; background: none; color: var(--ds-text-muted); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 8px; font-family: inherit; }
   .ag-del:hover { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
   .ag-new { border: 1.5px dashed var(--ds-border); background: var(--ds-surface-sunken); color: var(--ds-text-secondary); border-radius: 14px; padding: 16px 18px; display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 14px; font-weight: 600; cursor: pointer; min-height: 158px; font-family: inherit; transition: color var(--ds-motion-fast) var(--ds-ease-standard), border-color var(--ds-motion-fast) var(--ds-ease-standard); }
@@ -347,7 +351,12 @@
         '<div class="ag-card-role">' + (esc(a.role) || '<span style="color:var(--ds-text-muted)">No role yet — open to configure.</span>') + '</div>' +
         '<div class="ag-card-foot">' +
           '<span class="ag-card-count">' + agentCounts(a) + '</span>' +
-          '<button type="button" class="ag-del" data-ag-del="' + esc(a.id) + '">Delete</button>' +
+          // The seeded default agent is not deletable (the API refuses it with
+          // 400 default_agent_undeletable) — every chat session is attributed
+          // to it. Render the reason in place of a control that cannot work.
+          (a.is_default
+            ? '<span class="ag-card-locked" title="Every chat is attributed to this agent">Default</span>'
+            : '<button type="button" class="ag-del" data-ag-del="' + esc(a.id) + '">Delete</button>') +
         '</div>' +
       '</div>';
     }).join('');
@@ -552,7 +561,8 @@
           '<h2 id="ag-build-title">' + (esc(a.name) || 'Untitled') + '</h2>' +
         '</div>' +
         '<div class="ag-build-actions">' + statusPill(a) +
-          '<button type="button" class="cc-btn ag-del-btn" data-ag-del="' + esc(a.id) + '">Delete</button>' +
+          // Same reason as the list card: the default agent has no delete.
+          (a.is_default ? '' : '<button type="button" class="cc-btn ag-del-btn" data-ag-del="' + esc(a.id) + '">Delete</button>') +
           '<button type="button" class="cc-btn' + (a.status === 'ready' ? '' : ' cc-btn--primary') + '" data-ag-status>' +
             (a.status === 'ready' ? 'Back to draft' : 'Mark ready') + '</button>' +
         '</div>' +

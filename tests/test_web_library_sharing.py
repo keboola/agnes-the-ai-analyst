@@ -133,6 +133,79 @@ def test_agent_slug_freed_name_reuses_suffix_after_delete(seeded_app):
     assert d1["slug"] != d2["slug"]
 
 
+def test_agent_default_cannot_be_deleted(seeded_app):
+    """The seeded default agent is not deletable through the builder.
+
+    It is listed like any other agent (``list_for_user`` returns it first), so
+    the Library's delete control reaches it. Deleting it used to break web chat
+    outright: every session create resolves the default first, and that lookup
+    re-inserted a row whose ``slug='default'`` still collided with the
+    soft-deleted tombstone — a permanent 500 on ``POST /api/chat/sessions``.
+    The repository now revives the tombstone instead of raising, but the delete
+    still has no business succeeding: the agent would vanish from the Library
+    and silently reappear on the owner's next chat. `/api/v1/agents` has
+    refused this since the agent-as-API work; the builder router must match.
+    """
+    from src.repositories import agents_repo
+
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+
+    default_id = agents_repo().get_or_create_default("admin1")["id"]
+    listed = c.get("/api/agents", headers=_auth(tok)).json()["agents"]
+    assert any(x["id"] == default_id for x in listed), "default agent is reachable in the Library"
+
+    r = c.delete(f"/api/agents/{default_id}", headers=_auth(tok))
+    assert r.status_code == 400
+    assert r.json()["detail"] == "default_agent_undeletable"
+
+    # Still live, and still the default.
+    assert agents_repo().get_by_id(default_id)["deleted_at"] is None
+    assert c.get(f"/api/agents/{default_id}", headers=_auth(tok)).status_code == 200
+
+
+def test_agent_wire_shape_marks_the_default_and_page_hides_its_delete(seeded_app):
+    """`is_default` reaches the browser, and the page uses it.
+
+    The API refuses to delete the seeded default (400
+    `default_agent_undeletable`). Without the flag on the wire the page renders
+    a delete control anyway, and clicking it optimistically removes the row,
+    fails, restores it, and toasts a bare "HTTP 400" — so the guard reads as a
+    glitch. Assert both halves: the projection, and that the two render sites
+    branch on it.
+    """
+    from pathlib import Path
+
+    from src.repositories import agents_repo
+
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+    default_id = agents_repo().get_or_create_default("admin1")["id"]
+
+    listed = c.get("/api/agents", headers=_auth(tok)).json()["agents"]
+    by_id = {a["id"]: a for a in listed}
+    assert by_id[default_id]["is_default"] is True
+    # A user-created agent is not the default — the flag has to discriminate.
+    mine = _create_agent(seeded_app, tok, name="Ordinary")
+    assert c.get(f"/api/agents/{mine['id']}", headers=_auth(tok)).json()["is_default"] is False
+
+    tpl = Path("app/web/templates/agents.html").read_text(encoding="utf-8")
+    assert tpl.count("a.is_default") >= 2, "both the list card and the builder header must branch on is_default"
+
+
+def test_agent_named_default_does_not_claim_the_reserved_slug(seeded_app):
+    """`"default"` belongs to the seeded default agent, not to a user-named one.
+
+    The builder derives its slug from a typed name, so "Default" is suffixed
+    rather than rejected (the governance router 400s `slug_reserved` instead).
+    Left unreserved, an ordinary name could claim the slug before the owner's
+    first chat seeded the real default — and
+    `POST /api/v1/agents/default/responses` would then address the user's agent.
+    """
+    a = _create_agent(seeded_app, seeded_app["admin_token"], name="Default")
+    assert a["slug"] == "default-2"
+
+
 def test_agent_patch_cannot_reassign_ownership(seeded_app):
     """A hostile payload can't move an agent to another owner or hijack a slug."""
     tok = seeded_app["admin_token"]

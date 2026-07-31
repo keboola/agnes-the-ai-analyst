@@ -52,6 +52,10 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _RT = ResourceType.AGENT.value
+# Reserved for the per-owner seeded default agent (``agents_repo().
+# get_or_create_default``), never claimable by a user-created one. Mirrors
+# ``app/api/agents_admin.py``'s ``_RESERVED_SLUGS``.
+_DEFAULT_AGENT_SLUG = "default"
 
 
 def _auto_slug(name: str) -> str:
@@ -77,9 +81,18 @@ def _unique_slug(base: str, owner_user_id: str) -> str:
     ``deleted_at`` while the UNIQUE spans deleted rows, so searching live rows
     only would report a soft-deleted agent's slug as free and drive the INSERT
     straight into a ConstraintException.
+
+    ``"default"`` is reserved for the per-owner seeded default agent, exactly as
+    ``app/api/agents_admin.py``'s ``_RESERVED_SLUGS`` treats it. The governance
+    router rejects it outright; here the slug is derived from a user-typed name,
+    so an agent called "Default" is suffixed to ``default-2`` rather than 400'd.
+    Without this an ordinary name could claim the slug before the owner's first
+    chat seeded the real default — which then lands on ``default-2``, and
+    ``POST /api/v1/agents/default/responses`` would address the user's agent
+    instead of the default.
     """
     repo = agents_repo()
-    if repo.get_by_slug(owner_user_id, base, include_deleted=True) is None:
+    if base != _DEFAULT_AGENT_SLUG and repo.get_by_slug(owner_user_id, base, include_deleted=True) is None:
         return base
     for n in range(2, 1000):
         candidate = f"{base}-{n}"[:100].strip("-")
@@ -158,6 +171,10 @@ def _agent_out(row: dict, *, uid: str) -> Dict[str, Any]:
         "plugins": _decode(row.get("plugins"), []),
         "surfaces": _decode(row.get("surfaces"), {}),
         "status": row.get("status") or "draft",
+        # The seeded default agent cannot be deleted (see ``delete_agent``), so
+        # the page needs to know which row that is — otherwise it renders a
+        # delete control that always 400s.
+        "is_default": bool(row.get("is_default")),
         "mine": owner == uid,
         "created_by": owner,
         "created_at": row["created_at"].isoformat() if row.get("created_at") is not None else None,
@@ -305,8 +322,16 @@ async def delete_agent(agent_id: str, user: dict = Depends(get_current_user)):
 
     Grants are removed too, so a later agent can never inherit a dangling
     grant through id reuse and /admin/access shows no orphan rows.
+
+    The seeded default agent is exempt: it is infrastructure every web chat
+    session is attributed to (``app/api/chat.py::_default_agent_id``), not a
+    user artifact, so deleting it would make the agent vanish from the Library
+    and silently reappear on the next chat. `/api/v1/agents` refuses this for
+    the same reason (``agents_admin.py::delete_agent``).
     """
-    _writable(agent_id, user)
+    row = _writable(agent_id, user)
+    if row.get("is_default"):
+        raise HTTPException(status_code=400, detail="default_agent_undeletable")
     agents_repo().soft_delete(agent_id)
     try:
         resource_grants_repo().delete_by_resource(_RT, agent_id)
