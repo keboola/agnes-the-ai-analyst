@@ -957,13 +957,20 @@ def _readable_file_or_404(collection_id: str, file_id: str, user: dict) -> dict:
     raise HTTPException(status_code=404, detail="file_not_found")
 
 
-def _blob_path_or_404(row: dict):
+def _blob_path_or_none(row: dict):
     """Resolve a row's blob to a real file inside the corpus storage root.
 
     `storage_path` is written by ``store_corpus_file`` (never by a caller), but
     it is still a filesystem path read out of the database: realpath-contain it
     under ``${DATA_DIR}/file_corpora`` so a bad row can never make this
     endpoint serve, say, ``/etc/passwd``.
+
+    Returns ``None`` when there is no readable blob — a row can legitimately
+    carry no path (an oversize or empty upload is recorded ``rejected`` with
+    ``storage_path=None`` but still keeps the extension derived from its
+    filename), and a path can outlive its bytes. Callers decide whether that is
+    fatal: serving raw bytes has nothing to send, but a *preview* still has the
+    extracted text and the status sentence to fall back on.
     """
     from pathlib import Path
 
@@ -971,10 +978,18 @@ def _blob_path_or_404(row: dict):
 
     raw = row.get("storage_path")
     if not raw:
-        raise HTTPException(status_code=404, detail="file_blob_missing")
+        return None
     root = (_get_data_dir() / "file_corpora").resolve()
     path = Path(raw).resolve()
     if not path.is_relative_to(root) or not path.is_file():
+        return None
+    return path
+
+
+def _blob_path_or_404(row: dict):
+    """``_blob_path_or_none`` for the callers that cannot degrade gracefully."""
+    path = _blob_path_or_none(row)
+    if path is None:
         raise HTTPException(status_code=404, detail="file_blob_missing")
     return path
 
@@ -1041,8 +1056,16 @@ async def preview_file(
             "raw_url": f"/api/collections/{collection_id}/files/{file_id}/raw",
         }
 
-    if ext in _PREVIEW_TEXTUAL_EXTS:
-        path = _blob_path_or_404(row)
+    # Textual formats read their own bytes when they have them. A missing blob
+    # is NOT fatal here: an oversize or empty upload is recorded `rejected` with
+    # storage_path=None yet keeps the extension from its filename, so 404ing
+    # would render the modal's generic "could not be loaded" for exactly the
+    # rows whose status sentence ("rejected during ingestion…") is the useful
+    # answer — and would throw away extracted text that is already in the DB.
+    # Fall through to the same two outcomes every non-textual format gets.
+    # Inline media above keeps its 404: there, a broken <img> is worse.
+    path = _blob_path_or_none(row) if ext in _PREVIEW_TEXTUAL_EXTS else None
+    if path is not None:
         with path.open("rb") as fh:
             # One byte past the cap: enough to know the file continues.
             data = fh.read(_PREVIEW_READ_MAX_BYTES + 1)

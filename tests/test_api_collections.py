@@ -1264,6 +1264,50 @@ class TestFilePreview:
         assert body["truncated"] is False
         assert body["filename"] == "notes.md"
 
+    def test_textual_row_with_no_blob_explains_itself_instead_of_erroring(self, seeded_app):
+        """A textual row can legitimately have no bytes on disk, and the modal
+        must still say why rather than fail.
+
+        An oversize or empty upload is recorded `rejected` with
+        `storage_path=None` but keeps the extension derived from its filename —
+        so the row looks textual while having nothing to read. Resolving the
+        blob fatally here returned 404 `file_blob_missing`, which the modal
+        renders as its generic "The preview could not be loaded.", burying the
+        one useful answer: that ingestion rejected the file. Non-textual
+        formats already degraded correctly; this makes the textual branch
+        behave the same.
+        """
+        from pathlib import Path
+
+        from src.repositories import corpus_files_repo
+
+        cid = self._collection(seeded_app, "Preview No Blob")
+        fid = self._upload(seeded_app, cid, "notes.md", b"real bytes", "text/markdown")
+        # A stored path can outlive its bytes; the row keeps its textual
+        # extension either way, which is the state under test.
+        stored = corpus_files_repo().get(fid).get("storage_path")
+        assert stored, "upload should have stored a blob for this fixture to remove"
+        Path(stored).unlink()
+
+        r = seeded_app["client"].get(
+            f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["admin_token"])
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["filename"] == "notes.md"
+        # Whichever graceful shape applies — never the 404 that the modal turns
+        # into "The preview could not be loaded."
+        assert body["kind"] in {"text", "none"}, body
+        # Crucially not `source: "file"`: there is no file left to have read.
+        assert body["source"] != "file", body
+        if body["kind"] == "text":
+            # Already ingested, so the extracted text is the better answer than
+            # a status sentence — that is the point of falling through.
+            assert body["source"] == "extracted"
+            assert body["text"]
+        else:
+            assert body["reason"], "a kind='none' preview must say why"
+
     def test_long_text_is_truncated_not_streamed_whole(self, seeded_app):
         """A preview is a glance: a big file comes back capped, and says so."""
         from app.api.collections import _PREVIEW_MAX_CHARS
@@ -1454,11 +1498,13 @@ class TestFilePreview:
             {"collection": frozenset({inside})},
         )
 
-        # Inside the intersection: reached (no blob on disk → 404 on the blob,
-        # which is the *next* check, so the access gate let it through).
-        with pytest.raises(_HTTPException) as inside_err:
-            asyncio.run(preview_file(collection_id=inside, file_id=fid_in, user=principal))
-        assert inside_err.value.detail == "file_blob_missing"
+        # Inside the intersection: reached. These rows carry no blob, and a
+        # textual row without one degrades to the explanatory shape rather than
+        # erroring, so "the access gate let it through" now shows up as a real
+        # response instead of as the next check's 404.
+        inside_body = asyncio.run(preview_file(collection_id=inside, file_id=fid_in, user=principal))
+        assert inside_body["kind"] == "none"
+        assert inside_body["reason"]
 
         # Outside it: indistinguishable from "no such file".
         with pytest.raises(_HTTPException) as outside_err:
