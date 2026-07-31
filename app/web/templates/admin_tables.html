@@ -2003,7 +2003,8 @@
           <div class="form-group" style="display:flex; gap:12px;">
             <div style="flex:1;">
               <label class="form-label">Icon</label>
-              <input id="cdp-icon" type="text" class="form-input" value="" maxlength="4">
+              {# Default icon: the classic 📦 on the default look; blank under the opt-in redesign (paper/rail), which renders a plain color badge instead. #}
+              <input id="cdp-icon" type="text" class="form-input" value="{{ '' if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' else '📦' }}" maxlength="4">
             </div>
             <div style="flex:1;">
               <label class="form-label">Color</label>
@@ -2161,7 +2162,7 @@
         document.getElementById('cdp-slug').value =
           (typed || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
         document.getElementById('cdp-desc').value = '';
-        document.getElementById('cdp-icon').value = '';
+        document.getElementById('cdp-icon').value = '{{ '' if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' else '📦' }}';
         document.getElementById('cdp-color').value = '#e0f2fe';
         // Reset cover image inputs on every open so a previous typed-and-
         // cancelled value doesn't leak into the new package.
@@ -5731,7 +5732,7 @@
                     + '</div>';
             } else {
                 pkgsEl.innerHTML = pkgsWithTables.map(function(p) {
-                    var iconRaw = p.icon || '';
+                    var iconRaw = p.icon || '{{ '' if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' else '📦' }}';
                     var color = p.color || '#f3f4f6';
                     var name = String(p.name || '');
                     var slug = String(p.slug || '');

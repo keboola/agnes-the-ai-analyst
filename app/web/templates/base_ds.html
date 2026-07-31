@@ -56,8 +56,13 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% endif %}
+    {# Orb favicon + tagline title ship only under the opt-in redesign (paper/rail); default blue/topnav keeps the original SVG mark and 'Agnes' title. #}
+    {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
     <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
-    <title>{% block title %}{{ config.INSTANCE_NAME or 'Agnes — ask and reuse' }}{% endblock %}</title>
+    {% else %}
+    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
+    {% endif %}
+    <title>{% block title %}{{ config.INSTANCE_NAME or (('Agnes — ask and reuse') if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' else 'Agnes') }}{% endblock %}</title>
 
     {# CSS load order matters: style-custom.css carries the legacy
        palette + canonical component CSS; design-tokens.css declares
@@ -138,7 +143,12 @@
         </main>
 
         <footer>
+            {# Keboola credit only under the opt-in redesign; default keeps the config-driven copyright. #}
+            {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
             {% include '_footer_keboola.html' %}
+            {% else %}
+            <p>&copy; {{ now().year if now is defined else 2026 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
+            {% endif %}
         </footer>
     </div>
     {% endblock %}

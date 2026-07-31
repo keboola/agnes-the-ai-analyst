@@ -23,7 +23,12 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% endif %}
+    {# Orb favicon ships only under the opt-in redesign (paper/rail); default blue/topnav keeps the original SVG mark. #}
+    {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
     <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
+    {% else %}
+    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
+    {% endif %}
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
     {# Design-system tokens (`--ds-*`) — opt-in green/navy palette used
@@ -86,7 +91,12 @@
         </main>
 
         <footer>
+            {# Keboola credit only under the opt-in redesign; default keeps the config-driven copyright. #}
+            {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
             {% include '_footer_keboola.html' %}
+            {% else %}
+            <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
+            {% endif %}
         </footer>
     </div>
     {% endblock %}
