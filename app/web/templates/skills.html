@@ -976,7 +976,7 @@
     bundle = null;   // a File can't be persisted — plugin drafts resume without one
     check = null;
     typeOpen = false;
-    lint = null; reviewInProgress = false; _reviewBannerHtml = null;
+    reviewInProgress = false; _reviewBannerHtml = null;
     // Say what happened to the work, in priority order: a restored draft is
     // the most surprising state, then a parked one.
     if (incoming && cfg().source === 'bundle') {
@@ -1129,6 +1129,8 @@
       }
 
       function updateBanner(state) {
+        // Re-query the live node: render() may have detached the original element.
+        var node = document.getElementById('sk-review-banner-wrap') || banner;
         var icon  = state.kind === 'ok' ? '✅' : state.kind === 'err' ? '❌' : '⏳';
         var pulse = state.kind === 'pending' ? '<span class="sk-review-pulse"></span>' : '';
         var actionsHtml = '';
@@ -1157,7 +1159,7 @@
               actionsHtml +
             '</div>' +
           '</div>';
-        banner.innerHTML = _reviewBannerHtml;
+        node.innerHTML = _reviewBannerHtml;
       }
 
       if (isPrivate) {
@@ -1267,7 +1269,9 @@
                 return [f.explanation, f.fix_hint].filter(Boolean).join(' — ');
               }).join(' ');
             } else if (Array.isArray(cqIssues) && cqIssues.length) {
-              msg = 'AI review failed: ' + cqIssues.join(' ');
+              msg = 'AI review failed: ' + cqIssues.map(function (i) {
+                return typeof i === 'string' ? i : (i.issue || i.hint || JSON.stringify(i));
+              }).join(' ');
             } else if (typeof verdict.summary === 'string') {
               msg = 'AI review failed: ' + verdict.summary;
             }
