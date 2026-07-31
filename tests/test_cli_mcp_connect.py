@@ -1,0 +1,127 @@
+"""Behavioural tests for `agnes mcp connect` / `agnes mcp disconnect`
+(2026-07-30 outbound MCP OAuth sources spec §3, CLI device-style UX)."""
+
+from __future__ import annotations
+
+import typer
+
+from cli.commands import mcp as mcpcmd
+
+
+class _Resp:
+    def __init__(self, status_code: int, payload=None):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self):
+        return self._payload
+
+
+# ---------------------------------------------------------------------------
+# agnes mcp connect
+# ---------------------------------------------------------------------------
+
+
+def test_connect_opens_browser_and_returns_once_connected(monkeypatch, capsys):
+    opened_urls = []
+    monkeypatch.setattr(mcpcmd.webbrowser, "open", lambda url: opened_urls.append(url) or True)
+    monkeypatch.setattr(mcpcmd, "get_server_url", lambda: "https://agnes.example.com")
+    monkeypatch.setattr(mcpcmd.time, "sleep", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcpcmd, "api_get", lambda path: _Resp(200, {"has_secret": True}))
+
+    mcpcmd.mcp_connect(source_id="src1", no_browser=False, timeout=10)
+
+    out = capsys.readouterr().out
+    assert opened_urls == ["https://agnes.example.com/api/mcp/sources/src1/oauth/authorize"]
+    assert "Connected src1" in out
+
+
+def test_connect_polls_until_connected(monkeypatch, capsys):
+    calls = {"n": 0}
+
+    def _fake_api_get(path):
+        calls["n"] += 1
+        return _Resp(200, {"has_secret": calls["n"] >= 3})
+
+    monkeypatch.setattr(mcpcmd.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr(mcpcmd, "get_server_url", lambda: "https://agnes.example.com")
+    monkeypatch.setattr(mcpcmd.time, "sleep", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcpcmd, "api_get", _fake_api_get)
+
+    mcpcmd.mcp_connect(source_id="src1", no_browser=False, timeout=10)
+
+    assert calls["n"] == 3
+    assert "Connected src1" in capsys.readouterr().out
+
+
+def test_connect_no_browser_prints_url_instead_of_opening(monkeypatch, capsys):
+    opened = []
+    monkeypatch.setattr(mcpcmd.webbrowser, "open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(mcpcmd, "get_server_url", lambda: "https://agnes.example.com")
+    monkeypatch.setattr(mcpcmd.time, "sleep", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcpcmd, "api_get", lambda path: _Resp(200, {"has_secret": True}))
+
+    mcpcmd.mcp_connect(source_id="src1", no_browser=True, timeout=10)
+
+    assert opened == []  # webbrowser.open never called
+    out = capsys.readouterr().out
+    assert "https://agnes.example.com/api/mcp/sources/src1/oauth/authorize" in out
+
+
+def test_connect_times_out_and_exits_nonzero(monkeypatch):
+    real_monotonic = mcpcmd.time.monotonic
+    ticks = {"n": 0}
+
+    def _fake_monotonic():
+        # Advance the clock past the deadline on the second read so the
+        # loop's first status check still runs once, then times out.
+        ticks["n"] += 1
+        return real_monotonic() + (ticks["n"] * 1000)
+
+    monkeypatch.setattr(mcpcmd.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr(mcpcmd, "get_server_url", lambda: "https://agnes.example.com")
+    monkeypatch.setattr(mcpcmd.time, "sleep", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcpcmd.time, "monotonic", _fake_monotonic)
+    monkeypatch.setattr(mcpcmd, "api_get", lambda path: _Resp(200, {"has_secret": False}))
+
+    try:
+        mcpcmd.mcp_connect(source_id="src1", no_browser=False, timeout=1)
+        raised = False
+    except typer.Exit as exc:
+        raised = True
+        assert exc.exit_code == 1
+    assert raised
+
+
+# ---------------------------------------------------------------------------
+# agnes mcp disconnect
+# ---------------------------------------------------------------------------
+
+
+def test_disconnect_calls_delete_and_reports_success(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(mcpcmd, "api_delete", lambda path: calls.append(path) or _Resp(204))
+    mcpcmd.mcp_disconnect(source_id="src1", yes=True)
+    assert calls == ["/api/mcp/sources/src1/oauth/connection"]
+    assert "Disconnected src1" in capsys.readouterr().out
+
+
+def test_disconnect_fails_on_error_status(monkeypatch):
+    monkeypatch.setattr(mcpcmd, "api_delete", lambda path: _Resp(403, "not_granted"))
+    try:
+        mcpcmd.mcp_disconnect(source_id="src1", yes=True)
+        raised = False
+    except typer.Exit:
+        raised = True
+    assert raised
+
+
+def test_disconnect_prompts_without_yes(monkeypatch):
+    monkeypatch.setattr(typer, "confirm", lambda *_a, **_kw: False)
+    try:
+        mcpcmd.mcp_disconnect(source_id="src1", yes=False)
+        raised = False
+    except typer.Abort:
+        raised = True
+    assert raised
