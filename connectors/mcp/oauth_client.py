@@ -309,12 +309,25 @@ class RegisteredOAuthClient:
 
 
 def _choose_token_endpoint_auth_method(as_metadata: Dict[str, Any]) -> str:
+    """Pick the client-auth style to ANNOUNCE at registration.
+
+    Only styles the token-call path actually implements may be announced —
+    ``_client_auth_kwargs`` speaks HTTP Basic (confidential) or public-client
+    (``client_id`` in the body). Announcing anything else (e.g. an AS that
+    supports only ``client_secret_post``) would register a contract the token
+    calls then violate, and the AS would reject every exchange/refresh
+    (Devin Review on #1124) — fail closed with an actionable message instead.
+    """
     supported = as_metadata.get("token_endpoint_auth_methods_supported") or ["client_secret_basic"]
     if "client_secret_basic" in supported:
         return "client_secret_basic"
     if "none" in supported:
         return "none"
-    return supported[0]
+    raise OAuthDiscoveryError(
+        "authorization server supports only these client-auth methods at the token endpoint: "
+        f"{supported!r}; Agnes implements 'client_secret_basic' and 'none'. Configure the "
+        "client manually via PUT …/oauth/client if the server offers another compatible option."
+    )
 
 
 async def register_dynamic_client(

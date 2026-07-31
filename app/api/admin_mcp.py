@@ -608,6 +608,21 @@ async def update_mcp_source(
         raise HTTPException(status_code=400, detail=str(exc))
     except duckdb.ConstraintException:
         raise HTTPException(status_code=409, detail="name_exists")
+    if (existing.get("auth_method") or "").lower() == "oauth" and (merged.get("auth_method") or "").lower() != "oauth":
+        # Flipping away from oauth strands the OAuth trio — the client
+        # registration, every user's tokens, and in-flight flows are useless
+        # under any other auth_method and must not linger as orphaned
+        # credential material (Devin Review on #1124). Flipping BACK later
+        # means re-registering + users re-connecting, same as a new source.
+        from src.repositories import (
+            mcp_oauth_flows_repo,
+            mcp_source_oauth_clients_repo,
+            mcp_user_oauth_tokens_repo,
+        )
+
+        mcp_user_oauth_tokens_repo().delete_for_source(source_id)
+        mcp_oauth_flows_repo().delete_for_source(source_id)
+        mcp_source_oauth_clients_repo().delete(source_id)
     fresh = repo.get(source_id)
     after = {k: (fresh or {}).get(k) for k in ("name", "transport", "command", "url", "enabled")}
     _audit(
