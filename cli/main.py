@@ -328,6 +328,7 @@ app.add_typer(data_apps_app, name="app")
 app.add_typer(search_app, name="search")
 app.add_typer(config_app, name="config")
 app.add_typer(agent_app, name="agent")
+app.add_typer(global_app, name="global")
 
 
 def _capture_cli_exception(exc: BaseException, kind: str) -> None:
