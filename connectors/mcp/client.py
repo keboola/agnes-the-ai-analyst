@@ -225,12 +225,16 @@ _OAUTH_REFRESH_SKEW_SECONDS = 60
 #: Short — a refresh call is one HTTP round-trip, never a long operation.
 _OAUTH_REFRESH_LEASE_TTL_S = 30
 
-#: In-process single-flight: one ``asyncio.Lock`` per ``(source_id,
-#: user_id)`` pair, created lazily. Guards concurrent coroutines in THIS
-#: process from each independently refreshing the same pair; the
-#: coordination-backend lease (below) extends that guarantee across
-#: processes (Postgres role-split deployments).
-_OAUTH_REFRESH_LOCKS: Dict[Tuple[str, str], asyncio.Lock] = {}
+#: In-process single-flight: one ``asyncio.Lock`` per (event loop,
+#: source_id, user_id), created lazily. Guards concurrent coroutines in
+#: THIS process from each independently refreshing the same pair. The
+#: coordination-backend lease (below) extends that across processes ONLY
+#: when a shared backend (e.g. redis) is configured — the default
+#: ``memory`` backend is process-local, so role-split deployments without
+#: one fall back to the under-lease re-read for correctness: the loser's
+#: replayed-refresh-token hazard is removed by re-reading the row after
+#: the lease/lock is won, not by the lease itself.
+_OAUTH_REFRESH_LOCKS: Dict[Tuple[int, str, str], Tuple[Any, asyncio.Lock]] = {}
 _OAUTH_REFRESH_LOCKS_GUARD = threading.Lock()
 
 
@@ -342,6 +346,21 @@ async def _refresh_oauth_token_with_lease(
             is_invalid_grant_error,
             refresh_access_token,
         )
+
+        # Re-read UNDER the lease: the row snapshot above predates winning
+        # the exclusive turn, so a concurrent process may have already
+        # rotated the refresh token. Replaying the superseded one would
+        # trip refresh-token-reuse detection at the AS and could revoke the
+        # whole grant — silently disconnecting the user (Devin Review on
+        # #1124). If the winner-before-us already refreshed, just use it.
+        row = tokens_repo.get(source_id, user_id)
+        if row is None:
+            return None
+        if not _needs_refresh(row):
+            return row["access_token"]
+        refresh_token = row.get("refresh_token")
+        if not refresh_token:
+            return row["access_token"]
 
         try:
             async with build_oauth_http_client() as http_client:
