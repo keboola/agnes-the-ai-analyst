@@ -586,3 +586,28 @@ def test_callback_missing_public_url_redirects_instead_of_409(seeded_app, monkey
     )
     assert r.status_code == 303, r.text
     assert "/me/connections?connect_error=" in r.headers["location"]
+
+
+def test_callback_error_param_is_never_echoed(seeded_app):
+    """`error_description` on the callback is attacker-controllable (crafted
+    link) — the banner must show a fixed mapped message, never the raw text
+    (Devin Review on #1130)."""
+    r = seeded_app["client"].get(
+        "/api/mcp/oauth-client/callback",
+        params={"error": "access_denied", "error_description": "EVIL INJECTED TEXT click http://evil.example"},
+        headers=_analyst_hdr(seeded_app),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    location = r.headers["location"]
+    assert "EVIL" not in location and "evil.example" not in location
+    assert "declined" in location
+
+    r2 = seeded_app["client"].get(
+        "/api/mcp/oauth-client/callback",
+        params={"error": "made_up_code", "error_description": "ATTACKER TEXT"},
+        headers=_analyst_hdr(seeded_app),
+        follow_redirects=False,
+    )
+    assert r2.status_code == 303
+    assert "ATTACKER" not in r2.headers["location"]
