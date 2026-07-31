@@ -3098,11 +3098,13 @@ async def skills_page(
 
     from app.instance_config import get_guardrails_enabled, get_guardrails_llm_provider_ready
 
+    _guardrails_enabled = get_guardrails_enabled()
     ctx = _build_context(
         request,
         user=user,
         store_categories=list(STORE_CATEGORIES),
-        guardrails_llm_ready=get_guardrails_enabled() and get_guardrails_llm_provider_ready(),
+        guardrails_enabled=_guardrails_enabled,
+        guardrails_llm_ready=_guardrails_enabled and get_guardrails_llm_provider_ready(),
     )
     return templates.TemplateResponse(request, "skills.html", ctx)
 

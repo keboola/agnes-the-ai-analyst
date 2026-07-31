@@ -309,10 +309,11 @@ class DryRunResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Pre-check verdict token store
 # ---------------------------------------------------------------------------
-# Tokens are server-generated UUIDs (unguessable); the client sends one back
-# in the real submit so the background LLM review can skip the Anthropic call.
+# Tokens are server-generated UUIDs bound to a content hash so a verdict from
+# skill A cannot be reused for skill B. The client sends the token back in the
+# real submit; the background LLM review then skips the second Anthropic call.
 
-_VERDICT_TOKEN_TTL = 300  # seconds — matches the JS "Reviewing with AI" timeout
+_VERDICT_TOKEN_TTL = 300  # seconds
 
 _verdict_token_store: Dict[str, tuple] = {}
 _verdict_token_lock = threading.Lock()
@@ -322,27 +323,44 @@ _precheck_verdict_ctx: contextvars.ContextVar[Optional[dict]] = contextvars.Cont
 )
 
 
-def _mint_verdict_token(verdict: dict) -> str:
-    """Store a pre-check verdict and return an opaque reference token."""
+def _markdown_content_hash(name: str, type_: str, description: Optional[str], skill_md: str) -> str:
+    """Stable hash of the fields sent in CreateFromMarkdownBody.
+
+    Used to bind a verdict token to exactly the content that was reviewed —
+    a token minted for skill A cannot be replayed against different content.
+    """
+    import hashlib
+
+    payload = json.dumps(
+        {"name": name, "type": type_, "description": description or "", "skill_md": skill_md},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _mint_verdict_token(verdict: dict, content_hash: str) -> str:
+    """Store a pre-check verdict bound to *content_hash* and return a token."""
     token = uuid.uuid4().hex
     expires_at = time.time() + _VERDICT_TOKEN_TTL
     with _verdict_token_lock:
         now = time.time()
-        expired = [k for k, (_, exp) in _verdict_token_store.items() if exp < now]
+        expired = [k for k, (_, exp, _ch) in _verdict_token_store.items() if exp < now]
         for k in expired:
             del _verdict_token_store[k]
-        _verdict_token_store[token] = (verdict, expires_at)
+        _verdict_token_store[token] = (verdict, expires_at, content_hash)
     return token
 
 
-def _consume_verdict_token(token: str) -> Optional[dict]:
-    """Pop and return the verdict for a token, or None if missing/expired."""
+def _consume_verdict_token(token: str, content_hash: str) -> Optional[dict]:
+    """Pop and return the verdict for *token* iff it matches *content_hash* and is fresh."""
     with _verdict_token_lock:
         entry = _verdict_token_store.pop(token, None)
     if entry is None:
         return None
-    verdict, expires_at = entry
-    return verdict if time.time() <= expires_at else None
+    verdict, expires_at, stored_hash = entry
+    if time.time() > expires_at or stored_hash != content_hash:
+        return None
+    return verdict
 
 
 # ---------------------------------------------------------------------------
@@ -2159,10 +2177,14 @@ async def create_entity_from_markdown(
                         model=default_model_loader(),
                     )
                     llm_safe = llm_review.is_safe(llm_verdict)
-            # Mint a token for safe, error-free verdicts so the real submit
-            # can reuse this verdict and skip the second Anthropic call.
+            # Mint a content-bound token for safe verdicts so the real submit
+            # can skip the second Anthropic call. Binding to the content hash
+            # prevents replaying a verdict from one skill onto different content.
             verdict_token = (
-                _mint_verdict_token(llm_verdict)
+                _mint_verdict_token(
+                    llm_verdict,
+                    _markdown_content_hash(name, body.type, body.description, body.skill_md),
+                )
                 if (llm_verdict and not llm_verdict.get("error") and llm_safe)
                 else None
             )
@@ -2196,7 +2218,15 @@ async def create_entity_from_markdown(
     upload = UploadFile(file=buf, filename=f"{name}.zip")
     # Propagate a pre-check verdict via ContextVar so _schedule_llm_review
     # can pass it to run_llm_review, skipping the second Anthropic call.
-    precheck_verdict = _consume_verdict_token(body.precheck_verdict_token) if body.precheck_verdict_token else None
+    # The token is bound to a content hash; mismatched content silently drops it.
+    precheck_verdict = (
+        _consume_verdict_token(
+            body.precheck_verdict_token,
+            _markdown_content_hash(name, body.type, body.description, body.skill_md),
+        )
+        if body.precheck_verdict_token
+        else None
+    )
     ctx_tok = _precheck_verdict_ctx.set(precheck_verdict)
     try:
         created = await create_entity(

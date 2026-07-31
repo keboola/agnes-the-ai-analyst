@@ -205,6 +205,8 @@ def run_llm_review(
         if precheck_verdict is not None and not precheck_verdict.get("error"):
             # Reuse the synchronous pre-check verdict — skip the Anthropic call.
             # Halves LLM cost per skill publish (pre-check + async review → pre-check only).
+            # plugin_dir is not read in this branch so the exists() guard is not needed;
+            # promote_to_version reads from the versioned bundle dir, not plugin_dir.
             verdict = precheck_verdict
             model = precheck_verdict.get("reviewed_by_model") or model_loader()
         else:

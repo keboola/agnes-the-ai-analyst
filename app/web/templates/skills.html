@@ -211,6 +211,7 @@
   var USER_ID = "{{ session.user.id }}";
   // True when an LLM guardrail is active on this instance — doSave() runs a
   // blocking pre-check and gates the real publish on the verdict.
+  var GUARDRAILS_ENABLED = {{ 'true' if guardrails_enabled else 'false' }};
   var GUARDRAILS_LLM_READY = {{ 'true' if guardrails_llm_ready else 'false' }};
   // Unpublished skill drafts never touch the store — they live only in this
   // browser (mirrors the Agent builder's localStorage persistence, and its
@@ -230,6 +231,7 @@
   var lint = null;        // last dry-run lint report (or null)
   var inFlight = false;
   var reviewInProgress = false;  // true while a submit is in the review queue; blocks re-save
+  var _reviewBannerHtml = null;  // saved banner HTML — re-inserted after every renderBuilder()
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -406,6 +408,22 @@
         '</div>' +
         '<aside class="sk-preview" id="sk-preview">' + previewHtml() + '</aside>' +
       '</div>';
+
+    // Re-insert the review banner if one was shown before this re-render (e.g. the
+    // author changed the access radio after saving — without this the banner disappears).
+    if (_reviewBannerHtml) {
+      var wrap = document.createElement('div');
+      wrap.id = 'sk-review-banner-wrap';
+      wrap.style.marginBottom = '16px';
+      wrap.innerHTML = _reviewBannerHtml;
+      var buildHead = builderView.querySelector('.sk-build-head');
+      var insertAfter = buildHead ? buildHead.nextSibling : null;
+      if (insertAfter) {
+        builderView.insertBefore(wrap, insertAfter);
+      } else {
+        builderView.appendChild(wrap);
+      }
+    }
   }
 
   /* Light-touch preview sync while typing (no re-render → keeps focus). */
@@ -428,7 +446,7 @@
     draft = existing ? JSON.parse(JSON.stringify(existing)) : makeDraft();
     // A resumed copy from before the access picker existed has no `access`.
     if (!draft.access) draft.access = 'private';
-    lint = null; renderBuilder(); window.scrollTo(0, 0);
+    lint = null; reviewInProgress = false; _reviewBannerHtml = null; renderBuilder(); window.scrollTo(0, 0);
   }
   function closeBuilder() { window.location.href = '/library'; }
 
@@ -537,7 +555,7 @@
               '<a class="cc-btn cc-btn--primary" href="/library">Open Library to delete &amp; retry →</a>' +
             '</div>';
         }
-        banner.innerHTML =
+        _reviewBannerHtml =
           '<div class="sk-review-banner ' + state.kind + '">' +
             '<div class="sk-review-banner-icon">' + icon + '</div>' +
             '<div class="sk-review-banner-body">' +
@@ -546,6 +564,7 @@
               actionsHtml +
             '</div>' +
           '</div>';
+        banner.innerHTML = _reviewBannerHtml;
       }
 
       if (isPrivate) {
@@ -553,6 +572,10 @@
         return;
       }
 
+      if (!GUARDRAILS_ENABLED) {
+        updateBanner({ kind: 'ok', title: 'Published immediately.', hint: 'Content guardrails are disabled on this instance — the skill is live.' });
+        return;
+      }
       if (!GUARDRAILS_LLM_READY) {
         updateBanner({
           kind: 'pending',
@@ -592,7 +615,21 @@
         pollCount++;
         if (pollCount > 75) {
           clearInterval(pollTimer);
-          updateBanner({ kind: 'pending', title: 'Still under review.', hint: 'This is taking longer than usual. Check back in the Library or contact your admin.' });
+          inFlight = false;
+          // Entity is in DB — keep reviewInProgress=true so buttons stay locked.
+          // Show a Library link so the user can track the outcome there.
+          _reviewBannerHtml =
+            '<div class="sk-review-banner pending">' +
+              '<div class="sk-review-banner-icon">⏳</div>' +
+              '<div class="sk-review-banner-body">' +
+                '<div class="sk-review-banner-title">Still under review.</div>' +
+                '<div class="sk-review-banner-hint">This is taking longer than usual. Track the outcome in the Library or contact your admin.</div>' +
+                '<div class="sk-review-actions">' +
+                  '<a class="cc-btn cc-btn--primary" href="/library">Open Library →</a>' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+          banner.innerHTML = _reviewBannerHtml;
         }
       }
       pollTimer = setInterval(poll, 4000);
