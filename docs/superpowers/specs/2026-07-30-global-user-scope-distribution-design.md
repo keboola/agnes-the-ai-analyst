@@ -42,8 +42,9 @@ data-querying rails — with the whole layer kept up to date by the existing
 
 **Non-goals (v1):**
 
-- No user-level SessionStart/SessionEnd hooks **by default** (opt-in only,
-  §7.3). The workspace hook set stays the canonical sync trigger.
+- No user-level SessionEnd hook — transcript push stays workspace-anchored
+  (§8). (The user-level SessionStart *update* hook IS installed by default
+  — owner decision, §7.3/§13 — with `--no-hook` as the opt-out.)
 - No multi-workspace support — one anchored workspace per machine, as today.
 - No skills-bundle sync client (`/api/user/skills-bundle` →
   `~/.claude/skills/`) — separate follow-up; the marketplace path already
@@ -156,8 +157,8 @@ Three code deliverables and one docs deliverable:
 - **D3 — convergence.** `agnes refresh-marketplace` gains
   `--target user|project`; `agnes update` gains a `global` step (gated on the
   config flag) so the user scope stays reconciled by the same machinery
-  that keeps the workspace fresh. Optional opt-in user-level SessionStart
-  hook (`enable --with-hook`).
+  that keeps the workspace fresh. A user-level SessionStart hook is
+  installed by default (`--no-hook` opts out; §7.3).
 - **D4 — docs.** `docs/global-distribution.md`: the engineer recipe, the
   remote-MCP alternative, and the org-fleet managed-settings appendix.
 
@@ -253,8 +254,9 @@ until `agnes init` anchors a workspace.
 | 2 | Plugins → user scope | Run the manifest reconcile (§7.1) in `target="user"` mode: install/update every plugin served by the caller's filtered marketplace with `claude plugin install <p>@agnes --scope user` (the `claude` CLI's own flag is `--scope`; our wrapper flag is `--target`, §7.1). Enablement is recorded by the `claude` CLI itself; the cwd-based `enabledPlugins` writer is skipped in this mode (§7.1, §6.4). |
 | 3 | MCP server entry | `claude mcp add --scope user agnes -- <abs-path-to-agnes> mcp` (stdio). Absolute binary path resolved at enable time (`shutil.which`/`sys.argv[0]` — same detection the setup bundle uses). If an `agnes` MCP entry already exists: ours (command ends in `agnes mcp`) → converge/no-op; foreign → warn + skip (never clobber), `--force` overrides. |
 | 4 | Rails block | Insert/replace a marker-fenced block in `~/.claude/CLAUDE.md` (create the file if absent). Exact markers: `<!-- BEGIN agnes-global (managed by 'agnes global enable'; edits inside are overwritten) -->` and `<!-- END agnes-global -->`. Content ships as a static CLI template (`cli/templates/global_rails.md`): ~20 lines — discovery-first protocol, `query_mode` decision table pointer, `agnes skills show agnes-data-querying` for the full version. Kept deliberately short: it is loaded into **every** session in **every** repo. Everything outside the markers is preserved byte-for-byte. |
-| 5 | Flag | `save_config({"global_scope": True})`. |
-| 6 | Summary | Human summary + "restart Claude Code sessions to pick it up". |
+| 5 | User-level SessionStart hook | Default ON (skip with `--no-hook`): install into `~/.claude/settings.json` a SessionStart entry with the same detached shape as the workspace one (`bash -c "( nohup agnes update --quiet … & ) ; true"`), written via the marker-aware merge (§6.4, `_OUR_COMMAND_MARKERS`) so third-party entries survive and re-runs are idempotent. |
+| 6 | Flag | `save_config({"global_scope": True})`. |
+| 7 | Summary | Human summary + "restart Claude Code sessions to pick it up". |
 
 Why stdio MCP (not the remote Streamable-HTTP endpoint) as the default
 registration: it reuses the already-saved PAT from `~/.config/agnes/`
@@ -271,14 +273,17 @@ plugins (`claude plugin uninstall <p>@agnes --scope user`; project-scope
 installs in the workspace are untouched), `claude mcp remove --scope user
 agnes` **only** when the entry's command resolves to an `agnes mcp`
 invocation, strip the marker-fenced CLAUDE.md block (rest of the file
-preserved), set `global_scope: false`. Marketplace registration and clone
+preserved), remove the Agnes-marked user-level SessionStart hook entry
+(matched via `_OUR_COMMAND_MARKERS`; foreign hook entries untouched), set
+`global_scope: false`. Marketplace registration and clone
 stay (they are also used by the workspace flow).
 
 ### 6.3 `agnes global status`
 
 One row per artifact — marketplace registration, plugins (n of m manifest
 plugins installed user-scope, version drift), MCP entry (present + binary
-path exists), rails block (present + byte-identical to the template shipped
+path exists), user-level SessionStart hook (present + canonical command),
+rails block (present + byte-identical to the template shipped
 with the running CLI version),
 config flag — each `ok | missing | drifted`, with the repair hint
 (`agnes global enable` re-runs convergence). `--json` for scripting.
@@ -306,6 +311,14 @@ well-formed marker pair → replace its contents; duplicated or unmatched
 markers → warn, skip, and let `agnes global status` report the block as
 `drifted`. Writes are atomic (temp file + rename), matching
 `cli/config.py::save_config`.
+
+One further user-settings key is edited directly: `hooks` in
+`~/.claude/settings.json` (no `claude` CLI exists for hook management).
+That writer follows the workspace hook installer's contract
+(`cli/lib/hooks.py`): only entries matching `_OUR_COMMAND_MARKERS` are
+ever replaced or removed, third-party entries pass through untouched — but
+combined with the automode-style recovery above (corrupt user file → warn
++ leave untouched, never rebuild).
 
 ## 7. D3 — convergence
 
@@ -349,32 +362,37 @@ run (a) the user-scope reconcile (7.1), (b) re-assert the rails block
 step; a failure is recorded and never aborts the run. Flag off → step
 skipped silently (no behaviour change for analysts).
 
-This means the global layer is converged by every existing trigger of
-`agnes update` — the workspace SessionStart hook, `agnes self-upgrade`'s
-successor path, and manual runs. Staleness bound: if the engineer never
-opens the analyst workspace, the layer converges only on manual
-`agnes update` / `agnes global enable` — accepted for v1 (see 7.3).
+This means the global layer is converged by every trigger of `agnes
+update` — the user-level SessionStart hook (§7.3, installed by default),
+the workspace SessionStart hook, and manual runs. Under `--no-hook`,
+convergence happens only when the analyst workspace opens or on manual
+runs — accepted for that opt-out.
 
-### 7.3 Opt-in user-level hook: `agnes global enable --with-hook`
+### 7.3 User-level SessionStart hook (default ON; `--no-hook` opts out)
 
-Off by default. When passed, install into `~/.claude/settings.json` a
-user-level SessionStart entry with the same shape as the workspace one
+`agnes global enable` installs into `~/.claude/settings.json` a user-level
+SessionStart entry with the same shape as the workspace one
 (`bash -c "( nohup agnes update --quiet … & ) ; true"`), tagged by the
 existing `_OUR_COMMAND_MARKERS` matching so `disable` (and idempotent
-re-runs) can strip exactly ours. Safety argument, in order: `update`
-anchors to `workspace_root` (never touches the repo it runs from), 7.1
-makes the marketplace step cwd-independent, the single-instance
-`update.lock` collapses the burst when the user opens five repos at once,
-and user+project hooks merging means the workspace double-fires `update` —
-which the lock also absorbs. Without `--with-hook`, no hook is written and
-hooks remain workspace-only.
+re-runs) strip exactly ours. Default ON is the product owner's decision
+(§13) — every session in every repo keeps data, plugins, and the global
+layer fresh. `--no-hook` skips the entry (and §7.2 describes the
+convergence bound under that opt-out).
+
+Safety argument, in order: `update` anchors to `workspace_root` (never
+touches the repo it runs from); 7.1 makes the marketplace step
+cwd-independent — which is why the hook and the `--target`-aware refresh
+MUST ship in the same release, never the hook first; the single-instance
+`update.lock` collapses the burst when the user opens five repos at once;
+and user+project hooks merging means the workspace double-fires `update`,
+which the lock also absorbs.
 
 ## 8. What stays workspace-scoped (privacy properties)
 
 - **Transcript upload:** `agnes push` scans only the anchored workspace's
   Claude Code project folder. Sessions from the engineer's other repos are
   **never** uploaded, with or without the global layer, with or without
-  `--with-hook`. This is a property of the existing design that this spec
+  the user-level hook. This is a property of the existing design that this spec
   deliberately preserves and documents.
 - **Foreign repos are never written to.** No step in D1–D3 writes into any
   project directory other than the anchored workspace — including the
@@ -436,6 +454,9 @@ hooks" section.
   is left untouched.
 - **Update gating:** flag off → no `global` step side effects; on → step
   runs after `marketplace`, failure recorded without aborting.
+- **Hook default:** `enable` installs the user-level SessionStart entry;
+  `enable --no-hook` does not; `disable` removes exactly the Agnes-marked
+  entry, leaving third-party user-level hooks byte-identical.
 - No schema/DB change anywhere → no DuckDB↔PG parity or migration-ladder
   obligations (CLI + docs only).
 
@@ -466,15 +487,18 @@ hooks" section.
 - Migrating the Cowork setup-bundle's direct `mcpServers` settings write to
   the `claude mcp add` path, aligning legacy code with the §6.4 discipline.
 
-## 13. Open questions
+## 13. Resolved decisions (2026-07-31, product owner)
+
+The draft's three open questions were decided:
 
 1. **Plugin subset:** v1 installs *all* plugins from the caller's filtered
-   manifest user-scope (the stack is already the user's curation surface).
-   Is a per-plugin opt-out (`agnes global enable --plugins a,b`) needed on
-   day one, or is `claude plugin uninstall --scope user` + stack
-   unsubscribe enough?
-2. **`--with-hook` default:** ship v1 strictly opt-in (as specced), or flip
-   the default once 7.1 has soaked for a release?
-3. **Rails block size budget:** is ~20 lines the right ceiling for content
-   injected into every session in every repo, or should it be a one-liner
-   pointing at the plugin skill only?
+   manifest at user scope — no `--plugins` filter flag. The stack is the
+   single curation surface; per-plugin opt-out is `claude plugin uninstall
+   --scope user` or unsubscribing in the stack.
+2. **User-level SessionStart hook:** installed **by default** by
+   `agnes global enable`, with `--no-hook` as the opt-out (§7.3). This
+   overrides the draft's opt-in lean; the hard prerequisite stands — the
+   hook and the `--target`-aware refresh ship in the same release.
+3. **Rails block:** the compact ~20-line block (§6.1 step 4), not a
+   one-line pointer — deterministic rails are worth the ~200 tokens per
+   session.
