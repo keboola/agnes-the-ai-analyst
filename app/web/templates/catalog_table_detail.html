@@ -60,8 +60,11 @@
 {% import "macros/_detail.html" as detail %}
 
 {% set _qmode = (table.query_mode or 'local')|lower %}
-{% set _back_href = ('/catalog/p/' ~ parent_packages[0].slug) if parent_packages else '/catalog?kind=data' %}
-{% set _back_label = parent_packages[0].name if parent_packages else 'All data' %}
+{# A table's home is the package that bundles it; only an unbundled table
+   falls back to the listing (Library band on rail, Catalog on topnav). #}
+{% set _fallback = detail_back('data_package', '/catalog?kind=data', 'All data') %}
+{% set _back_href = ('/catalog/p/' ~ parent_packages[0].slug) if parent_packages else _fallback.href %}
+{% set _back_label = parent_packages[0].name if parent_packages else _fallback.label %}
 
 {% set _meta = [{'icon': 'code', 'text': table.id}] %}
 {% set _ = _meta.append({'icon': 'db', 'text': _qmode}) %}

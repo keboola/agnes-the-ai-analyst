@@ -585,17 +585,19 @@
      data-visibility="{{ entity.visibility_status if entity else 'approved' }}">
 
   {# Back link — pinned to the very top, above the hero.
-     Layout-aware target; when the visitor arrived from the Skill builder
-     (`?from=skills`) it returns there instead of the generic marketplace. #}
+     Layout-aware target (router._detail_back): rail returns to this kind's
+     band in the Library, topnav to the marketplace tab. When the visitor
+     arrived from the Skill builder (`?from=skills`) it returns there
+     instead. #}
   {% if from_source == 'skills' %}
     {% set _back = '/skills' %}
     {% set _back_label = 'Skill builder' %}
-  {% elif (ui_layout | default('topnav')) == 'rail' %}
-    {% set _back = '/catalog?kind=plugins' %}
-    {% set _back_label = 'All plugins' %}
   {% else %}
-    {% set _back = '/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea') %}
-    {% set _back_label = 'Curated Marketplace' if source == 'curated' else 'Flea Market' %}
+    {% set _b = detail_back(kind or 'plugin',
+                            '/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea'),
+                            'Curated Marketplace' if source == 'curated' else 'Flea Market') %}
+    {% set _back = _b.href %}
+    {% set _back_label = _b.label %}
   {% endif %}
   <a class="detail-back" href="{{ _back }}">{{ detail.ico('back') }}{{ _back_label }}</a>
 

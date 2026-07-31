@@ -214,8 +214,10 @@
 /* Head — icon tile + title. min-height keeps a one-line title's card the same
    height as a two-line one. */
 /* `margin-top` is the strip a collection's folder tab occupies (see
-   library.html). BOTH variants reserve it, so the two are the same height and a
-   mixed grid lines up — the collection variant only adds a tint and the tab.
+   library.html, where the collection variant reserves the same 8px as the
+   card's OUTER margin instead, because its tab hangs outside the card box).
+   BOTH variants reserve it, so the two are the same height and a mixed grid
+   lines up — the collection variant only adds a tint and the tab.
    `min-height` reserves TWO title lines (the clamp's maximum) so a title that
    wraps at a narrow column can't make its row taller than its neighbours';
    `align-items: center` then centres a one-line title in the same box.
