@@ -595,3 +595,54 @@ def test_reregister_with_new_client_id_drops_user_tokens(seeded_app, monkeypatch
     )
     assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
     assert mcp_oauth_flows_repo().consume("rereg-nonce") is None
+
+
+def test_repointing_an_oauth_source_url_drops_credential_material(seeded_app):
+    """Tokens are minted by the OLD resource's authorization server. Repointing
+    `url` at a different upstream while staying on oauth would forward them as
+    `Authorization: Bearer` to a new host — handing one server's credentials to
+    another (Devin Review on #1124). Everything goes; a re-register + reconnect
+    is required, same as a new source."""
+    from src.repositories import (
+        mcp_oauth_flows_repo,
+        mcp_source_oauth_clients_repo,
+        mcp_user_oauth_tokens_repo,
+    )
+
+    def _seed_material(sid):
+        mcp_source_oauth_clients_repo().upsert(
+            sid,
+            issuer="https://as.example.com",
+            client_id="cid",
+            client_secret=None,
+            registration_access_token=None,
+            authorization_endpoint="https://as.example.com/authorize",
+            token_endpoint="https://as.example.com/token",
+            scopes=None,
+        )
+        mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "tok", refresh_token=None, expires_at=None, scopes=None)
+        mcp_oauth_flows_repo().create(f"{sid}-nonce", sid, "admin1", "verifier")
+
+    sid = _seed_oauth_source(source_id="src_oauth_repoint")
+    _seed_material(sid)
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"url": "https://other-upstream.example.com/mcp"},
+    )
+    assert r.status_code == 200, r.text
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
+    assert mcp_oauth_flows_repo().consume(f"{sid}-nonce") is None
+    assert mcp_source_oauth_clients_repo().get(sid) is None
+
+    # An unrelated patch on the same source leaves the material alone.
+    sid2 = _seed_oauth_source(source_id="src_oauth_no_repoint")
+    _seed_material(sid2)
+    r2 = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid2}",
+        headers=_hdr(seeded_app),
+        json={"connect_hint": "ask the platform team"},
+    )
+    assert r2.status_code == 200, r2.text
+    assert mcp_user_oauth_tokens_repo().has(sid2, "admin1") is True
+    assert mcp_source_oauth_clients_repo().get(sid2) is not None
