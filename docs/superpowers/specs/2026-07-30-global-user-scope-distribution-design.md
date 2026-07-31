@@ -7,7 +7,10 @@ mechanics verified against the official docs and empirically against a
 current Claude Code install (`plugin install`/`marketplace add` default
 `--scope user`; `enabledPlugins`/`extraKnownMarketplaces` live in
 `~/.claude/settings.json`; `claude mcp add --scope user`; user-level
-`hooks`/`env`/`CLAUDE.md` apply in every project).
+`hooks`/`env`/`CLAUDE.md` apply in every project; `claude plugin list
+--json` reports per-entry `scope: "user"|"project"` with
+`projectPath: null` for user-scope installs; `claude plugin uninstall`
+supports `--scope user|project|local`).
 
 ## 1. Context & goal
 
@@ -111,7 +114,7 @@ Three code deliverables and one docs deliverable:
   `~/.config/agnes/config.yaml`. `disable` reverts exactly what `enable`
   wrote.
 - **D3 — convergence.** `agnes refresh-marketplace` gains
-  `--scope user|project`; `agnes update` gains a `global` step (gated on the
+  `--target user|project`; `agnes update` gains a `global` step (gated on the
   config flag) so the user scope stays reconciled by the same machinery
   that keeps the workspace fresh. Optional opt-in user-level SessionStart
   hook (`enable --with-hook`).
@@ -180,7 +183,9 @@ Behaviour deltas (all additive):
 - **stdio MCP server:** `query_local`/`pull` work when the client spawns the
   process with cwd `/` or `$HOME` (Claude Desktop and user-scope
   registrations do exactly that). This fixes the desktop case even before
-  D2 exists.
+  D2 exists. Both tools' docstrings are updated to describe the new
+  resolution order — tool docstrings are the agent-facing UX surface
+  (command-UX standard).
 
 `agnes push` is untouched (already anchored, `workspace_root`-only by
 design).
@@ -205,7 +210,7 @@ until `agnes init` anchors a workspace.
 | # | Step | Mechanism |
 |---|---|---|
 | 1 | Marketplace present | If `~/.agnes/marketplace` clone or the `agnes` registration is missing, run the existing `refresh-marketplace --bootstrap` path first (reuse, not reimplement). |
-| 2 | Plugins → user scope | Run the manifest reconcile (§7.1) with `scope="user"`: install/update every plugin served by the caller's filtered marketplace with `claude plugin install <p>@agnes --scope user`. Enablement lands in `~/.claude/settings.json` via the `claude` CLI itself — we never hand-edit `enabledPlugins`. |
+| 2 | Plugins → user scope | Run the manifest reconcile (§7.1) in `target="user"` mode: install/update every plugin served by the caller's filtered marketplace with `claude plugin install <p>@agnes --scope user` (the `claude` CLI's own flag is `--scope`; our wrapper flag is `--target`, §7.1). Enablement is recorded by the `claude` CLI itself; the cwd-based `enabledPlugins` writer is skipped in this mode (§7.1, §6.4). |
 | 3 | MCP server entry | `claude mcp add --scope user agnes -- <abs-path-to-agnes> mcp` (stdio). Absolute binary path resolved at enable time (`shutil.which`/`sys.argv[0]` — same detection the setup bundle uses). If an `agnes` MCP entry already exists: ours (command ends in `agnes mcp`) → converge/no-op; foreign → warn + skip (never clobber), `--force` overrides. |
 | 4 | Rails block | Insert/replace a marker-fenced block in `~/.claude/CLAUDE.md` (create the file if absent). Exact markers: `<!-- BEGIN agnes-global (managed by 'agnes global enable'; edits inside are overwritten) -->` and `<!-- END agnes-global -->`. Content ships as a static CLI template (`cli/templates/global_rails.md`): ~20 lines — discovery-first protocol, `query_mode` decision table pointer, `agnes skills show agnes-data-querying` for the full version. Kept deliberately short: it is loaded into **every** session in **every** repo. Everything outside the markers is preserved byte-for-byte. |
 | 5 | Flag | `save_config({"global_scope": True})`. |
@@ -240,26 +245,60 @@ config flag — each `ok | missing | drifted`, with the repair hint
 
 ### 6.4 User-scope write discipline
 
-All direct writes to `~/.claude/CLAUDE.md` (and any future user-settings
-key we own) go through a new `cli/lib/user_scope.py` that generalises the
-`automode.py` pattern: read → merge/replace only what we own → atomic
-write; on unparseable/corrupt input back up to a `.corrupt.<ts>` sibling
-and rebuild only our managed piece. `enabledPlugins` and `mcpServers` are
-**never** hand-edited — the `claude` CLI owns those formats.
+This design introduces a **new discipline** for user-scope files — it is
+not a description of current practice, and stating it explicitly matters
+because two existing writers diverge from it today: JSON owned by Claude
+Code (`enabledPlugins` in `~/.claude/settings.json`, `mcpServers` in
+`~/.claude.json`) is mutated only through the `claude` CLI
+(`plugin install/uninstall`, `mcp add/remove`), never hand-edited. The
+divergers: `refresh_marketplace.py::_enable_plugins_in_workspace_settings`
+hand-writes `enabledPlugins` into the **cwd** workspace settings (made
+target-aware and skipped in user mode by §7.1), and the Cowork
+setup-bundle flow writes an `mcpServers` entry into user-level settings
+directly (left as-is in v1; migration is follow-up hygiene, §12).
+
+The one file this feature edits directly is `~/.claude/CLAUDE.md`
+(markdown, marker splice) via a new `cli/lib/user_scope.py` helper that
+follows the `automode.py` recovery philosophy — **on anything unexpected,
+warn and leave the user's file untouched** (never back up + rebuild a
+user-owned file): markers absent → append the block; exactly one
+well-formed marker pair → replace its contents; duplicated or unmatched
+markers → warn, skip, and let `agnes global status` report the block as
+`drifted`. Writes are atomic (temp file + rename), matching
+`cli/config.py::save_config`.
 
 ## 7. D3 — convergence
 
-### 7.1 `agnes refresh-marketplace --scope user|project`
+### 7.1 `agnes refresh-marketplace --target user|project`
 
-`_reconcile_with_manifest` and `_list_installed_agnes_plugins_in_cwd` gain a
-scope parameter (enumerated `--scope`, per the frozen flag vocabulary — no
-new boolean). Default stays `project` (workspace flow unchanged). The
-`user` mode lists/installs/updates/prunes with `--scope user` and its
-"installed" snapshot reads user-scope state instead of cwd projectPath —
-this is what makes running convergence from an arbitrary cwd **safe**:
-today's project-scope reconcile would write plugin enablement into whatever
-repo it runs from, which is the reason global hooks are currently
-unshippable.
+The reconcile trio — `_reconcile_with_manifest`,
+`_list_installed_agnes_plugins_in_cwd`, **and**
+`_enable_plugins_in_workspace_settings` (the function that performs the
+actual `enabledPlugins` write, hardcoded to `Path.cwd()` today) — gains a
+target parameter. Default stays `project` (workspace flow byte-for-byte
+unchanged). In `user` mode:
+
+- installs/updates/prunes run with the `claude` CLI's `--scope user`;
+- the "installed" snapshot filters the same `claude plugin list --json`
+  output by the per-entry `scope` field (`"user"`) instead of
+  `projectPath == cwd`. Verified against a current Claude Code install:
+  entries carry `scope: "user"|"project"` and user-scope installs have
+  `projectPath: null`. The repo's existing test fixtures predate the
+  `scope` field, so the filter must be defensive (`scope == "user"`, or
+  `projectPath` null/absent on older CLIs);
+- `_enable_plugins_in_workspace_settings` is **skipped entirely** —
+  user-scope enablement is recorded by `claude plugin install --scope user`
+  itself. This skip is what actually makes running convergence from an
+  arbitrary cwd **safe**: without it, user-mode reconcile would still
+  hand-write `enabledPlugins` into whichever repo it happens to run from,
+  violating §8's guarantee (guard-tested in §10).
+
+Flag naming: the CLI flag is `--target user|project`, deliberately **not**
+`--scope` — the command-UX standard reserves `--scope` for the frozen
+data-locality enumeration (`auto|local|server`), and a third meaning
+(Claude Code install target, after `admin mcp`'s credential scope) would
+erode the one-mental-model rule. The internal parameter may mirror the
+`claude` CLI's own `--scope` argument it forwards to.
 
 ### 7.2 `agnes update` step `global`
 
@@ -298,8 +337,10 @@ hooks remain workspace-only.
   `--with-hook`. This is a property of the existing design that this spec
   deliberately preserves and documents.
 - **Foreign repos are never written to.** No step in D1–D3 writes into any
-  project directory other than the anchored workspace. The v1 acceptance
-  checklist includes a guard test for this (§10).
+  project directory other than the anchored workspace — including the
+  user-mode reconcile, which skips today's cwd-based `enabledPlugins`
+  writer (§7.1). The v1 acceptance checklist includes a guard test for
+  this (§10).
 - **Tokens:** nothing in D2 places a secret into any Claude Code config
   file. The stdio MCP server reads `~/.config/agnes/token.json` (0600) at
   runtime; the remote-MCP alternative documented in D4 uses OAuth (no PAT
@@ -329,21 +370,30 @@ hooks" section.
 
 - **Resolver matrix** (unit, `tests/test_workspace_resolve.py`): env set /
   unset × cwd shaped / unshaped × anchor present / stale / absent — assert
-  the full precedence table, including "stale anchor → None".
+  the full precedence table, including "stale anchor → None". One dedicated
+  assertion pins that `resolve_data_workspace` (cwd before anchor) and
+  `update._resolve_workspace` (anchor before cwd) keep their
+  **deliberately different** precedence, so a future dedup refactor cannot
+  silently collapse them.
 - **Adoption smoke:** `agnes query --local` and MCP `query_local` from a
   temp cwd with a fake anchored workspace (monkeypatched
   `AGNES_CONFIG_DIR`) succeed; with no anchor they render the typed hint.
   `agnes pull` with unshaped cwd + no anchor → typed error, no scaffold
   created in cwd (the **no-writes-to-foreign-repos guard**).
-- **`global` group:** fake `$HOME` + `AGNES_CONFIG_DIR` + a recorded `claude`
-  shim binary (same technique as the existing refresh-marketplace tests):
+- **`global` group:** fake `$HOME` + `AGNES_CONFIG_DIR`, driving the
+  `claude` CLI through the monkeypatched `subprocess.run` recorder +
+  `shutil.which` fixtures that `tests/test_cli_refresh_marketplace.py`
+  already provides (`recorder`, `claude_in_path` — no PATH shim binary):
   enable twice → identical end state, second run all no-ops; disable →
   byte-identical `~/.claude/CLAUDE.md` outside markers, foreign MCP entry
-  named `agnes` survives with a warning; corrupt user CLAUDE.md → `.corrupt.*`
-  backup + managed block rebuilt.
-- **Reconcile scope:** `--scope user` never invokes `claude plugin` with
+  named `agnes` survives with a warning; user CLAUDE.md with duplicated or
+  unmatched markers → warned, left byte-identical, `status` reports the
+  block `drifted`.
+- **Reconcile target:** `--target user` never invokes `claude plugin` with
   `--scope project` (and vice versa); prune only ever targets `@agnes`
-  plugins in the selected scope.
+  plugins in the selected target; and the foreign-repo guard of §8: run the
+  user-mode reconcile from a temp cwd and assert that cwd's `.claude/`
+  is left untouched.
 - **Update gating:** flag off → no `global` step side effects; on → step
   runs after `marketplace`, failure recorded without aborting.
 - No schema/DB change anywhere → no DuckDB↔PG parity or migration-ladder
@@ -352,9 +402,12 @@ hooks" section.
 ## 11. Rollout & phasing
 
 - **PR 1 — D1** (small, independently valuable): resolver + adoption +
-  tests. CHANGELOG *Changed*: data commands and the stdio MCP server fall
-  back to the anchored workspace from any directory; *Fixed*: `agnes pull`
-  no longer scaffolds a data tree into an arbitrary cwd.
+  tests, including the `query_local`/`pull` docstring updates (§5.2) and a
+  sweep of `docs/` + `--help` texts for descriptions of the old
+  cwd-scaffold behavior. CHANGELOG *Changed*: data commands and the stdio
+  MCP server fall back to the anchored workspace from any directory;
+  *Fixed*: `agnes pull` no longer scaffolds a data tree into an arbitrary
+  cwd.
 - **PR 2 — D2 + D3 + D4:** `agnes global` group, refresh `--scope`,
   `update` step, docs page. CHANGELOG *Added*. Depends on PR 1 (the MCP
   entry registered without `--env` relies on the resolver).
@@ -370,6 +423,8 @@ hooks" section.
 - Interactive nudge at the end of `agnes init` ("enable globally? [y/N]").
 - Managed-settings *generator* (`agnes admin global-settings emit`) that
   renders the fleet JSON from the instance's marketplace + MCP config.
+- Migrating the Cowork setup-bundle's direct `mcpServers` settings write to
+  the `claude mcp add` path, aligning legacy code with the §6.4 discipline.
 
 ## 13. Open questions
 
