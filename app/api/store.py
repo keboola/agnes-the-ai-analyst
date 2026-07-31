@@ -3590,15 +3590,23 @@ async def install_entity(
     # could never reach its author's own Stack — the point of the Private
     # tier. Scoped tightly:
     #
-    #   * owner only (never a third party, never `pending`/`blocked`/
-    #     `archived`), and
+    #   * owner only, and only at `visibility_status='hidden'` — the other
+    #     statuses (`pending`, `blocked`, `archived`) fall through to the 409
+    #     for everyone including the author, and a third party never reaches
+    #     the exemption at all, and
     #   * refused when guardrail review REJECTED the bundle — `hidden` is the
     #     status BOTH Private and quarantine write, so the submission history
     #     is what separates them.
     #
-    # The serve chokepoint (``user_store_installs.list_for_user``) enforces the
-    # same two conditions independently, so a bundle blocked AFTER install
-    # stops being served without needing this row removed.
+    # What this deliberately does NOT wait for: an async guardrail review still
+    # in flight. `_entity_review_blocked` is false while a submission sits at
+    # `pending_llm`, so the author can install their own Private bundle the
+    # moment they upload it rather than being locked out of their own Stack for
+    # the duration of a review that, for a Private entity, gates nobody else's
+    # access. What makes that safe is that install is not a grant: the serve
+    # chokepoint (``user_store_installs.list_for_user``) re-evaluates both
+    # conditions on EVERY read, so a bundle the review goes on to block stops
+    # being served without this row needing to be removed.
     _status = entity.get("visibility_status")
     _is_own_private = (
         _status == "hidden"

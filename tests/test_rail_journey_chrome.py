@@ -291,3 +291,26 @@ def test_history_list_is_resolved_at_its_use_site():
     code = _strip_js_comments(js)
     for orphan in ("listEl", "toggleTxt", "applyTruncation", "RECENT_LIMIT", "EXPANDED_KEY"):
         assert orphan not in code, f"{orphan} was deleted with the truncation block — nothing may reference it"
+
+
+def test_every_chrome_context_builder_supplies_the_brand_the_rail_renders():
+    """`_app_rail.html` says "How {{ instance_brand_short }} works", and
+    `base_ds.html` includes that partial on EVERY page — so the key has to come
+    from whichever context builder the page used, not just the rich one.
+
+    `instance_brand_short` is not a Jinja global (it is re-read per request so
+    an admin renaming the instance takes effect without a restart), which makes
+    this the same context-gap class as the `can_chat` omission that once dropped
+    the chat entry on /admin/studio. A page built by a builder that forgets the
+    key renders "How  works" — a hole in the middle of a sentence, with nothing
+    raising. Cheaper to pin than to re-audit every route.
+    """
+    import inspect
+
+    from app.web import router as _router
+
+    for builder in (_router._build_context, _router._chrome_ctx):
+        src = inspect.getsource(builder)
+        assert '"instance_brand_short"' in src, (
+            f"{builder.__name__} must supply instance_brand_short — the rail renders it on every page"
+        )
