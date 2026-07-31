@@ -101,3 +101,39 @@ def test_precedence_differs_from_update_resolver(tmp_path, monkeypatch):
     monkeypatch.chdir(cwd)
     assert resolve_data_workspace() == cwd.resolve()  # cwd first
     assert update_resolve() == anchor.resolve()  # anchor first
+
+
+def test_query_run_local_falls_back_to_anchor(tmp_path, monkeypatch):
+    """From an unshaped cwd, _run_local opens the ANCHOR's DuckDB (spec §5.2)."""
+    import duckdb
+
+    from cli.commands import query as query_module
+
+    anchor = tmp_path / "anchor"
+    (anchor / "user" / "duckdb").mkdir(parents=True)
+    con = duckdb.connect(str(anchor / "user" / "duckdb" / "analytics.duckdb"))
+    con.execute("CREATE TABLE t AS SELECT 42 AS answer")
+    con.close()
+
+    monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+    monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: str(anchor))
+    plain = tmp_path / "foreign-repo"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+
+    printed: list[str] = []
+    monkeypatch.setattr(query_module.typer, "echo", lambda *a, **k: printed.append(str(a[0]) if a else ""))
+    query_module._run_local("SELECT answer FROM t", fmt="csv", limit=10)
+    assert any("42" in line for line in printed)
+
+
+def test_query_run_local_none_raises_missing(tmp_path, monkeypatch):
+    from cli.commands import query as query_module
+
+    monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+    monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: None)
+    plain = tmp_path / "foreign-repo"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    with pytest.raises(query_module._LocalDbMissing):
+        query_module._run_local("SELECT 1", fmt="csv", limit=10)
