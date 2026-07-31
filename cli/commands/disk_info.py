@@ -10,7 +10,9 @@ disk_info_app = typer.Typer(help="Show snapshot disk usage")
 
 
 def _local_dir() -> Path:
-    return Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    return resolve_data_workspace() or Path.cwd().resolve()
 
 
 def _format_size(n: int) -> str:
@@ -40,11 +42,17 @@ def disk_info(
     quota_gb = int(os.environ.get("AGNES_SNAPSHOT_QUOTA_GB", "10"))
 
     if json:
-        typer.echo(json_lib.dumps({
-            "snapshots_dir": str(snap_dir),
-            "used_bytes": used, "snapshot_count": count,
-            "free_bytes": free, "quota_gb": quota_gb,
-        }))
+        typer.echo(
+            json_lib.dumps(
+                {
+                    "snapshots_dir": str(snap_dir),
+                    "used_bytes": used,
+                    "snapshot_count": count,
+                    "free_bytes": free,
+                    "quota_gb": quota_gb,
+                }
+            )
+        )
         return
 
     typer.echo(f"Snapshots dir:    {snap_dir}")
