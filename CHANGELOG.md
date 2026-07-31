@@ -11,6 +11,37 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+- MCP OAuth sources, phase 2 — the per-user browser connect flow: `GET
+  /api/mcp/sources/{id}/oauth/authorize` (signed, single-use PKCE state;
+  grant- and rate-limit-gated) redirects the analyst's browser to the
+  upstream authorization server; `GET /api/mcp/oauth-client/callback`
+  redeems the code (login-CSRF + mix-up defenses, RFC 9700-aligned) and
+  lands back on `/me/connections`; `DELETE
+  /api/mcp/sources/{id}/oauth/connection` disconnects. `/me/connections`
+  and the admin source-detail "Your connection" panel swap the paste-a-token
+  flow for Connect/Disconnect buttons on `auth_method='oauth'` sources;
+  `GET .../my-secret` gains `auth_kind`/`expires_at`. New CLI verbs `agnes
+  mcp connect <source>` (opens the browser, polls until connected) and
+  `agnes mcp disconnect <source>`. The single-use authorization code and
+  signed state are now redacted from the server's own access log for the
+  callback path — operators should apply the same redaction in their
+  TLS-terminating reverse proxy's access log (see `docs/DEPLOYMENT.md`).
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.33] - 2026-07-31
+
+### Added
+
 - Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
   behavior yet): schema v109 adds `mcp_source_oauth_clients`,
   `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
