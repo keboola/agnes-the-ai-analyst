@@ -37,12 +37,15 @@ import os
 import re
 from collections.abc import AsyncIterator
 
+from mcp.server.auth.handlers.revoke import RevocationHandler, RevocationRequest
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
+from starlette.applications import Starlette
 from starlette.requests import Request
+from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.api.mcp.foundation_tools import register_foundation_tools
@@ -135,6 +138,110 @@ def _oauth_revocation_options() -> RevocationOptions:
     return RevocationOptions(enabled=True)
 
 
+class _PublicClientRevocationRequest(RevocationRequest):
+    """RFC 7009 §2.1 revocation request with ``client_secret`` truly optional.
+
+    The SDK model declares ``client_secret: str | None`` with no default —
+    pydantic v2 reads that as required-but-nullable — so a public client
+    (``token_endpoint_auth_method='none'``: Claude Code, VS Code, claude.ai)
+    posting ``token=…&client_id=…`` is rejected 400 "client_secret: Field
+    required" before revocation runs, and its tokens live out their full TTL.
+    Still broken upstream as of mcp 2.0.0.
+    """
+
+    client_secret: str | None = None
+
+
+class _PublicClientRevocationHandler(RevocationHandler):
+    """The SDK's RevocationHandler with the lenient request model above.
+
+    ``handle`` mirrors the SDK implementation except for the model swap —
+    client *authentication* is already auth-method-aware
+    (``ClientAuthenticator.authenticate_request`` skips the secret check for
+    public clients), so only the post-auth form validation needed fixing.
+    Confidential clients are unaffected: a stored secret is still enforced by
+    the authenticator before the form is ever validated.
+    """
+
+    async def handle(self, request: Request) -> Response:
+        from collections.abc import Awaitable, Callable
+        from functools import partial
+
+        from mcp.server.auth.errors import stringify_pydantic_error
+        from mcp.server.auth.handlers.revoke import RevocationErrorResponse
+        from mcp.server.auth.json_response import PydanticJSONResponse
+        from mcp.server.auth.middleware.client_auth import AuthenticationError
+        from mcp.server.auth.provider import AccessToken, RefreshToken
+        from pydantic import ValidationError
+
+        try:
+            client = await self.client_authenticator.authenticate_request(request)
+        except AuthenticationError as e:
+            return PydanticJSONResponse(
+                status_code=401,
+                content=RevocationErrorResponse(
+                    error="unauthorized_client",
+                    error_description=e.message,
+                ),
+            )
+
+        try:
+            form_data = await request.form()
+            revocation_request = _PublicClientRevocationRequest.model_validate(dict(form_data))
+        except ValidationError as e:
+            return PydanticJSONResponse(
+                status_code=400,
+                content=RevocationErrorResponse(
+                    error="invalid_request",
+                    error_description=stringify_pydantic_error(e),
+                ),
+            )
+
+        loaders: list[Callable[[str], Awaitable[AccessToken | RefreshToken | None]]] = [
+            self.provider.load_access_token,
+            partial(self.provider.load_refresh_token, client),
+        ]
+        if revocation_request.token_type_hint == "refresh_token":
+            loaders = list(reversed(loaders))
+
+        token: AccessToken | RefreshToken | None = None
+        for loader in loaders:
+            token = await loader(revocation_request.token)
+            if token is not None:
+                break
+
+        # Unknown token → still 200, per RFC 7009 §2.2.
+        if token and token.client_id == client.client_id:
+            await self.provider.revoke_token(token)
+
+        return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+def _patch_revocation_route_for_public_clients(app: Starlette, provider: AgnesMCPOAuthProvider) -> None:
+    """Swap the SDK's /revoke endpoint for the public-client-aware handler.
+
+    Route-level (not a middleware layer): the fix changes request validation,
+    so the clean seam is the handler itself. If an SDK bump moves the route
+    and the patch stops applying, the handshake test asserting a 200
+    public-client revoke catches it.
+    """
+    from mcp.server.auth.middleware.client_auth import ClientAuthenticator
+    from mcp.server.auth.routes import REVOCATION_PATH, cors_middleware
+    from starlette.routing import Route
+
+    handler = _PublicClientRevocationHandler(provider, ClientAuthenticator(provider))
+    routes = app.router.routes
+    for i, route in enumerate(routes):
+        if isinstance(route, Route) and route.path == REVOCATION_PATH:
+            routes[i] = Route(
+                REVOCATION_PATH,
+                endpoint=cors_middleware(handler.handle, ["POST", "OPTIONS"]),
+                methods=["POST", "OPTIONS"],
+            )
+            return
+    logger.error("Streamable MCP: /revoke route not found — public-client token revocation patch not applied")
+
+
 def _oauth_metadata_for_request(request: Request):
     """Build OAuth AS + protected-resource metadata for the incoming host."""
     from urllib.parse import urlparse
@@ -157,6 +264,12 @@ def _oauth_metadata_for_request(request: Request):
     _supported = list(as_metadata.token_endpoint_auth_methods_supported or [])
     if "none" not in _supported:
         as_metadata.token_endpoint_auth_methods_supported = _supported + ["none"]
+    # Same RFC 8252 rationale for revocation: /revoke accepts public clients
+    # (see _PublicClientRevocationHandler), so advertise 'none' there too.
+    if as_metadata.revocation_endpoint:
+        _rev_supported = list(as_metadata.revocation_endpoint_auth_methods_supported or [])
+        if "none" not in _rev_supported:
+            as_metadata.revocation_endpoint_auth_methods_supported = _rev_supported + ["none"]
 
     pr_metadata = ProtectedResourceMetadata(
         resource=issuer,
@@ -335,8 +448,10 @@ class _FixMcpOAuthResourceMetadataMiddleware:
 
 
 class _PatchPublicClientDiscoveryMiddleware:
-    """Append 'none' to token_endpoint_auth_methods_supported in FastMCP's OAuth discovery.
+    """Append 'none' to the advertised auth-method lists in FastMCP's OAuth discovery.
 
+    Patches both token_endpoint_auth_methods_supported and (when the endpoint
+    is advertised) revocation_endpoint_auth_methods_supported.
     build_metadata() in the MCP SDK hardcodes only confidential auth methods.
     VS Code native MCP is a public client (method=none, no client_secret + PKCE)
     and skips Dynamic Client Registration when it doesn't see 'none' in this list.
@@ -377,6 +492,10 @@ class _PatchPublicClientDiscoveryMiddleware:
                         methods = data.get("token_endpoint_auth_methods_supported") or []
                         if "none" not in methods:
                             data["token_endpoint_auth_methods_supported"] = methods + ["none"]
+                        if data.get("revocation_endpoint"):
+                            rev_methods = data.get("revocation_endpoint_auth_methods_supported") or []
+                            if "none" not in rev_methods:
+                                data["revocation_endpoint_auth_methods_supported"] = rev_methods + ["none"]
                         patched = _json.dumps(data).encode()
                     except Exception:
                         patched = raw
@@ -443,6 +562,9 @@ def _make_streamable_app() -> ASGIApp:
     # lift it onto the main app and run its session manager in the lifespan.
     inner = mcp.streamable_http_app()
     inner.state.mcp_streamable_instance = mcp
+    # Fix the SDK's /revoke for public clients (RFC 7009) before wrapping —
+    # see _PublicClientRevocationHandler.
+    _patch_revocation_route_for_public_clients(inner, provider)
     # Layer 0: serve the MCP endpoint at the mount root — the URL clients
     # actually paste — not only at the SDK-internal /mcp sub-path.
     rooted = _ServeStreamableAtMountRootMiddleware(inner)
