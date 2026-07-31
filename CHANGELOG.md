@@ -20,6 +20,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- Vault repositories now share one decrypt path: `SharedSecretsRepository`,
+  `PerUserSecretsRepository`, and `ConnectionSecretsRepository` (DuckDB and
+  Postgres alike) fold their inline `InvalidToken`-swallow blocks onto the
+  `app.secrets_vault.decrypt_optional` helper. Behavior is unchanged — a NULL
+  or undecryptable column still reads as absent instead of raising — but the
+  warning now names the column that failed (`<table>.<column>[<key>]`) and
+  keeps the caller's "falling back to …" note via a new `hint` argument.
+  `SystemSecretsRepository` stays on its own path deliberately: it also
+  swallows the `RuntimeError` raised by a malformed `AGNES_VAULT_KEY` so a bad
+  key disables the feature instead of failing every request. Cross-engine
+  contract tests now assert the decrypt-failure path for all three columns on
+  both backends.
+
 ### Security
 
 ## [0.77.33] - 2026-07-31
