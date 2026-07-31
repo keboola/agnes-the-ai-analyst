@@ -62,13 +62,19 @@ def test_tour_does_not_assert_activity_driven_flags():
     )
 
 
-def test_tour_marks_only_the_steps_it_walks():
-    """Finishing the tour asserts exactly the two steps it visits."""
+def test_tour_marks_only_the_step_it_walks():
+    """Finishing the tour asserts exactly ONE step: "Explore your Library",
+    which is the thing the tour actually does for you.
+
+    `catalog_discovered` used to ride along, from when that step meant "saw the
+    Catalog" and the tour walked it. Under its current label ("Add or share
+    something") it is an action the user has to take, and ticking it on finish
+    left the checklist claiming credit for work nobody had done."""
     js = _js()
     assert "markTourStepsDone" in js
     body = js.split("async function markTourStepsDone()", 1)[1].split("}\n", 1)[0]
     assert "explored_stack: true" in body
-    assert "catalog_discovered: true" in body
+    assert "catalog_discovered" not in body
 
 
 def test_connect_button_marks_use_anywhere():

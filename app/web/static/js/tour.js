@@ -14,82 +14,237 @@
  *
  * Usage:
  *   import { launchTour, TOURS } from './tour.js';
- *   launchTour('stack');          // start from step 0
- *   launchTour('stack', 2);       // resume at index 2
+ *   launchTour('welcome');        // start from step 0
+ *   launchTour('welcome', 2);     // resume at index 2
+ *   autoLaunchTour('welcome');    // first visit only — no-op once seen
+ *
+ * Every step carries a stable `key`, and `tourIndexOf(id, key)` resolves it to
+ * an index — that is how the onboarding checklist opens the coach-mark that
+ * teaches ITS step instead of restarting the walkthrough from the composer.
+ * Addressing steps by name rather than by number is the whole point: a number
+ * in chat_onboarding.js would silently point at the wrong card the first time
+ * a step is inserted here.
  */
 
 // ── Tour definitions ────────────────────────────────────────────────────────
 
 export const TOURS = {
-  stack: [
-    // Step 0: /stack — the tabs + cards zone
+  // The newcomer walkthrough. It follows the path a first-time user actually
+  // takes rather than the old surface-by-surface tour of /stack + /catalog
+  // (both retired from the rail): they land on a fresh chat, so the FIRST
+  // thing shown is the composer — asking is the product — and only then the
+  // Library, what "in stack" means, and how to add and share their own things.
+  welcome: [
+    // Step 0: /chat — the composer. The scrim is pointer-events:none, so the
+    // spotlighted input stays fully typeable while this step is up; that's the
+    // point, and chat_onboarding.js ends the tour the moment they send.
     {
-      page: '/stack',
-      selector: '#stack-explore-zone',
-      title: 'This is your Stack',
-      desc: 'Your Stack is everything I can draw on to answer you — all your knowledge sources and capabilities, in one place.',
+      key: 'ask',
+      page: '/chat',
+      // Rail wraps the textarea in the `.cloud-chat-composer` pill (the whole
+      // bar is the affordance); topnav has no wrapper, so fall through to the
+      // textarea itself. A comma list is a FALLBACK CHAIN, tried left to right
+      // (see _visibleMatch) — not document order.
+      selector: '.cloud-chat-composer, #chat-input',
+      title: 'Just ask — that\'s the whole thing',
+      // Kept deliberately short: this card has to fit ABOVE the composer at a
+      // laptop viewport height, or the positioner has to cap and scroll it.
+      desc: 'Ask a real work question in plain English — go ahead, type right now, this card won\'t get in the way. I answer from the company knowledge you can see, and always show where the answer came from.',
       points: [
-        'Switch between Data, Plugins, Memory, and Uploads with the tabs.',
-        'Locked cards were set up by your admin — I use them automatically, and you can\'t remove them.',
+        'Try "what changed in revenue last month?"',
+        'Type / to run a skill, or + to attach a file.',
       ],
     },
-    // Step 1: /stack — the Artefacts nav (private uploads live under Artefacts).
+    // Step 1: /chat — the Library nav item, introduced from the chat page so
+    // the concept lands before we navigate anywhere.
     {
-      page: '/stack',
-      selector: '#nav-artefacts',
-      title: 'Add your own files',
-      desc: 'Your private files live under Artefacts — upload a document only you need (a pricing deck, a spec, meeting notes) and I\'ll search it and cite it in my answers. No admin needed.',
+      key: 'library',
+      page: '/chat',
+      // #nav-artefacts is the rail's Library row (the id predates the
+      // /artefacts → /library rename); topnav labels its link with data-tour.
+      selector: '#nav-artefacts, [data-tour="nav-library"]',
+      title: 'Everything I can read lives in your Library',
+      desc: 'Knowledge your organization shares with you, plus every file, skill and agent you add yourself — one place, all searchable.',
       points: [
-        'Works with PDF, Markdown, TXT, and more.',
-        'Private to you unless you choose to share it.',
+        'Data packages and memory your admin set up appear here on their own.',
+        'Anything you add is private to you until you choose to share it.',
       ],
     },
-    // Step 2: /stack — Marketplace nav item (in rail). Framed as the community
-    // sharing surface: see what colleagues built, add it, and share back.
+    // Step 2: /library — the "in stack" concept, the one idea that decides
+    // whether an answer can use a thing.
+    //
+    // Anchored on a ROW'S OWN "Add" control, with the "In stack only" filter
+    // ringed alongside it (`extraSpotlight`). Getting to that took two fixes:
+    //
+    //   1. The filter used to lead the selector chain, which made this the one
+    //      step pointing at the wrong KIND of control — the toggle FILTERS the
+    //      list, so the row whose whole job is "put something in your stack"
+    //      spotlighted a filter and left the real action to be found.
+    //   2. Leading with `[data-add-to-stack]` alone wasn't enough either: the
+    //      Library ships every group COLLAPSED, so on a first visit that control
+    //      is in the DOM with a zero-size box and resolution fell straight
+    //      through to the filter anyway. `reveal` opens a group that has one
+    //      (data packages and memory first — the knowledge a newcomer is meant
+    //      to put in their stack — then files and skills).
+    //
+    // Both controls carry the ring because the step teaches both halves: what
+    // "in stack" MEANS (the filter names the set) and how something joins it
+    // (the Add button). The popover anchors on the Add control, since that is
+    // the one the copy asks you to click.
     {
-      page: '/stack',
-      selector: '#nav-catalog',
-      title: 'Here\'s the Marketplace',
-      desc: 'See what your colleagues have already built and shared — data packages, skills, and plugins you can add to your Stack in one click. Spot a gap? Build something useful and share it back for the whole team.',
+      key: 'in-stack',
+      page: '/library',
+      selector: '[data-add-to-stack]',
+      // Every Library group ships collapsed, so the Add controls are all in the
+      // DOM with a zero-size box; this opens the one group that has one.
+      revealHost: { container: '[data-lib-sec]', toggle: '[data-sec-toggle]' },
+      // Only if no group turns out to have an Add control at all — a Library
+      // where everything is already in-stack has nothing left to add, and the
+      // filter is then the honest thing to point at.
+      fallbackSelector: '#lib-stack-toggle, [data-stack-badge]',
+      extraSpotlight: ['#lib-stack-toggle'],
+      title: 'Put it in your stack and I can use it',
+      desc: 'Your Library is everything available to you. Your stack is the smaller set your chat agent actually draws on — that\'s what keeps answers fast and on topic. Click Add on a row and it joins your stack.',
       points: [
-        'When a question needs something you don\'t have yet, I\'ll usually point you here right in the chat.',
+        'It counts from your very next question — no reload, no waiting.',
+        '"In stack" above filters the list down to what I\'m using right now.',
+        'Items your admin marked required are always on and can\'t be removed.',
       ],
     },
-    // Step 3: /catalog — the submit CTA
+    // Step 3: /library — bringing your own knowledge in. Spotlights the
+    // "+ Add" button, which is the control the reader has to find and the one
+    // the copy names.
+    //
+    // It briefly opened the menu and ringed THAT instead, so the four routes
+    // were on screen while being described. Two things were wrong with it: the
+    // ring landed on a popover rather than on the button you press to get it, so
+    // the step no longer showed you where to start; and with the card positioned
+    // off the button, the open menu and the card compete for the same space
+    // below it. The button is the anchor; the menu is what happens when they
+    // click it.
     {
-      page: '/catalog',
-      selector: '#browse-submit-btn',
-      title: 'Share what you build',
-      desc: 'Built a skill or plugin your team could reuse? Publish it here so others can add it from the Marketplace.',
+      key: 'add',
+      page: '/library',
+      selector: '#lib-new-btn',
+      title: 'Bring your own knowledge in',
+      desc: 'Click + Add to upload a file only you have — a pricing deck, a spec, meeting notes — and I\'ll search it and cite it in my answers. No admin needed. The same menu is where you build a skill, a plugin or a shareable agent.',
       points: [
-        'Publishing to the Flea Market is separate from adding something to your own Stack.',
+        'PDF, Markdown, CSV, Excel, and more.',
+        'It lands in your Library, and you decide whether it goes in your stack.',
       ],
     },
-    // Step 4: final centered step — no anchor
+    // Step 4: /library — sharing. The badge lives on a ROW, and the Library
+    // ships every group collapsed on a first visit, so the step opens whichever
+    // group holds a sharing badge (`revealHost`). Skipped when no group has one
+    // — an empty Library has nothing to share yet, and nothing to point at.
     {
-      page: '/catalog',
+      key: 'share',
+      page: '/library',
+      selector: '[data-share], [data-share-info]',
+      revealHost: { container: '[data-lib-sec]', toggle: '[data-sec-toggle]' },
+      title: 'Share what turns out to be useful',
+      desc: 'Every row shows who can see it. Click the sharing badge to open something up to a group — or your whole workspace — so colleagues, and their agents, can use it too.',
+      points: [
+        'Shared items show up in your teammates\' Library, ready for their stack.',
+      ],
+    },
+    // Step 5: final centered step — no anchor
+    {
+      key: 'done',
+      page: '/library',
       centered: true,
       finalChoice: true,
       title: 'That\'s the tour',
-      desc: 'You can set up your Stack and add what I need by prompting me in chat. Want the same company context in Claude Code, Cursor, and VS Code? Use Connect my AI tools below.',
+      desc: 'Ask questions, add what\'s missing, share what works. Want the same company knowledge in Claude Code, Cursor, and VS Code? Use Connect my AI tools below.',
+      points: [],
+    },
+  ],
+
+  // Agents — a SINGLE card, shown the first time someone lands on /agents,
+  // not a step of the walkthrough.
+  //
+  // The concept had no explanation anywhere: Agents sits directly under Library
+  // in the rail, so a first-timer met an unexplained robot icon, and "agent" is
+  // used two ways in this product (the chat you are already talking to, and a
+  // named assistant you define) — leaving that unsaid isn't neutral, it reads as
+  // a duplicate of chat. It was briefly a sixth step of `welcome`, which was the
+  // wrong shape: it dragged everyone off /library onto a page they hadn't asked
+  // for, mid-walkthrough, to explain a surface most readers don't need on day
+  // one. Teaching a destination is better done ON arrival, when the reader chose
+  // to be there and the thing being explained is what they are looking at.
+  //
+  // One step → the popover renders in its solo form (no dots, no "I'll explore
+  // on my own", primary reads "Got it"), and autoLaunchTour's localStorage gate
+  // means it appears exactly once.
+  //
+  // `awaitAnchor`: the list view is client-rendered after /api/agents resolves,
+  // so `[data-ag-new]` is genuinely absent for the first frames after load.
+  // Without the wait the step resolves to nothing and is silently dropped — the
+  // failure mode that lets a coach-mark go unnoticed rather than visibly broken.
+  // Deliberately NO fallback selector: a fallback present on the first frame
+  // (the page head) would always win the race and the wait would never happen.
+  agents: [
+    {
+      key: 'agents',
+      page: '/agents',
+      selector: '[data-ag-new]',
+      awaitAnchor: true,
+      // Kept SHORT on purpose. Its anchor sits mid-page, so the positioner has
+      // roughly 250px of room above it and caps the card to that — anything
+      // longer scrolls its own tail out of sight, which for a card the reader
+      // gets exactly once means the explanation simply doesn't arrive.
+      title: 'Agents are assistants you define',
+      desc: 'The chat in the sidebar reaches everything in your stack. An agent is narrower: one role, only the knowledge it should see, only the skills it may use.',
+      points: [
+        'Never more than your own permissions.',
+      ],
+    },
+  ],
+
+  // The "use Agnes outside this tab" micro-tour — one card, launched by the
+  // checklist step of the same name. It exists because that step used to be a
+  // bare link: it dropped the reader at the top of a long orientation page with
+  // no indication of which of its eight sections was the one they had just
+  // asked about. A single coach-mark on the section, with the two-step shape of
+  // the job spelled out, is the difference between "navigated" and "guided".
+  //
+  // Anchored on the fold's own summary (always visible) rather than the
+  // connector-URL box inside it: the page opens the fold itself on a #connect
+  // arrival, and a tour that clicked it too would race that script and close
+  // what it had just opened.
+  connect: [
+    {
+      key: 'connect',
+      page: '/how-it-works#connect',
+      selector: '#connect summary, #connect',
+      // Same length budget as the agents card: an anchor sitting mid-viewport
+      // leaves the positioner roughly 270px, and the body scrolls its tail out
+      // of sight beyond that. Title plus about four lines.
+      title: 'Take this knowledge into your own tools',
+      desc: 'Agnes is not only this tab. Point Claude Code, Cursor or VS Code at your connector URL and they answer from the same governed knowledge, under your own permissions.',
+      // No bullets: the section this card rings opens with "Two steps: copy your
+      // connector URL, then follow the instructions for your tool" — a bullet
+      // repeating it would cost the one line that made the card overflow.
       points: [],
     },
   ],
 
   // Single-step coach-mark for authors arriving from the Marketplace's
-  // "Submit a skill or plugin" CTA (/skills?spotlight=new-skill). The Skills
-  // grid opens on the caller's existing skills, so the one card that starts
-  // authoring needs pointing at. One step → the popover renders in its solo
-  // form (no dots, no "I'll explore on my own", primary reads "Got it").
+  // "Submit a skill or plugin" CTA (/skills?spotlight=new-skill). One step →
+  // the popover renders in its solo form (no dots, no "I'll explore on my
+  // own", primary reads "Got it").
   'skill-builder': [
     {
       page: '/skills',
-      // /skills IS the builder now (the separate "your skills" index was
-      // retired when created skills started landing in the Library), so the
-      // coach-mark anchors on the first field instead of a "+ New skill" card.
-      selector: '[data-sk-field="name"]',
+      // Anchors on the TYPE cards, which are the first thing on the page and
+      // the first decision to make. It briefly anchored on the name field
+      // instead; that broke when type became step 1, because the name field
+      // does not exist in the DOM until a type is chosen — the coach-mark had
+      // nothing to point at. The cards are always present, including on the
+      // ?type= deep link where step 1 lands collapsed.
+      selector: '[data-sk-type], [data-sk-change]',
       title: 'Start here',
-      desc: 'This is where a skill begins — a name, a line on when to use it, and the instructions themselves.',
+      desc: 'Pick what you are building — a skill, a plugin, or a shareable agent. The rest of the form follows from that choice.',
       points: [
         'Choose who can use it: just you, or everyone in the organization.',
         'Save to Library and it appears in your Library, ready to share.',
@@ -104,7 +259,7 @@ const PENDING_KEY = 'agnes.tour.pending';
 // Only auto-resume a pending record written within this window. A cross-page
 // tour hop stashes then navigates and the destination loads within seconds; a
 // stale record (the user abandoned the tour via a normal link) must not re-pop
-// the tour on later /stack or /catalog visits.
+// the tour on later /chat or /library visits.
 const RESUME_FRESH_MS = 12000;
 
 function seenKey(id) {
@@ -154,36 +309,41 @@ function getPending() {
 // ── Journey patch helper (fire-and-forget) ──────────────────────────────────
 // Mark ONLY the journey steps the tour genuinely walks the user through.
 //
-// The tour visits My Stack (explored_stack) and the Marketplace
-// (catalog_discovered), so it may assert those. It must NOT touch the
-// activity-driven flags — chat_onboarding.js deliberately leaves those to real
-// activity: `first_asked` completes when a question is asked, and
-// `stack_setup_done` when a package is actually subscribed. `stack_setup_done`
-// additionally gates the in-chat gap resolver, so asserting it here would
-// permanently suppress the "your Stack is empty, here's what I'd add" card for
-// anyone who takes the tour before asking their first question.
+// That is exactly ONE of them: `explored_stack` ("Explore your Library"), which
+// the tour completes because walking you through the Library is literally what
+// it does. Every other step is something the user has to DO, and ticking a
+// to-do because someone read a card about it is how a checklist starts lying:
 //
-// `use_anywhere` is likewise left alone: the final step OFFERS "Connect my AI
-// tools" but finishing the tour is not the same as having connected one.
+//   • `first_asked` completes when a question is actually asked;
+//   • `stack_setup_done` when a package is actually subscribed — and it gates
+//     the in-chat gap resolver, so asserting it here would permanently suppress
+//     the "your Stack is empty, here's what I'd add" card for anyone who takes
+//     the tour before asking their first question;
+//   • `catalog_discovered` now reads "Add or share something", an action; the
+//     tour only shows you where the controls are. It USED to mean "saw the
+//     Catalog", which the old tour did walk — asserting it under the new label
+//     left the checklist ticking a step the user had not done, two rows below
+//     one they had (see STEP_KEYS in chat_onboarding.js for the ordering half
+//     of that same bug);
+//   • `use_anywhere`: the final step OFFERS "Connect my AI tools" but finishing
+//     the tour is not the same as having connected one. The button itself marks
+//     it — see markUseAnywhereDone.
 async function markTourStepsDone() {
   try {
     await fetch('/api/chat/journey', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        explored_stack: true,
-        catalog_discovered: true,
-      }),
+      body: JSON.stringify({ explored_stack: true }),
     });
   } catch (_) { /* fire-and-forget — onboarding is soft state */ }
 }
 
 // Mark the "Use Agnes from other AI tools" step — fired when the final step's
-// "Connect my AI tools" button navigates to the AI Connector page.
+// "Connect my AI tools" button navigates to the connect section.
 async function markUseAnywhereDone() {
   try {
     // keepalive: the one call site fires this immediately before a full-page
-    // navigation (`window.location.href = '/me/ai-connector'`); without it
+    // navigation (`window.location.href = '/how-it-works#connect'`); without it
     // the browser cancels the in-flight PUT and the journey step stays
     // unmarked (Devin Review on #1092). keepalive lets the write survive the
     // page teardown while keeping the call fire-and-forget.
@@ -220,9 +380,74 @@ export function launchTour(id, index = 0) {
   _startTour(id, steps, index);
 }
 
+/**
+ * Public: launch a tour ONCE, unattended — the newcomer path. Every guard here
+ * exists because this fires without anyone asking for it:
+ *   • already seen → never again (the journey panel's "↻" is the way back);
+ *   • a tour already on screen, or a pending cross-page resume about to put one
+ *     there → don't stack a second engine over it;
+ *   • unknown id → no-op.
+ * The caller decides WHETHER this user is a newcomer (chat_onboarding.js reads
+ * the journey for that); this only decides whether the tour has run before.
+ */
+export function autoLaunchTour(id) {
+  if (!TOURS[id] || isSeen(id) || _active || _pendingResumesHere()) return false;
+  launchTour(id, 0);
+  return true;
+}
+
+// Is there a cross-page resume about to put a tour on THIS page? That is the
+// only pending record an unattended launch has to yield to.
+//
+// It used to be `getPending()` — any record at all — which quietly suppressed
+// unrelated coach-marks: abandoning the welcome tour on /library leaves a record
+// naming a /library step, and for the next 12 seconds that record blocked the
+// Agents card on /agents, where nothing was going to resume. The card simply
+// never appeared, with nothing to see or debug. Same freshness + page test
+// resumePendingTour itself applies, so the two can't disagree about what is
+// pending.
+function _pendingResumesHere() {
+  const pending = getPending();
+  if (!pending || !pending.ts || Date.now() - pending.ts > RESUME_FRESH_MS) return false;
+  const step = (TOURS[pending.id] || [])[pending.index];
+  return !!step && pathMatches(step.page, window.location.pathname);
+}
+
+/**
+ * Public: take the tour off screen without marking it seen. Called when the
+ * user does the thing the tour was pointing at — sending their first message —
+ * so the coach-mark gets out of the way of the answer instead of narrating
+ * over it, and the rest of the walkthrough is still there to replay.
+ */
+export function dismissActiveTour() {
+  if (!_active) return false;
+  _endTour(false);
+  return true;
+}
+
+/** Public: resolve a step's stable `key` to its index in a tour.
+ *
+ * Callers outside this module address steps by name — `tourIndexOf('welcome',
+ * 'in-stack')` — so inserting a step here can't silently repoint them at the
+ * wrong card. Unknown id/key falls back to 0: starting the walkthrough from the
+ * beginning is a worse experience than the intended step, but a working one.
+ */
+export function tourIndexOf(id, key) {
+  const steps = TOURS[id];
+  if (!steps) return 0;
+  const i = steps.findIndex((s) => s.key === key);
+  return i < 0 ? 0 : i;
+}
+
 function pathMatches(page, path) {
-  // Normalize both: strip trailing slash, compare exact pathname.
-  const norm = (p) => p.replace(/\/$/, '') || '/';
+  // Normalize both: drop hash + query, strip trailing slash, compare pathname.
+  // A step's `page` may carry a hash (`/how-it-works#connect`) because the
+  // destination page keys real behaviour off it — the connect fold opens itself
+  // on arrival. Navigation uses the value verbatim so that hash survives; only
+  // the COMPARISON strips it. Comparing the raw string instead is an infinite
+  // navigation loop: we'd arrive at /how-it-works, decide we still weren't
+  // there, and navigate again.
+  const norm = (p) => String(p).split('#')[0].split('?')[0].replace(/\/$/, '') || '/';
   return norm(page) === norm(path);
 }
 
@@ -249,13 +474,172 @@ function _startTour(id, steps, index, skipped) {
     id, steps, index: null, overlay, popover: null, spotlight: null,
     skipped: new Set(skipped || []),
     liftedAncestor: null,
+    // Additional elements ringed for the current step (`extraSpotlight`) —
+    // tracked so they are cleaned up on step change and on end, exactly like
+    // the anchor's own ring.
+    extraSpotlights: [],
   };
   _showStep(index);
 }
 
+// Resolve a step's anchor to an element that is actually ON SCREEN.
+//
+// `document.querySelector` is not enough for either half of that. It returns
+// the first MATCH, which with the comma selectors these steps use can easily be
+// a hidden one while a perfectly good sibling matches later; and "present in
+// the DOM" is not "visible" — the Library renders every group's rows and then
+// collapses the groups with `display: none`, so the sharing badge the share
+// step points at is a real element with a zero box. Spotlighting that paints a
+// ring around nothing and drops the popover in the top-left corner.
+//
+// A step may also name a `reveal` control (or a list of them, tried in order):
+// the thing that would UN-hide its anchor — a collapsed section header, a
+// closed menu. It's clicked only when the anchor can't be found on its own, and
+// only when it isn't already expanded, so the tour can't collapse something the
+// user opened.
+function _visibleMatch(selector) {
+  // Selector PRIORITY, not document order. A step's comma list is a fallback
+  // chain — "the composer pill, else the bare textarea"; "the open menu, else
+  // the button that opens it" — and one `querySelectorAll` over the whole list
+  // returns whichever comes first in the DOCUMENT, which for a
+  // specific-then-generic chain is reliably the wrong one (the generic fallback
+  // usually sits higher in the page). Walk the chain in the order it was
+  // authored and take the first candidate that is actually laid out.
+  for (const part of String(selector).split(',')) {
+    const sel = part.trim();
+    if (!sel) continue;
+    for (const el of document.querySelectorAll(sel)) {
+      if (el.offsetWidth || el.offsetHeight || el.getClientRects().length) return el;
+    }
+  }
+  return null;
+}
+
+function _applyExtraSpotlights(step, anchor) {
+  if (!_active || !step.extraSpotlight) return;
+  for (const sel of [].concat(step.extraSpotlight)) {
+    const el = _visibleMatch(sel);
+    // Never double-ring the anchor (it already has one, and removing the class
+    // on step change would then be order-dependent).
+    if (!el || el === anchor) continue;
+    el.classList.add('tour-spotlight');
+    _active.extraSpotlights.push(el);
+  }
+}
+
+function _clearExtraSpotlights() {
+  if (!_active || !_active.extraSpotlights) return;
+  for (const el of _active.extraSpotlights) el.classList.remove('tour-spotlight');
+  _active.extraSpotlights = [];
+}
+
+// Open the collapsed container that HOLDS the anchor.
+//
+// A step declares `revealHost: { container, toggle }`: the collapsible wrapper
+// the anchor may be sitting inside, and the control within that wrapper which
+// expands it. For each DOM match of the anchor that has no box, we walk up to
+// its own container and open that one — so the section that gets expanded is
+// always the section the target is actually in.
+//
+// This replaces a list of hardcoded openers (`[data-sec-toggle="files"]`,
+// `[data-sec-toggle="skill"]`, …), which was guesswork twice over: it opened
+// groups that turned out not to contain the target, and it silently failed for
+// any group nobody had thought to list — a shareable row in Plugins, an addable
+// row in Recipes. Never collapses anything: only a container reporting
+// `aria-expanded="false"` is clicked, so a section the user opened themselves is
+// left alone.
+function _revealAnchorHost(step) {
+  const host = step.revealHost;
+  if (!host) return null;
+  const laidOut = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  // Openers we clicked, so anything that didn't pay off can be put back. Opening
+  // a section is how we find out whether the target is in it, and a step that
+  // leaves three sections expanded to spotlight a control in the fourth has
+  // rearranged the reader's page for no reason.
+  const opened = [];
+  let found = null;
+  for (const el of document.querySelectorAll(step.selector)) {
+    if (laidOut(el)) {
+      found = el;
+      break;
+    }
+    const container = el.closest(host.container);
+    if (!container) continue;
+    const opener = container.querySelector(host.toggle);
+    if (!opener || opener.getAttribute('aria-expanded') === 'true') continue;
+    opener.click();
+    opened.push({ opener, container });
+    // Reading a layout property forces the reflow, so the freshly un-hidden
+    // anchor measures correctly without waiting a frame.
+    if (laidOut(el)) {
+      found = el;
+      break;
+    }
+  }
+  for (const { opener, container } of opened) {
+    if (found && container.contains(found)) continue;
+    if (opener.getAttribute('aria-expanded') === 'true') opener.click();
+  }
+  return found;
+}
+
+// Resolution order: the step's own `selector`, then `revealHost` (open the thing
+// hiding it), then `fallbackSelector` — a lesser anchor accepted only once the
+// real one has proven unreachable.
+//
+// Those last two being SEPARATE fields is load-bearing. The reveal step used to
+// be a fallback for the whole comma chain, which quietly defeated itself the
+// moment a chain contained its own fallback: the in-stack step listed
+// `[data-add-to-stack], #lib-stack-toggle`, every Library group ships COLLAPSED
+// (so all twelve Add controls have a zero-size box), and the filter toggle —
+// always visible — satisfied the chain before the reveal was ever consulted. The
+// step spotlighted a filter and nothing ever opened a group. Keeping the real
+// anchor and the consolation prize apart is what lets "try hard, including
+// expanding the right section" run before "settle for this instead".
+function _resolveAnchor(step) {
+  const found = _visibleMatch(step.selector);
+  if (found) return found;
+
+  const revealed = _revealAnchorHost(step);
+  if (revealed) return revealed;
+
+  return step.fallbackSelector ? _visibleMatch(step.fallbackSelector) : null;
+}
+
+// Some anchors are rendered by their own page's JS after a fetch resolves — the
+// Agents list is built from /api/agents — so on a cross-page hop they are
+// legitimately absent for the first frames after load. Resolving once and
+// dropping the step on a miss turns that race into a step nobody ever sees,
+// which is invisible: the tour just gets shorter. A step that knows its anchor
+// arrives late declares `awaitAnchor` and gets polled for up to
+// ANCHOR_WAIT_MS before we accept it isn't coming.
+//
+// The callback fires synchronously when the anchor is already there, so every
+// existing step keeps its current single-pass behaviour.
+const ANCHOR_WAIT_MS = 2500;
+const ANCHOR_POLL_MS = 100;
+
+function _resolveAnchorEventually(step, cb) {
+  const found = _resolveAnchor(step);
+  if (found || !step.awaitAnchor) {
+    cb(found);
+    return;
+  }
+  const start = performance.now();
+  const poll = () => {
+    const el = _resolveAnchor(step);
+    if (el || performance.now() - start > ANCHOR_WAIT_MS) {
+      cb(el);
+      return;
+    }
+    setTimeout(poll, ANCHOR_POLL_MS);
+  };
+  setTimeout(poll, ANCHOR_POLL_MS);
+}
+
 function _showStep(index) {
   if (!_active) return;
-  const { id, steps, overlay } = _active;
+  const { steps } = _active;
   const step = steps[index];
   if (!step) { _endTour(true); return; }
 
@@ -265,6 +649,7 @@ function _showStep(index) {
     _active.spotlight.classList.remove('tour-spotlight');
     _active.spotlight = null;
   }
+  _clearExtraSpotlights();
   if (_active.liftedAncestor) {
     _active.liftedAncestor.classList.remove('tour-lifts-ancestor');
     _active.liftedAncestor = null;
@@ -272,10 +657,15 @@ function _showStep(index) {
 
   _active.index = index;
 
-  // Resolve anchor element (skip forward on miss).
-  let anchor = null;
-  if (!step.centered && step.selector) {
-    anchor = document.querySelector(step.selector);
+  if (step.centered || !step.selector) {
+    _renderStep(index, null);
+    return;
+  }
+
+  _resolveAnchorEventually(step, (anchor) => {
+    // A step can be superseded while we wait (Next/Back/Escape) — `index` is
+    // then stale and rendering it would resurrect a card the user dismissed.
+    if (!_active || _active.index !== index) return;
     if (!anchor) {
       // Resilient: the anchor is absent here. Record it so the progress dots
       // stop counting a step the user will never see, then route through
@@ -286,6 +676,21 @@ function _showStep(index) {
       _gotoStep(index + 1);
       return;
     }
+    _renderStep(index, anchor);
+  });
+}
+
+// Paint the step: spotlight the anchor (when there is one), stash the resume
+// record, build and place the card. Split out of _showStep because anchor
+// resolution can now span frames — everything here has to run AFTER it, and
+// only if the step is still the current one.
+function _renderStep(index, anchor) {
+  if (!_active) return;
+  const { steps } = _active;
+  const step = steps[index];
+  if (!step) { _endTour(true); return; }
+
+  if (anchor) {
     // Scroll target into view — horizontally only "nearest" so a target near
     // the viewport edge (e.g. a nav item in the rail's mobile top-bar layout)
     // never induces horizontal scroll of the page itself (see the
@@ -307,6 +712,14 @@ function _showStep(index) {
     }
   }
 
+  // Ring anything else the step is teaching. Some steps explain a CONCEPT that
+  // two controls between them express — "in stack" is what the filter names and
+  // what the Add button does — and one ring around one of them leaves the reader
+  // to guess which half of the sentence they are looking at. These take the same
+  // ring but never the popover: a card can only point at one place, and it
+  // points at the control the copy asks you to click.
+  _applyExtraSpotlights(step, anchor);
+
   // Keep the resume record in sync with the step actually on screen (not just
   // cross-page hops), so a reload mid-tour resumes here — and re-stamp its
   // freshness. Combined with the RESUME_FRESH_MS window, an abandoned tour
@@ -326,9 +739,27 @@ function _showStep(index) {
   // for the anchor's rect to stop moving instead of guessing a fixed delay.
   _waitForScrollSettle(anchor, () => {
     if (_active && _active.index === index) {
+      _ensureAnchorVisible(anchor);
       _positionPopover(popover, anchor, step.centered);
     }
   });
+}
+
+// Last line of defence on the one promise a coach-mark makes: that you can see
+// what it is pointing at.
+//
+// The scroll above aims at the anchor's rect AT THAT MOMENT, and the page can
+// grow underneath it — the Library builds its grid cards after a group expands,
+// so a step that reveals a section and then scrolls to a row inside it lands
+// short and leaves the spotlight a screen and a half below the fold. Re-check
+// once the scroll has settled and correct instantly (no second smooth scroll to
+// wait on), before the popover is placed, so the card is positioned from the
+// rect the reader will actually be looking at.
+function _ensureAnchorVisible(anchor) {
+  if (!anchor) return;
+  const rect = anchor.getBoundingClientRect();
+  if (rect.top >= 0 && rect.bottom <= window.innerHeight) return;
+  anchor.scrollIntoView({ block: 'center', inline: 'nearest' });
 }
 
 // Resolve once `anchor`'s bounding rect is unchanged across two consecutive
@@ -449,7 +880,7 @@ function _buildPopover(step, index, total) {
     finishBtn.className = 'tour-btn tour-btn-finish';
     finishBtn.textContent = 'Finish onboarding';
     finishBtn.addEventListener('click', async () => {
-      markSeen(_active ? _active.id : 'stack');
+      markSeen(_active ? _active.id : 'welcome');
       await markTourStepsDone();
       _endTour(true);
       window.location.href = '/chat';
@@ -460,18 +891,20 @@ function _buildPopover(step, index, total) {
     connectBtn.className = 'tour-btn tour-btn-connect';
     connectBtn.textContent = 'Connect my AI tools';
     connectBtn.addEventListener('click', () => {
-      markSeen(_active ? _active.id : 'stack');
-      // Navigating to the AI Connector is exactly what the journey panel's
+      markSeen(_active ? _active.id : 'welcome');
+      // Navigating to the connect section is exactly what the journey panel's
       // "Use Agnes from other AI tools" step does, and that step marks itself
       // done on click — mirror it so the same action doesn't behave two ways.
       // Fire-and-forget: the navigation below must not wait on it.
       markUseAnywhereDone();
       _endTour(true);
-      // The AI Connector page (/me/ai-connector) is the per-tool MCP guide
-      // (Claude Code · Cursor · VS Code · …) that matches this button's intent
-      // and the main-page "Connect your tools" CTA. /setup is the narrower
-      // CLI-install page, reached from getting-started, not from here.
-      window.location.href = '/me/ai-connector';
+      // /how-it-works#connect is the per-tool MCP guide (Claude Code · Cursor ·
+      // VS Code · …) that matches this button's intent and the main-page
+      // "Connect your tools" CTA. It was the standalone /me/ai-connector page
+      // until that was absorbed into the consolidated orientation page, which
+      // still 302s here. /setup is the narrower CLI-install page, reached from
+      // getting-started, not from here.
+      window.location.href = '/how-it-works#connect';
     });
 
     actions.appendChild(backBtn);
@@ -560,6 +993,7 @@ function _endTour(markSeenNow) {
   if (_active.spotlight) {
     _active.spotlight.classList.remove('tour-spotlight');
   }
+  _clearExtraSpotlights();
   if (_active.liftedAncestor) {
     _active.liftedAncestor.classList.remove('tour-lifts-ancestor');
   }
@@ -591,8 +1025,17 @@ function _findStackingContextAncestor(el) {
 
 const POPOVER_GAP = 14;
 const VIEWPORT_PAD = 12;
+// Below this, capping the card to the space beside its anchor stops producing
+// a readable coach-mark (header + a title + one scrolling line + the actions
+// row) and centering is the more honest layout. Roughly the header/footer
+// chrome plus two lines of body.
+const MIN_POPOVER_HEIGHT = 240;
 
 function _positionPopover(popover, anchor, centered) {
+  // Drop any cap a previous placement applied BEFORE measuring — otherwise a
+  // reflow into a roomier spot (window resize, the anchor scrolling away from
+  // an edge) keeps the old constrained height forever.
+  popover.style.maxHeight = '';
   if (centered || !anchor) {
     // Center in the viewport WITHOUT a transform. The popover carries a
     // fill:both entrance animation whose end keyframe sets `transform`
@@ -612,7 +1055,7 @@ function _positionPopover(popover, anchor, centered) {
   popover.style.transform = '';
   const rect = anchor.getBoundingClientRect();
   const popW = popover.offsetWidth || 380;
-  const popH = popover.offsetHeight || 260;
+  let popH = popover.offsetHeight || 260;
   const vh = window.innerHeight;
   const vw = window.innerWidth;
 
@@ -622,14 +1065,26 @@ function _positionPopover(popover, anchor, centered) {
   const spaceAbove = Math.max(0, rect.top - POPOVER_GAP - VIEWPORT_PAD);
 
   if (popH > spaceBelow && popH > spaceAbove) {
-    // The card fits on neither side of the anchor — e.g. a short viewport, or
-    // an anchor near an edge after the rail collapses to a top bar on mobile.
-    // Pinning to `top: VIEWPORT_PAD` in this case reads as broken (the card
-    // floats disconnected from what it's supposed to be pointing at); centering
-    // at least reads as an intentional layout, and `.tour-popover`'s own
-    // max-height + scroll (tour.css) keeps the content reachable either way.
-    _positionPopover(popover, anchor, true);
-    return;
+    // The card fits on neither side of the anchor at its natural height — a
+    // short viewport, or an anchor low on the page like the chat composer.
+    //
+    // Centering here USED to be the answer, and it was wrong in the one case
+    // that matters most: it lays the card straight over the thing the step is
+    // pointing at. On the composer step the user is being asked to type into
+    // that anchor, so covering it defeats the step. Take the roomier side
+    // instead and cap the card to the space that is actually there —
+    // `.tour-popover-body` scrolls (tour.css), so nothing becomes unreachable,
+    // and the anchor stays visible and usable.
+    const roomier = Math.max(spaceBelow, spaceAbove);
+    if (roomier < MIN_POPOVER_HEIGHT) {
+      // Not even a readable card fits beside the anchor. NOW centering is the
+      // honest layout — pinning to `top: VIEWPORT_PAD` reads as broken (a card
+      // floating disconnected from what it points at).
+      _positionPopover(popover, anchor, true);
+      return;
+    }
+    popover.style.maxHeight = `${roomier}px`;
+    popH = roomier;
   }
 
   // Try below the anchor first, else flip above.

@@ -70,13 +70,27 @@ def test_popover_body_scrolls_independently_of_header_and_footer():
     assert "overflow-y: auto" in body_block
 
 
-def test_positioning_falls_back_to_centering_when_neither_side_fits():
-    """When the card fits above the anchor nor below it, pinning to the top
-    reads as broken (disconnected from what it's supposed to point at) —
-    centering (which composes with the popover's own max-height/scroll) is
-    the fallback."""
+def test_a_card_that_fits_neither_side_takes_the_roomier_one_and_caps_itself():
+    """Centering used to be the fallback whenever the card fit on neither side
+    of its anchor — which lays it straight OVER the thing the step points at.
+    Fatal for the composer step, where the anchor is what the user is being
+    asked to type into. The card now takes the side with more room and caps
+    itself to it (the body scrolls, so nothing is unreachable)."""
     js = _js()
     assert "spaceBelow" in js and "spaceAbove" in js
+    assert "Math.max(spaceBelow, spaceAbove)" in js
+    assert "popover.style.maxHeight = `${roomier}px`" in js
+    # And the cap comes off before the next measurement, or a reflow into a
+    # roomier spot would keep the old constrained height forever.
+    assert "popover.style.maxHeight = '';" in js
+
+
+def test_centering_survives_as_the_last_resort_only():
+    """When not even a readable card fits beside the anchor, centering is still
+    the honest layout — pinning to the viewport top reads as broken."""
+    js = _js()
+    assert "MIN_POPOVER_HEIGHT" in js
+    assert "roomier < MIN_POPOVER_HEIGHT" in js
     assert "_positionPopover(popover, anchor, true)" in js
 
 
