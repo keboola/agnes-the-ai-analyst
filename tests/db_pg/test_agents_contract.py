@@ -80,6 +80,41 @@ def test_get_or_create_default_idempotent(repo):
     assert len(repo.list_for_user("u1")) == 1
 
 
+def test_get_or_create_default_revives_soft_deleted(repo):
+    """A soft-deleted default agent is revived, not re-inserted.
+
+    The `(owner_user_id, slug)` UNIQUE spans soft-deleted rows, so the
+    seeded `slug='default'` row survives deletion. Re-inserting it would
+    raise a ConstraintException on EVERY subsequent call — permanently
+    breaking web chat, whose session create resolves the default agent
+    first (`app/api/chat.py::_default_agent_id`).
+    """
+    d1 = repo.get_or_create_default("u1")
+    repo.soft_delete(d1["id"])
+    assert repo.get_by_id(d1["id"])["deleted_at"] is not None
+
+    revived = repo.get_or_create_default("u1")
+    assert revived["id"] == d1["id"]  # same row, history preserved
+    assert revived["is_default"] is True
+    assert revived["deleted_at"] is None
+    assert len(repo.list_for_user("u1")) == 1
+
+
+def test_get_or_create_default_sidesteps_live_default_slug(repo):
+    """A live non-default agent already holding `slug='default'` is left alone.
+
+    Reviving it would silently promote one of the owner's own agents to be
+    their default. Seed the new default under the next free slug instead.
+    """
+    repo.create(id="a1", owner_user_id="u1", name="Default", slug="default")
+
+    seeded = repo.get_or_create_default("u1")
+    assert seeded["id"] != "a1"
+    assert seeded["is_default"] is True
+    assert seeded["slug"] != "default"
+    assert repo.get_by_id("a1")["is_default"] is False
+
+
 def test_scope_replace_all(repo):
     repo.create(id="a1", owner_user_id="u1", name="A", slug="x")
     repo.set_scope("a1", [("plugin", "p1"), ("table", "t1")])

@@ -201,7 +201,35 @@ class AgentsPgRepository:
                 {"deleted_at": datetime.now(timezone.utc), "id": agent_id},
             )
 
+    def _free_default_slug(self, owner_user_id: str) -> str:
+        """First unused slug in ``default``, ``default-2``, ``default-3``, …
+
+        See ``src/repositories/agents.py``'s sibling — the scan must include
+        soft-deleted rows because ``uq_agents_owner_slug`` spans them.
+        """
+        with self._engine.connect() as conn:
+            taken = {
+                r[0]
+                for r in conn.execute(
+                    sa.text("SELECT slug FROM agents WHERE owner_user_id = :owner_user_id AND slug LIKE 'default%'"),
+                    {"owner_user_id": owner_user_id},
+                ).all()
+            }
+        if "default" not in taken:
+            return "default"
+        for n in range(2, 1000):
+            candidate = f"default-{n}"
+            if candidate not in taken:
+                return candidate
+        return f"default-{uuid4().hex[:8]}"
+
     def get_or_create_default(self, owner_user_id: str) -> Dict[str, Any]:
+        """The owner's default agent, seeding one on first touch.
+
+        Parity sibling of ``src/repositories/agents.py`` — see that docstring
+        for why the soft-deleted-default revive and the free-slug fallback
+        exist (a permanent 500 on every web chat session create).
+        """
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
@@ -217,12 +245,31 @@ class AgentsPgRepository:
         if row:
             return dict(row)
 
+        with self._engine.begin() as conn:
+            stale = conn.execute(
+                sa.text(
+                    "SELECT id FROM agents WHERE owner_user_id = :owner_user_id "
+                    "AND slug = 'default' AND is_default AND deleted_at IS NOT NULL"
+                ),
+                {"owner_user_id": owner_user_id},
+            ).first()
+            if stale:
+                conn.execute(
+                    sa.text(
+                        "UPDATE agents SET deleted_at = NULL, is_default = TRUE, "
+                        "updated_at = :updated_at WHERE id = :id"
+                    ),
+                    {"updated_at": datetime.now(timezone.utc), "id": stale[0]},
+                )
+        if stale:
+            return self.get_by_id(stale[0])  # type: ignore[return-value]
+
         agent_id = str(uuid4())
         self.create(
             id=agent_id,
             owner_user_id=owner_user_id,
             name="Default",
-            slug="default",
+            slug=self._free_default_slug(owner_user_id),
             plugins_mode="all",
             connections_mode="all",
             tables_mode="all",

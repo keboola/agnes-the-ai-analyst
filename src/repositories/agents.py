@@ -178,7 +178,47 @@ class AgentsRepository:
             [datetime.now(timezone.utc), agent_id],
         )
 
+    def _free_default_slug(self, owner_user_id: str) -> str:
+        """First unused slug in ``default``, ``default-2``, ``default-3``, …
+
+        Scans slugs INCLUDING soft-deleted rows: the ``(owner_user_id, slug)``
+        UNIQUE spans them, so a live-rows-only search would report a taken
+        slug as free and drive the INSERT straight into a constraint error.
+        Mirrors ``app/api/agents_admin.py``'s slug search for user-created
+        agents, which the seeded default never goes through.
+        """
+        taken = {
+            r[0]
+            for r in self.conn.execute(
+                "SELECT slug FROM agents WHERE owner_user_id = ? AND slug LIKE 'default%'",
+                [owner_user_id],
+            ).fetchall()
+        }
+        if "default" not in taken:
+            return "default"
+        for n in range(2, 1000):
+            candidate = f"default-{n}"
+            if candidate not in taken:
+                return candidate
+        # Pathological — a random suffix beats raising on the chat path.
+        return f"default-{uuid.uuid4().hex[:8]}"
+
     def get_or_create_default(self, owner_user_id: str) -> Dict[str, Any]:
+        """The owner's default agent, seeding one on first touch.
+
+        Every web chat session resolves this first
+        (``app/api/chat.py::_default_agent_id``), so it must never be able to
+        fail permanently. Two states used to make it do exactly that, because
+        the lookup filters on ``is_default AND deleted_at IS NULL`` while the
+        INSERT's hardcoded ``slug='default'`` collides with ANY row holding
+        that slug:
+
+        * the default agent was soft-deleted (its row keeps ``slug='default'``)
+          — revive it, preserving the id sessions were already attributed to;
+        * a non-default agent holds ``slug='default'`` — leave it alone (it is
+          the owner's own agent, not ours to promote or resurrect) and seed
+          under the next free slug.
+        """
         row = self.conn.execute(
             "SELECT * FROM agents WHERE owner_user_id = ? AND is_default AND deleted_at IS NULL",
             [owner_user_id],
@@ -187,12 +227,24 @@ class AgentsRepository:
         if existing is not None:
             return existing
 
+        stale = self.conn.execute(
+            "SELECT id FROM agents "
+            "WHERE owner_user_id = ? AND slug = 'default' AND is_default AND deleted_at IS NOT NULL",
+            [owner_user_id],
+        ).fetchone()
+        if stale is not None:
+            self.conn.execute(
+                "UPDATE agents SET deleted_at = NULL, is_default = TRUE, updated_at = ? WHERE id = ?",
+                [datetime.now(timezone.utc), stale[0]],
+            )
+            return self.get_by_id(stale[0])  # type: ignore[return-value]
+
         agent_id = str(uuid.uuid4())
         self.create(
             id=agent_id,
             owner_user_id=owner_user_id,
             name="Default",
-            slug="default",
+            slug=self._free_default_slug(owner_user_id),
             plugins_mode="all",
             connections_mode="all",
             tables_mode="all",
