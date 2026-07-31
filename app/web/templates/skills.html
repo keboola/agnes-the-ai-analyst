@@ -229,6 +229,7 @@
   var draft = null;       // the in-progress skill in the builder
   var lint = null;        // last dry-run lint report (or null)
   var inFlight = false;
+  var reviewInProgress = false;  // true while a submit is in the review queue; blocks re-save
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -417,7 +418,7 @@
     if ((el = document.getElementById('sk-pv-stats'))) el.textContent = bodyStats();
     if ((el = document.getElementById('sk-build-title'))) el.textContent = draft.name || 'New skill';
     if ((el = document.getElementById('sk-name-hint'))) { el.textContent = ns.msg; el.className = 'sk-hint' + (ns.err ? ' err' : ''); }
-    var enable = canPublish();
+    var enable = canPublish() && !reviewInProgress;
     ['sk-save', 'sk-check'].forEach(function (id) { var b = document.getElementById(id); if (b) b.disabled = !enable; });
   }
 
@@ -501,6 +502,7 @@
         if (checkBtn) checkBtn.disabled = disabled;
         if (saveBtn)  saveBtn.disabled  = disabled;
       }
+      reviewInProgress = true;
       setButtonsDisabled(true);
 
       // Insert banner between the build-head and the section grid.
@@ -526,6 +528,7 @@
             '</div>';
         } else if (state.kind === 'err') {
           // Re-enable so the user can edit and try again.
+          reviewInProgress = false;
           setButtonsDisabled(false);
           inFlight = false;
           actionsHtml =
@@ -607,8 +610,8 @@
         .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
     }
 
-    if (!GUARDRAILS_LLM_READY) {
-      // No LLM gate — publish immediately (historical behaviour).
+    if (!GUARDRAILS_LLM_READY || access !== 'everyone') {
+      // No LLM gate, or private save (can never auto-publish — no point reviewing).
       commitSave();
       return;
     }

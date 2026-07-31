@@ -1304,8 +1304,10 @@ finishBtn.addEventListener('click', async () => {
       const dres = await fetch('/api/store/entities/dryrun', {method: 'POST', body: dfd});
       if (dres.ok) {
         const report = await dres.json();
-        if (!report.would_publish) {
-          // LLM (or inline checks) rejected the bundle — surface the verdict.
+        if (report.llm_safe === false) {
+          // LLM explicitly rejected the bundle. Surface the verdict and abort.
+          // Inline failures fall through to the real submit where humanizeError
+          // renders the structured per-field checks payload.
           let llmMsg = 'AI review did not pass.';
           const verdict = report.llm_findings;
           if (verdict) {
@@ -1321,7 +1323,7 @@ finishBtn.addEventListener('click', async () => {
           finishBtn.textContent = 'Finish';
           return;
         }
-        // Passed — fall through to real submit below.
+        // LLM passed (or inline check failed) — fall through to real submit below.
       }
       // dres not ok (server error on dryrun) → fall through to real submit.
     } catch (_) {
