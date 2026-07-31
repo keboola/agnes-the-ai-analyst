@@ -45,6 +45,7 @@ from cli.commands.setup import setup_app
 from cli.commands.server import server_app
 from cli.commands.explore import explore_app
 from cli.commands.catalog import catalog_app
+from cli.commands.global_scope import global_app
 from cli.commands.glossary import glossary_app
 from cli.commands.schema import schema_app
 from cli.commands.describe import describe
