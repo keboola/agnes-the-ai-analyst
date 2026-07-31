@@ -277,7 +277,9 @@ def statusline() -> None:
     if not isinstance(session_id, str) or not session_id:
         return
 
-    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    workspace = resolve_data_workspace() or Path.cwd().resolve()
     try:
         if is_private(workspace, session_id):
             typer.echo("🔒 agnes-private")
