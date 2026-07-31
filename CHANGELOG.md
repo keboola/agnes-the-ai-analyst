@@ -613,10 +613,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [0.80.1] - 2026-08-06
 
 ### Added
+- `agnes global enable|disable|status` — user-scope (all-repositories) layer: stack plugins installed with `claude plugin install --scope user`, an `agnes` user-scope stdio MCP entry, a marker-fenced rails block in `~/.claude/CLAUDE.md`, and (by default; `--no-hook` opts out) a user-level SessionStart hook running the detached `agnes update`. `agnes update` re-converges the layer via a new `global` step, and `agnes refresh-marketplace` gains `--target user|project` (the `user` target performs no per-repository writes). New docs page: `docs/global-distribution.md`.
 
 ### Changed
 
+- CLI data commands (`query --local`, `pull`, `snapshot`, `status`, `disk-info`, `explore`, `statusline`, `mark-private`) and the stdio MCP server (`query_local`, `pull`) now fall back to the workspace anchored by `agnes init` when run outside a workspace directory — Agnes data access works from any repository. `AGNES_LOCAL_DIR` still overrides; behavior inside a workspace is unchanged. `agnes pull` gains `--workspace <dir>`.
+
 ### Fixed
+
+- `agnes pull` no longer scaffolds a `server/parquet` + `user/duckdb` tree into an arbitrary current directory when no workspace exists — it errors with a typed hint instead.
 
 ### Removed
 

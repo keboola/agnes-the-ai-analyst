@@ -57,7 +57,9 @@ def pull(
         ),
     ),
 ):
-    """Refresh data from the server into ./server/parquet + ./user/duckdb."""
+    """Refresh data from the server into the workspace's server/parquet +
+    user/duckdb (resolved via AGNES_LOCAL_DIR → shaped cwd → anchored
+    workspace_root; override with --workspace)."""
     server_url = get_server_url()
     if not server_url:
         # `get_server_url()` falls back to a localhost default today, so this
