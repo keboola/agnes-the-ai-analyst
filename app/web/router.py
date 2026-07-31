@@ -3096,10 +3096,13 @@ async def skills_page(
     apply identically. Category options come from the shared store taxonomy."""
     from src.store_categories import STORE_CATEGORIES
 
+    from app.instance_config import get_guardrails_enabled, get_guardrails_llm_provider_ready
+
     ctx = _build_context(
         request,
         user=user,
         store_categories=list(STORE_CATEGORIES),
+        guardrails_llm_ready=get_guardrails_enabled() and get_guardrails_llm_provider_ready(),
     )
     return templates.TemplateResponse(request, "skills.html", ctx)
 
@@ -4473,6 +4476,8 @@ async def store_new(
         owner_username = sanitize_username(user.get("email") or "")
     except ValueError:
         owner_username = ""
+    from app.instance_config import get_guardrails_enabled, get_guardrails_llm_provider_ready
+
     ctx = _build_context(
         request,
         user=user,
@@ -4480,6 +4485,7 @@ async def store_new(
         guardrail=_guardrail_thresholds(),
         title_acronyms=TITLE_ACRONYMS,
         owner_username=owner_username,
+        guardrails_llm_ready=get_guardrails_enabled() and get_guardrails_llm_provider_ready(),
     )
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
@@ -6005,6 +6011,11 @@ async def admin_store_submission_detail_page(
     # Combine for back-compat with the existing template var name.
     audit_rows = submission_audit_rows
 
+    from app.instance_config import (
+        get_guardrails_enabled,
+        get_guardrails_llm_provider_ready,
+    )
+
     ctx = _build_context(
         request,
         user=user,
@@ -6018,6 +6029,7 @@ async def admin_store_submission_detail_page(
         entity_version_no=entity_version_no,
         submission_version_no=submission_version_no,
         sibling_submissions=sibling_submissions,
+        guardrails_llm_ready=get_guardrails_enabled() and get_guardrails_llm_provider_ready(),
     )
     return templates.TemplateResponse(request, "admin_store_submission_detail.html", ctx)
 

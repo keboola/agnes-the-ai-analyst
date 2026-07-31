@@ -1995,6 +1995,11 @@ class CreateFromMarkdownBody(BaseModel):
     # short-circuits after name/frontmatter synthesis — no create_entity
     # call, no DB writes of any kind.
     dry_run: bool = False
+    # When dry_run=True and include_llm=True, run the LLM security review
+    # synchronously (same as dryrun_entity) and include the verdict + a
+    # guardrails_active flag in the response so the builder JS can gate the
+    # real save on the LLM result without a separate dryrun_entity round-trip.
+    include_llm: bool = False
 
 
 @router.post(
@@ -2071,12 +2076,39 @@ async def create_entity_from_markdown(
                     text,
                     plugin_dir=plugin_dir,
                 )
+            # Optional LLM pre-check: runs when the caller sets include_llm=True
+            # (the builder's "Save to Library" gate). Mirrors dryrun_entity's
+            # logic — blocking Anthropic round-trip in a threadpool so it
+            # doesn't stall the event loop. guardrails_active tells the caller
+            # whether an LLM gate exists at all (false → approve on inline alone).
+            llm_verdict: Optional[dict] = None
+            guardrails_active = False
+            llm_safe = True
+            if body.include_llm:
+                guardrails_active = get_guardrails_enabled() and get_guardrails_llm_provider_ready()
+                if guardrails_active:
+                    from src.store_guardrails import llm_review
+
+                    llm_verdict = await run_in_threadpool(
+                        llm_review.review_bundle,
+                        plugin_dir,
+                        type_=body.type,
+                        name=name,
+                        version="",
+                        description=body.description,
+                        api_key=default_api_key_loader(),
+                        model=default_model_loader(),
+                    )
+                    llm_safe = llm_review.is_safe(llm_verdict)
             return Response(
                 content=json.dumps(
                     {
                         "dry_run": True,
                         "inline": inline.to_response_dict(),
                         "lint": lint_report,
+                        "guardrails_active": guardrails_active,
+                        "llm_safe": llm_safe,
+                        "llm_findings": llm_verdict,
                     }
                 ),
                 media_type="application/json",
