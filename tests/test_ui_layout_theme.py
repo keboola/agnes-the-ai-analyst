@@ -98,6 +98,26 @@ class TestDefaultChromeUnchanged:
         assert 'data-ui-layout="topnav"' in resp.text
         assert 'data-theme="blue"' in resp.text
 
+    def test_default_footer_is_config_copyright_not_keboola(self, web_client, admin_cookie, monkeypatch):
+        """Default (blue/topnav) instances keep the config-driven copyright
+        footer; the Keboola-branded credit ships only under the opt-in
+        redesign (paper/rail). Regression guard for the #896 footer leak."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "AI Harness" in resp.text
+        assert "<b>Keboola</b>" not in resp.text
+
+    def test_default_favicon_is_svg_not_orb(self, web_client, admin_cookie, monkeypatch):
+        """Default instances keep the original SVG favicon; the orb PNG is
+        redesign-only."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        assert "favicon.svg" in resp.text
+        assert "img/agnes-orb.png" not in resp.text
+
 
 class TestRailOptIn:
     def test_rail_layout_swaps_chrome(self, web_client, admin_cookie, monkeypatch):
@@ -480,6 +500,15 @@ class TestRailOptIn:
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code == 200
         assert 'data-theme="paper"' in resp.text
+
+    def test_paper_keeps_keboola_credit_and_orb(self, web_client, admin_cookie, monkeypatch):
+        """The default-safety gate must not kill the redesign's own footer:
+        under paper the Keboola credit + orb favicon still render."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "<b>Keboola</b>" in resp.text
+        assert "img/agnes-orb.png" in resp.text
 
 
 class TestRailChatHistory:
