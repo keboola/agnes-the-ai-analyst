@@ -4,6 +4,8 @@ Recovery philosophy under test: on anything unexpected, warn and leave the
 user's file untouched. Never rebuild a user-owned file.
 """
 
+import json
+
 from cli.lib.user_scope import (
     RAILS_BEGIN,
     RAILS_END,
@@ -105,3 +107,64 @@ def test_load_global_rails_compact_and_marker_free():
     assert 5 < len(text.splitlines()) <= 25, "rails block must stay compact (spec §13.3)"
     assert RAILS_BEGIN not in text, "template carries content only, markers are added by the splice"
     assert "agnes catalog" in text and "agnes skills show agnes-data-querying" in text
+
+
+# ---------------------------------------------------------------------------
+# User-level SessionStart hook writers (spec §7.3)
+# ---------------------------------------------------------------------------
+
+
+def _fake_user_settings(tmp_path, monkeypatch, initial):
+    settings = tmp_path / "user-claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(initial, dict):
+        settings.write_text(json.dumps(initial), encoding="utf-8")
+    elif isinstance(initial, str):
+        settings.write_text(initial, encoding="utf-8")
+    monkeypatch.setattr("cli.lib.user_scope.user_settings_path", lambda: settings)
+    return settings
+
+
+def test_install_user_hook_creates_entry_and_is_idempotent(tmp_path, monkeypatch):
+    from cli.lib.user_scope import GLOBAL_UPDATE_HOOK_CMD, install_user_session_hook, user_session_hook_state
+
+    settings = _fake_user_settings(tmp_path, monkeypatch, {"env": {"FOO": "1"}})
+    assert install_user_session_hook() == "installed"
+    cfg = json.loads(settings.read_text(encoding="utf-8"))
+    assert cfg["env"] == {"FOO": "1"}, "foreign keys preserved"
+    cmds = [h["command"] for entry in cfg["hooks"]["SessionStart"] for h in entry["hooks"]]
+    assert cmds == [GLOBAL_UPDATE_HOOK_CMD]
+    assert install_user_session_hook() == "unchanged"
+    assert user_session_hook_state() == "ok"
+
+
+def test_install_preserves_third_party_hooks(tmp_path, monkeypatch):
+    from cli.lib.user_scope import install_user_session_hook, remove_user_session_hook
+
+    third_party = {"hooks": [{"type": "command", "command": "echo hello-from-elsewhere"}]}
+    settings = _fake_user_settings(tmp_path, monkeypatch, {"hooks": {"SessionStart": [third_party]}})
+    install_user_session_hook()
+    cfg = json.loads(settings.read_text(encoding="utf-8"))
+    assert len(cfg["hooks"]["SessionStart"]) == 2
+    assert remove_user_session_hook() == "removed"
+    cfg = json.loads(settings.read_text(encoding="utf-8"))
+    cmds = [h["command"] for entry in cfg["hooks"]["SessionStart"] for h in entry["hooks"]]
+    assert cmds == ["echo hello-from-elsewhere"]
+
+
+def test_corrupt_user_settings_left_untouched(tmp_path, monkeypatch):
+    from cli.lib.user_scope import install_user_session_hook, remove_user_session_hook, user_session_hook_state
+
+    settings = _fake_user_settings(tmp_path, monkeypatch, "{not json")
+    assert install_user_session_hook() == "skipped_malformed"
+    assert settings.read_text(encoding="utf-8") == "{not json"
+    assert remove_user_session_hook() == "skipped_malformed"
+    assert user_session_hook_state() == "malformed"
+
+
+def test_remove_hook_absent(tmp_path, monkeypatch):
+    from cli.lib.user_scope import remove_user_session_hook, user_session_hook_state
+
+    _fake_user_settings(tmp_path, monkeypatch, None)
+    assert remove_user_session_hook() == "absent"
+    assert user_session_hook_state() == "missing"
