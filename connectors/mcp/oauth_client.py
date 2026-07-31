@@ -380,6 +380,17 @@ async def register_dynamic_client(
     client_id = body.get("client_id")
     if not client_id:
         raise OAuthDiscoveryError("dynamic client registration response carries no 'client_id'")
+    # RFC 7591 §3.2.1: the AS MAY register a different auth method than the
+    # one asked for, and its response — not the request — is authoritative.
+    # Same fail-closed reasoning as _choose_token_endpoint_auth_method, on
+    # the one path that check cannot see (Devin Review on #1124).
+    granted_auth_method = body.get("token_endpoint_auth_method")
+    if granted_auth_method and granted_auth_method not in ("client_secret_basic", "none"):
+        raise OAuthDiscoveryError(
+            f"authorization server registered the client with token_endpoint_auth_method="
+            f"{granted_auth_method!r}; Agnes implements 'client_secret_basic' and 'none'. "
+            "Configure the client manually via PUT …/oauth/client instead."
+        )
     authorization_endpoint = as_metadata.get("authorization_endpoint")
     token_endpoint = as_metadata.get("token_endpoint")
     if not authorization_endpoint or not token_endpoint:

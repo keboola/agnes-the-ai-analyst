@@ -886,6 +886,18 @@ async def register_oauth_client(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
+    # Every stored user token was issued to the OLD client_id, whose
+    # registration we just revoked. They keep working until they expire, then
+    # refresh against the new client: a spec-compliant AS answers
+    # invalid_grant (clean reconnect prompt) but others answer invalid_client,
+    # which is not classified as invalid_grant — the user would be stuck on an
+    # opaque upstream 401 indefinitely. Drop them so the next call asks for a
+    # reconnect straight away (Devin Review on #1124).
+    if existing and existing.get("client_id") != registered.client_id:
+        from src.repositories import mcp_oauth_flows_repo, mcp_user_oauth_tokens_repo
+
+        mcp_user_oauth_tokens_repo().delete_for_source(source_id)
+        mcp_oauth_flows_repo().delete_for_source(source_id)
     _audit(
         conn,
         user["id"],
@@ -945,11 +957,18 @@ async def set_oauth_client_config(
     # the old client and must not be paired with the new one (Devin Review
     # on #1124).
     existing = clients_repo.get(source_id)
-    keep_rat = (
-        existing.get("registration_access_token")
-        if existing and existing.get("client_id") == payload.client_id
-        else None
-    )
+    same_client = bool(existing) and existing.get("client_id") == payload.client_id
+    keep_rat = existing.get("registration_access_token") if same_client else None
+    # The secret is write-only over the API (GET never echoes it), so a form
+    # re-saving scopes/endpoints has nothing to resubmit and arrives with
+    # client_secret=None. Treat that as "leave it alone" for the SAME
+    # client_id — passing it through wipes client_secret_enc and breaks every
+    # user's refresh (Devin Review on #1124). An explicit "" still clears it
+    # for a public PKCE-only client, and a different client_id replaces the
+    # registration and its secret wholesale.
+    client_secret = payload.client_secret
+    if client_secret is None and same_client:
+        client_secret = existing.get("client_secret")
     try:
         clients_repo.upsert(
             source_id,
@@ -957,7 +976,7 @@ async def set_oauth_client_config(
             client_id=payload.client_id,
             authorization_endpoint=payload.authorization_endpoint,
             token_endpoint=payload.token_endpoint,
-            client_secret=payload.client_secret,
+            client_secret=client_secret,
             registration_access_token=keep_rat,
             scopes=payload.scopes,
         )
