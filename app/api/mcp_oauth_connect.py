@@ -44,10 +44,11 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, get_optional_user
 from app.auth.oauth_connect_state import ConnectStateInvalid, sign_connect_state, verify_connect_state
 from app.chat.session_principal_guard import deny_principal
 from app.secrets_vault import VaultKeyNotConfiguredError
+from src.net.ssrf_safe_client import SSRFRejected
 from connectors.mcp.client import exc_summary as _exc_summary
 from src.repositories import (
     audit_repo,
@@ -180,7 +181,7 @@ async def oauth_connect_callback(
     state: Optional[str] = None,
     error: Optional[str] = None,
     error_description: Optional[str] = None,
-    user: dict = Depends(get_current_user),
+    user: Optional[dict] = Depends(get_optional_user),
 ):
     """Authorization-code redemption — the upstream AS redirects the user's
     browser here after they authorize (or decline).
@@ -199,6 +200,13 @@ async def oauth_connect_callback(
         exchange_code_for_token,
     )
 
+    if user is None:
+        # The Agnes session can expire while the user is away at the AS —
+        # this is a browser landing page, so bounce through login instead of
+        # a bare 401 JSON body (Devin Review on #1130). The connect flow
+        # itself is lost (the state outlives the round-trip but the flow
+        # nonce may expire) — /me/connections shows the Connect button again.
+        return RedirectResponse(url="/login?next=/me/connections", status_code=303)
     deny_principal(user)
 
     if error:
@@ -289,6 +297,12 @@ async def oauth_connect_callback(
     except httpx.HTTPError as exc:
         logger.warning("mcp oauth token exchange transport error for source=%s: %s", source_id, _exc_summary(exc))
         return _err_redirect("could not reach the authorization server — try again or contact your admin")
+    except SSRFRejected as exc:
+        # The token endpoint resolved to a blocked address (DNS changed since
+        # registration, or a misconfigured manual entry) — still a friendly
+        # landing, not a raw 500 (Devin Review on #1130).
+        logger.warning("mcp oauth token exchange SSRF-rejected for source=%s: %s", source_id, _exc_summary(exc))
+        return _err_redirect("the authorization server's address was rejected — contact your admin")
 
     expires_at = None
     if token_set.expires_in:

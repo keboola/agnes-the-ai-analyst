@@ -42,6 +42,13 @@ _EXEMPT: dict[str, str] = {
         "one-time setup token for a PAT; documented in app/api/cowork_bundle.py's "
         "module docstring as 'no auth required'"
     ),
+    "/api/mcp/oauth-client/callback": (
+        "browser landing page for the OAuth connect flow — uses "
+        "Depends(get_optional_user) plus a manual redirect-to-/login in the "
+        "handler body so an expired Agnes session mid-flow lands on the login "
+        "page instead of a raw 401 JSON body (same pattern as "
+        "/api/initial-workspace.zip; Devin Review on #1130)"
+    ),
     "/api/initial-workspace.zip": (
         "uses Depends(get_optional_user) plus a manual 401/redirect check in the "
         "handler body (not a Depends-chain auth dependency) so an anonymous browser "
