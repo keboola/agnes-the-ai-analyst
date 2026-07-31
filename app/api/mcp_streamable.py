@@ -161,6 +161,14 @@ class _PublicClientRevocationHandler(RevocationHandler):
     public clients), so only the post-auth form validation needed fixing.
     Confidential clients are unaffected: a stored secret is still enforced by
     the authenticator before the form is ever validated.
+
+    Maintenance: the ``mcp>=1.28.1`` floor in pyproject.toml is load-bearing
+    here — older SDK lines have no ``authenticate_request`` (only
+    ``authenticate(client_id, client_secret)``, with form validation running
+    *before* client auth). On an SDK bump, re-diff this method against the
+    SDK's ``RevocationHandler.handle`` (kept 1:1 minus the model) so semantics
+    the SDK adds are not silently dropped, and delete the whole patch once
+    upstream makes ``client_secret`` truly optional.
     """
 
     async def handle(self, request: Request) -> Response:
