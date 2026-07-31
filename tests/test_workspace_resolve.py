@@ -137,3 +137,51 @@ def test_query_run_local_none_raises_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(plain)
     with pytest.raises(query_module._LocalDbMissing):
         query_module._run_local("SELECT 1", fmt="csv", limit=10)
+
+
+def test_pull_refuses_to_scaffold_foreign_cwd(tmp_path, monkeypatch):
+    """No workspace anywhere -> typed error, NOTHING written into cwd (§5.2 + §8 guard)."""
+    from typer.testing import CliRunner
+
+    from cli.commands.pull import pull_app
+
+    monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+    monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: None)
+    monkeypatch.setenv("AGNES_SERVER", "http://localhost:9")  # never reached
+    monkeypatch.setenv("AGNES_TOKEN", "t")
+    plain = tmp_path / "foreign-repo"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+
+    result = CliRunner().invoke(pull_app, [])
+    assert result.exit_code == 1
+    assert "agnes init" in result.output
+    assert not (plain / "server").exists()
+    assert not (plain / "user").exists()
+
+
+def test_pull_workspace_flag_wins(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from cli.commands import pull as pull_module
+
+    target = tmp_path / "explicit-ws"
+    target.mkdir()
+    seen: dict = {}
+
+    def fake_run_pull(server_url, token, workspace, **kw):
+        seen["workspace"] = Path(workspace)
+
+        class R:  # minimal PullResult stand-in: --quiet path reads only .errors
+            errors: list = []
+
+        return R()
+
+    monkeypatch.setattr(pull_module, "run_pull", fake_run_pull)
+    monkeypatch.setenv("AGNES_SERVER", "http://localhost:9")
+    monkeypatch.setenv("AGNES_TOKEN", "t")
+    monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+
+    result = CliRunner().invoke(pull_module.pull_app, ["--workspace", str(target), "--quiet"])
+    assert result.exit_code == 0, result.output
+    assert seen["workspace"] == target.resolve()
