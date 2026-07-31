@@ -342,3 +342,50 @@ def test_two_refreshes_across_separate_event_loops_both_work(oauth_db, monkeypat
     _seed_token_row(oauth_db, expires_in_seconds=30, refresh_token="rt-2")
     second = asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1"))
     assert second == "at-after-rt-2"
+
+
+def test_lease_winner_rereads_row_and_skips_replayed_refresh(oauth_db, monkeypatch):
+    """TOCTOU guard: the refresh token is re-read AFTER the lease is won.
+    If another process already rotated it in the window, we must NOT replay
+    the superseded refresh token (AS reuse detection can revoke the whole
+    grant) — and when the other process fully refreshed, no refresh call
+    happens at all (Devin Review on #1124)."""
+    _seed_client_row(oauth_db)
+    _seed_token_row(oauth_db, expires_in_seconds=30, refresh_token="rt-stale")
+
+    from app.coordination.factory import coordination
+
+    real_backend = coordination()
+
+    class _RotatingLease:
+        """Simulates a concurrent process completing a full refresh between
+        our initial row read and winning the lease."""
+
+        def lease_acquire(self, name, holder, *, ttl_s):
+            from src.repositories.mcp_user_oauth_tokens import MCPUserOAuthTokenRepository
+
+            MCPUserOAuthTokenRepository(oauth_db).upsert(
+                "src_oauth1",
+                "user1",
+                "at-fresh-from-other-process",
+                refresh_token="rt-fresh",
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            return real_backend.lease_acquire(name, holder, ttl_s=ttl_s)
+
+        def lease_release(self, name, holder):
+            return real_backend.lease_release(name, holder)
+
+    monkeypatch.setattr("app.coordination.factory.coordination", lambda: _RotatingLease())
+
+    refresh_calls = []
+
+    async def _fake_refresh(*, token_endpoint, client_id, client_secret, refresh_token, client):
+        refresh_calls.append(refresh_token)
+        return mcp_oauth_client.TokenSet(access_token="never", refresh_token=None, expires_in=3600, scopes=None)
+
+    monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _fake_refresh)
+
+    result = asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1"))
+    assert result == "at-fresh-from-other-process"
+    assert refresh_calls == []  # the superseded rt-stale was never replayed
