@@ -235,13 +235,23 @@ _OAUTH_REFRESH_LOCKS_GUARD = threading.Lock()
 
 
 def _get_oauth_refresh_lock(source_id: str, user_id: str) -> asyncio.Lock:
-    key = (source_id, user_id)
+    # Keyed by the RUNNING EVENT LOOP as well: an asyncio.Lock is bound to
+    # the loop it was created under, and the sync wrappers (call_tool /
+    # list_tools) spin a fresh loop per asyncio.run() — a lock cached from a
+    # previous loop would raise "attached to a different loop" on the second
+    # renewal in the same process (Devin Review on #1124). Dead loops' locks
+    # are dropped lazily.
+    loop = asyncio.get_running_loop()
+    key = (id(loop), source_id, user_id)
     with _OAUTH_REFRESH_LOCKS_GUARD:
-        lock = _OAUTH_REFRESH_LOCKS.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            _OAUTH_REFRESH_LOCKS[key] = lock
-        return lock
+        for stale_key, (stale_loop, _) in list(_OAUTH_REFRESH_LOCKS.items()):
+            if stale_loop.is_closed():
+                del _OAUTH_REFRESH_LOCKS[stale_key]
+        entry = _OAUTH_REFRESH_LOCKS.get(key)
+        if entry is None or entry[0] is not loop:
+            entry = (loop, asyncio.Lock())
+            _OAUTH_REFRESH_LOCKS[key] = entry
+        return entry[1]
 
 
 def reset_oauth_refresh_locks_for_tests() -> None:

@@ -540,3 +540,39 @@ def test_as_metadata_non_object_json_is_translated():
 
     with pytest.raises(OAuthDiscoveryError, match="not a JSON object"):
         run(_impl())
+
+
+def test_as_metadata_missing_issuer_is_rejected():
+    def handler(request):
+        return httpx.Response(200, json={"authorization_endpoint": "https://as.example.com/authorize"})
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await discover_as_metadata("https://as.example.com", client=client)
+
+    with pytest.raises(OAuthDiscoveryError, match="carries no 'issuer'"):
+        run(_impl())
+
+
+def test_as_metadata_issuer_mismatch_is_rejected():
+    def handler(request):
+        return httpx.Response(200, json={"issuer": "https://evil.example.net"})
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await discover_as_metadata("https://as.example.com", client=client)
+
+    with pytest.raises(OAuthDiscoveryError, match="issuer mismatch"):
+        run(_impl())
+
+
+def test_as_metadata_issuer_trailing_slash_is_tolerated():
+    def handler(request):
+        return httpx.Response(200, json={"issuer": "https://as.example.com/"})
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await discover_as_metadata("https://as.example.com", client=client)
+
+    meta = run(_impl())
+    assert meta["issuer"] == "https://as.example.com/"
