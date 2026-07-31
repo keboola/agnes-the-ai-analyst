@@ -608,7 +608,16 @@ async def update_mcp_source(
         raise HTTPException(status_code=400, detail=str(exc))
     except duckdb.ConstraintException:
         raise HTTPException(status_code=409, detail="name_exists")
-    if (existing.get("auth_method") or "").lower() == "oauth" and (merged.get("auth_method") or "").lower() != "oauth":
+    was_oauth = (existing.get("auth_method") or "").lower() == "oauth"
+    still_oauth = (merged.get("auth_method") or "").lower() == "oauth"
+    # Repointing `url` at a different upstream is the more dangerous of the
+    # two: the stored tokens were minted by the OLD resource's authorization
+    # server, and forwarding them as `Authorization: Bearer` to a new host
+    # would hand that host another server's credentials (Devin Review on
+    # #1124). Any change counts — a path-only edit can still be a different
+    # protected resource, and the registration is discovered from this URL.
+    repointed = was_oauth and still_oauth and (existing.get("url") or "") != (merged.get("url") or "")
+    if (was_oauth and not still_oauth) or repointed:
         # Flipping away from oauth strands the OAuth trio — the client
         # registration, every user's tokens, and in-flight flows are useless
         # under any other auth_method and must not linger as orphaned
