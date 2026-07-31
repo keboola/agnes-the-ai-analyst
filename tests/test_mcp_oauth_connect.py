@@ -538,3 +538,51 @@ def test_disconnect_is_idempotent(seeded_app):
         headers=_analyst_hdr(seeded_app),
     )
     assert r.status_code == 204
+
+
+def test_authorize_joins_query_with_ampersand_when_endpoint_has_params(seeded_app, monkeypatch):
+    """A registered authorization_endpoint that already carries query params
+    must be extended with '&', not a second '?' (Devin Review on #1130)."""
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    source_id = _seed_oauth_source(source_id="src_oauth_qparam")
+    mcp_source_oauth_clients_repo().upsert(
+        "src_oauth_qparam",
+        issuer="https://as.example.com",
+        client_id="agnes-client",
+        client_secret="agnes-secret",
+        registration_access_token=None,
+        authorization_endpoint="https://as.example.com/authorize?tenant=t1",
+        token_endpoint="https://as.example.com/token",
+        scopes=None,
+    )
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    r = seeded_app["client"].get(
+        f"/api/mcp/sources/{source_id}/oauth/authorize",
+        headers=_analyst_hdr(seeded_app),
+        follow_redirects=False,
+    )
+    assert r.status_code == 302, r.text
+    location = r.headers["location"]
+    assert location.startswith("https://as.example.com/authorize?tenant=t1&")
+    assert location.count("?") == 1
+
+
+def test_callback_missing_public_url_redirects_instead_of_409(seeded_app, monkeypatch):
+    """Every callback failure mode lands back on /me/connections — including
+    the 409 from an unset public server URL (Devin Review on #1130)."""
+    source_id = _seed_oauth_source(source_id="src_oauth_nopub")
+    hdr = _analyst_hdr(seeded_app)
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    state = _authorize_and_extract_state(seeded_app, source_id, hdr)
+    monkeypatch.delenv("PUBLIC_URL", raising=False)
+    monkeypatch.delenv("SERVER_URL", raising=False)
+
+    r = seeded_app["client"].get(
+        "/api/mcp/oauth-client/callback",
+        params={"code": "c", "state": state},
+        headers=hdr,
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, r.text
+    assert "/me/connections?connect_error=" in r.headers["location"]
