@@ -20,8 +20,8 @@ direct import (which is exactly what the test does).
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+from typing import Optional
 
 import typer
 
@@ -46,6 +46,14 @@ def pull(
             "scan results, often multi-GB). Their data is still discoverable "
             "via `agnes catalog` and remote-mode tables still pull. Useful "
             "for a fast first init when an analyst only needs --remote access."
+        ),
+    ),
+    workspace_str: Optional[str] = typer.Option(
+        None,
+        "--workspace",
+        help=(
+            "Target workspace dir (default: AGNES_LOCAL_DIR, else the current "
+            "dir if it is a workspace, else the anchored workspace_root)."
         ),
     ),
 ):
@@ -86,7 +94,31 @@ def pull(
         )
         raise typer.Exit(1)
 
-    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    if workspace_str:
+        workspace = Path(workspace_str).resolve()
+    else:
+        from cli.lib.workspace_resolve import resolve_data_workspace
+
+        resolved = resolve_data_workspace()
+        if resolved is None:
+            typer.echo(
+                render_error(
+                    0,
+                    {
+                        "detail": {
+                            "kind": "partial_state",
+                            "hint": (
+                                "No workspace found — run `agnes init` first, or pass "
+                                "--workspace <dir> / set AGNES_LOCAL_DIR. Refusing to "
+                                "download data into an arbitrary directory."
+                            ),
+                        }
+                    },
+                ),
+                err=True,
+            )
+            raise typer.Exit(1)
+        workspace = resolved
 
     # Legacy-hook nudge (#478): workspaces bootstrapped by the OLD server
     # flow (a `collect_session` / `server/scripts/` SessionEnd hook, no
