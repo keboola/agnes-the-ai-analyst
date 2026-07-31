@@ -687,6 +687,11 @@ async function renderMyConnection() {
     } else {
       el.textContent = "Not connected — Introspect will run without your credential";
       el.style.color = "#b45309";
+      // Reset the label too — after a disconnect this branch re-renders and
+      // "Reconnect" would linger on a source with no connection (Devin
+      // Review on #1130).
+      const link = document.getElementById("myconn-oauth-connect-link");
+      if (link) link.textContent = "Connect";
       const disc = document.getElementById("myconn-oauth-disconnect-btn");
       if (disc) disc.style.display = "none";
     }
