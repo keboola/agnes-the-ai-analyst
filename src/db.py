@@ -51,7 +51,7 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # Merge of main's ladder (→107) with the paper-theme branch's schema
 # additions restacked on top: 108 file_corpora.origin, 109 store_entities
 # trust columns, 110 agents builder superset columns.
-SCHEMA_VERSION = 110
+SCHEMA_VERSION = 111
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -88,12 +88,54 @@ CREATE TABLE IF NOT EXISTS data_apps (
 );
 """
 
-# NOTE: the paper-theme agent-builder's fields (role/tone/greeting/knowledge/
-# plugins/surfaces/status) were merged as a SUPERSET onto main's canonical
-# `agents` table (declared inline in _SYSTEM_SCHEMA below + added on upgrade by
-# _v109_to_v110); the builder maps created_by→owner_user_id and
-# instructions→system_prompt. The old standalone _AGENTS_CREATE_SQL constant
-# was removed in that merge — one table, one DDL.
+# v101: agent profiles + agent-as-API foundation (spec
+# docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
+#
+# The paper-theme agent-builder's fields (role/tone/greeting/knowledge/plugins/
+# surfaces/status) were merged as a SUPERSET onto this, main's canonical table
+# (added on upgrade by _v109_to_v110); the builder maps created_by→owner_user_id
+# and instructions→system_prompt, so those reuse the columns above rather than
+# duplicating them.
+#
+# Shared constant (same reasoning as _DATA_APPS_CREATE_SQL) so the fresh-install
+# DDL spliced into _SYSTEM_SCHEMA below and the rebuild in
+# _heal_legacy_agents_table execute the identical CREATE TABLE — a heal that
+# hand-copied the shape would drift the moment a column is added here.
+_AGENTS_CREATE_SQL = """
+-- No secondary indexes anywhere here — see the _v94_to_v95 ART-index
+-- incident note; chat_sessions.agent_id especially must stay unindexed.
+CREATE TABLE IF NOT EXISTS agents (
+    id                   VARCHAR PRIMARY KEY,
+    owner_user_id        VARCHAR NOT NULL,
+    name                 VARCHAR NOT NULL,
+    slug                 VARCHAR NOT NULL,
+    description          TEXT,
+    system_prompt        TEXT,
+    model                VARCHAR,
+    token_budget_monthly BIGINT,
+    plugins_mode         VARCHAR NOT NULL DEFAULT 'all',
+    connections_mode     VARCHAR NOT NULL DEFAULT 'all',
+    tables_mode          VARCHAR NOT NULL DEFAULT 'all',
+    memory_mode          VARCHAR NOT NULL DEFAULT 'all',
+    memory_write_mode    VARCHAR NOT NULL DEFAULT 'propose',
+    is_default           BOOLEAN NOT NULL DEFAULT FALSE,
+    -- v110: paper-theme agent-builder superset. role/tone/greeting are authored
+    -- profile fields; knowledge/plugins/surfaces are opaque id-list JSON the
+    -- builder owns (never joined in SQL); status is the builder's draft|ready
+    -- lifecycle.
+    role                 VARCHAR,
+    tone                 VARCHAR DEFAULT 'concise',
+    greeting             TEXT,
+    knowledge            TEXT DEFAULT '[]',
+    plugins              TEXT DEFAULT '[]',
+    surfaces             TEXT DEFAULT '{}',
+    status               VARCHAR DEFAULT 'draft',
+    created_at           TIMESTAMP DEFAULT current_timestamp,
+    updated_at           TIMESTAMP DEFAULT current_timestamp,
+    deleted_at           TIMESTAMP,
+    UNIQUE (owner_user_id, slug)
+);
+"""
 
 _SYSTEM_SCHEMA = (
     """
@@ -1345,7 +1387,14 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- Deliberately unindexed: this table already carries idx_chat_sessions_user
     -- and DuckDB's ART-index maintenance is the exact incident class
     -- _v94_to_v95 exists to fix, so no new secondary index goes on this column.
-    agent_id          VARCHAR
+    agent_id          VARCHAR,
+    -- v111: user-pinned conversations. NULL = not pinned; a timestamp records
+    -- WHEN it was pinned so the history panel can order pins most-recent-first
+    -- rather than by an arbitrary tiebreak. Deliberately unindexed for the same
+    -- reason as agent_id above — and doubly so here, since this column IS
+    -- UPDATEd after chat_messages rows exist (the DuckDB 1.5.3 FK+index bug
+    -- would turn every pin click into a false FK violation).
+    pinned_at         TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
     ON chat_sessions(user_email, last_message_at);
@@ -1664,43 +1713,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
 CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
 
--- v101: agent profiles + agent-as-API foundation (spec
--- docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
--- No secondary indexes anywhere here — see the _v94_to_v95 ART-index
--- incident note; chat_sessions.agent_id especially must stay unindexed.
-CREATE TABLE IF NOT EXISTS agents (
-    id                   VARCHAR PRIMARY KEY,
-    owner_user_id        VARCHAR NOT NULL,
-    name                 VARCHAR NOT NULL,
-    slug                 VARCHAR NOT NULL,
-    description          TEXT,
-    system_prompt        TEXT,
-    model                VARCHAR,
-    token_budget_monthly BIGINT,
-    plugins_mode         VARCHAR NOT NULL DEFAULT 'all',
-    connections_mode     VARCHAR NOT NULL DEFAULT 'all',
-    tables_mode          VARCHAR NOT NULL DEFAULT 'all',
-    memory_mode          VARCHAR NOT NULL DEFAULT 'all',
-    memory_write_mode    VARCHAR NOT NULL DEFAULT 'propose',
-    is_default           BOOLEAN NOT NULL DEFAULT FALSE,
-    -- v110: paper-theme agent-builder superset. role/tone/greeting are authored
-    -- profile fields; knowledge/plugins/surfaces are opaque id-list JSON the
-    -- builder owns (never joined in SQL); status is the builder's draft|ready
-    -- lifecycle. The builder maps created_by→owner_user_id and
-    -- instructions→system_prompt, so those reuse the columns above.
-    role                 VARCHAR,
-    tone                 VARCHAR DEFAULT 'concise',
-    greeting             TEXT,
-    knowledge            TEXT DEFAULT '[]',
-    plugins              TEXT DEFAULT '[]',
-    surfaces             TEXT DEFAULT '{}',
-    status               VARCHAR DEFAULT 'draft',
-    created_at           TIMESTAMP DEFAULT current_timestamp,
-    updated_at           TIMESTAMP DEFAULT current_timestamp,
-    deleted_at           TIMESTAMP,
-    UNIQUE (owner_user_id, slug)
-);
-
+"""
+    + _AGENTS_CREATE_SQL
+    + """
 CREATE TABLE IF NOT EXISTS agent_scope (
     agent_id  VARCHAR NOT NULL,
     item_type VARCHAR NOT NULL,
@@ -6809,6 +6824,29 @@ def _v109_to_v110(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 110")
 
 
+def _v110_to_v111(conn: duckdb.DuckDBPyConnection) -> None:
+    """v110→v111: add ``chat_sessions.pinned_at`` (user-pinned conversations).
+
+    NULL = not pinned, which is every pre-v111 row — so the upgrade is visually
+    inert (the history panel renders no Pinned group until the user pins
+    something). A timestamp rather than a boolean so pins order
+    most-recently-pinned-first.
+
+    The column is deliberately NOT indexed: it is UPDATEd on every pin/unpin,
+    which on DuckDB 1.5.3 happens long after ``chat_messages`` rows exist for
+    the session — indexing it would trip the FK+index false-violation bug that
+    already forces ``last_message_at`` / ``message_count`` to be derived at read
+    time (see the ``chat_sessions`` DDL in ``_SYSTEM_SCHEMA``).
+
+    Idempotent ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a no-op
+    on fresh installs where ``_SYSTEM_SCHEMA`` already declares the column.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'chat_sessions'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMP")
+    conn.execute("UPDATE schema_version SET version = 111")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v104 column DDL on its own, with no version stamp.
 
@@ -6869,6 +6907,68 @@ def _heal_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
         "— healing (see _heal_store_entity_trust_columns)"
     )
     _add_store_entity_trust_columns(conn)
+
+
+def _heal_legacy_agents_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """Rebuild a pre-merge paper-theme ``agents`` table into main's canonical shape.
+
+    Stamp-independent, for the same reason as
+    :func:`_heal_store_entity_trust_columns`: the damage is invisible to
+    ``schema_version``. Before the two agent features were combined (PR #1113)
+    the paper-theme branch owned its own ``agents`` table — ``created_by`` /
+    ``instructions`` / globally-UNIQUE ``slug``, created at *its* v103. A
+    database built by that branch therefore reaches the merge already stamped
+    past 101, so ``_v100_to_v101`` (whose ``CREATE TABLE IF NOT EXISTS`` would
+    otherwise have laid down main's shape) never runs, and ``_v109_to_v110``
+    finds every superset column already present and adds nothing. The table
+    stays in the old shape forever while the repository layer
+    (``src/repositories/agents.py``) writes the canonical one — so every
+    ``POST /api/agents`` dies with ``Binder Error: Table "agents" does not have
+    a column with name "owner_user_id"`` and the /agents builder's "Build an
+    agent" button 500s.
+
+    No deployed instance can be in this state (main never shipped the old
+    shape), but every checkout that ran the paper-theme branch before the merge
+    is — which is what makes this a heal rather than a ladder step.
+
+    The rebuild is a rename → recreate → copy → drop, not a column shuffle:
+    ``created_by`` → ``owner_user_id`` and ``instructions`` → ``system_prompt``
+    are the mappings the repository already assumes, the columns main adds
+    (description/model/token_budget_monthly/…) take their declared defaults, and
+    the old global ``UNIQUE (slug)`` is strictly stronger than the new
+    ``UNIQUE (owner_user_id, slug)`` so no row can collide on the way in.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'agents'").fetchone()
+    if not exists:
+        return
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'agents'"
+        ).fetchall()
+    }
+    # Canonical already (the overwhelmingly common case) — or something else
+    # entirely, which this heal must not touch.
+    if "owner_user_id" in cols or "created_by" not in cols:
+        return
+    logger.warning(
+        "agents is in the pre-merge paper-theme shape despite schema_version "
+        "— rebuilding onto the canonical shape (see _heal_legacy_agents_table)"
+    )
+    conn.execute("DROP TABLE IF EXISTS agents_legacy_heal")
+    conn.execute("ALTER TABLE agents RENAME TO agents_legacy_heal")
+    conn.execute(_AGENTS_CREATE_SQL)
+    conn.execute("""
+        INSERT INTO agents
+        (id, owner_user_id, name, slug, system_prompt,
+         role, tone, greeting, knowledge, plugins, surfaces, status,
+         created_at, updated_at, deleted_at)
+        SELECT id, created_by, name, slug, instructions,
+               role, tone, greeting, knowledge, plugins, surfaces, status,
+               created_at, updated_at, deleted_at
+        FROM agents_legacy_heal
+    """)
+    conn.execute("DROP TABLE agents_legacy_heal")
 
 
 def _v98_to_v99(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7568,6 +7668,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # agent-builder fields onto main's agents table. No-op on fresh
             # installs — _SYSTEM_SCHEMA already declares them.
             _v109_to_v110(conn)
+            # v110→v111: chat_sessions.pinned_at (pinned conversations). No-op
+            # on fresh installs — _SYSTEM_SCHEMA already declares the column.
+            _v110_to_v111(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7841,6 +7944,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v108_to_v109(conn)
             if current < 110:
                 _v109_to_v110(conn)
+            if current < 111:
+                _v110_to_v111(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
@@ -7908,8 +8013,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # for the columns directly instead of trusting the stamp; one
     # information_schema read per connect. See
     # _heal_store_entity_trust_columns.
+    #
+    # _heal_legacy_agents_table is the same class of repair one step further —
+    # there the stamp is not merely ahead of a missing column but ahead of a
+    # whole pre-merge table SHAPE (see its docstring), so it too checks the
+    # columns directly rather than trusting the version.
     if not _state_backend_is_pg():
         _heal_store_entity_trust_columns(conn)
+        _heal_legacy_agents_table(conn)
 
 
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:
