@@ -53,12 +53,14 @@ from src.repositories import (
     user_store_installs_repo,
     users_repo,
 )
+from src.repositories.store_submissions import BLOCKING_SUBMISSION_STATUSES
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from app.auth.access import is_user_admin, require_admin, required_store_entity_ids
 from app.auth.dependencies import _get_db, get_current_user
+from app.services.journey import mark_journey
 from app.instance_config import (
     get_guardrails_enabled,
     get_guardrails_llm_provider_ready,
@@ -2106,19 +2108,10 @@ async def create_entity_from_markdown(
         tagline=None,
         photo=None,
         docs=[],
+        access=body.access,
         user=user,
         conn=conn,
     )
-    # Private = owner-only. Flip straight after creation; the review may still
-    # be in flight, but it can only promote from 'pending', so 'hidden' sticks.
-    if body.access == "private":
-        entity_id = created.id if hasattr(created, "id") else (created or {}).get("id")
-        if entity_id:
-            try:
-                store_entities_repo().set_visibility(entity_id, "hidden")
-                created.visibility_status = "hidden"
-            except Exception:
-                logger.exception("store: could not mark entity %s private", entity_id)
     return created
 
 
@@ -2137,11 +2130,21 @@ async def create_entity(
     tagline: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     docs: List[UploadFile] = File(default=[]),
+    # Builder "who can use this" choice, identical in meaning to
+    # CreateFromMarkdownBody.access. Plugins are the only type that cannot
+    # reach this endpoint's JSON sibling (they are real ZIP bundles, not a
+    # markdown body), so without it the unified builder could offer Private
+    # for skills and agents but not for plugins. Default keeps every existing
+    # caller — the upload wizard, the CLI, the tests — on the historical
+    # publish-to-everyone behaviour.
+    access: str = Form("everyone"),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     if type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
+    if access not in ("private", "everyone"):
+        raise HTTPException(status_code=400, detail="invalid_access")
 
     try:
         username = sanitize_username(user["email"])
@@ -2394,6 +2397,16 @@ async def create_entity(
         # resolves flea entities via `store_entities.name` at event time.
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+    # Private = owner-only. Flip straight after creation; the review may still
+    # be in flight, but `set_visibility_if_pending` only promotes from
+    # 'pending', so 'hidden' sticks. This is the single implementation of the
+    # access choice — the JSON sibling routes its `access` through here.
+    if access == "private":
+        try:
+            store_entities_repo().set_visibility(entity_id, "hidden")
+        except Exception:
+            logger.exception("store: could not mark entity %s private", entity_id)
 
     _invalidate_etag()
     entity = store_entities_repo().get(entity_id)
@@ -3536,6 +3549,26 @@ async def delete_entity(
 # ---------------------------------------------------------------------------
 
 
+def _entity_review_blocked(entity_id: str) -> bool:
+    """True when guardrail review REJECTED any submission for ``entity_id``.
+
+    ``store_entities.visibility_status = 'hidden'`` is written by two very
+    different paths — the author choosing Private, and guardrail quarantine —
+    so the submission history is the only thing that tells them apart. Probes
+    every submission rather than just the latest so an ambiguous chain resolves
+    the safe way. Mirrors the ``NOT EXISTS`` clause in
+    ``user_store_installs.list_for_user``; see
+    ``BLOCKING_SUBMISSION_STATUSES`` for why ``review_error`` is not a
+    rejection.
+    """
+    try:
+        subs = store_submissions_repo().list_for_entity(entity_id)
+    except Exception:
+        logger.exception("store: could not read submissions for entity %s", entity_id)
+        return True  # unreadable history → refuse, never fail open
+    return any((s.get("status") or "") in BLOCKING_SUBMISSION_STATUSES for s in subs)
+
+
 @router.post("/entities/{entity_id}/install", response_model=InstallResponse)
 async def install_entity(
     entity_id: str,
@@ -3549,10 +3582,30 @@ async def install_entity(
     # Block installs against entities still in guardrail review or that
     # have been hidden — they are not visible in the public flea browse,
     # but a user with the entity_id in hand could otherwise install
-    # directly. Owner installing their own pending entity gets the same
-    # 409 — they preview before publishing via /api/store/entities/preview
-    # or wait for approval.
-    if entity.get("visibility_status") != "approved" and not is_user_admin(user["id"], conn):
+    # directly.
+    #
+    # One exemption: the entity's own AUTHOR may install their own hidden
+    # entity, i.e. one they deliberately kept Private (`access='private'` on
+    # upload, or the builder's Private choice). Without it, a Private skill
+    # could never reach its author's own Stack — the point of the Private
+    # tier. Scoped tightly:
+    #
+    #   * owner only (never a third party, never `pending`/`blocked`/
+    #     `archived`), and
+    #   * refused when guardrail review REJECTED the bundle — `hidden` is the
+    #     status BOTH Private and quarantine write, so the submission history
+    #     is what separates them.
+    #
+    # The serve chokepoint (``user_store_installs.list_for_user``) enforces the
+    # same two conditions independently, so a bundle blocked AFTER install
+    # stops being served without needing this row removed.
+    _status = entity.get("visibility_status")
+    _is_own_private = (
+        _status == "hidden"
+        and (entity.get("owner_user_id") or "") == user["id"]
+        and not _entity_review_blocked(entity_id)
+    )
+    if _status != "approved" and not _is_own_private and not is_user_admin(user["id"], conn):
         raise HTTPException(status_code=409, detail="entity_not_approved")
     installs = user_store_installs_repo()
     inserted = installs.install(user["id"], entity_id)
@@ -3560,6 +3613,10 @@ async def install_entity(
         repo.bump_install_count(entity_id, +1)
         _audit(conn, user["id"], "store.entity.install", entity_id)
         _invalidate_etag()
+    # Installing a skill / plugin / agent IS the Library's "Add to stack" for
+    # that kind of row (its own endpoint, same control) — so it ticks the same
+    # onboarding milestone as /api/stack/subscribe.
+    mark_journey(user.get("id"), stack_setup_done=True)
     return InstallResponse(entity_id=entity_id, installed=True)
 
 
