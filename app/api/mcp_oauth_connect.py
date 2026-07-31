@@ -202,7 +202,21 @@ async def oauth_connect_callback(
     deny_principal(user)
 
     if error:
-        return _err_redirect(error_description or error)
+        # NEVER echo error/error_description — the callback URL is openable
+        # by anyone (crafted link), so its params are attacker-controllable
+        # text that must not render as an Agnes banner (Devin Review on
+        # #1130). Map known RFC 6749 codes to fixed messages instead.
+        _KNOWN = {
+            "access_denied": "you declined the authorization request",
+            "invalid_request": "the authorization server rejected the request",
+            "unauthorized_client": "this client is not authorized at the authorization server",
+            "unsupported_response_type": "the authorization server rejected the request",
+            "invalid_scope": "the authorization server rejected the requested scope",
+            "server_error": "the authorization server reported an internal error",
+            "temporarily_unavailable": "the authorization server is temporarily unavailable — try again",
+        }
+        logger.warning("mcp oauth callback error param: %s", (error or "")[:100])
+        return _err_redirect(_KNOWN.get(error, "the authorization server returned an error — try again"))
     if not code or not state:
         return _err_redirect("missing code or state")
 
