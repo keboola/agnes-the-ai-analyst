@@ -471,7 +471,7 @@ def test_callback_token_exchange_failure_redirects_with_error(seeded_app, monkey
 
 def test_callback_deny_principal_for_restricted_token(seeded_app):
     """A co-session/agent-session token must never redeem a connect flow."""
-    from app.auth.dependencies import get_current_user
+    from app.auth.dependencies import get_optional_user as get_current_user
     from app.auth.session_principal import SessionPrincipal
 
     principal = SessionPrincipal(session_id="s1", participant_user_ids=[], participant_emails=[], intersection={})
@@ -611,3 +611,42 @@ def test_callback_error_param_is_never_echoed(seeded_app):
     )
     assert r2.status_code == 303
     assert "ATTACKER" not in r2.headers["location"]
+
+
+def test_callback_expired_session_redirects_to_login(seeded_app):
+    """An expired Agnes session mid-flow must land on the login page, not a
+    bare 401 JSON body (Devin Review on #1130)."""
+    r = seeded_app["client"].get(
+        "/api/mcp/oauth-client/callback",
+        params={"code": "c", "state": "whatever"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/login")
+
+
+def test_callback_ssrf_rejected_exchange_redirects_friendly(seeded_app, monkeypatch):
+    """A blocked/unresolvable token endpoint must land back on
+    /me/connections, not a raw 500 (Devin Review on #1130)."""
+    import connectors.mcp.oauth_client as oc
+
+    from src.net.ssrf_safe_client import SSRFRejected
+
+    source_id = _seed_oauth_source(source_id="src_oauth_ssrfcb")
+    hdr = _analyst_hdr(seeded_app)
+    state = _authorize_and_extract_state(seeded_app, source_id, hdr)
+
+    async def _boom(**kwargs):
+        raise SSRFRejected("address_in_blocked_range: 10.0.0.5")
+
+    monkeypatch.setattr(oc, "exchange_code_for_token", _boom)
+    r = seeded_app["client"].get(
+        "/api/mcp/oauth-client/callback",
+        params={"code": "c", "state": state},
+        headers=hdr,
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    location = r.headers["location"]
+    assert "/me/connections?connect_error=" in location
+    assert "10.0.0.5" not in location
