@@ -1720,6 +1720,42 @@ CREATE TABLE IF NOT EXISTS agent_memories (
     activated_at      TIMESTAMP,
     archived_at       TIMESTAMP
 );
+
+-- v109: outbound MCP OAuth sources (spec
+-- docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md). Same DDL as
+-- _v108_to_v109 so the split-brain self-heal can recreate them; the migration
+-- keeps IF NOT EXISTS so both paths coexist. No secondary indexes (ART-index
+-- incident — see _v94_to_v95).
+CREATE TABLE IF NOT EXISTS mcp_source_oauth_clients (
+    source_id                     VARCHAR PRIMARY KEY,
+    issuer                        VARCHAR NOT NULL,
+    client_id                     VARCHAR NOT NULL,
+    client_secret_enc             BLOB,
+    registration_access_token_enc BLOB,
+    authorization_endpoint        VARCHAR NOT NULL,
+    token_endpoint                VARCHAR NOT NULL,
+    scopes                        VARCHAR,
+    created_at                    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    updated_at                    TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+CREATE TABLE IF NOT EXISTS mcp_user_oauth_tokens (
+    source_id         VARCHAR NOT NULL,
+    user_id            VARCHAR NOT NULL,
+    access_token_enc   BLOB NOT NULL,
+    refresh_token_enc  BLOB,
+    expires_at         TIMESTAMP,
+    scopes             VARCHAR,
+    created_at         TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    updated_at         TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (source_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS mcp_oauth_flows (
+    nonce              VARCHAR PRIMARY KEY,
+    source_id          VARCHAR NOT NULL,
+    user_id            VARCHAR NOT NULL,
+    pkce_verifier_enc  BLOB NOT NULL,
+    created_at         TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
 """
     + _DATA_APPS_CREATE_SQL
 )

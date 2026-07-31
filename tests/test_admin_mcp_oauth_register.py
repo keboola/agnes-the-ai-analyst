@@ -463,3 +463,34 @@ def test_manual_client_preserves_rat_for_same_client_id_only(seeded_app, monkeyp
     r3 = seeded_app["client"].put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json=body)
     assert r3.status_code == 200, r3.text
     assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token"] is None  # replaced — dropped
+
+
+def test_flipping_auth_method_away_from_oauth_purges_oauth_rows(seeded_app, monkeypatch):
+    """PUT that flips auth_method oauth→bearer must not strand the client
+    registration / user tokens / flows (Devin Review on #1124)."""
+    from src.repositories import (
+        mcp_oauth_flows_repo,
+        mcp_source_oauth_clients_repo,
+        mcp_user_oauth_tokens_repo,
+    )
+
+    sid = _seed_oauth_source(source_id="src_oauth_flip")
+    mcp_source_oauth_clients_repo().upsert(
+        sid,
+        issuer="https://as.example.com",
+        client_id="cid",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+    )
+    mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "tok", refresh_token=None, expires_at=None, scopes=None)
+    mcp_oauth_flows_repo().create("flip-nonce", sid, "admin1", "verifier")
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"auth_method": "bearer"},
+    )
+    assert r.status_code == 200, r.text
+    assert mcp_source_oauth_clients_repo().get(sid) is None
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
+    assert mcp_oauth_flows_repo().consume("flip-nonce") is None
