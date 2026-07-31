@@ -1,0 +1,74 @@
+/* =====================================================================
+ * chat_row_menu.css — the "⋮" row-menu PANEL (Pin/Unpin · Rename · Delete).
+ *
+ * Companion to js/components/chat_row_menu.js. Loaded globally from
+ * base_ds.html and inert until that script injects a `.chat-rowmenu` — the
+ * same pattern tour.css uses.
+ *
+ * Global rather than per-host on purpose. The panel is appended to <body>
+ * (both history hosts put the list in an overflow-hidden scroll container,
+ * which would clip a nested panel), so it is NOT a descendant of .rail or of
+ * .cloud-chat-shell and cannot be reached from rail.css's
+ * `html[data-ui-layout="rail"] .rail-history …` selectors or from chat.css,
+ * which only /chat loads. One sheet, one definition, every host page.
+ *
+ * The TRIGGER button (.chat-rowmenu-btn) lives inside the row and so stays
+ * with the row styles in chat.css / rail.css, where it can inherit each
+ * host's sizing.
+ * ===================================================================== */
+
+/* Layout only — chat_row_menu.js owns placement (it sets top/left). */
+.chat-rowmenu {
+  position: fixed;
+  z-index: 2400;
+  min-width: 168px;
+  padding: 5px;
+  /* Same panel treatment as library.html's .lib-movemenu, the other row menu
+     in the app — surface + border + shadow, so they read as one component. */
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--ds-shadow-lg);
+}
+.chat-rowmenu[hidden] {
+  display: none;
+}
+.chat-rowmenu__item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ds-text-primary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-rowmenu__item:hover,
+.chat-rowmenu__item:focus-visible {
+  background: var(--ds-surface-dim);
+}
+.chat-rowmenu__item:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: calc(var(--ds-focus-outline-offset) * -1);
+}
+.chat-rowmenu__item.is-danger {
+  color: var(--ds-accent-danger-ink);
+}
+.chat-rowmenu__item.is-danger:hover,
+.chat-rowmenu__item.is-danger:focus-visible {
+  background: var(--ds-accent-danger-bg);
+}
+/* Single-letter accelerator, right-aligned and muted — a hint, not a label. */
+.chat-rowmenu__key {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-text-muted);
+}
+

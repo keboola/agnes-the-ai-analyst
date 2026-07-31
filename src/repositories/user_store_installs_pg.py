@@ -10,6 +10,8 @@ from typing import Any, Dict, List
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from src.repositories.store_submissions import BLOCKING_SUBMISSION_STATUS_SQL
+
 
 class UserStoreInstallsPgRepository:
     def __init__(self, engine: Engine):
@@ -61,11 +63,14 @@ class UserStoreInstallsPgRepository:
         return row is not None
 
     def list_for_user(self, user_id: str) -> List[Dict[str, Any]]:
+        """PG sibling of the DuckDB ``list_for_user`` — see that docstring for
+        which visibility states serve and why a hidden entity serves only to
+        its own author."""
         with self._engine.connect() as conn:
             rows = (
                 conn.execute(
                     sa.text(
-                        """SELECT
+                        f"""SELECT
                            se.id, se.owner_user_id, se.owner_username, se.type,
                            se.name, se.description, se.category, se.version,
                            se.photo_path, se.video_url, se.file_size,
@@ -76,7 +81,18 @@ class UserStoreInstallsPgRepository:
                        FROM user_store_installs usi
                        JOIN store_entities se ON se.id = usi.entity_id
                        WHERE usi.user_id = :u
-                         AND se.visibility_status IN ('approved', 'archived')
+                         AND (
+                           se.visibility_status IN ('approved', 'archived')
+                           OR (
+                             se.visibility_status = 'hidden'
+                             AND se.owner_user_id = :u
+                             AND NOT EXISTS (
+                               SELECT 1 FROM store_submissions ss
+                               WHERE ss.entity_id = se.id
+                                 AND ss.status IN ({BLOCKING_SUBMISSION_STATUS_SQL})
+                             )
+                           )
+                         )
                        ORDER BY usi.installed_at DESC, se.id"""
                     ),
                     {"u": user_id},

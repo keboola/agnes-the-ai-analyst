@@ -42,10 +42,12 @@
 {% set _meta = [] %}
 {% if related_tables %}{% set _ = _meta.append({'icon': 'table', 'text': (related_tables|length|string) ~ ' table' ~ ('s' if related_tables|length != 1 else '')}) %}{% endif %}
 
+{% set _back = detail_back('recipe', '/catalog?kind=recipes', 'All recipes') %}
+
 {% call detail.hero(
      kind='recipe', name=recipe.title, color=recipe.color,
      description=recipe.description, meta=_meta,
-     back_href='/catalog?kind=recipes', back_label='All recipes') %}
+     back_href=_back.href, back_label=_back.label) %}
   {{ detail.ask_agnes('Walk me through the ' ~ recipe.title ~ ' recipe and adapt it to my data.') }}
 {% endcall %}
 

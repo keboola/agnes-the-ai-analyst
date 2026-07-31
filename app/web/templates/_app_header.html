@@ -218,11 +218,20 @@
                 </div>
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
                 {# The redesign dropped the "AI Connector" link (the connector
-                   page is reached from the "Connect your tools" CTA) and added
+                   content now lives in /how-it-works#connect) and added
                    "Learn how it works" (tests/test_web_nav_cowork.py). "My
                    connections" (#1086) stays — tests/test_web_nav_me_connections
-                   requires it here. #}
-                <a class="app-user-menu-item {% if _path == '/home' %}is-active{% endif %}" role="menuitem" href="/home">Learn how it works</a>
+                   requires it here.
+
+                   Repointed from /home to /how-it-works: /home is a CLI install
+                   wizard titled "Setup", which is not what this label promises.
+                   The LABEL is deliberately unchanged here — topnav is the
+                   default chrome, and changing its visible text would change
+                   the look of every existing instance (guarded by
+                   tests/test_ui_layout_theme.py). The rail chrome, which is
+                   opt-in, gets the clearer "How {brand} works" wording as a
+                   nav row of its own. #}
+                <a class="app-user-menu-item {% if _path == '/how-it-works' %}is-active{% endif %}" role="menuitem" href="/how-it-works">Learn how it works</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
 

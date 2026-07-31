@@ -83,6 +83,12 @@
     {# Coach-mark tour engine — inert until a .tour-overlay is injected.
        Loads after design-tokens.css so --ds-* tokens resolve in tour.css. #}
     <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
+    {# Conversation row menu (Pin/Rename/Delete) — inert until
+       js/components/chat_row_menu.js injects a .chat-rowmenu. Global, not
+       per-host: the panel is appended to <body>, so neither rail.css's
+       rail-scoped selectors nor chat.css (which only /chat loads) can reach
+       it. Same inert-until-used pattern as tour.css above. #}
+    <link rel="stylesheet" href="{{ static_url('css/chat_row_menu.css') }}">
 
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' ignore missing %}
@@ -165,20 +171,27 @@
        zero behaviour drift. #}
     {% include "_app_scripts.html" %}
     {# Tour engine boot — lazy: only import tour.js when a pending tour resume
-       is possible for the current page, or when on a tour-launching page
-       (/stack, /catalog). Keeps idle pages cost-free.
+       is possible for the current page (a cross-page hop always leaves a
+       sessionStorage record behind, so that record is the whole test). Every
+       other entry point imports the module itself: chat_onboarding.js for the
+       first-visit launch and the checklist/replay, skills.html for the
+       one-step builder coach-mark. Keeps idle pages cost-free.
        Also stamps window._agTourUrl so chat_onboarding.js can dynamic-import
        tour.js at the versioned URL without a Jinja context. #}
+    {# Telegram bot handle for chat_onboarding.js — it offers the notification
+       channel mid-run and links it inline, and both need the handle the user is
+       told to message. Empty string when the operator hasn't configured a bot,
+       which is the signal to offer nothing at all (an unconfigured instance
+       would otherwise send people to "@your-bot"). `default('', true)` keeps
+       pages whose context builder skips `config` from raising in `tojson`. #}
     <script type="module">
       (function () {
         const tourUrl = "{{ static_url('js/tour.js') }}";
         window._agTourUrl = tourUrl;
-        const path = window.location.pathname;
-        const tourPages = ['/stack', '/catalog'];
+        window._agTelegramBot = {{ config.TELEGRAM_BOT_USERNAME | default('', true) | tojson }};
         let pending = null;
         try { pending = JSON.parse(sessionStorage.getItem('agnes.tour.pending') || 'null'); } catch (_) {}
-        const shouldLoad = !!pending || tourPages.includes(path);
-        if (!shouldLoad) return;
+        if (!pending) return;
         import(tourUrl)
           .then((mod) => mod.resumePendingTour())
           .catch(() => { /* tour is additive — never block the page */ });

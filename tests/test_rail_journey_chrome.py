@@ -1,4 +1,5 @@
-"""Static-source guards for the rail's "Get started" popover close behavior
+"""Static-source guards for the rail's onboarding ("Finish setup") popover
+close behavior
 (#1037) and the journey panel head / mobile nav collapse (#1039).
 
 No headless browser in CI — these assert the source contract the way
@@ -17,9 +18,10 @@ Three defects:
    the ↻ / × buttons past the edge. They were also 20x20px, under the 44px
    touch-target minimum.
 3. Below 1024px the rail becomes a wrapping top bar with no way to collapse
-   it — nav + Chats + Admin stayed permanently on screen.
+   it — the nav zones + recents + Admin stayed permanently on screen.
 """
 
+import re
 from pathlib import Path
 
 RAIL_CSS = Path("app/web/static/css/rail.css")
@@ -43,6 +45,19 @@ def _rail_history_js() -> str:
 
 def _onboarding_js() -> str:
     return ONBOARDING_JS.read_text(encoding="utf-8")
+
+
+def _strip_js_comments(js: str) -> str:
+    """Drop `//` and `/* */` comments so an assertion can target CODE only.
+
+    Needed by any guard phrased as "this identifier must not appear": the file
+    that removed a thing usually names it in the comment explaining why, and a
+    guard that forbids that forces the code to be undocumented. Not a full
+    tokenizer — it does not know about `//` inside a string literal — which is
+    fine for the rail scripts and would only ever over-strip, never under-strip.
+    """
+    js = re.sub(r"/\*.*?\*/", "", js, flags=re.DOTALL)
+    return re.sub(r"^\s*//.*$", "", js, flags=re.MULTILINE)
 
 
 def _rail_template() -> str:
@@ -122,29 +137,43 @@ def test_rail_has_a_collapse_toggle():
     assert 'aria-controls="rail-collapsible"' in html
 
 
-def test_rail_admin_is_a_single_hub_link_not_a_mega_list():
-    """The rail admin nav collapsed to ONE entry → /admin (the card hub).
-    The granular per-page admin links moved to the hub, so the sidebar stays
-    calm and new admin surfaces are added to the hub, not threaded into the
-    rail. The `rail-admin` wrapper class stays (collapsible-order contract)."""
+def test_rail_admin_expands_into_area_rows_with_flyouts():
+    """Admin opens IN the rail into one row per admin area, and each area's
+    own links open in a flyout beside the column — never inline.
+
+    That distinction is the whole point: an inline expansion contributes
+    height, so opening one area would push every row below it down and the
+    rail's geometry would differ page to page (areas restore their own open
+    state). An absolutely-positioned flyout contributes none, so `Admin` open
+    is always exactly as tall as its area list.
+
+    Native <details> + a plain <button> per area, zero JS — the rail's only
+    script (rail_history.js) is chat-gated, so an admin without a chat grant
+    would otherwise get a dead Admin section. The `rail-admin` wrapper class
+    stays either way (collapsible-order contract).
+    """
     html = _rail_template()
     assert 'class="rail-admin"' in html
-    assert 'href="/admin"' in html
-    for gone in (
-        'href="/admin/users"',
-        'href="/admin/tables"',
-        'href="/admin/marketplaces"',
-        'href="/admin/store/submissions"',
-    ):
-        assert gone not in html, f"rail should no longer carry the granular link {gone}"
+    assert '<details class="rail-admin"' in html, "Admin must be a native <details>, not a bare link"
+    assert "rail-admin-summary" in html
+    # Data-driven: the area rows and their links are declared once, as the same
+    # set the header dropdown carries (_app_header.html) — the parity contract.
+    assert "admin_sections" in html
+    assert "rail-admin-flyout" in html, "area links must open in a flyout beside the rail"
+    # The area row is a <button>, NOT a nested <details>: Chrome hides a closed
+    # <details>'s content via `::details-content { content-visibility: hidden }`,
+    # which an author `display` rule on the child cannot override, so a
+    # hover-revealed panel inside a closed <details> never appears.
+    assert "rail-admin-sub-row" in html
+    assert 'aria-haspopup="true"' in html
 
 
 def test_collapsible_wrapper_spans_nav_history_and_admin_only():
     """The wrapper must open right after the logo/toggle and close before
-    .rail-foot — Get started + the user menu must stay reachable regardless
+    .rail-foot — Finish setup + the user menu must stay reachable regardless
     of the collapsed state."""
     html = _rail_template()
-    assert html.index('id="rail-collapsible"') < html.index('class="rail-nav"')
+    assert html.index('id="rail-collapsible"') < html.index('class="rail-nav rail-nav-top"')
     assert html.index('class="rail-admin"') < html.index("/.rail-collapsible")
     assert html.index("/.rail-collapsible") < html.index('class="rail-foot"')
 
@@ -183,3 +212,105 @@ def test_javascript_toggles_nav_open_state():
     js = _rail_history_js()
     assert 'getElementById("rail-collapse-toggle")' in js
     assert 'classList.toggle("is-nav-open"' in js
+
+
+# --- "Start over onboarding" (profile menu) ---------------------------------
+
+
+def test_restart_onboarding_is_wired_from_both_boot_paths():
+    """The rail mounts the journey module two ways — chat.js's
+    initChatOnboarding on /chat, and mountJourneyPanel everywhere else. The
+    profile-menu entry must be wired in BOTH, or restarting works on one half of
+    the app. Wired before the awaited fetch so the click works as soon as the
+    page is interactive."""
+    js = _onboarding_js()
+    assert js.count("wireRestartOnboardingMenuItem()") == 3  # 1 definition + 2 calls
+    init = js.split("export async function initChatOnboarding", 1)[1].split("}", 1)[0]
+    assert "wireRestartOnboardingMenuItem()" in init
+    assert init.index("wireRestartOnboardingMenuItem()") < init.index("await loadJourney()")
+    mount = js.split("export async function mountJourneyPanel", 1)[1].split("\n}", 1)[0]
+    assert "wireRestartOnboardingMenuItem()" in mount
+
+
+def test_restart_clears_every_step_and_the_soft_dismiss():
+    """Clearing the steps is what un-retires the Finish setup row (rail.css
+    hides it on `.is-complete`). `dismissed` has to go too — an earlier "×" this
+    page load would otherwise swallow the checklist the caller just restarted."""
+    js = _onboarding_js()
+    body = js.split("function restartJourney() {", 1)[1].split("\n}", 1)[0]
+    assert "dismissed = false" in body
+    for key in (
+        "onboarded: false",
+        "first_asked: false",
+        "stack_setup_done: false",
+        "explored_stack: false",
+        "catalog_discovered: false",
+        "use_anywhere: false",
+    ):
+        assert key in body, f"restart must clear {key}"
+    # The checklist's own "Start over" button shares the same function.
+    assert 'restartBtn.addEventListener("click", restartJourney)' in js
+
+
+def test_restart_from_the_menu_closes_it_and_reveals_the_row():
+    """Restarting from a menu needs feedback the checklist's own button doesn't:
+    close the profile menu and pin the Finish setup popover, so the row the
+    caller was promised is actually on screen. `.is-closed` must be lifted —
+    it's the only thing that beats rail.css's own hover/focus reveal."""
+    js = _onboarding_js()
+    body = js.split("function wireRestartOnboardingMenuItem() {", 1)[1].split("\n}\n", 1)[0]
+    assert 'setAttribute("hidden", "")' in body  # profile menu closed
+    assert 'classList.remove("is-closed")' in body
+    assert 'classList.add("is-open")' in body
+
+
+def test_history_list_is_resolved_at_its_use_site():
+    """Regression guard, from a real breakage: the rail rendered NO conversations
+    on any page except /chat.
+
+    `#chat-list` used to be looked up once at the top of the IIFE, as a
+    module-level `listEl` sitting beside the recent-list truncation state. When
+    the truncation was removed the whole declaration block went with it, but the
+    line that consumed it (`const list = listEl;`) stayed — so the script threw
+    `ReferenceError: listEl is not defined` before it ever fetched, and the
+    conversation list came up empty everywhere `rail_history.js` owns it. Which
+    looked exactly like "clicking Library makes my chats disappear".
+
+    `node --check` cannot catch this: it is valid syntax that fails at runtime.
+    So the guard is that the element is resolved WHERE it is used, and that no
+    identifier from the deleted block is referenced anywhere.
+    """
+    js = _rail_history_js()
+    assert 'const list = document.getElementById("chat-list");' in js
+    # Every name that lived in the deleted truncation block. Any reference to one
+    # of these is a dangling read of state that no longer exists.
+    #
+    # Checked against CODE only — the comment above the fix names these very
+    # identifiers to explain the breakage, and a guard that forbids a file from
+    # documenting its own history is a guard that gets deleted.
+    code = _strip_js_comments(js)
+    for orphan in ("listEl", "toggleTxt", "applyTruncation", "RECENT_LIMIT", "EXPANDED_KEY"):
+        assert orphan not in code, f"{orphan} was deleted with the truncation block — nothing may reference it"
+
+
+def test_every_chrome_context_builder_supplies_the_brand_the_rail_renders():
+    """`_app_rail.html` says "How {{ instance_brand_short }} works", and
+    `base_ds.html` includes that partial on EVERY page — so the key has to come
+    from whichever context builder the page used, not just the rich one.
+
+    `instance_brand_short` is not a Jinja global (it is re-read per request so
+    an admin renaming the instance takes effect without a restart), which makes
+    this the same context-gap class as the `can_chat` omission that once dropped
+    the chat entry on /admin/studio. A page built by a builder that forgets the
+    key renders "How  works" — a hole in the middle of a sentence, with nothing
+    raising. Cheaper to pin than to re-audit every route.
+    """
+    import inspect
+
+    from app.web import router as _router
+
+    for builder in (_router._build_context, _router._chrome_ctx):
+        src = inspect.getsource(builder)
+        assert '"instance_brand_short"' in src, (
+            f"{builder.__name__} must supply instance_brand_short — the rail renders it on every page"
+        )

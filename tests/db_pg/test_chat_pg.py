@@ -587,3 +587,79 @@ def test_relay_protocol_version_roundtrip(_chat_env):
 
     repo.clear_sandbox_ref(s.id)
     assert repo.get_session(s.id).relay_protocol_version is None
+
+
+# ---------------------------------------------------------------------------
+# Dual-backend contract: pinned conversations (chat_sessions.pinned_at)
+# ---------------------------------------------------------------------------
+
+
+def test_set_pinned_roundtrip(_chat_env):
+    """``set_pinned`` stamps / clears ``pinned_at`` identically on both backends,
+    and re-pinning re-stamps it (which is what moves a session to the front of
+    the history panel's Pinned group)."""
+    repo = _chat_env
+    s = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    assert repo.get_session(s.id).pinned_at is None
+
+    repo.set_pinned(s.id, True)
+    first = repo.get_session(s.id).pinned_at
+    assert first is not None
+
+    # Re-pinning an already-pinned session is idempotent in state and advances
+    # the timestamp — never clears it.
+    repo.set_pinned(s.id, True)
+    again = repo.get_session(s.id).pinned_at
+    assert again is not None and again >= first
+
+    repo.set_pinned(s.id, False)
+    assert repo.get_session(s.id).pinned_at is None
+
+
+def test_set_pinned_after_messages(_chat_env):
+    """The production order: a conversation is pinned long after it has
+    messages. This is the DuckDB 1.5.3 FK+index guard — if ``pinned_at`` were
+    ever indexed, this UPDATE would raise a false FK violation (same failure
+    mode the sandbox-ref tests above guard against, but load-bearing here since
+    every real pin click lands in this state)."""
+    repo = _chat_env
+    s = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    repo.append_message(session_id=s.id, role="user", content="hello")
+    repo.append_message(session_id=s.id, role="assistant", content="hi")
+
+    repo.set_pinned(s.id, True)
+    assert repo.get_session(s.id).pinned_at is not None
+    repo.set_pinned(s.id, False)
+    assert repo.get_session(s.id).pinned_at is None
+
+
+def test_list_sessions_orders_pinned_first(_chat_env):
+    """Pinned sessions lead ``list_sessions`` on both backends, most-recently-
+    pinned first, with the unpinned remainder keeping plain recency order.
+
+    Spelled out as a contract test because the two backends need DIFFERENT SQL
+    to agree: Postgres defaults ``ORDER BY … DESC`` to NULLS FIRST, so without
+    an explicit ``NULLS LAST`` the PG leg would sort every *unpinned* session
+    above the pins — the exact inversion of the intended behavior.
+    """
+    repo = _chat_env
+    older = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    newer = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    newest = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+
+    # Give them real recency, oldest-first, so the unpinned order is defined.
+    for s in (older, newer, newest):
+        repo.append_message(session_id=s.id, role="user", content="hi")
+
+    unpinned_ids = [s.id for s in repo.list_sessions("u@example.com")]
+    assert set(unpinned_ids) == {older.id, newer.id, newest.id}
+
+    repo.set_pinned(older.id, True)
+    ids = [s.id for s in repo.list_sessions("u@example.com")]
+    assert ids[0] == older.id, "a pinned session leads regardless of its recency"
+    assert set(ids[1:]) == {newer.id, newest.id}
+
+    repo.set_pinned(newest.id, True)
+    ids2 = [s.id for s in repo.list_sessions("u@example.com")]
+    assert ids2[:2] == [newest.id, older.id], "most-recently-pinned leads the pinned block"
+    assert ids2[2] == newer.id

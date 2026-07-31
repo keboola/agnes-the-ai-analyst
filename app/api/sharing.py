@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import is_user_admin
 from app.auth.dependencies import get_current_user
+from app.services.journey import mark_journey
 from app.services.library_sharing import (
     SHAREABLE_TYPES,
     current_share_group_ids,
@@ -145,6 +146,11 @@ async def put_share_state(
         result["removed"],
         user["id"],
     )
+    # Onboarding step "Add or share something" — the SHARE half. Only when the
+    # item actually ends up shared: turning sharing back off (group_ids: []) puts
+    # it at "private", which is the opposite of the milestone.
+    if result["visibility"] != "private":
+        mark_journey(user.get("id"), catalog_discovered=True)
     return {
         "resource_type": resource_type,
         "resource_id": resource_id,

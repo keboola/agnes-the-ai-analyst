@@ -83,6 +83,8 @@
                     background: var(--ds-surface); color: var(--ds-text-primary); }
 .pf-notif-err     { display: none; margin-top: 8px; font-size: 13px;
                     color: var(--ds-accent-warn-ink); }
+.pf-notif-note    { margin: 12px 0 0; padding-top: 12px; font-size: 13px;
+                    border-top: 1px solid var(--ds-border); color: var(--ds-text-muted); }
 </style>
 {% endblock %}
 
@@ -168,11 +170,21 @@
      the desktop row is an informational private-beta placeholder (no self-
      serve link flow yet). `telegram_status` / `desktop_status` come from the
      /me/profile route. #}
+  {# `id="notifications"` is a PUBLIC ANCHOR: the in-chat notification nudge and
+     the onboarding checklist's "Choose where Agnes reaches you" sub-action both
+     deep-link `/me/profile#notifications`. Don't rename it. #}
   {% call ds.panel(title='Notifications', tag='section',
                    klass='section-card',
-                   attrs='aria-label="Notification channels"') %}
+                   attrs='id="notifications" aria-label="Notification channels"') %}
     <p class="pf-notif-intro">Choose where Agnes reaches you when a long-running analysis finishes or needs input.</p>
     <ul class="pf-notif-list" role="list">
+      {# The Telegram row is CONFIGURATION-GATED. Without TELEGRAM_BOT_USERNAME the
+         link instructions used to read "message @your-bot", i.e. a dead end — and
+         since Agnes now actively offers this channel mid-run, a dead end would be
+         offered rather than merely stumbled upon. An already-linked user keeps the
+         row (and its Unlink) even if the operator later drops the env var, so the
+         link never becomes un-manageable. #}
+      {% if config.TELEGRAM_BOT_USERNAME or telegram_status.linked %}
       <li class="pf-notif-row">
         <span class="pf-notif-icon" aria-hidden="true">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
@@ -187,13 +199,14 @@
         </span>
         {% if telegram_status.linked %}
         <button type="button" class="pf-notif-btn ghost" onclick="unlinkChannel('telegram')">Unlink</button>
-        {% else %}
+        {% elif config.TELEGRAM_BOT_USERNAME %}
         <button type="button" class="pf-notif-btn" onclick="showTelegramVerify()">Link</button>
         {% endif %}
       </li>
+      {% if config.TELEGRAM_BOT_USERNAME %}
       <li id="telegramVerify" class="pf-notif-verify">
         <ol>
-          <li>Message <code>/start</code> to <strong>@{{ config.TELEGRAM_BOT_USERNAME or 'your-bot' }}</strong> on Telegram</li>
+          <li>Message <code>/start</code> to <strong>@{{ config.TELEGRAM_BOT_USERNAME }}</strong> on Telegram</li>
           <li>Enter the 6-digit verification code it replies with</li>
         </ol>
         <div class="pf-notif-verify-row">
@@ -202,6 +215,8 @@
         </div>
         <div id="telegramError" class="pf-notif-err" role="alert"></div>
       </li>
+      {% endif %}
+      {% endif %}
       <li class="pf-notif-row">
         <span class="pf-notif-icon" aria-hidden="true">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -219,6 +234,12 @@
         {% endif %}
       </li>
     </ul>
+    {# With Telegram unconfigured and the macOS app still invite-only, this panel
+       has no actionable row at all — say why rather than leaving a heading over
+       two inert lines. #}
+    {% if not config.TELEGRAM_BOT_USERNAME and not telegram_status.linked %}
+    <p class="pf-notif-note">Telegram isn't configured on this instance yet — ask your admin to enable it if you'd like Agnes to reach you there.</p>
+    {% endif %}
   {% endcall %}
 
   {# `<details>` can't go through `ds.panel` (the macro doesn't render

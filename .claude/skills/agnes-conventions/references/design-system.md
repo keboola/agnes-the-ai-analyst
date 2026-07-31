@@ -81,15 +81,30 @@ to `[data-theme="paper"]`; the rail chrome CSS is
    the other (`tests/test_ui_layout_theme.py::TestRailOptIn` asserts
    the rail side). The two chromes deliberately differ in IA: topnav
    keeps the flat link row (Home · Chat · Marketplace · Data Packages
-   · Library · Memory); the rail is one flat, undivided group of
-   primary destinations — New chat · Library · Agents. The Studio
-   dropdown, the Marketplace entry and the `.rail-sub-i` subcategory
-   tree under Catalog are all retired, and My Stack is demoted out of
-   the rail (#1088) — `/stack` stays live, reached from the Library
-   header, the chat hero counts and the `/catalog` lede. A new
-   content surface reaches the caller through an existing destination
-   (the Library's "+ New" menu, chat suggestions, search), not by
-   growing the rail.
+   · Library · Memory); the rail is **two fixed zones with the
+   conversation list between them** — top: New chat + the newest 5
+   chats (no "Chats" heading; `View all chats` expands the list, which
+   scrolls inside `.rail-history-body`); bottom: Library · Agents, then
+   Admin behind the nav's only divider, then the onboarding card
+   (`Set up Agnes` → `Continue setup`, tinted `--ds-accent-info-*`, gone
+   at 5/5), then the profile. Neither zone may move when the list grows.
+   Admin's seven areas are fixed subitem rows whose links open in a
+   flyout BESIDE the rail (`.rail-admin-flyout`, absolutely positioned,
+   revealed by `:hover` / `:focus-within`) — nothing in the rail may
+   expand inline, or the zones drift page to page. Note the two traps:
+   a closed `<details>` cannot host a hover-revealed panel (Chrome's
+   `::details-content { content-visibility: hidden }` beats any author
+   `display`), and the rail's only script is chat-gated, so admin
+   chrome must work with zero JS.
+   Every row shares one height (`--rail-row-h`) and the active
+   destination is the ONLY tinted row — never add a standing CTA tint.
+   The Studio dropdown, the Marketplace entry and the `.rail-sub-i`
+   subcategory tree under Catalog are all retired, and My Stack is
+   demoted out of the rail (#1088) — `/stack` stays live, reached from
+   the Library header, the chat hero counts and the `/catalog` lede. A
+   new content surface reaches the caller through an existing
+   destination (the Library's "+ New" menu, chat suggestions, search),
+   not by growing the rail.
 9. **Verify visually.** After any UI change, run the app with both
    configs and screenshot: default (nothing set) and
    `AGNES_INSTANCE_THEME=paper AGNES_UI_LAYOUT=rail`. A page that

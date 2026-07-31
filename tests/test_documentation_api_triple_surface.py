@@ -258,6 +258,17 @@ _COLLECTIONS_FILES_REASON = (
     "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
     "analogue. The collection read surfaces carry the triple-surface contract."
 )
+_LIBRARY_PREVIEW_REASON = (
+    "Backs the Library's file-preview modal — a browser viewer, not a data "
+    "product. `…/raw` streams image/PDF bytes for the BROWSER to draw (no "
+    "JSON/MCP analogue), and `…/preview` exists to tell that viewer which "
+    "shape to render; its text is capped at a glance (_PREVIEW_MAX_CHARS), so "
+    "it is deliberately not a faithful read-the-file surface an agent could "
+    "rely on. Agent-facing access to collection text stays `collections_search` "
+    "/ `agnes collections search`. A real 'read this file whole' tool would be "
+    "its own feature (uncapped, paginated) and would then owe all three "
+    "surfaces."
+)
 _AUTHORING_SUGGESTIONS_REASON = (
     "Authoring-studio suggestion queue (v80) — web-form/admin-moderation flow. "
     "Non-admins submit a proposed create payload from the /admin/studio/{domain} "
@@ -499,6 +510,8 @@ _EXEMPT: dict[str, str] = {
     ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
+    "/api/collections/{collection_id}/files/{file_id}/preview": _LIBRARY_PREVIEW_REASON,
+    "/api/collections/{collection_id}/files/{file_id}/raw": _LIBRARY_PREVIEW_REASON,
     "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
     "/api/admin/memory-mining/run": _MEMORY_MINING_REASON,
     "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,
@@ -590,6 +603,23 @@ _EXEMPT: dict[str, str] = {
         "chat-driven onboarding backend foundation — internal state read/write "
         "for the in-chat onboarding UI (a follow-up task), self-scoped to the "
         "caller's own journey row; no analyst CLI/MCP analogue"
+    ),
+    # Chat history row menu (pin / rename). Both mutate how the WEB history
+    # panel presents a conversation, not what any agent can read or do: a pin
+    # is a hoist in one rendered list, and a title is the label that list
+    # shows. There is no CLI or MCP notion of "my history panel's ordering" to
+    # mirror them onto — `agnes chat <slug>` streams a session, it does not
+    # render the panel — and the auto-title already writes the same column
+    # server-side. Self-scoped to the caller's own session (404, never 403).
+    "/api/chat/sessions/{chat_id}/pin": (
+        "web chat history-panel affordance — hoists one of the caller's own "
+        "conversations into the Pinned group in the rendered list; no analyst "
+        "CLI/MCP analogue"
+    ),
+    "/api/chat/sessions/{chat_id}/title": (
+        "web chat history-panel affordance — renames one of the caller's own "
+        "conversations, the same column the Haiku auto-title writes; no "
+        "analyst CLI/MCP analogue"
     ),
     # Keboola glossary import (2026-07-17 design). `/api/glossary/search`
     # carries the triple-surface contract in _COHORT; list and get-by-id are

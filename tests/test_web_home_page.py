@@ -141,10 +141,7 @@ def test_home_hero_call_me_when_short_brand_differs(fresh_db, monkeypatch):
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert (
-        'Acme Data Analyst is your team\'s <span class="accent">AI workspace.</span>'
-        " Call me Acme." in body
-    )
+    assert 'Acme Data Analyst is your team\'s <span class="accent">AI workspace.</span> Call me Acme.' in body
     # Body copy uses the short brand, not the full one — one representative
     # assertion per changed section so a partial revert of any section back
     # to `instance_brand` fails here (each expected string is NOT a prefix
@@ -398,10 +395,14 @@ def test_home_reads_onboarded_through_repo_factory_not_raw_duckdb(fresh_db, monk
 
 def test_home_cowork_card_links_to_me_cowork(fresh_db):
     """The /home Cowork surface card carries real upload instructions and now
-    points at /me/ai-connector for the per-plugin download list (the list + the
-    package guideline were relocated there so there is a single home for them).
-    Pin: the placeholder badge is gone, the inline download list is no longer
-    on /home, and the card links to /me/ai-connector."""
+    points at the consolidated page's connect section for the per-plugin
+    download list (the list + the package guideline were relocated there so
+    there is a single home for them). Pin: the placeholder badge is gone, the
+    inline download list is no longer on /home, and the card links out.
+
+    The target moved from /me/ai-connector to /how-it-works#connect when the
+    connector page was absorbed into the consolidated orientation page; it is
+    the direct anchor rather than the redirect, so the link costs no hop."""
     from src.db import get_system_db, close_system_db
 
     conn = get_system_db()
@@ -414,9 +415,11 @@ def test_home_cowork_card_links_to_me_cowork(fresh_db):
     body = _client().get("/home", cookies={"access_token": sess}).text
     # Placeholder removed.
     assert "INSTRUCTIONS NEEDED" not in body
-    # The inline plugin list moved to /me/ai-connector; /home links there instead.
+    # The inline plugin list moved to the consolidated orientation page; /home
+    # links straight at its connect section rather than at the /me/ai-connector
+    # redirect, so the link costs no hop.
     assert 'id="cowork-plugin-list"' not in body
-    assert 'href="/me/ai-connector"' in body
+    assert 'href="/how-it-works#connect"' in body
 
 
 # ── GWS Email-admin button render tests (admin_email knob coverage) ────────

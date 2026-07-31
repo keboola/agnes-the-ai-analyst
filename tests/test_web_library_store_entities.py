@@ -308,3 +308,62 @@ def test_verified_chip_renders_green_when_flag_off(seeded_app):
     row = _row(text, "Always Verified")
     assert row
     assert "lib-trust--verified" in row
+
+
+class TestLibraryDraftsBand:
+    """Unfinished builder drafts are surfaced on /library.
+
+    A draft lives in localStorage and never reaches the server, so the band is
+    filled client-side and the server can only be asked for the scaffolding.
+    What these guard is the part that must NOT drift: the band is separate from
+    the inventory, it starts hidden, and every promise-limiting label the
+    design depends on is actually present in the shipped markup.
+    """
+
+    def test_drafts_band_ships_hidden_and_outside_the_inventory(self, seeded_app):
+        text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+        # Present, and hidden until the client finds drafts — an empty section
+        # would be noise on a page that already carries five kinds.
+        assert 'id="lib-drafts"' in text
+        assert 'id="lib-drafts-rows"' in text
+        assert '<div class="lib-drafts" id="lib-drafts" hidden>' in text
+        # NOT a `.lib-group`: drafts must never join the united inventory list,
+        # whose rows are account-scoped and survive a device switch. Anchor the
+        # ordering on the item-count row, which renders whether or not this
+        # fixture's user actually has any sections.
+        assert 'class="lib-drafts"' in text
+        assert "lib-group" not in text[text.index('id="lib-drafts"') : text.index('id="lib-item-count"')]
+        assert text.index('id="lib-drafts"') < text.index('id="lib-item-count"'), (
+            "drafts band must sit above the inventory, not inside it"
+        )
+
+    def test_drafts_band_states_the_durability_limit(self, seeded_app):
+        """Placement in the Library implies account-scoped durability that
+        localStorage cannot keep, so the limit is stated on the band AND on
+        every row — a row can be read on its own."""
+        text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+        assert "Saved in this browser only — not yet in your Library" in text
+        assert "this browser only" in text
+        # A plugin draft never keeps its .zip (a File cannot be serialized),
+        # which is a second, type-specific limit.
+        assert "bundle not saved — re-attach to publish" in text
+
+    def test_drafts_resume_links_target_the_builder_by_type(self, seeded_app):
+        text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+        assert "/skills?type=' + k" in text
+        assert "agnes_builder_draft_v1_" in text
+        # The pre-redesign single-slot key is still read, so a draft written by
+        # the skill-only builder is not orphaned.
+        assert "agnes_skill_draft_v1_" in text
+
+    def test_add_menu_carries_no_draft_count(self, seeded_app):
+        """The "+ Add" button must NOT badge a draft count.
+
+        It exists only on /library, which already shows the band — so a badge
+        could only ever duplicate what is on screen. Worse, it would count
+        something its own menu does not contain: the menu offers Build a
+        skill / plugin / agent and Upload a file, never a draft.
+        """
+        text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+        assert "lib-new-draftcount" not in text
+        assert "lib-new__count" not in text

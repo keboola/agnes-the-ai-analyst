@@ -362,6 +362,179 @@ def test_sessions_list_not_paused_for_active(fake_provider_client: TestClient):
     assert sessions[0]["paused"] is False
 
 
+# ---------------------------------------------------------------------------
+# Pinned conversations — PUT /sessions/{id}/pin
+# ---------------------------------------------------------------------------
+
+
+def test_sessions_list_unpinned_by_default(api_client: TestClient, logged_in_user):
+    api_client.post("/api/chat/sessions", json={"surface": "web"})
+    sessions = api_client.get("/api/chat/sessions").json()
+    assert sessions[0]["pinned"] is False
+    assert sessions[0]["pinned_at"] is None
+
+
+def test_pin_and_unpin_round_trip(api_client: TestClient, logged_in_user):
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+
+    r = api_client.put(f"/api/chat/sessions/{chat_id}/pin", json={"pinned": True})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"id": chat_id, "pinned": True}
+
+    pinned = api_client.get("/api/chat/sessions").json()[0]
+    assert pinned["pinned"] is True
+    assert pinned["pinned_at"] is not None  # the timestamp orders the Pinned group
+
+    assert api_client.put(f"/api/chat/sessions/{chat_id}/pin", json={"pinned": False}).status_code == 200
+    unpinned = api_client.get("/api/chat/sessions").json()[0]
+    assert unpinned["pinned"] is False
+    assert unpinned["pinned_at"] is None
+
+
+def test_pin_survives_messages(api_client: TestClient, logged_in_user):
+    """Pinning happens on real conversations, i.e. AFTER chat_messages rows
+    exist. On DuckDB 1.5.3 that combination is exactly what the FK+index bug
+    breaks if ``pinned_at`` is ever indexed — this is the regression guard for
+    that (the same guard test_chat_pg.py applies to the sandbox-ref columns)."""
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+    repo = api_client.app.state.chat_repo
+    repo.append_message(session_id=chat_id, role="user", content="hello")
+    repo.append_message(session_id=chat_id, role="assistant", content="hi")
+
+    assert api_client.put(f"/api/chat/sessions/{chat_id}/pin", json={"pinned": True}).status_code == 200
+    assert api_client.get("/api/chat/sessions").json()[0]["pinned"] is True
+
+
+def test_pinned_sessions_lead_the_list(api_client: TestClient, logged_in_user):
+    """The panel renders the server order, so an old pinned chat must come back
+    ahead of newer unpinned ones — even though its own recency puts it last.
+
+    Each session gets a message before the next is created: creating a session
+    archives the caller's still-empty ones, so a message is what makes a session
+    outlive the next ``POST /sessions``.
+    """
+    repo = api_client.app.state.chat_repo
+    ids = []
+    for n in range(3):
+        chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+        repo.append_message(session_id=chat_id, role="user", content=f"msg {n}")
+        ids.append(chat_id)
+    first, second, third = ids
+
+    # Sanity: plain recency order is newest-first, i.e. the reverse of creation.
+    assert [s["id"] for s in api_client.get("/api/chat/sessions").json()] == [third, second, first]
+
+    api_client.put(f"/api/chat/sessions/{first}/pin", json={"pinned": True})
+    ordered = [s["id"] for s in api_client.get("/api/chat/sessions").json()]
+    assert ordered == [first, third, second], "the pin leads despite being the least recent"
+
+    # Most-recently-pinned leads within the pinned block.
+    api_client.put(f"/api/chat/sessions/{second}/pin", json={"pinned": True})
+    assert [s["id"] for s in api_client.get("/api/chat/sessions").json()] == [second, first, third]
+
+
+def test_pin_404_for_unknown_session(api_client: TestClient, logged_in_user):
+    r = api_client.put("/api/chat/sessions/chat_nonexistent/pin", json={"pinned": True})
+    assert r.status_code == 404
+
+
+def test_pin_404_for_other_users_session(api_client: TestClient, logged_in_user):
+    """Pinning is auth-scoped — Alice cannot pin Bob's chat, and the refusal is
+    a 404 (not 403) so the endpoint can't be used to probe for session ids."""
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+
+    app = api_client.app
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "user2",
+        "email": "bob@test.com",
+        "is_admin": False,
+    }
+    try:
+        r = api_client.put(f"/api/chat/sessions/{chat_id}/pin", json={"pinned": True})
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides[get_current_user] = lambda: TEST_USER
+
+    # And Alice's own pin state is untouched by the refused call.
+    assert api_client.get("/api/chat/sessions").json()[0]["pinned"] is False
+
+
+# ---------------------------------------------------------------------------
+# Rename — PUT /sessions/{id}/title (the row menu's Rename action)
+# ---------------------------------------------------------------------------
+
+
+def test_rename_session(api_client: TestClient, logged_in_user):
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+
+    r = api_client.put(f"/api/chat/sessions/{chat_id}/title", json={"title": "Q3 pipeline review"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"id": chat_id, "title": "Q3 pipeline review"}
+    assert api_client.get("/api/chat/sessions").json()[0]["title"] == "Q3 pipeline review"
+
+
+def test_rename_strips_surrounding_whitespace(api_client: TestClient, logged_in_user):
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+    r = api_client.put(f"/api/chat/sessions/{chat_id}/title", json={"title": "  padded  "})
+    assert r.status_code == 200
+    assert r.json()["title"] == "padded"
+
+
+def test_rename_rejects_blank_title(api_client: TestClient, logged_in_user):
+    """An all-whitespace title is a 400, not a silent no-op: the row would
+    otherwise render as "Untitled chat" with no explanation."""
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+    for blank in ("", "   ", "\t\n"):
+        r = api_client.put(f"/api/chat/sessions/{chat_id}/title", json={"title": blank})
+        assert r.status_code == 400, blank
+        assert r.json()["detail"]["kind"] == "invalid_title"
+
+
+def test_rename_rejects_overlong_title(api_client: TestClient, logged_in_user):
+    from app.api.chat import _TITLE_MAX
+
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+    assert api_client.put(f"/api/chat/sessions/{chat_id}/title", json={"title": "x" * _TITLE_MAX}).status_code == 200
+    r = api_client.put(f"/api/chat/sessions/{chat_id}/title", json={"title": "x" * (_TITLE_MAX + 1)})
+    assert r.status_code == 400
+    assert r.json()["detail"]["kind"] == "invalid_title"
+
+
+def test_rename_preserves_pin_state(api_client: TestClient, logged_in_user):
+    """Renaming a pinned conversation must not unpin it — they are independent
+    columns, and the row menu offers both actions side by side."""
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+    api_client.put(f"/api/chat/sessions/{chat_id}/pin", json={"pinned": True})
+    api_client.put(f"/api/chat/sessions/{chat_id}/title", json={"title": "still pinned"})
+    row = api_client.get("/api/chat/sessions").json()[0]
+    assert (row["title"], row["pinned"]) == ("still pinned", True)
+
+
+def test_rename_404_for_unknown_session(api_client: TestClient, logged_in_user):
+    r = api_client.put("/api/chat/sessions/chat_nonexistent/title", json={"title": "nope"})
+    assert r.status_code == 404
+
+
+def test_rename_404_for_other_users_session(api_client: TestClient, logged_in_user):
+    """Auth-scoped like the sibling routes — 404 (not 403) so the endpoint can't
+    be used to probe for other users' session ids."""
+    chat_id = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()["id"]
+
+    app = api_client.app
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "user2",
+        "email": "bob@test.com",
+        "is_admin": False,
+    }
+    try:
+        r = api_client.put(f"/api/chat/sessions/{chat_id}/title", json={"title": "hijacked"})
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides[get_current_user] = lambda: TEST_USER
+
+    assert api_client.get("/api/chat/sessions").json()[0]["title"] != "hijacked"
+
+
 def test_chat_requires_rbac_grant():
     """Default-deny: a user with no chat grant (and not admin) is refused 403
     by the chat API. This is the whole-feature RBAC gate — chat is off for

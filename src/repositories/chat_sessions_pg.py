@@ -48,6 +48,7 @@ def _row_to_session(row) -> ChatSession:
         relay_protocol_version=(
             int(row["relay_protocol_version"]) if row["relay_protocol_version"] is not None else None
         ),
+        pinned_at=row["pinned_at"],
     )
 
 
@@ -107,7 +108,10 @@ class ChatSessionPgRepository:
         sql = "SELECT * FROM chat_sessions WHERE user_email = :user_email"
         if not include_archived:
             sql += " AND archived = FALSE"
-        sql += " ORDER BY last_message_at DESC NULLS LAST, started_at DESC"
+        # Pinned first, most-recently-pinned leading; then plain recency. The
+        # explicit NULLS LAST matters more here than on DuckDB: PG's default for
+        # DESC is NULLS FIRST, which would sort every unpinned row to the top.
+        sql += " ORDER BY pinned_at DESC NULLS LAST, last_message_at DESC NULLS LAST, started_at DESC"
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text(sql), {"user_email": user_email}).mappings().all()
         return [_row_to_session(r) for r in rows]
@@ -156,6 +160,18 @@ class ChatSessionPgRepository:
             conn.execute(
                 sa.text("UPDATE chat_sessions SET title = :title WHERE id = :id"),
                 {"title": title, "id": chat_id},
+            )
+
+    def set_pinned(self, chat_id: str, pinned: bool) -> None:
+        """Pin (``pinned_at = now``) or unpin (``pinned_at = NULL``) a session.
+
+        Mirrors ``ChatRepository.set_pinned``: re-pinning re-stamps the
+        timestamp, moving the session to the front of the Pinned group.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE chat_sessions SET pinned_at = :ts WHERE id = :id"),
+                {"ts": datetime.now(timezone.utc) if pinned else None, "id": chat_id},
             )
 
     def archive_empty_user_sessions(
