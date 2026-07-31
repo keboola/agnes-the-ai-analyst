@@ -37,17 +37,29 @@
 .conn-status--error { color: var(--ds-accent-danger-ink); }
 .conn-status--ok { color: var(--ds-accent-success-ink); }
 .conn-empty { color: var(--ds-text-secondary); }
+.conn-banner {
+  border-radius: var(--ds-radius-md, 8px);
+  padding: 10px 14px; margin-bottom: 14px; font-size: 13px;
+}
+.conn-banner--ok { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.conn-banner--error { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
 </style>
 {% endblock %}
 
 {% block page %}
 <div class="conn-page" data-highlight="{{ highlight_source }}">
+  {% if connected_source %}
+    <div class="conn-banner conn-banner--ok">Connected {{ connected_source }}.</div>
+  {% endif %}
+  {% if connect_error %}
+    <div class="conn-banner conn-banner--error">Connect failed: {{ connect_error }}</div>
+  {% endif %}
   {% if not connect_sources %}
     <p class="conn-empty">You have no per-user MCP sources to connect. When an admin grants you a source that authenticates per person, it appears here.</p>
   {% endif %}
 
   {% for s in connect_sources %}
-  <div class="conn-card" id="source-{{ s.id }}" data-source="{{ s.id }}">
+  <div class="conn-card" id="source-{{ s.id }}" data-source="{{ s.id }}" data-auth-kind="{{ s.auth_kind }}">
     <div class="conn-card__head">
       <div>
         <div class="conn-card__name">{{ s.name }}</div>
@@ -62,6 +74,16 @@
 
     {% if s.hint_html %}<div class="conn-hint">{{ s.hint_html | safe }}</div>{% endif %}
 
+    {% if s.auth_kind == "oauth" %}
+    <div class="conn-row">
+      <a class="btn btn-primary btn-sm" href="/api/mcp/sources/{{ s.id }}/oauth/authorize" data-action="oauth-connect">{% if s.has_secret %}Reconnect{% else %}Connect with {{ s.name }}{% endif %}</a>
+      {% if s.has_secret %}
+      <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
+      <button type="button" class="btn btn-danger btn-sm" data-action="oauth-disconnect">Disconnect</button>
+      {% endif %}
+    </div>
+    {% if s.expires_at %}<div class="conn-updated">Token expires {{ s.expires_at }}</div>{% endif %}
+    {% else %}
     <div class="conn-row">
       <input type="password" autocomplete="off" placeholder="Paste your token" data-token />
       <button type="button" class="btn btn-primary btn-sm" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
@@ -70,6 +92,7 @@
       <button type="button" class="btn btn-danger btn-sm" data-action="remove">Remove</button>
       {% endif %}
     </div>
+    {% endif %}
     {% if s.updated_at %}<div class="conn-updated">Updated {{ s.updated_at }}</div>{% endif %}
     <div class="conn-status" data-status></div>
   </div>
@@ -77,7 +100,7 @@
 
   <div class="conn-note">
     Your token is encrypted and used only for your own requests. Admins cannot see it, and it never passes through the chat.
-    Remove stops Agnes from using the token — to fully revoke it, revoke it in the upstream system.
+    Remove/Disconnect stops Agnes from using the token — to fully revoke it, revoke it in the upstream system.
   </div>
 </div>
 {% endblock %}
@@ -103,7 +126,11 @@
   document.querySelectorAll(".conn-card").forEach(function (card) {
     var id = card.getAttribute("data-source");
     var base = "/api/mcp/sources/" + encodeURIComponent(id) + "/my-secret";
+    var oauthConnectionUrl = "/api/mcp/sources/" + encodeURIComponent(id) + "/oauth/connection";
     card.addEventListener("click", async function (ev) {
+      // The "Connect with …" affordance for oauth sources is a plain <a
+      // href> — a real browser GET navigation into the authorize redirect,
+      // not a fetch() call — so it falls through here untouched.
       var btn = ev.target.closest("button[data-action]");
       if (!btn) return;
       var action = btn.getAttribute("data-action");
@@ -127,6 +154,12 @@
           var d = await api("DELETE", base);
           if (d.status === 204) { location.reload(); }
           else { say(card, "Remove failed (" + d.status + ").", "error"); }
+        } else if (action === "oauth-disconnect") {
+          if (!confirm("Disconnect your OAuth connection for this source?")) return;
+          say(card, "Disconnecting…");
+          var od = await api("DELETE", oauthConnectionUrl);
+          if (od.status === 204) { location.reload(); }
+          else { say(card, "Disconnect failed (" + od.status + ").", "error"); }
         }
       } catch (e) { say(card, "Network error.", "error"); }
     });

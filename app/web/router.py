@@ -1103,10 +1103,16 @@ async def me_connections_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Self-service page: connect / replace / test / remove your own credential
-    for the per_user MCP sources you are granted. Any authenticated user."""
+    for the per_user MCP sources you are granted. Any authenticated user.
+
+    ``auth_method='oauth'`` sources (2026-07-30 outbound MCP OAuth sources
+    spec §3) report against ``mcp_user_oauth_tokens`` instead of the
+    vault-backed per-user secrets table — same card, a Connect/Disconnect
+    button in place of the paste-field (template branches on
+    ``s.auth_kind``)."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.markdown_render import render_safe
-    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+    from src.repositories import mcp_sources_repo, mcp_user_oauth_tokens_repo, per_user_secrets_repo
 
     granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
     sources = []
@@ -1115,14 +1121,26 @@ async def me_connections_page(
             continue
         if (src.get("scope") or "shared").lower() != "per_user":
             continue
+        is_oauth = (src.get("auth_method") or "").lower() == "oauth"
+        if is_oauth:
+            token_row = mcp_user_oauth_tokens_repo().get(src["id"], user["id"])
+            has_secret = token_row is not None
+            updated_at = token_row["updated_at"].isoformat() if token_row and token_row.get("updated_at") else None
+            expires_at = token_row["expires_at"].isoformat() if token_row and token_row.get("expires_at") else None
+        else:
+            has_secret = per_user_secrets_repo().has(src["id"], user["id"])
+            updated_at = per_user_secrets_repo().get_updated_at(src["id"], user["id"])
+            expires_at = None
         sources.append(
             {
                 "id": src["id"],
                 "name": src["name"],
                 "transport": src.get("transport"),
                 "hint_html": render_safe(src.get("connect_hint")),
-                "has_secret": per_user_secrets_repo().has(src["id"], user["id"]),
-                "updated_at": per_user_secrets_repo().get_updated_at(src["id"], user["id"]),
+                "auth_kind": "oauth" if is_oauth else "secret",
+                "has_secret": has_secret,
+                "updated_at": updated_at,
+                "expires_at": expires_at,
             }
         )
     ctx = _build_context(
@@ -1132,6 +1150,8 @@ async def me_connections_page(
         is_admin=is_user_admin(user["id"], conn),
         connect_sources=sources,
         highlight_source=request.query_params.get("source") or "",
+        connected_source=request.query_params.get("connected") or "",
+        connect_error=request.query_params.get("connect_error") or "",
     )
     return templates.TemplateResponse(request, "me_connections.html", ctx)
 
