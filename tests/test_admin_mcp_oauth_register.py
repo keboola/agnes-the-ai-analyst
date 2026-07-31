@@ -494,3 +494,104 @@ def test_flipping_auth_method_away_from_oauth_purges_oauth_rows(seeded_app, monk
     assert mcp_source_oauth_clients_repo().get(sid) is None
     assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
     assert mcp_oauth_flows_repo().consume("flip-nonce") is None
+
+
+def test_manual_client_preserves_secret_when_omitted(seeded_app):
+    """The secret is write-only over the API, so a form that re-saves scopes
+    arrives with client_secret=None. That must NOT wipe the stored secret —
+    doing so breaks every user's refresh. An explicit "" still clears it
+    (Devin Review on #1124)."""
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    sid = _seed_oauth_source(source_id="src_oauth_secret_keep")
+    body = {
+        "client_id": "cid-manual",
+        "client_secret": "s3cr3t",
+        "authorization_endpoint": "https://as.example.com/authorize",
+        "token_endpoint": "https://as.example.com/token",
+        "scopes": "read",
+    }
+    assert (
+        seeded_app["client"]
+        .put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json=body)
+        .status_code
+        == 200
+    )
+
+    # Re-save with a different scope and no secret — the common form round-trip.
+    assert (
+        seeded_app["client"]
+        .put(
+            f"/api/admin/mcp-sources/{sid}/oauth/client",
+            headers=_hdr(seeded_app),
+            json={**{k: v for k, v in body.items() if k != "client_secret"}, "scopes": "read write"},
+        )
+        .status_code
+        == 200
+    )
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row["client_secret"] == "s3cr3t"
+    assert row["scopes"] == "read write"
+
+    # Explicit empty string is a deliberate clear (public PKCE-only client).
+    assert (
+        seeded_app["client"]
+        .put(
+            f"/api/admin/mcp-sources/{sid}/oauth/client",
+            headers=_hdr(seeded_app),
+            json={**body, "client_secret": ""},
+        )
+        .status_code
+        == 200
+    )
+    assert mcp_source_oauth_clients_repo().get(sid)["client_secret"] is None
+
+    # A different client_id replaces the registration — secret goes with it.
+    assert (
+        seeded_app["client"]
+        .put(
+            f"/api/admin/mcp-sources/{sid}/oauth/client",
+            headers=_hdr(seeded_app),
+            json={**{k: v for k, v in body.items() if k != "client_secret"}, "client_id": "cid-other"},
+        )
+        .status_code
+        == 200
+    )
+    assert mcp_source_oauth_clients_repo().get(sid)["client_secret"] is None
+
+
+def test_reregister_with_new_client_id_drops_user_tokens(seeded_app, monkeypatch):
+    """Tokens were issued to the old client_id, whose registration the
+    re-register just revoked. Some AS answer invalid_client rather than
+    invalid_grant on the refresh, which is not classified as a reconnect
+    signal — the user would be stuck on an opaque 401. Drop them so the next
+    call prompts a reconnect (Devin Review on #1124)."""
+    from src.repositories import mcp_oauth_flows_repo, mcp_user_oauth_tokens_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_oauth_rereg_tokens")
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-first")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+
+    mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "tok", refresh_token="rt", expires_at=None, scopes=None)
+    mcp_oauth_flows_repo().create("rereg-nonce", sid, "admin1", "verifier")
+
+    # Same client_id back from the AS — nothing to invalidate.
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-first")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is True
+
+    # New client_id — every user's tokens are now unusable.
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-second")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
+    assert mcp_oauth_flows_repo().consume("rereg-nonce") is None

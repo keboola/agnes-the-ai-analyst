@@ -631,3 +631,30 @@ def test_async_ssrf_transport_does_not_block_the_event_loop():
 
     assert resolve_thread_id.get("id") is not None, "resolve_safe was never reached"
     assert resolve_thread_id["id"] != loop_thread_id["id"], "resolve_safe ran on the event loop thread"
+
+
+def test_register_rejects_response_granting_an_unperformable_auth_method():
+    """RFC 7591 §3.2.1 lets the AS register a different method than the one
+    requested, and its response is authoritative — the metadata-side check
+    cannot see this case (Devin Review on #1124)."""
+
+    def handler(request):
+        return httpx.Response(
+            201,
+            json={
+                "client_id": "abc123",
+                "client_secret": "s3cr3t",
+                "token_endpoint_auth_method": "private_key_jwt",
+            },
+        )
+
+    async def _impl():
+        async with _client(handler) as client:
+            await register_dynamic_client(
+                _AS_METADATA,
+                redirect_uri="https://agnes.example.com/api/mcp/oauth-client/callback",
+                client=client,
+            )
+
+    with pytest.raises(OAuthDiscoveryError, match="private_key_jwt"):
+        run(_impl())
