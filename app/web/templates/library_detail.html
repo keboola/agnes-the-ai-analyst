@@ -7,34 +7,9 @@
 {% block head_extra %}
 {% import "macros/_detail.html" as detail %}
 {{ detail.styles() }}
+<link rel="stylesheet" href="{{ static_url('css/file_preview.css') }}">
+<script src="{{ static_url('js/file_preview.js') }}" defer></script>
 <style>
-  /* Ask bar */
-  .ask {
-    display: flex; gap: var(--space-2); align-items: center;
-    padding: var(--space-2); background: var(--ds-surface);
-    border: 1px solid var(--ds-border); border-radius: var(--radius-full);
-    box-shadow: var(--ds-shadow-sm); transition: border-color .16s ease, box-shadow .16s ease;
-  }
-  .ask:focus-within { border-color: var(--kind); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kind) 18%, transparent); }
-  .ask__icon { flex: none; width: 20px; height: 20px; margin-left: var(--space-2); color: var(--ds-text-muted); }
-  .ask input { flex: 1; border: none; background: transparent; outline: none; font-size: 1rem; color: var(--ds-text-primary); padding: var(--space-2); }
-
-  .results { margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
-  .result {
-    padding: var(--space-4); background: var(--ds-surface);
-    border: 1px solid var(--ds-border); border-left: 3px solid var(--kind);
-    border-radius: var(--radius-lg); box-shadow: var(--ds-shadow-sm);
-  }
-  .result--low-confidence { border-left-color: var(--ds-warn-line); }
-  .result__cite { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: 0.78rem; color: var(--ds-text-secondary); margin-bottom: 6px; }
-  .result__file { font-weight: var(--font-semibold); color: var(--ds-text-primary); }
-  .result__score { margin-left: auto; font-family: var(--ds-font-mono); font-size: 0.72rem; color: var(--kind); background: color-mix(in srgb, var(--kind) 10%, var(--ds-surface)); padding: 1px 8px; border-radius: var(--radius-full); }
-  .result__confidence { font-size: 0.72rem; font-weight: var(--font-medium); padding: 1px 8px; border-radius: var(--radius-full); color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-secondary) 10%, var(--ds-surface)); }
-  .result__confidence--low { color: var(--ds-warn-ink); background: var(--ds-warn-bg); }
-  .result__text { font-size: 0.92rem; color: var(--ds-text-primary); line-height: 1.55; margin: 0; }
-  .results__empty { color: var(--ds-text-secondary); font-size: 0.9rem; }
-  .ask__note { font-size: 0.78rem; color: var(--ds-text-secondary); margin: var(--space-3) 0 0; }
-
   /* Drop zone */
   .drop {
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2);
@@ -65,6 +40,8 @@
   .file__icon svg { width: 18px; height: 18px; }
   .file__body { flex: 1; min-width: 0; }
   .file__name { color: var(--ds-text-primary); font-weight: var(--font-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file__name a { color: inherit; text-decoration: none; }
+  .file__name a:hover { color: var(--kind); text-decoration: underline; }
   .file__meta { font-size: 0.76rem; color: var(--ds-text-muted); }
   .file__reason { font-size: 0.76rem; color: var(--ds-warn-ink); margin-top: 2px; }
   .status-pill { flex: none; font-size: 0.72rem; font-weight: var(--font-medium); padding: 2px 10px; border-radius: var(--radius-full); color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-secondary) 10%, var(--ds-surface)); }
@@ -108,7 +85,7 @@
 {% else %}
   {% set _meta = [{'icon': 'file', 'text': (_n|string) ~ ' file' ~ ('s' if _n != 1 else '')}] %}
 {% endif %}
-{% set _desc = collection.description or ('Search this file, or add more to build a collection.' if _single else 'Search across the files in this collection, or add more.') %}
+{% set _desc = collection.description or ('One file in your library — add more to build a collection.' if _single else 'The files in this collection, indexed so your agents can search them.') %}
 
 {% call detail.hero(
      kind='library', glyph=_hero_glyph, name=_title,
@@ -117,20 +94,10 @@
   {{ detail.ask_agnes('Search the ' ~ _title ~ ' ' ~ _noun ~ ' and answer from its files.') }}
 {% endcall %}
 
-{{ detail.section_open('Ask this ' ~ _noun, icon='search') }}
-  <div class="ask">
-    <svg class="ask__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-    <input id="lib-q" type="search" placeholder="Search this {{ _noun }}…" aria-label="Search">
-    {{ ds.button("Search", variant="primary", attrs='id="lib-search-btn" type="button"') }}
-  </div>
-  <p class="ask__note">
-    Search combines lexical term matching with semantic embeddings (when available) over the
-    indexed file chunks. Confidence reflects how clearly the top match stands out — on a small
-    {{ _noun }} or a close call, treat "low confidence" results as a starting point.
-  </p>
-  <div class="results" id="lib-results"></div>
-{{ detail.section_close() }}
-
+{# No in-page ask/search box: a detail page presents its entity (like the data
+   package / plugin / table pages), and asking happens in chat via the hero's
+   Ask Agnes action. Uploading stays here — it targets a COLLECTION, so it is
+   this page's affordance and never the individual file page's. #}
 {{ detail.section_open('Upload files', icon='file') }}
   <label class="drop" id="lib-drop">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V6M8 10l4-4 4 4"/><path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/></svg>
@@ -166,7 +133,18 @@
           {% endif %}
         </span>
         <div class="file__body">
-          <div class="file__name">{{ f.filename }}</div>
+          {# Clicking a file previews it in place (file_preview.js intercepts
+             the click) — from a list of files, "what is this one?" is the
+             question, and a modal answers it without leaving the collection.
+             It stays a real link to the file's own page, so Cmd/middle-click,
+             the context menu and a no-JS load all still open the full page,
+             which the modal's footer also links to. #}
+          <div class="file__name"><a href="/library/{{ collection.slug }}/f/{{ f.id }}"
+             data-preview-file="{{ f.id }}"
+             data-preview-collection="{{ collection.id }}"
+             data-preview-name="{{ f.filename }}"
+             data-preview-type="{{ ft }}"
+             data-preview-size="{{ (f.size_bytes or 0)|humanbytes(1) if f.size_bytes else '' }}">{{ f.filename }}</a></div>
           {% set fdetail = f.processing_detail or {} %}
           {% if fdetail.get("kind") == "bundle" %}
             <div class="file__meta">archive · {{ fdetail.get("children", 0) }} files · {{ fdetail.get("indexed", 0) }} indexed</div>
@@ -226,37 +204,6 @@
       if (r.ok || r.status === 422) { window.location.reload(); }
       else { alert("Upload failed: " + r.status); }
     });
-
-    async function runSearch() {
-      var q = (document.getElementById("lib-q").value || "").trim();
-      var box = document.getElementById("lib-results");
-      if (!q) { box.innerHTML = ""; return; }
-      var r = await fetch("/api/collections/search?corpus_id=" + encodeURIComponent(cid) + "&q=" + encodeURIComponent(q));
-      if (!r.ok) { box.innerHTML = '<p class="results__empty">Search failed.</p>'; return; }
-      var results = (await r.json()).results || [];
-      if (!results.length) { box.innerHTML = '<p class="results__empty">No matches.</p>'; return; }
-      box.innerHTML = "";
-      results.forEach(function (res) {
-        var el = document.createElement("div"); el.className = "result";
-        var confidence = res.confidence || "low";
-        if (confidence === "low") el.classList.add("result--low-confidence");
-        var cite = document.createElement("div"); cite.className = "result__cite";
-        var fn = document.createElement("span"); fn.className = "result__file";
-        fn.textContent = res.filename || res.file_id || "chunk";
-        var loc = document.createElement("span"); loc.textContent = "#" + res.ordinal;
-        var conf = document.createElement("span");
-        conf.className = "result__confidence" + (confidence === "low" ? " result__confidence--low" : "");
-        conf.textContent = confidence + " confidence";
-        var score = document.createElement("span"); score.className = "result__score"; score.textContent = "score " + res.score;
-        cite.appendChild(fn); cite.appendChild(loc); cite.appendChild(conf); cite.appendChild(score);
-        var txt = document.createElement("p"); txt.className = "result__text"; txt.textContent = (res.text || "").slice(0, 500);
-        el.appendChild(cite); el.appendChild(txt); box.appendChild(el);
-      });
-    }
-    var sb = document.getElementById("lib-search-btn");
-    if (sb) sb.addEventListener("click", runSearch);
-    var qi = document.getElementById("lib-q");
-    if (qi) qi.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); runSearch(); } });
 
     document.querySelectorAll("[data-reingest]").forEach(function (btn) {
       btn.addEventListener("click", function () {

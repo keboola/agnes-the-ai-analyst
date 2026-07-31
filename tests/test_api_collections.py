@@ -24,6 +24,25 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _seed_everyone_membership(user_id: str) -> None:
+    """Put ``user_id`` in Everyone so an Everyone-scoped grant reaches them.
+
+    Membership is never implicit (see ``_seed_collection_grant``), and the
+    fixture only seeds the admin's — so a test that shares *to* Everyone and
+    then reads *as* the analyst has to add the row itself.
+    """
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    conn = get_system_db()
+    grp = UserGroupsRepository(conn).get_by_name("Everyone")
+    assert grp, "Everyone group must be seeded"
+    members = UserGroupMembersRepository(conn)
+    if grp["id"] not in set(members.list_groups_for_user(user_id)):
+        members.add_member(user_id, grp["id"], source="system_seed")
+    conn.close()
+
+
 def _seed_collection_grant(corpus_id: str, user_id: str) -> None:
     """Give ``user_id`` access to the collection.
 
@@ -1200,3 +1219,248 @@ class TestFileUpsert:
             headers=_auth(seeded_app["analyst_token"]),
         )
         assert listing.json()["files"] == []
+
+
+# ---------------------------------------------------------------------------
+# Preview — GET …/files/{file_id}/preview  +  …/raw
+# ---------------------------------------------------------------------------
+
+
+class TestFilePreview:
+    """The Library's file-preview contract.
+
+    One JSON endpoint tells the client what to show (`kind`), and a separate
+    raw endpoint streams only the formats a browser can safely draw itself.
+    The split is the security boundary: uploads accept `.html`, so what is
+    streamed inline can never be decided by the uploader.
+    """
+
+    def _collection(self, seeded_app, name: str) -> str:
+        r = seeded_app["client"].post("/api/collections", json={"name": name}, headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    def _upload(self, seeded_app, cid: str, filename: str, body: bytes, ctype: str) -> str:
+        r = seeded_app["client"].post(
+            f"/api/collections/{cid}/files",
+            files={"files": (filename, io.BytesIO(body), ctype)},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code in (200, 201, 422), r.text
+        return r.json()[0]["file_id"]
+
+    def test_textual_file_previews_its_own_bytes(self, seeded_app):
+        cid = self._collection(seeded_app, "Preview Text")
+        fid = self._upload(seeded_app, cid, "notes.md", b"# Title\n\nbody text", "text/markdown")
+
+        r = seeded_app["client"].get(
+            f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["admin_token"])
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["kind"] == "text"
+        assert body["source"] == "file"
+        assert "# Title" in body["text"]
+        assert body["truncated"] is False
+        assert body["filename"] == "notes.md"
+
+    def test_long_text_is_truncated_not_streamed_whole(self, seeded_app):
+        """A preview is a glance: a big file comes back capped, and says so."""
+        from app.api.collections import _PREVIEW_MAX_CHARS
+
+        cid = self._collection(seeded_app, "Preview Long")
+        fid = self._upload(seeded_app, cid, "big.txt", b"x" * (_PREVIEW_MAX_CHARS + 5000), "text/plain")
+
+        body = (
+            seeded_app["client"]
+            .get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["admin_token"]))
+            .json()
+        )
+        assert body["kind"] == "text"
+        assert body["truncated"] is True
+        assert len(body["text"]) == _PREVIEW_MAX_CHARS
+
+    def test_image_previews_through_the_raw_endpoint(self, seeded_app):
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 40
+        cid = self._collection(seeded_app, "Preview Image")
+        fid = self._upload(seeded_app, cid, "shot.png", png, "image/png")
+
+        c = seeded_app["client"]
+        body = c.get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["admin_token"])).json()
+        assert body["kind"] == "image"
+        assert body["raw_url"] == f"/api/collections/{cid}/files/{fid}/raw"
+
+        raw = c.get(body["raw_url"], headers=_auth(seeded_app["admin_token"]))
+        assert raw.status_code == 200, raw.text
+        assert raw.headers["content-type"] == "image/png"
+        assert raw.headers["content-disposition"].startswith("inline")
+        assert raw.headers["x-content-type-options"] == "nosniff"
+        assert raw.content == png
+
+    def test_pdf_previews_inline(self, seeded_app):
+        cid = self._collection(seeded_app, "Preview Pdf")
+        fid = self._upload(seeded_app, cid, "deck.pdf", b"%PDF-1.4 body", "application/pdf")
+
+        c = seeded_app["client"]
+        body = c.get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["admin_token"])).json()
+        assert body["kind"] == "pdf"
+        raw = c.get(body["raw_url"], headers=_auth(seeded_app["admin_token"]))
+        assert raw.headers["content-type"] == "application/pdf"
+        # The modal draws a PDF in a same-origin iframe, so this one response
+        # must narrow the app-wide DENY / frame-ancestors 'none' defaults to
+        # SELF — otherwise the viewer is blocked by our own security headers.
+        assert raw.headers["x-frame-options"] == "SAMEORIGIN"
+        assert "frame-ancestors 'self'" in raw.headers["content-security-policy"]
+        assert raw.headers["x-content-type-options"] == "nosniff"
+
+    def test_uploaded_html_is_never_streamed_inline(self, seeded_app):
+        """The XSS boundary: an uploaded .html previews as SOURCE TEXT, and the
+        raw endpoint refuses it outright — serving it inline from our origin
+        would run the uploader's script against every viewer."""
+        cid = self._collection(seeded_app, "Preview Html")
+        fid = self._upload(seeded_app, cid, "evil.html", b"<script>alert(document.cookie)</script>", "text/html")
+
+        c = seeded_app["client"]
+        body = c.get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["admin_token"])).json()
+        assert body["kind"] == "text"  # shown as source in a <pre>, never rendered
+        assert body["raw_url"] is None
+        assert "<script>" in body["text"]
+
+        raw = c.get(f"/api/collections/{cid}/files/{fid}/raw", headers=_auth(seeded_app["admin_token"]))
+        assert raw.status_code == 415, raw.text
+        assert "/preview" in raw.text  # points at what to call instead
+
+    def test_binary_format_previews_its_extracted_text(self, seeded_app):
+        """A .docx has no readable bytes — its preview is the text ingestion
+        already extracted, labelled as such."""
+        from src.repositories import corpus_chunks_repo, corpus_files_repo
+
+        cid = self._collection(seeded_app, "Preview Extracted")
+        fid = corpus_files_repo().add(
+            corpus_id=cid,
+            filename="report.docx",
+            sha256="s",
+            file_type="docx",
+            size_bytes=10,
+            storage_path=None,
+        )
+        corpus_chunks_repo().add_many(
+            [{"corpus_id": cid, "file_id": fid, "ordinal": 0, "text": "quarterly revenue grew"}]
+        )
+
+        body = (
+            seeded_app["client"]
+            .get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["admin_token"]))
+            .json()
+        )
+        assert body["kind"] == "text"
+        assert body["source"] == "extracted"
+        assert "quarterly revenue grew" in body["text"]
+
+    def test_unpreviewable_file_says_why(self, seeded_app):
+        """No bytes we can draw and no extracted text yet → an explicit reason,
+        in the words the modal shows, not an empty box."""
+        from src.repositories import corpus_files_repo
+
+        cid = self._collection(seeded_app, "Preview None")
+        fid = corpus_files_repo().add(
+            corpus_id=cid,
+            filename="archive.zip",
+            sha256="s",
+            file_type="zip",
+            size_bytes=10,
+            storage_path=None,
+        )
+
+        body = (
+            seeded_app["client"]
+            .get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["admin_token"]))
+            .json()
+        )
+        assert body["kind"] == "none"
+        assert body["reason"]
+        assert "indexed" in body["reason"]
+
+    def test_preview_404s_for_wrong_collection_and_unknown_file(self, seeded_app):
+        cid = self._collection(seeded_app, "Preview Guard A")
+        other = self._collection(seeded_app, "Preview Guard B")
+        fid = self._upload(seeded_app, cid, "n.txt", b"hi", "text/plain")
+
+        c = seeded_app["client"]
+        tok = _auth(seeded_app["admin_token"])
+        assert c.get(f"/api/collections/{other}/files/{fid}/preview", headers=tok).status_code == 404
+        assert c.get(f"/api/collections/{cid}/files/cf_nope/preview", headers=tok).status_code == 404
+        assert c.get(f"/api/collections/{other}/files/{fid}/raw", headers=tok).status_code == 404
+
+    def test_preview_404s_without_access(self, seeded_app):
+        """404, not 403 — an outsider can't tell the file exists."""
+        cid = self._collection(seeded_app, "Preview Private")
+        fid = self._upload(seeded_app, cid, "secret.txt", b"classified", "text/plain")
+
+        c = seeded_app["client"]
+        other = _auth(seeded_app["analyst_token"])
+        assert c.get(f"/api/collections/{cid}/files/{fid}/preview", headers=other).status_code == 404
+        assert c.get(f"/api/collections/{cid}/files/{fid}/raw", headers=other).status_code == 404
+
+    def test_a_file_shared_out_of_its_folder_is_previewable(self, seeded_app):
+        """Per-file sharing has to carry the preview with it: the recipient holds
+        no grant on the parent collection, so a collection-only rule would share
+        a file nobody but its owner can open."""
+        cid = self._collection(seeded_app, "Preview Shared File")
+        fid = self._upload(seeded_app, cid, "shared.txt", b"for you", "text/plain")
+
+        c = seeded_app["client"]
+        gs = c.get("/api/sharing/groups", headers=_auth(seeded_app["admin_token"])).json()
+        everyone = next(g for g in gs if g["is_everyone"])
+        r = c.put(
+            f"/api/sharing/corpus_file/{fid}",
+            json={"group_ids": [everyone["id"]]},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+
+        _seed_everyone_membership("analyst1")
+        body = c.get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(seeded_app["analyst_token"]))
+        assert body.status_code == 200, body.text
+        assert body.json()["text"] == "for you"
+
+    def test_restricted_principal_is_held_to_its_intersection(self, seeded_app):
+        """A co-session caller is not a user dict — ``user['id']`` would crash it
+        (the /api/collections list regression above) — and its authority is its
+        intersection, so a collection outside that set previews as 404 even
+        though the underlying owner is an admin."""
+        import asyncio
+
+        import pytest
+        from fastapi import HTTPException as _HTTPException
+
+        from app.api.collections import preview_file
+        from app.auth.session_principal import SessionPrincipal
+        from src.repositories import corpus_files_repo, file_corpora_repo
+
+        repo = file_corpora_repo()
+        inside = repo.create(name="SP Preview In", slug="sp-preview-in", description=None, created_by="admin1")
+        outside = repo.create(name="SP Preview Out", slug="sp-preview-out", description=None, created_by="admin1")
+        fid_in = corpus_files_repo().add(
+            corpus_id=inside, filename="in.txt", sha256="s", file_type="txt", size_bytes=1, storage_path=None
+        )
+        fid_out = corpus_files_repo().add(
+            corpus_id=outside, filename="out.txt", sha256="s", file_type="txt", size_bytes=1, storage_path=None
+        )
+        principal = SessionPrincipal(
+            "chat_sp_preview",
+            ["analyst1"],
+            ["analyst@test.com"],
+            {"collection": frozenset({inside})},
+        )
+
+        # Inside the intersection: reached (no blob on disk → 404 on the blob,
+        # which is the *next* check, so the access gate let it through).
+        with pytest.raises(_HTTPException) as inside_err:
+            asyncio.run(preview_file(collection_id=inside, file_id=fid_in, user=principal))
+        assert inside_err.value.detail == "file_blob_missing"
+
+        # Outside it: indistinguishable from "no such file".
+        with pytest.raises(_HTTPException) as outside_err:
+            asyncio.run(preview_file(collection_id=outside, file_id=fid_out, user=principal))
+        assert outside_err.value.detail == "file_not_found"

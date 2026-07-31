@@ -258,6 +258,17 @@ _COLLECTIONS_FILES_REASON = (
     "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
     "analogue. The collection read surfaces carry the triple-surface contract."
 )
+_LIBRARY_PREVIEW_REASON = (
+    "Backs the Library's file-preview modal — a browser viewer, not a data "
+    "product. `…/raw` streams image/PDF bytes for the BROWSER to draw (no "
+    "JSON/MCP analogue), and `…/preview` exists to tell that viewer which "
+    "shape to render; its text is capped at a glance (_PREVIEW_MAX_CHARS), so "
+    "it is deliberately not a faithful read-the-file surface an agent could "
+    "rely on. Agent-facing access to collection text stays `collections_search` "
+    "/ `agnes collections search`. A real 'read this file whole' tool would be "
+    "its own feature (uncapped, paginated) and would then owe all three "
+    "surfaces."
+)
 _AUTHORING_SUGGESTIONS_REASON = (
     "Authoring-studio suggestion queue (v80) — web-form/admin-moderation flow. "
     "Non-admins submit a proposed create payload from the /admin/studio/{domain} "
@@ -499,6 +510,8 @@ _EXEMPT: dict[str, str] = {
     ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
+    "/api/collections/{collection_id}/files/{file_id}/preview": _LIBRARY_PREVIEW_REASON,
+    "/api/collections/{collection_id}/files/{file_id}/raw": _LIBRARY_PREVIEW_REASON,
     "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
     "/api/admin/memory-mining/run": _MEMORY_MINING_REASON,
     "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,

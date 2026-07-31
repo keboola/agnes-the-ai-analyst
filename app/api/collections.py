@@ -12,6 +12,10 @@ Endpoints:
                                                   require_collection_access("{collection_id}")
   POST   /api/collections/{collection_id}/files/{file_id}/reingest
                                                   require_collection_access("{collection_id}")
+  GET    /api/collections/{collection_id}/files/{file_id}/preview
+                                                  collection access OR corpus_file grant
+  GET    /api/collections/{collection_id}/files/{file_id}/raw
+                                                  collection access OR corpus_file grant
 
 RBAC model: **create** = any authenticated user (the corpus is owned by its
 creator and private to them); **delete** = owner or admin; file
@@ -24,6 +28,11 @@ Fail-closed: the GET list returns only collections the caller can access
 (granted + owned); unknown collections on entity-scoped endpoints return 404
 (not 403) so callers cannot probe for existence of collections they cannot
 access.
+
+The two **preview** endpoints widen the read rule by one case — a grant on the
+``corpus_file`` itself also grants them — because a file shared out of a folder
+has to be viewable by the person it was shared with, who holds no grant on the
+parent collection.
 """
 
 from __future__ import annotations
@@ -43,6 +52,7 @@ from app.auth.access import (
     require_collection_access,
 )
 from app.auth.dependencies import get_current_user
+from app.services.journey import mark_journey
 from src.corpus_allowlist import classify
 from src.file_storage import delete_corpus_file, store_corpus_file
 from src.repositories import (
@@ -181,6 +191,10 @@ async def create_collection(
 
     row = repo.get(corpus_id)
     logger.info("collection created id=%s slug=%s by=%s", corpus_id, slug, user.get("email"))
+    # Onboarding step "Add or share something": bringing your own knowledge in
+    # starts here — the Library's upload flow creates the collection first, then
+    # posts the files into it.
+    mark_journey(user.get("id"), catalog_discovered=True)
     return _collection_out(row)
 
 
@@ -863,3 +877,259 @@ async def reingest_file(
         cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
 
     return {**_file_out(cf_repo.get(file_id))}
+
+
+# ---------------------------------------------------------------------------
+# Preview — "what IS this file?" without a download
+# ---------------------------------------------------------------------------
+
+# Formats the browser can render itself, served as the real bytes. Deliberately
+# a CLOSED map, not "everything that isn't text": uploads accept `html` (and a
+# bundle can carry anything), and serving attacker-authored HTML/SVG inline
+# from our own origin is stored XSS against every viewer of the collection.
+# Anything absent here is previewed as TEXT or not at all — never streamed
+# inline with a type the browser will execute.
+_PREVIEW_INLINE_MEDIA: dict[str, str] = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "pdf": "application/pdf",
+}
+
+# Extensions whose stored bytes ARE the text. Everything else that is not in
+# `_PREVIEW_INLINE_MEDIA` (docx, xlsx, pptx, parquet, epub, zip …) previews
+# through the text ingestion already extracted into `corpus_chunks`, which is
+# the only text that exists for those formats. `html` lands here on purpose:
+# shown as source, in a `<pre>`, never rendered.
+_PREVIEW_TEXTUAL_EXTS: frozenset[str] = frozenset(
+    {"txt", "md", "csv", "tsv", "json", "jsonl", "html", "rtf", "eml", "log", "yaml", "yml"}
+)
+
+# A preview is a glance, not the file: cap what we read off disk AND what we
+# return, so a 100 MiB CSV can't turn a modal into a 100 MiB response.
+_PREVIEW_READ_MAX_BYTES = 512 * 1024
+_PREVIEW_MAX_CHARS = 20_000
+
+
+def _readable_file_or_404(collection_id: str, file_id: str, user: dict) -> dict:
+    """The file's row, if this caller may read it — else 404.
+
+    Mirrors the per-file access rule the web detail page uses: the parent
+    collection's access (admin / owner / group grant) OR a grant on the file
+    itself, so a file shared *out* of a folder stays previewable by the person
+    it was shared with. 404 (never 403) for missing AND for no-access, matching
+    the rest of this module so the URL space can't be probed.
+    """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+    from app.resource_types import ResourceType
+
+    if not file_corpora_repo().get(collection_id):
+        raise HTTPException(status_code=404, detail="collection_not_found")
+    row = corpus_files_repo().get(file_id)
+    if not row or row.get("corpus_id") != collection_id:
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        # A co-session / agent-session caller is not a user dict: its authority
+        # IS its intersection — no admin short-circuit, and the per-file grant
+        # below never widens it (that would hand an agent a file its scope
+        # doesn't name). Fail-closed when the type isn't in the intersection.
+        from src.rbac import get_accessible_ids
+
+        allowed = get_accessible_ids(user, ResourceType.COLLECTION.value) or frozenset()
+        if collection_id in allowed:
+            return row
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    if can_access_collection(user["id"], collection_id):
+        return row
+
+    from src.repositories import resource_grants_repo
+
+    try:
+        granted = set(resource_grants_repo().list_resource_ids_for_user(user["id"], ResourceType.CORPUS_FILE.value))
+    except Exception:  # pragma: no cover - grant lookup is best-effort
+        granted = set()
+    if file_id in granted:
+        return row
+    raise HTTPException(status_code=404, detail="file_not_found")
+
+
+def _blob_path_or_404(row: dict):
+    """Resolve a row's blob to a real file inside the corpus storage root.
+
+    `storage_path` is written by ``store_corpus_file`` (never by a caller), but
+    it is still a filesystem path read out of the database: realpath-contain it
+    under ``${DATA_DIR}/file_corpora`` so a bad row can never make this
+    endpoint serve, say, ``/etc/passwd``.
+    """
+    from pathlib import Path
+
+    from src.db import _get_data_dir
+
+    raw = row.get("storage_path")
+    if not raw:
+        raise HTTPException(status_code=404, detail="file_blob_missing")
+    root = (_get_data_dir() / "file_corpora").resolve()
+    path = Path(raw).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HTTPException(status_code=404, detail="file_blob_missing")
+    return path
+
+
+def _extracted_text(file_id: str) -> str:
+    """Joined chunk text for a file — the only text a docx/xlsx/pdf-scan has."""
+    chunks = corpus_chunks_repo().list_for_file(file_id)
+    if not chunks:
+        return ""
+    out: list[str] = []
+    total = 0
+    for c in chunks:
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        out.append(text)
+        total += len(text)
+        if total >= _PREVIEW_MAX_CHARS:
+            break
+    return "\n\n".join(out)
+
+
+@router.get("/{collection_id}/files/{file_id}/preview")
+async def preview_file(
+    collection_id: str,
+    file_id: str,
+    user=Depends(get_current_user),
+):
+    """What to show for this file, and how — the modal's single fetch.
+
+    Returns a `kind` the client renders directly:
+
+    * ``image`` / ``pdf`` — fetch ``raw_url`` and let the browser draw it.
+    * ``text`` — ``text`` holds the preview (source for textual uploads, the
+      ingested text for formats whose bytes aren't readable), ``truncated``
+      says a glance is all this is.
+    * ``none`` — nothing to show yet; ``reason`` says why, in the words the
+      modal shows the caller.
+
+    Deliberately one endpoint for every format: the client should not have to
+    know which extensions are streamable, which are text and which are only
+    previewable once ingestion has run.
+    """
+    row = _readable_file_or_404(collection_id, file_id, user)
+    ext = (row.get("file_type") or "").lower()
+    base = {
+        "file_id": file_id,
+        "collection_id": collection_id,
+        "filename": row.get("filename"),
+        "file_type": ext or None,
+        "size_bytes": row.get("size_bytes"),
+        "raw_url": None,
+        "text": None,
+        "truncated": False,
+        "source": None,
+        "reason": None,
+    }
+
+    if ext in _PREVIEW_INLINE_MEDIA:
+        _blob_path_or_404(row)  # 404 now beats a broken <img> in the modal
+        return {
+            **base,
+            "kind": "image" if ext != "pdf" else "pdf",
+            "raw_url": f"/api/collections/{collection_id}/files/{file_id}/raw",
+        }
+
+    if ext in _PREVIEW_TEXTUAL_EXTS:
+        path = _blob_path_or_404(row)
+        with path.open("rb") as fh:
+            # One byte past the cap: enough to know the file continues.
+            data = fh.read(_PREVIEW_READ_MAX_BYTES + 1)
+        clipped = len(data) > _PREVIEW_READ_MAX_BYTES
+        text = data[:_PREVIEW_READ_MAX_BYTES].decode("utf-8", errors="replace")
+        truncated = clipped or len(text) > _PREVIEW_MAX_CHARS
+        return {
+            **base,
+            "kind": "text",
+            "text": text[:_PREVIEW_MAX_CHARS],
+            "truncated": truncated,
+            "source": "file",
+        }
+
+    text = _extracted_text(file_id)
+    if text:
+        return {
+            **base,
+            "kind": "text",
+            "text": text[:_PREVIEW_MAX_CHARS],
+            "truncated": len(text) > _PREVIEW_MAX_CHARS,
+            "source": "extracted",
+        }
+
+    status = row.get("processing_status") or "pending"
+    reason = {
+        "pending": "This file hasn't been indexed yet — its text preview appears once ingestion runs.",
+        "processing": "Indexing is running — its text preview appears when it finishes.",
+        "rejected": "This file was rejected during ingestion, so there is no text to preview.",
+        "needs_review": "This file needs review before its text can be previewed.",
+    }.get(status, "No preview is available for this format.")
+    return {**base, "kind": "none", "reason": reason}
+
+
+@router.get("/{collection_id}/files/{file_id}/raw")
+async def raw_file(
+    collection_id: str,
+    file_id: str,
+    user=Depends(get_current_user),
+):
+    """Stream a browser-renderable file inline (images + PDF only).
+
+    Serves ONLY the closed ``_PREVIEW_INLINE_MEDIA`` set, with the media type
+    taken from that map rather than from anything the uploader controls, plus
+    ``nosniff`` so a mislabelled body can't be re-interpreted as HTML. Any
+    other extension is 415 with a pointer at the text preview — this endpoint
+    is a viewer, not a download route.
+    """
+    from fastapi.responses import FileResponse
+
+    row = _readable_file_or_404(collection_id, file_id, user)
+    ext = (row.get("file_type") or "").lower()
+    media = _PREVIEW_INLINE_MEDIA.get(ext)
+    if not media:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"no inline preview for '.{ext or 'unknown'}' — "
+                f"GET /api/collections/{collection_id}/files/{file_id}/preview for its text"
+            ),
+        )
+    path = _blob_path_or_404(row)
+    return FileResponse(
+        path=str(path),
+        media_type=media,
+        headers={
+            # The blob is named `<sha256><ext>` on disk; `inline` keeps it in
+            # the viewer, and the sanitized filename is only a display hint.
+            "Content-Disposition": f'inline; filename="{_safe_download_name(row)}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=60",
+            # The app-wide defaults are `X-Frame-Options: DENY` +
+            # `frame-ancestors 'none'`, which would block the modal's own PDF
+            # iframe — same-origin framing included. Narrow both to SELF (never
+            # wider) for this one response; SecurityHeadersMiddleware applies
+            # its defaults with setdefault, so these win. Images don't need it
+            # (an <img> is not framing), but one rule for the endpoint beats a
+            # per-extension header set.
+            "X-Frame-Options": "SAMEORIGIN",
+            "Content-Security-Policy": "frame-ancestors 'self'; object-src 'none'; base-uri 'none'",
+        },
+    )
+
+
+def _safe_download_name(row: dict) -> str:
+    """Quote-free, path-free filename for a Content-Disposition header."""
+    from pathlib import Path
+
+    name = Path(row.get("filename") or "file").name
+    return re.sub(r"[^A-Za-z0-9._ -]", "_", name) or "file"
