@@ -36,7 +36,7 @@ from typing import Optional
 
 import typer
 
-from cli.client import api_delete, api_get, api_post
+from cli.client import api_delete, api_get, api_patch, api_post
 
 data_apps_app = typer.Typer(help="Manage hosted data apps")
 
@@ -100,10 +100,12 @@ def _not_found(slug: str) -> None:
 @data_apps_app.command("list")
 def list_apps(
     limit: int = typer.Option(20, "--limit", help="Max results"),
+    linked: bool = typer.Option(False, "--linked", help="Show only linked (externally-hosted) apps"),
     json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """List data apps you can see (owner, Admin, or a granted group)."""
-    resp = api_get("/api/data-apps")
+    params = {"kind": "linked"} if linked else None
+    resp = api_get("/api/data-apps", params=params)
     if resp.status_code != 200:
         _fail(resp)
 
@@ -118,9 +120,34 @@ def list_apps(
         typer.echo("Try: agnes app create <slug> <name>  — to create one.")
         return
 
-    typer.echo(f"{'SLUG':20s} {'NAME':20s} {'STATE':10s} URL")
+    typer.echo(f"{'SLUG':20s} {'NAME':20s} {'KIND':8s} {'STATE':10s} URL")
     for a in apps:
-        typer.echo(f"{a.get('slug', ''):20s} {a.get('name', ''):20s} {a.get('state', ''):10s} {a.get('url', '')}")
+        typer.echo(
+            f"{a.get('slug', ''):20s} {a.get('name', ''):20s} "
+            f"{a.get('kind', ''):8s} {a.get('state', ''):10s} {a.get('url', '')}"
+        )
+
+
+@data_apps_app.command("set-description")
+def set_description(
+    slug: str = typer.Argument(..., help="App slug"),
+    description: str = typer.Argument(..., help="Description (admin override for managed/linked apps)"),
+    json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Set the admin description override on a managed (linked) app.
+
+    The ingest sync refreshes a linked app's synced description; this pins a
+    human-authored one the sync won't clobber. Owner/Admin only; managed rows
+    only (hosted apps edit their description via the create/update flow).
+    """
+    resp = api_patch(f"/api/data-apps/{slug}", json={"description": description})
+    if resp.status_code != 200:
+        _fail(resp)
+    app = resp.json()
+    if json:
+        typer.echo(json_lib.dumps(app, indent=2, default=str))
+        return
+    typer.echo(f"Updated {slug}: {app.get('effective_description', '')}")
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +174,14 @@ def show_app(
 
     typer.echo(f"Slug:        {a.get('slug', slug)}")
     typer.echo(f"Name:        {a.get('name', '')}")
+    if a.get("kind"):
+        typer.echo(f"Kind:        {a['kind']}")
     typer.echo(f"State:       {a.get('state', '')}")
     typer.echo(f"URL:         {a.get('url', '')}")
-    if a.get("description"):
-        typer.echo(f"Description: {a['description']}")
+    # effective_description = admin-pinned override where present, synced text
+    # otherwise — same value every other surface (list, web, MCP) shows.
+    if a.get("effective_description") or a.get("description"):
+        typer.echo(f"Description: {a.get('effective_description') or a['description']}")
     if a.get("deployed_sha"):
         typer.echo(f"Deployed:    {a['deployed_sha']}")
 

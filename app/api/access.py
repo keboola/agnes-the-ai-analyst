@@ -22,6 +22,7 @@ from typing import List, Optional
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import exc as sa_exc
 
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
@@ -702,7 +703,12 @@ async def create_grant(
             assigned_by=user.get("email"),
             requirement=payload.requirement,
         )
-    except duckdb.ConstraintException:
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
+        # Both backends must surface a duplicate as the same 409 — on
+        # Postgres the unique violation arrives as SQLAlchemy IntegrityError,
+        # which previously fell through to a 500 and made batch-granting
+        # clients (e.g. the /admin/linked-apps wizard) misreport an
+        # already-granted row as a failure (Devin Review on #1116).
         raise HTTPException(
             status_code=409,
             detail="Grant already exists for this group/resource_type/resource_id",

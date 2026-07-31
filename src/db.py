@@ -48,10 +48,11 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-# Merge of main's ladder (→107) with the paper-theme branch's schema
-# additions restacked on top: 108 file_corpora.origin, 109 store_entities
-# trust columns, 110 agents builder superset columns.
-SCHEMA_VERSION = 110
+# Merge of main's ladder (→108: data_apps linked columns) with the
+# paper-theme branch's schema additions restacked on top: 109
+# file_corpora.origin, 110 store_entities trust columns, 111 agents builder
+# superset columns.
+SCHEMA_VERSION = 111
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -81,6 +82,15 @@ CREATE TABLE IF NOT EXISTS data_apps (
     parent_app_id   VARCHAR DEFAULT '',
     is_draft        BOOLEAN DEFAULT FALSE,
     draft_branch    VARCHAR DEFAULT '',
+    -- Linked (externally-hosted) apps (v108): repo_mode='linked' rows carry an
+    -- external deployment URL instead of a git repo/runtime; source_ref is the
+    -- ingest provenance "<connection_id>:<external_app_id>"; managed=TRUE marks a
+    -- sync-owned row whose description the admin may override without the sync
+    -- clobbering it.
+    external_url    VARCHAR,
+    source_ref      VARCHAR,
+    managed         BOOLEAN NOT NULL DEFAULT FALSE,
+    description_override TEXT,
     last_request_at TIMESTAMP,
     last_deploy_at  TIMESTAMP,
     created_at      TIMESTAMP DEFAULT current_timestamp,
@@ -6746,8 +6756,8 @@ def _v97_to_v98(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 98")
 
 
-def _v107_to_v108(conn: duckdb.DuckDBPyConnection) -> None:
-    """v107→v108: add ``file_corpora.origin`` (``uploaded`` | ``generated``).
+def _v108_to_v109(conn: duckdb.DuckDBPyConnection) -> None:
+    """v108→v109: add ``file_corpora.origin`` (``uploaded`` | ``generated``).
 
     Provenance for the Artefacts toolbar's Source facet. Every existing
     artefact is user-uploaded, so the column defaults to ``'uploaded'``; the
@@ -6755,18 +6765,19 @@ def _v107_to_v108(conn: duckdb.DuckDBPyConnection) -> None:
     ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a no-op on fresh
     installs (``_SYSTEM_SCHEMA`` already declares the column).
 
-    Restacked from the paper-theme branch's v101→v102 onto main's ladder.
+    Restacked from the paper-theme branch onto main's ladder (was v107→v108
+    before main's data_apps-linked step claimed v108).
     """
     exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'file_corpora'").fetchone()
     if exists:
         conn.execute("ALTER TABLE file_corpora ADD COLUMN IF NOT EXISTS origin VARCHAR DEFAULT 'uploaded'")
-    conn.execute("UPDATE schema_version SET version = 108")
+    conn.execute("UPDATE schema_version SET version = 109")
 
 
-def _v108_to_v109(conn: duckdb.DuckDBPyConnection) -> None:
-    """v108→v109: ``store_entities`` publisher + verification columns.
+def _v109_to_v110(conn: duckdb.DuckDBPyConnection) -> None:
+    """v109→v110: ``store_entities`` publisher + verification columns.
 
-    Backfill intent: every pre-v109 row is a user upload (the "publish as the
+    Backfill intent: every pre-v110 row is a user upload (the "publish as the
     organization" action ships with this version), so ``publisher_kind``
     defaults to ``'user'`` and ``verification_state`` to ``'none'`` — which is
     also the state that renders NO chip, so the upgrade is visually inert.
@@ -6777,14 +6788,15 @@ def _v108_to_v109(conn: duckdb.DuckDBPyConnection) -> None:
     reuse it **without** re-stamping the version — see
     :func:`_heal_store_entity_trust_columns`.
 
-    Restacked from the paper-theme branch's v103→v104 onto main's ladder.
+    Restacked from the paper-theme branch onto main's ladder (was v108→v109
+    before main's data_apps-linked step claimed v108).
     """
     _add_store_entity_trust_columns(conn)
-    conn.execute("UPDATE schema_version SET version = 109")
+    conn.execute("UPDATE schema_version SET version = 110")
 
 
-def _v109_to_v110(conn: duckdb.DuckDBPyConnection) -> None:
-    """v109→v110: agents builder superset columns.
+def _v110_to_v111(conn: duckdb.DuckDBPyConnection) -> None:
+    """v110→v111: agents builder superset columns.
 
     Combines the paper-theme agent-builder's authored fields onto main's
     ``agents`` table so both the agent-as-API backend (main) and the /agents
@@ -6796,6 +6808,9 @@ def _v109_to_v110(conn: duckdb.DuckDBPyConnection) -> None:
 
     Idempotent ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a no-op
     on fresh installs where ``_SYSTEM_SCHEMA`` already declares them.
+
+    Restacked from the paper-theme branch onto main's ladder (was v109→v110
+    before main's data_apps-linked step claimed v108).
     """
     exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'agents'").fetchone()
     if exists:
@@ -6806,7 +6821,7 @@ def _v109_to_v110(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS plugins TEXT DEFAULT '[]'")
         conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS surfaces TEXT DEFAULT '{}'")
         conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'")
-    conn.execute("UPDATE schema_version SET version = 110")
+    conn.execute("UPDATE schema_version SET version = 111")
 
 
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7119,6 +7134,31 @@ def _v106_to_v107(conn: duckdb.DuckDBPyConnection) -> None:
         if "source_ref" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN source_ref VARCHAR")
     conn.execute("UPDATE schema_version SET version = 107")
+
+
+def _v107_to_v108(conn: duckdb.DuckDBPyConnection) -> None:
+    """v107→v108: linked (externally-hosted) data apps. Adds ``external_url``,
+    ``source_ref``, ``managed``, ``description_override`` to ``data_apps`` so a
+    ``repo_mode='linked'`` row can point at an app hosted elsewhere (e.g. a
+    Keboola-platform data app ingested via an MCP source) instead of a git repo.
+    No-op on fresh installs (snapshot DDL already declares the columns).
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('data_apps')").fetchall()}
+    if "external_url" not in cols:
+        conn.execute("ALTER TABLE data_apps ADD COLUMN external_url VARCHAR")
+    if "source_ref" not in cols:
+        conn.execute("ALTER TABLE data_apps ADD COLUMN source_ref VARCHAR")
+    if "managed" not in cols:
+        # DuckDB can't ADD COLUMN with a NOT NULL constraint ("Adding columns
+        # with constraints not yet supported") — add with DEFAULT only and
+        # backfill, same pattern as v106's `surface` column. Fresh installs
+        # get the NOT NULL from the snapshot DDL; migrated DBs rely on the
+        # DEFAULT + backfill (every writer passes an explicit value).
+        conn.execute("ALTER TABLE data_apps ADD COLUMN managed BOOLEAN DEFAULT FALSE")
+    conn.execute("UPDATE data_apps SET managed = FALSE WHERE managed IS NULL")
+    if "description_override" not in cols:
+        conn.execute("ALTER TABLE data_apps ADD COLUMN description_override TEXT")
+    conn.execute("UPDATE schema_version SET version = 108")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7555,19 +7595,23 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v106→v107: metric_definitions/glossary_terms.source_ref —
             # declared in _SYSTEM_SCHEMA on fresh installs; no-op here.
             _v106_to_v107(conn)
-            # --- paper-theme branch schema, restacked on top of main's ladder ---
-            # v107→v108: file_corpora.origin (uploaded | generated). No-op on
-            # fresh installs — _SYSTEM_SCHEMA already declares the column.
+            # v107→v108: data_apps linked columns (external_url/source_ref/
+            # managed/description_override) — declared in _SYSTEM_SCHEMA on
+            # fresh installs; no-op here.
             _v107_to_v108(conn)
-            # v108→v109: store_entities publisher_kind + verification_state
+            # --- paper-theme branch schema, restacked on top of main's ladder ---
+            # v108→v109: file_corpora.origin (uploaded | generated). No-op on
+            # fresh installs — _SYSTEM_SCHEMA already declares the column.
+            _v108_to_v109(conn)
+            # v109→v110: store_entities publisher_kind + verification_state
             # (+ verified_at/by/note). No-op on fresh installs — _SYSTEM_SCHEMA
             # already declares the columns.
-            _v108_to_v109(conn)
-            # v109→v110: agents builder superset columns (role/tone/greeting/
+            _v109_to_v110(conn)
+            # v110→v111: agents builder superset columns (role/tone/greeting/
             # knowledge/plugins/surfaces/status) — combines the paper-theme
             # agent-builder fields onto main's agents table. No-op on fresh
             # installs — _SYSTEM_SCHEMA already declares them.
-            _v109_to_v110(conn)
+            _v110_to_v111(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7841,6 +7885,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v108_to_v109(conn)
             if current < 110:
                 _v109_to_v110(conn)
+            if current < 111:
+                _v110_to_v111(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

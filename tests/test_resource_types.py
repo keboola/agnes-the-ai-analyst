@@ -204,6 +204,25 @@ class TestDataAppResourceType:
 
         assert _data_app_blocks() == []
 
+    def test_data_app_blocks_hide_soft_deleted_linked_and_use_override(self, system_conn):
+        """The grant picker must not offer `linked_hidden` rows (they 404 on
+        every read surface) and shows the admin-pinned description override
+        where present (Devin Review on #1116)."""
+        from app.resource_types import _data_app_blocks
+
+        system_conn.execute(
+            "INSERT INTO data_apps(id, slug, name, description, description_override, owner_user_id, repo_mode, state) "
+            "VALUES ('app_l1', 'kbc-live', 'Live', 'synced', 'pinned by admin', 'system', 'linked', 'linked')"
+        )
+        system_conn.execute(
+            "INSERT INTO data_apps(id, slug, name, description, owner_user_id, repo_mode, state) "
+            "VALUES ('app_l2', 'kbc-gone', 'Gone', 'synced', 'system', 'linked', 'linked_hidden')"
+        )
+        blocks = _data_app_blocks()
+        items = {i["resource_id"]: i for i in blocks[0]["items"]}
+        assert "kbc-gone" not in items
+        assert items["kbc-live"]["description"] == "pinned by admin"
+
     def test_data_app_blocks_includes_apps(self, system_conn):
         from app.resource_types import _data_app_blocks
 

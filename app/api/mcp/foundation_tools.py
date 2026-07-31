@@ -130,6 +130,10 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "data_app_create_draft",
     "data_app_delete_draft",
     "data_app_git_credential",
+    # Linked (externally-hosted) data apps (v108) — set the admin description
+    # override on a managed/linked app. Triple-surface with
+    # PATCH /api/data-apps/{slug} + `agnes app set-description`.
+    "data_app_set_description",
     # Wave 3C in-chat preview loop (Task 4/5) — chat-surface-ONLY render
     # directives for the split-pane preview iframe (spec §7/§9): no REST/CLI
     # analogue exists or is planned (the fixed render-directive JSON these
@@ -163,6 +167,7 @@ DATA_APP_TOOL_NAMES: tuple[str, ...] = (
     "data_app_create_draft",
     "data_app_delete_draft",
     "data_app_git_credential",
+    "data_app_set_description",
     "agnes_data_app_preview",
     "agnes_data_app_refresh",
     "agnes_data_app_close",
@@ -1564,18 +1569,26 @@ def register_foundation_tools(
             return r.json()
 
     @mcp.tool()
-    async def data_apps_list() -> dict:
-        """List hosted data apps you can see (RBAC-filtered).
+    async def data_apps_list(kind: str = "") -> dict:
+        """List data apps you can see (RBAC-filtered).
 
         Visible to any authenticated user: apps you own, apps a group you're
-        in has a ``resource_grants`` row for, or (Admin) all apps. Returns a
-        list of app summaries — ``slug``, ``name``, ``state``
-        (``stopped``/``deploying``/``running``/``sleeping``/``error``),
-        ``url``, and metadata; secrets are never included. Mirrors
-        ``GET /api/data-apps`` and ``agnes app list``.
+        in has a ``resource_grants`` row for, or (Admin) all apps. Each entry
+        has a ``kind`` — ``hosted`` (an app Agnes runs, with a runtime
+        ``state``) or ``linked`` (an externally-hosted app, e.g. on Keboola,
+        whose ``url`` opens the remote app directly). Returns a list of app
+        summaries — ``slug``, ``name``, ``kind``, ``state``, ``url``,
+        ``effective_description``, and metadata; secrets are never included.
+
+        Args:
+            kind: Optional filter — ``"hosted"`` or ``"linked"``; empty
+                  (default) lists both.
+
+        Mirrors ``GET /api/data-apps[?kind=]`` and ``agnes app list [--linked]``.
         """
+        params = {"kind": kind} if kind else None
         async with httpx.AsyncClient() as c:
-            r = await c.get(f"{base_url}/api/data-apps", headers=headers_fn(), timeout=30)
+            r = await c.get(f"{base_url}/api/data-apps", headers=headers_fn(), params=params, timeout=30)
             r.raise_for_status()
             return r.json()
 
@@ -1725,6 +1738,32 @@ def register_foundation_tools(
                 f"{base_url}/api/data-apps/{slug}/logs",
                 headers=headers_fn(),
                 params={"tail": tail},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def data_app_set_description(slug: str, description: str) -> dict:
+        """Set the admin description override on a managed (linked) data app.
+
+        Linked apps are org resources whose ``description`` the ingest sync
+        refreshes; this pins a human-authored description the sync won't clobber.
+        Owner/Admin only; managed rows only (a 409 ``not_managed`` comes back for
+        a hosted app — edit those via the normal update flow).
+
+        Args:
+            slug:        The app's slug.
+            description: The description to pin (empty string clears it).
+
+        Returns the updated app dict. Mirrors ``PATCH /api/data-apps/{slug}`` and
+        ``agnes app set-description``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.patch(
+                f"{base_url}/api/data-apps/{slug}",
+                json={"description": description},
+                headers=headers_fn(),
                 timeout=30,
             )
             r.raise_for_status()

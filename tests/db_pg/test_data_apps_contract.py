@@ -187,3 +187,113 @@ def test_draft_lifecycle(repo):
     assert got["draft_branch"] == "i"
     assert [r["id"] for r in repo.list_drafts(p)] == [d]
     assert "cp--i" not in {r["slug"] for r in repo.list(include_drafts=False)}
+
+
+# ---------------------------------------------------------------------------
+# linked (externally-hosted) data apps — v108
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_linked_insert_then_update(repo):
+    row1 = repo.upsert_linked(
+        slug="kbc-sales",
+        source_ref="conn1:app1",
+        name="Sales",
+        description="orig",
+        external_url="https://example.com/app1",
+    )
+    assert row1["repo_mode"] == "linked"
+    assert bool(row1["managed"]) is True
+    assert row1["external_url"] == "https://example.com/app1"
+    assert row1["source_ref"] == "conn1:app1"
+    assert row1["state"] == "linked"
+
+    # second upsert with the same source_ref updates in place (no new row)
+    row2 = repo.upsert_linked(
+        slug="kbc-sales",
+        source_ref="conn1:app1",
+        name="Sales v2",
+        description="new",
+        external_url="https://example.com/app1b",
+    )
+    assert row2["id"] == row1["id"]
+    assert row2["name"] == "Sales v2"
+    assert row2["external_url"] == "https://example.com/app1b"
+    assert len(repo.list_linked()) == 1
+
+
+def test_description_override_survives_resync(repo):
+    repo.upsert_linked(
+        slug="kbc-a",
+        source_ref="c:a",
+        name="A",
+        description="synced",
+        external_url="https://example.com/a",
+    )
+    assert repo.set_description_override("kbc-a", "admin desc") is True
+    row = repo.get_by_slug("kbc-a")
+    assert repo.effective_description(row) == "admin desc"
+
+    # a re-sync changes the synced description but the admin override still wins
+    repo.upsert_linked(
+        slug="kbc-a",
+        source_ref="c:a",
+        name="A",
+        description="synced-2",
+        external_url="https://example.com/a2",
+    )
+    row = repo.get_by_slug("kbc-a")
+    assert row["description"] == "synced-2"
+    assert row["description_override"] == "admin desc"
+    assert repo.effective_description(row) == "admin desc"
+
+
+def test_effective_description_falls_back_to_synced(repo):
+    repo.upsert_linked(
+        slug="kbc-b",
+        source_ref="c:b",
+        name="B",
+        description="synced only",
+        external_url="https://example.com/b",
+    )
+    row = repo.get_by_slug("kbc-b")
+    assert repo.effective_description(row) == "synced only"
+
+
+def test_soft_delete_missing_linked_scoped_per_source(repo):
+    repo.upsert_linked(
+        slug="a1", source_ref="conn1:a1", name="A1", description="", external_url="https://example.com/a1"
+    )
+    repo.upsert_linked(
+        slug="a2", source_ref="conn1:a2", name="A2", description="", external_url="https://example.com/a2"
+    )
+    repo.upsert_linked(
+        slug="b1", source_ref="conn2:b1", name="B1", description="", external_url="https://example.com/b1"
+    )
+
+    # conn1 reconcile keeps only a1 → a2 hidden; conn2's b1 untouched
+    hidden = repo.soft_delete_missing_linked(source_ref_prefix="conn1:", keep_source_refs=["conn1:a1"])
+    assert hidden == 1
+
+    active = {r["slug"] for r in repo.list_linked()}
+    assert active == {"a1", "b1"}
+
+    all_including = {r["slug"] for r in repo.list_linked(include_hidden=True)}
+    assert all_including == {"a1", "a2", "b1"}
+
+
+def test_reappearing_linked_app_relinks_losslessly(repo):
+    repo.upsert_linked(
+        slug="r1", source_ref="conn1:r1", name="R1", description="", external_url="https://example.com/r1"
+    )
+    repo.set_description_override("r1", "kept")
+    repo.soft_delete_missing_linked(source_ref_prefix="conn1:", keep_source_refs=[])
+    assert {r["slug"] for r in repo.list_linked()} == set()
+
+    # app reappears in Keboola → re-upsert reactivates the SAME row + keeps override
+    row = repo.upsert_linked(
+        slug="r1", source_ref="conn1:r1", name="R1", description="back", external_url="https://example.com/r1"
+    )
+    assert row["state"] == "linked"
+    assert row["description_override"] == "kept"
+    assert {r["slug"] for r in repo.list_linked()} == {"r1"}
