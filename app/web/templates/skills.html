@@ -977,6 +977,9 @@
     check = null;
     typeOpen = false;
     reviewInProgress = false; _reviewBannerHtml = null;
+    // render() must run first — it replaces view.innerHTML and creates a fresh
+    // #sk-result node; setResult() written before render() would be wiped out.
+    render();
     // Say what happened to the work, in priority order: a restored draft is
     // the most surprising state, then a parked one.
     if (incoming && cfg().source === 'bundle') {
@@ -986,7 +989,6 @@
     } else if (previous) {
       setResult('Your ' + previous.toLowerCase() + ' draft is saved — switch back any time.');
     }
-    render();
   }
 
   /* ── Server calls ── */
