@@ -355,8 +355,8 @@
         '</div>' +
         '<div class="sk-build-actions">' +
           '<span class="sk-result" id="sk-result"></span>' +
-          '<button type="button" class="cc-btn" id="sk-check" ' + (canPublish() ? '' : 'disabled') + '>Check</button>' +
-          '<button type="button" class="cc-btn cc-btn--primary" id="sk-save" ' + (canPublish() ? '' : 'disabled') + '>Save to Library</button>' +
+          '<button type="button" class="cc-btn" id="sk-check" ' + (canPublish() && !reviewInProgress ? '' : 'disabled') + '>Check</button>' +
+          '<button type="button" class="cc-btn cc-btn--primary" id="sk-save" ' + (canPublish() && !reviewInProgress ? '' : 'disabled') + '>Save to Library</button>' +
         '</div>' +
       '</div>' +
       '<div class="sk-access" role="radiogroup" aria-label="Who can use this skill">' +

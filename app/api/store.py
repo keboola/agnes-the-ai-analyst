@@ -295,6 +295,7 @@ class DryRunResponse(BaseModel):
 
     inline_checks: dict
     llm_findings: Optional[dict] = None
+    llm_safe: Optional[bool] = None  # None when no LLM review was run
     would_publish: bool
     # v89: skill-linter dry-run block. Only populated for type == "skill"
     # (the linter is skill-specific — agents/plugins never get a lint key).
@@ -1961,6 +1962,9 @@ async def dryrun_entity(
         return DryRunResponse(
             inline_checks=inline_checks,
             llm_findings=verdict,
+            # None when no LLM ran (lint_only, guardrails off, or provider not
+            # configured); JS gate reads this with === false so None passes through.
+            llm_safe=safe if verdict is not None else None,
             would_publish=inline.passed and safe,
             lint=lint_report,
         )
