@@ -322,6 +322,7 @@ from app.api.admin_source_connections import router as source_connections_admin_
 from app.api.mcp_passthrough import router as mcp_passthrough_router
 from app.api.mcp_per_table import router as mcp_per_table_router
 from app.api.mcp_user_secrets import router as mcp_user_secrets_router
+from app.api.mcp_oauth_connect import router as mcp_oauth_connect_router
 from app.api.memory_domains import router as memory_domains_router
 from app.api.knowledge_digests import router as knowledge_digests_router
 from app.api.recipes import (
@@ -2266,6 +2267,7 @@ def create_app() -> FastAPI:
     app.include_router(source_connections_admin_router)
     app.include_router(mcp_passthrough_router)
     app.include_router(mcp_user_secrets_router)
+    app.include_router(mcp_oauth_connect_router)
     app.include_router(mcp_per_table_router)
     app.include_router(memory_domains_router)
     app.include_router(knowledge_digests_router)

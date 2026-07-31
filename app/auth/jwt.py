@@ -7,12 +7,14 @@ from typing import Optional
 
 import jwt
 
+
 def _get_secret_key() -> str:
     """Resolve the JWT signing key. Fail-closed in production."""
     if os.environ.get("TESTING", "").lower() in ("1", "true"):
         return os.environ.get("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
 
     from app.auth.dependencies import is_local_dev_mode
+
     env_key = os.environ.get("JWT_SECRET_KEY")
     if not is_local_dev_mode():
         # Production: an explicit, strong key is mandatory. Never auto-generate
@@ -23,19 +25,20 @@ def _get_secret_key() -> str:
                 "auto-generated or shared signing key."
             )
         if len(env_key) < 32:
-            raise RuntimeError(
-                f"JWT_SECRET_KEY too short ({len(env_key)} chars); minimum 32 required."
-            )
+            raise RuntimeError(f"JWT_SECRET_KEY too short ({len(env_key)} chars); minimum 32 required.")
         return env_key
 
     # Local dev keeps the auto-generate-and-persist convenience.
     from app.secrets import get_jwt_secret
+
     key = get_jwt_secret()
     if len(key) < 32:
         import warnings as _warnings
+
         _warnings.warn(
             f"JWT_SECRET_KEY is {len(key)} chars — minimum 32 recommended",
-            UserWarning, stacklevel=2,
+            UserWarning,
+            stacklevel=2,
         )
     return key
 
@@ -78,6 +81,19 @@ def _get_cached_secret_key() -> str:
     return _SECRET_KEY_CACHE
 
 
+def get_signing_secret() -> str:
+    """Public accessor for the server's signing secret.
+
+    Same key that signs session JWTs, exposed for OTHER short-lived signed
+    payloads that aren't themselves JWTs (e.g. the outbound MCP OAuth
+    connect flow's ``state`` param — ``app.auth.oauth_connect_state``) so
+    every server-side signature shares one fail-closed key-resolution path
+    instead of each caller re-implementing ``_get_secret_key``'s
+    prod-vs-dev/env-var rules.
+    """
+    return _get_cached_secret_key()
+
+
 def create_access_token(
     user_id: str,
     email: str,
@@ -111,9 +127,7 @@ def create_access_token(
         "jti": token_id or uuid.uuid4().hex,
     }
     if not omit_exp:
-        expire = datetime.now(timezone.utc) + (
-            expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
-        )
+        expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS))
         payload["exp"] = expire
     if extra_claims:
         _reserved = {"sub", "email", "typ", "iat", "jti", "exp"}
