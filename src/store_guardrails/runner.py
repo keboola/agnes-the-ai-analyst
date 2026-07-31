@@ -152,6 +152,7 @@ def run_llm_review(
     subs_repo: Any = None,
     ents_repo: Any = None,
     audit: Any = None,
+    precheck_verdict: Optional[Dict[str, Any]] = None,
 ) -> LlmResult:
     """Background-task entry point. Resolves the LLM verdict and persists it.
 
@@ -201,44 +202,50 @@ def run_llm_review(
         version = sub.get("version") or ""
         submitter_id = sub.get("submitter_id")
 
-        if not plugin_dir.exists():
-            # Bundle was deleted between accept + review (e.g. submitter
-            # deleted their entity). Mark the submission so admins can
-            # see the trail without a phantom approval.
-            subs_repo.update_status(submission_id, status="review_error")
-            audit.log(
-                user_id=submitter_id,
-                action="store.submission.review_error",
-                resource=f"store_submission:{submission_id}",
-                params={"reason": "plugin_dir_missing"},
-                result="error",
-            )
-            return LlmResult(error="plugin_dir_missing")
+        if precheck_verdict is not None and not precheck_verdict.get("error"):
+            # Reuse the synchronous pre-check verdict — skip the Anthropic call.
+            # Halves LLM cost per skill publish (pre-check + async review → pre-check only).
+            verdict = precheck_verdict
+            model = precheck_verdict.get("reviewed_by_model") or model_loader()
+        else:
+            if not plugin_dir.exists():
+                # Bundle was deleted between accept + review (e.g. submitter
+                # deleted their entity). Mark the submission so admins can
+                # see the trail without a phantom approval.
+                subs_repo.update_status(submission_id, status="review_error")
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.review_error",
+                    resource=f"store_submission:{submission_id}",
+                    params={"reason": "plugin_dir_missing"},
+                    result="error",
+                )
+                return LlmResult(error="plugin_dir_missing")
 
-        try:
-            api_key = api_key_loader()
-            model = model_loader()
-        except Exception as e:  # config error
-            logger.exception("run_llm_review: failed to load LLM config")
-            subs_repo.update_status(submission_id, status="review_error")
-            audit.log(
-                user_id=submitter_id,
-                action="store.submission.review_error",
-                resource=f"store_submission:{submission_id}",
-                params={"reason": "llm_config_unavailable", "error": str(e)},
-                result="error",
-            )
-            return LlmResult(error=f"config:{e}")
+            try:
+                api_key = api_key_loader()
+                model = model_loader()
+            except Exception as e:  # config error
+                logger.exception("run_llm_review: failed to load LLM config")
+                subs_repo.update_status(submission_id, status="review_error")
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.review_error",
+                    resource=f"store_submission:{submission_id}",
+                    params={"reason": "llm_config_unavailable", "error": str(e)},
+                    result="error",
+                )
+                return LlmResult(error=f"config:{e}")
 
-        verdict = llm_review.review_bundle(
-            plugin_dir,
-            type_=type_,
-            name=name,
-            version=version,
-            description=None,
-            api_key=api_key,
-            model=model,
-        )
+            verdict = llm_review.review_bundle(
+                plugin_dir,
+                type_=type_,
+                name=name,
+                version=version,
+                description=None,
+                api_key=api_key,
+                model=model,
+            )
 
         if verdict.get("error"):
             subs_repo.update_status(

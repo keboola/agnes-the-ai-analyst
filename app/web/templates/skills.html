@@ -598,10 +598,11 @@
       poll();
     }
 
-    function commitSave() {
+    function commitSave(verdictToken) {
       setResult('Saving…');
       var body = payload();
       body.access = access;
+      if (verdictToken) { body.precheck_verdict_token = verdictToken; }
       post(body)
         .then(function (created) {
           showReviewPanel(created, access);
@@ -612,7 +613,7 @@
 
     if (!GUARDRAILS_LLM_READY || access !== 'everyone') {
       // No LLM gate, or private save (can never auto-publish — no point reviewing).
-      commitSave();
+      commitSave(null);
       return;
     }
 
@@ -622,8 +623,8 @@
       .then(function (res) {
         if (!res.guardrails_active || res.llm_safe || res.llm_error) {
           // Passed, guardrails toggled off, or reviewer itself errored —
-          // fall through so the real submit lands in the admin queue.
-          commitSave();
+          // pass the verdict_token so the BG review skips the Anthropic call.
+          commitSave(res.verdict_token || null);
         } else {
           // Genuine rejection — extract findings from the verdict.
           var msg = 'AI review did not pass.';
@@ -648,7 +649,7 @@
       .catch(function (e) {
         // Pre-check network error — fall through to save so a transient
         // outage doesn't silently block publishing.
-        commitSave();
+        commitSave(null);
       });
   }
 

@@ -17,6 +17,7 @@ display name don't collide in Claude Code's flat namespace.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import json
 import logging
@@ -24,6 +25,8 @@ import os
 import re
 import shutil
 import tempfile
+import threading
+import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
@@ -304,6 +307,45 @@ class DryRunResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Pre-check verdict token store
+# ---------------------------------------------------------------------------
+# Tokens are server-generated UUIDs (unguessable); the client sends one back
+# in the real submit so the background LLM review can skip the Anthropic call.
+
+_VERDICT_TOKEN_TTL = 300  # seconds — matches the JS "Reviewing with AI" timeout
+
+_verdict_token_store: Dict[str, tuple] = {}
+_verdict_token_lock = threading.Lock()
+
+_precheck_verdict_ctx: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "_precheck_verdict_ctx", default=None
+)
+
+
+def _mint_verdict_token(verdict: dict) -> str:
+    """Store a pre-check verdict and return an opaque reference token."""
+    token = uuid.uuid4().hex
+    expires_at = time.time() + _VERDICT_TOKEN_TTL
+    with _verdict_token_lock:
+        now = time.time()
+        expired = [k for k, (_, exp) in _verdict_token_store.items() if exp < now]
+        for k in expired:
+            del _verdict_token_store[k]
+        _verdict_token_store[token] = (verdict, expires_at)
+    return token
+
+
+def _consume_verdict_token(token: str) -> Optional[dict]:
+    """Pop and return the verdict for a token, or None if missing/expired."""
+    with _verdict_token_lock:
+        entry = _verdict_token_store.pop(token, None)
+    if entry is None:
+        return None
+    verdict, expires_at = entry
+    return verdict if time.time() <= expires_at else None
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -443,6 +485,9 @@ def _schedule_llm_review(
     fires (FastAPI yields cursors from ``_get_db`` and the cleanup runs
     on the response yield).
     """
+    # Capture at schedule time (sync context) — ContextVar doesn't propagate
+    # into background tasks, so we read it here and pass as a kwarg.
+    precheck_verdict = _precheck_verdict_ctx.get()
     background_tasks.add_task(
         run_llm_review,
         submission_id,
@@ -450,6 +495,7 @@ def _schedule_llm_review(
         conn_factory=get_system_db,
         api_key_loader=default_api_key_loader,
         model_loader=default_model_loader,
+        precheck_verdict=precheck_verdict,
     )
 
 
@@ -2009,6 +2055,10 @@ class CreateFromMarkdownBody(BaseModel):
     # guardrails_active flag in the response so the builder JS can gate the
     # real save on the LLM result without a separate dryrun_entity round-trip.
     include_llm: bool = False
+    # Token returned by a successful dry_run+include_llm pre-check. When
+    # present the background LLM review reuses the pre-check verdict instead
+    # of calling Anthropic again, halving the cost per skill publish.
+    precheck_verdict_token: Optional[str] = None
 
 
 @router.post(
@@ -2109,6 +2159,13 @@ async def create_entity_from_markdown(
                         model=default_model_loader(),
                     )
                     llm_safe = llm_review.is_safe(llm_verdict)
+            # Mint a token for safe, error-free verdicts so the real submit
+            # can reuse this verdict and skip the second Anthropic call.
+            verdict_token = (
+                _mint_verdict_token(llm_verdict)
+                if (llm_verdict and not llm_verdict.get("error") and llm_safe)
+                else None
+            )
             return Response(
                 content=json.dumps(
                     {
@@ -2119,6 +2176,7 @@ async def create_entity_from_markdown(
                         "llm_safe": llm_safe,
                         "llm_error": bool(llm_verdict and llm_verdict.get("error")),
                         "llm_findings": llm_verdict,
+                        "verdict_token": verdict_token,
                     }
                 ),
                 media_type="application/json",
@@ -2136,21 +2194,28 @@ async def create_entity_from_markdown(
             zf.writestr(f"{name}/SKILL.md", text)
     buf.seek(0)
     upload = UploadFile(file=buf, filename=f"{name}.zip")
-    created = await create_entity(
-        background_tasks,
-        file=upload,
-        type=body.type,
-        name=name,
-        description=body.description,
-        category=body.category,
-        video_url=None,
-        title=None,
-        tagline=None,
-        photo=None,
-        docs=[],
-        user=user,
-        conn=conn,
-    )
+    # Propagate a pre-check verdict via ContextVar so _schedule_llm_review
+    # can pass it to run_llm_review, skipping the second Anthropic call.
+    precheck_verdict = _consume_verdict_token(body.precheck_verdict_token) if body.precheck_verdict_token else None
+    ctx_tok = _precheck_verdict_ctx.set(precheck_verdict)
+    try:
+        created = await create_entity(
+            background_tasks,
+            file=upload,
+            type=body.type,
+            name=name,
+            description=body.description,
+            category=body.category,
+            video_url=None,
+            title=None,
+            tagline=None,
+            photo=None,
+            docs=[],
+            user=user,
+            conn=conn,
+        )
+    finally:
+        _precheck_verdict_ctx.reset(ctx_tok)
     # Private = owner-only. Flip straight after creation; the review may still
     # be in flight, but it can only promote from 'pending', so 'hidden' sticks.
     if body.access == "private":
