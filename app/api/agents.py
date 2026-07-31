@@ -171,6 +171,10 @@ def _agent_out(row: dict, *, uid: str) -> Dict[str, Any]:
         "plugins": _decode(row.get("plugins"), []),
         "surfaces": _decode(row.get("surfaces"), {}),
         "status": row.get("status") or "draft",
+        # The seeded default agent cannot be deleted (see ``delete_agent``), so
+        # the page needs to know which row that is — otherwise it renders a
+        # delete control that always 400s.
+        "is_default": bool(row.get("is_default")),
         "mine": owner == uid,
         "created_by": owner,
         "created_at": row["created_at"].isoformat() if row.get("created_at") is not None else None,

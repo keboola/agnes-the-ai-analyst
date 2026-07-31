@@ -164,6 +164,35 @@ def test_agent_default_cannot_be_deleted(seeded_app):
     assert c.get(f"/api/agents/{default_id}", headers=_auth(tok)).status_code == 200
 
 
+def test_agent_wire_shape_marks_the_default_and_page_hides_its_delete(seeded_app):
+    """`is_default` reaches the browser, and the page uses it.
+
+    The API refuses to delete the seeded default (400
+    `default_agent_undeletable`). Without the flag on the wire the page renders
+    a delete control anyway, and clicking it optimistically removes the row,
+    fails, restores it, and toasts a bare "HTTP 400" — so the guard reads as a
+    glitch. Assert both halves: the projection, and that the two render sites
+    branch on it.
+    """
+    from pathlib import Path
+
+    from src.repositories import agents_repo
+
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+    default_id = agents_repo().get_or_create_default("admin1")["id"]
+
+    listed = c.get("/api/agents", headers=_auth(tok)).json()["agents"]
+    by_id = {a["id"]: a for a in listed}
+    assert by_id[default_id]["is_default"] is True
+    # A user-created agent is not the default — the flag has to discriminate.
+    mine = _create_agent(seeded_app, tok, name="Ordinary")
+    assert c.get(f"/api/agents/{mine['id']}", headers=_auth(tok)).json()["is_default"] is False
+
+    tpl = Path("app/web/templates/agents.html").read_text(encoding="utf-8")
+    assert tpl.count("a.is_default") >= 2, "both the list card and the builder header must branch on is_default"
+
+
 def test_agent_named_default_does_not_claim_the_reserved_slug(seeded_app):
     """`"default"` belongs to the seeded default agent, not to a user-named one.
 
