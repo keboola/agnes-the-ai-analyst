@@ -58,7 +58,7 @@ from typing import Callable, Optional
 
 import typer
 
-from cli.config import _config_dir, get_server_url, get_token, get_workspace_root
+from cli.config import _config_dir, get_server_url, get_token, get_workspace_root, load_config
 
 update_app = typer.Typer(
     name="update",
@@ -514,6 +514,37 @@ def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Step 4a½ — user-scope (all-repositories) layer convergence
+# --------------------------------------------------------------------------- #
+def _step_global(*, report: list[dict], quiet: bool = False) -> None:
+    """Converge the user-scope layer (spec §7.2). Workspace-independent —
+    runs OUTSIDE the workspace chdir block and also when no workspace
+    exists. Gated on the `global_scope` config flag; `global_hook: false`
+    (set by `agnes global enable --no-hook`) keeps the hook un-asserted."""
+    import contextlib
+    import io
+
+    cfg = load_config()
+    if not cfg.get("global_scope"):
+        report.append({"stage": "global", "status": "skipped", "detail": "global_scope not enabled"})
+        return
+    from cli.commands.global_scope import run_convergence
+
+    sub_report: list[dict] = []
+    sink = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
+    with sink:
+        run_convergence(want_hook=bool(cfg.get("global_hook", False)), force=False, report=sub_report)
+    bad = [r for r in sub_report if r.get("status") == "error"]
+    report.append(
+        {
+            "stage": "global",
+            "status": "error" if bad else "ok",
+            "detail": "; ".join(f"{r['stage']}={r['status']}" for r in sub_report),
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Step 4b — session catch-up push
 # --------------------------------------------------------------------------- #
 def _step_push(*, report: list[dict]) -> None:
@@ -797,6 +828,11 @@ def update(
                         os.chdir(prev_cwd)
                     except OSError:
                         pass
+
+        # User-scope layer (spec §7.2) — workspace-independent by design:
+        # runs from the LAUNCHING cwd (safe: the user target performs no
+        # cwd writes) and also when workspace is None.
+        _run_step("global", lambda: _step_global(report=report, quiet=step_quiet), report)
 
         entry = {
             "ts": _utc_stamp(),
