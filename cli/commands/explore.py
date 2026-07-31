@@ -1,7 +1,6 @@
 """Explore commands — agnes explore {table}."""
 
 import json
-import os
 from pathlib import Path
 
 import typer
@@ -25,7 +24,9 @@ def explore(
 def _explore_local(table: str, as_json: bool):
     from src.duckdb_conn import _open_duckdb
 
-    local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    local_dir = resolve_data_workspace() or Path.cwd().resolve()
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
         typer.echo("Local DuckDB not found. Run: agnes pull", err=True)
@@ -34,14 +35,21 @@ def _explore_local(table: str, as_json: bool):
     conn = _open_duckdb(str(db_path), read_only=True)
     try:
         # Check table exists
-        tables = [r[0] for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_name = ?", [table]
-        ).fetchall()]
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = ?", [table]
+            ).fetchall()
+        ]
         if not tables:
             # Also check views
-            tables = [r[0] for r in conn.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_name = ? AND table_type='VIEW'", [table]
-            ).fetchall()]
+            tables = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_name = ? AND table_type='VIEW'",
+                    [table],
+                ).fetchall()
+            ]
         if not tables:
             typer.echo(f"Table '{table}' not found. Available:", err=True)
             for r in conn.execute("SELECT table_name FROM information_schema.tables ORDER BY table_name").fetchall():
@@ -52,7 +60,7 @@ def _explore_local(table: str, as_json: bool):
         count = conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
 
         # Column info
-        columns = conn.execute(f"DESCRIBE \"{table}\"").fetchall()
+        columns = conn.execute(f'DESCRIBE "{table}"').fetchall()
         col_info = [{"name": c[0], "type": c[1], "nullable": c[2]} for c in columns]
 
         # Sample rows
@@ -77,6 +85,7 @@ def _explore_local(table: str, as_json: bool):
             typer.echo(f"\nSample ({min(5, count)} rows):")
             from rich.console import Console
             from rich.table import Table
+
             console = Console()
             t = Table()
             for c in sample_cols:

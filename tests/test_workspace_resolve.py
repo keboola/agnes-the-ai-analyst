@@ -185,3 +185,49 @@ def test_pull_workspace_flag_wins(tmp_path, monkeypatch):
     result = CliRunner().invoke(pull_module.pull_app, ["--workspace", str(target), "--quiet"])
     assert result.exit_code == 0, result.output
     assert seen["workspace"] == target.resolve()
+
+
+def test_snapshot_local_dir_uses_anchor(tmp_path, monkeypatch):
+    from cli.commands import snapshot as snapshot_module
+
+    anchor = _make_shaped(tmp_path / "anchor")
+    monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+    monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: str(anchor))
+    plain = tmp_path / "foreign-repo"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    assert snapshot_module._local_dir() == anchor.resolve()
+
+
+def test_disk_info_local_dir_falls_back_to_cwd_when_nothing(tmp_path, monkeypatch):
+    from cli.commands import disk_info as disk_info_module
+
+    monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+    monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: None)
+    plain = tmp_path / "foreign-repo"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    assert disk_info_module._local_dir() == plain.resolve()
+
+
+def test_mcp_query_local_uses_anchor(tmp_path, monkeypatch):
+    pytest.importorskip("mcp")
+    import duckdb
+
+    from cli.mcp import server as mcp_server
+
+    anchor = tmp_path / "anchor"
+    (anchor / "user" / "duckdb").mkdir(parents=True)
+    con = duckdb.connect(str(anchor / "user" / "duckdb" / "analytics.duckdb"))
+    con.execute("CREATE TABLE t AS SELECT 7 AS n")
+    con.close()
+
+    monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+    monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: str(anchor))
+    plain = tmp_path / "spawned-at-home"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+
+    fn = getattr(mcp_server.query_local, "fn", mcp_server.query_local)
+    out = fn("SELECT n FROM t")
+    assert out["rows"] == [[7]]
