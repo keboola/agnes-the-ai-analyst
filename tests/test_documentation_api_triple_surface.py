@@ -442,13 +442,14 @@ _EXEMPT: dict[str, str] = {
     # data/tool operation. Mirrors the grandfathered …/secret vault-write
     # endpoint on this same router (also CLI-only by the same reasoning).
     "/api/admin/mcp-sources/{source_id}/oauth/register": (
-        "CLI-reachable (`agnes admin mcp source oauth-register`) — RFC 7591 dynamic "
-        "client registration against the source's own AS; no MCP analogue (one-time "
-        "admin provisioning action, mirrors the grandfathered …/secret vault-write path)"
+        "CLI-reachable (`agnes admin mcp source oauth-register`); never MCP-exposed "
+        "per CONTRIBUTING.md → 'API coverage (REST × CLI × MCP)' → 'Standing "
+        "exemption — admin credential-provisioning writes'"
     ),
     "/api/admin/mcp-sources/{source_id}/oauth/client": (
-        "CLI-reachable (`agnes admin mcp source oauth-client`) — manual OAuth client "
-        "config escape hatch; same no-MCP-analogue reasoning as …/oauth/register"
+        "CLI-reachable (`agnes admin mcp source oauth-client`); never MCP-exposed "
+        "per CONTRIBUTING.md → 'API coverage (REST × CLI × MCP)' → 'Standing "
+        "exemption — admin credential-provisioning writes'"
     ),
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "

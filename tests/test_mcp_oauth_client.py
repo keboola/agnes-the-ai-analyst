@@ -576,3 +576,18 @@ def test_as_metadata_issuer_trailing_slash_is_tolerated():
 
     meta = run(_impl())
     assert meta["issuer"] == "https://as.example.com/"
+
+
+def test_registration_fails_closed_on_post_only_client_auth():
+    """An AS supporting only client_secret_post must be refused at
+    registration — announcing a method the token calls never use would get
+    every exchange/refresh rejected (Devin Review on #1124)."""
+    meta = dict(_AS_METADATA)
+    meta["token_endpoint_auth_methods_supported"] = ["client_secret_post"]
+
+    async def _impl():
+        async with _client(lambda request: httpx.Response(500)) as client:
+            return await register_dynamic_client(meta, redirect_uri="https://agnes.example.com/cb", client=client)
+
+    with pytest.raises(OAuthDiscoveryError, match="client_secret_basic"):
+        run(_impl())
