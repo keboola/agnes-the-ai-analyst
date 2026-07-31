@@ -340,6 +340,7 @@ async def _refresh_oauth_token_with_lease(
         return fresh["access_token"] if fresh else None
 
     try:
+        from app.secrets_vault import VaultKeyNotConfiguredError
         from connectors.mcp.oauth_client import (
             OAuthTokenError,
             build_oauth_http_client,
@@ -393,14 +394,32 @@ async def _refresh_oauth_token_with_lease(
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_set.expires_in)
         # Rotated refresh tokens are persisted atomically with the new
         # access token — a single upsert, one row write.
-        tokens_repo.upsert(
-            source_id,
-            user_id,
-            token_set.access_token,
-            refresh_token=token_set.refresh_token or refresh_token,
-            expires_at=expires_at,
-            scopes=token_set.scopes or row.get("scopes"),
-        )
+        try:
+            tokens_repo.upsert(
+                source_id,
+                user_id,
+                token_set.access_token,
+                refresh_token=token_set.refresh_token or refresh_token,
+                expires_at=expires_at,
+                scopes=token_set.scopes or row.get("scopes"),
+            )
+        except VaultKeyNotConfiguredError:
+            # The vault key went away between connect and this refresh, so
+            # the freshly-issued pair cannot be written. Upstream may have
+            # ROTATED the refresh token, in which case the stored one is now
+            # dead and the user is stranded until they reconnect — say so
+            # loudly instead of failing silently at the call seam. Returning
+            # the new access token still fails closed: nothing stale or
+            # borrowed is forwarded, and it is only usable until it expires
+            # (RBAC review on #1124).
+            logger.error(
+                "mcp oauth refresh succeeded for source=%s user=%s but the vault key is "
+                "unavailable, so the new token pair was NOT persisted; if upstream rotated "
+                "the refresh token the stored one is now stale and the user must reconnect "
+                "once AGNES_VAULT_KEY is restored",
+                source_id,
+                user_id,
+            )
         return token_set.access_token
     finally:
         try:

@@ -576,3 +576,44 @@ def test_as_metadata_issuer_trailing_slash_is_tolerated():
 
     meta = run(_impl())
     assert meta["issuer"] == "https://as.example.com/"
+
+
+def test_async_ssrf_transport_does_not_block_the_event_loop():
+    """resolve_safe() calls a blocking socket.getaddrinfo(); the async
+    transport must off-load it, or one slow upstream DNS stalls every other
+    concurrent request in the process (architecture review on #1124)."""
+    import asyncio
+    import threading
+
+    import httpx
+
+    from src.net import ssrf_safe_client
+
+    loop_thread_id = {}
+    resolve_thread_id = {}
+
+    def _fake_resolve(url, *, https_only=False):
+        resolve_thread_id["id"] = threading.get_ident()
+        return True, "", "203.0.113.10"
+
+    async def _fake_parent(self, request):
+        # Stand in for the real connection so the test never touches the
+        # network — only the resolve step is under test here.
+        return httpx.Response(200, request=request)
+
+    async def _drive():
+        loop_thread_id["id"] = threading.get_ident()
+        transport = ssrf_safe_client.SSRFGuardAsyncTransport()
+        resp = await transport.handle_async_request(httpx.Request("GET", "https://example.com/x"))
+        assert resp.status_code == 200
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(ssrf_safe_client, "resolve_safe", _fake_resolve)
+    monkey.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _fake_parent)
+    try:
+        asyncio.run(_drive())
+    finally:
+        monkey.undo()
+
+    assert resolve_thread_id.get("id") is not None, "resolve_safe was never reached"
+    assert resolve_thread_id["id"] != loop_thread_id["id"], "resolve_safe ran on the event loop thread"
