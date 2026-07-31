@@ -58,8 +58,11 @@ def test_library_detail_renders_for_admin(seeded_app):
     r = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 200
     assert "DetailUI Demo" in r.text
-    assert "Ask this collection" in r.text
     assert "Upload files" in r.text
+    # A detail page presents its entity — no in-page ask/search box (the hero's
+    # Ask Agnes action carries asking into chat instead).
+    assert "Ask this collection" not in r.text
+    assert 'id="lib-q"' not in r.text
 
 
 def test_library_detail_404_for_missing(seeded_app):
@@ -104,7 +107,8 @@ def test_single_file_artefact_presents_as_file(seeded_app, monkeypatch):
     det = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["admin_token"])).text
     assert "Solo Upload" in det  # the typed name is the hero title
     assert "report.pdf" in det  # filename surfaced in the hero meta
-    assert "Ask this file" in det
+    assert _DOC_GLYPH in det  # single-document hero glyph
+    assert "Ask this file" not in det  # detail pages carry no in-page ask box
 
 
 def test_multi_file_artefact_presents_as_collection(seeded_app, monkeypatch):
@@ -122,7 +126,7 @@ def test_multi_file_artefact_presents_as_collection(seeded_app, monkeypatch):
     assert _FOLDER_GLYPH in lst  # folder glyph — the row is a drop target
 
     det = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["admin_token"])).text
-    assert "Ask this collection" in det
+    assert "collection" in det  # collection framing in the hero copy
     assert _LIB_GLYPH in det  # two-sheet hero glyph is unchanged
 
 
