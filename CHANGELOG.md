@@ -20,6 +20,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- Vault repositories now share one decrypt path: `SharedSecretsRepository`,
+  `PerUserSecretsRepository`, `ConnectionSecretsRepository` and
+  `SystemSecretsRepository` (DuckDB and Postgres alike) fold their inline
+  decrypt-failure blocks onto the `app.secrets_vault.decrypt_optional` helper.
+  Behavior is unchanged — a NULL or unreadable column still reads as absent
+  instead of raising — but the warning now names the column that failed
+  (`<table>.<column>[<key>]`) and keeps the caller's "falling back to …" note
+  via a new `hint` argument. `SystemSecretsRepository` was going to stay
+  outside the fold, on the grounds that its wider catch (the `RuntimeError` a
+  malformed `AGNES_VAULT_KEY` raises) did not belong in a shared path; the
+  helper has since gained that catch for every caller, so the exception lost
+  its reason and the last hand-rolled copy goes with it. Cross-engine contract
+  tests assert the decrypt-failure path on both backends.
+
 ### Security
 
 ## [0.78.1] - 2026-08-04
