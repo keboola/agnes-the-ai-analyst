@@ -122,6 +122,22 @@ Claude Code, agnes CLI `0.77.27`), with full state restore afterwards:
   tools were still connecting at the moment the short session answered —
   the stdio server has a noticeable cold start (heavy Python imports); D4's
   docs should mention that tools appear a few seconds into a fresh session.
+- **Remote MCP OAuth (the D4 alternative), end-to-end:** discovery →
+  RFC 7591 dynamic registration (the server requires
+  `grant_types: ["authorization_code", "refresh_token"]` — registration
+  with `authorization_code` alone is rejected) → browser consent screen
+  (rendered with the operator's existing web session; shows client name,
+  scope, signed-in identity) → PKCE S256 code exchange (Bearer token,
+  `expires_in` 8 h, scope `read`) → authenticated `initialize` +
+  `tools/list` returned the full RBAC-filtered tool set; the same call
+  without a token is 401. Two D4-relevant caveats: (a) `claude mcp add
+  --transport http` leaves the server at "Needs authentication" — the
+  OAuth round is completed from `/mcp` in an interactive session, which
+  the docs recipe must say explicitly; (b) the revocation endpoint
+  rejects public-client revocation (`client_secret: Field required`, an
+  upstream SDK request-validation layer above our provider's working
+  `revoke_token`) — tokens currently live out their TTL; tracked as a
+  follow-up outside this design.
 
 ## 4. Design overview
 
