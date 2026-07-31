@@ -30,7 +30,9 @@ snapshot_app = typer.Typer(help="Manage local snapshots")
 
 
 def _local_dir() -> Path:
-    return Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    return resolve_data_workspace() or Path.cwd().resolve()
 
 
 def _snap_dir() -> Path:

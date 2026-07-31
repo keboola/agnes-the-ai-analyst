@@ -40,24 +40,21 @@ def mark_private() -> None:
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
     if not session_id:
         typer.echo(
-            "Error: CLAUDE_CODE_SESSION_ID is not set. "
-            "Run this inside a Claude Code session (via /agnes-private).",
+            "Error: CLAUDE_CODE_SESSION_ID is not set. Run this inside a Claude Code session (via /agnes-private).",
             err=True,
         )
         raise typer.Exit(1)
 
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    # Anchor-first ON PURPOSE (unlike resolve_data_workspace's cwd-first
+    # order): the private mark must land in the workspace `agnes push`
+    # scans, which is anchored on workspace_root exclusively.
     workspace_root = get_workspace_root()
-    workspace = (
-        Path(workspace_root)
-        if workspace_root
-        else Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
-    )
+    workspace = Path(workspace_root) if workspace_root else (resolve_data_workspace() or Path.cwd().resolve())
     newly_added = add_private(workspace, session_id)
 
     if newly_added:
-        typer.echo(
-            f"Session {session_id} marked as private. "
-            "Its transcript will not be uploaded by `agnes push`."
-        )
+        typer.echo(f"Session {session_id} marked as private. Its transcript will not be uploaded by `agnes push`.")
     else:
         typer.echo(f"Session {session_id} is already marked as private. No change.")
