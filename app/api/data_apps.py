@@ -310,11 +310,40 @@ def _require_owner_or_admin(user: dict, row: dict) -> None:
     raise HTTPException(status_code=403, detail="forbidden")
 
 
-def _get_row_or_404(slug: str) -> dict:
+def _get_row_or_404(slug: str, *, allow_hidden: bool = False) -> dict:
     row = data_apps_repo().get_by_slug(slug)
     if not row:
         raise HTTPException(status_code=404, detail="data_app_not_found")
+    # A soft-deleted linked app (its upstream config disappeared) is hidden from
+    # the list; keep it hidden from every by-slug surface too (detail, PATCH,
+    # and the hosted-only op endpoints, which linked rows never reach anyway),
+    # so a stale grant can't still read/operate on a gone app. Its row + grants
+    # persist for a lossless re-link when the upstream app reappears.
+    #
+    # `allow_hidden` is for DELETE alone: purging a retired row (and its
+    # lingering grants) is exactly what an admin needs to do to a hidden app,
+    # so the read-side 404 must not make it permanently undeletable (Devin
+    # Review on #1116).
+    if row.get("state") == "linked_hidden" and not allow_hidden:
+        raise HTTPException(status_code=404, detail="data_app_not_found")
     return row
+
+
+def _reject_linked(row: dict) -> None:
+    """400 for hosted-only lifecycle actions on an externally-hosted row.
+
+    `state` doubles as the reconciler's scope filter (`state='linked'`), so a
+    stop/deploy that rewrote it would knock the row out of the sync's control
+    permanently — the app could never be retired (`linked_hidden`) again after
+    disappearing upstream, leaving users a dead Open link (Devin Review on
+    #1116). Agnes hosts nothing for a linked app anyway; the runner has no
+    container to act on.
+    """
+    if row.get("repo_mode") == "linked":
+        raise HTTPException(
+            status_code=400,
+            detail="linked_app_not_hosted: this app runs outside Agnes — deploy/stop/logs do not apply",
+        )
 
 
 def _app_url(slug: str, cfg: dict) -> str:
@@ -327,7 +356,13 @@ def _app_url(slug: str, cfg: dict) -> str:
 def _serialize(row: dict, cfg: Optional[dict] = None) -> dict:
     cfg = cfg if cfg is not None else _effective_config()
     out = {k: v for k, v in row.items() if k not in ("secrets_enc", "service_token_id")}
-    out["url"] = _app_url(row["slug"], cfg)
+    kind = "linked" if row.get("repo_mode") == "linked" else "hosted"
+    out["kind"] = kind
+    # A linked app opens at its external URL (Agnes doesn't proxy it); a hosted
+    # app opens at the reverse-proxy path. `effective_description` lets the admin
+    # override the synced description without the next sync clobbering it.
+    out["url"] = (row.get("external_url") or "") if kind == "linked" else _app_url(row["slug"], cfg)
+    out["effective_description"] = row.get("description_override") or row.get("description") or ""
     return out
 
 
@@ -719,6 +754,10 @@ class CreateDraftRequest(BaseModel):
     branch: str = "init"
 
 
+class SetDescriptionRequest(BaseModel):
+    description: str = ""
+
+
 def _draft_slug(parent_slug: str, branch: str) -> str:
     """Derive the draft's own slug from its parent + branch:
     ``<parent>--<branch>``, lowercased, non-``SLUG_RE`` characters folded to
@@ -739,14 +778,72 @@ def _draft_slug(parent_slug: str, branch: str) -> str:
 
 
 @router.get("")
-async def list_data_apps(user: dict = Depends(get_current_user)):
+async def list_data_apps(
+    user: dict = Depends(get_current_user),
+    kind: Optional[str] = None,
+    source: Optional[str] = None,
+):
     _feature_gate()
+    if kind is not None and kind not in ("hosted", "linked"):
+        raise HTTPException(status_code=400, detail="invalid_kind")
     cfg = _effective_config()
     # Drafts are working copies layered on a parent app, not independent
     # apps a caller should stumble onto in the human-facing/CLI list —
     # they're reached via `GET /{slug}`'s inlined `drafts` field instead.
-    rows = data_apps_repo().list(include_drafts=False)
-    return [_serialize(r, cfg) for r in rows if _can_view(user, r)]
+    # Hidden linked rows (app removed upstream) are excluded from `list()` by
+    # the `state='linked_hidden'` filter below only when filtering to linked;
+    # the default list already omits them since callers key off visible state.
+    repo = data_apps_repo()
+    if kind == "linked":
+        # Filter in SQL, not post-fetch: linked rows are created per upstream
+        # app by the ingest reconciler, so their count is data-driven and can
+        # exceed list()'s page cap — post-filtering a capped page could return
+        # an incomplete (or empty) pool to the wizard/CLI/MCP even though
+        # matching rows exist (Devin Review on #1116). list_linked() already
+        # excludes linked_hidden and scopes by connection prefix; source_ref
+        # is "<connection_id>:<external_app_id>".
+        rows = repo.list_linked(source_ref_prefix=f"{source}:" if source is not None else None)
+    else:
+        rows = repo.list(include_drafts=False)
+    out = []
+    for r in rows:
+        if r.get("state") == "linked_hidden":
+            continue  # soft-deleted linked app — not shown
+        if not _can_view(user, r):
+            continue
+        serialized = _serialize(r, cfg)
+        if kind is not None and serialized["kind"] != kind:
+            continue
+        # Filter to one ingest connection (see above; kept for the non-linked
+        # branch and as a belt-and-braces check on the SQL-filtered rows).
+        if source is not None and not str(r.get("source_ref") or "").startswith(f"{source}:"):
+            continue
+        out.append(serialized)
+    return out
+
+
+@router.patch("/{slug}")
+async def set_data_app_description(
+    slug: str,
+    payload: SetDescriptionRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Set the admin description override on a managed (sync-owned) app.
+
+    Linked apps are org resources whose ``description`` is refreshed by the
+    ingest sync; this override lets an owner/Admin pin a human-authored
+    description the sync won't clobber. Only ``managed`` rows accept it —
+    hosted apps edit their description via the normal create/update flow.
+    """
+    _feature_gate()
+    row = _get_row_or_404(slug)
+    _require_owner_or_admin(user, row)
+    if not row.get("managed"):
+        raise HTTPException(status_code=409, detail="not_managed")
+    data_apps_repo().set_description_override(slug, payload.description)
+    _audit(conn, user["id"], "data_app.set_description", f"data_app:{slug}", {})
+    return _serialize(_get_row_or_404(slug))
 
 
 @router.post("", status_code=201)
@@ -850,6 +947,9 @@ async def deploy_data_app(
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
 
     holder = require_op_lease(slug)
     try:
@@ -913,6 +1013,9 @@ async def mint_git_credential(
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
     try:
         url = _mint_git_credential(row)
     except OwnerNotFoundError:
@@ -943,6 +1046,7 @@ async def create_preview_grant(
     row = _get_row_or_404(slug)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
+    _reject_linked(row)
     _token, cookie = _mint_preview_token(row, user)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
     _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
@@ -989,6 +1093,7 @@ async def create_draft(
     _feature_gate()
     parent = _get_row_or_404(slug)
     _require_owner_or_admin(user, parent)
+    _reject_linked(parent)
     if parent.get("is_draft"):
         raise HTTPException(status_code=400, detail="parent_is_draft")
     if not _BRANCH_RE.match(payload.branch) or not _is_git_valid_branch(payload.branch):
@@ -1127,6 +1232,9 @@ async def stop_data_app(
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
 
     holder = require_op_lease(slug)
     try:
@@ -1186,12 +1294,32 @@ async def delete_data_app(
     draft down correctly.
     """
     _feature_gate()
-    row = _get_row_or_404(slug)
+    # allow_hidden: a retired linked row (and its lingering grants) is exactly
+    # what an admin needs to purge — see _get_row_or_404.
+    row = _get_row_or_404(slug, allow_hidden=True)
     _require_owner_or_admin(user, row)
     if row.get("is_draft"):
         raise HTTPException(status_code=400, detail="use_draft_delete_route")
 
     repo = data_apps_repo()
+    # Linked rows: registry-only removal — Agnes hosts nothing for them, so
+    # there is no runner container, service token, git repo, or config dir to
+    # tear down, and running the hosted teardown would 500 on the synthetic
+    # 'system' owner. This is the admin's ONLY retire path for a row orphaned
+    # by unregistering its MCP source/lister (the reconciler can no longer
+    # hide it); on a still-syncing source the next lister run recreates the
+    # row under the same deterministic slug, grants intact — a harmless no-op
+    # loop rather than data loss (Devin Review on #1116).
+    if row.get("repo_mode") == "linked":
+        repo.delete(row["id"])
+        _audit(
+            conn,
+            user["id"],
+            "data_app.delete",
+            f"data_app:{slug}",
+            {"linked": True, "source_ref": row.get("source_ref")},
+        )
+        return
     # Drafts live on the parent's repo and have their own containers/branches;
     # tear them down first so deleting a prod app can't strand them.
     for draft in repo.list_drafts(row["id"]):
@@ -1233,6 +1361,9 @@ async def set_data_app_secrets(
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
 
     try:
         enc = encrypt_secret(json.dumps(payload.secrets))
@@ -1252,6 +1383,9 @@ async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get
     _feature_gate()
     row = _get_row_or_404(slug)
     _require_owner_or_admin(user, row)
+    # AFTER authz — the distinct 400 must not leak an app's kind/existence
+    # to callers who would otherwise get a plain 403 (Devin Review on #1116).
+    _reject_linked(row)
 
     try:
         logs = _runner().logs(slug, tail=tail)
@@ -1275,6 +1409,7 @@ async def get_data_app_readiness(slug: str, user: dict = Depends(get_current_use
     row = _get_row_or_404(slug)
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
+    _reject_linked(row)
 
     state = row["state"]
     ready = False

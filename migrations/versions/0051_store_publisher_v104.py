@@ -1,6 +1,6 @@
 """store_entities publisher_kind + verification columns
 
-Mirrors DuckDB ``_v103_to_v104``. Two orthogonal axes for the catalog card's
+Mirrors DuckDB ``_v109_to_v110``. Two orthogonal axes for the catalog card's
 trust line:
 
 - ``publisher_kind`` ('organization' | 'user') — who stands behind the item.

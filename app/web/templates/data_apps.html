@@ -3,7 +3,7 @@
 
 {% set page_hero_eyebrow = "Data Apps" %}
 {% set page_hero_title = "Data apps" %}
-{% set page_hero_subtitle = "Hosted web apps deployed from a git repo. Owners and Admin can deploy, stop, and view logs from an app's detail page." %}
+{% set page_hero_subtitle = "Hosted web apps deployed from a git repo, plus linked apps running elsewhere (e.g. Keboola). Owners and Admin can deploy, stop, and view logs for hosted apps from an app's detail page." %}
 
 {% block head_extra %}
 <style>
@@ -40,10 +40,16 @@
         <tr>
           <td><a href="/apps/detail/{{ a.slug }}">{{ a.name }}</a></td>
           <td><code>{{ a.slug }}</code></td>
-          <td><span class="badge {{ a.badge_class }}">{{ a.state }}</span></td>
-          <td>{{ a.owner_email }}</td>
           <td>
-            {% if a.state == 'running' %}
+            {% if a.kind == 'linked' %}
+            <span class="badge">linked</span>
+            {% else %}
+            <span class="badge {{ a.badge_class }}">{{ a.state }}</span>
+            {% endif %}
+          </td>
+          <td>{% if a.kind == 'linked' %}<span class="muted">Keboola</span>{% else %}{{ a.owner_email }}{% endif %}</td>
+          <td>
+            {% if a.kind == 'linked' or a.state == 'running' %}
             <a href="{{ a.url }}" target="_blank" rel="noopener">Open ↗</a>
             {% else %}
             <span class="muted">not running</span>

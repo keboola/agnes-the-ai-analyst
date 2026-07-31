@@ -4020,7 +4020,15 @@ async def data_apps_list_page(
     apps: list[dict] = []
     if enabled:
         u_repo = users_repo()
-        rows = [r for r in data_apps_repo().list(include_drafts=False) if _can_view(user, r)]
+        # `linked_hidden` = a linked app that disappeared upstream (row +
+        # grants kept for lossless re-link). The API list/detail/PATCH
+        # surfaces already exclude it — mirror that here so a granted user
+        # doesn't keep seeing an "Open ↗" onto a dead external URL.
+        rows = [
+            r
+            for r in data_apps_repo().list(include_drafts=False)
+            if r.get("state") != "linked_hidden" and _can_view(user, r)
+        ]
         for row in rows:
             serialized = _serialize(row, cfg)
             owner = u_repo.get_by_id(row["owner_user_id"])
@@ -4054,7 +4062,10 @@ async def data_app_detail_page(
     from src.repositories import data_apps_repo, users_repo
 
     row = data_apps_repo().get_by_slug(slug)
-    if not row:
+    # Same hidden-state 404 as the API's _get_row_or_404: a soft-deleted
+    # linked row (gone upstream) must not render a detail page with a live
+    # link onto a dead external URL.
+    if not row or row.get("state") == "linked_hidden":
         raise HTTPException(status_code=404, detail="data_app_not_found")
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
@@ -5585,6 +5596,20 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
+@router.get("/admin/linked-apps", response_class=HTMLResponse)
+async def admin_linked_apps_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Guided admin flow for linking externally-hosted (Keboola) data apps:
+    pick an MCP source → materialize its data-app lister → select the ingested
+    apps and grant them to a group. Wires existing admin APIs (mcp-sources,
+    mcp-tools, materialize, data-apps ?kind=linked, access/grants) — no new
+    control-plane surface beyond the page itself."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_linked_apps.html", ctx)
+
+
 @router.get("/admin/contribute-skill", response_class=HTMLResponse)
 async def admin_contribute_skill_page(
     request: Request,
@@ -5785,6 +5810,59 @@ SCHEDULER_AUDIT_ACTIONS = [
     "initial_workspace.sync",
     "initial_workspace.sync_failed",
 ]
+
+
+@router.get("/admin/store", response_class=HTMLResponse)
+async def admin_moderation_hub_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Moderation & Trust — one admin surface for entity verification,
+    submission review, and marketplace curation.
+
+    Lists Store entities awaiting verification (``verification_state='requested'``)
+    with a direct link to each entity's detail page, where the Verify /
+    Request changes / Archive / Override actions live. The pre-publish
+    submission queue and marketplace curation are surfaced as links (count +
+    jump-off), not rebuilt here. ``/admin/store`` is the natural parent of the
+    ``/admin/store/submissions`` review queue.
+    """
+    from app.instance_config import get_store_verification_enabled
+
+    verification_enabled = get_store_verification_enabled()
+    verification_requests: list = []
+    verification_total = 0
+    verification_limit = 200
+    if verification_enabled:
+        # Admin view: no visibility_status filter, so a requested entity
+        # surfaces regardless of its lifecycle state. Keep the repo's real
+        # total (not len(rows)) so the page can flag when more are waiting
+        # than the page shows.
+        verification_requests, verification_total = store_entities_repo().list(
+            verification_state=["requested"],
+            limit=verification_limit,
+        )
+
+    # "Needs review" count — the exact verdict set the submission queue's
+    # "Needs review" chip uses (admin_store_submissions.html), so this number
+    # matches what the admin sees after clicking through. `blocked_inline`
+    # (the Rescan-flow state) MUST be included — dropping it undercounts.
+    _, pending_submissions_total = store_submissions_repo().list_for_admin(
+        status=["blocked_inline", "blocked_llm", "review_error"],
+        limit=1,
+    )
+
+    ctx = _build_context(
+        request,
+        user=user,
+        verification_requests=verification_requests,
+        verification_total=verification_total,
+        verification_limit=verification_limit,
+        pending_submissions_total=pending_submissions_total,
+        store_verification_enabled=verification_enabled,
+    )
+    return templates.TemplateResponse(request, "admin_moderation_hub.html", ctx)
 
 
 @router.get("/admin/store/submissions", response_class=HTMLResponse)

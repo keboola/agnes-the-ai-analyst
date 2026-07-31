@@ -97,7 +97,7 @@ def test_update_whitelist(repo):
 
 
 def test_builder_superset_roundtrip(repo):
-    """v110 paper-theme builder superset — create + update + read the authored
+    """v111 paper-theme builder superset — create + update + read the authored
     fields on the same canonical row that holds main's agent-as-API columns."""
     repo.create(
         id="a1",

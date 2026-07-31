@@ -658,8 +658,12 @@
      Rail returns to the Library's Plugins band (its only browse surface —
      Marketplace/Catalog is not a rail destination); topnav keeps the
      classic per-tab marketplace link; ?from=skills returns to the Skill
-     builder. See router._detail_back. #}
-  {% if from_source == 'skills' %}
+     builder, and admin moderation back to /admin/store. See
+     router._detail_back. #}
+  {% if from_source == 'admin-moderation' %}
+    {% set _back = '/admin/store' %}
+    {% set _back_label = 'Moderation & Trust' %}
+  {% elif from_source == 'skills' %}
     {% set _back = '/skills' %}
     {% set _back_label = 'Skill builder' %}
   {% else %}

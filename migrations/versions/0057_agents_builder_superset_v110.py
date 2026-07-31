@@ -1,6 +1,6 @@
 """agents builder superset columns
 
-Mirrors DuckDB ``_v109_to_v110``. Combines the paper-theme agent-builder's
+Mirrors DuckDB ``_v110_to_v111``. Combines the paper-theme agent-builder's
 authored fields onto main's canonical ``agents`` table so both the
 agent-as-API backend (main) and the /agents builder (paper-theme) read one
 table:
@@ -37,7 +37,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-# (name, type, server_default) — matches src/db.py _v109_to_v110 and the
+# (name, type, server_default) — matches src/db.py _v110_to_v111 and the
 # src/models/agents.py Agent model.
 _COLUMNS: tuple[tuple[str, sa.types.TypeEngine, str | None], ...] = (
     ("role", sa.String(), None),

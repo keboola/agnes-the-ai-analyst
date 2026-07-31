@@ -133,7 +133,7 @@ class StoreEntity(Base):
     synthetic_name: Mapped[str | None] = mapped_column(String, nullable=True)
     # v104 trust line — who stands behind the item (publisher_kind) and the
     # org's advisory review of a user-published item (verification_*). Mirrors
-    # migration 0051_store_publisher_v104 + DuckDB _v108_to_v109.
+    # migration 0051_store_publisher_v104 + DuckDB _v109_to_v110.
     publisher_kind: Mapped[str] = mapped_column(String, server_default=text("'user'"), nullable=False)
     verification_state: Mapped[str] = mapped_column(String, server_default=text("'none'"), nullable=False)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

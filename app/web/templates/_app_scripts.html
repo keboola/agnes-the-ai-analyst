@@ -250,6 +250,7 @@
           'c': '/admin/marketplaces',     // (curated)
           'k': '/admin/tokens',           // (keys/tokens)
           'r': '/admin/store/submissions', // (review queue)
+          'v': '/admin/store',            // (verification / moderation & trust)
         };
         let pending = false;
         let pendingTimer = null;
@@ -264,7 +265,7 @@
               'box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:3000;';
             document.body.appendChild(hintEl);
           }
-          hintEl.textContent = 'g … (t a m u g s l c k r)';
+          hintEl.textContent = 'g … (t a m u g s l c k r v)';
           hintEl.style.display = 'block';
         }
         function _hideHint() {
@@ -342,6 +343,7 @@
           { label: 'Studio · Suggestions queue',  hint: 'admin',        href: '/admin/studio/suggestions' },
           {% endif %}
           { label: 'Tokens',                      hint: 'admin · g k',  href: '/admin/tokens' },
+          { label: 'Moderation & Trust',          hint: 'admin · g v',  href: '/admin/store' },
           { label: 'Flea Submissions',            hint: 'admin · g r',  href: '/admin/store/submissions' },
           { label: 'Prompts',                     hint: 'admin',        href: '/admin/prompts' },
           { label: '— User-facing —',             hint: 'separator',    href: null },

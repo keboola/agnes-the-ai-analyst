@@ -1703,6 +1703,7 @@ KNOWN_UNTESTED = {
     "GET /api/data-apps",
     "POST /api/data-apps",
     "GET /api/data-apps/{slug}",
+    "PATCH /api/data-apps/{slug}",
     "POST /api/data-apps/{slug}/deploy",
     "POST /api/data-apps/{slug}/stop",
     "DELETE /api/data-apps/{slug}",
@@ -1820,6 +1821,9 @@ KNOWN_UNTESTED = {
     # Admin semantic-layer sources page (multi-project sync) — tested in
     # tests/test_admin_semantic_layer_page.py.
     "GET /admin/semantic-layer",
+    # Guided linked-apps admin wizard (v0.77.28) — tested in
+    # tests/test_web_data_apps.py (render + admin-gate).
+    "GET /admin/linked-apps",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",
     "POST /api/admin/keboola/test",

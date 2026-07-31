@@ -1,5 +1,6 @@
 {% extends "base_ds.html" %}
 {% block title %}Admin — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--full{% endblock %}
 
 {% block head_extra %}
 <style>
@@ -98,8 +99,14 @@
       <a class="admin-hub-link" href="/admin/data-sources">Data sources
         <span class="admin-hub-link__desc">Keboola/BigQuery projects Agnes pulls tables from</span>
       </a>
+      <a class="admin-hub-link" href="/admin/semantic-layer">Semantic layer
+        <span class="admin-hub-link__desc">Business metric + entity definitions layered over sources</span>
+      </a>
       <a class="admin-hub-link" href="/admin/mcp-sources">MCP sources
         <span class="admin-hub-link__desc">MCP servers whose tools Agnes calls at runtime</span>
+      </a>
+      <a class="admin-hub-link" href="/admin/linked-apps">Link Keboola apps
+        <span class="admin-hub-link__desc">Ingest externally-hosted (Keboola) data apps and grant them to a group</span>
       </a>
       <a class="admin-hub-link" href="/admin/datasource-credentials">Instance secrets
         <span class="admin-hub-link__desc">Vault-backed BigQuery / Google Workspace credentials</span>
@@ -110,6 +117,9 @@
   <div class="admin-hub-card">
     <h2 class="admin-hub-card__title">Agent Experience</h2>
     <div class="admin-hub-links">
+      <a class="admin-hub-link" href="/admin/store">Moderation &amp; Trust
+        <span class="admin-hub-link__desc">Verification requests, submission review, marketplace curation</span>
+      </a>
       <a class="admin-hub-link" href="/admin/marketplaces">Curated Marketplaces</a>
       <a class="admin-hub-link" href="/admin/initial-workspace">Initial Workspace</a>
       <a class="admin-hub-link" href="/admin/news">News</a>
@@ -117,6 +127,11 @@
       <a class="admin-hub-link" href="/admin/knowledge-digests">Maintained digests</a>
       <a class="admin-hub-link" href="/admin/store/submissions">Flea Submissions</a>
       <a class="admin-hub-link" href="/admin/prompts">Prompts</a>
+      {% if can_studio %}
+      <a class="admin-hub-link" href="/admin/studio">Studio
+        <span class="admin-hub-link__desc">Authoring workspace for data packages, skills, and agents</span>
+      </a>
+      {% endif %}
     </div>
   </div>
 

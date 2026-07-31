@@ -137,6 +137,23 @@ def test_rail_has_a_collapse_toggle():
     assert 'aria-controls="rail-collapsible"' in html
 
 
+def test_rail_admin_is_a_single_hub_link_not_a_mega_list():
+    """The rail admin nav collapsed to ONE entry → /admin (the card hub).
+    The granular per-page admin links moved to the hub, so the sidebar stays
+    calm and new admin surfaces are added to the hub, not threaded into the
+    rail. The `rail-admin` wrapper class stays (collapsible-order contract)."""
+    html = _rail_template()
+    assert 'class="rail-admin"' in html
+    assert 'href="/admin"' in html
+    for gone in (
+        'href="/admin/users"',
+        'href="/admin/tables"',
+        'href="/admin/marketplaces"',
+        'href="/admin/store/submissions"',
+    ):
+        assert gone not in html, f"rail should no longer carry the granular link {gone}"
+
+
 def test_collapsible_wrapper_spans_nav_history_and_admin_only():
     """The wrapper must open right after the logo/toggle and close before
     .rail-foot — Finish setup + the user menu must stay reachable regardless

@@ -1,7 +1,7 @@
 """chat_sessions.pinned_at — user-pinned conversations
 
-Mirrors DuckDB ``_v110_to_v111``. Adds a nullable timestamp to
-``chat_sessions``: NULL = not pinned (every pre-v111 row), a timestamp = pinned
+Mirrors DuckDB ``_v111_to_v112``. Adds a nullable timestamp to
+``chat_sessions``: NULL = not pinned (every pre-v112 row), a timestamp = pinned
 at that moment. A timestamp rather than a boolean so the history panel can order
 pins most-recently-pinned-first.
 
@@ -11,7 +11,7 @@ UPDATEd after ``chat_messages`` rows exist trips the FK+index false-violation
 bug. Pin state is only ever read as part of a single user's session list, which
 is already covered by ``idx_chat_sessions_user``.
 
-Revision ID: 0058_chat_pinned_v111
+Revision ID: 0059_chat_pinned_v112
 Revises: 0057_agents_superset_v110
 Create Date: 2026-07-31
 
@@ -27,7 +27,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0058_chat_pinned_v111"
+revision: str = "0059_chat_pinned_v112"
 down_revision: Union[str, None] = "0057_agents_superset_v110"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

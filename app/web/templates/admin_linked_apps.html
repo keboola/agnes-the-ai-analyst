@@ -1,0 +1,279 @@
+{% extends "base_page.html" %}
+{% block title %}Link Keboola apps — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Data Apps" %}
+{% set page_hero_title = "Link Keboola apps" %}
+{% set page_hero_subtitle = "Ingest externally-hosted apps from a Keboola MCP source and grant them to a group — in three steps. Linked apps open on Keboola; Agnes only catalogs, links, and grants them." %}
+
+{% block head_extra %}
+<style>
+  .wiz-step { margin-bottom: var(--space-6); }
+  .wiz-step[hidden] { display: none; }
+  .wiz-step h3 { margin-bottom: var(--space-2); }
+  .wiz-step .step-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 999px; margin-right: 8px;
+    background: var(--ds-primary-light); color: var(--ds-primary);
+    font-size: var(--text-sm); font-weight: 600;
+  }
+  .wiz-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: var(--space-3) 0; }
+  .wiz-row select, .wiz-row input { min-width: 260px; }
+  .wiz-note { color: var(--ds-text-secondary); font-size: var(--text-sm); }
+  .wiz-result { margin-top: var(--space-2); font-size: var(--text-sm); }
+  .wiz-pool-table td, .wiz-pool-table th { padding: 6px 10px; }
+  .wiz-desc { color: var(--ds-text-secondary); font-size: var(--text-sm); max-width: 340px; }
+  .wiz-muted { color: var(--ds-text-muted); }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="linked-wizard">
+
+  <div class="wiz-step ds-card" id="wiz-step-1">
+    <h3><span class="step-num">1</span>Choose a Keboola MCP source</h3>
+    <p class="wiz-note">The source whose "list data apps" tool exposes the Keboola apps to ingest.
+      Not registered yet? <a href="/admin">Register an MCP source</a> first, then come back.</p>
+    <div class="wiz-row">
+      <select id="wiz-source" aria-label="MCP source"><option value="">Loading sources…</option></select>
+      {{ ds.button('Next', variant='primary', id='wiz-source-next') }}
+    </div>
+  </div>
+
+  <div class="wiz-step ds-card" id="wiz-step-2" hidden>
+    <h3><span class="step-num">2</span>Fetch the apps</h3>
+    <p class="wiz-note">Pick the tool that lists this source's data apps. It'll be set to
+      <code>materialize</code> mode and run now — re-run from this page (or the
+      MCP source's Materialize button) whenever you want a refresh; there is no
+      background sync yet.</p>
+    <div class="wiz-row">
+      <select id="wiz-tool" aria-label="Lister tool"><option value="">Loading tools…</option></select>
+      {{ ds.button('Fetch apps now', variant='primary', id='wiz-fetch') }}
+    </div>
+    <div class="wiz-result" id="wiz-fetch-result"></div>
+  </div>
+
+  <div class="wiz-step ds-card" id="wiz-step-3" hidden>
+    <h3><span class="step-num">3</span>Select apps &amp; grant to a group</h3>
+    <p class="wiz-note">Checked apps become visible to every member of the chosen group
+      (a <code>data_app</code> resource grant). Leave unchecked the ones you don't want to expose.</p>
+    <div class="wiz-row">
+      <label><input type="checkbox" id="wiz-all"> Select all</label>
+      <select id="wiz-group" aria-label="Group"><option value="">Loading groups…</option></select>
+      {{ ds.button('Grant to group', variant='primary', id='wiz-grant') }}
+    </div>
+    <div class="data-table-wrap">
+      <table class="data-table wiz-pool-table" id="wiz-pool">
+        <thead>
+          <tr><th></th><th>Name</th><th>Description</th><th>URL</th><th>Slug</th></tr>
+        </thead>
+        <tbody id="wiz-pool-body"><tr><td colspan="5" class="wiz-muted">No apps loaded yet.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="wiz-result" id="wiz-grant-result"></div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  let sourceId = "";
+
+  // ── safe DOM helpers (never innerHTML with API-supplied text) ─────
+  function el(tag, opts) {
+    const e = document.createElement(tag);
+    if (opts && opts.text != null) e.textContent = opts.text;
+    if (opts && opts.class) e.className = opts.class;
+    return e;
+  }
+  function option(value, text) {
+    const o = document.createElement("option");
+    o.value = value == null ? "" : String(value);
+    o.textContent = text == null ? "" : String(text);
+    return o;
+  }
+  function fillSelect(sel, items, valueOf, textOf) {
+    sel.replaceChildren(...items.map((i) => option(valueOf(i), textOf(i))));
+  }
+  function placeholderOption(sel, text) {
+    sel.replaceChildren(option("", text));
+  }
+  function poolMessageRow(text) {
+    const tr = document.createElement("tr");
+    const td = el("td", { text, class: "wiz-muted" });
+    td.colSpan = 5;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  async function jget(url) {
+    const r = await fetch(url, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+  async function jsend(url, method, body) {
+    const r = await fetch(url, {
+      method, credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!r.ok) {
+      let detail = r.status;
+      try { detail = (await r.json()).detail || detail; } catch (e) { /* ignore */ }
+      throw new Error(detail);
+    }
+    return r.status === 204 ? {} : r.json();
+  }
+
+  // ── Step 1: sources ──────────────────────────────────────────────
+  async function loadSources() {
+    try {
+      const sources = await jget("/api/admin/mcp-sources");
+      if (!sources.length) { placeholderOption($("wiz-source"), "No MCP sources registered"); return; }
+      fillSelect($("wiz-source"), sources, (s) => s.id, (s) => s.name);
+    } catch (e) {
+      placeholderOption($("wiz-source"), "Failed to load sources");
+    }
+  }
+
+  $("wiz-source-next").addEventListener("click", () => {
+    sourceId = $("wiz-source").value;
+    if (!sourceId) { alert("Pick a source first."); return; }
+    $("wiz-step-2").hidden = false;
+    loadTools();
+  });
+
+  // ── Step 2: tools + fetch ────────────────────────────────────────
+  async function loadTools() {
+    try {
+      const tools = await jget(`/api/admin/mcp-tools?source_id=${encodeURIComponent(sourceId)}`);
+      if (!tools.length) { placeholderOption($("wiz-tool"), "No tools on this source"); return; }
+      fillSelect(
+        $("wiz-tool"),
+        tools,
+        (t) => t.tool_id,
+        (t) => (t.exposed_name || t.original_name) + (t.mode === "materialize" ? " (materialize)" : ""),
+      );
+    } catch (e) {
+      placeholderOption($("wiz-tool"), "Failed to load tools");
+    }
+  }
+
+  $("wiz-fetch").addEventListener("click", async () => {
+    const toolId = $("wiz-tool").value;
+    const out = $("wiz-fetch-result");
+    if (!toolId) { alert("Pick a tool first."); return; }
+    const opt = $("wiz-tool").selectedOptions[0];
+    out.textContent = "Working…";
+    try {
+      // Ensure the tool is in materialize mode (idempotent; keep an existing schedule).
+      if (!/\(materialize\)/.test(opt.textContent)) {
+        await jsend(`/api/admin/mcp-tools/${encodeURIComponent(toolId)}`, "PUT",
+          { mode: "materialize", schedule: "daily 03:00" });
+      }
+      // `lister: true` = the admin is explicitly designating this tool as the
+      // data-app lister — only then does the server project its output table
+      // into linked data_apps rows (a plain per-tool materialize never does).
+      const res = await jsend(`/api/admin/mcp-sources/${encodeURIComponent(sourceId)}/materialize`, "POST",
+        { tool_id: toolId, lister: true });
+      const proj = res.linked_projection;
+      out.textContent = proj
+        ? `Fetched: ${proj.created} new, ${proj.updated} updated, ${proj.hidden} hidden.`
+        : "Materialized, but this tool produced no linked apps (no keboola_data_apps table).";
+      $("wiz-step-3").hidden = false;
+      loadPool();
+      loadGroups();
+    } catch (e) {
+      out.textContent = "Failed: " + e.message;
+    }
+  });
+
+  // ── Step 3: pool + grant ─────────────────────────────────────────
+  function poolRow(a) {
+    const tr = document.createElement("tr");
+
+    const tdCheck = document.createElement("td");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.className = "wiz-pick"; cb.value = a.slug; cb.checked = true;
+    tdCheck.appendChild(cb);
+
+    const tdName = el("td", { text: a.name || "" });
+
+    const tdDesc = el("td", { class: "wiz-desc" });
+    if (a.effective_description) tdDesc.textContent = a.effective_description;
+    else tdDesc.appendChild(el("span", { class: "wiz-muted", text: "—" }));
+
+    const tdUrl = document.createElement("td");
+    // Only render a clickable link for a real http(s) URL — never assign an
+    // API-supplied string that could be a `javascript:` scheme to href.
+    if (/^https?:\/\//i.test(a.url || "")) {
+      const link = document.createElement("a");
+      link.href = a.url; link.target = "_blank"; link.rel = "noopener";
+      link.textContent = "open ↗";
+      tdUrl.appendChild(link);
+    } else {
+      tdUrl.appendChild(el("span", { class: "wiz-muted", text: a.url || "—" }));
+    }
+
+    const tdSlug = document.createElement("td");
+    tdSlug.appendChild(el("code", { text: a.slug }));
+
+    tr.append(tdCheck, tdName, tdDesc, tdUrl, tdSlug);
+    return tr;
+  }
+
+  async function loadPool() {
+    const body = $("wiz-pool-body");
+    try {
+      const apps = await jget(`/api/data-apps?kind=linked&source=${encodeURIComponent(sourceId)}`);
+      if (!apps.length) { body.replaceChildren(poolMessageRow("No linked apps from this source.")); return; }
+      body.replaceChildren(...apps.map(poolRow));
+    } catch (e) {
+      body.replaceChildren(poolMessageRow("Failed to load apps."));
+    }
+  }
+
+  async function loadGroups() {
+    try {
+      const groups = await jget("/api/admin/groups");
+      fillSelect($("wiz-group"), groups, (g) => g.id, (g) => g.name);
+    } catch (e) {
+      placeholderOption($("wiz-group"), "Failed to load groups");
+    }
+  }
+
+  $("wiz-all").addEventListener("change", (e) => {
+    document.querySelectorAll(".wiz-pick").forEach((cb) => { cb.checked = e.target.checked; });
+  });
+
+  $("wiz-grant").addEventListener("click", async () => {
+    const groupId = $("wiz-group").value;
+    const out = $("wiz-grant-result");
+    if (!groupId) { alert("Pick a group first."); return; }
+    const slugs = Array.from(document.querySelectorAll(".wiz-pick:checked")).map((cb) => cb.value);
+    if (!slugs.length) { alert("Select at least one app."); return; }
+    out.textContent = "Granting…";
+    let ok = 0;
+    const errors = [];
+    for (const slug of slugs) {
+      try {
+        await jsend("/api/admin/grants", "POST",
+          { group_id: groupId, resource_type: "data_app", resource_id: slug, requirement: "available" });
+        ok++;
+      } catch (e) {
+        // A duplicate grant (already granted) is fine — count it as done.
+        if (String(e.message).includes("409") || /exists?/i.test(String(e.message))) ok++;
+        else errors.push(`${slug}: ${e.message}`);
+      }
+    }
+    out.textContent = errors.length
+      ? `Granted ${ok}/${slugs.length}. Errors: ${errors.join("; ")}`
+      : `Granted ${ok} app(s) to the group. They now appear in those members' /apps and their agent's data_apps_list.`;
+  });
+
+  loadSources();
+})();
+</script>
+{% endblock %}

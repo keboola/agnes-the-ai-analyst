@@ -5,14 +5,16 @@ after upstream's connect_hint/glossary/jobs/usage-fix/data_apps/corpus_files_pat
 migrations claimed v92..v97 first.
 
 Revision ID: 0045_user_journey_state_v98
-Revises: 0044_corpus_files_path_v97
+Revises: 0055_dataapps_linked_v108
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0045_user_journey_state_v98"
-down_revision: str = "0054_semantic_source_ref_v107"  # restacked onto main head (PG parity gap: main lacks user_journey_state)
+down_revision: str = (
+    "0055_dataapps_linked_v108"  # restacked onto main head (PG parity gap: main lacks user_journey_state)
+)
 branch_labels = None
 depends_on = None
 

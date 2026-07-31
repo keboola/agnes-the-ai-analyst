@@ -256,6 +256,10 @@ class TestRailOptIn:
         assert "rail-studio" not in css
         assert "rail-badge--maybe" not in css
         assert "rail-nav-sep" not in css
+        # ...and none for the retired admin <details> mega-list, replaced by a
+        # single link to the admin hub (Devin Review on #1118).
+        assert "rail-admin-summary" not in css
+        assert "rail-admin-groups" not in css
         # The retired /ask hero (#896) is gone: no rail nav item points at it,
         # and the Chat slot renders only when cloud-chat is actually reachable.
         assert 'href="/ask"' not in text
@@ -1066,6 +1070,7 @@ class TestRailDashboard:
             'id="rdb-actions-list"',  # suggested-actions list
             "css/chat_dashboard.css",  # dashboard styles
             'id="chat-input"',  # the REAL composer serves the dashboard
+            'href="/catalog/semantics"',  # semantic-layer browse link (#1108)
         ):
             assert anchor in text, f"rail chat dashboard is missing {anchor}"
         # The retired three-panel layout is gone (one actions list instead).

@@ -20,7 +20,13 @@ from services.session_processors.usage_lib import (
     WINDOW_30D_REFRESH_SECONDS,
     _aggregate_events,
 )
-from src.repositories.usage import _slow_actions_from_raw
+from src.repositories.usage import (
+    _configured_bq_data_project,
+    _merge_frequency,
+    _merge_top_tables,
+    _registry_identity_keys,
+    _slow_actions_from_raw,
+)
 
 
 _EVENT_COLS = [
@@ -205,18 +211,41 @@ class UsagePgRepository:
         PG mirror of UsageRepository.summary_query_telemetry — same output
         shape. ``resource`` is ``table:<id>`` or ``table:<id>:as:<snapshot>``;
         ``scan_bytes`` comes from the JSONB ``params->>'bytes_scanned'``.
+        Like the DuckDB sibling, recorded paths are folded onto the registry id
+        that owns them (``registered``) by the shared
+        ``_registry_identity_keys`` / ``_merge_*`` helpers, split by outcome
+        (``failed``), and ranked by successful queries.
         """
         # ``table:<id>[:as:<name>]`` → <id>: strip the 6-char "table:" prefix,
         # then cut any ":as:" suffix. PG substring is 1-indexed (from 7).
-        table_id_expr = "split_part(substring(resource from 7), ':as:', 1)"
+        # lower(): registry ids are lowercased at registration, and rows
+        # written before the parser lowercased its output can carry mixed
+        # case — fold both so a table is one row and the registry join
+        # is not a byte comparison (Devin Review on #1121).
+        table_id_expr = "lower(split_part(substring(resource from 7), ':as:', 1))"
         # JSONB text extraction → numeric. NULLIF guards empty strings.
         bytes_expr = "NULLIF(params->>'bytes_scanned', '')::bigint"
+        # `result` is 'success' or an 'error.<code>' string; NULL on rows
+        # written before the column existed, which count as neither.
+        failed_expr = "SUM(CASE WHEN result LIKE 'error%' THEN 1 ELSE 0 END)"
 
         with self._engine.connect() as conn:
+            # Every spelling a registered table can appear under in query SQL,
+            # oldest-registered-first (see the DuckDB sibling).
+            registry_rows = conn.execute(
+                sa.text(
+                    """SELECT id, name, source_type, bucket, source_table, bq_fqn
+                       FROM table_registry
+                       ORDER BY registered_at, id"""
+                )
+            ).fetchall()
+            # Grouped by the recorded path; the fold onto registry ids and the
+            # ranking happen after, so the LIMIT cannot be pushed into SQL.
             top_rows = conn.execute(
                 sa.text(
                     f"""SELECT {table_id_expr} AS table_id,
                                COUNT(*) AS queries,
+                               {failed_expr} AS failed,
                                COALESCE(SUM({bytes_expr}), 0) AS scan_bytes,
                                SUM(CASE WHEN action = 'query.remote' THEN 1 ELSE 0 END) AS remote,
                                SUM(CASE WHEN action = 'query.local'  THEN 1 ELSE 0 END) AS local
@@ -224,11 +253,9 @@ class UsagePgRepository:
                         WHERE timestamp >= :cutoff
                           AND action IN ('query.remote', 'query.local', 'snapshot.create')
                           AND resource LIKE 'table:%'
-                        GROUP BY {table_id_expr}
-                        ORDER BY queries DESC, scan_bytes DESC
-                        LIMIT :lim"""
+                        GROUP BY {table_id_expr}"""
                 ),
-                {"cutoff": cutoff, "lim": limit},
+                {"cutoff": cutoff},
             ).fetchall()
             freq_rows = conn.execute(
                 sa.text(
@@ -260,25 +287,22 @@ class UsagePgRepository:
                 {"cutoff": cutoff},
             ).fetchone()
 
-        top_tables = [
-            {
-                "table_id": r[0],
-                "queries": int(r[1]),
-                "scan_bytes": int(r[2] or 0),
-                "remote": int(r[3] or 0),
-                "local": int(r[4] or 0),
-            }
-            for r in top_rows
-        ]
-        frequency = [
-            {
-                "day": r[0].isoformat() if r[0] else None,
-                "table_id": r[1],
-                "remote": int(r[2] or 0),
-                "local": int(r[3] or 0),
-            }
-            for r in freq_rows
-        ]
+        identity_keys = _registry_identity_keys(
+            [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "source_type": r[2],
+                    "bucket": r[3],
+                    "source_table": r[4],
+                    "bq_fqn": r[5],
+                }
+                for r in registry_rows
+            ],
+            _configured_bq_data_project(),
+        )
+        top_tables = _merge_top_tables(top_rows, identity_keys, limit)
+        frequency = _merge_frequency(freq_rows, identity_keys)
         return {
             "top_tables": top_tables,
             "frequency": frequency,
