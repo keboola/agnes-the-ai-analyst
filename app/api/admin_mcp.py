@@ -31,6 +31,7 @@ the four connector helpers (introspect/classify/test/materialize).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
@@ -952,7 +953,11 @@ async def set_oauth_client_config(
         ("authorization_endpoint", payload.authorization_endpoint),
         ("token_endpoint", payload.token_endpoint),
     ):
-        ok, reason, _ip = resolve_safe(url, https_only=True)
+        # resolve_safe() does a BLOCKING socket.getaddrinfo(); this is an
+        # `async def` handler, so calling it inline stalls the whole process's
+        # event loop for the resolver timeout, twice per save. Same hazard —
+        # and same remedy — as SSRFGuardAsyncTransport (Devin Review on #1124).
+        ok, reason, _ip = await asyncio.to_thread(resolve_safe, url, https_only=True)
         if not ok:
             raise HTTPException(status_code=400, detail=f"{field} failed SSRF/https validation: {reason}")
 
@@ -994,6 +999,17 @@ async def set_oauth_client_config(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
+    # Swapping in a different client identity by hand strands every user's
+    # tokens on the old one exactly as a DCR re-registration does, so the
+    # manual escape hatch gets the same purge (Devin Review on #1124) — a
+    # refresh against the new client can come back `invalid_client`, which
+    # is not classified as a reconnect signal, leaving the user on an opaque
+    # upstream 401 forever.
+    if existing and not same_client:
+        from src.repositories import mcp_oauth_flows_repo, mcp_user_oauth_tokens_repo
+
+        mcp_user_oauth_tokens_repo().delete_for_source(source_id)
+        mcp_oauth_flows_repo().delete_for_source(source_id)
     _audit(
         conn,
         user["id"],
