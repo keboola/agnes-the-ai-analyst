@@ -213,11 +213,19 @@ class AgentsRepository:
         INSERT's hardcoded ``slug='default'`` collides with ANY row holding
         that slug:
 
-        * the default agent was soft-deleted (its row keeps ``slug='default'``)
-          — revive it, preserving the id sessions were already attributed to;
+        * the default agent was soft-deleted (its row keeps its slug) — revive
+          it, preserving the id sessions were already attributed to;
         * a non-default agent holds ``slug='default'`` — leave it alone (it is
           the owner's own agent, not ours to promote or resurrect) and seed
           under the next free slug.
+
+        The revive predicate keys on ``is_default``, NOT on the literal
+        ``slug='default'``: ``_free_default_slug`` can seed a default under
+        ``default-2``, and a slug-keyed lookup would miss that tombstone,
+        stranding the id ``chat_sessions.agent_id`` points at and seeding a
+        duplicate on every cycle. ``is_default`` is only ever set here, so it
+        identifies the seeded default on its own. Most-recent first, so
+        repeated pre-fix cycles resolve deterministically to the newest.
         """
         row = self.conn.execute(
             "SELECT * FROM agents WHERE owner_user_id = ? AND is_default AND deleted_at IS NULL",
@@ -229,7 +237,8 @@ class AgentsRepository:
 
         stale = self.conn.execute(
             "SELECT id FROM agents "
-            "WHERE owner_user_id = ? AND slug = 'default' AND is_default AND deleted_at IS NOT NULL",
+            "WHERE owner_user_id = ? AND is_default AND deleted_at IS NOT NULL "
+            "ORDER BY deleted_at DESC LIMIT 1",
             [owner_user_id],
         ).fetchone()
         if stale is not None:

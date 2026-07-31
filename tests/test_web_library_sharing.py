@@ -164,6 +164,19 @@ def test_agent_default_cannot_be_deleted(seeded_app):
     assert c.get(f"/api/agents/{default_id}", headers=_auth(tok)).status_code == 200
 
 
+def test_agent_named_default_does_not_claim_the_reserved_slug(seeded_app):
+    """`"default"` belongs to the seeded default agent, not to a user-named one.
+
+    The builder derives its slug from a typed name, so "Default" is suffixed
+    rather than rejected (the governance router 400s `slug_reserved` instead).
+    Left unreserved, an ordinary name could claim the slug before the owner's
+    first chat seeded the real default — and
+    `POST /api/v1/agents/default/responses` would then address the user's agent.
+    """
+    a = _create_agent(seeded_app, seeded_app["admin_token"], name="Default")
+    assert a["slug"] == "default-2"
+
+
 def test_agent_patch_cannot_reassign_ownership(seeded_app):
     """A hostile payload can't move an agent to another owner or hijack a slug."""
     tok = seeded_app["admin_token"]

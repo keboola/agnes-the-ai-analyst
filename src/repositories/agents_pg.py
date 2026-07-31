@@ -249,7 +249,8 @@ class AgentsPgRepository:
             stale = conn.execute(
                 sa.text(
                     "SELECT id FROM agents WHERE owner_user_id = :owner_user_id "
-                    "AND slug = 'default' AND is_default AND deleted_at IS NOT NULL"
+                    "AND is_default AND deleted_at IS NOT NULL "
+                    "ORDER BY deleted_at DESC LIMIT 1"
                 ),
                 {"owner_user_id": owner_user_id},
             ).first()

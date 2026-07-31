@@ -100,6 +100,27 @@ def test_get_or_create_default_revives_soft_deleted(repo):
     assert len(repo.list_for_user("u1")) == 1
 
 
+def test_get_or_create_default_revives_a_default_seeded_under_a_suffixed_slug(repo):
+    """The revive keys on `is_default`, not on the literal slug.
+
+    When a live non-default agent already holds `slug='default'`, the seeder
+    lands the default on `default-2`. A slug-keyed revive would miss that
+    tombstone, strand the id `chat_sessions.agent_id` points at, and seed a
+    fresh duplicate on every delete cycle.
+    """
+    repo.create(id="squatter", owner_user_id="u1", name="Default", slug="default")
+    seeded = repo.get_or_create_default("u1")
+    assert seeded["slug"] == "default-2"
+
+    repo.soft_delete(seeded["id"])
+    revived = repo.get_or_create_default("u1")
+
+    assert revived["id"] == seeded["id"]  # same row, not a duplicate
+    assert revived["deleted_at"] is None
+    # No third agent was invented.
+    assert len(repo.list_for_user("u1")) == 2
+
+
 def test_get_or_create_default_sidesteps_live_default_slug(repo):
     """A live non-default agent already holding `slug='default'` is left alone.
 

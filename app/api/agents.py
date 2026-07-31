@@ -52,6 +52,10 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _RT = ResourceType.AGENT.value
+# Reserved for the per-owner seeded default agent (``agents_repo().
+# get_or_create_default``), never claimable by a user-created one. Mirrors
+# ``app/api/agents_admin.py``'s ``_RESERVED_SLUGS``.
+_DEFAULT_AGENT_SLUG = "default"
 
 
 def _auto_slug(name: str) -> str:
@@ -77,9 +81,18 @@ def _unique_slug(base: str, owner_user_id: str) -> str:
     ``deleted_at`` while the UNIQUE spans deleted rows, so searching live rows
     only would report a soft-deleted agent's slug as free and drive the INSERT
     straight into a ConstraintException.
+
+    ``"default"`` is reserved for the per-owner seeded default agent, exactly as
+    ``app/api/agents_admin.py``'s ``_RESERVED_SLUGS`` treats it. The governance
+    router rejects it outright; here the slug is derived from a user-typed name,
+    so an agent called "Default" is suffixed to ``default-2`` rather than 400'd.
+    Without this an ordinary name could claim the slug before the owner's first
+    chat seeded the real default — which then lands on ``default-2``, and
+    ``POST /api/v1/agents/default/responses`` would address the user's agent
+    instead of the default.
     """
     repo = agents_repo()
-    if repo.get_by_slug(owner_user_id, base, include_deleted=True) is None:
+    if base != _DEFAULT_AGENT_SLUG and repo.get_by_slug(owner_user_id, base, include_deleted=True) is None:
         return base
     for n in range(2, 1000):
         candidate = f"{base}-{n}"[:100].strip("-")
