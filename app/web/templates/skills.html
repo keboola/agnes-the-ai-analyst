@@ -1111,12 +1111,13 @@
     // Markdown path (skill / agent): LLM pre-check gate + async review banner.
     function showReviewPanel(created, chosenAccess) {
       discardDraft(type);
+      var isPrivate = chosenAccess !== 'everyone';
+      // Set BEFORE render() — render() reads reviewInProgress to decide whether
+      // the Save / Check buttons are disabled.
+      reviewInProgress = true;
       // Keep draft in memory so render() can display what the user typed.
       render();
 
-      var isPrivate = chosenAccess !== 'everyone';
-
-      reviewInProgress = true;
 
       // Insert banner between the build-head and the section grid.
       var banner = document.createElement('div');
