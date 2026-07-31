@@ -527,13 +527,14 @@
               '<a class="cc-btn cc-btn--primary" href="/library?new=' + encodeURIComponent(created.id) + '">Open in Library →</a>' +
             '</div>';
         } else if (state.kind === 'err') {
-          // Re-enable so the user can edit and try again.
-          reviewInProgress = false;
-          setButtonsDisabled(false);
+          // The entity was already written to the DB (showReviewPanel is only
+          // called after a successful commitSave). Re-saving with the same name
+          // would hit a 409 conflict. Keep buttons locked and direct the user to
+          // Library where they can delete the rejected entry before retrying.
           inFlight = false;
           actionsHtml =
             '<div class="sk-review-actions">' +
-              '<a class="cc-btn" href="/library">Library</a>' +
+              '<a class="cc-btn cc-btn--primary" href="/library">Open Library to delete &amp; retry →</a>' +
             '</div>';
         }
         banner.innerHTML =
