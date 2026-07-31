@@ -153,9 +153,88 @@ async def list_sessions(
             "last_message_at": s.last_message_at.isoformat() if s.last_message_at else None,
             "message_count": s.message_count,
             "paused": s.sandbox_paused_at is not None,
+            # Pin state for the history panel's Pinned group. `pinned_at` is
+            # also exposed so a client can order pins itself; the repo already
+            # returns pinned-first, so the flag alone is enough for the rail.
+            "pinned": s.pinned_at is not None,
+            "pinned_at": s.pinned_at.isoformat() if s.pinned_at else None,
         }
         for s in rows
     ]
+
+
+class PinSessionBody(BaseModel):
+    pinned: bool
+
+
+@router.put("/sessions/{chat_id}/pin")
+async def set_session_pinned(
+    chat_id: str,
+    body: PinSessionBody,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Pin or unpin a conversation in the caller's history panel.
+
+    Ownership-gated the same way as archive/messages: 404 (never 403) when the
+    session doesn't exist or belongs to someone else, so the endpoint can't be
+    used to probe for other users' session ids. Idempotent — pinning an already
+    pinned session just re-stamps ``pinned_at``, which re-orders it to the front
+    of the Pinned group.
+    """
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    repo.set_pinned(chat_id, body.pinned)
+    return {"id": chat_id, "pinned": body.pinned}
+
+
+# Long enough for a descriptive sentence, short enough that the row's own
+# ellipsis stays the thing that truncates it in the UI. The auto-title path
+# (Haiku) already produces titles well inside this.
+_TITLE_MAX = 200
+
+
+class RenameSessionBody(BaseModel):
+    title: str
+
+
+@router.put("/sessions/{chat_id}/title")
+async def rename_session(
+    chat_id: str,
+    body: RenameSessionBody,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Rename a conversation from the history panel's row menu.
+
+    ``set_title`` already existed for the Haiku auto-title path; this is the
+    user-driven route to the same column. Ownership-gated like the sibling
+    per-session routes (404, never 403).
+
+    The title is stripped and length-capped here rather than in the repo: the
+    auto-title path is a trusted internal caller, this one is user input. An
+    all-whitespace title is a 400 rather than a silent no-op — the row would
+    otherwise render as "Untitled chat" with no explanation.
+    """
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "invalid_title", "hint": "Title cannot be empty."},
+        )
+    if len(title) > _TITLE_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "invalid_title", "hint": f"Title cannot exceed {_TITLE_MAX} characters."},
+        )
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    repo.set_title(chat_id, title)
+    return {"id": chat_id, "title": title}
 
 
 @router.get("/skills")

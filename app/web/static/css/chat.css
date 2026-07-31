@@ -189,10 +189,29 @@ body.chat-page-body main { margin: 0; padding: 0; }
   text-overflow: ellipsis;
 }
 
-/* Per-item delete button — invisible until the row is hovered or the
-   button itself receives focus (keyboard nav). Soft red tint on hover
-   so it reads as a destructive control without being loud. */
-.cloud-chat-list-del {
+/* Pinned-state indicator — a static glyph, not a control (the pin ACTION
+   lives in the row menu). Filled rather than outlined so pin state is a
+   shape difference and not color alone, and always visible: it is the only
+   thing marking a pinned row once the Pinned header scrolls out of view. */
+.cloud-chat-pin-flag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ds-accent-info-ink);
+  pointer-events: none;
+}
+.cloud-chat-pin-flag svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+/* Row overflow trigger ("⋮") — one control for Pin/Rename/Delete. Hidden
+   until the row is hovered or the button itself is focused (keyboard nav),
+   and forced visible while its menu is open so the row doesn't look like it
+   lost its affordance mid-interaction. */
+.chat-rowmenu-btn {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
@@ -202,8 +221,6 @@ body.chat-page-body main { margin: 0; padding: 0; }
   border: none;
   background: transparent;
   color: var(--ds-text-muted);
-  font-size: var(--text-md);
-  line-height: 1;
   border-radius: var(--radius-sm);
   cursor: pointer;
   opacity: 0;
@@ -212,15 +229,21 @@ body.chat-page-body main { margin: 0; padding: 0; }
     background var(--transition-fast),
     color var(--transition-fast);
 }
-.cloud-chat-list li:hover .cloud-chat-list-del,
-.cloud-chat-list-del:focus-visible {
+.chat-rowmenu-btn svg {
+  width: 15px;
+  height: 15px;
+}
+.cloud-chat-list li:hover .chat-rowmenu-btn,
+.chat-rowmenu-btn:focus-visible,
+.chat-rowmenu-btn[aria-expanded="true"] {
   opacity: 1;
 }
-.cloud-chat-list-del:hover {
-  background: var(--ds-accent-danger-bg);
-  color: var(--ds-accent-danger-ink);
+.chat-rowmenu-btn:hover,
+.chat-rowmenu-btn[aria-expanded="true"] {
+  background: var(--ds-surface);
+  color: var(--ds-text-primary);
 }
-.cloud-chat-list-del:focus-visible {
+.chat-rowmenu-btn:focus-visible {
   outline: var(--ds-focus-outline);
   outline-offset: var(--ds-focus-outline-offset);
 }
@@ -284,7 +307,10 @@ body.chat-page-body main { margin: 0; padding: 0; }
   border-color: var(--ds-accent-info-line);
   color: var(--ds-accent-info-ink);
 }
-.cloud-chat-shell.is-mini .cloud-chat-list-del { display: none; }
+/* Mini-mode is a ~56px rail of initials — no room for the overflow trigger or
+   the pin flag. Both actions remain reachable by expanding the sidebar. */
+.cloud-chat-shell.is-mini .chat-rowmenu-btn { display: none; }
+.cloud-chat-shell.is-mini .cloud-chat-pin-flag { display: none; }
 .cloud-chat-shell.is-mini .cloud-chat-list-group-header { display: none; }
 .cloud-chat-shell.is-mini .cloud-chat-sidebar-empty { display: none; }
 
@@ -919,10 +945,11 @@ body.chat-page-body main { margin: 0; padding: 0; }
      the empty-state panel sits at top with a clean gap below. */
   margin: auto auto var(--space-4);
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* Three columns: leading "+" upload button, textarea, trailing actions. */
+  grid-template-columns: auto 1fr auto;
   align-items: end;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  padding: var(--space-2);
   max-width: var(--chat-reading-width);
   width: calc(100% - var(--space-12));
   border: 1px solid var(--ds-border);
@@ -1396,18 +1423,18 @@ body.chat-page-body main { margin: 0; padding: 0; }
 }
 
 /* ---------- Touch-device hover fallback ----------
-   Four affordances use opacity: 0 with a hover-to-1 transition: the
-   sidebar delete X, the message-bubble actions row (timestamp +
-   copy + regenerate), and the code-block copy button. That's fine
-   for mouse but invisible on touchscreens (no hover event fires).
-   ``@media (hover: none)`` matches touchscreens / pens / coarse
+   Several affordances use opacity: 0 with a hover-to-1 transition: the
+   sidebar row's "⋮" overflow trigger, the message-bubble actions row
+   (timestamp + copy + regenerate), and the code-block copy button.
+   That's fine for mouse but invisible on touchscreens (no hover event
+   fires). ``@media (hover: none)`` matches touchscreens / pens / coarse
    pointers and pins those affordances to opacity: 1 so the inputs
    are reachable.
 
    Pairs with the existing :focus-visible rules to give every input
    mode (mouse / keyboard / touch) a working path. */
 @media (hover: none) {
-  .cloud-chat-list-del,
+  .chat-rowmenu-btn,
   .msg-actions,
   .code-block-copy {
     opacity: 1;
@@ -1671,7 +1698,7 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
 html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden])) .cloud-chat-composer {
   min-height: 56px;
   border-radius: 28px;
-  padding: 6px 6px 6px 22px;
+  padding: 6px;
 }
 
 /* Composer → paper pill + circular send button. Under rail the pill
@@ -1695,10 +1722,13 @@ html[data-ui-layout="rail"] .cloud-chat-composer {
      Flex + align-items:center keeps the textarea at its content height. */
   display: flex;
   align-items: center;
+  /* The leading "+" button owns the left inset, so the pill's own padding is
+     symmetric and the textarea gets its breathing room from the flex gap. */
+  gap: var(--space-1);
   background: var(--ds-surface);
   border: 1.5px solid var(--ds-assistant-line);
   border-radius: 26px;
-  padding: 6px 6px 6px 18px;
+  padding: 6px;
 }
 html[data-ui-layout="rail"] .cloud-chat-composer .cloud-chat-input {
   flex: 1 1 auto;
@@ -1821,12 +1851,12 @@ html[data-ui-layout="rail"] .cloud-chat-plus-btn:hover {
   border-color: var(--ds-border);
 }
 
-/* The popover menu — opens upward, anchored to the right edge of the "+"
-   button (its wrapper is the positioning context) and grows leftward so it
-   stays inside the composer instead of overflowing past the send button. */
+/* The popover menu — opens upward, anchored to the left edge of the "+"
+   button (its wrapper is the positioning context) and grows rightward, so it
+   stays inside the composer instead of overflowing past its leading edge. */
 .cloud-chat-plus-menu {
   position: absolute;
-  right: 0;
+  left: 0;
   bottom: calc(100% + var(--space-2));
   z-index: 20;
   min-width: 240px;
@@ -1866,7 +1896,6 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
 .cloud-chat-plus-menu-item {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-3);
   padding: 10px var(--space-3);
   border-radius: var(--ds-radius-md, 8px);
   cursor: pointer;
@@ -1881,15 +1910,12 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
   border-color: var(--ds-accent-info-line);
   outline: none;
 }
-.cloud-chat-plus-menu-item-icon {
-  font-size: 20px;
-  line-height: 1.2;
-  flex: 0 0 auto;
-  margin-top: 1px;
-}
 .cloud-chat-plus-menu-item-text {
   flex: 1 1 auto;
   min-width: 0;
+  /* Stack label over hint — both are inline <span>s in the markup. */
+  display: flex;
+  flex-direction: column;
 }
 .cloud-chat-plus-menu-item-label {
   font-size: var(--text-sm);
@@ -2047,6 +2073,18 @@ html[data-ui-layout="rail"] .cloud-chat-main:has(#chat-capabilities:not([hidden]
   flex: 0 0 auto;
   margin-top: 2px;
   cursor: pointer;
+}
+/* A row stating a fixed destination rather than offering a choice (the store
+   dialog's "Save to my Library"). It keeps the checkbox — the point is to show
+   WHERE the upload lands — so it has to stop looking clickable, or the first
+   thing a reader learns about it is that clicking does nothing. */
+.cloud-chat-upload-table-row.is-locked,
+.cloud-chat-upload-table-row.is-locked input[type="checkbox"] {
+  cursor: default;
+}
+.cloud-chat-upload-table-row.is-locked {
+  background: transparent;
+  border-style: dashed;
 }
 .cloud-chat-upload-table-row-text {
   flex: 1 1 auto;
@@ -2215,17 +2253,20 @@ html[data-ui-layout="rail"] .cloud-chat-status.is-error { border-color: var(--ds
 
 /* ---- Message containers (rail) ----------------------------------------
    Drop the avatars for a cleaner, airier thread. Assistant turns read as
-   soft borderless grey cards at full reading width; user turns are solid
-   agnes-green bubbles pinned right — matching the paper-theme reference. */
+   plain text on the chat surface at full reading width — no card fill, so
+   the answer flows like a document; user turns stay solid agnes-green
+   bubbles pinned right — matching the paper-theme reference. */
 html[data-ui-layout="rail"] .msg-avatar { display: none; }
 html[data-ui-layout="rail"] .cloud-chat-messages { gap: var(--space-5); }
 
 html[data-ui-layout="rail"] .msg-assistant .msg-bubble {
   max-width: 100%;
-  padding: 14px 18px;
+  /* No horizontal padding: without a fill the old 18px inset only pushed
+     the text off the reading column the composer and header align to. */
+  padding: 0;
   border: none;
-  border-radius: 16px;
-  background: var(--ds-surface-dim);
+  border-radius: 0;
+  background: transparent;
   color: var(--ds-text-primary);
 }
 html[data-ui-layout="rail"] .msg-user .msg-bubble {
@@ -2238,14 +2279,35 @@ html[data-ui-layout="rail"] .msg-user .msg-bubble {
   line-height: 1.4;
   border: none;
   border-radius: 16px;
-  background: var(--ds-assistant);
-  color: var(--ds-text-inverse);
+  /* Pale blue. `--ds-accent-info-bg`, NOT `--ds-primary-light`: the primary is
+     only blue under the default theme — it is emerald under `paper` (and at the
+     raw `:root`), so a primary-tinted bubble would render GREEN on those
+     instances, which is not what "blue" means. The info family is blue in every
+     palette, and it is already the token the base (topnav) `.msg-user` rule
+     uses, so the two chromes now agree instead of diverging.
+
+     Not the solid sky `--ds-assistant` this carried originally: that token is
+     Agnes's own identity accent, so a sky-filled user bubble labelled the user's
+     words in the assistant's colour, and at full saturation it made the message
+     you had already read the loudest block on screen. It also passed through
+     plain `--ds-surface-dim` grey, which was legible but left the two voices
+     nothing but shape to tell them apart. */
+  background: var(--ds-accent-info-bg);
+  /* Ink is --ds-text-primary, not the matching blue ink. This is body copy, so
+     it needs AA (4.5:1), and blue-on-blue does not clear that in every palette —
+     `--ds-primary-dark` on a primary tint measures 6.06:1 light but only 4.27:1
+     dark, AA-large at best. --ds-text-primary is 16.4:1 / 12.6:1 on this fill.
+     The fill carries the "this is you" signal; the text only has to be read. */
+  color: var(--ds-text-primary);
 }
-/* Keep inline code / links legible on the solid sky-blue user bubble. */
-html[data-ui-layout="rail"] .msg-user .msg-bubble a { color: var(--ds-text-inverse); text-decoration: underline; }
+/* Inline code / links sit on a light tint rather than a saturated fill, so they
+   follow the bubble's own ink instead of inverting against it. Links keep the
+   underline as their non-colour affordance, which is what lets them share the
+   body ink instead of taking a blue that would fail contrast in dark. */
+html[data-ui-layout="rail"] .msg-user .msg-bubble a { color: var(--ds-text-primary); text-decoration: underline; }
 html[data-ui-layout="rail"] .msg-user .msg-bubble code {
-  background: color-mix(in srgb, var(--ds-text-inverse) 22%, transparent);
-  color: var(--ds-text-inverse);
+  background: color-mix(in srgb, var(--ds-text-primary) 10%, transparent);
+  color: var(--ds-text-primary);
 }
 
 /* ---- Frosted scroll edges (rail, active conversation) -----------------
@@ -2393,48 +2455,111 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   outline: var(--ds-focus-outline);
   outline-offset: var(--ds-focus-outline-offset);
 }
+/* "N of 5 done" — the panel's own progress, stated because the inline mount has
+   no launcher card to read it off. Text only: under the rail chrome the launcher
+   keeps its bar on screen below this popover the whole time it is open. */
 .cloud-chat-journey-sub {
-  margin: 4px 0 10px;
+  margin: 2px 0 8px;
   font-size: var(--text-xs);
   color: var(--ds-text-muted);
 }
 .cloud-chat-journey-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
+/* A step row: mark · (label + why). No trailing chevron — one column of glyphs
+   down the left is enough, and a second down the right crowded labels that wrap.
+   `align-items: flex-start` because the label WRAPS in a 260px popover — with
+   the row centered, a two-line label floated the ✓/→/• to the middle of the
+   text block, so the marks down the left edge no longer lined up with each
+   other and the list lost its spine. */
 .cloud-chat-journey-step {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   width: 100%;
   text-align: left;
-  padding: 6px 8px;
+  padding: 7px 8px;
   border: none;
   border-radius: var(--ds-radius-sm);
   background: transparent;
   color: var(--ds-text-secondary);
   font-size: var(--text-sm);
+  line-height: 1.35;
   cursor: pointer;
 }
-.cloud-chat-journey-step:hover { background: var(--ds-surface); }
+.cloud-chat-journey-step:hover { background: var(--ds-surface-dim); }
 .cloud-chat-journey-step:focus-visible {
   outline: var(--ds-focus-outline);
   outline-offset: var(--ds-focus-outline-offset);
 }
 .cloud-chat-journey-mark {
   flex-shrink: 0;
-  width: 18px;
+  width: 16px;
   text-align: center;
   font-weight: 600;
 }
+.cloud-chat-journey-body {
+  flex: 1;
+  min-width: 0;
+}
+.cloud-chat-journey-label { display: block; }
+/* The one sentence that explains the step, shown on the suggested step only
+   (see renderJourneyPanel) — it replaced a `title` tooltip nobody hovers. */
+.cloud-chat-journey-why {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  color: var(--ds-text-muted);
+}
+/* Done: ✓ + muted label, and NO line-through. Struck text on a label that wraps
+   to two lines in this width read as damaged rather than finished, and it fought
+   the tick that already says the same thing. */
 .cloud-chat-journey-step.done { color: var(--ds-text-muted); }
 .cloud-chat-journey-step.done .cloud-chat-journey-mark { color: var(--ds-accent-success-ink); }
-.cloud-chat-journey-step.done .cloud-chat-journey-label { text-decoration: line-through; }
-.cloud-chat-journey-step.active { color: var(--ds-text-primary); }
+/* The suggested step is the card's focal point: tinted block, primary ink, its
+   own why-line. It is a suggestion of where to resume, not a gate — every other
+   row is equally clickable. */
+.cloud-chat-journey-step.active {
+  color: var(--ds-text-primary);
+  background: var(--ds-primary-light);
+  font-weight: 600;
+}
 .cloud-chat-journey-step.active .cloud-chat-journey-mark { color: var(--ds-primary); }
-.cloud-chat-journey-step.locked { color: var(--ds-text-disabled); cursor: default; }
-.cloud-chat-journey-step.locked:hover { background: transparent; }
+.cloud-chat-journey-step.active .cloud-chat-journey-why { font-weight: 400; }
+.cloud-chat-journey-step.active:hover { background: var(--ds-primary-light); }
+/* A step further down the list: a full-strength control that keeps the pointer
+   cursor and the hover wash, because any step can be opened in any order. Three
+   ranks of ink, and each has to stay distinct from the other two — `.active`
+   darkest (where the card suggests resuming), this one at the row default, and
+   `.done` muted + struck through. Two dead ends to avoid: `--ds-text-disabled`
+   says "you can't click this" (it is what made these rows look locked), and
+   `--ds-text-muted` collides with `.done`. */
+.cloud-chat-journey-step.todo { color: var(--ds-text-secondary); }
+
+.cloud-chat-journey-finish {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: var(--ds-text-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.cloud-chat-journey-finish:hover {
+  color: var(--ds-text-primary);
+  background: var(--ds-surface);
+}
+.cloud-chat-journey-finish:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
 
 /* Gap-resolver card (assistant bubble in the thread) */
 .cloud-chat-gapcard {
@@ -2478,6 +2603,95 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   border-radius: var(--ds-radius-sm);
   padding: 1px 5px;
 }
+
+/* Long-run notification nudge (assistant bubble in the thread) — Agnes offers
+ * the Telegram channel while a turn is still running, and links it inline.
+ * Same surface treatment as the gap-resolver card above so the two read as one
+ * family of "Agnes is asking you something actionable" cards. */
+.cloud-chat-notifycard {
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface);
+  padding: 14px;
+}
+.cloud-chat-notifycard-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ds-text-muted);
+}
+.cloud-chat-notifycard-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cloud-chat-notifycard-steps { margin-top: 12px; }
+.cloud-chat-notifycard-steps ol {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--ds-text-secondary);
+}
+.cloud-chat-notifycard-steps code {
+  background: var(--ds-surface-dim);
+  border-radius: var(--ds-radius-sm);
+  padding: 1px 5px;
+}
+.cloud-chat-notifycard-verify { display: flex; gap: 8px; }
+.cloud-chat-notifycard-verify input {
+  flex: 1;
+  max-width: 160px;
+  font: inherit;
+  padding: 7px 10px;
+  /* Inputs are never pill-shaped (design-system rule 5). */
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-surface);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-notifycard-err {
+  margin-top: 8px;
+  font-size: var(--text-sm);
+  color: var(--ds-accent-warn-ink);
+}
+/* The card settles into a single line once answered — the exchange stays in the
+ * thread (the user did reply to a question) without keeping dead controls. */
+.cloud-chat-notifycard-settled {
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+  color: var(--ds-text-secondary);
+}
+.cloud-chat-notifycard-hint {
+  margin-top: 10px;
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+}
+
+/* Journey step secondary destination — a sibling <a> under its step button
+ * (a button may not contain a link), indented to hang off the step's label
+ * rather than its ✓/→ gutter. */
+.cloud-chat-journey-sub-action {
+  display: block;
+  margin: -2px 0 2px 34px;
+  padding: 2px 0;
+  font-size: var(--text-xs);
+  /* The label wraps in the rail's narrow popover — give the two lines leading. */
+  line-height: 1.45;
+  color: var(--ds-text-muted);
+  text-decoration: none;
+}
+.cloud-chat-journey-sub-action:hover {
+  color: var(--ds-primary);
+  text-decoration: underline;
+}
+.cloud-chat-journey-sub-action:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+.cloud-chat-journey-sub-action.is-linked { color: var(--ds-accent-success-ink); }
 
 /* --- Data-app preview split pane (wave-3C) -------------------------------
  * Renders the `agnes_data_app_preview`/`_refresh`/`_close` render
