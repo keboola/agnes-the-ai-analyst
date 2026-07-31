@@ -646,3 +646,56 @@ def test_repointing_an_oauth_source_url_drops_credential_material(seeded_app):
     assert r2.status_code == 200, r2.text
     assert mcp_user_oauth_tokens_repo().has(sid2, "admin1") is True
     assert mcp_source_oauth_clients_repo().get(sid2) is not None
+
+
+def test_manual_client_with_a_new_client_id_drops_user_tokens(seeded_app):
+    """The manual escape hatch strands tokens on the old client identity
+    exactly as a DCR re-registration does, so it gets the same purge — a
+    refresh against the new client can answer `invalid_client`, which is not
+    classified as a reconnect signal (Devin Review on #1124)."""
+    from src.repositories import (
+        mcp_oauth_flows_repo,
+        mcp_source_oauth_clients_repo,
+        mcp_user_oauth_tokens_repo,
+    )
+
+    sid = _seed_oauth_source(source_id="src_oauth_manual_swap")
+    body = {
+        "client_id": "cid-first",
+        "client_secret": "s3cr3t",
+        "authorization_endpoint": "https://as.example.com/authorize",
+        "token_endpoint": "https://as.example.com/token",
+    }
+    assert (
+        seeded_app["client"]
+        .put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json=body)
+        .status_code
+        == 200
+    )
+    mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "tok", refresh_token="rt", expires_at=None, scopes=None)
+    mcp_oauth_flows_repo().create("manual-swap-nonce", sid, "admin1", "verifier")
+
+    # Same client_id — a plain settings tweak leaves user state alone.
+    assert (
+        seeded_app["client"]
+        .put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json={**body, "scopes": "read"})
+        .status_code
+        == 200
+    )
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is True
+
+    # Different client_id — every user's tokens are now unusable.
+    assert (
+        seeded_app["client"]
+        .put(
+            f"/api/admin/mcp-sources/{sid}/oauth/client",
+            headers=_hdr(seeded_app),
+            json={**body, "client_id": "cid-second"},
+        )
+        .status_code
+        == 200
+    )
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
+    assert mcp_oauth_flows_repo().consume("manual-swap-nonce") is None
+    # The new registration itself is stored, not purged.
+    assert mcp_source_oauth_clients_repo().get(sid)["client_id"] == "cid-second"
