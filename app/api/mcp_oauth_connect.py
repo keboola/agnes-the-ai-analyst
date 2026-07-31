@@ -99,7 +99,7 @@ def _err_redirect(message: str) -> RedirectResponse:
 @router.get("/sources/{source_id}/oauth/authorize")
 async def authorize_oauth_connect(
     source_id: str,
-    user: dict = Depends(get_current_user),
+    user: Optional[dict] = Depends(get_optional_user),
 ):
     """Kick off the browser authorization-code + PKCE flow for ``source_id``.
 
@@ -115,6 +115,14 @@ async def authorize_oauth_connect(
     from app.api.mcp_user_secrets import _require_source_grant
     from connectors.mcp.oauth_client import generate_pkce_pair
 
+    if user is None:
+        # A browser without a live Agnes session (fresh profile, or the CLI's
+        # printed URL opened elsewhere) bounces through login and returns to
+        # this authorize URL to continue the flow (Devin Review on #1130).
+        return RedirectResponse(
+            url=f"/login?next={quote(f'/api/mcp/sources/{source_id}/oauth/authorize')}",
+            status_code=303,
+        )
     deny_principal(user)
     src = _get_source_or_404(source_id)
     _require_oauth_source(src)
