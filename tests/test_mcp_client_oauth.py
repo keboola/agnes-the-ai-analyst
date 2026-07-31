@@ -389,3 +389,38 @@ def test_lease_winner_rereads_row_and_skips_replayed_refresh(oauth_db, monkeypat
     result = asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1"))
     assert result == "at-fresh-from-other-process"
     assert refresh_calls == []  # the superseded rt-stale was never replayed
+
+
+def test_vault_key_lost_during_refresh_still_returns_the_new_token(oauth_db, monkeypatch, caplog):
+    """The vault key can disappear between connect and a later refresh. The
+    upsert then raises, and before this guard it escaped to the call seam as
+    a bare 502 — silently discarding a token pair upstream may already have
+    rotated, stranding the user with no idea why (RBAC review on #1124).
+
+    Fails closed either way (nothing stale or borrowed is forwarded); the
+    point is that the new access token is still usable for its lifetime and
+    the operator gets a loud, actionable log line instead of silence.
+    """
+    import logging
+
+    from app.secrets_vault import VaultKeyNotConfiguredError
+    from src.repositories.mcp_user_oauth_tokens import MCPUserOAuthTokenRepository
+
+    _seed_client_row(oauth_db)
+    _seed_token_row(oauth_db, expires_in_seconds=10, refresh_token="old-rt")
+
+    async def _fake_refresh(**kwargs):
+        return mcp_oauth_client.TokenSet(access_token="new-at", refresh_token="rotated-rt", expires_in=3600, scopes=None)
+
+    monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _fake_refresh)
+
+    def _boom(*args, **kwargs):
+        raise VaultKeyNotConfiguredError("AGNES_VAULT_KEY is not set")
+
+    monkeypatch.setattr(MCPUserOAuthTokenRepository, "upsert", _boom)
+
+    with caplog.at_level(logging.ERROR):
+        result = asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1"))
+
+    assert result == "new-at"  # usable until it expires; nothing borrowed
+    assert any("vault key is unavailable" in r.getMessage() for r in caplog.records), caplog.text

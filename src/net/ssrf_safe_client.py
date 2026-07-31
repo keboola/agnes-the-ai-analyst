@@ -28,6 +28,7 @@ to the caller-supplied hostname.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from typing import Optional, Tuple
@@ -176,7 +177,14 @@ class SSRFGuardAsyncTransport(httpx.AsyncHTTPTransport):
         return resolve_safe(url, https_only=self._https_only)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        ok, reason, ip = self._resolve(str(request.url))
+        # resolve_safe() does a BLOCKING socket.getaddrinfo(); off-load it to
+        # a worker thread. Inline, it stalls the whole process's event loop
+        # for the length of every lookup — once per request and again per
+        # redirect hop — so one unresponsive upstream DNS would freeze
+        # unrelated concurrent requests server-wide. The sync transport below
+        # is already on its own thread and needs no such care (architecture
+        # review on #1124).
+        ok, reason, ip = await asyncio.to_thread(self._resolve, str(request.url))
         if not ok:
             raise SSRFRejected(reason)
         original_host = request.url.host
