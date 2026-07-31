@@ -166,9 +166,12 @@ def test_state_signed_with_one_secret_rejected_with_another(monkeypatch):
 
 
 def test_authorize_requires_auth(seeded_app):
+    # Unauthenticated hits redirect to login (see the dedicated test below);
+    # what must NOT happen is anonymous access reaching the flow itself.
     source_id = _seed_oauth_source()
     r = seeded_app["client"].get(f"/api/mcp/sources/{source_id}/oauth/authorize", follow_redirects=False)
-    assert r.status_code == 401
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/login")
 
 
 def test_authorize_404_for_unknown_source(seeded_app):
@@ -650,3 +653,18 @@ def test_callback_ssrf_rejected_exchange_redirects_friendly(seeded_app, monkeypa
     location = r.headers["location"]
     assert "/me/connections?connect_error=" in location
     assert "10.0.0.5" not in location
+
+
+def test_authorize_unauthenticated_redirects_to_login_with_next(seeded_app):
+    """A browser without a live session must bounce through /login and come
+    back to the authorize URL, not receive a raw 401 (Devin Review on
+    #1130)."""
+    source_id = _seed_oauth_source(source_id="src_oauth_anon")
+    r = seeded_app["client"].get(
+        f"/api/mcp/sources/{source_id}/oauth/authorize",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    location = r.headers["location"]
+    assert location.startswith("/login?next=")
+    assert "oauth%2Fauthorize" in location or "oauth/authorize" in location
