@@ -295,6 +295,7 @@ def parity_env(seeded_app, monkeypatch):
             "cli.commands.admin",
             "cli.commands.admin_jobs",
             "cli.commands.admin_mcp",
+            "cli.commands.mcp",
         ],
         client=client,
         token=admin_token,
@@ -1442,3 +1443,33 @@ class TestMcpSourceOAuthRegisterParity:
 
         assert delta_api == delta_cli
         assert len(delta_cli) == 1 and delta_cli[0][1] == "parity-client-id"
+
+
+class TestMcpOAuthDisconnectParity:
+    """``DELETE /api/mcp/sources/{id}/oauth/connection`` ↔
+    ``agnes mcp disconnect`` (2026-07-30 outbound MCP OAuth sources spec §3,
+    PR 2). Admin short-circuits the grant gate, so no tool/grant seeding is
+    needed — only the source row and the token row under test."""
+
+    def test_disconnect_parity(self, parity_env, monkeypatch):
+        from src.repositories import mcp_user_oauth_tokens_repo
+
+        _oauth_parity_env(monkeypatch)
+        sid = "src_par_oauth_disc"
+        _seed_oauth_parity_source(sid)
+        tokens = mcp_user_oauth_tokens_repo()
+
+        tokens.upsert(sid, "admin1", "atok", refresh_token="rtok")
+        r = parity_env["client"].delete(
+            f"/api/mcp/sources/{sid}/oauth/connection",
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 204, r.text
+        delta_api = tokens.has(sid, "admin1")
+        assert delta_api is False
+
+        tokens.upsert(sid, "admin1", "atok2", refresh_token="rtok2")
+        parity_env["run_cli"](["mcp", "disconnect", sid, "--yes"])
+        delta_cli = tokens.has(sid, "admin1")
+
+        assert delta_api == delta_cli is False
