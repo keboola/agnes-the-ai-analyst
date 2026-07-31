@@ -223,10 +223,7 @@ async def discover_as_metadata(issuer: str, *, client: httpx.AsyncClient) -> Dic
         raise OAuthDiscoveryError(f"authorization-server metadata fetch failed: {exc_summary(exc)}") from exc
     if resp.status_code != 200:
         raise OAuthDiscoveryError(f"authorization-server metadata fetch {url!r} returned HTTP {resp.status_code}")
-    try:
-        return resp.json()
-    except ValueError as exc:
-        raise OAuthDiscoveryError(f"authorization-server metadata at {url!r} is not valid JSON") from exc
+    return _json_or_discovery_error(resp, url)
 
 
 def require_pkce_s256(as_metadata: Dict[str, Any]) -> None:
