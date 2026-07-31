@@ -99,6 +99,30 @@ install:
   `extraKnownMarketplaces`, `enabledPlugins`, and managed MCP servers for
   every user; `strictKnownMarketplaces` locks the marketplace list.
 
+### 3.1 End-to-end verified before implementation (2026-07-31)
+
+The three load-bearing hypotheses were exercised on a live install (current
+Claude Code, agnes CLI `0.77.27`), with full state restore afterwards:
+
+- **Plugins:** a plugin from the Agnes-served marketplace installed via
+  `claude plugin install <p>@agnes --scope user` surfaced its skill
+  (`<plugin>:<skill>`) inside a headless session started in an unrelated
+  directory. `claude plugin uninstall … --scope user` restored the prior
+  state exactly — including a pre-existing project-scope install of the
+  same plugin, whose reported `enabled` state had reflected the *merged*
+  user-scope enablement during the test and reverted with it (empirical
+  backing for §6.2's revert semantics).
+- **Rails:** a marker-fenced block in `~/.claude/CLAUDE.md` (the §6.1
+  step-4 format) was loaded verbatim by the same foreign-directory session
+  (nonce echo test).
+- **MCP:** `claude mcp add --scope user <name> -- <abs-path-to-agnes> mcp`
+  registered the stdio server in `~/.claude.json`; `claude mcp get`
+  reported it *Connected* (spawn + handshake using the saved CLI
+  credentials), and the foreign-directory session listed the server. Its
+  tools were still connecting at the moment the short session answered —
+  the stdio server has a noticeable cold start (heavy Python imports); D4's
+  docs should mention that tools appear a few seconds into a fresh session.
+
 ## 4. Design overview
 
 Three code deliverables and one docs deliverable:
