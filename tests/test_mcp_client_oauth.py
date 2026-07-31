@@ -318,3 +318,27 @@ def test_two_process_refresh_race_exactly_one_token_call(oauth_db, monkeypatch):
     row = MCPUserOAuthTokenRepository(oauth_db).get("src_oauth1", "user1")
     assert row["access_token"] == "winner-at"
     assert row["refresh_token"] == "winner-rt"
+
+
+def test_two_refreshes_across_separate_event_loops_both_work(oauth_db, monkeypatch):
+    """The sync wrappers spin a fresh loop per asyncio.run(); a cached
+    asyncio.Lock from the first loop must not poison the second renewal in
+    the same process ("attached to a different loop" — Devin Review on
+    #1124)."""
+    _seed_client_row(oauth_db)
+
+    async def _fake_refresh(*, token_endpoint, client_id, client_secret, refresh_token, client):
+        return mcp_oauth_client.TokenSet(
+            access_token=f"at-after-{refresh_token}", refresh_token="rt-next", expires_in=1, scopes=None
+        )
+
+    monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _fake_refresh)
+
+    _seed_token_row(oauth_db, expires_in_seconds=30, refresh_token="rt-1")
+    first = asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1"))
+    assert first == "at-after-rt-1"
+
+    # Second renewal for the SAME (source, user) under a brand-new loop.
+    _seed_token_row(oauth_db, expires_in_seconds=30, refresh_token="rt-2")
+    second = asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1"))
+    assert second == "at-after-rt-2"

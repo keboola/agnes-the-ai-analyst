@@ -215,7 +215,15 @@ def resolve_issuer(protected_resource_metadata: Dict[str, Any]) -> str:
 
 
 async def discover_as_metadata(issuer: str, *, client: httpx.AsyncClient) -> Dict[str, Any]:
-    """RFC 8414 authorization-server metadata for ``issuer``."""
+    """RFC 8414 authorization-server metadata for ``issuer``.
+
+    Enforces RFC 8414 §3.3: the document's ``issuer`` MUST be present and
+    MUST match the issuer the metadata was requested for (trailing-slash
+    tolerant). Beyond spec compliance this guarantees the stored client row
+    and its audit record always carry a real provider identity, and adds a
+    defense-in-depth layer against a compromised AS answering for a foreign
+    issuer (Devin Review on #1124).
+    """
     url = _join_well_known(issuer, "oauth-authorization-server")
     try:
         resp = await client.get(url)
@@ -223,7 +231,15 @@ async def discover_as_metadata(issuer: str, *, client: httpx.AsyncClient) -> Dic
         raise OAuthDiscoveryError(f"authorization-server metadata fetch failed: {exc_summary(exc)}") from exc
     if resp.status_code != 200:
         raise OAuthDiscoveryError(f"authorization-server metadata fetch {url!r} returned HTTP {resp.status_code}")
-    return _json_or_discovery_error(resp, url)
+    body = _json_or_discovery_error(resp, url)
+    meta_issuer = body.get("issuer")
+    if not isinstance(meta_issuer, str) or not meta_issuer:
+        raise OAuthDiscoveryError(f"authorization-server metadata at {url!r} carries no 'issuer' (RFC 8414 §3.3)")
+    if meta_issuer.rstrip("/") != issuer.rstrip("/"):
+        raise OAuthDiscoveryError(
+            f"authorization-server metadata issuer mismatch: requested {issuer!r}, document says {meta_issuer!r}"
+        )
+    return body
 
 
 def require_pkce_s256(as_metadata: Dict[str, Any]) -> None:
@@ -355,8 +371,14 @@ async def register_dynamic_client(
     token_endpoint = as_metadata.get("token_endpoint")
     if not authorization_endpoint or not token_endpoint:
         raise OAuthDiscoveryError("authorization server metadata is missing authorization_endpoint/token_endpoint")
+    issuer = as_metadata.get("issuer")
+    if not issuer:
+        # Unreachable via discover_as_metadata (which enforces RFC 8414 §3.3),
+        # but direct callers with hand-built metadata must not record a blank
+        # provider identity either.
+        raise OAuthDiscoveryError("authorization server metadata carries no 'issuer'")
     return RegisteredOAuthClient(
-        issuer=as_metadata.get("issuer") or "",
+        issuer=issuer,
         client_id=client_id,
         client_secret=body.get("client_secret"),
         registration_access_token=body.get("registration_access_token"),

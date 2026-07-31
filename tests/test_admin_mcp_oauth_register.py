@@ -432,3 +432,34 @@ def test_reregister_revokes_old_only_after_new_registration_succeeds(seeded_app,
     assert r3.status_code == 200, r3.text
     assert [c[1] for c in revoke_calls2] == ["cid-old"]
     assert mcp_source_oauth_clients_repo().get(sid)["client_id"] == "cid-new"
+
+
+def test_manual_client_preserves_rat_for_same_client_id_only(seeded_app, monkeypatch):
+    """PUT …/oauth/client keeps a DCR-issued registration access token when
+    the client_id is unchanged (so re-register can still revoke upstream),
+    and drops it when the client is replaced (Devin Review on #1124)."""
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_oauth_rat")
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-dcr")
+    r = seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app))
+    assert r.status_code == 200, r.text
+    assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token"] == "new-rat"
+
+    body = {
+        "client_id": "cid-dcr",
+        "authorization_endpoint": "https://as.example.com/authorize",
+        "token_endpoint": "https://as.example.com/token",
+        "scopes": "read",
+    }
+    r2 = seeded_app["client"].put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json=body)
+    assert r2.status_code == 200, r2.text
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row["registration_access_token"] == "new-rat"  # same client_id — kept
+    assert row["scopes"] == "read"
+
+    body["client_id"] = "cid-other"
+    r3 = seeded_app["client"].put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json=body)
+    assert r3.status_code == 200, r3.text
+    assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token"] is None  # replaced — dropped

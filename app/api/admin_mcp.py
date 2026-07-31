@@ -923,6 +923,18 @@ async def set_oauth_client_config(
     issuer = payload.issuer or _url_origin(payload.authorization_endpoint)
 
     clients_repo = mcp_source_oauth_clients_repo()
+    # A manual PUT for the SAME client_id is a tweak (endpoints/scopes/secret)
+    # of a possibly DCR-created registration — keep its registration access
+    # token so a later re-register can still revoke it upstream. A different
+    # client_id replaces the registration entirely; the old RAT belongs to
+    # the old client and must not be paired with the new one (Devin Review
+    # on #1124).
+    existing = clients_repo.get(source_id)
+    keep_rat = (
+        existing.get("registration_access_token")
+        if existing and existing.get("client_id") == payload.client_id
+        else None
+    )
     try:
         clients_repo.upsert(
             source_id,
@@ -931,6 +943,7 @@ async def set_oauth_client_config(
             authorization_endpoint=payload.authorization_endpoint,
             token_endpoint=payload.token_endpoint,
             client_secret=payload.client_secret,
+            registration_access_token=keep_rat,
             scopes=payload.scopes,
         )
     except VaultKeyNotConfiguredError as exc:
