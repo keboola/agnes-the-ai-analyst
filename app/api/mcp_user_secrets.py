@@ -50,6 +50,15 @@ class HasSecretResponse(BaseModel):
     has_secret: bool
     source_scope: str  # 'shared' | 'per_user'
     updated_at: str | None = None  # ISO-8601 of last set; None when not connected
+    # 2026-07-30 outbound MCP OAuth sources spec §3/§5: one status model for
+    # both credential kinds. 'secret' (default) covers every pre-existing
+    # source unchanged; 'oauth' sources report against
+    # ``mcp_user_oauth_tokens`` instead of ``mcp_user_secrets`` — has_secret
+    # means "has a stored token", updated_at is the token row's last write,
+    # and expires_at is new (always None for 'secret' — a pasted token has
+    # no known expiry).
+    auth_kind: str = "secret"  # 'secret' | 'oauth'
+    expires_at: str | None = None
 
 
 def _require_source_grant(source_id: str, user: dict) -> None:
@@ -125,16 +134,35 @@ async def get_my_secret_status(
     user: dict = Depends(get_current_user),
 ) -> HasSecretResponse:
     """Return ``has_secret: bool`` for the caller + the source's scope so
-    a UI can show "Connect your <source>" or "Connected"."""
+    a UI can show "Connect your <source>" or "Connected".
+
+    ``auth_method='oauth'`` sources report against ``mcp_user_oauth_tokens``
+    instead of the vault-backed ``mcp_user_secrets`` table — same response
+    shape, ``auth_kind`` tells the caller which credential kind it's
+    reading (spec §3/§5)."""
     deny_principal(user)
     source = mcp_sources_repo().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     _require_source_grant(source_id, user)
+    if (source.get("auth_method") or "").lower() == "oauth":
+        from src.repositories import mcp_user_oauth_tokens_repo
+
+        row = mcp_user_oauth_tokens_repo().get(source_id, user["id"])
+        expires_at = row.get("expires_at") if row else None
+        updated_at = row.get("updated_at") if row else None
+        return HasSecretResponse(
+            has_secret=row is not None,
+            source_scope=(source.get("scope") or "shared"),
+            updated_at=updated_at.isoformat() if updated_at else None,
+            auth_kind="oauth",
+            expires_at=expires_at.isoformat() if expires_at else None,
+        )
     return HasSecretResponse(
         has_secret=per_user_secrets_repo().has(source_id, user["id"]),
         source_scope=(source.get("scope") or "shared"),
         updated_at=per_user_secrets_repo().get_updated_at(source_id, user["id"]),
+        auth_kind="secret",
     )
 
 
@@ -198,7 +226,15 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
     except PerUserCredentialMissing as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    token = per_user_secrets_repo().get(source_id, user["id"]) or ""
+    if (source.get("auth_method") or "").lower() == "oauth":
+        # OAuth sources have no ``mcp_user_secrets`` row at all — the value
+        # to redact out of a failure message is the stored access token.
+        from src.repositories import mcp_user_oauth_tokens_repo
+
+        oauth_row = mcp_user_oauth_tokens_repo().get(source_id, user["id"])
+        token = (oauth_row or {}).get("access_token") or ""
+    else:
+        token = per_user_secrets_repo().get(source_id, user["id"]) or ""
     try:
         tools = await list_tools_async(source, caller_user_id=user["id"])
     except Exception as exc:  # upstream unreachable / bad token
