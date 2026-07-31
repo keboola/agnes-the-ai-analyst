@@ -459,7 +459,14 @@ def test_callback_token_exchange_failure_redirects_with_error(seeded_app, monkey
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert "connect_error" in r.headers["location"]
+    location = r.headers["location"]
+    assert "connect_error" in location
+    # The redirect carries a FIXED message only — the exception text can
+    # embed the AS's raw error body (externally controlled), which must
+    # never be replayed into a user-facing query string (RBAC review, PR 2).
+    assert "invalid_grant" not in location
+    assert "code+already+used" not in location and "code%20already%20used" not in location
+    assert "try+again+or+contact+your+admin" in location or "try%20again%20or%20contact%20your%20admin" in location
 
 
 def test_callback_deny_principal_for_restricted_token(seeded_app):
