@@ -399,3 +399,36 @@ def test_manual_client_returns_409_without_vault_key(seeded_app, monkeypatch):
         _reset_ephemeral_key_for_tests()
     assert r.status_code == 409, r.text
     assert "vault_key_not_configured" in r.json()["detail"]
+
+
+def test_reregister_revokes_old_only_after_new_registration_succeeds(seeded_app, monkeypatch):
+    """Register-then-revoke ordering: a DCR failure during re-registration
+    must leave the OLD stored registration intact and un-revoked, so
+    connected users keep working (Devin Review on #1124)."""
+    import connectors.mcp.oauth_client as oc
+
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_oauth_rereg")
+    revoke_calls = _patch_discovery_success(monkeypatch, registered_client_id="cid-old")
+    r1 = seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app))
+    assert r1.status_code == 200, r1.text
+    assert revoke_calls == []  # first registration — nothing to revoke
+
+    async def _fail_register(meta, *, redirect_uri, client, scopes=None, client_name="Agnes"):
+        raise oc.OAuthDiscoveryError("registration endpoint exploded")
+
+    monkeypatch.setattr(oc, "register_dynamic_client", _fail_register)
+    r2 = seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app))
+    assert r2.status_code == 502
+    assert revoke_calls == []  # old registration NOT revoked on failure
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row is not None and row["client_id"] == "cid-old"  # old row intact
+
+    # A successful re-registration revokes the old client afterwards.
+    revoke_calls2 = _patch_discovery_success(monkeypatch, registered_client_id="cid-new")
+    r3 = seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app))
+    assert r3.status_code == 200, r3.text
+    assert [c[1] for c in revoke_calls2] == ["cid-old"]
+    assert mcp_source_oauth_clients_repo().get(sid)["client_id"] == "cid-new"

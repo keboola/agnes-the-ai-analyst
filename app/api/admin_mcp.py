@@ -823,6 +823,18 @@ async def register_oauth_client(
             require_https_endpoints(as_metadata)
             require_pkce_s256(as_metadata)
 
+            # Register the NEW client first, revoke the OLD one only after
+            # success — revoke-then-register left a failure window where the
+            # stored row pointed at a cancelled registration and every user
+            # silently lost access (Devin Review on #1124). A failed revoke
+            # merely leaves a dangling upstream registration (harmless).
+            registered = await register_dynamic_client(
+                as_metadata,
+                redirect_uri=redirect_uri,
+                scopes=scopes,
+                client=http_client,
+            )
+
             if existing:
                 await best_effort_revoke_registration(
                     registration_endpoint=as_metadata.get("registration_endpoint"),
@@ -830,13 +842,6 @@ async def register_oauth_client(
                     registration_access_token=existing.get("registration_access_token"),
                     client=http_client,
                 )
-
-            registered = await register_dynamic_client(
-                as_metadata,
-                redirect_uri=redirect_uri,
-                scopes=scopes,
-                client=http_client,
-            )
     except OAuthDiscoveryError as exc:
         raise HTTPException(status_code=502, detail=f"oauth_discovery_failed: {_exc_summary(exc)}")
     except SSRFRejected as exc:

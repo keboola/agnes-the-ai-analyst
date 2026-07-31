@@ -525,3 +525,18 @@ def test_exchange_ignores_any_endpoint_hint_in_as_response_body():
     tok = run(_impl())
     assert seen_urls == ["https://as.example.com/token"]
     assert tok.access_token == "at1"
+
+
+def test_as_metadata_non_object_json_is_translated():
+    """Valid JSON that is not an object (e.g. a bare list) must raise
+    OAuthDiscoveryError, not crash downstream (Devin Review on #1124)."""
+
+    def handler(request):
+        return httpx.Response(200, json=["not", "an", "object"])
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await discover_as_metadata("https://as.example.com", client=client)
+
+    with pytest.raises(OAuthDiscoveryError, match="not a JSON object"):
+        run(_impl())
