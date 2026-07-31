@@ -1304,18 +1304,21 @@ finishBtn.addEventListener('click', async () => {
       const dres = await fetch('/api/store/entities/dryrun', {method: 'POST', body: dfd});
       if (dres.ok) {
         const report = await dres.json();
-        if (report.llm_safe === false) {
-          // LLM explicitly rejected the bundle. Surface the verdict and abort.
-          // Inline failures fall through to the real submit where humanizeError
-          // renders the structured per-field checks payload.
+        if (report.llm_safe === false && !report.llm_error) {
+          // Genuine LLM rejection — surface the verdict and abort.
+          // Inline failures and reviewer errors fall through to the real submit
+          // (humanizeError handles inline; review_error lands in admin queue).
           let llmMsg = 'AI review did not pass.';
           const verdict = report.llm_findings;
           if (verdict) {
-            const findings = verdict.findings || verdict.issues || [];
+            const findings = verdict.findings || [];
+            const cqIssues = (verdict.content_quality && verdict.content_quality.issues) || [];
             if (Array.isArray(findings) && findings.length) {
-              llmMsg = 'AI review failed: ' + findings.map(f => f.hint || f.message || f.code || JSON.stringify(f)).join(' ');
-            } else if (typeof verdict.reason === 'string') {
-              llmMsg = 'AI review failed: ' + verdict.reason;
+              llmMsg = 'AI review failed: ' + findings.map(f => [f.explanation, f.fix_hint].filter(Boolean).join(' — ')).join(' ');
+            } else if (Array.isArray(cqIssues) && cqIssues.length) {
+              llmMsg = 'AI review failed: ' + cqIssues.join(' ');
+            } else if (typeof verdict.summary === 'string') {
+              llmMsg = 'AI review failed: ' + verdict.summary;
             }
           }
           showError(llmMsg);
@@ -1323,7 +1326,7 @@ finishBtn.addEventListener('click', async () => {
           finishBtn.textContent = 'Finish';
           return;
         }
-        // LLM passed (or inline check failed) — fall through to real submit below.
+        // LLM passed, reviewer errored, or inline check failed — fall through.
       }
       // dres not ok (server error on dryrun) → fall through to real submit.
     } catch (_) {

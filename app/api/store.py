@@ -296,6 +296,7 @@ class DryRunResponse(BaseModel):
     inline_checks: dict
     llm_findings: Optional[dict] = None
     llm_safe: Optional[bool] = None  # None when no LLM review was run
+    llm_error: bool = False  # True when the review call itself failed (≠ rejection)
     would_publish: bool
     # v89: skill-linter dry-run block. Only populated for type == "skill"
     # (the linter is skill-specific — agents/plugins never get a lint key).
@@ -1965,6 +1966,10 @@ async def dryrun_entity(
             # None when no LLM ran (lint_only, guardrails off, or provider not
             # configured); JS gate reads this with === false so None passes through.
             llm_safe=safe if verdict is not None else None,
+            # Distinguish a provider/transport error from a genuine rejection so
+            # the JS gate can fall through to the real submit (→ admin queue +
+            # retry path) instead of hard-blocking with a misleading message.
+            llm_error=bool(verdict and verdict.get("error")) if verdict is not None else False,
             would_publish=inline.passed and safe,
             lint=lint_report,
         )
@@ -2112,6 +2117,7 @@ async def create_entity_from_markdown(
                         "lint": lint_report,
                         "guardrails_active": guardrails_active,
                         "llm_safe": llm_safe,
+                        "llm_error": bool(llm_verdict and llm_verdict.get("error")),
                         "llm_findings": llm_verdict,
                     }
                 ),

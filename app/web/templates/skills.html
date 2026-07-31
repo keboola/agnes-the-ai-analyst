@@ -620,19 +620,25 @@
     setResult('Reviewing with AI… (this may take up to 30 seconds)', 'checking');
     post(payload({ dry_run: true, include_llm: true }))
       .then(function (res) {
-        if (!res.guardrails_active || res.llm_safe) {
-          // Passed (or guardrails were toggled off between page load and now).
+        if (!res.guardrails_active || res.llm_safe || res.llm_error) {
+          // Passed, guardrails toggled off, or reviewer itself errored —
+          // fall through so the real submit lands in the admin queue.
           commitSave();
         } else {
-          // Failed — extract findings from the verdict and stay on builder.
+          // Genuine rejection — extract findings from the verdict.
           var msg = 'AI review did not pass.';
           var verdict = res.llm_findings;
           if (verdict) {
-            var findings = verdict.findings || verdict.issues || [];
+            var findings = verdict.findings || [];
+            var cqIssues = (verdict.content_quality && verdict.content_quality.issues) || [];
             if (Array.isArray(findings) && findings.length) {
-              msg = 'AI review failed: ' + findings.map(function (f) { return f.hint || f.message || f.code || JSON.stringify(f); }).join(' ');
-            } else if (typeof verdict.reason === 'string') {
-              msg = 'AI review failed: ' + verdict.reason;
+              msg = 'AI review failed: ' + findings.map(function (f) {
+                return [f.explanation, f.fix_hint].filter(Boolean).join(' — ');
+              }).join(' ');
+            } else if (Array.isArray(cqIssues) && cqIssues.length) {
+              msg = 'AI review failed: ' + cqIssues.join(' ');
+            } else if (typeof verdict.summary === 'string') {
+              msg = 'AI review failed: ' + verdict.summary;
             }
           }
           setResult(msg, 'err');
