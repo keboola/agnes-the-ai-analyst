@@ -146,6 +146,19 @@ Both modes converge: once the CA publishes the signed chain at `TLS_FULLCHAIN_UR
 
 `scripts/tls-fetch.sh` at `/usr/local/bin/tls-fetch.sh` is required (generic URL fetcher used by rotate). On infra-repo-managed VMs, both scripts are installed by `startup.sh` and fired via a daily systemd timer; for manual compose deployments, copy them under `/usr/local/bin/` and wire a systemd timer (`OnBootSec=10min`, `OnUnitActiveSec=24h`, `Persistent=true`).
 
+#### Reverse-proxy access logs — outbound MCP OAuth callback
+
+`GET /api/mcp/oauth-client/callback?code=…&state=…` (the outbound MCP OAuth
+connect flow, 2026-07-30 spec) carries a single-use authorization code and a
+signed state token in its query string. Agnes's own `uvicorn.access` logger
+already strips the query string for this one path before writing a line —
+but a TLS-terminating reverse proxy in front of Agnes (Caddy, nginx, an LB)
+logs the request line independently and is not covered by that in-process
+filter. If your proxy's access log records the full request URI, add a
+path-scoped rule to drop or truncate the query string for
+`/api/mcp/oauth-client/callback` the same way you would for any other
+credential-bearing URL.
+
 ### Upgrades (manual)
 
 ```bash
