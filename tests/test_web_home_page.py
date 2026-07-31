@@ -415,9 +415,11 @@ def test_home_cowork_card_links_to_me_cowork(fresh_db):
     body = _client().get("/home", cookies={"access_token": sess}).text
     # Placeholder removed.
     assert "INSTRUCTIONS NEEDED" not in body
-    # The inline plugin list moved to /me/ai-connector; /home links there instead.
+    # The inline plugin list moved to the consolidated orientation page; /home
+    # links straight at its connect section rather than at the /me/ai-connector
+    # redirect, so the link costs no hop.
     assert 'id="cowork-plugin-list"' not in body
-    assert 'href="/me/ai-connector"' in body
+    assert 'href="/how-it-works#connect"' in body
 
 
 # ── GWS Email-admin button render tests (admin_email knob coverage) ────────

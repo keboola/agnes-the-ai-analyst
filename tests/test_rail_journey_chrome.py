@@ -137,21 +137,35 @@ def test_rail_has_a_collapse_toggle():
     assert 'aria-controls="rail-collapsible"' in html
 
 
-def test_rail_admin_is_a_single_hub_link_not_a_mega_list():
-    """The rail admin nav collapsed to ONE entry → /admin (the card hub).
-    The granular per-page admin links moved to the hub, so the sidebar stays
-    calm and new admin surfaces are added to the hub, not threaded into the
-    rail. The `rail-admin` wrapper class stays (collapsible-order contract)."""
+def test_rail_admin_expands_into_area_rows_with_flyouts():
+    """Admin opens IN the rail into one row per admin area, and each area's
+    own links open in a flyout beside the column — never inline.
+
+    That distinction is the whole point: an inline expansion contributes
+    height, so opening one area would push every row below it down and the
+    rail's geometry would differ page to page (areas restore their own open
+    state). An absolutely-positioned flyout contributes none, so `Admin` open
+    is always exactly as tall as its area list.
+
+    Native <details> + a plain <button> per area, zero JS — the rail's only
+    script (rail_history.js) is chat-gated, so an admin without a chat grant
+    would otherwise get a dead Admin section. The `rail-admin` wrapper class
+    stays either way (collapsible-order contract).
+    """
     html = _rail_template()
     assert 'class="rail-admin"' in html
-    assert 'href="/admin"' in html
-    for gone in (
-        'href="/admin/users"',
-        'href="/admin/tables"',
-        'href="/admin/marketplaces"',
-        'href="/admin/store/submissions"',
-    ):
-        assert gone not in html, f"rail should no longer carry the granular link {gone}"
+    assert '<details class="rail-admin"' in html, "Admin must be a native <details>, not a bare link"
+    assert "rail-admin-summary" in html
+    # Data-driven: the area rows and their links are declared once, as the same
+    # set the header dropdown carries (_app_header.html) — the parity contract.
+    assert "admin_sections" in html
+    assert "rail-admin-flyout" in html, "area links must open in a flyout beside the rail"
+    # The area row is a <button>, NOT a nested <details>: Chrome hides a closed
+    # <details>'s content via `::details-content { content-visibility: hidden }`,
+    # which an author `display` rule on the child cannot override, so a
+    # hover-revealed panel inside a closed <details> never appears.
+    assert "rail-admin-sub-row" in html
+    assert 'aria-haspopup="true"' in html
 
 
 def test_collapsible_wrapper_spans_nav_history_and_admin_only():

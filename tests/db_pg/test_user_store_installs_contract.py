@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import duckdb
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -33,11 +32,12 @@ OTHER = "other-1"
 
 def _make_duckdb(tmp_path):
     from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
     from src.repositories.store_entities import StoreEntitiesRepository
     from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.repositories.user_store_installs import UserStoreInstallsRepository
 
-    conn = duckdb.connect(str(tmp_path / "duck.duckdb"))
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
     _ensure_schema(conn)
     return (
         UserStoreInstallsRepository(conn),

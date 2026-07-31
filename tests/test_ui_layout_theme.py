@@ -256,10 +256,13 @@ class TestRailOptIn:
         assert "rail-studio" not in css
         assert "rail-badge--maybe" not in css
         assert "rail-nav-sep" not in css
-        # ...and none for the retired admin <details> mega-list, replaced by a
-        # single link to the admin hub (Devin Review on #1118).
-        assert "rail-admin-summary" not in css
-        assert "rail-admin-groups" not in css
+        # The admin <details> section is NOT retired chrome — it is live, so
+        # its rules must be present rather than absent. Admin expands in the
+        # rail into one row per area, with each area's links in a flyout beside
+        # the column (see test_rail_admin_expands_into_area_rows_with_flyouts).
+        assert "rail-admin-summary" in css
+        assert "rail-admin-groups" in css
+        assert "rail-admin-flyout" in css
         # The retired /ask hero (#896) is gone: no rail nav item points at it,
         # and the Chat slot renders only when cloud-chat is actually reachable.
         assert 'href="/ask"' not in text

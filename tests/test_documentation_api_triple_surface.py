@@ -604,6 +604,23 @@ _EXEMPT: dict[str, str] = {
         "for the in-chat onboarding UI (a follow-up task), self-scoped to the "
         "caller's own journey row; no analyst CLI/MCP analogue"
     ),
+    # Chat history row menu (pin / rename). Both mutate how the WEB history
+    # panel presents a conversation, not what any agent can read or do: a pin
+    # is a hoist in one rendered list, and a title is the label that list
+    # shows. There is no CLI or MCP notion of "my history panel's ordering" to
+    # mirror them onto — `agnes chat <slug>` streams a session, it does not
+    # render the panel — and the auto-title already writes the same column
+    # server-side. Self-scoped to the caller's own session (404, never 403).
+    "/api/chat/sessions/{chat_id}/pin": (
+        "web chat history-panel affordance — hoists one of the caller's own "
+        "conversations into the Pinned group in the rendered list; no analyst "
+        "CLI/MCP analogue"
+    ),
+    "/api/chat/sessions/{chat_id}/title": (
+        "web chat history-panel affordance — renames one of the caller's own "
+        "conversations, the same column the Haiku auto-title writes; no "
+        "analyst CLI/MCP analogue"
+    ),
     # Keboola glossary import (2026-07-17 design). `/api/glossary/search`
     # carries the triple-surface contract in _COHORT; list and get-by-id are
     # thin REST reads with no dedicated MCP tool (an agent resolves a term by

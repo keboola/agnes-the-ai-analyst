@@ -193,12 +193,15 @@ def test_sub_action_is_a_sibling_anchor_not_a_nested_button():
     """A <button> may not contain a link, so the secondary destination is a
     sibling <a> — which also means it navigates natively, no handler needed."""
     js = _onboarding_js()
-    body = js.split("function subActionHtml(step, unlocked) {", 1)[1].split("\n}", 1)[0]
+    body = js.split("function subActionHtml(step) {", 1)[1].split("\n}", 1)[0]
     assert "<a class=" in body
     assert "<button" not in body
-    # Locked steps must not offer a shortcut past themselves, and an instance
-    # with no bot configured must not advertise the channel.
-    assert "if (!step.sub || !unlocked) return" in body
+    # A step with no sub-action renders nothing, and an instance with no bot
+    # configured must not advertise the channel. Note there is deliberately NO
+    # lock gate: a sub-action is a secondary destination, not a shortcut past
+    # the step, so it renders unconditionally (see the note above the telegram
+    # gate in chat_onboarding.js).
+    assert 'if (!sub) return ""' in body
     assert "if (!telegramBot()) return" in body
 
 

@@ -1677,6 +1677,10 @@ KNOWN_UNTESTED = {
     "GET /api/admin/store/lint-findings",
     "POST /api/admin/store/lint-audit",
     "POST /api/admin/store/lint-dismiss",
+    # Moderation & Trust hub — an admin card index over the Store review
+    # queue. Behaviour covered by tests/test_admin_moderation_hub.py +
+    # tests/test_web_nav_moderation_hub.py.
+    "GET /admin/store",
     # Skill contribution — admin web-form flow + REST/MCP triple-surface
     # (paste a SKILL.md, publish it to the contributed marketplace). Core logic
     # covered by tests/test_skill_contribution.py and
@@ -1919,6 +1923,9 @@ KNOWN_UNTESTED = {
     "GET /documentation/api",
     "GET /first-time-setup",
     "GET /home",
+    # Static explainer page. Covered by tests/test_web_how_it_works.py +
+    # tests/test_web_nav_cowork.py.
+    "GET /how-it-works",
     "GET /install",
     "GET /login",
     "GET /login/email",
@@ -2185,6 +2192,10 @@ KNOWN_UNTESTED = {
     "GET /api/chat/skills",  # tested in tests/test_chat_skills_endpoint.py
     "GET /api/chat/journey",  # tested in tests/test_chat_api.py
     "PUT /api/chat/journey",  # tested in tests/test_chat_api.py
+    # History row menu — pin/unpin and rename. Both are self-scoped writes on
+    # the caller's own session; tested in tests/test_chat_pin_conversations.py.
+    "PUT /api/chat/sessions/{chat_id}/pin",
+    "PUT /api/chat/sessions/{chat_id}/title",
     "POST /api/chat/sessions/{chat_id}/ticket",
     "POST /api/chat/{session_id}/fork",
     "POST /api/chat/{session_id}/invite",
