@@ -279,9 +279,9 @@
 
   /* ── Review status banner (shown above the builder form after save) ── */
   .sk-review-banner { display: flex; align-items: flex-start; gap: 14px; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; font-size: 14px; line-height: 1.5; }
-  .sk-review-banner.pending { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; }
-  .sk-review-banner.ok      { background: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46; }
-  .sk-review-banner.err     { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+  .sk-review-banner.pending { background: var(--ds-accent-warn-bg); border: 1px solid var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink); }
+  .sk-review-banner.ok      { background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
+  .sk-review-banner.err     { background: var(--ds-accent-danger-bg); border: 1px solid var(--ds-accent-danger-line); color: var(--ds-accent-danger-ink); }
   .sk-review-banner-icon { font-size: 22px; line-height: 1; flex-shrink: 0; margin-top: 1px; }
   .sk-review-banner-body { flex: 1; min-width: 0; }
   .sk-review-banner-title { font-weight: 700; margin-bottom: 4px; }
@@ -291,9 +291,9 @@
   .sk-review-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
   .sk-review-meta { font-size: 12.5px; color: var(--ds-text-muted); margin-top: 12px; }
   .sk-review-label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 9px; border-radius: var(--ds-radius-pill); }
-  .sk-review-label.pending { background: #fef3c7; color: #92400e; }
-  .sk-review-label.ok      { background: #d1fae5; color: #065f46; }
-  .sk-review-label.err     { background: #fee2e2; color: #991b1b; }
+  .sk-review-label.pending { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .sk-review-label.ok      { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .sk-review-label.err     { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
 </style>
 {% endblock %}
 
@@ -485,6 +485,11 @@
   }
   function persist() {
     if (!type || !draft) return;
+    // After a successful save the review banner is shown and the entity exists
+    // in the DB. Any further edit in the still-visible form must not re-create
+    // a localStorage draft, or the next visit will offer to "resume" a skill
+    // that is already published (and a re-save would fail on a name conflict).
+    if (reviewInProgress) return;
     // Emptying the last field is a way of throwing work away too — leaving the
     // old slot behind would resurrect the removed content on the next visit,
     // which is exactly what someone who just hit Remove did not ask for.
