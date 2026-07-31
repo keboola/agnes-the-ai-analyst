@@ -38,7 +38,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -166,7 +166,10 @@ async def authorize_oauth_connect(
     scopes = client_row.get("scopes")
     if scopes:
         params["scope"] = scopes
-    url = f"{client_row['authorization_endpoint']}?{urlencode(params)}"
+    # The registered endpoint may already carry query parameters — join with
+    # '&' in that case, never a second '?' (Devin Review on #1130).
+    sep = "&" if urlparse(client_row["authorization_endpoint"]).query else "?"
+    url = f"{client_row['authorization_endpoint']}{sep}{urlencode(params)}"
     return RedirectResponse(url=url, status_code=302)
 
 
@@ -188,7 +191,7 @@ async def oauth_connect_callback(
     still applies — this route requires the caller's normal authenticated
     web session (cookie or bearer), never a restricted principal.
     """
-    from app.api.admin_mcp import _oauth_redirect_uri, _require_oauth_source
+    from app.api.admin_mcp import _require_oauth_source
     from app.api.mcp_user_secrets import _require_source_grant
     from connectors.mcp.oauth_client import (
         OAuthTokenError,
@@ -240,6 +243,16 @@ async def oauth_connect_callback(
     if client_row is None:
         return _err_redirect("oauth client registration is missing")
 
+    from app.api.admin_mcp import _oauth_redirect_uri
+
+    try:
+        redirect_uri = _oauth_redirect_uri()
+    except HTTPException as exc:
+        # public_url unset raises HTTPException(409) — on the browser-facing
+        # callback EVERY failure mode must land back on /me/connections, not
+        # a raw error page (Devin Review on #1130).
+        return _err_redirect(str(exc.detail))
+
     try:
         async with build_oauth_http_client() as http_client:
             token_set = await exchange_code_for_token(
@@ -247,7 +260,7 @@ async def oauth_connect_callback(
                 client_id=client_row["client_id"],
                 client_secret=client_row.get("client_secret"),
                 code=code,
-                redirect_uri=_oauth_redirect_uri(),
+                redirect_uri=redirect_uri,
                 code_verifier=flow["pkce_verifier"],
                 client=http_client,
             )

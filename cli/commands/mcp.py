@@ -192,7 +192,18 @@ def mcp_connect(
     logged-in Agnes session; this command never sees or forwards your CLI
     token to the browser.
     """
-    url = f"{get_server_url()}/api/mcp/sources/{source_id}/oauth/authorize"
+    # Baseline BEFORE opening the browser: on a re-connect the source
+    # already has a credential, and "has_secret is true" would declare
+    # success instantly without the user finishing the new authorization —
+    # wait for the connection to CHANGE instead (Devin Review on #1130).
+    baseline = None
+    baseline_resp = api_get(f"/api/mcp/sources/{source_id}/my-secret")
+    if baseline_resp.status_code == 200:
+        body = baseline_resp.json() or {}
+        if body.get("has_secret"):
+            baseline = body.get("updated_at") or "connected"
+
+    url = f"{get_server_url().rstrip('/')}/api/mcp/sources/{source_id}/oauth/authorize"
     opened = False if no_browser else webbrowser.open(url)
     if opened:
         typer.echo(f"Opened your browser to connect {source_id}. Waiting for you to finish there…")
@@ -202,9 +213,12 @@ def mcp_connect(
     deadline = time.monotonic() + timeout
     while True:
         resp = api_get(f"/api/mcp/sources/{source_id}/my-secret")
-        if resp.status_code == 200 and (resp.json() or {}).get("has_secret"):
-            typer.echo(f"Connected {source_id}.")
-            return
+        if resp.status_code == 200:
+            body = resp.json() or {}
+            current = (body.get("updated_at") or "connected") if body.get("has_secret") else None
+            if current is not None and current != baseline:
+                typer.echo(f"Connected {source_id}.")
+                return
         if time.monotonic() >= deadline:
             break
         time.sleep(_CONNECT_POLL_INTERVAL_SECONDS)
