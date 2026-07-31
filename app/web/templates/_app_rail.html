@@ -2,14 +2,16 @@
    AGNES_UI_LAYOUT=rail). Renders INSTEAD of _app_header.html via the
    switch in base_ds.html; topnav instances never load this partial.
 
-   IA (issue #896 prototype): the primary destinations are one flat,
-   undivided group — New chat · Library · Agents. The Studio dropdown and the
-   Marketplace entry have both been retired from the rail, and with so few
-   destinations left the group dividers went with them; /catalog and the
-   Skill/Plugin builders remain live routes, reached from in-page surfaces
-   (the Library header's "+ Add" menu, chat suggestions, search) rather than
-   the rail. The topnav chrome keeps its flat link row — this IA applies only
-   to the rail layout.
+   IA: the rail is TWO fixed zones with the conversation list between them.
+   Top — New chat, then the caller's most recent conversations directly under
+   it (no "Chats" heading; the rows ARE the section), filling the free space and
+   scrolling inside it. Bottom — the browse destinations Library · Agents, then
+   Admin behind a divider, then the onboarding card, then the profile pinned to
+   the very bottom. The Studio dropdown and the Marketplace entry have both
+   been retired from the rail; /catalog and the Skill/Plugin builders remain
+   live routes, reached from in-page surfaces (the Library header's "+ Add"
+   menu, chat suggestions, search) rather than the rail. The topnav chrome
+   keeps its flat link row — this IA applies only to the rail layout.
 
    TODO(#1088): My Stack is UNLINKED, not resolved. /stack is still a live,
    fully-featured surface — it is simply not a rail destination any more, and
@@ -28,6 +30,12 @@
    Styles live in app/web/static/css/rail.css (.rail-* prefix),
    activated by html[data-ui-layout="rail"]. #}
 {% import "macros/_agnes_orb.html" as agnes_orb %}
+{# Emits "1" when `path` is under any of `prefixes` — the rail's one
+   active-path test, used for the Admin flyout links and (over the union of an
+   area's prefixes) for the area row that contains them. A macro rather than a
+   `startswith` chain per link: the Admin areas are data below, so the test has
+   to work over a list. `| trim` at the call site turns it into a boolean. #}
+{% macro _admin_hit(path, prefixes) %}{% for p in prefixes %}{% if path.startswith(p) %}1{% endif %}{% endfor %}{% endmacro %}
 {% if session.user %}
 <nav class="rail" aria-label="Primary">
     <a class="rail-logo" href="{{ home_route or '/dashboard' }}" aria-label="Home">
@@ -38,11 +46,11 @@
     </a>
 
     {# Below 1024px the rail becomes a wrapping top bar (rail.css) with nowhere
-       to collapse to — every nav item, the Chats history, and Admin stayed
+       to collapse to — every nav item, the recent-chats list, and Admin stayed
        permanently on screen, eating vertical space. This toggle is invisible
        above 1024px (rail.css); below it, it shows/hides `.rail-collapsible`
-       (nav + Chats + Admin) while the compact foot (Get started + user menu)
-       stays reachable either way. #}
+       (both nav groups + recents + the onboarding card + Admin) while the foot
+       (the profile row) stays reachable either way. #}
     <button type="button" class="rail-collapse-toggle" id="rail-collapse-toggle"
             aria-expanded="false" aria-controls="rail-collapsible" aria-label="Toggle navigation">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -55,7 +63,12 @@
     {% set _on_library = _path.startswith('/library') or _path == '/artefacts' %}
     {% set _on_agents = _path == '/agents' %}
 
-    <div class="rail-nav">
+    {# ── Zone 1 (top): New chat + the recent conversations under it ──────
+       The whole zone is chat-gated: without a grant there is no New chat row
+       and no list, so an empty top zone would just be dead space above the
+       bottom one. #}
+    {% if can_chat %}
+    <div class="rail-nav rail-nav-top">
         {# Chat is a surface only when it actually works: enabled + the caller
            holds a chat grant (`can_chat`). The retired /ask hero used to fill
            this slot for non-chat users (#896) — but it just forwarded to /chat
@@ -76,16 +89,71 @@
            session deep link (server-side here; chat.js keeps it in sync across
            in-page open-session / new-chat transitions via #new-chat). While
            you're inside a conversation the item drops its highlight and the
-           conversation you're viewing is highlighted in the Chats history list
+           conversation you're viewing is highlighted in the recent-chats list
            below instead. The rail logo above lands on the same surface (its
            href is home_route, which defaults to /dashboard → /chat). #}
-        {% if can_chat %}
-        <a class="rail-i rail-newchat-item {% if _path == '/chat' and not request.query_params.get('session') %}on{% endif %}"
+        {# An ORDINARY `.rail-i` row — same height, ink, weight and radius as
+           Library / Agents / Admin, with no treatment of its own.
+
+           It went through a `.rail-compose` control phase (a pale-blue
+           borderless block one step taller) to separate the verb from the
+           conversation nouns directly beneath it. That is deliberately retired:
+           a standing tint on one row consumed the rail's whole accent budget, so
+           the active row could not be tinted without the two colliding, and
+           `.on` needed an inset ring purely to tell two pale-blue things apart.
+
+           It loses nothing, because /chat IS the landing surface and New chat is
+           the active row there — so it renders with the accent
+           (`--rail-active-bg`) on the page where you see it most, without any
+           row carrying a resting tint. Elsewhere what distinguishes it is the
+           `+` glyph (no conversation row has an icon), its position at the top
+           of the column, and the 8px gap `.rail-nav-top` leaves above the
+           list. See the COLOUR RULE at the top of rail.css. #}
+        <a class="rail-i {% if _path == '/chat' and not request.query_params.get('session') %}on{% endif %}"
            id="new-chat" href="/chat">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
-            New chat
+            <span class="rail-i-label">New chat</span>
         </a>
-        {% endif %}
+    </div>
+
+    {# Recent conversations — the caller's latest chats, rendered directly under
+       New chat with NO section heading: at 3–5 rows the titles read as the
+       continuation of the chat zone, and a "Chats" label above them was pure
+       chrome. This is the ONLY conversation history in the rail layout (the
+       chat page's own Conversations column is retired there).
+
+         • The <ul id="chat-list"> + #cloud-chat-empty-state ids are the same
+           the chat page used, so on /chat chat.js owns this list unchanged —
+           live inserts, active-row highlight, delete, and the Cmd+K palette all
+           keep working, now rendering into the rail.
+         • On every OTHER rail page chat.js isn't loaded, so js/rail_history.js
+           fetches /api/chat/sessions and renders the same rows, wiring each to
+           /chat?session=<id>. It bails on /chat (chat.js is authoritative there).
+         • There is NO truncation and no "View all chats" / "Show less" toggle.
+           The list simply fills the space between the two zones and scrolls
+           inside .rail-history-body, so the bottom zone (Library · Agents ·
+           Admin, the onboarding card, profile) never moves. The toggle was
+           redundant by construction: this region is already exactly the rail's
+           free space, so capping the list at five rows on top of that showed
+           five on a screen with room for nine and then offered a button to
+           reveal rows that already fitted. Scrolling is the affordance. #}
+    <section class="rail-history" id="rail-history">
+        <div class="rail-history-body" id="rail-history-body">
+            <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
+            {# Starts hidden; chat.js (/chat) and rail_history.js (elsewhere)
+               both unhide it only once a fetch resolves with zero sessions, so
+               "No conversations yet" never flashes before the list loads. #}
+            <p id="cloud-chat-empty-state" class="rail-history-empty" hidden>No conversations yet.</p>
+        </div>
+    </section>
+    {% endif %}{# /can_chat — end of zone 1 #}
+
+    {# ── Zone 2 (bottom): browse destinations, then Admin behind a divider ──
+       Library and Agents are "go somewhere and look at things" surfaces, not
+       the thing you do on arrival — they sit at the foot of the rail so the
+       chat zone owns the top and the two zones stay put while the conversation
+       list between them scrolls. #}
+    <div class="rail-nav rail-nav-bottom">
         {# Library — the umbrella for the things the caller has and creates:
            their private collections of files (moved off My Stack), skills and
            agents today and, soon, their data apps. #}
@@ -110,143 +178,192 @@
         </a>
     </div>
 
-    {% if can_chat %}
-    {# Chat history — a collapsible, scrollable list of the caller's
-       conversations, sitting directly under the primary destinations. This is
-       the ONLY conversation history in the rail layout (the chat page's own
-       Conversations column is retired there).
-
-         • The <ul id="chat-list"> + #cloud-chat-empty-state ids are the same
-           the chat page used, so on /chat chat.js owns this list unchanged —
-           live inserts, active-row highlight, delete, and the Cmd+K palette all
-           keep working, now rendering into the rail.
-         • On every OTHER rail page chat.js isn't loaded, so js/rail_history.js
-           fetches /api/chat/sessions and renders the same rows, wiring each to
-           /chat?session=<id>. It bails on /chat (chat.js is authoritative there).
-
-       Native <details> keeps the collapse keyboard-accessible with zero JS;
-       rail_history.js persists the open/closed state in localStorage. The body
-       is the rail's flex-grow region (rail.css) so it scrolls independently
-       while the nav above and the user menu below stay put.
-
-       NB: this is a button + region, NOT a native <details> — a <details> set
-       to display:flex does not distribute its height to flex children in
-       Chrome, so the scroll region never engages and older rows spill past the
-       footer. rail_history.js wires the collapse (aria-expanded + a class) on
-       every rail page, /chat included. #}
-    <section class="rail-history" id="rail-history">
-        <button type="button" class="rail-i rail-history-summary"
-                id="rail-history-toggle"
-                aria-expanded="true" aria-controls="rail-history-body">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="rail-history-summary-txt">Chats</span>
-            <svg class="rail-history-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <div class="rail-history-body" id="rail-history-body">
-            <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
-            {# Starts hidden; chat.js (/chat) and rail_history.js (elsewhere)
-               both unhide it only once a fetch resolves with zero sessions, so
-               "No conversations yet" never flashes before the list loads. #}
-            <p id="cloud-chat-empty-state" class="rail-history-empty" hidden>No conversations yet.</p>
-        </div>
-    </section>
-    {% endif %}
-
     {% if session.user.is_admin %}
     {% set _admin_active = _path.startswith('/admin/') or _path.startswith('/documentation') %}
-    {# Admin — one collapsible rail section holding the same grouped
-       links as the header dropdown. Native <details> keeps it
-       keyboard-accessible with zero JS; open state persists via the
-       same localStorage keys app.js already manages for
-       .app-nav-menu-group sections. #}
+    {# Admin — the last thing in the bottom zone, behind the nav's only divider
+       (rail.css): a different KIND of destination from Library/Agents
+       (operating the instance vs. using it).
+
+       Open, it lists its seven areas as SUBITEMS — one row each, and that is
+       all. The links inside an area appear in a flyout beside the rail on
+       hover / focus / click, never inline. That is what keeps the two zones
+       fixed: the old version nested a <details> per area that expanded IN the
+       column, so opening "Agent Experience" alone added seven rows and pushed
+       the profile down — and because the areas restored their own open state,
+       the rail's height (and therefore where every row below sat) differed
+       from page to page. An absolutely-positioned flyout contributes no
+       height, so `Admin` open is now always exactly seven rows tall.
+
+       Data-driven so the row + flyout markup is written once; the area rows
+       and their links are the same set the header dropdown carries
+       (_app_header.html), which is the parity contract to keep in step.
+       `match` is the list of path prefixes that mean "this link is the page
+       you're on" — the area row picks up a quiet marker when any of its own
+       links match (it is the ROUTE to the active page, not the active page
+       itself, so it deliberately does not take the `.on` tint).
+
+       Native <details> throughout: click toggles, Escape/blur closes, and the
+       whole thing works with zero JS — which it has to, since the rail's only
+       script (rail_history.js) is chat-gated and an admin without a chat grant
+       would otherwise get a dead Admin section. #}
+    {% set admin_sections = [
+        {'label': 'Activity Center', 'items': [
+            {'label': 'Adoption', 'href': '/admin/adoption', 'match': ['/admin/adoption']},
+            {'label': 'Audit log', 'href': '/admin/activity', 'match': ['/admin/activity']},
+            {'label': 'Telemetry', 'href': '/admin/telemetry', 'match': ['/admin/telemetry', '/admin/usage']},
+            {'label': 'Analyst sessions', 'href': '/admin/sessions', 'match': ['/admin/sessions']},
+            {'label': 'Chat sessions', 'href': '/admin/chat', 'match': ['/admin/chat']}]},
+        {'label': 'Users & Access', 'items': [
+            {'label': 'Users', 'href': '/admin/users', 'match': ['/admin/users']},
+            {'label': 'Groups', 'href': '/admin/groups', 'match': ['/admin/groups']},
+            {'label': 'Resource access', 'href': '/admin/access', 'match': ['/admin/access']},
+            {'label': 'Tokens', 'href': '/admin/tokens', 'match': ['/admin/tokens']}]},
+        {'label': 'Data Packages', 'items': [
+            {'label': 'Tables', 'href': '/admin/tables', 'match': ['/admin/tables']},
+            {'label': 'Sync', 'href': '/admin/sync', 'match': ['/admin/sync']}]},
+        {'label': 'Sources', 'items': [
+            {'label': 'Data sources', 'href': '/admin/data-sources', 'match': ['/admin/data-sources']},
+            {'label': 'MCP sources', 'href': '/admin/mcp-sources', 'match': ['/admin/mcp-sources', '/admin/mcp-tools']},
+            {'label': 'Instance secrets', 'href': '/admin/datasource-credentials', 'match': ['/admin/datasource-credentials']}]},
+        {'label': 'Agent Experience', 'items': [
+            {'label': 'Curated Marketplaces', 'href': '/admin/marketplaces', 'match': ['/admin/marketplaces']},
+            {'label': 'Initial Workspace', 'href': '/admin/initial-workspace', 'match': ['/admin/initial-workspace']},
+            {'label': 'News', 'href': '/admin/news', 'match': ['/admin/news']},
+            {'label': 'Curated memory reviews', 'href': '/admin/corporate-memory', 'match': ['/admin/corporate-memory']},
+            {'label': 'Maintained digests', 'href': '/admin/knowledge-digests', 'match': ['/admin/knowledge-digests']},
+            {'label': 'Flea Submissions', 'href': '/admin/store/submissions', 'match': ['/admin/store/submissions']},
+            {'label': 'Prompts', 'href': '/admin/prompts', 'match': ['/admin/prompts', '/admin/agent-prompt', '/admin/workspace-prompt']}]},
+        {'label': 'Documentation', 'items': [
+            {'label': 'API Guide', 'href': '/documentation/api', 'match': ['/documentation']},
+            {'label': 'Interactive API (Swagger)', 'href': '/docs', 'match': []},
+            {'label': 'API Reference (ReDoc)', 'href': '/redoc', 'match': []}]},
+        {'label': 'Server', 'items': [
+            {'label': 'Instance settings', 'href': '/admin/server-config', 'match': ['/admin/server-config']},
+            {'label': 'Database backend', 'href': '/admin/database', 'match': ['/admin/database']}]},
+    ] %}
     <details class="rail-admin" {% if _admin_active %}open{% endif %}>
         <summary class="rail-i rail-admin-summary {% if _admin_active %}on{% endif %}">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.3 4.3a2 2 0 0 1 3.4 0l.6 1a2 2 0 0 0 2.2.9l1.1-.3a2 2 0 0 1 2.4 2.4l-.3 1.1a2 2 0 0 0 .9 2.2l1 .6a2 2 0 0 1 0 3.4l-1 .6a2 2 0 0 0-.9 2.2l.3 1.1a2 2 0 0 1-2.4 2.4l-1.1-.3a2 2 0 0 0-2.2.9l-.6 1a2 2 0 0 1-3.4 0l-.6-1a2 2 0 0 0-2.2-.9l-1.1.3a2 2 0 0 1-2.4-2.4l.3-1.1a2 2 0 0 0-.9-2.2l-1-.6a2 2 0 0 1 0-3.4l1-.6a2 2 0 0 0 .9-2.2l-.3-1.1a2 2 0 0 1 2.4-2.4l1.1.3a2 2 0 0 0 2.2-.9l.6-1Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
-            Admin
+            {# The cog's every command after the moveto is RELATIVE, so the
+               start y is what centres the whole outline: at the original 4.3 it
+               ran 3.35 → 24.45 (centre 13.9), i.e. 1.9 low — clipped at the
+               foot of the viewBox and not concentric with its own inner circle.
+               2.4 puts it at 1.45 → 22.55, matching the x extent exactly. #}
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.3 2.4a2 2 0 0 1 3.4 0l.6 1a2 2 0 0 0 2.2.9l1.1-.3a2 2 0 0 1 2.4 2.4l-.3 1.1a2 2 0 0 0 .9 2.2l1 .6a2 2 0 0 1 0 3.4l-1 .6a2 2 0 0 0-.9 2.2l.3 1.1a2 2 0 0 1-2.4 2.4l-1.1-.3a2 2 0 0 0-2.2.9l-.6 1a2 2 0 0 1-3.4 0l-.6-1a2 2 0 0 0-2.2-.9l-1.1.3a2 2 0 0 1-2.4-2.4l.3-1.1a2 2 0 0 0-.9-2.2l-1-.6a2 2 0 0 1 0-3.4l1-.6a2 2 0 0 0 .9-2.2l-.3-1.1a2 2 0 0 1 2.4-2.4l1.1.3a2 2 0 0 0 2.2-.9l.6-1Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
+            <span class="rail-i-label">Admin</span>
+            <svg class="rail-admin-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </summary>
         <div class="rail-admin-groups">
-            <details class="app-nav-menu-group" data-section="activity-center">
-                <summary class="app-nav-menu-section">Activity Center</summary>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/adoption') %}is-active{% endif %}" href="/admin/adoption">Adoption</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" href="/admin/activity">Audit log</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') %}is-active{% endif %}" href="/admin/telemetry">Telemetry</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" href="/admin/sessions">Analyst sessions</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/chat') %}is-active{% endif %}" href="/admin/chat">Chat sessions</a>
-            </details>
-            <details class="app-nav-menu-group" data-section="users-access">
-                <summary class="app-nav-menu-section">Users &amp; Access</summary>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" href="/admin/users">Users</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" href="/admin/groups">Groups</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" href="/admin/access">Resource access</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" href="/admin/tokens">Tokens</a>
-            </details>
-            <details class="app-nav-menu-group" data-section="data-packages">
-                <summary class="app-nav-menu-section">Data Packages</summary>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" href="/admin/tables">Tables</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" href="/admin/sync">Sync</a>
-            </details>
-            <details class="app-nav-menu-group" data-section="sources">
-                <summary class="app-nav-menu-section">Sources</summary>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/data-sources') %}is-active{% endif %}" href="/admin/data-sources">Data sources</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') %}is-active{% endif %}" href="/admin/mcp-sources">MCP sources</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/datasource-credentials') %}is-active{% endif %}" href="/admin/datasource-credentials">Instance secrets</a>
-            </details>
-            <details class="app-nav-menu-group" data-section="agent-experience">
-                <summary class="app-nav-menu-section">Agent Experience</summary>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" href="/admin/marketplaces">Curated Marketplaces</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/initial-workspace') %}is-active{% endif %}" href="/admin/initial-workspace">Initial Workspace</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/news') %}is-active{% endif %}" href="/admin/news">News</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" href="/admin/corporate-memory">Curated memory reviews</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/knowledge-digests') %}is-active{% endif %}" href="/admin/knowledge-digests">Maintained digests</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" href="/admin/store/submissions">Flea Submissions</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/prompts') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" href="/admin/prompts">Prompts</a>
-            </details>
-            <details class="app-nav-menu-group" data-section="documentation">
-                <summary class="app-nav-menu-section">Documentation</summary>
-                <a class="app-nav-menu-item {% if _path.startswith('/documentation') %}is-active{% endif %}" href="/documentation/api">API Guide</a>
-                <a class="app-nav-menu-item" href="/docs">Interactive API (Swagger)</a>
-                <a class="app-nav-menu-item" href="/redoc">API Reference (ReDoc)</a>
-            </details>
-            <details class="app-nav-menu-group" data-section="server">
-                <summary class="app-nav-menu-section">Server</summary>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" href="/admin/server-config">Instance settings</a>
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/database') %}is-active{% endif %}" href="/admin/database">Database backend</a>
-            </details>
+            {% for sec in admin_sections %}
+            {% set _sec_hit = _admin_hit(_path, sec['items'] | map(attribute='match') | sum(start=[])) | trim %}
+            <div class="rail-admin-sub">
+                {# A plain <button>, NOT a nested <details>: Chrome now hides a
+                   closed <details>'s content via `::details-content
+                   { content-visibility: hidden }`, which an author `display`
+                   rule on the child cannot override — so a hover-revealed
+                   panel inside a closed <details> never appears. The button
+                   opens the panel on hover and, because clicking it leaves it
+                   focused, on click too (`:focus-within`, which also covers
+                   tabbing in from the keyboard). Blur / moving away closes it.
+                   No JS, deliberately — see the section note above. #}
+                <button type="button" class="rail-admin-sub-row {% if _sec_hit %}has-active{% endif %}"
+                        aria-haspopup="true">
+                    <span class="rail-admin-sub-txt">{{ sec['label'] }}</span>
+                    <svg class="rail-admin-sub-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                {# Opens beside the rail (never inline — see the note above), so
+                   it costs the column no height and can be as long as the area
+                   needs. #}
+                <div class="rail-admin-flyout" role="group" aria-label="{{ sec['label'] }}">
+                    {% for it in sec['items'] %}
+                    <a class="rail-admin-flyout-item {% if _admin_hit(_path, it['match']) | trim %}is-active{% endif %}"
+                       href="{{ it['href'] }}">{{ it['label'] }}</a>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
         </div>
     </details>
     {% endif %}
 
+    {# "How {brand} works" — the single orientation destination
+       (/how-it-works): what this is, what it knows for you, where you can use
+       it, how to connect each surface, where your data goes. Consolidates
+       /home's product story with what used to be the standalone AI Connector
+       page, so there is one place to send someone who asks "what is this?".
+
+       Directly above the onboarding card because the two are siblings —
+       read vs. do — and OUTSIDE its `can_chat` gate: a caller with no chat
+       grant needs the orientation more than anyone. It replaces the "Learn
+       how it works" item that sat in the account menu, which is the shelf for
+       things about *you* (Profile, My activity, Logout), not for the product
+       explainer. #}
+    <a class="rail-i {% if _path == '/how-it-works' %}on{% endif %}" href="/how-it-works">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 16.8v-3.6a2.7 2.7 0 1 0-2.7-2.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="8.3" r=".2" fill="currentColor"/></svg>
+        <span class="rail-i-label">How {{ instance_brand_short }} works</span>
+    </a>
+
+    {% if can_chat %}
+    {# Onboarding card — the last thing in the bottom zone, under Admin and
+       directly above the profile. It replaces the "Finish setup · N/5" text
+       row: a row in a column of rows is easy to read past, and onboarding has
+       to be noticed before it can be finished. A card can carry what a row
+       can't —
+       what it is ("Set up Agnes"), how far along you are in words ("0 of 5
+       steps complete") and at a glance (the bar), and that it goes somewhere
+       (the chevron) — inside one tinted block that reads as a distinct object
+       rather than a fourth destination. It stays deliberately small: three
+       tight lines, no illustration, no dismiss control.
+
+       Blue, not the brand accent: `--ds-accent-info-*` is the design system's
+       informational vocabulary, and the active destination keeps sole use of
+       `--ds-primary` (a primary-tinted card here would read as "you are on this
+       page"). Blue in every palette theme, including paper's emerald primary.
+
+       Title flips to "Continue setup" once the first step lands
+       (chat_onboarding.js): "Set up Agnes" names the job for someone who hasn't
+       started, and "Continue" is the accurate word for everyone else. At 5/5
+       the card retires itself entirely (`.is-complete`, rail.css) — the profile
+       menu's "Start over onboarding" is the way back.
+
+       Same ids as the row it replaces (`railGetStarted`,
+       `rail-getstarted-toggle`, `-panel`, `-count`): they are the seam
+       chat_onboarding.js and rail_history.js bind to, so the popover, its
+       hover/click/Escape handling and the progress writes are unchanged. #}
+    <div class="rail-getstarted" id="railGetStarted">
+        <button type="button" class="rail-getstarted-btn"
+                id="rail-getstarted-toggle"
+                aria-expanded="false"
+                aria-controls="rail-getstarted-panel">
+            <span class="rail-getstarted-body">
+                <span class="rail-getstarted-title" id="rail-getstarted-title">Set up Agnes</span>
+                {# Rendered EMPTY and written whole ("3 of 5 steps complete") by
+                   chat_onboarding.js once /api/chat/journey resolves — a static
+                   "0 of 5" would flash the wrong number at anyone mid-way. #}
+                <span class="rail-getstarted-sub" id="rail-getstarted-count"></span>
+                {# Decorative: the sub line above already states the progress in
+                   words, and a progressbar role inside a <button> is flattened
+                   out of the accessible name anyway. #}
+                <span class="rail-getstarted-bar" aria-hidden="true">
+                    <span class="rail-getstarted-bar-fill" id="rail-getstarted-bar"></span>
+                </span>
+            </span>
+            <svg class="rail-getstarted-chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="rail-getstarted-panel" id="rail-getstarted-panel"
+             role="region" aria-label="Set up Agnes">
+            {# Chat-driven onboarding progress — rendered by chat_onboarding.js. #}
+            <div id="chat-journey" class="cloud-chat-journey" hidden></div>
+        </div>
+    </div>
+    {% endif %}
+
     </div>{# /.rail-collapsible #}
 
+    {# The foot is the profile row alone — onboarding is a card at the end of
+       the bottom zone (see .rail-getstarted). It stays outside
+       .rail-collapsible so the profile is reachable in the ≤1024px bar even
+       with the nav collapsed. #}
     <div class="rail-foot">
-        {% if can_chat %}
-        {# "Get started" — the onboarding launcher. The "Your Journey" steps
-           (chat-driven onboarding) used to sit crammed at the bottom of the
-           Chats list, where they were easy to miss and hard to reach. They now
-           live in a popover opened from this pinned foot button, which also
-           shows live progress (N/5). #chat-journey is populated by
-           chat_onboarding.js — by chat.js on /chat, and by a standalone mount
-           (see the module below) on every other rail page. rail_history.js
-           wires the open/close on all rail pages. #}
-        <div class="rail-getstarted" id="railGetStarted">
-            <button type="button" class="rail-i rail-getstarted-btn"
-                    id="rail-getstarted-toggle"
-                    aria-expanded="false"
-                    aria-label="Get started"
-                    aria-controls="rail-getstarted-panel">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3c3 1.5 5 4.6 5 8.5 0 2-.7 3.4-1.4 4.4l-.1.1H8.5l-.1-.1C7.7 14.9 7 13.5 7 11.5 7 7.6 9 4.5 12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="10.5" r="1.6" stroke="currentColor" stroke-width="1.6"/><path d="M9 19c.8.7 1.8 1 3 1s2.2-.3 3-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-                <span class="rail-getstarted-txt">Get started</span>
-                <span class="rail-getstarted-count" id="rail-getstarted-count" aria-hidden="true"></span>
-                <svg class="rail-getstarted-check" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-            <div class="rail-getstarted-panel" id="rail-getstarted-panel"
-                 role="region" aria-label="Your Journey">
-                {# Chat-driven onboarding progress — rendered by chat_onboarding.js. #}
-                <div id="chat-journey" class="cloud-chat-journey" hidden></div>
-            </div>
-        </div>
-        {% endif %}
-
         {# User row + pop-up menu — same ids/classes as the header's user
            menu so app.js wiring (trigger toggle, theme radio group)
            works unchanged; only the container styling differs. #}
@@ -272,7 +389,32 @@
                     {% endif %}
                 </div>
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
-                <a class="app-user-menu-item {% if _path == '/home' %}is-active{% endif %}" role="menuitem" href="/home">Learn how it works</a>
+                {# "Learn how it works" is no longer here — it is a rail row of
+                   its own ("How {brand} works", above the onboarding card).
+                   This menu is for things about *you*; a product explainer
+                   buried between Profile and Logout was the wrong shelf, and
+                   the page it pointed at (/home) was a CLI install wizard
+                   rather than an explanation. #}
+                {# "Start over onboarding" — the way back to the checklist once
+                   the onboarding card has retired itself (it hides at 5/5, so
+                   the checklist's own "Start over" button goes with it). Kept in
+                   the profile menu: it is "help me get my bearings again", and
+                   the profile row is the one thing pinned to the rail at every
+                   state.
+
+                   Rail-only on purpose — the topnav chrome keeps the journey
+                   card inline in the chat sidebar, where its own "Start over"
+                   button is still on screen when complete. Chat-gated to match
+                   the row and the popover it re-arms.
+
+                   The click handler is wired by chat_onboarding.js (it owns the
+                   journey state and the optimistic re-render); with the module
+                   absent this is inert rather than broken, hence a <button> with
+                   no href to follow. #}
+                {% if can_chat %}
+                <button type="button" class="app-user-menu-item app-user-menu-btn"
+                        role="menuitem" id="rail-restart-onboarding">Start over onboarding</button>
+                {% endif %}
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
                 <div class="app-user-menu-sep" role="separator"></div>
@@ -292,11 +434,18 @@
    chromes. Defer keeps it non-blocking. #}
 <script src="{{ static_url('app.js') }}" defer></script>
 <script src="{{ static_url('js/global_search.js') }}" defer></script>
-{# Populates the rail's Chats history on every page EXCEPT /chat (where chat.js
-   owns #chat-list). Self-guards on body.chat-page-body, so loading it globally
-   is safe. Only needed when the caller can chat. #}
-{% if can_chat %}<script src="{{ static_url('js/rail_history.js') }}" defer></script>{% endif %}
-{# Mounts the "Your Journey" panel into the Get started popover on rail pages
+{# Populates the rail's recent-chats list on every page EXCEPT /chat (where
+   chat.js owns #chat-list) and truncates it to the newest few rows on ALL rail
+   pages. Self-guards on body.chat-page-body, so loading it globally is safe.
+   Only needed when the caller can chat. #}
+{# window.chatRowMenu — the shared "⋮" row menu (Pin/Unpin · Rename · Delete)
+   both history renderers use. Must be defined before a row is BUILT, not before
+   this file's scripts parse: rows are built after an async sessions fetch, so
+   `defer` is enough regardless of tag order. Self-guards against the duplicate
+   load on a rail /chat page (chat.html loads it too). #}
+{% if can_chat %}<script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>
+<script src="{{ static_url('js/rail_history.js') }}" defer></script>{% endif %}
+{# Mounts the onboarding checklist into the card's popover on rail pages
    OTHER than /chat (there chat.js's initChatOnboarding already renders it, with
    the full chat hooks). Same module either way, so #chat-journey has one owner
    per page. #}

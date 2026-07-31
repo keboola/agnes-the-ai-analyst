@@ -1637,6 +1637,16 @@ KNOWN_UNTESTED = {
     "GET /api/collections/{collection_id}/files",
     "DELETE /api/collections/{collection_id}/files/{file_id}",
     "POST /api/collections/{collection_id}/files/{file_id}/reingest",
+    # Library file preview — both routes need a real (collection_id, file_id)
+    # pair AND a blob on disk, so neither belongs in this parameter-free sweep.
+    # They add no repo method or migration (reads go through corpus_files_repo /
+    # corpus_chunks_repo, both already parity-covered). Behaviour covered in
+    # tests/test_api_collections.py::TestFilePreview — each `kind`, truncation,
+    # the .html inline refusal (415), wrong-collection/unknown-file 404,
+    # no-access 404, per-file sharing, SessionPrincipal intersection — and the
+    # web wiring in tests/test_web_library_files_folders.py.
+    "GET /api/collections/{collection_id}/files/{file_id}/preview",
+    "GET /api/collections/{collection_id}/files/{file_id}/raw",
     # Chat composer "+" upload (#966) — multipart file upload, chat-access
     # gated. Behaviour covered in tests/test_chat_uploads.py (happy path,
     # register-as-table + end-to-end query, oversize/415/path-traversal/unauth
