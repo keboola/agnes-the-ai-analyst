@@ -613,6 +613,59 @@ def test_file_inside_a_folder_has_its_own_detail_page(seeded_app):
     assert "Share this file" in r.text
 
 
+def test_file_detail_uses_the_shared_detail_scaffold(seeded_app):
+    """The file page is a detail page like any other (data package, plugin,
+    table): the shared hero + section cards from macros/_detail.html — and it
+    presents the file only. No in-page ask/search box, and no upload drop-zone
+    (uploading targets a COLLECTION, so it lives on the collection page)."""
+    tok = seeded_app["admin_token"]
+    col = _folder(seeded_app, "Scaffold Folder", tok)
+    fid = _files(seeded_app, col["id"], tok)[0]["file_id"]
+
+    text = seeded_app["client"].get(f"/library/{col['slug']}/f/{fid}", headers=_auth(tok)).text
+    # Shared scaffold, not a bespoke header.
+    assert "detail-hero" in text
+    assert "detail-section" in text
+    assert "detail-hero--compact" in text  # library item pages use the compact header
+    # Presents the file: facts as detail rows, sharing as its own section.
+    assert "detail-rows" in text
+    assert ">Details<" in text
+    assert ">Sharing<" in text
+    # Neither an ask box nor an upload zone.
+    assert "Ask this file" not in text
+    assert "Upload files" not in text
+    assert 'id="lib-drop"' not in text
+
+
+def test_file_detail_leads_with_a_preview_action(seeded_app):
+    """The first thing you want from a file's page is to see the file, so
+    Preview is the primary hero action and opens the shared modal."""
+    tok = seeded_app["admin_token"]
+    col = _folder(seeded_app, "Preview Action Folder", tok)
+    fid = _files(seeded_app, col["id"], tok)[0]["file_id"]
+
+    text = seeded_app["client"].get(f"/library/{col['slug']}/f/{fid}", headers=_auth(tok)).text
+    assert 'id="lfd-preview-btn"' in text
+    assert "js/file_preview.js" in text
+    assert "css/file_preview.css" in text
+    assert "openFilePreview" in text
+
+
+def test_collection_rows_preview_in_place_and_stay_links(seeded_app):
+    """A row click previews the file without leaving the collection — but the
+    row is still a real link to the file's own page, so Cmd/middle-click, the
+    context menu and a no-JS load all still work."""
+    tok = seeded_app["admin_token"]
+    col = _folder(seeded_app, "Row Preview Folder", tok)
+    fid = _files(seeded_app, col["id"], tok)[0]["file_id"]
+
+    text = seeded_app["client"].get(f"/library/{col['slug']}", headers=_auth(tok)).text
+    assert f'href="/library/{col["slug"]}/f/{fid}"' in text
+    assert f'data-preview-file="{fid}"' in text
+    assert f'data-preview-collection="{col["id"]}"' in text
+    assert "js/file_preview.js" in text
+
+
 def test_file_detail_404s_for_wrong_collection_and_unknown_file(seeded_app):
     tok = seeded_app["admin_token"]
     col = _folder(seeded_app, "Guard Folder", tok)

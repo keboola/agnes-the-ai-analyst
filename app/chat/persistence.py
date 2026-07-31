@@ -43,7 +43,7 @@ def _row_to_session(row: tuple) -> ChatSession:
     # 8  message_count   (derived via LEFT JOIN),
     # 9  archived, 10 is_co_session, 11 ephemeral,
     # 12 sandbox_id, 13 runner_pid, 14 sandbox_paused_at,
-    # 15 relay_protocol_version, 16 agent_id
+    # 15 relay_protocol_version, 16 agent_id, 17 pinned_at
     return ChatSession(
         id=row[0],
         user_email=row[1],
@@ -62,6 +62,7 @@ def _row_to_session(row: tuple) -> ChatSession:
         sandbox_paused_at=row[14],
         relay_protocol_version=int(row[15]) if row[15] is not None else None,
         agent_id=row[16],
+        pinned_at=row[17],
     )
 
 
@@ -78,7 +79,10 @@ _SESSION_SELECT = (
     # Sandbox pause/resume refs — NOT indexed (DuckDB 1.5.3 FK+index bug).
     "s.sandbox_id, s.runner_pid, s.sandbox_paused_at, s.relay_protocol_version, "
     # Owning agent profile — NOT indexed (same DuckDB 1.5.3 FK+index bug).
-    "s.agent_id "
+    "s.agent_id, "
+    # Pin marker — NOT indexed, and unlike the columns above this one is
+    # actually UPDATEd post-INSERT, so indexing it would be the FK+index bug.
+    "s.pinned_at "
     "FROM chat_sessions s "
     "LEFT JOIN chat_messages m ON m.session_id = s.id"
 )
@@ -86,7 +90,7 @@ _SESSION_GROUP = (
     " GROUP BY s.id, s.user_email, s.surface, s.slack_channel_id, s.slack_thread_ts, "
     "s.title, s.started_at, s.archived, s.is_co_session, s.ephemeral, "
     "s.sandbox_id, s.runner_pid, s.sandbox_paused_at, s.relay_protocol_version, "
-    "s.agent_id"
+    "s.agent_id, s.pinned_at"
 )
 
 
@@ -185,7 +189,16 @@ class ChatRepository:
         where = " WHERE s.user_email = ?"
         if not include_archived:
             where += " AND s.archived = FALSE"
-        q = _SESSION_SELECT + where + _SESSION_GROUP + " ORDER BY MAX(m.created_at) DESC NULLS LAST, s.started_at DESC"
+        # Pinned conversations lead the list, most-recently-pinned first; the
+        # rest keep the plain recency order. `NULLS LAST` is spelled out rather
+        # than left to the engine default because the PG sibling's default for
+        # DESC is NULLS FIRST — which would sort every *unpinned* row to the top.
+        q = (
+            _SESSION_SELECT
+            + where
+            + _SESSION_GROUP
+            + " ORDER BY s.pinned_at DESC NULLS LAST, MAX(m.created_at) DESC NULLS LAST, s.started_at DESC"
+        )
         rows = self._conn.execute(q, [user_email]).fetchall()
         return [_row_to_session(r) for r in rows]
 
@@ -238,6 +251,28 @@ class ChatRepository:
             self._sessions_pg.set_title(chat_id, title)
             return
         self._conn.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", [title, chat_id])
+
+    def set_pinned(self, chat_id: str, pinned: bool) -> None:
+        """Pin (or unpin) a conversation so the history panel keeps it on top.
+
+        ``pinned=True`` stamps ``pinned_at`` with now; ``pinned=False`` clears it
+        back to NULL. Re-pinning an already-pinned session re-stamps it, which
+        moves it to the front of the Pinned group — the same "most recent action
+        wins" ordering the rest of the list uses.
+
+        Safe to call after ``chat_messages`` rows exist: ``pinned_at`` is not
+        part of any secondary index on ``chat_sessions``, so it dodges the
+        DuckDB 1.5.3 FK+index bug (same reasoning as ``set_title`` above — but
+        load-bearing here, since pinning happens on conversations that by
+        definition already have messages).
+        """
+        if self._sessions_pg is not None:
+            self._sessions_pg.set_pinned(chat_id, pinned)
+            return
+        self._conn.execute(
+            "UPDATE chat_sessions SET pinned_at = ? WHERE id = ?",
+            [datetime.now(timezone.utc) if pinned else None, chat_id],
+        )
 
     # --- sandbox pause/resume refs -----------------------------------------
     # The three columns (sandbox_id, runner_pid, sandbox_paused_at) are

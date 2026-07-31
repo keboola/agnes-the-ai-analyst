@@ -68,9 +68,9 @@
    ?source=library, so returning to the memory listing there would strand them
    on a page they never opened. Any other source keeps the listing. #}
 {% set _from_library = (source | default('direct')) == 'library' %}
-{% set _back = '/library' if _from_library
-               else ('/catalog?kind=memory' if (ui_layout | default('topnav')) == 'rail' else '/corporate-memory') %}
-{% set _back_label = 'Back to library' if _from_library else 'All memory domains' %}
+{% set _fallback = detail_back('memory_domain', '/corporate-memory', 'All memory domains') %}
+{% set _back = '/library' if _from_library else _fallback.href %}
+{% set _back_label = 'Back to library' if _from_library else _fallback.label %}
 {% set _meta = [{'icon': 'brain', 'text': (items|length|string) ~ ' item' ~ ('s' if items|length != 1 else '')}] %}
 {% if required_count %}{% set _ = _meta.append({'icon': 'check', 'text': (required_count|string) ~ ' required'}) %}{% endif %}
 

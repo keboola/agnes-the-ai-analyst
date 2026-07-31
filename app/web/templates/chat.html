@@ -272,6 +272,46 @@
          the wrapper would break its grid composer. #}
       {% if ui_layout == 'rail' %}
       <div class="cloud-chat-composer">
+      {% endif %}
+      {# "+" button + its upload menu, wrapped together in a position:relative
+         anchor so the popover attaches to the BUTTON (not the whole form).
+         Sits at the LEADING edge of the composer, left of the textarea — in
+         rail inside the .cloud-chat-composer pill, in topnav as the form
+         grid's first column.  aria-haspopup="menu" + aria-expanded are
+         toggled by chat.js to reflect the open state for screen readers. #}
+      <span class="cloud-chat-plus-wrap">
+        <button type="button" id="chat-plus-btn"
+                class="cloud-chat-plus-btn"
+                aria-label="Upload a file"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="chat-plus-menu">+</button>
+        <ul id="chat-plus-menu" class="cloud-chat-plus-menu" hidden
+            role="menu" aria-label="Upload options">
+          <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+              data-upload-action="data">
+            <span class="cloud-chat-plus-menu-item-text">
+              <span class="cloud-chat-plus-menu-item-label">Data file</span>
+              <span class="cloud-chat-plus-menu-item-hint">CSV, Parquet, Excel &mdash; land in your chat workspace</span>
+            </span>
+          </li>
+          <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+              data-upload-action="store">
+            <span class="cloud-chat-plus-menu-item-text">
+              <span class="cloud-chat-plus-menu-item-label">Skill / Agent / Plugin</span>
+              <span class="cloud-chat-plus-menu-item-hint">Lands in your Library &mdash; share it if you want to</span>
+            </span>
+          </li>
+          <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
+              data-upload-action="media">
+            <span class="cloud-chat-plus-menu-item-text">
+              <span class="cloud-chat-plus-menu-item-label">Image / Document</span>
+              <span class="cloud-chat-plus-menu-item-hint">PDF, image, text &mdash; attach to your workspace</span>
+            </span>
+          </li>
+        </ul>
+      </span>
+      {% if ui_layout == 'rail' %}
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes anything... (try: summarize revenue trends)" rows="1"></textarea>
       {% else %}
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes… (try / for skills)" rows="2"></textarea>
@@ -279,46 +319,6 @@
       <div class="cloud-chat-form-actions">
         <button type="button" id="cancel-btn"
                 class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
-        {# "+" button + its upload menu, wrapped together in a
-           position:relative anchor so the popover attaches to the BUTTON
-           (not the whole form).  Sits to the left of the send/stop buttons.
-           aria-haspopup="menu" + aria-expanded are toggled by chat.js to
-           reflect the open state for screen readers. #}
-        <span class="cloud-chat-plus-wrap">
-          <button type="button" id="chat-plus-btn"
-                  class="cloud-chat-plus-btn"
-                  aria-label="Upload a file"
-                  aria-haspopup="menu"
-                  aria-expanded="false"
-                  aria-controls="chat-plus-menu">+</button>
-          <ul id="chat-plus-menu" class="cloud-chat-plus-menu" hidden
-              role="menu" aria-label="Upload options">
-            <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
-                data-upload-action="data">
-              <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F4C8;</span>
-              <span class="cloud-chat-plus-menu-item-text">
-                <span class="cloud-chat-plus-menu-item-label">Data file</span>
-                <span class="cloud-chat-plus-menu-item-hint">CSV, Parquet, Excel &mdash; land in your chat workspace</span>
-              </span>
-            </li>
-            <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
-                data-upload-action="store">
-              <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F9E9;</span>
-              <span class="cloud-chat-plus-menu-item-text">
-                <span class="cloud-chat-plus-menu-item-label">Skill / Agent / Plugin</span>
-                <span class="cloud-chat-plus-menu-item-hint">Submit to the shared Store for everyone</span>
-              </span>
-            </li>
-            <li class="cloud-chat-plus-menu-item" role="menuitem" tabindex="0"
-                data-upload-action="media">
-              <span class="cloud-chat-plus-menu-item-icon" aria-hidden="true">&#x1F5BC;&#xFE0F;</span>
-              <span class="cloud-chat-plus-menu-item-text">
-                <span class="cloud-chat-plus-menu-item-label">Image / Document</span>
-                <span class="cloud-chat-plus-menu-item-hint">PDF, image, text &mdash; attach to your workspace</span>
-              </span>
-            </li>
-          </ul>
-        </span>
         {# Rail (issue #896): circular send button matching the /ask
            composer (paper pill + up-arrow glyph); aria-label carries the
            "Send" name the visible text used to provide. Topnav keeps the
@@ -395,12 +395,12 @@
          role="dialog" aria-modal="true" aria-labelledby="chat-upload-store-title">
       <div class="cloud-chat-upload-panel">
         <div class="cloud-chat-upload-panel-head">
-          <h2 id="chat-upload-store-title" class="cloud-chat-upload-panel-title">Submit to the Store</h2>
+          <h2 id="chat-upload-store-title" class="cloud-chat-upload-panel-title">Upload a Skill, Agent, or Plugin</h2>
           <button type="button" class="cloud-chat-upload-close" data-close-upload aria-label="Close">&#x2715;</button>
         </div>
         <p class="cloud-chat-upload-desc">
-          Upload a Skill, Agent, or Plugin ZIP (or <code>.skill</code> file) to the shared Store.
-          It goes through the same validation as <a href="/store/upload" target="_blank" rel="noopener" style="color:var(--ds-primary)">the full upload page</a>.
+          Drop a ZIP (or <code>.skill</code> file) and it lands in your Library, private to you.
+          It goes through the same automated validation as <a href="/store/new" target="_blank" rel="noopener" style="color:var(--ds-primary)">the full upload page</a>.
         </p>
         <div class="cloud-chat-store-tiles" id="chat-store-type-tiles">
           <label class="cloud-chat-store-tile is-active">
@@ -427,14 +427,40 @@
           <span id="chat-store-drop-filename" class="cloud-chat-drop-zone-filename" hidden></span>
           <input type="file" id="chat-store-file" hidden accept=".zip,.skill">
         </div>
+        {# Destinations. Saving to the Library is what the upload IS — it is
+           shown checked-and-locked rather than omitted so the dialog states
+           where the thing ends up. The other two are real choices: the Stack
+           makes the default agent able to USE it, and sharing is the only one
+           that leaves the uploader's own account. #}
+        <label class="cloud-chat-upload-table-row is-locked">
+          <input type="checkbox" id="chat-store-library" checked disabled>
+          <span class="cloud-chat-upload-table-row-text">
+            <span class="cloud-chat-upload-table-row-label">Save to my Library</span>
+            <span class="cloud-chat-upload-table-row-hint">Always. Private to you until you share it below.</span>
+          </span>
+        </label>
+        <label class="cloud-chat-upload-table-row">
+          <input type="checkbox" id="chat-store-stack" checked>
+          <span class="cloud-chat-upload-table-row-text">
+            <span class="cloud-chat-upload-table-row-label">Add to my stack</span>
+            <span class="cloud-chat-upload-table-row-hint">Lets the default agent use it in your next session.</span>
+          </span>
+        </label>
+        <label class="cloud-chat-upload-table-row">
+          <input type="checkbox" id="chat-store-share">
+          <span class="cloud-chat-upload-table-row-text">
+            <span class="cloud-chat-upload-table-row-label">Share with everyone in the organization</span>
+            <span class="cloud-chat-upload-table-row-hint">Submits it to the Store. Visible instance-wide once the automated review passes.</span>
+          </span>
+        </label>
         <p class="cloud-chat-upload-desc" style="font-size:var(--text-xs)">
-          Name, description, and other metadata will be pre-filled from the ZIP's frontmatter.
-          You can edit them on the <a href="/store/upload" target="_blank" rel="noopener" style="color:var(--ds-primary)">full upload page</a> after the quick submit.
+          Name, description, and other metadata are read from the bundle's frontmatter.
+          You can edit them from the item's page in your Library afterwards.
         </p>
         <div id="chat-store-error" class="cloud-chat-upload-error" hidden></div>
         <div class="cloud-chat-upload-actions">
           <button type="button" class="btn btn-secondary" data-close-upload>Cancel</button>
-          <button type="button" id="chat-store-submit" class="btn btn-primary" disabled>Submit to Store</button>
+          <button type="button" id="chat-store-submit" class="btn btn-primary" disabled>Save to Library</button>
         </div>
       </div>
     </div>
@@ -542,5 +568,9 @@
   <script id="chat-capabilities-data" type="application/json">
     {{ chat_capabilities | tojson }}
   </script>
+  {# window.chatRowMenu — shared "⋮" row menu (Pin/Unpin · Rename · Delete),
+     also loaded by _app_rail.html; the component self-guards against running
+     twice. Classic + defer so it is defined before chat.js builds any row. #}
+  <script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>
   <script type="module" src="{{ static_url('js/chat.js') }}"></script>
 {% endblock %}

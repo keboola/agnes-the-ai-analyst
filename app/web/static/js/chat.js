@@ -1,8 +1,11 @@
 // app/web/static/js/chat.js
 import {
   initChatOnboarding,
+  noteComposerSubmitted as onboardingNoteComposerSubmitted,
   onUserMessage as onboardingOnUserMessage,
   noteAnswered as onboardingNoteAnswered,
+  noteTurnStarted as onboardingNoteTurnStarted,
+  noteTurnEnded as onboardingNoteTurnEnded,
 } from "./chat_onboarding.js";
 import { initChatDashboard, updateDashboardSuggestions } from "./chat_dashboard.js";
 
@@ -320,16 +323,32 @@ async function loadSidebar() {
   const list = await api("/api/chat/sessions");
   _sessionsCache = list;
   const ul = $("chat-list");
+  // The row menu is body-appended, not a child of the row — so a panel left
+  // open across a re-render would hover over a row it no longer belongs to.
+  if (window.chatRowMenu) window.chatRowMenu.close();
   ul.innerHTML = "";
-  // Group by recency before rendering — see _groupSessionsByDate. The
-  // groups come back in display order with a label per non-empty
-  // bucket; we inject a small section header above each.
+  // Group by recency before rendering — see _groupSessionsByDate. The groups
+  // come back in display order; each one that carries a label gets a small
+  // section header above it. Not all of them do: the rail runs a two-bucket
+  // set whose recent group is deliberately unlabelled.
   for (const group of _groupSessionsByDate(list)) {
-    const header = document.createElement("li");
-    header.className = "cloud-chat-list-group-header";
-    header.setAttribute("role", "presentation");
-    header.textContent = group.label;
-    ul.appendChild(header);
+    // A null label is a deliberate no-header bucket (the rail's unlabelled
+    // recent group — see _groupSessionsByDate). The rail's "Older" is further
+    // dropped when nothing renders above it: it is a BOUNDARY label, and a
+    // boundary with nothing on the near side is just a word telling someone
+    // returning after a month that all their work is old. Only the rail marks
+    // a bucket `boundaryLabel`, so topnav's leading "Today" — and "Pinned" in
+    // either layout — always render.
+    if (group.label && !(group.boundaryLabel && ul.childElementCount === 0)) {
+      const header = document.createElement("li");
+      header.className = "cloud-chat-list-group-header";
+      // Marks the hoisted "Pinned" group so rail.css can style that header
+      // differently from the date ones.
+      if (group.pinnedGroup) header.classList.add("is-pinned-group");
+      header.setAttribute("role", "presentation");
+      header.textContent = group.label;
+      ul.appendChild(header);
+    }
     for (const s of group.items) ul.appendChild(_makeSidebarItem(s));
   }
   const empty = $("cloud-chat-empty-state");
@@ -352,10 +371,29 @@ async function loadSidebar() {
  *  (the `<li onclick>` pattern doesn't put the element in the focus
  *  ring) — a hard a11y bug that left screen-reader and
  *  keyboard-only users unable to open a session. */
+/** Pushpin glyph for the pin toggle. Duplicated in rail_history.js's copy of
+ *  the row renderer (same reason that whole function is duplicated: the rail
+ *  script must render identical markup on pages where chat.js isn't loaded).
+ *  Outline by default; the CSS fills it on the pressed state. */
+const PIN_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M12 17v5"/>' +
+  '<path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8' +
+  'a2 2 0 0 0-1.1-1.7l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>' +
+  "</svg>";
+
 function _makeSidebarItem(s) {
   const li = document.createElement("li");
   if (s.id === currentChatId) li.classList.add("is-active");
   li.dataset.id = s.id;
+  // `data-pinned` is the cross-renderer contract rail.css keys off (the pin
+  // button stays visible on a pinned row) — rail_history.js stamps it the same
+  // way on the pages where IT draws this list, so both agree.
+  if (s.pinned) {
+    li.dataset.pinned = "1";
+    li.classList.add("is-pinned");
+  }
   li.title = s.title || `Untitled · ${s.id}`;
   li.setAttribute("role", "button");
   li.tabIndex = 0;
@@ -399,24 +437,66 @@ function _makeSidebarItem(s) {
     li.appendChild(pausedBadge);
   }
 
-  const del = document.createElement("button");
-  del.type = "button";
-  del.className = "cloud-chat-list-del";
-  del.setAttribute("aria-label", `Delete ${s.title || "this conversation"}`);
-  del.innerHTML = "&times;";
-  del.onclick = async (e) => {
-    e.stopPropagation();
-    await deleteSession(s.id);
-  };
-  li.appendChild(del);
+  // Pinned-state indicator — not a control (the pin ACTION is in the row menu).
+  // Without it a pinned row is indistinguishable from any other once the
+  // "Pinned" group header has scrolled out of view. aria-hidden: the group
+  // header already names the state.
+  if (s.pinned) {
+    const flag = document.createElement("span");
+    flag.className = "cloud-chat-pin-flag";
+    flag.setAttribute("aria-hidden", "true");
+    flag.innerHTML = PIN_SVG;
+    li.appendChild(flag);
+  }
+
+  // One "⋮" for all three row actions (Pin/Unpin · Rename · Delete), from the
+  // shared component so this menu and rail_history.js's are the same menu.
+  // Guarded: if the component didn't load the row still opens its conversation.
+  if (window.chatRowMenu) {
+    li.appendChild(
+      window.chatRowMenu.trigger({
+        session: s,
+        onPin: (pinned) => setSessionPinned(s.id, pinned),
+        onRename: () => renameSessionPrompt(s),
+        onDelete: () => deleteSession(s.id),
+      }),
+    );
+  }
   return li;
 }
 
 /** Group a flat sessions list into [{label, items}, …] buckets
- *  ordered most-recent-first. Bucket boundaries are local-time
- *  midnight (Today / Yesterday), the current ISO week's Monday
- *  ("Earlier this week"), 30 days ago ("Earlier this month"), and
- *  anything older ("Older").
+ *  ordered most-recent-first.
+ *
+ *  TWO bucket sets, because the two layouts put this list in very
+ *  different amounts of space:
+ *
+ *  - topnav — a full-height column that exists to hold conversations
+ *    and nothing else. Five date buckets (Today / Yesterday / Earlier
+ *    this week / Earlier this month / Older) are worth their rows
+ *    there: you can see twenty titles at once, so the labels are what
+ *    let you scan for "the one from Tuesday".
+ *
+ *  - rail — roughly seven rows of free space between two fixed zones.
+ *    The same five labels put THREE headers among five titles, so more
+ *    than a third of the visible list was chrome, and each header cost
+ *    a full row (14px margin + line + 4px, ≈ the 34px row height). They
+ *    were also telling you what the ordering already tells you: the
+ *    list is strictly most-recent-first, so "Yesterday" over a single
+ *    row is a label, not a group. The rail therefore gets ONE date
+ *    boundary — an unlabelled recent bucket (rolling 7 days, no Monday
+ *    cliff that would drop Friday's work into the archive) and "Older"
+ *    for the rest. That single label marks the one thing the ordering
+ *    can't say: past here, search rather than scroll.
+ *
+ *  A label of `null` renders no header at all (see _renderSidebar).
+ *
+ *  User-pinned sessions are HOISTED out of their date bucket into a
+ *  leading "Pinned" group (never duplicated — a chat appears under
+ *  Pinned or under its date, not both), ordered most-recently-pinned
+ *  first by the server. Pinned keeps its label in BOTH layouts: it is
+ *  the only group that breaks the chronology, so it is the only one a
+ *  reader cannot infer from position.
  *
  *  Buckets with no items are dropped so the sidebar doesn't render
  *  an empty header. Sort within each bucket is by last_message_at
@@ -434,29 +514,107 @@ function _groupSessionsByDate(sessions) {
   startOfWeek.setDate(startOfWeek.getDate() - dow);
   const startOfMonth = new Date(startOfToday);
   startOfMonth.setDate(startOfMonth.getDate() - 30);
+  const startOfRecent = new Date(startOfToday);
+  startOfRecent.setDate(startOfRecent.getDate() - 6); // rolling 7 days, today included
 
-  const groups = [
-    { label: "Today",              items: [], threshold: startOfToday },
-    { label: "Yesterday",          items: [], threshold: startOfYesterday },
-    { label: "Earlier this week",  items: [], threshold: startOfWeek },
-    { label: "Earlier this month", items: [], threshold: startOfMonth },
-    { label: "Older",              items: [], threshold: new Date(0) },
-  ];
+  const isRail = document.documentElement.getAttribute("data-ui-layout") === "rail";
+  const groups = isRail
+    ? [
+        { label: null,    items: [], threshold: startOfRecent },
+        { label: "Older", items: [], threshold: new Date(0), boundaryLabel: true },
+      ]
+    : [
+        { label: "Today",              items: [], threshold: startOfToday },
+        { label: "Yesterday",          items: [], threshold: startOfYesterday },
+        { label: "Earlier this week",  items: [], threshold: startOfWeek },
+        { label: "Earlier this month", items: [], threshold: startOfMonth },
+        { label: "Older",              items: [], threshold: new Date(0) },
+      ];
+  const pinned = { label: "Pinned", items: [], pinnedGroup: true };
   for (const s of sessions) {
+    if (s.pinned) { pinned.items.push(s); continue; }
     const ts = s.last_message_at || s.started_at;
     const d = ts ? new Date(ts) : new Date(0);
     for (const g of groups) {
       if (d >= g.threshold) { g.items.push(s); break; }
     }
   }
-  return groups.filter(g => g.items.length > 0);
+  return [pinned, ...groups].filter(g => g.items.length > 0);
+}
+
+/** Pin or unpin a conversation (PUT /api/chat/sessions/{id}/pin), then
+ *  re-render the sidebar so the row moves into (or out of) the Pinned
+ *  group. Pin state lives on the server, so it follows the user across
+ *  devices and is shared with the rail's own renderer. */
+async function setSessionPinned(chatId, pinned) {
+  try {
+    await api(`/api/chat/sessions/${chatId}/pin`, {
+      method: "PUT",
+      body: JSON.stringify({ pinned }),
+    });
+  } catch (err) {
+    showToast(`Could not ${pinned ? "pin" : "unpin"}: ${err.message}`, "error");
+    return;
+  }
+  await loadSidebar();
+}
+
+/** Rename a conversation (PUT /api/chat/sessions/{id}/title) from the row
+ *  menu. Uses the app-wide promptModal rather than an inline edit so the
+ *  focus/Escape handling is the one every other dialog in the app uses.
+ *  Reuses applySessionRename for the DOM update — the same path the
+ *  server-pushed Haiku auto-title takes — so the sidebar row, the Cmd+K
+ *  cache and the thread header all move together. */
+async function renameSessionPrompt(s) {
+  if (typeof window.promptModal !== "function") return;
+  const next = await window.promptModal({
+    title: "Rename conversation",
+    message: "This is the name shown in the history panel.",
+    defaultValue: s.title || "",
+    placeholder: "Conversation name",
+    confirmText: "Rename",
+  });
+  // null = cancelled/Escape. Unchanged or blank-only is a no-op rather than a
+  // request the server would just 400.
+  if (next === null) return;
+  const title = next.trim();
+  if (!title || title === (s.title || "")) return;
+  try {
+    await api(`/api/chat/sessions/${s.id}/title`, {
+      method: "PUT",
+      body: JSON.stringify({ title }),
+    });
+  } catch (err) {
+    showToast(`Could not rename: ${err.message}`, "error");
+    return;
+  }
+  applySessionRename({ chat_id: s.id, title });
+  // Re-render too: the row may have to move (a rename doesn't change its
+  // bucket, but applySessionRename only patches the label in place and the
+  // cached session object behind the menu still holds the old title).
+  await loadSidebar();
 }
 
 /** Soft-archive a session via DELETE /api/chat/sessions/{id}. If the
  *  caller is currently viewing the session they're deleting, swap them
  *  out to the empty-state shell so the main panel doesn't keep
- *  showing a dead conversation. */
+ *  showing a dead conversation.
+ *
+ *  Confirms first: Delete sits in the row menu one keystroke ("D") away
+ *  from Pin and Rename, so an unconfirmed destructive action would be a
+ *  slip away. Matches rail_history.js's copy of the same flow. */
 async function deleteSession(chatId) {
+  if (typeof window.confirmModal === "function") {
+    const cached = _sessionsCache.find(s => s.id === chatId);
+    const name = (cached && cached.title) || "this conversation";
+    const ok = await window.confirmModal({
+      title: "Delete conversation?",
+      message: `"${name}" will be permanently deleted.`,
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+  }
   try {
     await api(`/api/chat/sessions/${chatId}`, { method: "DELETE" });
   } catch (err) {
@@ -689,18 +847,23 @@ function handleFrame(frame) {
     case "session_renamed":
       applySessionRename(frame);
       break;
+    // The three terminal frames all disarm the long-run notification nudge —
+    // a turn that has stopped is no longer worth offering to be pinged about.
     case "cancelled":
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
+      onboardingNoteTurnEnded();
       break;
     case "error":
       setStatus(`Error: ${frame.kind} (${frame.message || ""})`, "error");
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
+      onboardingNoteTurnEnded();
       break;
     case "done":
       $("cancel-btn").hidden = true;
+      onboardingNoteTurnEnded();
       break;
     case "session_participants":
       // §5.3 Co-presence: full re-render of the participant roster.
@@ -757,8 +920,11 @@ function applySessionRename(frame) {
     }
     li.title = title;
     li.setAttribute("aria-label", `Open ${title}`);
-    const del = li.querySelector(".cloud-chat-list-del");
-    if (del) del.setAttribute("aria-label", `Delete ${title}`);
+    // The row menu's trigger names the conversation in its accessible label.
+    // (Its menu ITEMS don't — they're generic verbs inside a panel already
+    // scoped to this row — so there is nothing else here to re-label.)
+    const kebab = li.querySelector(".chat-rowmenu-btn");
+    if (kebab) kebab.setAttribute("aria-label", `More actions for ${title}`);
   }
   // Main-panel header.
   if (id === currentChatId) setThreadTitle(title);
@@ -1933,6 +2099,11 @@ async function submitUserMessage(text) {
     ta.value = "";
     autosizeComposer();
   }
+  //    Part of that same synchronous feedback: if the newcomer coach-mark is
+  //    up over this composer, take it down now. It sits BEFORE the socket
+  //    wait deliberately — a runner that boots slowly, or fails outright,
+  //    must not leave the card hanging over the input they just used.
+  onboardingNoteComposerSubmitted();
 
   // 2. Make sure we have an open WS. For a brand-new chat this calls
   //    newChat() -> openSession(), and openSession wipes
@@ -1972,6 +2143,11 @@ async function submitUserMessage(text) {
 
   showThinkingPlaceholder();
   $("cancel-btn").hidden = false;
+  // Arm the long-run nudge here — AFTER the onboarding takeover check, so a
+  // turn that never reaches the model (gap resolver, "add X") doesn't start a
+  // clock, and BEFORE the runner-ready wait, because a slow runner is exactly
+  // the kind of wait worth being pinged about.
+  onboardingNoteTurnStarted();
 
   // 4. Wait for the server's ``ready`` frame before sending the first
   //    ``user_msg`` — see ``serverReadyPromise`` definition for why.
@@ -1986,11 +2162,16 @@ async function submitUserMessage(text) {
   } catch (err) {
     setStatus(`Runner did not become ready: ${err.message}`, "error");
     clearThinkingPlaceholder();
+    // These two bail out before any frame is ever received, so the terminal-frame
+    // handlers above never fire — disarm the nudge here or it would fire 45 s
+    // later against a turn that died at the door.
+    onboardingNoteTurnEnded();
     return;
   }
   if (!ws || ws.readyState !== 1) {
     setStatus("WebSocket dropped before runner became ready.", "error");
     clearThinkingPlaceholder();
+    onboardingNoteTurnEnded();
     return;
   }
   ws.send(JSON.stringify({ type: "user_msg", text }));
@@ -2894,8 +3075,25 @@ function renderCoPresence(host, participants) {
   const storeErrorEl    = $("chat-store-error");
   const storeSubmitBtn  = $("chat-store-submit");
   const storeTiles      = $("chat-store-type-tiles");
+  const storeStackCb    = $("chat-store-stack");
+  const storeShareCb    = $("chat-store-share");
 
   let _storeFile = null;
+
+  // The primary action names the destination the checkboxes actually chose:
+  // sharing is the only one that leaves the uploader's account, so it takes
+  // the label. Everything else is a Library save.
+  function storeSubmitLabel() {
+    return (storeShareCb && storeShareCb.checked) ? "Submit to Store" : "Save to Library";
+  }
+
+  if (storeShareCb) {
+    storeShareCb.addEventListener("change", () => {
+      if (storeSubmitBtn && !storeSubmitBtn.disabled) {
+        storeSubmitBtn.textContent = storeSubmitLabel();
+      }
+    });
+  }
 
   // Store type-tile interaction (radio + visual active class).
   if (storeTiles) {
@@ -2912,7 +3110,11 @@ function renderCoPresence(host, participants) {
     if (storeDropEl) clearDropFile(storeDropEl, storeFilenameEl);
     if (storeFileInput) storeFileInput.value = "";
     if (storeErrorEl) clearDialogError(storeErrorEl);
-    if (storeSubmitBtn) { storeSubmitBtn.disabled = true; storeSubmitBtn.textContent = "Submit to Store"; }
+    // Destination defaults: Library + Stack on, sharing off (Private is the
+    // default for anything uploaded through chat).
+    if (storeStackCb) storeStackCb.checked = true;
+    if (storeShareCb) storeShareCb.checked = false;
+    if (storeSubmitBtn) { storeSubmitBtn.disabled = true; storeSubmitBtn.textContent = storeSubmitLabel(); }
     // Reset type to skill.
     if (storeTiles) {
       storeTiles.querySelectorAll("label").forEach((l) => l.classList.remove("is-active"));
@@ -2936,14 +3138,19 @@ function renderCoPresence(host, participants) {
     clearDialogError(storeErrorEl);
     _storeFile = file;
     showDropFile(storeDropEl, storeFilenameEl, file);
-    if (storeSubmitBtn) storeSubmitBtn.disabled = false;
+    if (storeSubmitBtn) {
+      storeSubmitBtn.disabled = false;
+      storeSubmitBtn.textContent = storeSubmitLabel();
+    }
   });
 
   if (storeSubmitBtn) {
     storeSubmitBtn.addEventListener("click", async () => {
       if (!_storeFile) return;
       clearDialogError(storeErrorEl);
-      setSubmitBusy(storeSubmitBtn, true, "Submitting…");
+      const share = !!(storeShareCb && storeShareCb.checked);
+      const wantStack = !!(storeStackCb && storeStackCb.checked);
+      setSubmitBusy(storeSubmitBtn, true, share ? "Submitting…" : "Saving…");
 
       try {
         // Step 1: run /preview to extract frontmatter (name, description).
@@ -2979,15 +3186,19 @@ function renderCoPresence(host, participants) {
           return;
         }
 
-        // Step 2: submit to /api/store/entities.  Mirror the shape from store_upload.html.
+        // Step 2: create the entity. Mirror the shape from store_upload.html.
         const fd = new FormData();
         fd.append("file", _storeFile);
         fd.append("type", type);
         fd.append("name", name);
         fd.append("description", description);
         fd.append("title", title || name);
+        // The "Share with everyone" checkbox IS the access choice: unchecked
+        // keeps the entity private to its author's Library, checked submits it
+        // to the Store for review. Same field the /skills builder writes.
+        fd.append("access", share ? "everyone" : "private");
         // No photo, docs, category, video_url in the quick-submit path — the user
-        // can edit those on the full store entity page after submission.
+        // can edit those on the item's page in the Library afterwards.
 
         const res = await fetch("/api/store/entities", {
           method: "POST", body: fd, credentials: "same-origin",
@@ -2995,14 +3206,42 @@ function renderCoPresence(host, participants) {
 
         if (res.ok) {
           const entity = await res.json();
+
+          // Step 3: the Stack checkbox. A private entity is installable by its
+          // own author; a shared one is still under review, so the install is
+          // refused with 409 until it is approved — say so instead of
+          // pretending it landed.
+          let stackOk = false, stackPending = false;
+          if (wantStack) {
+            try {
+              const ir = await fetch(
+                "/api/store/entities/" + encodeURIComponent(entity.id) + "/install",
+                { method: "POST", credentials: "same-origin" },
+              );
+              stackOk = ir.ok;
+              stackPending = ir.status === 409;
+            } catch (_) { /* network — reported as "not added" below */ }
+          }
+
           closeOverlay(STORE_OVERLAY);
           resetStoreDialog();
-          showToast("Submitted to the Store! Opening…", "ok", { durationMs: 3000 });
+
+          let msg = share
+            ? "Submitted to the Store for review. It's in your Library now."
+            : "Saved to your Library, private to you.";
+          if (wantStack && stackOk) {
+            msg += " Added to your stack.";
+          } else if (wantStack && stackPending) {
+            msg += " Add it to your stack once the review approves it.";
+          } else if (wantStack) {
+            msg += " Could not add it to your stack — do it from the Library.";
+          }
+          showToast(msg, "ok", { durationMs: 6000 });
           setTimeout(() => {
-            window.open("/marketplace/flea/" + encodeURIComponent(entity.id), "_blank", "noopener");
+            window.open("/library?new=" + encodeURIComponent(entity.id), "_blank", "noopener");
           }, 600);
         } else {
-          let msg = "Submission failed.";
+          let msg = share ? "Submission failed." : "Save failed.";
           if (res.status === 409) {
             msg = "A Store entity with this name already exists under your account.";
           } else {
@@ -3011,10 +3250,10 @@ function renderCoPresence(host, participants) {
               const d = j && j.detail;
               if (d && typeof d === "object") {
                 msg = d.code === "validation_failed"
-                  ? "Bundle did not pass review. Fix the issues and try the full upload page."
+                  ? "Bundle did not pass review. Fix the issues and upload again."
                   : d.code === "security_blocked"
                   ? "Upload blocked: security review found risky patterns."
-                  : d.code || "Submission failed.";
+                  : d.code || msg;
               } else if (d) {
                 msg = String(d);
               }
@@ -3023,9 +3262,9 @@ function renderCoPresence(host, participants) {
           showDialogError(storeErrorEl, msg);
         }
       } catch (err) {
-        showDialogError(storeErrorEl, "Submission failed: " + String(err));
+        showDialogError(storeErrorEl, "Upload failed: " + String(err));
       } finally {
-        setSubmitBusy(storeSubmitBtn, false, "Submit to Store");
+        setSubmitBusy(storeSubmitBtn, false, storeSubmitLabel());
       }
     });
   }

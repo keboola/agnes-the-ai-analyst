@@ -346,7 +346,6 @@ def test_library_offers_grid_view_toggle(seeded_app):
     # ONE table for the whole list (the groups are its tbodies), and a parallel
     # grid container holding one grid per group — a grid cannot nest in a tbody,
     # so the two views are separate structures wearing the same group headers.
-    import re
 
     # One table + one grid per GROUP, both inside the group's own section, so the
     # view toggle and the grouping compose (there is no page-level pair).
@@ -365,14 +364,8 @@ def test_library_add_actions_live_behind_one_menu(seeded_app):
     for label in ("Build a skill", "Build a plugin", "Upload a file"):
         assert f"<span>{label}</span>" in text
     assert "Build an agent" not in text
-    # "Build a plugin" still routes to the unfinished /store/new upload wizard,
-    # so that row (and only that row) carries the WIP marker. Matched with the
-    # whitespace between the two spans collapsed, so re-indenting the menu
-    # cannot break the assertion.
-    compact = re.sub(r">\s+<", "><", text)
-    assert '<span>Build a plugin</span><span class="lib-wip">WIP</span>' in compact
-    for live in ("Build a skill", "Upload a file"):
-        assert f'<span>{live}</span><span class="lib-wip">' not in compact
+    # Every row goes to the one builder at /skills, so no row is marked WIP.
+    assert "lib-wip" not in text
     # The connect banner is a page-level note under the header, never inside
     # the header row itself.
     assert 'class="cbn cbn--bar"' in text
@@ -491,22 +484,64 @@ def test_dock_card_hugs_its_controls_in_every_state(seeded_app):
     assert "animating = true" in css or "libDockCard.animate(" in css
 
 
-def test_library_head_closes_with_two_quiet_notices(seeded_app):
-    """Both page-level caveats ride the shared `.pnote` component, in order:
-    connect banner, then "content is still being prepared", then Data apps."""
+def test_library_title_carries_no_setup_caveat(seeded_app):
+    """The whole-Library "content being prepared" caveat is gone: no `.pnote`
+    panel under the lede AND no status pill on the title. The page opens on its
+    own name and inventory — a standing condition that asks nothing of the reader
+    does not earn a permanent marker next to the h1."""
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
-    assert text.count('class="pnote"') == 2
+    # Neither the panel nor the pill that replaced it — markup, CSS and JS.
+    assert 'class="pnote"' not in text
+    assert "lib-status" not in text
+    # None of the caveat's copy survives anywhere on the page.
+    assert "Content being prepared" not in text
+    assert "Library content is still being prepared" not in text
+    assert "while we finish adding content" not in text
+    # The title stands alone, directly ahead of the lede.
+    assert "<h1>Library</h1>" in text
+    assert text.index("<h1>Library</h1>") < text.index('class="lede"')
+
+
+def test_data_apps_note_is_an_info_banner_below_the_list(seeded_app):
+    """The Data apps caveat is an INFO BANNER under the inventory — not a `.pnote`
+    in the page head (which would open the page on the one kind you cannot have),
+    and no longer a band inside `.lib-list` (which dressed a roadmap note in the
+    chrome of the inventory, so it read as a sixth openable section)."""
+    _create_collection(seeded_app, "Soon Banner Anchor", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert 'class="lib-soon__badge">Coming soon<' in text
+    assert 'aria-label="Data apps — coming soon"' in text
+    # The old notice's copy in full — including "Nothing to do yet", which the
+    # badge alone cannot say.
+    assert "Hosted apps that run next to your data will live here too." in text
+    assert "This is still in the works" in text
+    assert "link an existing one" in text
+    assert "Nothing to do yet." in text
+    # Below the list, OUTSIDE its frame: `#lib-noresults` is the first thing after
+    # the list's closing tag, so landing after it is what puts the banner outside.
     assert (
-        text.index('class="cbn cbn--bar"')
-        < text.index("Library content is still being prepared")
-        < text.index(">Data apps")
+        text.index('class="lede"')
+        < text.index('class="lib-list"')
+        # every group section opens before it (the class attribute, so the page's
+        # own `.lib-group` CSS and JS further down don't count)
+        < text.rindex('class="fbar-group lib-group')
+        < text.index('id="lib-noresults"')
+        < text.index('class="lib-soon"')
     )
-    assert "Some items and information may be incomplete" in text
-    # Only Data apps carries a marker, and it is the flat `.pnote-badge` label,
-    # not the bordered `.lib-wip` pill the "+ Add" menu uses — inside a panel this
-    # quiet, a filled chip would outshout the sentence it qualifies.
-    assert text.count('class="pnote-badge"') == 1
-    # The loud page-local banner these replaced is gone, markup and CSS both.
+    # One banner, not one per page state: the stocked and empty branches share it.
+    assert text.count('class="lib-soon"') == 1
+    # Not inventory: no section key, no count, no collapse toggle.
+    banner = text[text.index('class="lib-soon"') :]
+    banner = banner[: banner.index("</div>")]
+    for group_machinery in ("data-lib-sec", "lib-group", "data-sec-toggle", "data-sec-count"):
+        assert group_machinery not in banner
+    # It states its genre with the info vocabulary + a leading rule no band or
+    # card on this page wears, and drops the band chrome it used to borrow (the
+    # glyph-column inset that lined it up with the five real sections).
+    assert "background: var(--ds-info-bg);" in text
+    assert "border-left: 3px solid var(--ds-info-line);" in text
+    assert "padding: 11px 16px 11px 42px" not in text
+    # The loud page-local banner it replaced is gone, markup and CSS both.
     assert "lib-apps" not in text
 
 

@@ -24,7 +24,11 @@ def _js() -> str:
 def test_complete_state_renders_a_restart_button():
     js = _js()
     assert 'complete ? "data-journey-restart" : "data-journey-finish-all"' in js
-    assert '${complete ? "Start over" : "Finish onboarding"}' in js
+    # The incomplete-state label reads "Skip onboarding" now: the action always
+    # ticked all five flags without doing any of them, and "Finish" on the
+    # panel's only button-shaped control invited exactly that click. The
+    # complete-state half — the reason this test exists — is unchanged.
+    assert '${complete ? "Start over" : "Skip onboarding"}' in js
 
 
 def test_restart_button_resets_all_five_flags_to_false():

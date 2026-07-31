@@ -105,10 +105,12 @@ class TestMemoryDomainDetail:
         # Topnav (default) layout → standalone memory page is the browse home.
         assert 'href="/corporate-memory"' in body
 
-    def test_back_link_targets_unified_catalog_under_rail(self, seeded_app, monkeypatch):
+    def test_back_link_targets_the_library_under_rail(self, seeded_app, monkeypatch):
         # Under the rail IA (#896) /corporate-memory is orphaned (nothing in
-        # the rail nav links to it); the back-link must return to the unified
-        # Catalog's Memory tab instead so the user stays in the new IA.
+        # the rail nav links to it) — and so is the unified Catalog this used
+        # to fall back to, since Marketplace was retired from the rail. The
+        # back link must return to the Library's Memory band, the rail's one
+        # browse surface.
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         dom_id = _make_domain("ops-rail", "Ops Rail")
         _make_item("ops_rail_item_1", "Ops rail runbook", dom_id)
@@ -117,7 +119,8 @@ class TestMemoryDomainDetail:
         resp = c.get("/memory/d/ops-rail", headers=_auth(token))
         assert resp.status_code == 200
         body = resp.text
-        assert 'href="/catalog?kind=memory"' in body
+        assert 'class="detail-back" href="/library?section=memory_domain"' in body
+        assert "/catalog?kind=memory" not in body
         assert 'href="/corporate-memory"' not in body
 
     def test_back_link_returns_to_the_library_when_opened_from_it(self, seeded_app):

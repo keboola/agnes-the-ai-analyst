@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from app.auth.access import can_access
 from app.auth.dependencies import get_current_user
 from app.resource_types import ResourceType
+from app.services.journey import mark_journey
 from app.services.stack_resolver import StackResolver
 
 logger = logging.getLogger(__name__)
@@ -204,6 +205,9 @@ async def subscribe(
             "resource_id": payload.resource_id,
         },
     )
+    # The onboarding step is "Put knowledge in your stack" — this is that,
+    # whichever surface asked for it (Library page, chat, CLI, MCP).
+    mark_journey(user.get("id"), stack_setup_done=True)
     return {"subscribed": True}
 
 
@@ -297,6 +301,9 @@ async def add_artefact_to_stack(
 
     user_stack_subscriptions_repo().subscribe(uid, ResourceType.COLLECTION.value, corpus_id)
     _emit_event(event_type="stack.artefact_add", user=user, props={"resource_id": corpus_id})
+    # Same onboarding milestone as /subscribe above: a file collection joining
+    # the stack is "Put knowledge in your stack" just as much as a package is.
+    mark_journey(uid, stack_setup_done=True)
 
     # Local import — the card normalizer lives in app/web/router.py (the web
     # page that owns its presentation contract); deferred to request time to

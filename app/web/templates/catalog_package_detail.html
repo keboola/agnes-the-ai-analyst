@@ -95,12 +95,16 @@
 {% endif %}
 {% endset %}
 
+{# Rail returns to the Library band this package lives in; topnav keeps the
+   classic Catalog listing it browses from. #}
+{% set _back = detail_back('data_package', '/catalog', 'All data packages') %}
+
 {% call detail.hero(
      kind='data', name=pkg.name, color=pkg.color,
      cover_image_url=pkg.cover_image_url, icon=pkg.icon,
      badges=badges, owner_name=pkg.owner_name, owner_team=pkg.owner_team,
      description=pkg.description, tags=pkg.tags, meta=_meta,
-     back_href='/catalog', back_label='All data packages', panel=pkg_panel|trim) %}
+     back_href=_back.href, back_label=_back.label, panel=pkg_panel|trim) %}
   {# Auto-membership: this package is already in the caller's stack (any
      grant, required or available); the toggle below only controls whether
      a local copy is downloaded (`agnes pull`) — ``in_stack`` here carries

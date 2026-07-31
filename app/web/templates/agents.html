@@ -757,4 +757,23 @@
     .finally(function () { if (!routeFromQuery()) renderList(); });
 })();
 </script>
+{# First-visit coach-mark (TOURS.agents) — one card, explaining what an agent
+   here IS before the reader is asked to build one.
+
+   It belongs on arrival rather than in the welcome walkthrough: as a step of
+   that tour it dragged every newcomer off the Library onto a page they hadn't
+   asked for, to explain a surface most people don't need on day one. Here the
+   reader chose to come, and the thing being explained is what they are looking
+   at.
+
+   `autoLaunchTour` owns the once-only gate (localStorage) and refuses to stack
+   over a tour already running or mid-hop, so this is safe to fire on every
+   /agents load. The card's anchor is the client-rendered "+ Build an agent"
+   control, which is why its step declares `awaitAnchor` — the fetch above has
+   not resolved when this runs. #}
+<script type="module">
+  import("{{ static_url('js/tour.js') }}")
+    .then((mod) => mod.autoLaunchTour("agents"))
+    .catch(() => { /* the coach-mark is additive — never block the page */ });
+</script>
 {% endblock %}

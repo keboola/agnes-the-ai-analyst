@@ -1,0 +1,166 @@
+/* =====================================================================
+ * file_preview.css — the Library's file-preview modal (see
+ * static/js/file_preview.js). Shared by the collection detail page (a row
+ * click opens it) and the file detail page (the hero's Preview action), so
+ * one file looks the same wherever you glance at it.
+ *
+ * Structural only — every colour is a --ds-* token, so the modal follows
+ * the active palette theme and skin like any other surface.
+ * ===================================================================== */
+
+.fp-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.55);
+}
+.fp-backdrop[hidden] {
+  display: none !important;
+}
+
+.fp-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 940px;
+  max-height: 88vh;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: 16px;
+  box-shadow: var(--ds-shadow-lg);
+  overflow: hidden;
+}
+
+.fp-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--ds-border);
+}
+.fp-head__glyph {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--ds-kind-library-soft);
+  color: var(--ds-kind-library);
+}
+.fp-head__glyph svg {
+  width: 18px;
+  height: 18px;
+}
+.fp-head__body {
+  flex: 1;
+  min-width: 0;
+}
+.fp-head__name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fp-head__meta {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--ds-text-muted);
+}
+.fp-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--ds-border);
+  border-radius: 8px;
+  background: var(--ds-surface);
+  color: var(--ds-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.fp-close:hover {
+  color: var(--ds-text-primary);
+  border-color: var(--ds-text-muted);
+}
+.fp-close:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+
+.fp-body {
+  flex: 1;
+  min-height: 220px;
+  padding: 18px;
+  overflow: auto;
+  background: var(--ds-surface-dim);
+}
+
+/* Image / PDF fill the body; text and the empty states are centred prose. */
+.fp-img {
+  display: block;
+  max-width: 100%;
+  max-height: 68vh;
+  margin: 0 auto;
+  border-radius: 10px;
+  background: var(--ds-surface);
+}
+.fp-frame {
+  display: block;
+  width: 100%;
+  height: 68vh;
+  border: 0;
+  border-radius: 10px;
+  background: var(--ds-surface);
+}
+.fp-text {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border-light);
+  border-radius: 10px;
+  font-family: var(--ds-font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ds-text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.fp-msg {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 180px;
+  text-align: center;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ds-text-secondary);
+}
+
+.fp-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--ds-border);
+}
+.fp-note {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ds-text-muted);
+}
+.fp-foot .btn {
+  flex: none;
+}

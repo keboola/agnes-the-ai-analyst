@@ -655,20 +655,23 @@
      data-visibility="{{ entity.visibility_status if entity else 'approved' }}">
   {# Back link — pinned to the very top, above the review banner + owner
      actions strip (previously it rendered after them, landing mid-page).
-     Rail browses via the unified Catalog; topnav keeps the classic per-tab
-     marketplace link; ?from=skills returns to the Skill builder. #}
+     Rail returns to the Library's Plugins band (its only browse surface —
+     Marketplace/Catalog is not a rail destination); topnav keeps the
+     classic per-tab marketplace link; ?from=skills returns to the Skill
+     builder, and admin moderation back to /admin/store. See
+     router._detail_back. #}
   {% if from_source == 'admin-moderation' %}
     {% set _back = '/admin/store' %}
     {% set _back_label = 'Moderation & Trust' %}
   {% elif from_source == 'skills' %}
     {% set _back = '/skills' %}
     {% set _back_label = 'Skill builder' %}
-  {% elif (ui_layout | default('topnav')) == 'rail' %}
-    {% set _back = '/catalog?kind=plugins' %}
-    {% set _back_label = 'All plugins' %}
   {% else %}
-    {% set _back = '/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea') %}
-    {% set _back_label = 'Curated Marketplace' if source == 'curated' else 'Flea Market' %}
+    {% set _b = detail_back('plugin',
+                            '/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea'),
+                            'Curated Marketplace' if source == 'curated' else 'Flea Market') %}
+    {% set _back = _b.href %}
+    {% set _back_label = _b.label %}
   {% endif %}
   <a class="detail-back" href="{{ _back }}">{{ detail.ico('back') }}{{ _back_label }}</a>
 

@@ -1637,6 +1637,16 @@ KNOWN_UNTESTED = {
     "GET /api/collections/{collection_id}/files",
     "DELETE /api/collections/{collection_id}/files/{file_id}",
     "POST /api/collections/{collection_id}/files/{file_id}/reingest",
+    # Library file preview — both routes need a real (collection_id, file_id)
+    # pair AND a blob on disk, so neither belongs in this parameter-free sweep.
+    # They add no repo method or migration (reads go through corpus_files_repo /
+    # corpus_chunks_repo, both already parity-covered). Behaviour covered in
+    # tests/test_api_collections.py::TestFilePreview — each `kind`, truncation,
+    # the .html inline refusal (415), wrong-collection/unknown-file 404,
+    # no-access 404, per-file sharing, SessionPrincipal intersection — and the
+    # web wiring in tests/test_web_library_files_folders.py.
+    "GET /api/collections/{collection_id}/files/{file_id}/preview",
+    "GET /api/collections/{collection_id}/files/{file_id}/raw",
     # Chat composer "+" upload (#966) — multipart file upload, chat-access
     # gated. Behaviour covered in tests/test_chat_uploads.py (happy path,
     # register-as-table + end-to-end query, oversize/415/path-traversal/unauth
@@ -1673,6 +1683,10 @@ KNOWN_UNTESTED = {
     "GET /api/admin/store/lint-findings",
     "POST /api/admin/store/lint-audit",
     "POST /api/admin/store/lint-dismiss",
+    # Moderation & Trust hub — an admin card index over the Store review
+    # queue. Behaviour covered by tests/test_admin_moderation_hub.py +
+    # tests/test_web_nav_moderation_hub.py.
+    "GET /admin/store",
     # Skill contribution — admin web-form flow + REST/MCP triple-surface
     # (paste a SKILL.md, publish it to the contributed marketplace). Core logic
     # covered by tests/test_skill_contribution.py and
@@ -1915,6 +1929,9 @@ KNOWN_UNTESTED = {
     "GET /documentation/api",
     "GET /first-time-setup",
     "GET /home",
+    # Static explainer page. Covered by tests/test_web_how_it_works.py +
+    # tests/test_web_nav_cowork.py.
+    "GET /how-it-works",
     "GET /install",
     "GET /login",
     "GET /login/email",
@@ -2181,6 +2198,10 @@ KNOWN_UNTESTED = {
     "GET /api/chat/skills",  # tested in tests/test_chat_skills_endpoint.py
     "GET /api/chat/journey",  # tested in tests/test_chat_api.py
     "PUT /api/chat/journey",  # tested in tests/test_chat_api.py
+    # History row menu — pin/unpin and rename. Both are self-scoped writes on
+    # the caller's own session; tested in tests/test_chat_pin_conversations.py.
+    "PUT /api/chat/sessions/{chat_id}/pin",
+    "PUT /api/chat/sessions/{chat_id}/title",
     "POST /api/chat/sessions/{chat_id}/ticket",
     "POST /api/chat/{session_id}/fork",
     "POST /api/chat/{session_id}/invite",

@@ -315,6 +315,47 @@ def _data_apps_nav_enabled() -> bool:
 templates.env.globals["data_apps_enabled"] = _data_apps_nav_enabled
 
 
+#: Where a detail page's back link goes in the RAIL layout, per Library
+#: section key. The rail retired Marketplace (/catalog) as a destination —
+#: it is not in the nav and a caller never arrives from it — so a detail
+#: page that sent them "back" there dropped them on a surface they had
+#: never seen. /library is the rail's one browse surface and lists every
+#: one of these kinds, so that is where back goes; `?section=` opens the
+#: matching band (library.html folds them by default). Keys are the
+#: `type_key` vocabulary /library groups by (`_SECTION_LABELS`).
+_RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
+    "data_package": ("/library?section=data_package", "All data packages"),
+    "memory_domain": ("/library?section=memory_domain", "All memory"),
+    "recipe": ("/library?section=recipe", "All recipes"),
+    "plugin": ("/library?section=plugin", "All plugins"),
+    "skill": ("/library?section=skill", "All skills"),
+    "agent": ("/library?section=agent", "All agents"),
+    "files": ("/library?section=files", "Library"),
+}
+
+
+def _detail_back(kind: str, href: str, label: str) -> dict[str, str]:
+    """Resolve a detail page's back link for the current chrome.
+
+    Topnav instances keep exactly what the caller passes (`href`/`label`) —
+    their nav still carries Marketplace and the classic Catalog, so those
+    remain honest destinations there. Rail instances get the /library
+    section instead (see `_RAIL_DETAIL_BACK`). Registered as a Jinja global
+    rather than threaded through each route's context so every detail
+    template resolves it the same way, including the ones rendered from a
+    minimal context.
+    """
+    if get_ui_layout() != "rail":
+        return {"href": href, "label": label}
+    rail = _RAIL_DETAIL_BACK.get(kind)
+    if not rail:
+        return {"href": "/library", "label": "Library"}
+    return {"href": rail[0], "label": rail[1]}
+
+
+templates.env.globals["detail_back"] = _detail_back
+
+
 class _FlexDict(dict):
     """Dict that returns empty _FlexDict for missing keys and attributes.
     Prevents Jinja2 UndefinedError when templates access missing nested values."""
@@ -1075,16 +1116,40 @@ async def home_page(
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
-@router.get("/me/ai-connector", response_class=HTMLResponse)
-async def me_cowork_page(
+@router.get("/how-it-works", response_class=HTMLResponse)
+async def how_it_works_page(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """User-facing AI Connector page: OAuth connector URL, plugin packages, and available tools."""
+    """The single orientation page: what {brand} is, what it knows for you,
+    where you can use it, how to connect each surface, and where your data
+    goes — one scroll with a sticky table of contents.
+
+    Consolidates what used to be split across /home's "Four places, one
+    workspace" + first-session narrative and the standalone AI Connector
+    page. The connector content is not summarized here, it LIVES here
+    (``#connect`` / ``#cli`` / ``#reference``), so there is exactly one
+    source of truth for "how do I connect" — the two pages had already
+    drifted ("four places" vs. six tool tabs). ``#connect`` is one section
+    with two large tabs, the MCP connector and the CLI; ``#cli`` is the
+    anchor of the second tab, which the page's script opens on arrival.
+    ``/me/ai-connector`` and its legacy aliases redirect to ``#connect``.
+
+    Any authenticated user; nothing on the page is admin-gated.
+    """
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
+    from app.services.journey import mark_journey
     from src.repositories import mcp_sources_repo
+
+    # "Use Agnes outside this tab" is earned by ARRIVING here — this page is where
+    # every connector lives, and it is the checklist row's own destination. The
+    # row used to tick itself the instant it was clicked, before the reader had
+    # seen anything; the tour's "Connect my AI tools" button already marks it the
+    # same way (tour.js::markUseAnywhereDone). Best-effort and swallowed (see
+    # app/services/journey.py) — a bookkeeping write must never fail a render.
+    mark_journey(user.get("id"), use_anywhere=True)
 
     # Backend-aware reads (mcp_sources / tool grants live in Postgres on a PG
     # instance) — a raw DuckDB conn here showed no MCP tools on Cowork.
@@ -1126,16 +1191,24 @@ async def me_cowork_page(
         skills=skills,
         server_url=server_url,
     )
-    return templates.TemplateResponse(request, "me_cowork.html", ctx)
+    return templates.TemplateResponse(request, "how_it_works.html", ctx)
 
 
+@router.get("/me/ai-connector", response_class=HTMLResponse)
 @router.get("/me/mcp", response_class=HTMLResponse)
 @router.get("/me/cowork", response_class=HTMLResponse)
 async def me_mcp_redirect(request: Request):
-    """Legacy redirects — /me/mcp and /me/cowork → /me/ai-connector."""
+    """Legacy redirects — the standalone AI Connector page and its two older
+    aliases now land on the consolidated page's connect section.
+
+    302, not 301: a permanent redirect is cached by the browser forever, so
+    it would be very hard to walk back if the consolidation is revisited.
+    Promote to 301 after a release of confidence (the same ladder /me/mcp
+    and /me/cowork went through before absorbing into this handler).
+    """
     from fastapi.responses import RedirectResponse
 
-    return RedirectResponse("/me/ai-connector", status_code=301)
+    return RedirectResponse("/how-it-works#connect", status_code=302)
 
 
 @router.get("/mcp-connect", response_class=HTMLResponse)
@@ -2231,10 +2304,19 @@ async def library_page(
     """
     from app.resource_types import ResourceType
     from app.services.artefact_access import build_artefact_access_context, collection_visibility
+    from app.services.journey import mark_journey
     from src.db import SYSTEM_EVERYONE_GROUP
 
     uid = user.get("id") or ""
     ct = ResourceType.COLLECTION.value
+
+    # The onboarding step is literally "Explore your Library" — so looking at it
+    # completes it. It used to need a click on the checklist row instead, which
+    # made the row a box to tick rather than a thing to do: someone who had spent
+    # ten minutes in here still had it listed as outstanding. Best-effort and
+    # swallowed (see app/services/journey.py) — a bookkeeping write must never
+    # fail a page render.
+    mark_journey(uid, explored_stack=True)
 
     access_ctx = build_artefact_access_context(uid)
     granted_to_me = access_ctx.granted_to_me
@@ -2962,6 +3044,14 @@ async def library_page(
         library_tags=library_tags,
         # Highlight target after "Save to Library" (see the builders).
         library_new_id=request.query_params.get("new") or "",
+        # Band to open on arrival — a detail page's back link returns here as
+        # /library?section=<type_key> (router._detail_back) and the bands are
+        # folded by default, so without this the caller lands on a closed
+        # list. Validated against the real section keys so the value reaching
+        # the page's JS is always one of ours.
+        library_open_section=(
+            request.query_params.get("section") if request.query_params.get("section") in _SECTION_LABELS else ""
+        ),
         # Opt-in flag: when true, show amber chip for unverified Store items.
         show_unverified_trust=feature_enabled(
             "library",
@@ -3084,16 +3174,23 @@ async def skills_page(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Skills — the caller's authored skills, plus a builder to create more.
+    """Builder — one authoring surface for skills, plugins and shareable agents.
 
-    The index counterpart to the Skill Builder: a self-contained surface with
-    two in-page views (mirrors ``/agents``). The LIST view fetches the caller's
-    own skills client-side from ``GET /api/store/entities?type=skill&owner=…``
-    (which returns their whole catalogue, including entries still in review),
-    and the BUILDER view is a section-based authoring form that publishes to
-    ``POST /api/store/entities/from-markdown`` — the same endpoint the studio
-    Skill Builder uses, so quota, guardrails, and the store review pipeline all
-    apply identically. Category options come from the shared store taxonomy."""
+    Formerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,
+    then a type-adapted BUILDER that keeps one shell (identity, access,
+    numbered sections, live preview, advisory check) and swaps only the
+    content section and its validation.
+
+    Markdown types (skill, agent) publish to
+    ``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles
+    and publish to the multipart ``POST /api/store/entities``. Both honour the
+    builder's private/everyone ``access`` choice, and both run the same quota,
+    guardrail and review pipeline. Category options come from the shared store
+    taxonomy.
+
+    The route keeps its ``/skills`` path: it is the target of the Marketplace
+    "submit" CTA, the ``?from=skills`` detail back-link and the tour anchors.
+    ``?type=skill|plugin|agent`` deep-links past the picker."""
     from src.store_categories import STORE_CATEGORIES
 
     from app.instance_config import get_guardrails_enabled, get_guardrails_llm_provider_ready

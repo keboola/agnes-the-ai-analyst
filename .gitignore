@@ -23,6 +23,8 @@ user/
 .env*.local
 # Local demo env — holds real secrets (JWT/session/vault keys); never commit
 .env.demo
+# ...including hand-made backups of it (.env.demo.bak-*, .env.demo.orig, …)
+.env.demo.*
 
 # Operating System
 .DS_Store
