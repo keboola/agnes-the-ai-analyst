@@ -279,8 +279,8 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
             '       export NODE_EXTRA_CA_CERTS="$HOME/.agnes/ca.pem"',
             '       export PATH="$HOME/.local/bin:$PATH"',
             "",
-            "   IMPORTANT for the Bash tool: env vars do NOT persist between separate",
-            "   Bash invocations. Re-export the four lines above (SSL_CERT_FILE,",
+            "   Note for the Bash tool: environment variables set in one call don't",
+            "   carry over to the next. Re-export the four lines above (SSL_CERT_FILE,",
             "   REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO, NODE_EXTRA_CA_CERTS) plus PATH at",
             "   the top of every later step's bash block that talks to Agnes.",
             "",
@@ -312,9 +312,10 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
             "   so direct `uv tool install <https-url>` against the wheel endpoint fails",
             "   (even with --native-tls). Workaround: curl-then-local-install.",
             "",
-            "   If uv is missing first:",
-            "     curl -LsSf https://astral.sh/uv/install.sh | sh",
-            '     export PATH="$HOME/.local/bin:$PATH"',
+            "   If uv is missing first, install it from the official instructions at",
+            "   https://docs.astral.sh/uv/ — on Windows `winget install --id=astral-sh.uv`,",
+            "   on macOS `brew install uv`. If you use the shell installer instead,",
+            "   download it to a file and show it to me before running it.",
             "",
             "   WHEEL=/tmp/{wheel_filename}",
             f'   curl -fsSL --cacert ~/.agnes/ca.pem -o "$WHEEL" {server_url_placeholder}/cli/wheel/{{wheel_filename}}',
@@ -334,8 +335,10 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
         "1) Install the CLI:",
         f"   uv tool install --force {server_url_placeholder}/cli/wheel/{{wheel_filename}}",
         "",
-        "   If uv is not installed yet:",
-        "     curl -LsSf https://astral.sh/uv/install.sh | sh",
+        "   If uv is not installed yet, install it from the official instructions at",
+        "   https://docs.astral.sh/uv/ — on Windows `winget install --id=astral-sh.uv`,",
+        "   on macOS `brew install uv`. If you use the shell installer instead,",
+        "   download it to a file and show it to me before running it.",
         "",
         "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
         '     export PATH="$HOME/.local/bin:$PATH"',
@@ -360,22 +363,21 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
 
     The new tree:
 
-    - **REFUSE** if cwd is `$HOME` exactly, or a system path (`/`,
+    - **Unsafe targets** if cwd is `$HOME` exactly, or a system path (`/`,
       `/tmp`, `/etc`, `/usr`, `/var`, `/opt`, `/root`, `/bin`, `/sbin`,
       `/boot`, `/sys`, `/proc`). Installing into any of these dumps
       `.claude/`, `.agnes/`, `AGNES_WORKSPACE.md`, marketplace clones,
       etc. into a directory that already has unrelated meaning. The old
       flow's `'install here'` keyword silently accepted `$HOME` — this
-      one refuses.
-    - **PROCEED SILENTLY** if cwd is empty, or contains only the
+      one explains why and stops instead.
+    - **Prepared workspace** if cwd is empty, or contains only the
       whitelisted artefacts a prepared workspace might already hold
       (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`, `README.md`).
       The user clearly created+cd'd into a workspace folder before
-      pasting; no need to interrupt them.
-    - **CONFIRM ONCE** for anything else (cwd has unrelated content).
-      Neutral framing: *"I'll install {brand} in <pwd>. Reply 'ok' to
-      continue here, 'default' to install in ~/Desktop/{workspace_dir}
-      instead, or 'abort'."* The 'default' branch runs the `mkdir + cd`
+      pasting; no need to interrupt them, beyond naming the directory.
+    - **Anything else** (cwd has unrelated content): ask once, in the
+      assistant's own words, whether to install here, at the default
+      path, or not at all. The 'default' branch runs the `mkdir + cd`
       itself so the user doesn't have to re-paste. Anything else stops
       cleanly without touching the filesystem. Users who want a
       different custom path /exit, `cd` to their preferred location,
@@ -411,31 +413,32 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         '   The /home page\'s "Step 2 — pick a folder" recommended',
         "       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
         "   but the install works in any workspace folder the user prepared.",
-        "   Decide where to install using the three branches below — do NOT",
-        "   silently `mkdir`/`cd` anywhere, and do NOT treat the user's current",
-        "   cwd as a mistake unless it lands in the REFUSE list.",
+        "   Decide where to install using the three branches below. Do not",
+        "   create or change directories on your own — say what you intend to",
+        "   do and let the user confirm. A cwd outside the unsafe list below is",
+        "   not a mistake.",
         "",
         "   Run:",
         "       pwd",
         "",
-        "   2a) REFUSE — these paths are never safe to install into. STOP and",
-        "       tell the user verbatim:",
+        "   2a) Unsafe targets — home and system directories. Explain to the",
+        "       user, in your own words, why you are not installing there:",
         "",
-        "           \"I won't install {instance_brand} into <pwd> — it's a home or",
-        "           system directory and the install would scatter .claude/,",
-        "           .agnes/, AGNES_WORKSPACE.md and marketplace clones across",
-        "           it. Please pick a workspace folder (e.g. ~/Desktop/{workspace_dir}",
-        "           or ~/work/{workspace_dir}), cd into it, and re-paste this",
-        '           script from there."',
+        "       Cover these points: the install would scatter `.claude/`,",
+        "       `.agnes/`, `AGNES_WORKSPACE.md` and marketplace clones across a",
+        "       home or system directory; a workspace folder such as",
+        "       ~/Desktop/{workspace_dir} or ~/work/{workspace_dir} is the right",
+        "       target; the user should cd there and re-run this script.",
         "",
-        "       Then stop — no `mkdir`, no `cd`, no further steps. The refuse",
-        "       list is exact match on:",
+        "       Then stop — no `mkdir`, no `cd`, no further steps. The list of",
+        "       directories to avoid is an exact match on:",
         "           $HOME    /    /tmp    /etc    /usr    /var    /opt",
         "           /root    /bin    /sbin    /boot    /sys    /proc",
         "",
-        "   2b) PROCEED SILENTLY — if the cwd is a prepared workspace, just",
-        "       continue to step 3 without prompting. The whitelisted artefacts",
-        "       a prepared workspace may already hold are:",
+        "   2b) Prepared workspace — if the cwd is already prepared, continue",
+        "       to step 3 and tell the user which directory you are installing",
+        "       into. The whitelisted artefacts a prepared workspace may",
+        "       already hold are:",
         "           .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md",
         "       To check, run (fixed-string match, no regex):",
         "",
@@ -446,14 +449,11 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "       folder; continue to step 3 in <pwd>. Remember <pwd> as the",
         "       install dir for step 9.",
         "",
-        "   2c) CONFIRM — for any other cwd (unrelated content present), tell",
-        "       the user verbatim, exactly once:",
-        "",
-        "           \"I'll install {instance_brand} in <pwd>. Reply 'ok' to",
-        "           continue here, 'default' to install in ~/Desktop/{workspace_dir}",
-        "           instead, or 'abort' to stop. (For a different custom path:",
-        "           type /exit, `cd` to where you want it, then run `claude`",
-        '           again and re-paste this script.)"',
+        "   2c) Anything else — the directory holds unrelated content.",
+        "       Summarise what is in it and ask, once, whether to install here,",
+        "       in ~/Desktop/{workspace_dir} instead, or not at all. Mention",
+        "       that a different custom path means leaving the session, cd-ing",
+        "       there, and re-running this script.",
         "",
         "       Wait for the user's reply.",
         "         - 'ok' / 'yes' / 'install here' / Enter → continue to step 3",
@@ -463,8 +463,8 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "                       Then continue to step 3 in the new cwd.",
         "                       Remember ~/Desktop/{workspace_dir} as the install",
         "                       dir for step 9.",
-        "         - 'abort' / anything else → stop without making any changes.",
-        "                       Do NOT run `mkdir`, do NOT `cd`, do NOT continue.",
+        "         - 'abort' / anything else → stop without making any changes:",
+        "                       no `mkdir`, no `cd`, no further steps.",
         "",
         "3) Bootstrap your {instance_brand} workspace in this directory.",
         "   Write the PAT to a file FIRST, then run `agnes init` with",
@@ -477,17 +477,18 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "AGNES_PAT",
         f'   agnes init --server-url "{server_url_placeholder}" --token-file ~/.agnes/token --workspace .',
         "",
-        "   ALREADY INSTALLED? If `.claude/init-complete` already exists in this",
-        "   directory, the workspace is initialised and `agnes init` will refuse.",
-        "   Run `agnes update` instead — it uses your SAVED credentials (no token",
-        "   needed) and converges the CLI, workspace template, plugins and data,",
-        "   repairing anything broken. Template/default workspace files you edited",
-        "   are backed up to `<name>.bak.<ts>` before being updated; Agnes-owned",
+        "   If `.claude/init-complete` already exists in this directory, the",
+        "   workspace is initialised and `agnes init` will refuse — that is",
+        "   expected. Run `agnes update` instead — it uses your SAVED",
+        "   credentials (no token needed) and converges the CLI, workspace",
+        "   template, plugins and data, repairing anything broken.",
+        "   Template/default workspace files you edited are backed up to",
+        "   `<name>.bak.<ts>` before being updated; Agnes-owned",
         "   hooks/statusLine/commands are re-applied on top. Then skip to step 4.",
-        "   (If `agnes update` fails on auth because your saved token expired, run",
-        f'   `agnes init --force --server-url "{server_url_placeholder}" --token-file ~/.agnes/token`',
-        "   — `agnes init` always needs an explicit --server-url; this refreshes",
-        "   the token and now backs up your edited template files before updating.)",
+        "   (If `agnes update` fails on auth because your saved token expired:",
+        "   the saved credential lives in `~/.config/agnes/token.json`. Open",
+        "   /setup on the server, generate a fresh prompt, and re-run step 3",
+        "   from there.)",
         "",
         "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
         "   writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
@@ -525,8 +526,10 @@ def _diagnose_lines(*, diagnose_num: str) -> list[str]:
         f"{diagnose_num}) Run diagnostics:",
         "   agnes diagnose",
         "",
-        '   This should print "Overall: healthy". `db_schema: unknown` and',
-        "   `data: 0 tables` are NORMAL in two cases:",
+        '   Expect "Overall: healthy" on a clean instance; "degraded" driven',
+        "   only by informational or data-freshness sub-checks is not an",
+        "   install problem. `db_schema: unknown` and `data: 0 tables` are",
+        "   normal in two cases:",
         "     - fresh install (no tables registered yet), and",
         "     - non-admin roles (e.g. `analyst`) that don't have grants to read",
         "       the system schema even on populated instances.",
@@ -590,37 +593,32 @@ def _required_connectors_block(
 
     lines = [
         "",
-        f"{step_num}) Install required tools (mandatory — run every prompt below now):",
+        f"{step_num}) Install required tools (run every prompt below now):",
         "",
-        "   The tools below are required by this instance — do NOT ask the user",
-        "   whether to set them up, and do not skip any. Run each inline prompt",
-        "   now, in order. Every prompt is idempotent and safe to re-run; a tool",
-        "   that is already configured short-circuits with its ✅ line instead of",
-        "   reinstalling.",
+        "   This instance requires the tools below for every account, so run",
+        "   each inline prompt now, in order. Every prompt is idempotent and",
+        "   safe to re-run; a tool that's already configured short-circuits",
+        "   with its ✅ line instead of reinstalling.",
         "",
     ]
     letter_idx = 0
     for entry in manifest:
         if letter_idx >= len(_SUB_LETTERS):
             logger.warning(
-                "setup_instructions: more than %d required connectors — "
-                "remaining tiles dropped",
+                "setup_instructions: more than %d required connectors — remaining tiles dropped",
                 len(_SUB_LETTERS),
             )
             break
         body = _load_connector_body(entry.slug)
         if body is None:
             logger.warning(
-                "setup_instructions: required connector %s body not found in "
-                "seed — skipped",
+                "setup_instructions: required connector %s body not found in seed — skipped",
                 entry.slug,
             )
             continue
         body = body.replace("{instance_brand}", instance_brand)
-        lines.append(
-            f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}"
-        )
-        lines.append("      Follow this inline prompt verbatim:")
+        lines.append(f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}")
+        lines.append("      Follow this inline prompt:")
         lines.append("")
         for body_line in body.split("\n"):
             lines.append(f"      {body_line}" if body_line else "")
@@ -628,8 +626,8 @@ def _required_connectors_block(
         letter_idx += 1
     lines.extend(
         [
-            f"   Continue to step {next_step_num} only after every required tool above has",
-            "   printed its ✅ line (or surfaced a ❌ that you reported back to the user).",
+            f"   Move on to step {next_step_num} once each tool above is set up or has",
+            "   reported a failure.",
         ]
     )
     return lines
@@ -645,10 +643,9 @@ def _connectors_block(
     """Per-connector interactive ask + inline prompt. Last interactive
     step before Confirm.
 
-    Defaults to install (Y) — the user has to actively type "no" to skip.
-    Default-install matches "wire everything up" — the common path. Each
-    connector ships with its own step-0 keychain precheck so re-runs
-    short-circuit cleanly.
+    Requires an explicit yes before setting a connector up — anything else
+    (a decline, a deferral, silence) skips it. Each connector ships with its
+    own step-0 keychain precheck so re-runs short-circuit cleanly.
 
     Manifest source: ``src.connectors_manifest.load_manifest()`` reads the
     seed-resident ``workspace/.claude/skills/connector-*/SKILL.md`` files
@@ -669,11 +666,12 @@ def _connectors_block(
         "",
         f"{step_num}) Connect the user's tools (last interactive ask before Confirm):",
         "",
-        '   For each tool below, ask the user verbatim: "Set up <NAME> now? (Y/n)".',
-        "   Treat empty/Enter as YES — the default is install. Only skip when the",
-        '   user types an explicit "no" / "n" / "skip". Wait for each answer',
-        "   before moving to the next. The prompts below are idempotent and",
-        "   safe to re-run if anything goes sideways.",
+        "   For each tool below, tell the user what it does and what access it",
+        "   needs, then ask whether to set it up. Wait for each answer before",
+        "   moving to the next. If the answer is anything other than a clear",
+        "   yes, skip that tool — declining and deferring are both valid",
+        "   answers. The prompts below are idempotent and safe to re-run if",
+        "   anything goes sideways.",
         "",
     ]
     # Sub-letter index tracks ONLY the connectors we actually rendered
@@ -685,8 +683,7 @@ def _connectors_block(
     for entry in manifest:
         if letter_idx >= len(_SUB_LETTERS):
             logger.warning(
-                "setup_instructions: more than %d optional connectors — "
-                "remaining tiles dropped",
+                "setup_instructions: more than %d optional connectors — remaining tiles dropped",
                 len(_SUB_LETTERS),
             )
             break
@@ -702,7 +699,7 @@ def _connectors_block(
         body = body.replace("{instance_brand}", instance_brand)
         lines.append(f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}")
         lines.append(f'      Ask: "Set up {entry.display_name} now? (Y/n)"')
-        lines.append("      If yes (default) — follow this inline prompt verbatim:")
+        lines.append("      If the user agrees, follow this outline:")
         lines.append("")
         for body_line in body.split("\n"):
             lines.append(f"      {body_line}" if body_line else "")
@@ -736,7 +733,7 @@ def _restart_claude_lines(step_num: str, *, confirm_step_num: str) -> list[str]:
         "",
         f"{step_num}) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:",
         "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/{workspace_dir}` on the default path, or whatever cwd the user explicitly accepted with 'install here').",
-        "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + agnes-update SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
+        "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the SessionStart/End hooks that `agnes init` installed. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
         f"   Before step {confirm_step_num} (Confirm): after all the steps and asks above (whatever the answers), give me a short recap of what was installed or was already present — CLI, workspace files, hooks, marketplace plugins, connectors — so the outcome is clear, then continue.",
     ]
 
@@ -761,7 +758,7 @@ def _finale_lines(
     adding/removing a connector in the seed flows through to the Confirm
     summary without a code change. An empty group omits its bullet (its
     connector block wasn't emitted either). When no required entries
-    exist, the optional bullet keeps its legacy wording verbatim — the
+    exist, the optional bullet keeps its exact default wording — the
     default install prompt must stay byte-identical
     (tests/test_install_prompt_snapshot.py).
     """
@@ -779,18 +776,16 @@ def _finale_lines(
         required_names = ", ".join(e.display_name for e in required_manifest)
         bullets.append(
             f"   - For each required connector ({required_names}): "
-            "the verbatim ✅ or ❌ line that the connector's verify step "
-            "emitted earlier in this session."
+            "the ✅ or ❌ line that the connector's verify step emitted "
+            "earlier in this session."
         )
     if manifest:
         connector_names = ", ".join(e.display_name for e in manifest)
         label = "optional connector" if required_manifest else "connector"
         bullets.append(
-            f"   - For each {label} ({connector_names}): "
-            "the verbatim ✅ or ❌ line that the connector's verify step "
-            "emitted earlier in this session (e.g. `✅ Asana ready — ...` "
-            "or `❌ Atlassian setup failed: ...`). If the user declined "
-            "a connector, say declined."
+            f"   - For each {label} ({connector_names}): whether it was set "
+            "up, failed, or declined — and for failures, the reason its "
+            "verify step reported."
         )
     if has_ca:
         bullets.append(
@@ -818,7 +813,7 @@ def _preflight_block(step_num: str) -> list[str]:
       - macOS: Homebrew (`brew install git`). The Xcode CLT bundle also
         ships git; we prefer brew because it's non-interactive.
       - Windows: winget (`winget install --id Git.Git -e ...`). Bundled
-        with Windows 10 1809+ and Windows 11; non-interactive with --silent.
+        with Windows 10 1809+ and Windows 11.
       - Linux: apt or dnf, depending on distro family.
 
     For `claude` we point at the official platform installer docs rather
@@ -838,7 +833,7 @@ def _preflight_block(step_num: str) -> list[str]:
         "",
         '   If `git --version` fails ("command not found" or similar), install git:',
         "     - macOS:   brew install git",
-        "     - Windows: winget install --id Git.Git -e --source winget --silent",
+        "     - Windows: winget install --id Git.Git -e --source winget",
         "     - Linux:   sudo apt-get install git    OR    sudo dnf install git",
         "",
         "   If `claude --version` fails, install Claude Code:",
@@ -1014,19 +1009,20 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "Run these, in order. The script is idempotent — safe to re-run if a step",
         "fails partway through.",
         "",
-        "FIRST, check whether this machine already ran this setup: if the target",
-        "workspace contains `.claude/init-complete` (or `agnes --version` already",
-        "works), you are RECONCILING an existing install, not starting fresh —",
-        "still run every step in order (each converges to the desired state",
-        "rather than reinstalling), but expect 'already configured' outcomes and",
-        "do NOT treat them as errors. Leftover state from a previous instance",
-        "(e.g. an old marketplace clone) is handled by the steps themselves.",
+        "Before you start, check whether this machine already ran this setup: if",
+        "the target workspace contains `.claude/init-complete` (or `agnes",
+        "--version` already works), this is a reconcile of an existing install,",
+        "not a fresh start. Run every step in order anyway — each converges to",
+        "the desired state rather than reinstalling — and treat 'already",
+        "configured' outcomes as success, not as errors. Leftover state from a",
+        "previous instance (e.g. an old marketplace clone) is handled by the",
+        "steps themselves.",
         "",
-        "If a step fails with an unfamiliar error, paste the",
-        "exact error back and stop. Do NOT improvise around TLS errors by disabling",
-        "verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`,",
-        "`git -c http.sslVerify=false`, etc.) — those are dead ends that hide the",
-        "real problem.",
+        "If a step fails with an unfamiliar error, paste the exact error back and",
+        "stop. If the failure is a TLS error, look for the cause — corporate",
+        "proxy, internal CA, clock skew — rather than lowering certificate",
+        "verification; turning verification off hides the problem instead of",
+        "solving it.",
     ]
     if has_ca:
         lines.append(

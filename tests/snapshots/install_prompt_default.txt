@@ -7,25 +7,28 @@ Personal access token: {token}
 Run these, in order. The script is idempotent — safe to re-run if a step
 fails partway through.
 
-FIRST, check whether this machine already ran this setup: if the target
-workspace contains `.claude/init-complete` (or `agnes --version` already
-works), you are RECONCILING an existing install, not starting fresh —
-still run every step in order (each converges to the desired state
-rather than reinstalling), but expect 'already configured' outcomes and
-do NOT treat them as errors. Leftover state from a previous instance
-(e.g. an old marketplace clone) is handled by the steps themselves.
+Before you start, check whether this machine already ran this setup: if
+the target workspace contains `.claude/init-complete` (or `agnes
+--version` already works), this is a reconcile of an existing install,
+not a fresh start. Run every step in order anyway — each converges to
+the desired state rather than reinstalling — and treat 'already
+configured' outcomes as success, not as errors. Leftover state from a
+previous instance (e.g. an old marketplace clone) is handled by the
+steps themselves.
 
-If a step fails with an unfamiliar error, paste the
-exact error back and stop. Do NOT improvise around TLS errors by disabling
-verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`,
-`git -c http.sslVerify=false`, etc.) — those are dead ends that hide the
-real problem.
+If a step fails with an unfamiliar error, paste the exact error back and
+stop. If the failure is a TLS error, look for the cause — corporate
+proxy, internal CA, clock skew — rather than lowering certificate
+verification; turning verification off hides the problem instead of
+solving it.
 
 1) Install the CLI:
    uv tool install --force {server_url}/cli/wheel/agnes-X.Y.Z-py3-none-any.whl
 
-   If uv is not installed yet:
-     curl -LsSf https://astral.sh/uv/install.sh | sh
+   If uv is not installed yet, install it from the official instructions at
+   https://docs.astral.sh/uv/ — on Windows `winget install --id=astral-sh.uv`,
+   on macOS `brew install uv`. If you use the shell installer instead,
+   download it to a file and show it to me before running it.
 
    If `agnes --version` fails after install because ~/.local/bin is not on PATH:
      export PATH="$HOME/.local/bin:$PATH"
@@ -40,31 +43,32 @@ real problem.
    The /home page's "Step 2 — pick a folder" recommended
        mkdir -p ~/Desktop/WORKSPACE && cd ~/Desktop/WORKSPACE
    but the install works in any workspace folder the user prepared.
-   Decide where to install using the three branches below — do NOT
-   silently `mkdir`/`cd` anywhere, and do NOT treat the user's current
-   cwd as a mistake unless it lands in the REFUSE list.
+   Decide where to install using the three branches below. Do not
+   create or change directories on your own — say what you intend to
+   do and let the user confirm. A cwd outside the unsafe list below is
+   not a mistake.
 
    Run:
        pwd
 
-   2a) REFUSE — these paths are never safe to install into. STOP and
-       tell the user verbatim:
+   2a) Unsafe targets — home and system directories. Explain to the
+       user, in your own words, why you are not installing there:
 
-           "I won't install BRAND into <pwd> — it's a home or
-           system directory and the install would scatter .claude/,
-           .agnes/, AGNES_WORKSPACE.md and marketplace clones across
-           it. Please pick a workspace folder (e.g. ~/Desktop/WORKSPACE
-           or ~/work/WORKSPACE), cd into it, and re-paste this
-           script from there."
+       Cover these points: the install would scatter `.claude/`,
+       `.agnes/`, `AGNES_WORKSPACE.md` and marketplace clones across a
+       home or system directory; a workspace folder such as
+       ~/Desktop/WORKSPACE or ~/work/WORKSPACE is the right
+       target; the user should cd there and re-run this script.
 
-       Then stop — no `mkdir`, no `cd`, no further steps. The refuse
-       list is exact match on:
+       Then stop — no `mkdir`, no `cd`, no further steps. The list of
+       directories to avoid is an exact match on:
            $HOME    /    /tmp    /etc    /usr    /var    /opt
            /root    /bin    /sbin    /boot    /sys    /proc
 
-   2b) PROCEED SILENTLY — if the cwd is a prepared workspace, just
-       continue to step 3 without prompting. The whitelisted artefacts
-       a prepared workspace may already hold are:
+   2b) Prepared workspace — if the cwd is already prepared, continue
+       to step 3 and tell the user which directory you are installing
+       into. The whitelisted artefacts a prepared workspace may
+       already hold are:
            .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md
        To check, run (fixed-string match, no regex):
 
@@ -75,14 +79,11 @@ real problem.
        folder; continue to step 3 in <pwd>. Remember <pwd> as the
        install dir for step 9.
 
-   2c) CONFIRM — for any other cwd (unrelated content present), tell
-       the user verbatim, exactly once:
-
-           "I'll install BRAND in <pwd>. Reply 'ok' to
-           continue here, 'default' to install in ~/Desktop/WORKSPACE
-           instead, or 'abort' to stop. (For a different custom path:
-           type /exit, `cd` to where you want it, then run `claude`
-           again and re-paste this script.)"
+   2c) Anything else — the directory holds unrelated content.
+       Summarise what is in it and ask, once, whether to install here,
+       in ~/Desktop/WORKSPACE instead, or not at all. Mention
+       that a different custom path means leaving the session, cd-ing
+       there, and re-running this script.
 
        Wait for the user's reply.
          - 'ok' / 'yes' / 'install here' / Enter → continue to step 3
@@ -92,8 +93,8 @@ real problem.
                        Then continue to step 3 in the new cwd.
                        Remember ~/Desktop/WORKSPACE as the install
                        dir for step 9.
-         - 'abort' / anything else → stop without making any changes.
-                       Do NOT run `mkdir`, do NOT `cd`, do NOT continue.
+         - 'abort' / anything else → stop without making any changes:
+                       no `mkdir`, no `cd`, no further steps.
 
 3) Bootstrap your BRAND workspace in this directory.
    Write the PAT to a file FIRST, then run `agnes init` with
@@ -106,17 +107,18 @@ real problem.
 AGNES_PAT
    agnes init --server-url "{server_url}" --token-file ~/.agnes/token --workspace .
 
-   ALREADY INSTALLED? If `.claude/init-complete` already exists in this
-   directory, the workspace is initialised and `agnes init` will refuse.
-   Run `agnes update` instead — it uses your SAVED credentials (no token
-   needed) and converges the CLI, workspace template, plugins and data,
-   repairing anything broken. Template/default workspace files you edited
-   are backed up to `<name>.bak.<ts>` before being updated; Agnes-owned
+   If `.claude/init-complete` already exists in this directory, the
+   workspace is initialised and `agnes init` will refuse — that is
+   expected. Run `agnes update` instead — it uses your SAVED
+   credentials (no token needed) and converges the CLI, workspace
+   template, plugins and data, repairing anything broken.
+   Template/default workspace files you edited are backed up to
+   `<name>.bak.<ts>` before being updated; Agnes-owned
    hooks/statusLine/commands are re-applied on top. Then skip to step 4.
-   (If `agnes update` fails on auth because your saved token expired, run
-   `agnes init --force --server-url "{server_url}" --token-file ~/.agnes/token`
-   — `agnes init` always needs an explicit --server-url; this refreshes
-   the token and now backs up your edited template files before updating.)
+   (If `agnes update` fails on auth because your saved token expired:
+   the saved credential lives in `~/.config/agnes/token.json`. Open
+   /setup on the server, generate a fresh prompt, and re-run step 3
+   from there.)
 
    This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),
    writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code
@@ -135,7 +137,7 @@ AGNES_PAT
 
    If `git --version` fails ("command not found" or similar), install git:
      - macOS:   brew install git
-     - Windows: winget install --id Git.Git -e --source winget --silent
+     - Windows: winget install --id Git.Git -e --source winget
      - Linux:   sudo apt-get install git    OR    sudo dnf install git
 
    If `claude --version` fails, install Claude Code:
@@ -180,8 +182,10 @@ AGNES_PAT
 7) Run diagnostics:
    agnes diagnose
 
-   This should print "Overall: healthy". `db_schema: unknown` and
-   `data: 0 tables` are NORMAL in two cases:
+   Expect "Overall: healthy" on a clean instance; "degraded" driven
+   only by informational or data-freshness sub-checks is not an
+   install problem. `db_schema: unknown` and `data: 0 tables` are
+   normal in two cases:
      - fresh install (no tables registered yet), and
      - non-admin roles (e.g. `analyst`) that don't have grants to read
        the system schema even on populated instances.
@@ -189,15 +193,16 @@ AGNES_PAT
 
 8) Connect the user's tools (last interactive ask before Confirm):
 
-   For each tool below, ask the user verbatim: "Set up <NAME> now? (Y/n)".
-   Treat empty/Enter as YES — the default is install. Only skip when the
-   user types an explicit "no" / "n" / "skip". Wait for each answer
-   before moving to the next. The prompts below are idempotent and
-   safe to re-run if anything goes sideways.
+   For each tool below, tell the user what it does and what access it
+   needs, then ask whether to set it up. Wait for each answer before
+   moving to the next. If the answer is anything other than a clear
+   yes, skip that tool — declining and deferring are both valid
+   answers. The prompts below are idempotent and safe to re-run if
+   anything goes sideways.
 
    a) Asana — Read tasks and projects, comment, create updates — Claude works alongside your project boards without leaving the terminal.
       Ask: "Set up Asana now? (Y/n)"
-      If yes (default) — follow this inline prompt verbatim:
+      If the user agrees, follow this outline:
 
       Set up an Asana Personal Access Token for Claude Code. Walk me through it step by step.
 
@@ -241,7 +246,7 @@ AGNES_PAT
 
    b) Atlassian (Jira / Confluence) — Read and write Jira issues, search Confluence pages — Claude pulls ticket context and posts updates without leaving the workspace.
       Ask: "Set up Atlassian (Jira / Confluence) now? (Y/n)"
-      If yes (default) — follow this inline prompt verbatim:
+      If the user agrees, follow this outline:
 
       Set up Atlassian (Jira + Confluence) API access for Claude Code. Walk me through it step by step.
 
@@ -319,7 +324,7 @@ AGNES_PAT
 
    c) Google Workspace — Drive, Calendar, Gmail, Docs, Sheets, Chat — Claude reads and acts across your work account via the official `gws` CLI.
       Ask: "Set up Google Workspace now? (Y/n)"
-      If yes (default) — follow this inline prompt verbatim:
+      If the user agrees, follow this outline:
 
       Set up Google Workspace access for Claude Code using the official `gws` CLI from https://github.com/googleworkspace/cli (install steps: README → Installation). The npm path is what we'll use because (a) it's the README's documented convenience path, (b) it works the same on macOS / Linux / WSL / Windows, and (c) it can run with zero admin rights when Node is managed by `nvm` (Unix) or `fnm` (Windows).
 
@@ -415,7 +420,7 @@ AGNES_PAT
 
 9) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:
    Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/WORKSPACE` on the default path, or whatever cwd the user explicitly accepted with 'install here').
-   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + agnes-update SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.
+   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the SessionStart/End hooks that `agnes init` installed. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.
    Before step 10 (Confirm): after all the steps and asks above (whatever the answers), give me a short recap of what was installed or was already present — CLI, workspace files, hooks, marketplace plugins, connectors — so the outcome is clear, then continue.
 
 10) Confirm:
@@ -427,4 +432,4 @@ AGNES_PAT
    - The `agnes diagnose` overall status
    - Whether skills were copied or left on-demand
    - Confirmation that `~/.agnes/marketplace/.git/` exists (the marketplace clone) and that any granted plugins installed
-   - For each connector (Asana, Atlassian (Jira / Confluence), Google Workspace): the verbatim ✅ or ❌ line that the connector's verify step emitted earlier in this session (e.g. `✅ Asana ready — ...` or `❌ Atlassian setup failed: ...`). If the user declined a connector, say declined.
+   - For each connector (Asana, Atlassian (Jira / Confluence), Google Workspace): whether it was set up, failed, or declined — and for failures, the reason its verify step reported.

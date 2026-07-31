@@ -16,6 +16,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- The generated install prompt reworded its force-style phrasing (`REFUSE`, `PROCEED SILENTLY`, "verbatim", "mandatory", default-yes asks, piped shell installers) into neutral, calm guidance — Claude Code's safety layer was increasingly stalling mid-install on the old wording. Added a banned-phrase regression guard (`tests/test_install_prompt_banned_phrases.py`) plus dev tooling (`scripts/dev/render_prompt.py`, `scripts/dev/check_prompt.py`) to catch a re-introduction.
+
 ### Removed
 
 ### Internal
