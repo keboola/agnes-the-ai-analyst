@@ -2100,14 +2100,14 @@ def test_spawn_uploads_wheel_before_workspace_and_sets_sentinel_env(manager: Cha
 
     order: list[str] = []
 
-    async def fake_wheel(sandbox):
+    async def fake_wheel(stage):
         order.append("wheel")
 
     async def fake_workspace(sandbox, root, *, max_bytes):
         order.append("workspace")
         return 0
 
-    monkeypatch.setattr(sync_mod, "upload_agnes_wheel", fake_wheel)
+    monkeypatch.setattr(sync_mod, "stage_agnes_wheel", fake_wheel)
     monkeypatch.setattr(sync_mod, "upload_workspace", fake_workspace)
 
     handle = FakeHandle()
@@ -2119,9 +2119,7 @@ def test_spawn_uploads_wheel_before_workspace_and_sets_sentinel_env(manager: Cha
         return handle
 
     manager._provider.spawn = fake_spawn
-    # The fixture's provider is a MagicMock whose auto-attribute would be
-    # truthy — pin the real E2BProvider value so the sync branch runs.
-    manager._provider.syncs_workspace = False
+    _make_provider_e2b_shaped(manager)
 
     async def _run():
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
@@ -2132,6 +2130,132 @@ def test_spawn_uploads_wheel_before_workspace_and_sets_sentinel_env(manager: Cha
 
     assert order == ["wheel", "workspace"]
     assert captured["env"]["AGNES_WORKSPACE_SYNC_SENTINEL"] == SANDBOX_WORKSPACE_READY
+
+
+def _make_provider_e2b_shaped(manager: ChatManager) -> None:
+    """Make the fixture's MagicMock provider behave like ``E2BProvider``:
+    ``syncs_workspace=False`` (the manager pushes the workspace) plus an async
+    ``stage_file`` that writes through the handle's sandbox file API.
+
+    Needed because the fixture provider is a bare ``MagicMock``: its
+    auto-attributes are truthy (so ``syncs_workspace`` must be pinned) and its
+    ``stage_file`` is not a coroutine function, which is exactly how
+    ``ChatManager._file_stager`` detects "this provider cannot stage files".
+    """
+    manager._provider.syncs_workspace = False
+
+    async def _stage(handle, path, data):
+        await handle._sandbox.files.write(path, data)
+
+    manager._provider.stage_file = _stage
+
+
+def test_spawn_stages_wheel_and_context_for_a_bind_mounting_provider(manager: ChatManager, tmp_path, monkeypatch):
+    """`syncs_workspace=True` must skip ONLY the workspace push.
+
+    The CLI wheel and the restore-context transcript are not workspace sync:
+    without them a bind-mounting provider loses the `agnes` CLI (the runner
+    blocks the full 60 s wheel wait on a `.ready` that never appears) and loses
+    conversation history on every crash respawn.
+    """
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    import app.chat.e2b_workspace_sync as sync_mod
+    from app.chat.e2b_workspace_sync import SANDBOX_CONTEXT_RESTORE, SANDBOX_WHEEL_READY
+
+    staged: dict = {}
+    pushed: list[str] = []
+
+    async def fake_workspace(sandbox, root, *, max_bytes):
+        pushed.append("workspace")
+        return 0
+
+    monkeypatch.setattr(sync_mod, "upload_workspace", fake_workspace)
+
+    handle = FakeHandle()
+    captured: dict = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return handle
+
+    async def _stage(h, path, data):
+        staged[path] = data
+
+    manager._provider.spawn = fake_spawn
+    manager._provider.syncs_workspace = True
+    manager._provider.stage_file = _stage
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.append_message(session_id=s.id, role="assistant", content="earlier answer")
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path)
+
+    asyncio.run(_run())
+
+    assert SANDBOX_WHEEL_READY in staged, "the wheel-ready sentinel must be staged for every provider"
+    assert SANDBOX_CONTEXT_RESTORE in staged
+    assert "earlier answer" in str(staged[SANDBOX_CONTEXT_RESTORE])
+    # ...and only the workspace tarball stays behind the syncs_workspace gate.
+    assert pushed == []
+    assert captured["env"]["AGNES_WORKSPACE_SYNC_SENTINEL"] == ""
+
+
+def test_spawn_stages_wheel_and_context_through_the_e2b_files_api(manager: ChatManager, tmp_path, monkeypatch):
+    """E2B regression for the same split: with the REAL provider the wheel,
+    its sentinel and the restore-context still land through
+    ``sandbox.files.write``, at the same paths, in the same order as before."""
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    from app.chat.e2b_provider import E2BProvider
+    from app.chat.e2b_workspace_sync import (
+        SANDBOX_CONTEXT_RESTORE,
+        SANDBOX_WHEEL_DIR,
+        SANDBOX_WHEEL_READY,
+        SANDBOX_WORKSPACE_READY,
+    )
+
+    wheel = tmp_path / "agnes_the_ai_analyst-0.1.0-py3-none-any.whl"
+    wheel.write_bytes(b"WHEELBYTES")
+    monkeypatch.setattr("app.api.cli_artifacts._find_wheel", lambda: wheel)
+
+    written: list[str] = []
+
+    handle = FakeHandle()
+    sb = MagicMock()
+    sb.files = MagicMock()
+
+    async def _write(path, data):
+        written.append(path)
+
+    sb.files.write = AsyncMock(side_effect=_write)
+    sb.commands = MagicMock()
+    sb.commands.run = AsyncMock()
+    handle._sandbox = sb
+
+    async def fake_spawn(**kw):
+        return handle
+
+    provider = E2BProvider(api_key="k", template_id="t")
+    provider.spawn = fake_spawn  # type: ignore[method-assign]
+    manager._provider = provider
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.append_message(session_id=s.id, role="assistant", content="earlier answer")
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path / "session")
+
+    (tmp_path / "session").mkdir()
+    asyncio.run(_run())
+
+    assert written == [
+        f"{SANDBOX_WHEEL_DIR}/{wheel.name}",
+        SANDBOX_WHEEL_READY,
+        SANDBOX_CONTEXT_RESTORE,
+        SANDBOX_WORKSPACE_READY,
+    ]
 
 
 def test_agnes_server_url_resolution_chain(monkeypatch):
@@ -3230,7 +3354,7 @@ class TestRestoreContext:
                 return handle
 
             manager._provider.spawn = fake_spawn
-            manager._provider.syncs_workspace = False
+            _make_provider_e2b_shaped(manager)
             await manager._spawn_runner(sess, tmp_path)
             assert SANDBOX_CONTEXT_RESTORE in writes
             assert "earlier answer" in str(writes[SANDBOX_CONTEXT_RESTORE])
@@ -3462,5 +3586,109 @@ def test_shutdown_no_notice_when_idle(tmp_path):
             await attach_task
         except (asyncio.CancelledError, Exception):
             pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Orphan sandbox reconciliation (host-local providers)
+# ---------------------------------------------------------------------------
+
+
+def _orphan_provider(manager: ChatManager, rows: list[dict]) -> list[str]:
+    """Give the fixture's provider the host-local-provider extras: an async
+    ``list_sandboxes`` (what the docker provider exposes) plus a recording
+    ``destroy``. Returns the list destroyed sandbox ids land in."""
+    destroyed: list[str] = []
+
+    async def _list():
+        return rows
+
+    async def _destroy(*, sandbox_id):
+        destroyed.append(sandbox_id)
+
+    manager._provider.list_sandboxes = _list
+    manager._provider.destroy = _destroy
+    return destroyed
+
+
+def test_orphan_sweep_destroys_sandboxes_with_no_owner(manager: ChatManager):
+    """A gateway that crashed mid-session leaves containers behind with no row
+    left to reap them — the paused-TTL sweep only ever sees rows."""
+
+    async def _run():
+        destroyed = _orphan_provider(
+            manager,
+            [{"name": "agnes-chatsbx-gone-1", "chat_id": "chat_gone", "age_seconds": 3600.0}],
+        )
+        assert await manager.reap_orphan_sandboxes() == 1
+        assert destroyed == ["agnes-chatsbx-gone-1"]
+
+    asyncio.run(_run())
+
+
+def test_orphan_sweep_keeps_a_sandbox_its_row_still_points_at(manager: ChatManager):
+    """The paused-and-resumable case: a row whose sandbox_id is this container."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.set_sandbox_ref(s.id, sandbox_id="agnes-chatsbx-live-1", runner_pid=1)
+        destroyed = _orphan_provider(
+            manager,
+            [{"name": "agnes-chatsbx-live-1", "chat_id": s.id, "age_seconds": 3600.0}],
+        )
+        assert await manager.reap_orphan_sandboxes() == 0
+        assert destroyed == []
+
+    asyncio.run(_run())
+
+
+def test_orphan_sweep_skips_young_sandboxes(manager: ChatManager):
+    """_spawn_runner returns before set_sandbox_ref persists — a just-created
+    sandbox legitimately has no row yet."""
+
+    async def _run():
+        destroyed = _orphan_provider(
+            manager,
+            [{"name": "agnes-chatsbx-fresh-1", "chat_id": "chat_fresh", "age_seconds": 5.0}],
+        )
+        assert await manager.reap_orphan_sandboxes() == 0
+        assert destroyed == []
+
+    asyncio.run(_run())
+
+
+def test_orphan_sweep_skips_sessions_this_process_serves(manager: ChatManager):
+    from datetime import datetime, timezone
+
+    from app.chat.manager import LiveSession
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        now = datetime.now(timezone.utc)
+        manager._live[s.id] = LiveSession(
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
+            handle=FakeHandle(),
+            started_at=now,
+            last_activity=now,
+        )
+        destroyed = _orphan_provider(
+            manager,
+            [{"name": "agnes-chatsbx-inflight-1", "chat_id": s.id, "age_seconds": 3600.0}],
+        )
+        assert await manager.reap_orphan_sandboxes() == 0
+        assert destroyed == []
+
+    asyncio.run(_run())
+
+
+def test_orphan_sweep_is_a_noop_for_providers_without_listing(manager: ChatManager):
+    """E2B (and any provider whose sandboxes aren't host-local) has no
+    list_sandboxes — the sweep must do nothing, not crash the reaper."""
+
+    async def _run():
+        assert await manager.reap_orphan_sandboxes() == 0
 
     asyncio.run(_run())

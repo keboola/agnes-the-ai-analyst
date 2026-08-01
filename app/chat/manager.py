@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -103,6 +104,13 @@ _DAILY_TOKENS_SEED_LEASE_TTL_SEC = 15
 # (the reaper runs every 60s — see `_idle_reaper_loop`), not minutes.
 _PAUSED_SWEEP_LEASE_NAME = "paused-sandbox-sweep"
 _PAUSED_SWEEP_LEASE_TTL_SEC = 90
+
+# Grace window before the orphan sweep (`reap_orphan_sandboxes`) will consider
+# a provider-side sandbox unowned. `_spawn_runner` returns before
+# `set_sandbox_ref` persists the reference, so a just-created sandbox has no
+# row for a short moment — 120s is far beyond that window while still reaping
+# a crashed gateway's leftovers on the following tick.
+_ORPHAN_SWEEP_MIN_AGE_SEC = 120
 
 # Session routing lease (wave-2F task 1 — see app/chat/routing.py). Claimed
 # for `chat:{chat_id}` when a session becomes live in this process's
@@ -1824,53 +1832,22 @@ class ChatManager:
         # ``app.chat.runner`` module inside the sandbox.
         argv = ["python3", "/work/runner.py", "--session-id", session.id]
         handle = await self._provider.spawn(workdir=session_dir, env=env, argv=argv)
-        # The provider may declare ``syncs_workspace = True`` (workspace
-        # is mounted, no sync needed). For E2B we hold the workspace
-        # locally and push it after spawn — Q1's full-push strategy.
+        # Provider-mediated file staging — runs for EVERY provider, including
+        # the ones that mount the workspace themselves.
+        await self._stage_boot_files(handle, session)
+        # Only the workspace tarball is actually workspace sync: a provider
+        # that declares ``syncs_workspace = True`` bind-mounts it instead. For
+        # E2B we hold the workspace locally and push it after spawn — Q1's
+        # full-push strategy.
         if not getattr(self._provider, "syncs_workspace", False):
             from app.chat.e2b_workspace_sync import (
-                SANDBOX_CONTEXT_RESTORE,
                 WorkspaceTooLarge,
-                upload_agnes_wheel,
                 upload_workspace,
             )
 
             max_bytes = getattr(self._config, "e2b_workspace_max_bytes", 100 * 1024 * 1024)
             sandbox = getattr(handle, "_sandbox", None)
             if sandbox is not None:
-                # Ship the agnes CLI wheel FIRST — it's a single small write,
-                # and its ``.ready`` sentinel unblocks the runner's in-sandbox
-                # ``pip install`` so that install runs CONCURRENTLY with the
-                # (much slower) workspace push below instead of queueing
-                # behind it. Best-effort: a missing wheel leaves the CLI
-                # absent but never blocks the session, so unlike the
-                # workspace push it does not tear the sandbox down.
-                try:
-                    await upload_agnes_wheel(sandbox)
-                except Exception:
-                    logger.exception(
-                        "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
-                        session.id,
-                    )
-                # Restored-conversation transcript for a fresh sandbox of a
-                # chat that already has history (crash respawn, post-restart
-                # spawn, takeover): the runner appends it to the agent's
-                # system prompt at boot, restoring FULL context — user AND
-                # assistant turns — where the old stdin replay carried only
-                # the last 3 user messages (and ran one LLM turn per message).
-                # Best-effort: a failed upload degrades to a context-free
-                # fresh session, never a blocked spawn. Must land before the
-                # workspace push so the workspace-ready sentinel (which gates
-                # the agent-CLI boot) also guarantees this file.
-                try:
-                    context_md = self._build_restore_context(session)
-                    if context_md:
-                        await sandbox.files.write(SANDBOX_CONTEXT_RESTORE, context_md)
-                except Exception:
-                    logger.exception(
-                        "restore-context upload failed for %s — respawned runner starts without prior context",
-                        session.id,
-                    )
                 try:
                     # Finishes by writing SANDBOX_WORKSPACE_READY, which the
                     # runner waits on before spawning the agent CLI (the CLI
@@ -1887,6 +1864,70 @@ class ChatManager:
                         logger.exception("kill after upload-refusal failed")
                     raise
         return handle
+
+    def _file_stager(self, handle):
+        """An ``async (path, data) -> None`` staging callable for ``handle``,
+        or ``None`` when this provider cannot stage files.
+
+        Capability is declared by an async ``stage_file`` on the provider
+        (``E2BProvider`` writes through the SDK file API, the docker provider
+        through the apps-runner sidecar). The ``iscoroutinefunction`` check —
+        rather than a bare ``getattr`` — is what makes a duck-typed test double
+        (whose every attribute exists and is truthy) opt out cleanly.
+        """
+        stage = getattr(self._provider, "stage_file", None)
+        if not inspect.iscoroutinefunction(stage):
+            return None
+
+        async def _stage(path: str, data) -> None:
+            await stage(handle, path, data)
+
+        return _stage
+
+    async def _stage_boot_files(self, handle, session: "ChatSession") -> None:
+        """Stage the agnes CLI wheel and the restore-context transcript.
+
+        Neither is workspace sync, so both run for EVERY provider — a
+        ``syncs_workspace=True`` provider that skipped them would lose the
+        `agnes` CLI (the runner then blocks its full 60 s wheel wait on a
+        ``.ready`` that never appears) and lose conversation history on every
+        crash respawn.
+
+        Order matters: the wheel goes first because its ``.ready`` sentinel
+        unblocks the in-sandbox ``pip install``, which then runs CONCURRENTLY
+        with the (much slower) workspace push instead of queueing behind it;
+        the restore-context lands before that push so the workspace-ready
+        sentinel — which gates the agent-CLI boot — also guarantees this file.
+        Both are best-effort: a failure degrades the session (no CLI, no prior
+        context) but never blocks the spawn.
+        """
+        stage = self._file_stager(handle)
+        if stage is None:
+            return
+        from app.chat.e2b_workspace_sync import SANDBOX_CONTEXT_RESTORE, stage_agnes_wheel
+
+        try:
+            await stage_agnes_wheel(stage)
+        except Exception:
+            logger.exception(
+                "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
+                session.id,
+            )
+        # Restored-conversation transcript for a fresh sandbox of a chat that
+        # already has history (crash respawn, post-restart spawn, takeover):
+        # the runner appends it to the agent's system prompt at boot, restoring
+        # FULL context — user AND assistant turns — where the old stdin replay
+        # carried only the last 3 user messages (and ran one LLM turn per
+        # message).
+        try:
+            context_md = self._build_restore_context(session)
+            if context_md:
+                await stage(SANDBOX_CONTEXT_RESTORE, context_md)
+        except Exception:
+            logger.exception(
+                "restore-context upload failed for %s — respawned runner starts without prior context",
+                session.id,
+            )
 
     async def _push_ticket_frame(self, live: "LiveSession") -> None:
         """Mint fresh main+mcp+data_apps broker tickets and push them to the
@@ -3000,7 +3041,78 @@ class ChatManager:
         if self._idle_task is None or self._idle_task.done():
             self._idle_task = asyncio.create_task(self._idle_reaper_loop())
 
+    async def reap_orphan_sandboxes(self) -> int:
+        """Destroy provider sandboxes that no live or persisted session owns.
+
+        Only providers that manage host-local resources implement
+        ``list_sandboxes`` (the docker provider lists containers by ownership
+        label); for everyone else this is a no-op. A gateway that crashed
+        mid-session leaves its containers running with nothing left to reap
+        them — the paused-TTL sweep only sees rows, not leftovers whose row is
+        already gone.
+
+        Three guards against reaping something legitimate:
+
+        - a sandbox younger than ``_ORPHAN_SWEEP_MIN_AGE_SEC`` is skipped —
+          ``_spawn_runner`` returns before ``set_sandbox_ref`` persists the
+          reference, so a brand-new container legitimately has no row yet;
+        - a chat this process is currently serving is skipped;
+        - a sandbox whose session row still points at it is skipped (that is
+          exactly the paused-and-resumable case).
+
+        Returns the number of sandboxes destroyed. Never raises.
+        """
+        lister = getattr(self._provider, "list_sandboxes", None)
+        if not inspect.iscoroutinefunction(lister):
+            return 0
+        try:
+            rows = await lister()
+        except Exception:
+            logger.debug("orphan sandbox sweep: provider listing failed", exc_info=True)
+            return 0
+        reaped = 0
+        for row in rows or []:
+            name = str(row.get("name") or "")
+            if not name:
+                continue
+            chat_id = str(row.get("chat_id") or "")
+            try:
+                age = float(row.get("age_seconds") or 0.0)
+            except (TypeError, ValueError):
+                age = 0.0
+            if age < _ORPHAN_SWEEP_MIN_AGE_SEC:
+                continue
+            if chat_id and chat_id in self._live:
+                continue
+            try:
+                session = self._repo.get_session(chat_id) if chat_id else None
+            except Exception:
+                logger.debug("orphan sandbox sweep: row lookup failed for %s", chat_id, exc_info=True)
+                continue
+            if session is not None and session.sandbox_id == name:
+                continue
+            try:
+                await self._provider.destroy(sandbox_id=name)
+            except Exception:
+                logger.debug("orphan sandbox sweep: destroy failed for %s", name, exc_info=True)
+                continue
+            reaped += 1
+            logger.info(
+                "orphan sandbox sweep: destroyed %s (chat_id=%r has no live or persisted owner)",
+                name,
+                chat_id,
+            )
+        return reaped
+
     async def _idle_reaper_loop(self) -> None:
+        # Startup reconciliation: containers a crashed predecessor left behind
+        # are orphaned the moment this process starts, not 60 s later.
+        try:
+            await self.reap_orphan_sandboxes()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("startup orphan sandbox sweep failed; continuing")
         while True:
             await asyncio.sleep(60)
             # #867: never let a single failed sweep kill the reaper task. Before
@@ -3142,6 +3254,13 @@ class ChatManager:
             acquired_sweep_lease = False
         if acquired_sweep_lease:
             try:
+                # Same lease, same tick: the orphan sweep also reads shared
+                # state (the provider's own container list), so exactly one
+                # replica should drive it per tick.
+                try:
+                    await self.reap_orphan_sandboxes()
+                except Exception:
+                    logger.exception("reaper: orphan sandbox sweep failed; continuing")
                 paused_cutoff = now - timedelta(seconds=self._config.paused_ttl_seconds)
                 # #867: a failing list_paused_sessions (DB hiccup) must skip
                 # this cycle's sweep, not propagate out and kill the reaper.
