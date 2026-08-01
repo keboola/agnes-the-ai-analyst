@@ -1706,10 +1706,15 @@ async function chatTestSecrets(btn) {
     if (!r.ok) throw new Error("HTTP " + r.status);
     const b = await r.json();
     const fmt = (label, x) => `${x.ok ? "✓" : "✗"} ${label}: ${x.detail}`;
-    resultEl.innerHTML =
-      '<div>' + escHtml(fmt("E2B", b.e2b_api_key)) + '</div>' +
-      '<div>' + escHtml(fmt("Anthropic", b.anthropic_api_key)) + '</div>';
-    resultEl.style.color = (b.e2b_api_key.ok && b.anthropic_api_key.ok) ? "#2a8c4a" : "#c0392b";
+    // The sandbox row is provider-aware: e2b_api_key on an E2B deployment,
+    // docker_sandbox on a self-hosted one. Render whichever came back.
+    const rows = [
+      ["E2B", b.e2b_api_key],
+      ["Docker sandbox", b.docker_sandbox],
+      ["Anthropic", b.anthropic_api_key],
+    ].filter(([, x]) => x);
+    resultEl.innerHTML = rows.map(([label, x]) => '<div>' + escHtml(fmt(label, x)) + '</div>').join('');
+    resultEl.style.color = rows.every(([, x]) => x.ok) ? "#2a8c4a" : "#c0392b";
   } catch (e) {
     resultEl.textContent = "✗ " + e.message;
     resultEl.style.color = "#c0392b";
