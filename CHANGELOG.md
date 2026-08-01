@@ -12,7 +12,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Cloud chat runs without an E2B account: `chat.provider: docker` spawns each session in a local Docker container instead of a cloud microVM, so a self-hosted instance no longer loses chat entirely for want of E2B keys. Same feature set — web chat, Slack, the agent API, headless runs and artifact harvest are unchanged. Docker access stays behind the `apps-runner` sidecar (still the only process holding the socket) over a new token-gated `/sandboxes/*` API; the gateway never touches `/var/run/docker.sock`. The per-session workspace is **bind-mounted** rather than uploaded, which removes the 100 MB `chat.e2b_workspace_max_bytes` cap and the per-spawn tarball, and makes files the agent writes persist on the host — note that concurrent sessions of the same user therefore share one workspace, and agent-created `node_modules`/`.venv` now survive the session; co-drive sessions still mount only their ephemeral directory. Pause maps to `docker pause` (memory survives while the daemon does, not across a host reboot — the next attach then produces a fresh sandbox with restored conversation context). Sandboxes run non-root with `cap_drop: ALL`, `no-new-privileges`, pids/memory/CPU limits, two fixed mounts and an image-prefix allowlist; no secret enters the container env. New keys: `chat.docker_image`, `docker_network`, `docker_mem_limit`, `docker_cpus`, `docker_pids_limit`, `docker_egress_mode` (`open` | `none`; hostname-level allowlisting is E2B-only), `docker_max_total_sandboxes`. Requires the operator-built sandbox image (`app/initial_workspace_default/docker-sandbox/`), the `apps` compose profile, and `AGNES_INTERNAL_URL`/`SERVER_URL` pointing at a container-reachable address — boot gates refuse to start chat with actionable log lines otherwise. Operator walkthrough, including an honest E2B-vs-Docker comparison: `docs/cloud-chat.md`.
+
 ### Changed
+
+- The chat sandbox's `agnes` CLI wheel and restored-conversation transcript are now staged for every sandbox provider, not only for providers that also upload the workspace. Only the workspace tarball itself remains tied to that decision. E2B behavior is unchanged.
+- `/admin/chat/secrets/test` ("Test connections" in server config) reports the sandbox credential for the configured provider: the E2B key on an E2B instance, a Docker daemon + image probe on a self-hosted one, instead of a permanently failing E2B row.
 
 ### Fixed
 
