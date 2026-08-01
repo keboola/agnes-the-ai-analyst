@@ -12,17 +12,29 @@
 
    Canonical button label across consumers: **Copy install script to
    clipboard**. Keep all consumers aligned; the action does the same
-   thing everywhere (copies a 90-day token-stamped setup script that
-   pastes into Claude Code in `~/Desktop/{workspace_dir}`).
+   thing everywhere (copies the setup script that pastes into Claude Code
+   in `~/Desktop/{workspace_dir}`). The script carries NO login token —
+   it reads its credential from `~/.agnes/token`, written by an earlier
+   step of the /home onboarding flow (see `launchClaudeWithToken` below).
 
    The clipboard payload is single-sourced through
    `_claude_setup_instructions.jinja` (preview_mode=False), which emits
-   `SETUP_INSTRUCTIONS_TEMPLATE` + `renderSetupInstructions(server, token)`.
+   `SETUP_INSTRUCTIONS_TEMPLATE` + `renderSetupInstructions(server)`.
 
    Pages that ALSO render the read-only preview (e.g. via
    `{% include "_claude_setup_instructions.jinja" %}` with preview_mode=True
    in their own template tree) just show the same lines under
    `<pre class="setup-preview-pre">`. The JS here doesn't touch that pre.
+
+   `mintAccessToken()` + `launchClaudeWithToken(btn)` are the OTHER half
+   of this partial: /home's Step 4 uses them to mint a fresh 90-day PAT
+   and copy an OS-appropriate shell command that writes it straight to
+   `~/.agnes/token` (never through the DOM or this page's markup — the
+   visible command in the host page stays masked with bullet characters).
+   See the host template (`home_not_onboarded.html`) for the markup
+   contract (`.install-cmd-secret[data-os-panel]` panels each carrying an
+   `.install-cmd-masked[data-cmd-template]` span with a literal `{TOKEN}`
+   marker).
 #}
 <style>
 .setup-fallback-overlay {
@@ -99,6 +111,18 @@
     color: #FFF;
     font-size: 13px;
 }
+.setup-error .setup-error-retry {
+    margin-left: 8px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.15);
+    color: #FFF;
+    cursor: pointer;
+}
+.setup-error .setup-error-retry:hover { background: rgba(255, 255, 255, 0.28); }
 </style>
 
 <script>
@@ -193,91 +217,180 @@
         });
     }
 
-    async function setupNewClaude(btn) {
+    // Mints a fresh 90-day PAT via POST /auth/tokens. This is the ONLY
+    // place that still talks to /auth/tokens — the install script itself
+    // (setupNewClaude below) no longer needs a token at all, since it
+    // reads ~/.agnes/token instead of carrying one inline. The Step 4
+    // "launch Claude" handler (launchClaudeWithToken, wired from the host
+    // page) is the sole remaining caller.
+    async function mintAccessToken() {
+        var resp = await fetch('/auth/tokens', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: defaultTokenName(),
+                expires_in_days: 90,
+            }),
+        });
+        if (resp.status === 401) {
+            window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+            throw new Error('redirecting to login');
+        }
+        if (!resp.ok) {
+            var detail = 'HTTP ' + resp.status;
+            try {
+                var body = await resp.json();
+                if (body && body.detail) { detail = body.detail; }
+            } catch (_) { /* non-JSON */ }
+            throw new Error(detail);
+        }
+        var data = await resp.json();
+        if (!data || !data.token) {
+            throw new Error('Server did not return a token.');
+        }
+        return data.token;
+    }
+
+    // Step 5 ("Get the install script"). No token involved any more — the
+    // script reads its credential from ~/.agnes/token (written by Step 4),
+    // so this is just a static clipboard copy with {server_url} resolved.
+    function setupNewClaude(btn) {
         var errEl = document.getElementById('setupClaudeError');
         if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
         var origText = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = 'Generating token…';
+        var instructions;
         try {
-            var resp = await fetch('/auth/tokens', {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: defaultTokenName(),
-                    expires_in_days: 90,
-                }),
-            });
-            if (resp.status === 401) {
-                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
-                return;
-            }
-            if (!resp.ok) {
-                var detail = 'HTTP ' + resp.status;
-                try {
-                    var body = await resp.json();
-                    if (body && body.detail) { detail = body.detail; }
-                } catch (_) { /* non-JSON */ }
-                throw new Error(detail);
-            }
-            var data = await resp.json();
-            if (!data || !data.token) {
-                throw new Error('Server did not return a token.');
-            }
-            var serverUrl = window.location.origin;
-            var instructions = renderSetupInstructions(serverUrl, data.token);
-
-            // Replace the inline preview's placeholder with the real token so
-            // users can see what got copied (and re-copy by hand if the
-            // clipboard write failed). The placeholder span lives inside the
-            // shared `_claude_setup_instructions.jinja` preview-mode block;
-            // not every page renders that block, so guard for absence.
-            var placeholders = document.querySelectorAll('.placeholder-token');
-            placeholders.forEach(function (span) {
-                span.textContent = data.token;
-                span.classList.remove('placeholder-token');
-                span.classList.add('token-revealed');
-                span.setAttribute(
-                    'aria-label',
-                    'Generated personal access token — already copied to your clipboard'
-                );
-                // Intentionally do NOT auto-open the parent <details>. The
-                // primary path is "Copied! Paste into Claude Code"; the
-                // manual-paste preview is a secondary affordance and should
-                // stay collapsed unless the user opens it themselves.
-            });
-
-            try {
-                await copyToClipboard(instructions);
-                btn.textContent = 'Copied! Paste into Claude Code';
-                btn.classList.add('copied');
-                setTimeout(function () {
-                    btn.textContent = origText;
-                    btn.classList.remove('copied');
-                    btn.disabled = false;
-                }, 3000);
-                // Notify any host page that wants to chain a follow-up UI
-                // (e.g. /home's P0-2 "where to paste" 3-step modal). The
-                // include itself does nothing with the event — listeners
-                // that don't exist are no-ops.
-                try {
-                    document.dispatchEvent(new CustomEvent('agnes:setup-script-copied'));
-                } catch (_e) { /* CustomEvent ctor missing — IE-era, ignore */ }
-            } catch (clipErr) {
-                btn.textContent = origText;
-                btn.disabled = false;
-                showSetupFallback(instructions);
-            }
+            instructions = renderSetupInstructions(window.location.origin);
         } catch (err) {
-            btn.textContent = origText;
-            btn.disabled = false;
             if (errEl) {
                 errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
                 errEl.style.display = 'block';
             } else {
                 alertModal('Setup failed: ' + (err && err.message ? err.message : err));
             }
+            return;
+        }
+        btn.disabled = true;
+        copyToClipboard(instructions).then(function () {
+            btn.textContent = 'Copied! Paste into Claude Code';
+            btn.classList.add('copied');
+            setTimeout(function () {
+                btn.textContent = origText;
+                btn.classList.remove('copied');
+                btn.disabled = false;
+            }, 3000);
+            // Notify any host page that wants to chain a follow-up UI
+            // (e.g. /home's P0-2 "where to paste" 3-step modal). The
+            // include itself does nothing with the event — listeners
+            // that don't exist are no-ops.
+            try {
+                document.dispatchEvent(new CustomEvent('agnes:setup-script-copied'));
+            } catch (_e) { /* CustomEvent ctor missing — IE-era, ignore */ }
+        }).catch(function () {
+            btn.textContent = origText;
+            btn.disabled = false;
+            showSetupFallback(instructions);
+        });
+    }
+
+    // Step 4 ("Launch Claude — we'll hand it your login first" on /home,
+    // both home_automode branches). Mints a fresh token, builds the
+    // OS-appropriate shell command that writes it to ~/.agnes/token (and,
+    // in the automode branch, launches `claude` in the same line), and
+    // copies ONLY that in-memory string to the clipboard — the real token
+    // never touches the DOM. The visible command stays masked with bullet
+    // characters at all times; `data-cmd-template` on the active
+    // `.install-cmd-masked` span carries the real command shape with a
+    // literal `{TOKEN}` marker (not a secret) for this function to fill in.
+    //
+    // Own click handler by design: the generic `.copy-btn` /
+    // `data-copy-target` mechanism copies the element's rendered
+    // textContent, which for this block is the masked (non-functional)
+    // placeholder — reusing it here would silently copy garbage.
+    function activeOsPanel(scopeEl) {
+        var panel = scopeEl.querySelector('.install-cmd-secret[data-os-panel]:not([hidden])');
+        return panel ? panel.getAttribute('data-os-panel') : 'unix';
+    }
+
+    function buildTokenCommand(scopeEl, os, token) {
+        var span = scopeEl.querySelector(
+            '.install-cmd-secret[data-os-panel="' + os + '"] .install-cmd-masked'
+        );
+        if (!span) return null;
+        var tmpl = span.getAttribute('data-cmd-template') || '';
+        return tmpl.split('{TOKEN}').join(token);
+    }
+
+    function showLaunchError(errEl, message, actions) {
+        if (!errEl) { alertModal(message); return; }
+        errEl.textContent = message + ' ';
+        (actions || []).forEach(function (action) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'setup-error-retry';
+            btn.textContent = action.label;
+            btn.addEventListener('click', action.onClick);
+            errEl.appendChild(btn);
+        });
+        errEl.style.display = 'block';
+    }
+
+    async function launchClaudeWithToken(btn) {
+        var errEl = document.getElementById('launchClaudeError');
+        if (errEl) { errEl.style.display = 'none'; errEl.innerHTML = ''; }
+        var origText = btn.textContent;
+        var scope = btn.closest('.install-block') || document;
+        btn.disabled = true;
+        btn.textContent = 'Generating token…';
+
+        var token;
+        try {
+            token = await mintAccessToken();
+        } catch (err) {
+            btn.disabled = false;
+            btn.textContent = origText;
+            showLaunchError(
+                errEl,
+                'Could not generate your login token: ' + (err && err.message ? err.message : err) + '.',
+                [{ label: 'Retry', onClick: function () { launchClaudeWithToken(btn); } }]
+            );
+            return;
+        }
+
+        var os = activeOsPanel(scope);
+        var command = buildTokenCommand(scope, os, token);
+        if (!command) {
+            btn.disabled = false;
+            btn.textContent = origText;
+            showLaunchError(errEl, 'Internal error: could not build the launch command.', []);
+            return;
+        }
+
+        try {
+            await copyToClipboard(command);
+            btn.textContent = 'Copied! Paste into your terminal';
+            btn.classList.add('copied');
+            setTimeout(function () {
+                btn.textContent = origText;
+                btn.classList.remove('copied');
+                btn.disabled = false;
+            }, 3000);
+        } catch (clipErr) {
+            btn.disabled = false;
+            btn.textContent = origText;
+            // Reveal-once escape hatch: clipboard access failed, but we
+            // never dead-end. The real command (including the token) is
+            // shown only after this SECOND, deliberate click — never
+            // automatically — reusing the same read-only textarea modal
+            // Step 5 uses for its own clipboard-blocked fallback.
+            showLaunchError(errEl, 'Clipboard access was blocked.', [
+                {
+                    label: 'Reveal the command once so I can copy it manually',
+                    onClick: function () { showSetupFallback(command); },
+                },
+                { label: 'Retry', onClick: function () { launchClaudeWithToken(btn); } },
+            ]);
         }
     }
 
@@ -285,7 +398,9 @@
     window.copyToClipboard = copyToClipboard;
     window.defaultTokenName = defaultTokenName;
     window.showSetupFallback = showSetupFallback;
+    window.mintAccessToken = mintAccessToken;
     window.setupNewClaude = setupNewClaude;
+    window.launchClaudeWithToken = launchClaudeWithToken;
     window.renderSetupInstructions = renderSetupInstructions;
     window.SETUP_INSTRUCTIONS_TEMPLATE = SETUP_INSTRUCTIONS_TEMPLATE;
 })();

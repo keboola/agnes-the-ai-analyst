@@ -43,21 +43,32 @@ def _client():
 # Markers from the shared partial that MUST appear on every page that
 # wires up the one-click setup flow.
 _PARTIAL_MARKERS = (
-    "SETUP_INSTRUCTIONS_TEMPLATE",            # JS template array from _claude_setup_instructions.jinja
-    "renderSetupInstructions",                 # JS renderer function
-    "function setupNewClaude",                 # async fn the button click invokes
-    "function showSetupFallback",              # clipboard-blocked modal
-    ".setup-fallback-modal",                   # modal CSS
-    'fetch(\'/auth/tokens\'',                  # token-mint endpoint
-    "__setupCtaWired",                         # IIFE re-include guard
+    "SETUP_INSTRUCTIONS_TEMPLATE",  # JS template array from _claude_setup_instructions.jinja
+    "renderSetupInstructions",  # JS renderer function
+    "function setupNewClaude",  # async fn the button click invokes
+    "function showSetupFallback",  # clipboard-blocked modal
+    ".setup-fallback-modal",  # modal CSS
+    "fetch('/auth/tokens'",  # token-mint endpoint
+    "__setupCtaWired",  # IIFE re-include guard
 )
 
 
 def _assert_partial_present(body: str) -> None:
     missing = [m for m in _PARTIAL_MARKERS if m not in body]
-    assert not missing, (
-        "Shared setup-CTA markers missing from rendered body: %r" % missing
-    )
+    assert not missing, "Shared setup-CTA markers missing from rendered body: %r" % missing
+
+
+# Step 4 ("launch Claude" / "save your login token") markers — /home's
+# not-onboarded view is currently the only consumer of the mint-then-mask
+# flow (dashboard doesn't render a Step 4). Kept separate from
+# `_PARTIAL_MARKERS` (which pins what's shared across every consumer of
+# the partial) since this is /home-specific markup, not partial markup.
+_LAUNCH_STEP_MARKERS = (
+    "function mintAccessToken",  # shared token-mint helper, moved out of setupNewClaude
+    "function launchClaudeWithToken",  # Step 4's own click handler
+    "install-cmd-masked",  # non-selectable masked command span
+    "data-cmd-template=",  # real command shape, {TOKEN} marker only
+)
 
 
 def test_dashboard_includes_setup_cta_partial(fresh_db):
@@ -106,7 +117,10 @@ def test_home_not_onboarded_includes_setup_cta_partial(fresh_db):
 def test_home_renders_preview_under_manual_fallback(fresh_db):
     """The collapsed 'Or paste manually' details exposes the same
     `setup-preview-pre` block that /setup uses, so users can read the
-    payload without committing to the one-click flow."""
+    payload without committing to the one-click flow. The preview no
+    longer carries a token placeholder — the script itself has no
+    `{token}` to substitute (the PAT is delivered out-of-band via
+    Step 4's launch/save-token command instead)."""
     from src.db import get_system_db, close_system_db
 
     conn = get_system_db()
@@ -122,4 +136,84 @@ def test_home_renders_preview_under_manual_fallback(fresh_db):
     body = resp.text
     assert "manual-fallback" in body
     assert "setup-preview-pre" in body
-    assert "placeholder-token" in body  # rendered placeholder span
+    assert "placeholder-token" not in body
+    assert "{token}" not in body
+    assert "eyJ" not in body
+
+
+def test_home_not_onboarded_renders_launch_step_markers(fresh_db):
+    """Step 4 ("Launch Claude — we'll hand it your login first" /
+    "Save your login token") wires up its own mint-then-mask JS contract,
+    distinct from Step 5's now-token-free setupNewClaude()."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp = c.get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    body = resp.text
+    missing = [m for m in _LAUNCH_STEP_MARKERS if m not in body]
+    assert not missing, "Step 4 launch markers missing from rendered body: %r" % missing
+    assert 'id="launchClaudeBtn"' in body
+    assert 'onclick="launchClaudeWithToken(this)"' in body
+
+
+def test_home_not_onboarded_body_has_no_leaked_token(fresh_db):
+    """AC: the rendered /home HTML must contain no JWT-shaped string and
+    no `{token}` placeholder anywhere — the login token is delivered
+    out-of-band by Step 4's masked shell command, minted only in memory
+    at click time, never written into the page markup."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp = c.get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "eyJ" not in body
+    assert "{token}" not in body
+    assert "{TOKEN}" in body  # the non-secret format marker IS expected
+
+
+def test_home_not_onboarded_masked_command_is_non_selectable(fresh_db):
+    """AC: the masked command block carries the CSS class that turns off
+    selection (home.css wires `user-select: none` on `.install-cmd-masked`)
+    plus the page-level copy/cut suppression hook."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp = c.get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'class="multiline install-cmd-masked"' in body
+    assert 'draggable="false"' in body
+    # Page-level copy/cut suppression hook (belt-and-braces on top of the
+    # CSS user-select: none — see home_not_onboarded.html's inline script).
+    assert "install-cmd-masked" in body
+    assert "addEventListener('copy'" in body
+    assert "addEventListener('cut'" in body
+
+    from pathlib import Path
+
+    css = (Path("app") / "web" / "static" / "css" / "home.css").read_text(encoding="utf-8")
+    assert ".install-cmd-masked" in css
+    assert "user-select: none" in css
