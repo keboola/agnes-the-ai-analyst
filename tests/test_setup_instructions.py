@@ -68,7 +68,7 @@ def test_init_step_has_no_security_judgment_suppression():
     # Legit mechanics preserved — file-based token, nothing to write here.
     assert "~/.agnes/token" in joined
     assert "--token-file" in joined
-    assert "already stored at ~/.agnes/token" in joined
+    assert "The token was saved to ~/.agnes/token" in joined
     # Anti-safety suppression must be gone (2 paragraphs + 1 sentence here).
     assert "security incident" not in joined
     assert "do not warn" not in joined

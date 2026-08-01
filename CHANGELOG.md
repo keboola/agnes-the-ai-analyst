@@ -24,7 +24,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-- The generated install prompt no longer embeds the analyst's raw access token: the `Personal access token: {token}` preamble line and the `~/.agnes/token` heredoc in the `agnes init` step are gone, replaced by a guard (`test -s ~/.agnes/token`, fresh-install vs. reconcile aware) that assumes the token was already saved out-of-band before the prompt was generated. The token value now never has to appear in the prompt text, a browser clipboard, or a pasted chat transcript. `docs/seed-repo-contract.md` and the banned-phrase regression guard were updated accordingly (`{token}` / a literal JWT fragment are now banned from the rendered body).
+- The generated install prompt no longer embeds the analyst's raw access token: the `Personal access token: {token}` preamble line and the `~/.agnes/token` heredoc in the `agnes init` step are gone, replaced by a guard (`test -s ~/.agnes/token`, fresh-install vs. reconcile aware) that assumes the token was already saved to `~/.agnes/token` by an earlier step of the web onboarding flow, before the prompt was generated. `agnes init --token-file` still reads it and removes it once the credential is saved to `~/.config/agnes/token.json`. The token value now never has to appear in the prompt text, a browser clipboard, or a pasted chat transcript. `docs/seed-repo-contract.md` and the banned-phrase regression guard were updated accordingly (`{token}` / a literal JWT fragment are now banned from the rendered body).
 
 ## [0.77.32] - 2026-07-30
 

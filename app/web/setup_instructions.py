@@ -484,10 +484,11 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "                       no `mkdir`, no `cd`, no further steps.",
         "",
         "3) Bootstrap your {instance_brand} workspace in this directory.",
-        "   The token is already stored at ~/.agnes/token, so there is nothing",
-        "   to write here — `agnes init --token-file` reads it directly (never",
-        "   on the command line) and deletes the file once the credential is",
-        "   saved:",
+        "   The token was saved to ~/.agnes/token by step 4 of the install",
+        "   guide, so there is nothing to write here — `agnes init",
+        "   --token-file` reads it directly (never on the command line) and",
+        "   removes the file once the credential is saved to",
+        "   ~/.config/agnes/token.json:",
         "",
         f'   agnes init --server-url "{server_url_placeholder}" --token-file ~/.agnes/token --workspace .',
         "",
@@ -500,8 +501,9 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "   `<name>.bak.<ts>` before being updated; Agnes-owned",
         "   hooks/statusLine/commands are re-applied on top. Then skip to step 4.",
         "   (If `agnes update` fails on auth because your saved token expired:",
-        "   go to {server_url}/home, re-run step 4 to save a fresh token, then",
-        "   re-run this step.)",
+        "   the saved credential lives in ~/.config/agnes/token.json. Re-run",
+        "   step 4 on {server_url}/home to save a fresh token, then re-run",
+        "   this step.)",
         "",
         "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
         "   writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
@@ -1029,6 +1031,11 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "",
         "Server: {server_url}",
         "",
+        "Your login token is already saved on this machine at ~/.agnes/token",
+        "(written by step 4 of the install guide at {server_url}). The steps",
+        "below only reference that file path — never print the token, echo",
+        "it, or paste it into this chat.",
+        "",
         "Run these, in order. The script is idempotent — safe to re-run if a step",
         "fails partway through.",
         "",
@@ -1041,14 +1048,16 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "previous instance (e.g. an old marketplace clone) is handled by the",
         "steps themselves.",
         "",
-        "Before step 1, also confirm the access token landed:",
-        "    test -s ~/.agnes/token",
-        "",
-        "If that's empty on a fresh install, stop here — tell the user their",
-        "token wasn't saved, and send them to {server_url}/home to re-run step 4,",
-        "then re-paste this prompt. If it's empty on a reconcile, that's",
-        "expected: the first `agnes init` already consumed and deleted the file",
-        "— continue, `agnes update` doesn't need it.",
+        "First, a quick check: run `test -s ~/.agnes/token`.",
+        "  - If the file exists, continue with step 1.",
+        "  - If it is missing and this machine was already set up (the checks",
+        "    above say reconcile), that's fine: the token file is consumed",
+        "    and removed by the first `agnes init`, and later runs use the",
+        "    saved credential. Continue.",
+        "  - If it is missing on a fresh install, stop here — tell the user",
+        '    to open {server_url}/home and run step 4 ("Launch Claude — it',
+        '    saves your login token to ~/.agnes/token first"), then paste',
+        "    this script again.",
         "",
         "If a step fails with an unfamiliar error, paste the exact error back and",
         "stop. If the failure is a TLS error, look for the cause — corporate",
@@ -1148,8 +1157,9 @@ def resolve_lines(
     """Return the template lines with server-side placeholders substituted.
 
     Pre-substitutes `{wheel_filename}` and `{server_host}`. Leaves
-    `{server_url}` and `{token}` as placeholders for click-time JS
-    substitution (or for `render_setup_instructions()` below).
+    `{server_url}` as a placeholder for click-time JS substitution (or for
+    `render_setup_instructions()` below). The access token is never a
+    placeholder here — see the module docstring.
 
     `ca_pem` (PEM-encoded fullchain of the Agnes server's TLS cert) gates
     the cross-platform step-0 trust-bootstrap block AND switches step 1 to
