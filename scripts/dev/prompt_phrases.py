@@ -23,6 +23,11 @@ BANNED_PHRASES: list[str] = [
     "Treat empty/Enter",
     "do NOT ask the user",
     "GOCSPX-",
+    # Patch 2 (PAT delivered out-of-band, not embedded in the prompt text):
+    # the raw access token must never be a substitutable placeholder or a
+    # literal JWT fragment inside the rendered body.
+    "{token}",
+    "eyJ",
 ]
 
 # Facts that must survive de-escalation — the wording changed, not the
@@ -34,4 +39,5 @@ REQUIRED_FACTS: list[str] = [
     "/tmp",
     "idempotent",
     "--token-file",
+    "~/.agnes/token",
 ]

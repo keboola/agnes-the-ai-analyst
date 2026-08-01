@@ -44,7 +44,11 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "{token}" not in out
     assert "{wheel_filename}" not in out
     assert "https://agnes.example.com/cli/wheel/agnes_the_ai_analyst-2.0.0-py3-none-any.whl" in out
-    assert "T-123" in out
+    # The token is delivered out-of-band (written to ~/.agnes/token before
+    # this prompt is generated) — its raw value must NEVER appear in the
+    # rendered text, even though the `token` kwarg is still accepted for
+    # backward compatibility.
+    assert "T-123" not in out
 
 
 def test_init_step_has_no_security_judgment_suppression():
@@ -55,15 +59,16 @@ def test_init_step_has_no_security_judgment_suppression():
     "auto-classifier / credential-exfil" framing, are removed — Claude Code's
     hardened security protocol reads such copy as an attempt to bypass its own
     protections and blocks the install. Only the legitimate mechanics remain:
-    write the PAT to a file so it never lands in the command-line argv.
+    the token is delivered out-of-band and read from a file, never written
+    inline or passed on the command line.
     """
     from app.web.setup_instructions import _init_lines
 
     joined = "\n".join(_init_lines())
-    # Legit mechanics preserved — file-based token keeps it out of argv.
+    # Legit mechanics preserved — file-based token, nothing to write here.
     assert "~/.agnes/token" in joined
     assert "--token-file" in joined
-    assert "argv" in joined
+    assert "already stored at ~/.agnes/token" in joined
     # Anti-safety suppression must be gone (2 paragraphs + 1 sentence here).
     assert "security incident" not in joined
     assert "do not warn" not in joined
@@ -349,9 +354,12 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
     assert "{server_host}" not in joined
-    # server_url + token are still placeholders for click-time JS substitution.
+    # server_url is still a placeholder for click-time JS substitution. The
+    # access token is delivered out-of-band (never a placeholder in this
+    # template — see the module docstring), so `{token}` must never appear.
     assert "{server_url}" in joined
-    assert "{token}" in joined
+    assert "{token}" not in joined
+    assert "eyJ" not in joined
 
 
 def test_preflight_checks_both_git_and_claude():
@@ -404,11 +412,12 @@ def test_render_setup_instructions_with_plugins_substitutes_all_placeholders():
     assert "{token}" not in out
     assert "{wheel_filename}" not in out
     assert "{server_host}" not in out
-    # Token still appears for `agnes init` (step 2). The marketplace
-    # step uses `agnes refresh-marketplace --bootstrap` which reads the
-    # token from the agnes config that step 2 just wrote, so no token
-    # in any URL inside step 5.
-    assert "T-XYZ" in out
+    # The token is delivered out-of-band (written to ~/.agnes/token before
+    # this prompt is generated) — its raw value must never appear here, and
+    # the marketplace step's `agnes refresh-marketplace --bootstrap` reads
+    # its own credentials from the agnes config step 3 wrote, not from any
+    # URL inside step 5.
+    assert "T-XYZ" not in out
     # The legacy `git config --global ... sslVerify false` downgrade is gone
     # (see CHANGELOG: it tripped Claude Code auto-mode classifiers and was
     # only ever a safety net for AGNES_DEBUG_AUTH instances without a
@@ -694,10 +703,11 @@ def test_render_setup_instructions_propagates_ca_pem():
     # The legacy `git config sslVerify=false` downgrade was deleted; the
     # ca_pem trust block is the sole TLS-bootstrap path now.
     assert "git config --global" not in out
-    # Other placeholders still substituted.
+    # Other placeholders still substituted. The access token is delivered
+    # out-of-band, so its raw value must never appear in the rendered text.
     assert "{server_url}" not in out
     assert "{token}" not in out
-    assert "T-CA" in out
+    assert "T-CA" not in out
     # Curl-then-local-install path is rendered (with placeholders resolved).
     assert "https://agnes.example.com/cli/wheel/agnes-1.0-py3-none-any.whl" in out
     assert 'uv tool install --native-tls --force "$WHEEL"' in out

@@ -173,7 +173,6 @@ The Agnes server substitutes the following placeholders at render time
 | Placeholder                | Replaced by                                          |
 |----------------------------|------------------------------------------------------|
 | `{server_url}`             | Browser-side at click time (JS clipboard renderer)   |
-| `{token}`                  | Browser-side at click time (analyst's PAT)           |
 | `{wheel_filename}`         | Server-side (real PEP 427 filename of the wheel)     |
 | `{server_host}`            | Server-side (bare host, no scheme)                   |
 | `{workspace_dir}`          | Server-side (`workspace_dir_name` from instance.yaml)|
@@ -183,6 +182,15 @@ The Agnes server substitutes the following placeholders at render time
 | `{marketplace_block}`      | Server-side — plugin-grant-aware step 6 body         |
 | `{connector_tiles}`        | Server-side — generated from manifest scan           |
 | `{ca_bundle_finale_bullet}`| Server-side — extra bullet when `has_ca` is true     |
+
+**`{token}` is NOT a placeholder.** The analyst's access token is
+deliberately never embedded in the install-prompt body — it is written to
+`~/.agnes/token` out-of-band, before the prompt is generated, so the raw
+value never has to appear in the prompt text, the browser clipboard, or a
+pasted chat transcript. A seed's `template.md.tmpl` MUST NOT reference a
+`{token}` placeholder or inline a literal token/JWT example; the prompt
+instead carries a guard (`test -s ~/.agnes/token`) and reads the file via
+`agnes init --token-file ~/.agnes/token`.
 
 A missing placeholder is rendered literally (no error). This is
 deliberate — a typo in the template surfaces as visible text in the

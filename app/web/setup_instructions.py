@@ -4,10 +4,19 @@ Both the JS-embedded clipboard renderer (`_claude_setup_instructions.jinja`)
 and the read-only HTML preview on the dashboard and /install pages consume
 these lines. Keep it in Python so there is exactly ONE place that edits.
 
-Placeholders `{server_url}`, `{token}`, `{wheel_filename}`, and `{server_host}`
-are substituted at render time. `{wheel_filename}` and `{server_host}` are
-pre-substituted server-side via `resolve_lines()`; `{server_url}` and
-`{token}` survive into the JS template and are filled in at click time.
+Placeholders `{server_url}`, `{wheel_filename}`, and `{server_host}` are
+substituted at render time. `{wheel_filename}` and `{server_host}` are
+pre-substituted server-side via `resolve_lines()`; `{server_url}` survives
+into the JS template and is filled in at click time.
+
+The analyst's access token is deliberately NOT a placeholder in this
+template. It is written to `~/.agnes/token` out-of-band, before this
+prompt is generated (see `{server_url}/home` step 4) — so the raw token
+value never has to appear in the prompt text, the browser clipboard, or a
+pasted chat transcript. `render_setup_instructions()` still accepts a
+`token` kwarg for backward compatibility with existing callers, but it is
+a no-op today: nothing in the rendered body contains `{token}` to
+substitute.
 
 `{wheel_filename}` is server-pre-substituted because `uv tool install`
 validates the PEP 427 filename *in the URL path* before fetching, so a
@@ -403,9 +412,17 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     `/api/catalog/tables` internally, and `agnes catalog` then doubles as
     a smoke verify of the data plane.
 
-    The PAT minted by `/setup` is `general` scope with a 90 d TTL, so the
-    init call will succeed for the operator's whole 90 d window without
-    re-clicking "Generate prompt".
+    The PAT minted by step 4 on `{server_url}/home` is `general` scope with
+    a 90 d TTL, so the init call will succeed for the operator's whole 90 d
+    window without re-generating a token.
+
+    Step 3 no longer writes the PAT into a heredoc: the token is delivered
+    out-of-band (written to `~/.agnes/token` before this prompt is
+    generated — see the preamble's access-token guard and step 4 on
+    `{server_url}/home`) so the raw value never has to appear inside the
+    prompt text itself. `agnes init --token-file ~/.agnes/token` reads it
+    directly and deletes the file once the credential is saved
+    (`cli/commands/init.py`).
     """
     return [
         "",
@@ -467,14 +484,11 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "                       no `mkdir`, no `cd`, no further steps.",
         "",
         "3) Bootstrap your {instance_brand} workspace in this directory.",
-        "   Write the PAT to a file FIRST, then run `agnes init` with",
-        '   `--token-file`. Passing the JWT inline via `--token "eyJ..."`',
-        "   puts the token in the command-line argv; piping it through a file",
-        "   keeps it out of the command-line argv entirely.",
+        "   The token is already stored at ~/.agnes/token, so there is nothing",
+        "   to write here — `agnes init --token-file` reads it directly (never",
+        "   on the command line) and deletes the file once the credential is",
+        "   saved:",
         "",
-        "   mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'",
-        "{token}",
-        "AGNES_PAT",
         f'   agnes init --server-url "{server_url_placeholder}" --token-file ~/.agnes/token --workspace .',
         "",
         "   If `.claude/init-complete` already exists in this directory, the",
@@ -486,9 +500,8 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "   `<name>.bak.<ts>` before being updated; Agnes-owned",
         "   hooks/statusLine/commands are re-applied on top. Then skip to step 4.",
         "   (If `agnes update` fails on auth because your saved token expired:",
-        "   the saved credential lives in `~/.config/agnes/token.json`. Open",
-        "   /setup on the server, generate a fresh prompt, and re-run step 3",
-        "   from there.)",
+        "   go to {server_url}/home, re-run step 4 to save a fresh token, then",
+        "   re-run this step.)",
         "",
         "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
         "   writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
@@ -997,14 +1010,24 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     top (above `Set up the {instance_brand} CLI…`). Empty/unset emits zero
     extra lines so the default output is byte-identical. Any
     `{instance_brand}` etc. inside it is substituted by the `resolve_lines`
-    loop; it must NOT contain literal `{server_url}`/`{token}` (those only
-    resolve at click time in the JS clipboard flow, not in the preamble)."""
+    loop; it must NOT contain literal `{server_url}` (that only resolves
+    at click time in the JS clipboard flow, not in the preamble).
+
+    The access-token guard (before step 1) is the prompt-side half of
+    keeping the raw token out of chat: the token is written to
+    `~/.agnes/token` out-of-band, before this prompt is generated (step 4
+    on `{server_url}/home` — the delivery mechanism itself is out of this
+    module's scope). The guard tells the agent what "missing" means in
+    each of the two cases the earlier "Before you start" paragraph already
+    established: on a FRESH install it's a real problem (the token never
+    landed) and the agent should stop and send the user back to generate
+    one; on a RECONCILE it's expected (the first `agnes init` already
+    consumed and deleted the file), so the agent should just continue.
+    """
     lines = [
         "Set up the {instance_brand} CLI on this machine.",
         "",
         "Server: {server_url}",
-        "Personal access token: {token}",
-        "(Just generated; treat it as a secret.)",
         "",
         "Run these, in order. The script is idempotent — safe to re-run if a step",
         "fails partway through.",
@@ -1017,6 +1040,15 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "configured' outcomes as success, not as errors. Leftover state from a",
         "previous instance (e.g. an old marketplace clone) is handled by the",
         "steps themselves.",
+        "",
+        "Before step 1, also confirm the access token landed:",
+        "    test -s ~/.agnes/token",
+        "",
+        "If that's empty on a fresh install, stop here — tell the user their",
+        "token wasn't saved, and send them to {server_url}/home to re-run step 4,",
+        "then re-paste this prompt. If it's empty on a reconcile, that's",
+        "expected: the first `agnes init` already consumed and deleted the file",
+        "— continue, `agnes update` doesn't need it.",
         "",
         "If a step fails with an unfamiliar error, paste the exact error back and",
         "stop. If the failure is a TLS error, look for the cause — corporate",
@@ -1235,9 +1267,14 @@ def render_setup_instructions(
 
     Used server-side for tests and any non-JS rendering path. The browser
     clipboard flow uses the JS renderer embedded in the Jinja partial; both
-    must produce byte-identical output for a given (server_url, token,
-    wheel, plugins, host, ca_pem, connector_manifest, brand, workspace_dir)
-    tuple.
+    must produce byte-identical output for a given (server_url, wheel,
+    plugins, host, ca_pem, connector_manifest, brand, workspace_dir) tuple.
+
+    `token` is accepted for backward compatibility with existing callers
+    but is otherwise unused: the rendered body deliberately contains no
+    `{token}` placeholder (the access token is delivered out-of-band, see
+    the module docstring), so the trailing `.replace("{token}", token)`
+    below is a no-op today.
     """
     lines = resolve_lines(
         wheel_filename,

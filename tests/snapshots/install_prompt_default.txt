@@ -1,8 +1,6 @@
 Set up the BRAND CLI on this machine.
 
 Server: {server_url}
-Personal access token: {token}
-(Just generated; treat it as a secret.)
 
 Run these, in order. The script is idempotent — safe to re-run if a step
 fails partway through.
@@ -15,6 +13,15 @@ the desired state rather than reinstalling — and treat 'already
 configured' outcomes as success, not as errors. Leftover state from a
 previous instance (e.g. an old marketplace clone) is handled by the
 steps themselves.
+
+Before step 1, also confirm the access token landed:
+    test -s ~/.agnes/token
+
+If that's empty on a fresh install, stop here — tell the user their
+token wasn't saved, and send them to {server_url}/home to re-run step 4,
+then re-paste this prompt. If it's empty on a reconcile, that's
+expected: the first `agnes init` already consumed and deleted the file
+— continue, `agnes update` doesn't need it.
 
 If a step fails with an unfamiliar error, paste the exact error back and
 stop. If the failure is a TLS error, look for the cause — corporate
@@ -97,14 +104,11 @@ solving it.
                        no `mkdir`, no `cd`, no further steps.
 
 3) Bootstrap your BRAND workspace in this directory.
-   Write the PAT to a file FIRST, then run `agnes init` with
-   `--token-file`. Passing the JWT inline via `--token "eyJ..."`
-   puts the token in the command-line argv; piping it through a file
-   keeps it out of the command-line argv entirely.
+   The token is already stored at ~/.agnes/token, so there is nothing
+   to write here — `agnes init --token-file` reads it directly (never
+   on the command line) and deletes the file once the credential is
+   saved:
 
-   mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'
-{token}
-AGNES_PAT
    agnes init --server-url "{server_url}" --token-file ~/.agnes/token --workspace .
 
    If `.claude/init-complete` already exists in this directory, the
@@ -116,9 +120,8 @@ AGNES_PAT
    `<name>.bak.<ts>` before being updated; Agnes-owned
    hooks/statusLine/commands are re-applied on top. Then skip to step 4.
    (If `agnes update` fails on auth because your saved token expired:
-   the saved credential lives in `~/.config/agnes/token.json`. Open
-   /setup on the server, generate a fresh prompt, and re-run step 3
-   from there.)
+   go to {server_url}/home, re-run step 4 to save a fresh token, then
+   re-run this step.)
 
    This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),
    writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code
