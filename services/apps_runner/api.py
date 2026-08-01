@@ -269,3 +269,13 @@ def list_apps(x_runner_token: str | None = Header(default=None)):
         if c.name.startswith("agnes-dataapp-")
     ]
     return {"apps": rows}
+
+
+# The chat-sandbox half of the socket API (`/sandboxes/*`, used by the chat
+# gateway's DockerSandboxProvider). Imported at the bottom, after the helpers
+# above exist: sandbox_api reaches back into this module lazily for
+# `_docker`/`_check_token`/`_container`/`_resolve_host_path` so both halves
+# share one Docker seam (and one monkeypatch point in tests).
+from services.apps_runner.sandbox_api import router as _sandbox_router
+
+app.include_router(_sandbox_router)
