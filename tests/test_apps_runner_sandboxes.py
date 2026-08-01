@@ -192,12 +192,34 @@ def _up(c, tmp, **over):
 # --- token gating ---------------------------------------------------------
 
 
-def test_sandbox_routes_require_token(client):
-    c, _, tmp = client
-    assert c.post(f"/sandboxes/{NAME}/up", json={"spec": SPEC(tmp)}).status_code == 401
-    assert c.get(f"/sandboxes/{NAME}/status").status_code == 401
-    assert c.get("/sandboxes").status_code == 401
-    assert c.get("/sandboxes/probe").status_code == 401
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("POST", f"/sandboxes/{NAME}/up", {}),
+        ("POST", f"/sandboxes/{NAME}/pause", None),
+        ("POST", f"/sandboxes/{NAME}/resume", None),
+        ("POST", f"/sandboxes/{NAME}/rm", None),
+        ("POST", f"/sandboxes/{NAME}/stdin", {}),
+        ("POST", f"/sandboxes/{NAME}/files", {}),
+        ("GET", f"/sandboxes/{NAME}/status", None),
+        ("GET", f"/sandboxes/{NAME}/stream", None),
+        ("GET", f"/sandboxes/{NAME}/files?path=/work", None),
+        ("GET", "/sandboxes", None),
+        ("GET", "/sandboxes/probe", None),
+    ],
+)
+def test_sandbox_routes_require_token(client, method, path, body):
+    """Every /sandboxes/* route 401s without the token — no route skips the guard.
+
+    Bodies are minimal valid JSON so FastAPI's request validation passes and the
+    handler's own ``_guard``/``_check_token`` is what produces the 401.
+    """
+    c, _, _tmp = client
+    if body is not None:
+        r = c.request(method, path, json=body)
+    else:
+        r = c.request(method, path)
+    assert r.status_code == 401
 
 
 def test_sandbox_token_fails_closed_when_unset(client, monkeypatch):

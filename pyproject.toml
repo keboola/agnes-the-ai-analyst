@@ -328,6 +328,12 @@ packages = ["app", "src", "connectors", "cli", "services", "config"]
 line-length = 120
 target-version = "py313"
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's parameter-declaration calls are immutable markers, not runtime
+# defaults — without this, ruff versions that enable B008 by default flag
+# every `= Body(...)` / `= Header(...)` route signature in the repo.
+extend-immutable-calls = ["fastapi.Body", "fastapi.Depends", "fastapi.Header", "fastapi.Query"]
+
 [tool.ruff.lint.per-file-ignores]
 # main.py deliberately runs env/config setup before its imports — the
 # 80+ E402s are the file's design, not drift.

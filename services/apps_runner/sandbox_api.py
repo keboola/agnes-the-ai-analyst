@@ -80,11 +80,17 @@ def _api():
 
 def _docker_errors(fn):
     """Delegate to ``api._docker_errors`` at call time (single source of truth
-    for ImageNotFound → 400 / APIError → 502 mapping, no import-time cycle)."""
+    for ImageNotFound → 400 / APIError → 502 mapping, no import-time cycle),
+    wrapping ``fn`` once on first use rather than on every request."""
+
+    wrapped = None
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        return _api()._docker_errors(fn)(*args, **kwargs)
+        nonlocal wrapped
+        if wrapped is None:
+            wrapped = _api()._docker_errors(fn)
+        return wrapped(*args, **kwargs)
 
     return wrapper
 
@@ -312,7 +318,7 @@ def sandbox_rm(
     if grace > 0:
         try:
             c.stop(timeout=int(grace) or 1)
-        except Exception:  # noqa: BLE001 — a stop failure must not block removal
+        except Exception:  # noqa: BLE001, S110 — a stop failure must not block removal
             pass
     c.remove(force=True)
     return {"status": "removed"}
