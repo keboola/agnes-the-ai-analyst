@@ -29,9 +29,10 @@ class SlackConfig:
 @dataclass(frozen=True)
 class ChatConfig:
     enabled: bool = False
-    # Sandbox provider id. ``e2b`` is the only production-supported
-    # value; future variants (mock_e2b for tests, sandbox-as-a-service
-    # alternatives) would extend the gate in ``app/main.py``.
+    # Sandbox provider id. ``e2b`` (cloud microVMs) and ``docker``
+    # (self-hosted containers, driven through the apps-runner sidecar)
+    # are the production-supported values; a further variant would
+    # extend the gate in ``app/main.py``.
     provider: str = "e2b"
     concurrency_per_user: int = 3
     idle_ttl_seconds: int = 30 * 60
@@ -54,8 +55,33 @@ class ChatConfig:
     # directly once the broker is live — Anthropic traffic goes via the relay.
     egress_allow_out: list[str] = field(default_factory=list)
     # Per-spawn workspace push cap (Q1, 100 MB default). Files past this
-    # cap → WorkspaceTooLarge → user-facing error frame.
+    # cap → WorkspaceTooLarge → user-facing error frame. Irrelevant under
+    # ``provider: docker`` — that provider bind-mounts the workspace, so
+    # nothing is pushed and nothing is capped.
     e2b_workspace_max_bytes: int = 100 * 1024 * 1024
+    # --- Docker sandbox provider (``provider: docker``) ---------------------
+    # Operator-built sandbox image (see
+    # app/initial_workspace_default/docker-sandbox/). The apps-runner sidecar
+    # additionally enforces CHAT_SANDBOX_IMAGE_PREFIX, so a tag outside the
+    # allowlisted prefix is refused at create time.
+    docker_image: str = "agnes-chat-sandbox:latest"
+    # Docker network the sandbox joins. Must be one the Agnes app is also
+    # attached to, or AGNES_SERVER won't resolve from inside the container.
+    docker_network: str = "agnes-apps"
+    # Always-set resource bounds (a local sandbox contends with the gateway
+    # host, unlike an offloaded E2B microVM).
+    docker_mem_limit: str = "2g"
+    docker_cpus: float = 1.0
+    docker_pids_limit: int = 512
+    # ``open`` — normal bridge, internet reachable (parity with in-sandbox
+    # tools that fetch packages). ``none`` — an ``internal`` bridge where the
+    # only reachable origin is whatever else is attached to it (stronger than
+    # E2B's allowlist, but in-sandbox package installs stop working).
+    # Hostname-level allowlisting is not offered here; see docs/cloud-chat.md.
+    docker_egress_mode: str = "open"
+    # Host-wide ceiling on live sandboxes, checked at spawn on top of
+    # ``concurrency_per_user``.
+    docker_max_total_sandboxes: int = 10
     # Lifecycle when the last sink detaches: "pause" (E2B snapshot, resumable)
     # or "kill" (legacy cost-minimizing behavior).
     # Deprecated: use on_detach instead of e2b_kill_on_ws_disconnect.
@@ -158,6 +184,16 @@ def _parse_slack_config(raw_chat: dict) -> SlackConfig:
     return SlackConfig(transport=transport)
 
 
+def _parse_docker_egress_mode(raw: dict) -> str:
+    """``open`` | ``none``; anything else warns and falls back to ``open``
+    (same normalize-don't-crash convention as ``_parse_on_detach``)."""
+    mode = str(raw.get("docker_egress_mode", "open")).strip().lower()
+    if mode not in ("open", "none"):
+        logger.warning("unknown chat.docker_egress_mode %r — falling back to 'open'", mode)
+        mode = "open"
+    return mode
+
+
 def _parse_on_detach(raw: dict) -> str:
     on_detach = str(raw.get("on_detach", "")).strip().lower()
     if on_detach not in ("pause", "kill"):
@@ -213,6 +249,13 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         e2b_template_id=raw.get("e2b_template_id") or None,
         egress_allow_out=list(raw.get("egress_allow_out") or []),
         e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
+        docker_image=str(raw.get("docker_image") or "agnes-chat-sandbox:latest"),
+        docker_network=str(raw.get("docker_network") or "agnes-apps"),
+        docker_mem_limit=str(raw.get("docker_mem_limit") or "2g"),
+        docker_cpus=float(raw.get("docker_cpus", 1.0)),
+        docker_pids_limit=int(raw.get("docker_pids_limit", 512)),
+        docker_egress_mode=_parse_docker_egress_mode(raw),
+        docker_max_total_sandboxes=int(raw.get("docker_max_total_sandboxes", 10)),
         on_detach=_parse_on_detach(raw),
         detach_linger_seconds=detach_linger_seconds,
         # Falls back to detach_linger_seconds's own resolved value when the

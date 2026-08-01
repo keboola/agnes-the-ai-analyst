@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 from app.chat.config import load_chat_config
 
 
@@ -41,6 +40,55 @@ def test_enabled_with_overrides(tmp_path: Path):
     assert cfg.e2b_kill_on_ws_disconnect is False
     assert cfg.concurrency_per_user == 5
     assert cfg.idle_ttl_seconds == 900
+
+
+def test_docker_provider_defaults(tmp_path: Path):
+    """`chat.docker_*` knobs are inert under the default e2b provider but must
+    still carry usable defaults — an operator flipping `provider: docker`
+    should get a working stack from the image tag alone."""
+    yaml = tmp_path / "instance.yaml"
+    yaml.write_text("instance_name: test\n")
+    cfg = load_chat_config(yaml)
+    assert cfg.docker_image == "agnes-chat-sandbox:latest"
+    assert cfg.docker_network == "agnes-apps"
+    assert cfg.docker_mem_limit == "2g"
+    assert cfg.docker_cpus == 1.0
+    assert cfg.docker_pids_limit == 512
+    assert cfg.docker_egress_mode == "open"
+    assert cfg.docker_max_total_sandboxes == 10
+
+
+def test_docker_provider_overrides(tmp_path: Path):
+    yaml = tmp_path / "instance.yaml"
+    yaml.write_text(
+        "chat:\n"
+        "  enabled: true\n"
+        "  provider: docker\n"
+        "  docker_image: agnes-chat-sandbox:0.77.32\n"
+        "  docker_network: agnes-chat\n"
+        "  docker_mem_limit: 4g\n"
+        "  docker_cpus: 2.5\n"
+        "  docker_pids_limit: 256\n"
+        "  docker_egress_mode: none\n"
+        "  docker_max_total_sandboxes: 3\n"
+    )
+    cfg = load_chat_config(yaml)
+    assert cfg.provider == "docker"
+    assert cfg.docker_image == "agnes-chat-sandbox:0.77.32"
+    assert cfg.docker_network == "agnes-chat"
+    assert cfg.docker_mem_limit == "4g"
+    assert cfg.docker_cpus == 2.5
+    assert cfg.docker_pids_limit == 256
+    assert cfg.docker_egress_mode == "none"
+    assert cfg.docker_max_total_sandboxes == 3
+
+
+def test_unknown_docker_egress_mode_normalizes_to_open(tmp_path: Path, caplog):
+    y = tmp_path / "instance.yaml"
+    y.write_text("chat:\n  enabled: true\n  provider: docker\n  docker_egress_mode: allowlist\n")
+    cfg = load_chat_config(y)
+    assert cfg.docker_egress_mode == "open"
+    assert "docker_egress_mode" in caplog.text
 
 
 def test_legacy_sandbox_uid_knob_is_dropped(tmp_path: Path):
