@@ -2293,11 +2293,21 @@
    from producing a (non-functional) copy of the masked line in every
    supporting engine; the copy/cut event handlers wired in the page
    script are the fallback for the rest. */
-.home-mock .install-cmd-masked {
+.install-cmd-masked {
     user-select: none;
     -webkit-user-select: none;
+    -moz-user-select: none;
     -ms-user-select: none;
     cursor: default;
+}
+
+/* Drags that start in the block's padding (outside the masked span)
+   must not paint a selection across it either. */
+.install-cmd-secret {
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
 }
 
 /* Warn-accented step badge — same visual family as .callout-rec

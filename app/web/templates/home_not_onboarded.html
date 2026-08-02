@@ -830,6 +830,11 @@ What would you like to do?
     document.querySelectorAll('.install-cmd-masked').forEach(function (el) {
         el.addEventListener('copy', function (ev) { ev.preventDefault(); });
         el.addEventListener('cut', function (ev) { ev.preventDefault(); });
+        // Some engines still let a drag that STARTS outside the element
+        // paint a selection across it despite user-select: none —
+        // suppress the selection at its source too.
+        el.addEventListener('selectstart', function (ev) { ev.preventDefault(); });
+        el.setAttribute('draggable', 'false');
     });
 
     // OS tab switching. Flips both the command panel AND the
