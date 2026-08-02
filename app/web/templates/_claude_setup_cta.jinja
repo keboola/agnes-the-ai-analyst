@@ -294,8 +294,12 @@
         });
     }
 
-    // Step 4 ("Launch Claude — we'll hand it your login first" on /home,
-    // both home_automode branches). Mints a fresh token, builds the
+    // Step 4 — the credential-bearing step on /home (launch-and-login in
+    // the automode branch, token-save-only otherwise). Do not quote the
+    // step labels literally here: this partial renders in BOTH branches,
+    // and a quoted label would leak the other branch's wording into the
+    // page body (tests assert the inactive branch's label is absent).
+    // Mints a fresh token, builds the
     // OS-appropriate shell command that writes it to ~/.agnes/token (and,
     // in the automode branch, launches `claude` in the same line), and
     // copies ONLY that in-memory string to the clipboard — the real token

@@ -221,7 +221,10 @@ def test_get_template_default_field_has_server_url_placeholder(seeded_app):
     assert r.status_code == 200
     body = r.json()
     assert "{server_url}" in body["default"]
-    assert "{token}" in body["default"]
+    # The default prompt body no longer carries the PAT: {token} was removed
+    # when the install guide's step 4 took over writing ~/.agnes/token.
+    assert "{token}" not in body["default"]
+    assert "~/.agnes/token" in body["default"]
 
 
 # ---------------------------------------------------------------------------
