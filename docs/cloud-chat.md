@@ -186,14 +186,20 @@ surface per-session cost in its admin UI.
 ## Security model
 
 Single-tenant: all users in one Agnes instance trust each other. The
-E2B microVM bounds FS / process / kernel isolation. The bundled
-PreToolUse hook in the workspace template
-(`.claude/hooks/pre_tool_use.py`) refuses workspace-destructive bash,
-prompts for admin mutations, and enforces the egress allowlist. **Per
-Q4 the egress allowlist exists only in the hook** — there is no
-firewall layer baked into the E2B template, so a prompt injection that
-rewrites the hook can reach arbitrary external hosts. The template's
-README documents this trade-off and how to flip it.
+E2B microVM bounds FS / process / kernel isolation. **Egress is enforced
+at the VM level**: `E2BProvider.spawn` passes
+`network={"allow_out": …, "deny_out": [ALL_TRAFFIC]}`, so anything
+outside `chat.egress_allow_out` is blocked by the platform, outside the
+sandbox's reach. The bundled PreToolUse hook in the workspace template
+(`.claude/hooks/pre_tool_use.py`) additionally refuses
+workspace-destructive bash and prompts for admin mutations, but it is
+defense-in-depth only — it is fail-open, inspects Bash alone, and is a
+workspace file the agent could rewrite. The VM-level deny-list survives
+its removal. (This supersedes the original Q4 decision, which shipped
+the allowlist in the hook alone.)
+
+The full trust model, the controls behind it, and the known limitations
+are in [`../SECURITY.md`](../SECURITY.md).
 
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.
