@@ -1143,6 +1143,17 @@ async def me_connections_page(
                 "expires_at": expires_at,
             }
         )
+    # Both banners render only fixed text: connect_error arrives as a short
+    # code mapped through CONNECT_ERROR_MESSAGES (unknown → generic fallback),
+    # and connected must name a source the caller can actually see — a
+    # crafted link can never put its own words in an Agnes banner (Devin
+    # Review on #1130).
+    from app.api.mcp_oauth_connect import CONNECT_ERROR_FALLBACK, CONNECT_ERROR_MESSAGES
+
+    error_code = request.query_params.get("connect_error") or ""
+    connected = request.query_params.get("connected") or ""
+    if connected and connected not in {s["id"] for s in sources}:
+        connected = ""
     ctx = _build_context(
         request,
         user=user,
@@ -1150,8 +1161,8 @@ async def me_connections_page(
         is_admin=is_user_admin(user["id"], conn),
         connect_sources=sources,
         highlight_source=request.query_params.get("source") or "",
-        connected_source=request.query_params.get("connected") or "",
-        connect_error=request.query_params.get("connect_error") or "",
+        connected_source=connected,
+        connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
     )
     return templates.TemplateResponse(request, "me_connections.html", ctx)
 

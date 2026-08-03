@@ -113,10 +113,43 @@ def test_me_connections_page_shows_connected_banner(seeded_app):
 
 
 def test_me_connections_page_shows_connect_error_banner(seeded_app):
+    from app.api.mcp_oauth_connect import CONNECT_ERROR_MESSAGES
+
     r = seeded_app["client"].get(
         "/me/connections",
-        params={"connect_error": "token exchange failed"},
+        params={"connect_error": "token_exchange_failed"},
         headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
     )
     assert r.status_code == 200
-    assert "token exchange failed" in r.text
+    assert CONNECT_ERROR_MESSAGES["token_exchange_failed"] in r.text
+
+
+def test_me_connections_error_banner_never_echoes_crafted_text(seeded_app):
+    """?connect_error= is reachable via a hand-crafted link, so anything not
+    in the fixed code→message map must render the generic fallback — never
+    the link's own words inside an Agnes-branded banner (Devin Review on
+    #1130)."""
+    from app.api.mcp_oauth_connect import CONNECT_ERROR_FALLBACK
+
+    crafted = "your account was suspended, call +1-555-0100"
+    r = seeded_app["client"].get(
+        "/me/connections",
+        params={"connect_error": crafted},
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    assert crafted not in r.text
+    assert "suspended" not in r.text
+    assert CONNECT_ERROR_FALLBACK in r.text
+
+
+def test_me_connections_connected_banner_only_names_visible_sources(seeded_app):
+    """Same crafted-link channel as connect_error: ?connected= must only
+    ever name a source the caller can actually see."""
+    r = seeded_app["client"].get(
+        "/me/connections",
+        params={"connected": "definitely-not-a-source"},
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    assert "definitely-not-a-source" not in r.text
