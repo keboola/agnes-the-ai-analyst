@@ -99,21 +99,70 @@ def test_ask_allow_roundtrip(tmp_path):
     asyncio.run(_run())
 
 
-def test_allow_session_dedupes_next_ask(tmp_path):
+def test_allow_session_dedupes_same_command_only(tmp_path):
     async def _run():
         emitted: list[dict] = []
         gate = ApprovalGate(emitted.append, _write_hook(tmp_path), timeout_seconds=5)
-        task = asyncio.create_task(gate.check(_bash("askme"), None, {}))
+        task = asyncio.create_task(gate.check(_bash("askme now"), None, {}))
         for _ in range(100):
             if emitted:
                 break
             await asyncio.sleep(0.01)
         gate.resolve(emitted[0]["request_id"], "allow_session")
         assert _decision_of(await task) == "allow"
-        # same reason again: allowed immediately, no second request frame
-        out2 = await gate.check(_bash("askme again"), None, {})
+        # IDENTICAL command: allowed immediately, no second request frame
+        out2 = await gate.check(_bash("askme now"), None, {})
         assert _decision_of(out2) == "allow"
         assert len([f for f in emitted if f["type"] == "approval_request"]) == 1
+
+    asyncio.run(_run())
+
+
+def test_allow_session_does_not_leak_across_commands(tmp_path):
+    """Dedup is command-keyed, not reason-keyed: approving one command of a
+    family must NOT pre-approve a different command sharing the hook's
+    reason string (review finding on #1145)."""
+
+    async def _run():
+        emitted: list[dict] = []
+        gate = ApprovalGate(emitted.append, _write_hook(tmp_path), timeout_seconds=5)
+        task = asyncio.create_task(gate.check(_bash("askme grant"), None, {}))
+        for _ in range(100):
+            if emitted:
+                break
+            await asyncio.sleep(0.01)
+        gate.resolve(emitted[0]["request_id"], "allow_session")
+        assert _decision_of(await task) == "allow"
+        # DIFFERENT command, SAME hook reason ("needs approval"): a fresh
+        # request must be raised, not silently pre-approved
+        task2 = asyncio.create_task(gate.check(_bash("askme delete"), None, {}))
+        for _ in range(100):
+            if len([f for f in emitted if f["type"] == "approval_request"]) == 2:
+                break
+            await asyncio.sleep(0.01)
+        reqs = [f for f in emitted if f["type"] == "approval_request"]
+        assert len(reqs) == 2
+        assert gate.awaiting_approval() is True
+        gate.resolve(reqs[1]["request_id"], "deny")
+        assert _decision_of(await task2) == "deny"
+
+    asyncio.run(_run())
+
+
+def test_awaiting_approval_reflects_pending(tmp_path):
+    async def _run():
+        emitted: list[dict] = []
+        gate = ApprovalGate(emitted.append, _write_hook(tmp_path), timeout_seconds=5)
+        assert gate.awaiting_approval() is False
+        task = asyncio.create_task(gate.check(_bash("askme"), None, {}))
+        for _ in range(100):
+            if emitted:
+                break
+            await asyncio.sleep(0.01)
+        assert gate.awaiting_approval() is True  # suspended on the human
+        gate.resolve(emitted[0]["request_id"], "allow")
+        await task
+        assert gate.awaiting_approval() is False
 
     asyncio.run(_run())
 

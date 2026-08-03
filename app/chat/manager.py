@@ -2250,14 +2250,31 @@ class ChatManager:
             details={"session_id": chat_id, "request_id": request_id, "decision": decision},
         )
         live = self._live.get(chat_id)
-        if live is None or live.handle is None:
+        if live is not None and live.handle is not None:
+            await self._deliver_local_approval(live, request_id, decision)
+            return
+        # No local runner. Forward over the inbound control stream ONLY if
+        # another gateway positively owns the session (mirror the kill/cancel
+        # + send_user_message owner check). Otherwise the session is dead or
+        # finished and its pending approval died with it — drop with a log
+        # rather than writing a junk queue entry that, if coordination is
+        # down, would raise out and knock the caller's WS offline (review
+        # finding on #1145).
+        try:
+            owner = await asyncio.to_thread(routing.owner_of, chat_id)
+        except Exception:
+            owner = None
+        if owner is not None and owner != routing.this_gateway_id():
             await inbound.publish_control(
                 chat_id,
                 "approval",
                 extra={"request_id": request_id, "decision": decision, "sender": sender_email or ""},
             )
             return
-        await self._deliver_local_approval(live, request_id, decision)
+        logger.info(
+            "approval decision for %s dropped — no live runner and no other gateway owns it",
+            chat_id,
+        )
 
     async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
         payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"
