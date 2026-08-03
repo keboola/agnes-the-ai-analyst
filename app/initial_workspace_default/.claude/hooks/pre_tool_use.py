@@ -222,7 +222,15 @@ _WRAPPER_VALUE_FLAGS = {
 _WRAPPER_POSITIONALS = {"chroot": 1, "flock": 1, "taskset": 1, "chrt": 1}
 
 
-_SHELL_OPERATORS = {";", "&", "&&", "|", "||", "\n", "(", ")"}
+# Any token made purely of shell operator characters is a separator. Testing
+# the character set rather than enumerating spellings is deliberate: an
+# enumeration missed `|&` and `;&`, which merged the pieces either side into
+# one segment whose head was the harmless leading command (review on #1141).
+_OPERATOR_CHARS = frozenset(";&|()\n")
+
+
+def _is_operator(tok: str) -> bool:
+    return bool(tok) and all(c in _OPERATOR_CHARS for c in tok)
 
 
 def _split_segments(cmd: str) -> list[str]:
@@ -265,7 +273,7 @@ def _split_segments(cmd: str) -> list[str]:
 
         current: list[str] = []
         for tok in tokens:
-            if tok in _SHELL_OPERATORS:
+            if _is_operator(tok):
                 if current:
                     segments.append(shlex.join(current))
                     current = []
@@ -390,6 +398,39 @@ def _is_env_dump(seg: str) -> bool:
     return False
 
 
+def _is_force_push(toks: list[str]) -> bool:
+    """git push that rewrites remote history, across its common spellings.
+
+    Matching `toks[:2] == ["git", "push"]` plus a standalone long flag missed
+    `git -C dir push --force`, glued short flags (`git push -fu origin main`)
+    and the `+refspec` form, all of which rewrite history just the same
+    (review finding on #1141).
+    """
+    if not toks or toks[0] != "git":
+        return False
+    rest = toks[1:]
+    # global git options before the subcommand: `git -C dir push`, `git -c k=v push`
+    i = 0
+    while i < len(rest) and rest[i].startswith("-"):
+        if rest[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") and i + 1 < len(rest):
+            i += 2
+        else:
+            i += 1
+    if i >= len(rest) or rest[i] != "push":
+        return False
+    args = rest[i + 1 :]
+    for a in args:
+        if a in _FORCE_PUSH_FLAGS or a.startswith("--force-with-lease=") or a.startswith("--force-if-includes"):
+            return True
+        # glued short flags: -f, -fu, -uf
+        if a.startswith("-") and not a.startswith("--") and "f" in a[1:]:
+            return True
+        # `git push origin +main` — a leading + on the refspec forces
+        if a.startswith("+") and len(a) > 1:
+            return True
+    return False
+
+
 def _rm_recursive_force(toks: list[str]) -> bool:
     if not toks or toks[0] != "rm":
         return False
@@ -501,7 +542,7 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
                     "Recursive force delete (rm -rf) — confirm with the user before running.",
                 )
             )
-        if toks[:2] == ["git", "push"] and any(t in _FORCE_PUSH_FLAGS for t in toks[2:]):
+        if _is_force_push(toks):
             verdicts.append(("ask", "Force push rewrites remote history; confirm with the user before running."))
 
         # Outbound network — bare curl/wget hosts (scheme-defaulting)
