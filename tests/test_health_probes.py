@@ -2,10 +2,25 @@ import asyncio
 import contextlib
 import threading
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api import health_probes
 from app.api.health_probes import ReadinessState, readiness, register_readiness_check, router
+
+
+@pytest.fixture(autouse=True)
+def _reset_drain_deadline():
+    """The shared shutdown-drain budget is process-global by design.
+
+    It is set once per process (shutdown happens once) and never reset, so
+    without this a test that exhausts the budget would leave every later
+    drain test with 0s of it.
+    """
+    health_probes._drain_deadline = None
+    yield
+    health_probes._drain_deadline = None
 
 
 def make_client():
@@ -170,3 +185,31 @@ def test_cancelled_canary_drain_is_bounded(monkeypatch):
             await task
 
     asyncio.run(drive())
+
+
+def test_drain_budget_is_shared_across_the_whole_shutdown(monkeypatch):
+    """Two drains must share one budget, not get a full timeout each.
+
+    app/main.py's lifespan cancels the checkpoint loop, then the canary
+    loop, then the worker loop sequentially, and the worker drains a
+    heartbeat per in-flight entry. Per-call budgets would stack and overrun
+    the container's stop_grace_period — reintroducing the SIGKILL the bound
+    exists to avoid.
+    """
+    monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "10")
+
+    async def drive() -> None:
+        first = health_probes._drain_budget_s()
+        assert first == pytest.approx(10.0, abs=0.5)
+        await asyncio.sleep(0.3)
+        second = health_probes._drain_budget_s()
+        assert second < first, "second drain must inherit the remaining budget, not a fresh one"
+        assert second == pytest.approx(9.7, abs=0.5)
+
+    asyncio.run(drive())
+
+
+def test_drain_budget_floors_at_zero_once_spent(monkeypatch):
+    monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "0")
+    assert health_probes._drain_budget_s() == 0.0
+    assert health_probes._drain_budget_s() == 0.0

@@ -80,15 +80,21 @@ lease that later expires and is recovered via ``claim_next()``'s reclaim
 path, or — if attempts are already exhausted by then — this module's own
 ``reap_exhausted()`` sweep.
 
-The bounded drain above covers *handler* futures only. The poll-path DB
-calls (``claim_next``/``reap_exhausted``/``heartbeat``/``complete``/
-``fail``) go through ``to_thread_drain_on_cancel``
+The bounded drain above covers *handler* futures only. Every jobs-table DB
+call this module makes — the poll-path ``claim_next``/``reap_exhausted``/
+``heartbeat`` and the shutdown-path ``complete``/``fail``/``get`` inside
+``_drain_in_flight`` — goes through ``to_thread_drain_on_cancel``
 (``app/api/health_probes.py``) instead: cancellation waits for the
 in-flight single-statement call rather than orphaning its thread, so
 ``app/main.py``'s lifespan can't proceed to ``close_system_db()`` while a
 jobs-table statement is still executing — the same
 abandoned-thread-vs-DB-close race the canary/checkpoint loops drain
 against, just with a millisecond window instead of a CHECKPOINT-sized one.
+
+Those drains all draw from one budget shared across the whole shutdown
+(see ``_drain_budget_s``), so cancelling the checkpoint loop, then the
+canary loop, then this one cannot stack a full timeout each and overrun
+the container's stop_grace_period.
 """
 
 from __future__ import annotations
@@ -509,7 +515,7 @@ async def _notify_in_flight_agent_response(job_id: str, status: str) -> None:
     "finalization (complete/fail) failed" error for a job whose outcome was
     already durably persisted."""
     try:
-        job_row = await asyncio.to_thread(_jobs_repo().get, job_id)
+        job_row = await to_thread_drain_on_cancel(_jobs_repo().get, job_id)
         if job_row is not None:
             _notify_agent_response_webhooks(job_row, status)
     except Exception:
@@ -582,7 +588,7 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                         entry.kind_name,
                         exc_info=exc,
                     )
-                    finalized = await asyncio.to_thread(
+                    finalized = await to_thread_drain_on_cancel(
                         _jobs_repo().fail,
                         job_id,
                         entry.worker_id,
@@ -599,7 +605,7 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                         await _notify_in_flight_agent_response(job_id, "failed")
                 else:
                     handler_result = fut.result()
-                    mutated = await asyncio.to_thread(
+                    mutated = await to_thread_drain_on_cancel(
                         _jobs_repo().complete, job_id, entry.worker_id, entry.lease_token, handler_result
                     )
                     obs_metrics.record_job_duration(entry.kind_name, "done", duration)
