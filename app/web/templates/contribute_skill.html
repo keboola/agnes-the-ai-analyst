@@ -155,6 +155,7 @@
     <br>
     <a class="deep" href="{{ result.detail_url }}">Open &ldquo;{{ result.plugin_name }}&rdquo; in Agnes &rarr;</a>
     <form method="post" action="/admin/contribute-skill/{{ result.plugin_name }}/delete" style="margin-top:0.75rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="contrib-btn-ghost">Remove this skill</button>
     </form>
   </div>
@@ -164,6 +165,7 @@
   {% endif %}
 
   <form class="contrib-card" method="post" action="/admin/contribute-skill">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <h2>Skill source</h2>
     <p class="help">
       The full <code>SKILL.md</code>, including the <code>--- name: … ---</code>
