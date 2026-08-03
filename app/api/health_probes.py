@@ -176,6 +176,15 @@ def _drain_budget_s() -> float:
     ``close_system_db()`` waiting behind us — a routine heartbeat
     cancellation is an isolated event — so such a drain gets the full
     timeout and leaves the shutdown budget untouched.
+
+    Known trade-off: sharing is first-come, so a slow drain early in the
+    sequence (the CHECKPOINT is the one call here that can legitimately take
+    seconds) can leave the later ones with 0.0 and send them back to
+    abandoning their thread. Both alternatives are worse — per-call bounds
+    stack past ``stop_grace_period``, and a per-call sub-bound just moves
+    which call gets starved. Operators who see the timeout log during a
+    slow-DB shutdown should raise ``AGNES_DRAIN_TIMEOUT_S`` (staying under
+    the grace period their orchestrator gives the container).
     """
     if _drain_deadline is None:
         return _drain_timeout_s()
