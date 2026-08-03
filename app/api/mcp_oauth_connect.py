@@ -40,7 +40,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import quote, urlencode, urlparse
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
@@ -236,6 +235,7 @@ async def oauth_connect_callback(
     from app.api.mcp_user_secrets import _require_source_grant
     from connectors.mcp.oauth_client import (
         OAuthTokenError,
+        OAuthTransportError,
         build_oauth_http_client,
         exchange_code_for_token,
     )
@@ -330,6 +330,12 @@ async def oauth_connect_callback(
                 code_verifier=flow["pkce_verifier"],
                 client=http_client,
             )
+    except OAuthTransportError as exc:
+        # Unreachable AS (DNS/TCP/TLS/timeout) — the exchange wrapper folds
+        # httpx transport failures into this subclass, so catching bare
+        # httpx.HTTPError here would be dead code (Devin Review on #1130).
+        logger.warning("mcp oauth token exchange transport error for source=%s: %s", source_id, _exc_summary(exc))
+        return _err_redirect("as_unreachable")
     except OAuthTokenError as exc:
         # Operator-facing detail goes to the server log ONLY. The browser
         # redirect gets a fixed message: the exception text can carry the
@@ -338,9 +344,6 @@ async def oauth_connect_callback(
         # user-facing query string (RBAC review on PR 2).
         logger.warning("mcp oauth token exchange failed for source=%s: %s", source_id, _exc_summary(exc))
         return _err_redirect("token_exchange_failed")
-    except httpx.HTTPError as exc:
-        logger.warning("mcp oauth token exchange transport error for source=%s: %s", source_id, _exc_summary(exc))
-        return _err_redirect("as_unreachable")
     except SSRFRejected as exc:
         # The token endpoint resolved to a blocked address (DNS changed since
         # registration, or a misconfigured manual entry) — still a friendly

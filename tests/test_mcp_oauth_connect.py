@@ -475,6 +475,28 @@ def test_callback_token_exchange_failure_redirects_with_error(seeded_app, monkey
     assert "connect_error=token_exchange_failed" in location
 
 
+def test_callback_unreachable_as_redirects_with_unreachable_error(seeded_app, monkeypatch):
+    """Transport failures reach the callback as OAuthTransportError (the
+    exchange wrapper folds httpx errors into it), and the user must see
+    "could not reach", not the generic exchange failure (Devin Review on
+    #1130)."""
+    from connectors.mcp.oauth_client import OAuthTransportError
+
+    source_id = _seed_oauth_source(source_id="src_oauth_cb_unreach")
+    hdr = _analyst_hdr(seeded_app)
+    state = _authorize_and_extract_state(seeded_app, source_id, hdr)
+    _patch_exchange(monkeypatch, exc=OAuthTransportError("token exchange failed: ConnectError: dns down"))
+
+    r = seeded_app["client"].get(
+        "/api/mcp/oauth-client/callback",
+        params={"code": "c", "state": state},
+        headers=hdr,
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "connect_error=as_unreachable" in r.headers["location"]
+
+
 def test_callback_deny_principal_for_restricted_token(seeded_app):
     """A co-session/agent-session token must never redeem a connect flow."""
     from app.auth.dependencies import get_optional_user as get_current_user
