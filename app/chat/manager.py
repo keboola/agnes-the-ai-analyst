@@ -1968,7 +1968,7 @@ class ChatManager:
                 # Feed the turn's token delta into the shared daily-spend
                 # counters _daily_token_totals checks in send_user_message.
                 self._record_daily_tokens(live.user_email, frame.get("tokens_in"), frame.get("tokens_out"))
-                live.turn_buffer.clear()
+                self._clear_turn_buffer_keeping_pending_approvals(live)
                 live.turn_in_flight = False
                 # Auto-title: the first assistant_message in a session
                 # is the trigger to ask Haiku for a short title. We
@@ -2235,7 +2235,7 @@ class ChatManager:
         async with live._stdin_lock:
             live.handle.stdin.write(payload.encode("utf-8"))
             await live.handle.stdin.drain()
-        live.turn_buffer.clear()
+        self._clear_turn_buffer_keeping_pending_approvals(live)
         live.turn_in_flight = True
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
@@ -2304,6 +2304,30 @@ class ChatManager:
             "approval decision for %s dropped — no live runner and no other gateway owns it",
             chat_id,
         )
+
+    @staticmethod
+    def _clear_turn_buffer_keeping_pending_approvals(live: "LiveSession") -> None:
+        """Clear the replay buffer but keep approval cards nobody answered yet.
+
+        A pending ``approval_request`` outlives the turn boundary it was
+        raised in: the tool call is suspended until a human answers or the
+        gate times out. Clearing it wholesale meant that typing anything
+        while a card was up, then refreshing, re-drew the conversation
+        without the card — leaving the blocked command no way out but the
+        timeout denial (review finding on #1145).
+        """
+        resolved = {
+            f.get("request_id")
+            for f in live.turn_buffer
+            if f.get("type") == "approval_resolved" and f.get("request_id")
+        }
+        pending = [
+            f
+            for f in live.turn_buffer
+            if f.get("type") == "approval_request" and f.get("request_id") not in resolved
+        ]
+        live.turn_buffer.clear()
+        live.turn_buffer.extend(pending)
 
     async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
         payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"

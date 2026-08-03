@@ -3600,3 +3600,39 @@ def test_spawn_env_approvals_gated_by_surface(manager: ChatManager, monkeypatch)
         assert dm["AGNES_APPROVALS"] == "off"
 
     asyncio.run(_run())
+
+
+def test_turn_buffer_clear_keeps_an_unanswered_approval_card(manager: ChatManager):
+    """A pending approval outlives the turn boundary it was raised in.
+
+    Typing while a card is up cleared the replay buffer, so a refresh
+    afterwards re-drew the conversation without the card and the blocked
+    command had no way out but the timeout denial.
+    """
+    from types import SimpleNamespace
+
+    live = SimpleNamespace(
+        turn_buffer=[
+            {"type": "token", "text": "hi"},
+            {"type": "approval_request", "request_id": "appr-1", "command": "rm -rf x"},
+        ]
+    )
+    ChatManager._clear_turn_buffer_keeping_pending_approvals(live)
+    assert live.turn_buffer == [
+        {"type": "approval_request", "request_id": "appr-1", "command": "rm -rf x"}
+    ], live.turn_buffer
+
+
+def test_turn_buffer_clear_drops_an_answered_approval_card(manager: ChatManager):
+    """Once answered, the card is history like any other frame."""
+    from types import SimpleNamespace
+
+    live = SimpleNamespace(
+        turn_buffer=[
+            {"type": "approval_request", "request_id": "appr-1"},
+            {"type": "approval_resolved", "request_id": "appr-1", "decision": "allow"},
+            {"type": "token", "text": "done"},
+        ]
+    )
+    ChatManager._clear_turn_buffer_keeping_pending_approvals(live)
+    assert live.turn_buffer == []
