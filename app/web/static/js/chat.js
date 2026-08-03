@@ -81,6 +81,13 @@ let lastSeenSeqByChat = new Map();
 // Frame types whose handlers are idempotent (keyed by request_id) and
 // which therefore must survive the seq-dedup guard on a reconnect replay.
 const REPLAYABLE_FRAME_TYPES = new Set(["approval_request", "approval_resolved"]);
+// Approval cards the user has not answered yet, keyed by request_id. Same
+// reason the server keeps them outside its turn buffer: a pending approval
+// is not part of the transcript, so it must be re-rendered after ANY redraw
+// of the transcript — a full_refresh reloads history asynchronously and
+// wipes #chat-messages, which could otherwise erase a card that had just
+// been replayed onto the socket (review finding on #1145).
+const pendingApprovalFrames = new Map();
 
 // §5.3 Co-presence: the current user's email for per-message sender attribution.
 // Sourced from <body data-user-email="..."> set by the server-rendered template.
@@ -513,6 +520,13 @@ async function loadAndRenderHistory(chatId) {
       renderMessage(m);
       if (m.role === "user") lastUserText = m.content || "";
     }
+  }
+  // Re-draw any approval still waiting for an answer. The wipe above is a
+  // transcript redraw, and a pending card is not transcript — without this
+  // a full_refresh racing a replayed card erases it and the blocked command
+  // has no way out but the timeout denial (review finding on #1145).
+  for (const frame of pendingApprovalFrames.values()) {
+    renderApprovalRequest(frame);
   }
 }
 
@@ -1288,6 +1302,7 @@ function _summarizeArgs(args) {
 
 function renderApprovalRequest(frame) {
   if (!frame.request_id) return;
+  pendingApprovalFrames.set(frame.request_id, frame);
   // Replay dedup: a mid-turn reconnect re-delivers the request frame.
   if (document.querySelector(`[data-approval-id="${CSS.escape(frame.request_id)}"]`)) return;
   clearThinkingPlaceholder();
@@ -1357,6 +1372,7 @@ function renderApprovalRequest(frame) {
 }
 
 function resolveApprovalCard(frame) {
+  if (frame.request_id) pendingApprovalFrames.delete(frame.request_id);
   const el = frame.request_id
     ? document.querySelector(`[data-approval-id="${CSS.escape(frame.request_id)}"]`)
     : null;
