@@ -49,12 +49,19 @@ class MCPSourceRepository:
             raise ValueError(f"{transport} transport requires 'url'")
         if scope not in ("shared", "per_user"):
             raise ValueError(f"unsupported scope: {scope!r}; must be 'shared' or 'per_user'")
-        if auth_method == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
+        if (auth_method or "").strip().lower() == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
             # 2026-07-30 outbound MCP OAuth spec §1: OAuth sources are
             # always per-user (authorization-code + PKCE ties tokens to a
             # human) and only make sense over a network transport — stdio
             # sources keep env-token auth. This is the ONE enforcement
             # point every per-user fail-closed path relies on `scope` for.
+            #
+            # Normalized, because every consumer normalizes too
+            # (_require_oauth_source, enforce_per_user_credential,
+            # _resolve_http_headers_async). Comparing verbatim here let an
+            # 'OAuth' row past the guard while the call seam still routed it
+            # down the OAuth branch — a shared-credential OAuth source with
+            # the fail-closed check silently disabled (Devin Review on #1124).
             raise ValueError(
                 "auth_method='oauth' requires transport in ('http', 'sse') and scope='per_user' "
                 f"(got transport={transport!r}, scope={scope!r})"
