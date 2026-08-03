@@ -782,3 +782,55 @@ def test_manual_client_refuses_to_silently_demote_an_undecryptable_secret(seeded
         .status_code
         == 200
     )
+
+
+def test_manual_client_repointing_endpoints_drops_user_tokens(seeded_app):
+    """A stored token is only usable against the exact (issuer, endpoints,
+    client_id) it was minted for. Repointing `token_endpoint` at a different
+    authorization server while KEEPING client_id would have the refresh path
+    POST the old server's refresh token — and the client secret via Basic
+    auth — to the new host (Devin Review on #1124)."""
+    from src.repositories import mcp_oauth_flows_repo, mcp_user_oauth_tokens_repo
+
+    sid = _seed_oauth_source(source_id="src_oauth_repoint_ep")
+    body = {
+        "client_id": "cid-same",
+        "client_secret": "s3cr3t",
+        "authorization_endpoint": "https://as.example.com/authorize",
+        "token_endpoint": "https://as.example.com/token",
+    }
+    assert (
+        seeded_app["client"]
+        .put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json=body)
+        .status_code
+        == 200
+    )
+    mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "tok", refresh_token="rt", expires_at=None, scopes=None)
+    mcp_oauth_flows_repo().create("repoint-ep-nonce", sid, "admin1", "verifier")
+
+    # Same identity, only scopes change — tokens stay.
+    assert (
+        seeded_app["client"]
+        .put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json={**body, "scopes": "read"})
+        .status_code
+        == 200
+    )
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is True
+
+    # Same client_id, DIFFERENT authorization server — tokens must go.
+    assert (
+        seeded_app["client"]
+        .put(
+            f"/api/admin/mcp-sources/{sid}/oauth/client",
+            headers=_hdr(seeded_app),
+            json={
+                **body,
+                "authorization_endpoint": "https://other-as.example.com/authorize",
+                "token_endpoint": "https://other-as.example.com/token",
+            },
+        )
+        .status_code
+        == 200
+    )
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
+    assert mcp_oauth_flows_repo().consume("repoint-ep-nonce") is None

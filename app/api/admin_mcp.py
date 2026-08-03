@@ -282,6 +282,25 @@ class OAuthClientConfigRequest(BaseModel):
     scopes: Optional[str] = None
 
 
+#: The tuple a stored user token is bound to. A token minted by one
+#: authorization server, for one client, at one pair of endpoints is useless
+#: — and dangerous to send — anywhere else, so a change to ANY of these
+#: invalidates every user's tokens for the source (Devin Review on #1124).
+_OAUTH_IDENTITY_FIELDS = ("issuer", "authorization_endpoint", "token_endpoint", "client_id")
+
+
+def _oauth_identity_changed(existing: Dict[str, Any], **written: Optional[str]) -> bool:
+    """True when the about-to-be-written client row addresses a different
+    authorization-server identity than the stored one.
+
+    Shared by the DCR re-register and the manual ``PUT …/oauth/client`` so the
+    two cannot drift — the manual path silently keeping tokens across an
+    endpoint repoint, while the DCR path dropped them, is exactly the
+    asymmetry this collapses.
+    """
+    return any((existing.get(k) or "") != (written.get(k) or "") for k in _OAUTH_IDENTITY_FIELDS)
+
+
 def _serialize_oauth_client(row: Dict[str, Any]) -> Dict[str, Any]:
     """Project an ``mcp_source_oauth_clients`` row to the API shape.
 
@@ -907,14 +926,23 @@ async def register_oauth_client(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
-    # Every stored user token was issued to the OLD client_id, whose
-    # registration we just revoked. They keep working until they expire, then
-    # refresh against the new client: a spec-compliant AS answers
+    # A stored token is only usable against the exact (issuer, endpoints,
+    # client_id) it was minted for, so ANY change to that tuple strands it —
+    # discovery can hand back new endpoints for the same client_id just as
+    # easily as a new client_id. They keep working until they expire, then
+    # refresh against whatever is now on the row: a spec-compliant AS answers
     # invalid_grant (clean reconnect prompt) but others answer invalid_client,
     # which is not classified as invalid_grant — the user would be stuck on an
     # opaque upstream 401 indefinitely. Drop them so the next call asks for a
-    # reconnect straight away (Devin Review on #1124).
-    if existing and existing.get("client_id") != registered.client_id:
+    # reconnect straight away (Devin Review on #1124). Same predicate as the
+    # manual PUT below; keep the two in step.
+    if existing and _oauth_identity_changed(
+        existing,
+        issuer=registered.issuer,
+        authorization_endpoint=registered.authorization_endpoint,
+        token_endpoint=registered.token_endpoint,
+        client_id=registered.client_id,
+    ):
         from src.repositories import mcp_oauth_flows_repo, mcp_user_oauth_tokens_repo
 
         mcp_user_oauth_tokens_repo().delete_for_source(source_id)
@@ -1025,13 +1053,22 @@ async def set_oauth_client_config(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
-    # Swapping in a different client identity by hand strands every user's
-    # tokens on the old one exactly as a DCR re-registration does, so the
-    # manual escape hatch gets the same purge (Devin Review on #1124) — a
-    # refresh against the new client can come back `invalid_client`, which
-    # is not classified as a reconnect signal, leaving the user on an opaque
-    # upstream 401 forever.
-    if existing and not same_client:
+    # A stored token is only usable against the exact (issuer, endpoints,
+    # client_id) it was minted for — so ANY change to that tuple strands it,
+    # not just a client_id swap. Repointing token_endpoint at a different
+    # authorization server while keeping client_id is the dangerous case: the
+    # refresh path reads the freshly-written row and would POST the OLD
+    # server's refresh token — and, when a secret is on file, the client
+    # secret via Basic auth — to the NEW host. Same reasoning as the source
+    # `url` repoint above; this is its mirror image on the client row
+    # (Devin Review on #1124).
+    if existing and _oauth_identity_changed(
+        existing,
+        issuer=issuer,
+        authorization_endpoint=payload.authorization_endpoint,
+        token_endpoint=payload.token_endpoint,
+        client_id=payload.client_id,
+    ):
         from src.repositories import mcp_oauth_flows_repo, mcp_user_oauth_tokens_repo
 
         mcp_user_oauth_tokens_repo().delete_for_source(source_id)
