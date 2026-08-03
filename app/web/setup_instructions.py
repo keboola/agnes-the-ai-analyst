@@ -452,10 +452,10 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "           $HOME    /    /tmp    /etc    /usr    /var    /opt",
         "           /root    /bin    /sbin    /boot    /sys    /proc",
         "",
-        "   2b) Prepared workspace — if the cwd is already prepared, continue",
-        "       to step 3 and tell the user which directory you are installing",
-        "       into. The whitelisted artefacts a prepared workspace may",
-        "       already hold are:",
+        "   2b) Prepared workspace — if the cwd is already prepared, tell the",
+        "       user right away which directory you are installing into, then",
+        "       continue to step 3. The whitelisted artefacts a prepared",
+        "       workspace may already hold are:",
         "           .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md",
         "       To check, run (fixed-string match, no regex):",
         "",
@@ -483,6 +483,10 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "         - 'abort' / anything else → stop without making any changes:",
         "                       no `mkdir`, no `cd`, no further steps.",
         "",
+        "   Through the rest of the steps below, post a brief one-line progress",
+        "   note as each step finishes, so the user has visibility instead of",
+        "   sitting silent for minutes.",
+        "",
         "3) Bootstrap your {instance_brand} workspace in this directory.",
         "   The token was saved to ~/.agnes/token by step 4 of the install",
         "   guide, so there is nothing to write here — `agnes init",
@@ -509,6 +513,13 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "   writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
         "   SessionStart/End hooks (auto-refresh), and runs an initial `agnes pull`",
         "   so your DuckDB views are ready.",
+        "",
+        "   Verify the token file was consumed:",
+        '   test ! -f ~/.agnes/token && echo "token file consumed"',
+        "",
+        "   `agnes init` deletes ~/.agnes/token once the credential is saved; if",
+        "   the file still exists, the deletion failed and a plaintext access",
+        "   token is left on disk — tell the user to remove it manually.",
         "",
         "4) Verify the data is queryable:",
         "   agnes catalog",
@@ -652,11 +663,12 @@ def _connectors_block(
     step_num: str,
     manifest: list["ConnectorEntry"],
     *,
-    confirm_step_num: str,
+    next_step_num: str,
     instance_brand: str,
 ) -> list[str]:
     """Per-connector interactive ask + inline prompt. Last interactive
-    step before Confirm.
+    step before Confirm — its trailer forwards to the Restart-Claude step
+    (`next_step_num`), which then bridges into Confirm on its own.
 
     Requires an explicit yes before setting a connector up — anything else
     (a decline, a deferral, silence) skips it. Each connector ships with its
@@ -682,11 +694,12 @@ def _connectors_block(
         f"{step_num}) Connect the user's tools (last interactive ask before Confirm):",
         "",
         "   For each tool below, tell the user what it does and what access it",
-        "   needs, then ask whether to set it up. Wait for each answer before",
-        "   moving to the next. If the answer is anything other than a clear",
-        "   yes, skip that tool — declining and deferring are both valid",
-        "   answers. The prompts below are idempotent and safe to re-run if",
-        "   anything goes sideways.",
+        "   needs, then ask whether to set it up — one combined question covering",
+        "   all the tools is fine; don't start setting a tool up until its answer",
+        "   has arrived. If the answer is anything other than a clear yes, skip",
+        "   that tool — declining and deferring are both valid answers. The",
+        "   prompts below are idempotent and safe to re-run if anything goes",
+        "   sideways.",
         "",
     ]
     # Sub-letter index tracks ONLY the connectors we actually rendered
@@ -722,7 +735,7 @@ def _connectors_block(
         letter_idx += 1
     lines.extend(
         [
-            f"   After all asks (regardless of answers) continue to step {confirm_step_num}.",
+            f"   After all asks (regardless of answers) continue to step {next_step_num}.",
         ]
     )
     return lines
@@ -779,6 +792,7 @@ def _finale_lines(
     """
     bullets = [
         "   - `agnes --version` output",
+        "   - Confirmation that `~/.agnes/token` was consumed (no longer exists)",
         "   - First few lines of `agnes catalog` (tables you can see)",
         "   - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist",
         "   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks",
@@ -930,7 +944,11 @@ def _marketplace_block(
     header = (
         "Register the Agnes Claude Code marketplace and install plugins:"
         if has_plugins
-        else "Register the Agnes Claude Code marketplace (no plugin grants visible when this prompt was generated):"
+        else (
+            "Register the Agnes Claude Code marketplace (no plugin grants were "
+            "visible when this prompt was generated — the CLI reads the live "
+            "manifest, so anything granted since will still install):"
+        )
     )
     # Both branches phrase grants as a render-time snapshot, not a timeless
     # fact: grants change after the prompt is generated, and the prompt is
@@ -943,8 +961,7 @@ def _marketplace_block(
         if has_plugins
         else (
             "   #   5. install every plugin the live manifest grants this account"
-            " (none were visible when this prompt was generated; anything granted"
-            " since still installs here)"
+            " (per the header above, none were visible at render time)"
         )
     )
     verify_lines = [
@@ -1232,7 +1249,7 @@ def resolve_lines(
         _connectors_block(
             steps["connectors"],
             optional_entries,
-            confirm_step_num=steps["confirm"],
+            next_step_num=steps["restart_claude"],
             instance_brand=instance_brand,
         )
     )

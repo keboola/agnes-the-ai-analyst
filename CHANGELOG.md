@@ -17,6 +17,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - The generated install prompt reworded its force-style phrasing (`REFUSE`, `PROCEED SILENTLY`, "verbatim", "mandatory", default-yes asks, piped shell installers) into neutral, calm guidance — Claude Code's safety layer was increasingly stalling mid-install on the old wording. Added a banned-phrase regression guard (`tests/test_install_prompt_banned_phrases.py`) plus dev tooling (`scripts/dev/render_prompt.py`, `scripts/dev/check_prompt.py`) to catch a re-introduction.
+- The optional-connectors step's trailer sent the agent straight to Confirm, skipping the Restart-Claude step in between — installed plugins, MCP servers, and hooks never got reloaded before the summary. It now forwards to Restart-Claude. The install prompt also gained: a verification line after `agnes init` confirming `~/.agnes/token` was actually consumed (surfaced in the Confirm summary too); explicit permission for one combined AskUserQuestion covering all optional connectors instead of one ask per tool; an instruction to announce the install directory immediately in step 2b and post brief one-line progress notes as later steps complete; and a reworded step-5 marketplace header that no longer hard-claims no plugins are granted (the CLI reads the live manifest at install time).
 
 ### Removed
 

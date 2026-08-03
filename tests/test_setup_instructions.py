@@ -130,7 +130,8 @@ def test_resolve_lines_no_plugins_unified_layout():
     # rather than the plugin-installing variant — phrased as a render-time
     # snapshot (grants may change after the prompt is generated), with the
     # live-truth verification step alongside.
-    assert "no plugin grants visible when this prompt was generated" in joined
+    assert "no plugin grants were visible when this prompt was generated" in joined
+    assert "the CLI reads the live manifest" in joined
     assert "agnes my-stack show" in joined
     assert "agnes refresh-marketplace --bootstrap" in joined
     # MCP step uses SSE transport for Atlassian's hosted Remote MCP.
@@ -1166,6 +1167,33 @@ def test_finale_bullets_split_required_and_optional(monkeypatch):
     joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
     assert "For each required connector (XTool):" in joined
     assert "or declined" not in joined
+
+
+def test_connectors_trailer_names_restart_step_not_confirm(monkeypatch):
+    """P1a regression: the optional-connectors trailer must forward to the
+    Restart-Claude step, not skip straight to Confirm — Restart-Claude sits
+    between connectors and Confirm and re-loads plugins/MCP servers/hooks
+    installed earlier. Covers both layouts, since required connectors shift
+    every later step number by one."""
+    from app.web.setup_instructions import resolve_lines
+
+    # Default layout: no required connectors. Restart is step 9, Confirm 10.
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "After all asks (regardless of answers) continue to step 9." in joined
+    assert "9) Restart Claude Code" in joined
+    assert "After all asks (regardless of answers) continue to step 10." not in joined
+
+    # With a required connector present, everything after it shifts by one:
+    # optional connectors move to 9, restart to 10, confirm to 11.
+    _fake_bodies(monkeypatch)
+    manifest = [
+        _connector_entry("connector-xtool", "XTool", required=True),
+        _connector_entry("connector-ztool", "ZTool"),
+    ]
+    joined = "\n".join(resolve_lines("agnes.whl", connector_manifest=manifest))
+    assert "After all asks (regardless of answers) continue to step 10." in joined
+    assert "10) Restart Claude Code" in joined
+    assert "After all asks (regardless of answers) continue to step 11." not in joined
 
 
 def test_restart_claude_step_emitted_unconditionally():
