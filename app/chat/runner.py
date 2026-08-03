@@ -28,6 +28,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -275,7 +276,13 @@ class ApprovalGate:
                 "in a web chat.",
             )
         self._counter += 1
-        request_id = f"appr-{os.getpid()}-{self._counter}"
+        # Globally unique, not per-process: a respawned sandbox restarts the
+        # counter at zero and can be handed the same pid, so the old scheme
+        # could mint an id the chat window had already seen. The client dedups
+        # cards by request_id, so such a prompt was silently never drawn and
+        # the command hung until the approval window expired (review finding
+        # on #1145). The counter stays for readable ordering within a process.
+        request_id = f"appr-{self._counter}-{uuid.uuid4().hex[:12]}"
         self._emit(
             {
                 "type": "approval_request",

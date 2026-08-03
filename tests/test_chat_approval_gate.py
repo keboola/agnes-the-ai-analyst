@@ -522,3 +522,45 @@ def test_cancelled_approval_does_not_leak_into_pending(tmp_path):
         assert gate.awaiting_approval() is False
 
     asyncio.run(drive())
+
+
+def test_request_ids_are_unique_across_gate_instances(tmp_path):
+    """A respawned sandbox must not mint ids the chat window already knows.
+
+    The old scheme was pid+counter; a fresh sandbox restarts the counter at
+    zero and can be handed the same pid, so a new prompt could reuse an id.
+    The client dedups cards by request_id, so that prompt was never drawn
+    and the command hung until the approval window expired.
+    """
+    import asyncio
+
+    import app.chat.runner as runner
+
+    hook = tmp_path / "hook.py"
+    hook.write_text("import json\nprint(json.dumps({'permissionDecision': 'ask', 'permissionDecisionReason': 'r'}))\n")
+
+    seen: list[str] = []
+
+    def make_gate():
+        g = runner.ApprovalGate.__new__(runner.ApprovalGate)
+        g._enabled = True
+        g._disabled_reason = ""
+        g._session_approved = set()
+        g._pending = {}
+        g._counter = 0          # a fresh sandbox restarts it at zero
+        g._hook_path = hook
+        g.timeout_seconds = 0.05  # resolve fast; we only want the id
+        g._emit = lambda frame: (
+            seen.append(frame["request_id"]) if frame.get("type") == "approval_request" else None
+        )
+        return g
+
+    async def drive():
+        for _ in range(3):      # three "sandbox lifetimes"
+            gate = make_gate()
+            for _ in range(2):
+                await gate.check({"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}}, None, None)
+
+    asyncio.run(drive())
+    assert len(seen) == 6, seen
+    assert len(set(seen)) == 6, f"request ids collided across gate instances: {seen}"
