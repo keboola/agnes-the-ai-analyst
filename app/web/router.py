@@ -4200,11 +4200,14 @@ async def profile_page(
     user_record_safe = {k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS}
     raw_token = _read_session_token(request)
 
+    from app.auth.elevation import elevation_paused
+
     ctx = _build_context(
         request,
         user=user,
         memberships=memberships,
         is_admin=is_user_admin(user["id"], conn),
+        elevation_paused=elevation_paused(),
         user_record=user_record_safe,
         claims=_decoded_claims(raw_token),
         token_fingerprint=_token_fingerprint(raw_token),

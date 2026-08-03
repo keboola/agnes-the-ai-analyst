@@ -45,6 +45,28 @@ The `path_template` argument is a Python format string resolved against the requ
 
 Admin short-circuits both helpers — admins never need explicit grants.
 
+### Admin elevation consent gate
+
+The short-circuit is subject to a per-browser consent gate
+(`app/auth/elevation.py`): an admin can **pause** their own elevation via
+`POST /api/me/elevation` (UI on `/profile`), and while paused the
+short-circuit is skipped — `can_access` falls through to the explicit
+group-grant path and `require_admin` refuses with the distinct detail
+`admin_elevation_paused`. State rides the `agnes_elevation` cookie, read
+into a request contextvar by middleware; the cookie can only ever
+*reduce* privilege (enforcement remains the server-side Admin-membership
+check), so this is a guard against accidental god-mode use plus an audit
+hook (`admin_elevation_paused`/`admin_elevation_resumed` audit actions),
+not a containment boundary — a paused admin can re-elevate at will.
+
+The instance default is `access.admin_default_elevation: "elevated"`
+(historical behavior); set `"paused"` for consent-first deployments.
+Non-request contexts (scheduler, CLI, background jobs) always run
+elevated so system automation is unaffected. Each god-mode grant of a
+resource the admin holds no explicit grant for emits a deduplicated
+`god_mode_bypass` log line — the observability data for deciding where
+explicit grants should replace god-mode reliance.
+
 ---
 
 ## Adding a new resource type

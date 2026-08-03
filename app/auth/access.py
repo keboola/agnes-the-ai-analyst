@@ -282,8 +282,13 @@ def can_access(
     group_ids = _user_group_ids(user_id, conn=conn)
     admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn=conn)
     if admin_id is not None and admin_id in group_ids:
-        _note_god_mode_hit(user_id, resource_type, resource_id, conn=conn)
-        return True
+        from app.auth.elevation import elevation_paused
+
+        if not elevation_paused():
+            _note_god_mode_hit(user_id, resource_type, resource_id, conn=conn)
+            return True
+        # Elevation paused (consent gate): fall through to the explicit
+        # group-grant path — the admin sees exactly what their grants say.
 
     if not group_ids:
         return False
@@ -437,6 +442,16 @@ def require_admin(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
+        )
+    from app.auth.elevation import elevation_paused
+
+    if elevation_paused():
+        # Consent gate: the caller IS an admin but has paused their own
+        # elevation for this browser. Distinct detail so clients can offer
+        # a "re-enable admin mode" action instead of a generic 403.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin_elevation_paused",
         )
     return user
 
