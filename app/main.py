@@ -1531,6 +1531,12 @@ async def lifespan(app):
 
     async with streamable_session_manager_lifespan(app):
         yield
+    # Start the shared drain budget before cancelling anything: the loops
+    # cancelled below drain their in-flight DB call, and they must share one
+    # bound rather than get a full one each (see health_probes._drain_budget_s).
+    from app.api.health_probes import begin_shutdown
+
+    begin_shutdown()
     if _checkpoint_task is not None:
         _checkpoint_task.cancel()
         try:

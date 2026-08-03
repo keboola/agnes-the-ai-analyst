@@ -19,6 +19,22 @@ import time
 
 import pytest
 
+from app.api import health_probes
+
+
+@pytest.fixture(autouse=True)
+def _reset_drain_deadline():
+    """Keep the process-global shutdown-drain budget out of these tests.
+
+    Tests here cancel `worker_loop` while it polls, and a cancellation that
+    lands mid-DB-call is exactly what the drain reacts to. Without this
+    reset one test could leave an armed (or spent) deadline behind and make
+    a later drain assertion depend on how long the rest of the file took.
+    """
+    health_probes._drain_deadline = None
+    yield
+    health_probes._drain_deadline = None
+
 
 @pytest.fixture
 def worker_db(tmp_path, monkeypatch):
