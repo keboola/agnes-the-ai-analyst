@@ -1131,11 +1131,6 @@ def _list_installed_agnes_plugins(target: str = "project") -> Optional[dict[str,
     return versions
 
 
-def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
-    """Back-compat wrapper — the historical project-target enumeration."""
-    return _list_installed_agnes_plugins("project")
-
-
 def run_user_scope_reconcile(*, quiet: bool = False) -> dict[str, list[str]]:
     """Reconcile the USER scope against the existing clone's manifest.
 
