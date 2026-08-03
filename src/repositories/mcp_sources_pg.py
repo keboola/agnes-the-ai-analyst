@@ -52,9 +52,9 @@ class MCPSourcePgRepository:
             raise ValueError(f"{transport} transport requires 'url'")
         if scope not in ("shared", "per_user"):
             raise ValueError(f"unsupported scope: {scope!r}; must be 'shared' or 'per_user'")
-        if auth_method == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
-            # Mirrors the DuckDB repo's coupling rule — see its comment
-            # (2026-07-30 outbound MCP OAuth spec §1).
+        if (auth_method or "").strip().lower() == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
+            # Mirrors the DuckDB repo's coupling rule, normalization included
+            # — see its comment (2026-07-30 outbound MCP OAuth spec §1).
             raise ValueError(
                 "auth_method='oauth' requires transport in ('http', 'sse') and scope='per_user' "
                 f"(got transport={transport!r}, scope={scope!r})"
