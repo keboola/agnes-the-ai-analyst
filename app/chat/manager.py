@@ -1079,10 +1079,18 @@ class ChatManager:
         # without this guard the loop would spin forever and the entry
         # in `_live` would leak (the reaper skips DEAD sessions).
         # Devin Review BUG_0001 follow-up from #605.
+        # Backs off: an ordinary turn clears in milliseconds, but a turn
+        # suspended on a pending approval holds `turn_in_flight` for the whole
+        # approval timeout (default 300s) — 6000 wakeups at the old flat 20 Hz
+        # for a session nobody is watching (review finding on #1145). Whether
+        # such a turn should keep the sandbox warm at all is the separate
+        # question of making approvals follow the attached client.
+        delay = 0.05
         while live.turn_in_flight:
             if live.state != SessionState.ACTIVE:
                 return
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 1.0)
         # Tier 1 grace window (docs/brainstorms/2026-07-23-chat-e2b-architecture-
         # comparison.md §5): keeps the sandbox warm for idle_grace_seconds after
         # the last sink detaches so a within-window follow-up (a new attach()
@@ -2299,9 +2307,23 @@ class ChatManager:
 
     async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
         payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"
-        async with live._stdin_lock:
-            live.handle.stdin.write(payload.encode("utf-8"))
-            await live.handle.stdin.drain()
+        try:
+            async with live._stdin_lock:
+                live.handle.stdin.write(payload.encode("utf-8"))
+                await live.handle.stdin.drain()
+        except Exception:
+            # Same posture as the cross-gateway forward: this runs on the
+            # WebSocket reader path, so a sandbox that died or was paused
+            # between rendering the card and the click must cost the answer,
+            # not the user's chat window. The gate's own timeout resolves the
+            # pending request either way (review finding on #1145).
+            logger.warning(
+                "approval decision for %s could not be written to the sandbox; "
+                "the pending request will fall through to the gate's own timeout",
+                live.chat_id,
+                exc_info=True,
+            )
+            return
         live.last_activity = datetime.now(timezone.utc)
 
     def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:

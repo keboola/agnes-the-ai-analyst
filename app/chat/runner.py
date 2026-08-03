@@ -157,6 +157,7 @@ class ApprovalGate:
         self._emit = emit
         self._hook_path = Path(hook_path)
         self._enabled = enabled
+        self._disabled_reason = ""
         self.timeout_seconds = timeout_seconds
         self._pending: "dict[str, asyncio.Future[str]]" = {}
         self._session_approved: set[str] = set()
@@ -217,14 +218,18 @@ class ApprovalGate:
                 fut.set_result("deny")
         self._pending.clear()
 
-    def disable_unsupported(self) -> None:
-        """Turn the gate off because it cannot be armed safely.
+    def disable_unsupported(self, reason: str) -> None:
+        """Turn the gate off because it cannot be armed, recording WHY.
 
-        Called when the installed SDK's HookMatcher takes no timeout: without
-        it the CLI could time the hook out and proceed while a human is still
-        being asked. Denying is the only honest option — see the call site.
+        Every path that fails to arm must come through here: leaving
+        ``_enabled`` True while the hook was never registered restores the
+        pre-PR behavior — an ``ask`` verdict executing unprompted — with
+        nothing in the log to say so. The reason is surfaced to the agent so
+        it does not relay a wrong explanation to the user.
         """
         self._enabled = False
+        self._disabled_reason = reason
+        print(f"approval gate: not armed — {reason}", file=sys.stderr, flush=True)
 
     def awaiting_approval(self) -> bool:
         """True while at least one tool call is suspended waiting for a
@@ -260,10 +265,14 @@ class ApprovalGate:
             return _hook_output(
                 "deny",
                 (reason + " — " if reason else "")
-                + "Approval cards render only in web chat, and this session was not started there "
-                "(opening it on the web via a deep link does not change that — the setting is fixed "
-                "when the session starts). Ask the user to confirm and run the command themselves, "
-                "or to start the task in a web chat.",
+                + (
+                    getattr(self, "_disabled_reason", "")
+                    or "Approval cards render only in web chat, and this session was not started "
+                    "there (opening it on the web via a deep link does not change that — the "
+                    "setting is fixed when the session starts)."
+                )
+                + " Ask the user to confirm and run the command themselves, or to start the task "
+                "in a web chat.",
             )
         self._counter += 1
         request_id = f"appr-{os.getpid()}-{self._counter}"
@@ -750,11 +759,21 @@ async def _real_agent_loop(
     # __dataclass_fields__ probe used for include_partial_messages below
     # (review finding on #1145).
     _hooks_supported = "hooks" in getattr(ClaudeAgentOptions, "__dataclass_fields__", {})
+    if gate is not None and not _hooks_supported:
+        gate.disable_unsupported(
+            "the installed claude-agent-sdk ClaudeAgentOptions has no `hooks` field, so the "
+            "PreToolUse gate cannot be registered"
+        )
     if gate is not None and _hooks_supported:
         try:
             from claude_agent_sdk import HookMatcher  # type: ignore[attr-defined]
         except ImportError:
             HookMatcher = None
+        if HookMatcher is None:
+            gate.disable_unsupported(
+                "the installed claude-agent-sdk provides no HookMatcher, so the PreToolUse gate "
+                "cannot be registered"
+            )
         if HookMatcher is not None:
 
             async def _gate_hook(input_data, tool_use_id, context):
@@ -783,13 +802,10 @@ async def _real_agent_loop(
             try:
                 _matcher = HookMatcher(matcher="Bash", hooks=[_gate_hook], timeout=gate.timeout_seconds + 30)
             except TypeError:
-                gate.disable_unsupported()
-                print(
-                    "approval gate: installed claude-agent-sdk HookMatcher has no timeout= "
-                    "parameter; refusing to arm the gate (ask-flagged commands will be denied "
-                    "rather than run unconfirmed). Upgrade the SDK to restore approvals.",
-                    file=sys.stderr,
-                    flush=True,
+                gate.disable_unsupported(
+                    "the installed claude-agent-sdk HookMatcher takes no `timeout`, so the gate "
+                    "cannot guarantee the CLI blocks while a human is asked; upgrade the SDK to "
+                    "restore approvals"
                 )
             else:
                 options_kwargs["hooks"] = {"PreToolUse": [_matcher]}

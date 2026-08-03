@@ -425,13 +425,13 @@ def test_gate_disables_itself_when_hookmatcher_takes_no_timeout():
 
     gate = runner.ApprovalGate.__new__(runner.ApprovalGate)
     gate._enabled = True
+    gate._disabled_reason = ""
     gate._session_approved = set()
-    gate.disable_unsupported()
+    gate.disable_unsupported("HookMatcher takes no timeout")
     assert gate._enabled is False
-
-    out = gate.decide({"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}}) if hasattr(gate, "decide") else None
-    if out is not None:
-        assert out.get("permissionDecision") == "deny"
+    # The recorded reason must reach the agent, so it cannot relay the
+    # wrong explanation (e.g. "this session was not started in web chat").
+    assert "timeout" in gate._disabled_reason
 
 
 def test_installed_sdk_hookmatcher_supports_timeout():
