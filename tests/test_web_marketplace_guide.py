@@ -192,7 +192,11 @@ def test_marketplace_shelves_collapsed_into_publisher_facet(fresh_db):
     assert 'id="mp-scope-curated"' not in body
     assert 'id="mp-scope-flea"' not in body
 
-    # Verification is opt-in per instance and OFF by default, so its row must
-    # not render here — an instance with no reviewer shows no such vocabulary.
-    assert 'data-verification="verified"' not in body
+    # v113: verification is opt-in per instance but now defaults to ON, because
+    # the Library states all three trust levels positively (Organization /
+    # Verified / Community) instead of marking only the ABSENCE of verification.
+    # The facet therefore renders by default; what must never render is a
+    # NEGATIVE label, which is what the old default-off reasoning was protecting
+    # against — "Not verified" on every row says nothing about any of them.
+    assert 'data-verification="verified"' in body
     assert "Not verified" not in body

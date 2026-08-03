@@ -170,7 +170,9 @@
 /* Height matches the toolbar's other controls (`.fbar__search input`,
    `.fbar-select select`, `.fbar-filter__btn`, `.fbar-toggle` — all 38px), so a
    primary action sitting beside the search field or an input doesn't read as
-   a smaller, secondary control. */
+   a smaller, secondary control. The radius is the shared `--ds-radius-btn`,
+   which every other labelled button in the product also wears — a toolbar CTA
+   and a detail-header CTA are the same component, so they are the same shape. */
 .cc-btn {
   display: inline-flex;
   align-items: center;
@@ -180,7 +182,7 @@
   font-weight: 600;
   height: 38px;
   padding: 0 14px;
-  border-radius: 9px;
+  border-radius: var(--ds-radius-btn);
   border: 1px solid var(--ds-border);
   background: var(--ds-surface);
   color: var(--ds-text-primary);

@@ -291,34 +291,29 @@ def _audit(
 _NEW_BADGE_DAYS = 30
 
 
-def _badges_for(pkg: Dict[str, Any], conn: duckdb.DuckDBPyConnection) -> List[str]:
+def _badges_for(pkg: Dict[str, Any], conn: Optional[duckdb.DuckDBPyConnection] = None) -> List[str]:
     """Derive the virtual badge list shown on /catalog cards + the
-    package-detail hero. Two badges today; both render-time-computed so
-    backdating ``created_at`` or admin-status changes pick up automatically.
+    package-detail hero. ONE badge now, render-time-computed so backdating
+    ``created_at`` picks up automatically:
 
-      * ``curated`` — creator (``created_by``) maps to a current Admin
-        group member. Reads `users.email` → `user_groups`. Cheap (two
-        small SELECTs); package list has few hundred rows max.
       * ``new`` — ``created_at`` within :data:`_NEW_BADGE_DAYS`.
+
+    ``curated`` is **gone** (v113). It was derived here from "is ``created_by``
+    currently in the Admin group", which is a fact about the person, not about
+    the package: an admin leaving the Admin group silently un-curated
+    everything they had ever created, and the badge could not be set or
+    corrected by anyone. The trust claim now lives in the stored
+    ``publisher_kind`` column — the same axis ``store_entities`` carries — and
+    is surfaced by :func:`_serialize` rather than invented here, so every
+    surface renders one shared marker off one stored value.
+
+    Note the shape that remains: ``new`` is a genuine function of the clock, so
+    deriving it is correct. That is the line — derive what follows from data on
+    the row, store what somebody decided.
     """
     from datetime import datetime, timedelta, timezone
 
     badges: List[str] = []
-
-    created_by = pkg.get("created_by")
-    if created_by:
-        try:
-            # Backend-aware: resolve the creator + Admin membership through the
-            # factory (RBAC lives in the active backend). created_by may be a
-            # user_id or an email.
-            from app.auth.access import is_user_admin
-            from src.repositories import users_repo
-
-            u = users_repo().get_by_id(created_by) or users_repo().get_by_email(created_by)
-            if u and is_user_admin(u["id"]):
-                badges.append("curated")
-        except Exception:
-            logger.warning("badge curated lookup failed for %s", created_by)
 
     created_at = pkg.get("created_at")
     if created_at:
@@ -361,6 +356,12 @@ def _serialize(pkg: Dict[str, Any], conn: Optional[duckdb.DuckDBPyConnection] = 
         # apply DEFAULT to existing rows on ADD COLUMN).
         "status": pkg.get("status") or "prod",
         "category": pkg.get("category"),
+        # v113: stored trust axis, same vocabulary + same values as
+        # store_entities. Defaulted here as well as in the repos because a
+        # caller may hand _serialize a dict that never went through one.
+        "publisher_kind": pkg.get("publisher_kind")
+        if pkg.get("publisher_kind") in ("user", "organization")
+        else "user",
         # v56: extended content. JSON-list fields decode to [] for NULL
         # via the repo's _decode_row; safe to pass through unchanged.
         "owner_name": pkg.get("owner_name"),
@@ -434,6 +435,13 @@ async def create_data_package(
             cover_image_url=payload.cover_image_url,
             status=payload.status or "prod",
             category=(payload.category or "").strip() or None,
+            # v113: 'organization', not the repo's 'user' default. This endpoint
+            # is `require_admin`-gated, so a package created through it IS the
+            # organization publishing — which is also what the retired derived
+            # badge effectively said (creator-is-admin was true by construction
+            # here). Writing it explicitly at creation is what stops the claim
+            # from evaporating later when that admin's group membership changes.
+            publisher_kind="organization",
             owner_name=payload.owner_name,
             owner_team=payload.owner_team,
             tags=payload.tags,

@@ -84,13 +84,22 @@ class TestCardOwnerAndTags:
 
 
 class TestCardBadges:
-    def test_curated_badge_on_card_for_admin_created(self, seeded_app):
-        _seed_pkg_for_grid(created_by="admin1")
+    def test_no_curated_badge_on_card_and_stored_claim_renders_instead(self, seeded_app):
+        """v113: the amber derived `Curated` chip is gone from the card.
+
+        An admin-created package no longer earns a badge from who its creator
+        currently is; the card renders the SAME shared trust marker as the
+        Library row and the detail hero, off the stored publisher_kind, so the
+        three cannot disagree.
+        """
+        _seed_pkg_for_grid(created_by="admin1", publisher_kind="organization")
         r = seeded_app["client"].get(
             "/catalog",
             headers=_auth(seeded_app["analyst_token"]),
         )
-        assert 'data-badge="curated"' in r.text
+        assert 'data-badge="curated"' not in r.text
+        assert ">Curated<" not in r.text
+        assert "ds-trust--org" in r.text
 
     def test_new_badge_on_card_for_recent(self, seeded_app):
         _seed_pkg_for_grid(created_by="admin1")

@@ -31,6 +31,25 @@
    collection shows one consistent icon everywhere. #}
 {% import "macros/_catalog_card.html" as cards %}
 
+{# ── Redesign switch ──────────────────────────────────────────────────
+   TRUE on instances that opted into the #896 redesign, which is what
+   selects the editorial two-column layout (header on the page ground,
+   sticky right rail, borderless sections — styled by
+   static/css/detail-page.css) over the legacy gradient-hero + stacked-
+   cards rendering. Default instances keep the legacy path byte-for-byte;
+   that is the project rule, not a preference.
+
+   `instance_theme` only resolves when the caller imports this file
+   `with context`:
+
+       {% import "macros/_detail.html" as detail with context %}
+
+   A plain import leaves it Undefined, the `default('blue')` catches it,
+   and the macros emit the legacy markup — so the templates that have not
+   been migrated yet keep working untouched, and migrating one is a matter
+   of adding `with context` plus the layout calls. #}
+{% set redesign = (instance_theme | default('blue')) == 'paper' %}
+
 {# Inline icon set — keyed by short name; stroke inherits currentColor. #}
 {% macro ico(name) %}
 {%- if name == 'back' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -54,6 +73,13 @@
 {%- elif name == 'link' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10 13a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1M14 11a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1" stroke-linecap="round" stroke-linejoin="round"/></svg>
 {%- elif name == 'chat' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke-linecap="round" stroke-linejoin="round"/></svg>
 {%- elif name == 'key' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.5 12.5L20 3M16 7l3 3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+{%- elif name == 'dots' -%}<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="5" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="19" r="1.7" fill="currentColor"/></svg>
+{%- elif name == 'user' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0" stroke-linecap="round"/></svg>
+{%- elif name == 'share' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="18" cy="6" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="18" r="2.6"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6"/></svg>
+{%- elif name == 'stack' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l8 4.5-8 4.5-8-4.5L12 3Z" stroke-linejoin="round"/><path d="M4 12l8 4.5 8-4.5M4 16.5 12 21l8-4.5" stroke-linejoin="round"/></svg>
+{%- elif name == 'history' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1M3.5 5v4h4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 8v4.4l2.8 1.6" stroke-linecap="round"/></svg>
+{%- elif name == 'trash' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12" stroke-linecap="round" stroke-linejoin="round"/></svg>
+{%- elif name == 'download' -%}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v10M8 10l4 4 4-4M5 19h14" stroke-linecap="round" stroke-linejoin="round"/></svg>
 {%- endif -%}
 {% endmacro %}
 
@@ -92,11 +118,20 @@
    When empty the hero renders exactly as before (single action bar), so
    existing callers are unaffected. The hero's action buttons still come
    through `caller()`. #}
+{# `type_label` / `menu` are the redesign's two additions to the header:
+   the resource-type badge that sits beside the title (so a reader knows
+   WHAT they are looking at, not only what it is called), and the overflow
+   menu that holds the secondary actions — build it with `detail.menu(...)`
+   and pass the result. Both are ignored on the legacy path: the gradient
+   hero states the kind through its own colour and has no room for a menu,
+   and a header the default instances render must not change. #}
+{% import "macros/_trustmark.html" as _detail_trust %}
 {% macro hero(kind='data', name='', color=None, cover_image_url=None, icon=None,
               eyebrow=None, badges=None, owner_name=None, owner_team=None,
               description=None, tags=None, meta=None,
               back_href='/catalog', back_label='Back', panel='', glyph=None,
-              compact=False) %}
+              compact=False, type_label=None, menu=None,
+              trust=None, trust_own=False) %}
 {# `kind` sets the accent color + data-kind; `glyph` optionally overrides just
    the icon shape (e.g. a one-file artefact keeps the library color but draws
    the single-document glyph). Defaults to kind, so existing callers are
@@ -124,6 +159,19 @@
   <div class="detail-hero__body">
     <div class="detail-hero__title-row">
       <h1>{{ name }}</h1>
+      {% if redesign and type_label %}
+      {# Resource-type badge — the word AND the resource colour, so the
+         type is never carried by hue alone. #}
+      <span class="detail-type" data-resource="{{ kind }}">{{ cards.kind_glyph(glyph or kind) }}{{ type_label }}</span>
+      {% endif %}
+      {# Trust marker — the SAME claim, from the same stored field, that the
+         Library table and the catalog cards render. `form='label'` because a
+         hero has room for the word, unlike the fixed table column that forced
+         icon-only; the glyph, colour and sentence are still the shared ones.
+         This replaces the amber `Curated` badge, which came through `badges`
+         below and was DERIVED from whether the creator happened to still be in
+         the Admin group. #}
+      {% if trust %}{{ _detail_trust.mark(trust, own=trust_own, form='label') }}{% endif %}
       {% for b in (badges or []) %}
       <span class="detail-badge detail-badge--{{ b }}" data-badge="{{ b }}">{{ b|capitalize }}</span>
       {% endfor %}
@@ -147,6 +195,7 @@
   </div>
   <div class="detail-hero__actions">
     {{ caller() }}
+    {% if redesign and menu %}{{ menu }}{% endif %}
   </div>
   </div>
   {% if panel %}<div class="detail-hero__panel">{{ panel }}</div>{% endif %}
@@ -173,6 +222,212 @@
 {# ── Admin edit icon-button (quiet) ─────────────────────────────────── #}
 {% macro edit_icon(href, title='Edit (admin)') %}
 <a class="detail-edit-icon" href="{{ href }}" title="{{ title }}" aria-label="{{ title }}" data-section-edit>{{ ico('edit') }}</a>
+{% endmacro %}
+
+{# ══════════════════════════════════════════════════════════════════════
+   REUSABLE DETAIL COMPONENTS
+   ══════════════════════════════════════════════════════════════════════
+   The building blocks every resource detail page composes from. All of
+   them are no-ops or legacy-equivalent when `redesign` is false, so a
+   migrated template renders the editorial layout on an opted-in instance
+   and exactly its previous markup everywhere else.
+
+   The shape of a migrated page:
+
+     {% import "macros/_detail.html" as detail with context %}
+
+     {% call detail.hero(kind='skill', type_label='Skill', menu=my_menu, …) %}
+       … the ONE primary action …
+     {% endcall %}
+
+     {{ detail.cols_open() }}                  ← main column opens
+       {{ detail.section_open('Overview') }} … {{ detail.section_close() }}
+       {{ detail.section_open('Best for') }}  … {{ detail.section_close() }}
+     {{ detail.aside_open() }}                 ← main closes, rail opens
+     {% if detail.redesign %}
+       {{ detail.side_open('Resource information', icon='info') }}
+         {{ detail.side_rows([{'key': 'Type', 'val': 'Skill'}]) }}
+       {{ detail.side_close() }}
+     {% endif %}
+     {{ detail.cols_close() }}                 ← rail closes, shell closes
+
+   THE GATING RULE, and the one thing to get right when migrating a page:
+
+     - `cols_open` / `aside_open` / `cols_close` emit nothing at all on the
+       legacy path, so the shell simply is not there and the sections stack
+       exactly as they do today. They need no guard.
+     - The RAIL'S CONTENT does need one: `{% if detail.redesign %}`. A
+       sidebar block is content that MOVED, and on the legacy path there is
+       no rail for it to move into — rendering it anyway would append new
+       sections, in a new order, to a page default instances are entitled to
+       see unchanged. Gate the rail; leave the main column alone.
+     - Same rule for any main-column section the redesign adds, moves or
+       re-words. Sections that merely get restyled are left ungated: the
+       markup is identical and only the paper sheet reacts to it.
+   ══════════════════════════════════════════════════════════════════════ #}
+
+{# ── Two-column shell ──────────────────────────────────────────────── #}
+{% macro cols_open() %}
+{%- if redesign %}<div class="detail-cols"><div class="detail-main">{% endif -%}
+{% endmacro %}
+
+{# Closes the main column and opens the sticky right rail. One macro
+   rather than a close+open pair, because the two are never separable —
+   forgetting one of them silently produces a broken grid. #}
+{% macro aside_open() %}
+{%- if redesign %}</div><aside class="detail-aside">{% endif -%}
+{% endmacro %}
+
+{% macro cols_close() %}
+{%- if redesign %}</aside></div>{% endif -%}
+{% endmacro %}
+
+{# ── Sidebar section ───────────────────────────────────────────────────
+   An eyebrow-headed block in the right rail. Rail-only by definition —
+   the caller gates the whole rail on `detail.redesign` (see THE GATING
+   RULE above), so these are never reached on the legacy path. #}
+{% macro side_open(title, icon='info') %}
+<section class="detail-side">
+  {% if title %}<h2 class="detail-side__title">{{ ico(icon) }}{{ title }}</h2>{% endif %}
+{% endmacro %}
+
+{% macro side_close() %}
+</section>
+{% endmacro %}
+
+{# Key/value rows. `rows` is a list of dicts:
+     key      the label (required)
+     val      pre-escaped text, or HTML when `html` is true
+     html     truthy → `val` is emitted unescaped (for a link or a badge)
+     stacked  truthy → value on its own line (long paths, descriptions)
+   Rows whose `val` is empty are dropped rather than printing an em dash
+   for a fact the resource simply does not have. #}
+{% macro side_rows(rows) %}
+<div class="detail-side__rows">
+  {% for r in rows if r.val %}
+  <div class="detail-side__row{% if r.stacked %} detail-side__row--stacked{% endif %}">
+    <span class="detail-side__key">{{ r.key }}</span>
+    <span class="detail-side__val">{% if r.html %}{{ r.val | safe }}{% else %}{{ r.val }}{% endif %}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{# ── Owner ────────────────────────────────────────────────────────────
+   Initial-monogram avatar + name. No photo: the platform has no avatar
+   store, and a generated illustration would imply one. #}
+{% macro owner(name, sub=None) %}
+<div class="detail-owner">
+  <span class="detail-owner__avatar" aria-hidden="true">{{ (name or '?')[:1] }}</span>
+  <span class="detail-owner__name">{{ name or 'Unknown' }}{% if sub %}<span class="detail-owner__sub">{{ sub }}</span>{% endif %}</span>
+</div>
+{% endmacro %}
+
+{# ── Stat blocks ───────────────────────────────────────────────────────
+   `items`: list of {value, label}. Hairline-separated, no boxes. #}
+{% macro stats(items) %}
+<ul class="detail-stats">
+  {% for s in items %}
+  <li class="detail-stat">
+    <span class="detail-stat__value">{{ s.value }}</span>
+    <span class="detail-stat__label">{{ s.label }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+
+{# ── Status pill ───────────────────────────────────────────────────────
+   `tone`: '' (neutral) | 'ok' | 'warn' | 'danger' | 'info'. The label is
+   always spelled out, so the tone is decoration and never the signal. #}
+{% macro status(label, tone='') %}
+<span class="detail-status{% if tone %} detail-status--{{ tone }}{% endif %}">{{ label }}</span>
+{% endmacro %}
+
+{# ── Activity timeline ────────────────────────────────────────────────
+   `events`: list of {title, when, body, current}. Mark the newest entry
+   `current: True` — it takes the filled accent dot, which is what makes
+   "where are we now" answerable without reading a date. #}
+{% macro timeline(events) %}
+<ol class="detail-timeline">
+  {% for e in events %}
+  <li class="detail-timeline__item{% if e.current %} detail-timeline__item--current{% endif %}">
+    <div class="detail-timeline__head">
+      <span class="detail-timeline__title">{{ e.title }}</span>
+      {% if e.when %}<span class="detail-timeline__when">{{ e.when }}</span>{% endif %}
+    </div>
+    {% if e.body %}<p class="detail-timeline__body">{{ e.body }}</p>{% endif %}
+  </li>
+  {% endfor %}
+</ol>
+{% endmacro %}
+
+{# ── Related resources ────────────────────────────────────────────────
+   `items`: list of {name, href, kind, kind_label, glyph}. Each row is
+   scoped to its OWN resource colour via an inline `--kind`, so a list of
+   related things reads as a map of the product rather than a list of
+   links — the same accent the reader will see when they land there. #}
+{% macro related(items) %}
+<ul class="detail-related">
+  {% for r in items %}
+  <li style="--kind: var(--ds-kind-{{ r.kind }}); --kind-soft: var(--ds-kind-{{ r.kind }}-soft);">
+    <a class="detail-related__link" href="{{ r.href }}">
+      <span class="detail-related__glyph">{{ cards.kind_glyph(r.glyph or r.kind) }}</span>
+      <span class="detail-related__text">
+        <span class="detail-related__name">{{ r.name }}</span>
+        {% if r.kind_label %}<span class="detail-related__kind">{{ r.kind_label }}</span>{% endif %}
+      </span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+
+{# ── Overflow menu ─────────────────────────────────────────────────────
+   The home for every secondary action, so the header carries exactly one
+   prominent one. `items`: list of dicts —
+     label     the text (required, unless `sep`)
+     href      renders an <a>; omit for a <button>
+     icon      an `ico()` name
+     attrs     raw attributes for the button (e.g. an id the page wires up)
+     danger    truthy → destructive styling
+     disabled  truthy → inert, kept visible so the action is discoverable
+     sep       truthy → a hairline separator instead of an item
+   <details>/<summary> rather than a JS popover: it opens, closes on
+   click-away via the browser, and needs no script to be keyboard-usable.
+
+   Returns markup — pass it to `hero(menu=…)`; on the legacy path the hero
+   drops it, because that header has no room for it. #}
+{% macro menu(items, label='More actions') %}
+<details class="detail-menu">
+  <summary title="{{ label }}" aria-label="{{ label }}" role="button">{{ ico('dots') }}</summary>
+  <div class="detail-menu__panel" role="menu">
+    {% for i in items %}
+      {% if i.sep %}
+      <div class="detail-menu__sep" role="separator"></div>
+      {% elif i.href and not i.disabled %}
+      <a class="detail-menu__item{% if i.danger %} detail-menu__item--danger{% endif %}"
+         href="{{ i.href }}" role="menuitem">{% if i.icon %}{{ ico(i.icon) }}{% endif %}{{ i.label }}</a>
+      {% else %}
+      <button type="button" role="menuitem"
+              class="detail-menu__item{% if i.danger %} detail-menu__item--danger{% endif %}"
+              {% if i.disabled %}disabled aria-disabled="true"{% endif %}
+              {% if i.title %}title="{{ i.title }}"{% endif %}
+              {{ i.attrs | default('') | safe }}>{% if i.icon %}{{ ico(i.icon) }}{% endif %}{{ i.label }}</button>
+      {% endif %}
+    {% endfor %}
+  </div>
+</details>
+{% endmacro %}
+
+{# ── Empty state ───────────────────────────────────────────────────────
+   What a section says when it holds nothing. One muted line under the
+   resource glyph — deliberately not a bordered box, because an empty box
+   is worse than no box. #}
+{% macro empty(text, icon='file') %}
+<div class="detail-empty">
+  <span class="detail-empty__glyph">{{ ico(icon) }}</span>
+  <span>{{ text }}</span>
+</div>
 {% endmacro %}
 
 {# ── Shared styles — emit once per page in head_extra ───────────────── #}
@@ -326,7 +581,9 @@
     display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px;
     font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .detail-badge--curated { background: #fef3c7; color: #92400e; }
+  /* `.detail-badge--curated` is gone with the derived badge it styled — the
+     trust claim is now `.ds-trust--org` from css/trustmark.css, shared with
+     every other surface. It was also this file's last raw-hex colour pair. */
   .detail-badge--new     { background: var(--kind-soft); color: var(--kind); }
 
   .detail-hero__owner { margin-top: 5px; font-size: 13px; color: rgba(255, 255, 255, 0.82); }
@@ -440,6 +697,12 @@
   }
   .detail-section__title svg { width: 18px; height: 18px; color: var(--kind); flex-shrink: 0; }
   .detail-prose { color: var(--ds-text-secondary); font-size: 14px; line-height: 1.65; white-space: pre-wrap; }
+  /* `pre-wrap` exists for USER-entered copy (a package's long description,
+     where the author's line breaks are meaning). Authored template copy is
+     a `<p>`, where source indentation is not — so a paragraph wraps
+     normally. Element+class out-specifies the bare class, including the
+     paper sheet's own `.detail-prose` rule, which sets no white-space. */
+  p.detail-prose { white-space: normal; }
   .detail-divider { border: 0; border-top: 1px solid var(--ds-border-light); margin: 18px 0; }
 
   /* ── Use it / Skip it two-column ── */
@@ -484,5 +747,124 @@
   .detail-row:last-child { border-bottom: 0; }
   .detail-row__key { color: var(--ds-text-muted); min-width: 150px; }
   .detail-row__val { color: var(--ds-text-primary); }
+
+  /* ── Baseline for the shared components ──────────────────────────────
+     The reusable pieces (sidebar rows, stat blocks, status pills,
+     timeline, related list, empty state) are NEW markup, emitted by
+     macros above on every theme. Their premium treatment — the two-column
+     shell, the sticky rail, the borderless sections — lives in
+     static/css/detail-page.css and is scoped to the opted-in redesign.
+     What follows is the plain version, so a default instance renders the
+     same components legibly inside the section cards it already draws.
+     Nothing here restyles a pre-existing class; there is no default look
+     to preserve for markup that did not exist. */
+
+  .detail-side__rows { display: flex; flex-direction: column; }
+  .detail-side__row {
+    display: flex; align-items: baseline; gap: 12px; padding: 10px 2px;
+    border-bottom: 1px solid var(--ds-border-light); font-size: 13.5px;
+  }
+  .detail-side__row:last-child { border-bottom: 0; }
+  .detail-side__row--stacked { display: block; }
+  .detail-side__key { color: var(--ds-text-muted); min-width: 150px; flex: none; }
+  .detail-side__val { color: var(--ds-text-primary); min-width: 0; overflow-wrap: anywhere; }
+  .detail-side__val a { color: var(--kind); }
+  .detail-side__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .detail-side__actions--spaced { margin-top: 14px; }
+  /* The explanatory line under a rail block's chip or rows. Same role as
+     `.detail-section__note` one level up, so the two read as one family. */
+  .detail-side__note { margin: 10px 0 0; font-size: 13px; line-height: 1.6; color: var(--ds-text-secondary); }
+
+  .detail-owner { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .detail-owner__avatar {
+    flex: none; display: grid; place-items: center; width: 30px; height: 30px;
+    border-radius: 999px; background: var(--kind-soft); color: var(--kind);
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
+  }
+  .detail-owner__name { min-width: 0; font-size: 13.5px; font-weight: 600; color: var(--ds-text-primary); }
+  .detail-owner__sub { display: block; font-weight: 400; font-size: 12px; color: var(--ds-text-muted); }
+
+  .detail-stats { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0; padding: 0; list-style: none; }
+  .detail-stat { min-width: 0; }
+  .detail-stat__value { display: block; font-size: 22px; font-weight: 600; color: var(--ds-text-primary); letter-spacing: -0.02em; }
+  .detail-stat__label {
+    display: block; margin-top: 3px; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-text-muted);
+  }
+
+  /* Status pill — the label always carries the meaning; the tint is
+     support. Each tone pairs a status background with its own ink, so it
+     survives the dark theme (both tokens flip together). */
+  .detail-status {
+    display: inline-flex; align-items: center; height: 22px; padding: 0 9px;
+    border-radius: 999px; font-size: 11.5px; font-weight: 600;
+    background: var(--ds-surface-dim); border: 1px solid var(--ds-border);
+    color: var(--ds-text-secondary); white-space: nowrap;
+  }
+  .detail-status--ok     { background: var(--ds-accent-success-bg); border-color: var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
+  .detail-status--warn   { background: var(--ds-accent-warn-bg);    border-color: var(--ds-accent-warn-line);    color: var(--ds-accent-warn-ink); }
+  .detail-status--danger { background: var(--ds-accent-danger-bg);  border-color: var(--ds-accent-danger-line);  color: var(--ds-accent-danger-ink); }
+  .detail-status--info   { background: var(--ds-accent-info-bg);    border-color: var(--ds-accent-info-line);    color: var(--ds-accent-info-ink); }
+
+  .detail-timeline { margin: 0; padding: 0 0 0 20px; list-style: none; border-left: 1px solid var(--ds-border); }
+  .detail-timeline__item { position: relative; padding-bottom: 18px; }
+  .detail-timeline__item:last-child { padding-bottom: 0; }
+  .detail-timeline__item::before {
+    content: ""; position: absolute; top: 5px; left: -24px; width: 8px; height: 8px;
+    border-radius: 999px; background: var(--ds-surface); border: 1.5px solid var(--ds-border);
+  }
+  .detail-timeline__item--current::before { background: var(--kind); border-color: var(--kind); }
+  .detail-timeline__head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+  .detail-timeline__title { font-size: 13.5px; font-weight: 600; color: var(--ds-text-primary); }
+  .detail-timeline__when { font-size: 12px; color: var(--ds-text-muted); }
+  .detail-timeline__body { margin: 3px 0 0; font-size: 13px; line-height: 1.6; color: var(--ds-text-secondary); }
+
+  .detail-related { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+  .detail-related__link {
+    display: flex; align-items: center; gap: 10px; padding: 8px 6px;
+    border-radius: 8px; color: inherit; text-decoration: none;
+  }
+  .detail-related__link:hover { background: var(--ds-surface-dim); }
+  .detail-related__glyph {
+    flex: none; display: grid; place-items: center; width: 28px; height: 28px;
+    border-radius: 8px; background: var(--kind-soft); color: var(--kind);
+  }
+  .detail-related__glyph svg { width: 15px; height: 15px; }
+  .detail-related__text { flex: 1; min-width: 0; }
+  .detail-related__name {
+    display: block; font-size: 13.5px; font-weight: 500; color: var(--ds-text-primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .detail-related__kind { display: block; font-size: 11.5px; font-weight: 600; color: var(--kind); }
+
+  .detail-empty {
+    display: flex; align-items: center; gap: 10px; padding: 6px 0;
+    color: var(--ds-text-secondary); font-size: 13.5px;
+  }
+  .detail-empty__glyph {
+    flex: none; display: grid; place-items: center; width: 32px; height: 32px;
+    border-radius: 9px; background: var(--kind-soft); color: var(--kind);
+  }
+  .detail-empty__glyph svg { width: 17px; height: 17px; }
+
+  /* Section note + table cell helpers — plain text roles, so the
+     baseline is the whole styling on themes without the redesign. */
+  .detail-section__note { margin: -6px 0 13px; font-size: 13px; line-height: 1.6; color: var(--ds-text-muted); }
+  .detail-cell__name { font-weight: 600; color: var(--ds-text-primary); text-decoration: none; }
+  .detail-cell__sub { display: block; margin-top: 2px; font-size: 12px; color: var(--ds-text-muted); }
+  .detail-cell__mono { font-family: var(--ds-font-mono); font-size: 12.5px; color: var(--ds-text-secondary); }
+
+  .detail-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+  .detail-list__item {
+    display: flex; align-items: center; gap: 12px; padding: 11px 2px;
+    border-bottom: 1px solid var(--ds-border-light);
+  }
+  .detail-list__item:last-child { border-bottom: 0; }
+  .detail-list__glyph {
+    flex: none; display: grid; place-items: center; width: 32px; height: 32px;
+    border-radius: 9px; background: var(--kind-soft); color: var(--kind);
+  }
+  .detail-list__glyph svg { width: 16px; height: 16px; }
+  .detail-list__body { flex: 1; min-width: 0; }
 </style>
 {% endmacro %}

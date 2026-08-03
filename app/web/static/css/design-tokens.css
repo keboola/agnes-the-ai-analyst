@@ -45,6 +45,27 @@
     --ds-code-ink: #d7e4ff;
     --ds-code-yellow: #ffd866;
 
+    /* Syntax-token palette for highlighted code painted on
+       --ds-code-bg. The vendored highlight.js sheet ships GitHub's
+       LIGHT theme (near-black / navy / dark-blue tokens meant for a
+       white page), which is unreadable on our dark code surface —
+       chat.css remaps every hljs token family onto these instead.
+       Every value clears 5.5:1 against --ds-code-bg in BOTH themes
+       (blue #0c1224 and paper #1c1b1a), so the set is declared once
+       here and inherited by the paper override below. */
+    --ds-code-keyword: #ff7b72;   /* keyword, type, doctag */
+    --ds-code-title: #d2a8ff;     /* function / class names */
+    --ds-code-literal: #79c0ff;   /* number, literal, attr, operator */
+    --ds-code-string: #a5d6ff;    /* string, regexp */
+    --ds-code-builtin: #ffa657;   /* built_in, symbol */
+    --ds-code-comment: #8b949e;   /* comment, formula */
+    --ds-code-tag: #7ee787;       /* tag/selector name, quote */
+    --ds-code-bullet: #f2cc60;    /* list bullets in md blocks */
+    --ds-code-addition-ink: #7ee787;
+    --ds-code-addition-bg: rgba(46, 160, 67, 0.15);
+    --ds-code-deletion-ink: #ffa198;
+    --ds-code-deletion-bg: rgba(248, 81, 73, 0.15);
+
     /* Light surface — page background, card surface, dim variant
        for inset panels. */
     --ds-bg: #f6f7fa;
@@ -231,8 +252,15 @@
    - --ds-motion-* / --ds-ease-*: shared motion vocabulary so page and
      panel transitions feel identical everywhere. Honor
      prefers-reduced-motion at the consumer site.
-   - --ds-radius-pill: marketing-style pill radius, reserved for the
-     one prominent CTA per context — never on inputs. */
+   - --ds-radius-btn: the ONE radius every labelled button wears —
+     primary CTA, secondary, ghost, on a detail header or in a
+     toolbar. Matched to the toolbar control radius (search field,
+     filter/sort buttons) so a primary action standing next to an
+     input is the same shape as the input.
+   - --ds-radius-pill: fully-round radius for BADGES — category tags,
+     status chips, counters, avatars, dots, and circular icon-only
+     buttons. Never on a labelled button (that is --ds-radius-btn),
+     never on inputs. */
 :root {
     --ds-kind-data: #185a57;
     --ds-kind-data-soft: #e1f3f1;
@@ -242,6 +270,13 @@
     --ds-kind-memory-soft: #f3e7dc;
     --ds-kind-library: #0a5aa8;
     --ds-kind-library-soft: #e9eff6;
+    /* `file` is a kind name the resource vocabulary introduced (paper
+       gives it amber). Aliased to `library` here so a `kind='file'`
+       caller resolves to something on every OTHER theme — which is the
+       pre-existing behaviour: a lone file used to borrow the colour of
+       the collection holding it. */
+    --ds-kind-file: var(--ds-kind-library);
+    --ds-kind-file-soft: var(--ds-kind-library-soft);
     --ds-kind-recipe: #9c1264;
     --ds-kind-recipe-soft: #fbe6f1;
     /* Marketplace entity kinds — skill (green) / agent (violet). Same
@@ -271,7 +306,132 @@
     --ds-ease-standard: cubic-bezier(.2, .7, .2, 1);
     --ds-ease-enter: cubic-bezier(.22, .9, .22, 1);
 
+    --ds-radius-btn: 9px;
     --ds-radius-pill: 9999px;
+}
+
+/* ─── Resource colour system ───────────────────────────────────────
+   ONE semantic accent per resource type, for the whole product — the
+   Library table and grid, detail pages, icons, type badges, section
+   glyphs, search results, related lists, activity timelines, the Stack,
+   empty states, builders, hover/selected states, context menus. A reader
+   should recognise "this is a Skill" from the colour before reading the
+   badge.
+
+   Three roles per resource, and no fourth:
+     -ink   the accent itself — glyphs, badge text, active indicators,
+            left borders, small decorative marks. Every value clears
+            4.5:1 on --ds-surface AND on its own -soft tint, so it is
+            safe as text, not just as a fill.
+     -soft  the tint — icon containers, badge fills, subtle gradients,
+            highlights. Only ever backs -ink (or the resource glyph).
+     -line  the hairline — 1px rims on tinted containers, separators
+            that need to carry the resource identity. Decorative: it is
+            never the only thing distinguishing two states.
+
+   Hard rule, and the reason the family stops at three roles: a resource
+   colour is NEVER a large filled background. No hero slabs, no
+   full-width bands, no filled buttons. It is an accent, so a category
+   can never be mistaken for the one brand action colour — the same rule
+   the --ds-kind-* vocabulary above was introduced for.
+
+   Declared globally (append-only, consumed by nothing yet at :root) so
+   any theme can pick the family up; the paper theme remaps its
+   --ds-kind-* aliases onto these values, which is what carries the
+   palette to every existing consumer without touching their markup. */
+:root {
+    /* Data — deep teal. Already the --ds-kind-data hue: data is the
+       oldest kind in the product and the one users have learned. */
+    --ds-resource-data-ink:  #0f5f5c;
+    --ds-resource-data-soft: #e2f2f0;
+    --ds-resource-data-line: #a9d8d3;
+
+    /* Skill — violet. */
+    --ds-resource-skill-ink:  #6d28d9;
+    --ds-resource-skill-soft: #f1eafe;
+    --ds-resource-skill-line: #cfb8f8;
+
+    /* Plugin — azure blue. The one hue in this family that shares a
+       family with a brand primary (paper's sky #0284c7), so it is
+       deliberately pulled DEEPER and cooler than any --ds-primary the
+       themes ship. What ultimately keeps the two apart is the hard rule
+       above: an azure fill is never a button, so azure never appears
+       where the reader is deciding what to click. */
+    --ds-resource-plugin-ink:  #1857b8;
+    --ds-resource-plugin-soft: #e7eefc;
+    --ds-resource-plugin-line: #b6cbf4;
+
+    /* File / Upload — amber. Deepened well past the warn vocabulary's
+       ink so a file's accent never reads as a warning about the file. */
+    --ds-resource-file-ink:  #92590a;
+    --ds-resource-file-soft: #fdf1dc;
+    --ds-resource-file-line: #efd09b;
+
+    /* Collection — coral. A collection is a container of files, so it
+       sits one hue-step from the file amber: related at a glance,
+       distinguishable side by side in the same list. */
+    --ds-resource-collection-ink:  #b83b32;
+    --ds-resource-collection-soft: #fdece9;
+    --ds-resource-collection-line: #f5c2ba;
+
+    /* Agent — indigo. */
+    --ds-resource-agent-ink:  #4338ca;
+    --ds-resource-agent-soft: #eaeafb;
+    --ds-resource-agent-line: #c1c1f1;
+
+    /* Memory — rose. */
+    --ds-resource-memory-ink:  #b0246a;
+    --ds-resource-memory-soft: #fce8f0;
+    --ds-resource-memory-line: #f3bdd3;
+
+    /* Recipe — plum. Not one of the seven named resource types, but a
+       real kind in the product, so it needs a slot here rather than
+       being the one thing still reading a legacy token. Kept on the
+       purple side of the memory rose: the two are the closest pair in
+       the family and never appear in the same list. */
+    --ds-resource-recipe-ink:  #86216f;
+    --ds-resource-recipe-soft: #fae8f5;
+    --ds-resource-recipe-line: #e6b9dc;
+}
+
+/* Dark mode — the tints cannot survive as near-white fills (see the
+   light-only-tint guard in tests/test_design_system_contract.py), so both
+   halves of each pair flip: the ink lightens to clear AA on the dark
+   surface, and the tint becomes a translucent wash of that lightened ink
+   over whatever surface it lands on. Declaring -ink first lets -soft and
+   -line derive from it, so a re-tint stays a one-value edit per resource. */
+:root[data-theme="dark"] {
+    --ds-resource-data-ink:  #5ccdc2;
+    --ds-resource-data-soft: color-mix(in srgb, var(--ds-resource-data-ink) 16%, var(--ds-surface));
+    --ds-resource-data-line: color-mix(in srgb, var(--ds-resource-data-ink) 38%, var(--ds-surface));
+
+    --ds-resource-skill-ink:  #b794f6;
+    --ds-resource-skill-soft: color-mix(in srgb, var(--ds-resource-skill-ink) 16%, var(--ds-surface));
+    --ds-resource-skill-line: color-mix(in srgb, var(--ds-resource-skill-ink) 38%, var(--ds-surface));
+
+    --ds-resource-plugin-ink:  #7fb0f4;
+    --ds-resource-plugin-soft: color-mix(in srgb, var(--ds-resource-plugin-ink) 16%, var(--ds-surface));
+    --ds-resource-plugin-line: color-mix(in srgb, var(--ds-resource-plugin-ink) 38%, var(--ds-surface));
+
+    --ds-resource-file-ink:  #e0b055;
+    --ds-resource-file-soft: color-mix(in srgb, var(--ds-resource-file-ink) 16%, var(--ds-surface));
+    --ds-resource-file-line: color-mix(in srgb, var(--ds-resource-file-ink) 38%, var(--ds-surface));
+
+    --ds-resource-collection-ink:  #f0897d;
+    --ds-resource-collection-soft: color-mix(in srgb, var(--ds-resource-collection-ink) 16%, var(--ds-surface));
+    --ds-resource-collection-line: color-mix(in srgb, var(--ds-resource-collection-ink) 38%, var(--ds-surface));
+
+    --ds-resource-agent-ink:  #9b93f5;
+    --ds-resource-agent-soft: color-mix(in srgb, var(--ds-resource-agent-ink) 16%, var(--ds-surface));
+    --ds-resource-agent-line: color-mix(in srgb, var(--ds-resource-agent-ink) 38%, var(--ds-surface));
+
+    --ds-resource-memory-ink:  #f191b8;
+    --ds-resource-memory-soft: color-mix(in srgb, var(--ds-resource-memory-ink) 16%, var(--ds-surface));
+    --ds-resource-memory-line: color-mix(in srgb, var(--ds-resource-memory-ink) 38%, var(--ds-surface));
+
+    --ds-resource-recipe-ink:  #dfa0d0;
+    --ds-resource-recipe-soft: color-mix(in srgb, var(--ds-resource-recipe-ink) 16%, var(--ds-surface));
+    --ds-resource-recipe-line: color-mix(in srgb, var(--ds-resource-recipe-ink) 38%, var(--ds-surface));
 }
 
 /* ─── Theme: paper ─────────────────────────────────────────────────
@@ -304,6 +464,39 @@
     /* NB: --ds-agnes stays emerald (defined globally) — it's the Agnes
        *platform* green kept for the "connect to Agnes" banners + AI
        Connector page. Assistant/chat surfaces use --ds-assistant (sky) explicitly. */
+
+    /* Resource colours — the --ds-kind-* aliases are re-pointed at the
+       --ds-resource-* family declared above. Every existing consumer
+       (catalog + library cards, the library table, detail heroes, the
+       activity centre, file previews, skills/agents/workspace pages,
+       admin surfaces) reads --ds-kind-*, so ONE remapping here carries
+       the resource palette to all of them with zero markup churn — and
+       leaves the default blue instance on its original hues, which is
+       what keeps this redesign opt-in.
+
+       Only the aliases move; nothing consumes --ds-resource-* directly
+       except the detail-page sheet, whose own rules are paper-scoped too.
+
+       `library` is the COLLECTION resource (the scaffold's kind name for
+       it predates the resource vocabulary), and `file` is net-new here:
+       a lone file used to borrow the collection's colour, which made a
+       file and the folder holding it indistinguishable in a list. */
+    --ds-kind-data: var(--ds-resource-data-ink);
+    --ds-kind-data-soft: var(--ds-resource-data-soft);
+    --ds-kind-skill: var(--ds-resource-skill-ink);
+    --ds-kind-skill-soft: var(--ds-resource-skill-soft);
+    --ds-kind-plugin: var(--ds-resource-plugin-ink);
+    --ds-kind-plugin-soft: var(--ds-resource-plugin-soft);
+    --ds-kind-file: var(--ds-resource-file-ink);
+    --ds-kind-file-soft: var(--ds-resource-file-soft);
+    --ds-kind-library: var(--ds-resource-collection-ink);
+    --ds-kind-library-soft: var(--ds-resource-collection-soft);
+    --ds-kind-agent: var(--ds-resource-agent-ink);
+    --ds-kind-agent-soft: var(--ds-resource-agent-soft);
+    --ds-kind-memory: var(--ds-resource-memory-ink);
+    --ds-kind-memory-soft: var(--ds-resource-memory-soft);
+    --ds-kind-recipe: var(--ds-resource-recipe-ink);
+    --ds-kind-recipe-soft: var(--ds-resource-recipe-soft);
 
     /* Surfaces — page canvas is a cool paper grey; panels are white.
        The dim variant is the inset/wash surface (table headers,

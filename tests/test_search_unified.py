@@ -96,6 +96,13 @@ def test_merges_all_five_sources():
     assert metric_hit["display_name"] == "Monthly Recurring Revenue"
     glossary_hit = next(h for h in hits if h["type"] == "glossary")
     assert glossary_hit["term"] == "Recurring revenue"
+    # The DEFINITION text rides along on both types, not just the name. The
+    # header search dropdown renders it as a second line under the hit
+    # (definitionFor() in global_search.js) so that looking a term up finishes
+    # in the panel instead of costing a page load — drop these fields and the
+    # dropdown silently degrades back to a bare link.
+    assert glossary_hit["definition"] == "Revenue that recurs each period."
+    assert metric_hit["description"]
 
 
 def test_glossary_is_public_independent_of_grants():
