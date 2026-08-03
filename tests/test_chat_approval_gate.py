@@ -200,6 +200,31 @@ def test_timeout_denies(tmp_path):
     asyncio.run(_run())
 
 
+def test_unattended_denies_with_an_actionable_message(tmp_path):
+    """The manager resolves a request nobody can answer with `unattended`
+    (agent-API one-shot). It denies like a timeout but says WHY and what to
+    do instead — the runner's message is the only thing the calling agent
+    sees."""
+
+    async def _run():
+        emitted: list[dict] = []
+        gate = ApprovalGate(emitted.append, _write_hook(tmp_path), timeout_seconds=30)
+        task = asyncio.create_task(gate.check(_bash("askme"), None, {}))
+        for _ in range(100):
+            if emitted:
+                break
+            await asyncio.sleep(0.01)
+        assert gate.resolve(emitted[0]["request_id"], "unattended") is True
+        out = await task
+        assert _decision_of(out) == "deny"
+        why = out["hookSpecificOutput"]["permissionDecisionReason"].lower()
+        assert "agent api" in why and "run the command themselves" in why
+        resolved = [f for f in emitted if f["type"] == "approval_resolved"]
+        assert resolved and resolved[0]["decision"] == "unattended"
+
+    asyncio.run(_run())
+
+
 def test_disabled_gate_denies_ask_without_prompting(tmp_path):
     async def _run():
         emitted: list[dict] = []

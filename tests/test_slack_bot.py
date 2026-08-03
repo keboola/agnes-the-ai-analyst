@@ -5,7 +5,6 @@ exist in src/db.py.  The real equivalents are:
   - ``duckdb.connect(":memory:")``   to open an in-memory connection
   - ``_ensure_schema(conn)``         to migrate it to the current version
 """
-from pathlib import Path
 
 import duckdb
 import pytest
@@ -114,6 +113,93 @@ def test_slack_sink_forwards_assistant_message(monkeypatch):
 
     asyncio.run(_run())
     assert sent == [("D1", "1.1", "hello")]
+
+
+def test_slack_sink_nudges_to_the_web_for_an_unattended_approval(monkeypatch):
+    """Slack renders no approve/deny card, so an unattended approval_request
+    posts the reason plus the Continue-on-web button — otherwise the turn
+    just stalls silently until the gate times out. The matching
+    approval_resolved closes the loop."""
+    import asyncio
+    from services.slack_bot import sink as sink_mod
+
+    with_blocks: list[tuple[str, list]] = []
+    plain: list[str] = []
+
+    async def fake_blocks(ch, ts, text, blocks):
+        with_blocks.append((text, blocks))
+        return "9.9"
+
+    async def fake_send(ch, ts, text):
+        plain.append(text)
+
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_blocks)
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(
+            channel="D1", thread_ts="1.1", chat_id="chat_1", web_base="https://agnes.example.com"
+        )
+        await bridge.send_json(
+            {
+                "type": "approval_request",
+                "request_id": "appr-1",
+                "command": "agnes admin user delete bob@x ``` <https://evil.test|click here>",
+                "reason": "admin mutation",
+                "attended": False,
+            }
+        )
+        await bridge.send_json({"type": "approval_resolved", "request_id": "appr-1", "decision": "allow"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert len(with_blocks) == 1
+    text, blocks = with_blocks[0]
+    assert "agnes admin user delete bob@x" in text and "admin mutation" in text
+    # The agent-authored command cannot close the code fence and turn the
+    # rest of the nudge into live mrkdwn.
+    assert text.count("```") == 2
+    assert blocks[-1]["elements"][0]["url"] == "https://agnes.example.com/chat?session=chat_1"
+    assert plain == ["_(approved)_"]
+
+
+def test_slack_sink_stays_quiet_when_a_web_client_holds_the_card(monkeypatch):
+    """`attended` means a browser is already showing the approve/deny
+    buttons — nagging the Slack thread would be noise, and the resolution
+    then stays silent too."""
+    import asyncio
+    from services.slack_bot import sink as sink_mod
+
+    posts: list[str] = []
+
+    async def fake_send(ch, ts, text):
+        posts.append(text)
+
+    async def fake_blocks(ch, ts, text, blocks):
+        posts.append(text)
+        return "9.9"
+
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_blocks)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(channel="D1", thread_ts="1.1", chat_id="chat_1", web_base="https://x.test")
+        await bridge.send_json({"type": "approval_request", "request_id": "appr-2", "attended": True})
+        await bridge.send_json({"type": "approval_resolved", "request_id": "appr-2", "decision": "deny"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert posts == []
+
+
+def test_slack_sink_is_not_an_approval_client():
+    """The bridge must never be counted as a sink that can answer an
+    approval — it is push-only, so ChatManager has to keep looking for a
+    web client (or auto-deny an agent-API session)."""
+    from services.slack_bot import sink as sink_mod
+
+    bridge = sink_mod.SlackSinkBridge(channel="D1", thread_ts="1.1")
+    assert getattr(bridge, "supports_approvals", False) is False
 
 
 def test_slack_sink_forwards_error_and_cancelled(monkeypatch):
