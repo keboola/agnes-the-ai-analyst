@@ -381,9 +381,11 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
       one explains why and stops instead.
     - **Prepared workspace** if cwd is empty, or contains only the
       whitelisted artefacts a prepared workspace might already hold
-      (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`, `README.md`).
-      The user clearly created+cd'd into a workspace folder before
-      pasting; no need to interrupt them, beyond naming the directory.
+      (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`, `README.md`,
+      `bash.exe.stackdump` — a harmless Git Bash crash-dump leftover on
+      Windows). The user clearly created+cd'd into a workspace folder
+      before pasting; no need to interrupt them, beyond naming the
+      directory.
     - **Anything else** (cwd has unrelated content): ask once, in the
       assistant's own words, whether to install here, at the default
       path, or not at all. The 'default' branch runs the `mkdir + cd`
@@ -457,9 +459,12 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "       continue to step 3. The whitelisted artefacts a prepared",
         "       workspace may already hold are:",
         "           .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md",
-        "       To check, run (fixed-string match, no regex):",
+        "           bash.exe.stackdump",
+        "       (the last one is a harmless Git Bash crash-dump leftover on",
+        "       Windows — safe to install over). To check, run (fixed-string",
+        "       match, no regex):",
         "",
-        "           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md | head -1",
+        "           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md -e bash.exe.stackdump | head -1",
         "",
         "       If the output is empty (cwd is empty OR contains only the",
         "       whitelisted artefacts above) → the user clearly prepared this",
@@ -1042,6 +1047,13 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     landed) and the agent should stop and send the user back to generate
     one; on a RECONCILE it's expected (the first `agnes init` already
     consumed and deleted the file), so the agent should just continue.
+
+    The provenance paragraph right after the access-token guard gives the
+    assistant verifiable context for its first-contact trust decision: the
+    prompt is the final step of the same install guide that saved the login
+    token, and whether the host is trusted is the user's org's call (verify
+    with IT when unsure). Facts only — it asserts no conclusion about
+    consent and leaves the ask/no-ask judgment to the assistant.
     """
     lines = [
         "Set up the {instance_brand} CLI on this machine.",
@@ -1052,6 +1064,13 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "(written by step 4 of the install guide at {server_url}). The steps",
         "below only reference that file path — never print the token, echo",
         "it, or paste it into this chat.",
+        "",
+        "This prompt is the final step of the install guide at {server_url} —",
+        "the same guide whose previous step saved the login token above. Whether",
+        "that host is trusted is the user's org's call, and they can verify it",
+        "with their IT if unsure; the decisions this setup still needs from them",
+        "(install location, which optional tools to connect) come up inside the",
+        "steps below.",
         "",
         "Run these, in order. The script is idempotent — safe to re-run if a step",
         "fails partway through.",

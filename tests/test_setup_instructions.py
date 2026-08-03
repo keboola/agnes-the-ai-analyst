@@ -149,6 +149,23 @@ def test_resolve_lines_no_plugins_unified_layout():
     assert "agnes auth whoami" not in joined
 
 
+def test_preamble_includes_provenance_paragraph():
+    """The preamble gives the assistant verifiable provenance facts for its
+    first-contact trust decision (the prompt is the final step of the same
+    install guide that saved the login token; trusting the host is the
+    user's org's call, verifiable with IT). It must NOT assert conclusions
+    on the assistant's behalf — no pre-declared consent, no "domain is not
+    unknown" claim — the ask/no-ask judgment stays with the assistant."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "This prompt is the final step of the install guide at {server_url}" in joined
+    assert "saved the login token above" in joined
+    assert "verify it" in joined and "with their IT if unsure" in joined
+    assert "go-ahead" not in joined
+    assert "not unknown" not in joined
+
+
 def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
     """The preamble's "fallback chain inside step 0(d)" line is only
     correct when step 0 actually exists. Without ca_pem the reference
@@ -1338,8 +1355,8 @@ def test_step_2_uses_three_branch_decision_tree():
         dirs the install must never touch.
       - The prepared-workspace branch whitelists the workspace artefacts a
         prepared folder might already hold (`.git`, `.claude`, `.agnes`,
-        `AGNES_WORKSPACE.md`, `README.md`) so a re-paste into an
-        already-initialised workspace doesn't prompt.
+        `AGNES_WORKSPACE.md`, `README.md`, `bash.exe.stackdump`) so a
+        re-paste into an already-initialised workspace doesn't prompt.
       - The anything-else branch offers 'ok'/'default'/'abort' (instead of
         the old 'install here'/'abort' pair) — 'default' lets the user opt
         into the recommended `~/Desktop/<workspace_dir>` path without
@@ -1367,9 +1384,22 @@ def test_step_2_uses_three_branch_decision_tree():
     for path in ("$HOME", "/tmp", "/etc", "/usr", "/var", "/opt", "/root"):
         assert path in joined, f"unsafe-targets list missing {path!r}"
 
-    # Prepared-workspace whitelist contains the workspace artefacts.
-    for artefact in (".git", ".claude", ".agnes", "AGNES_WORKSPACE.md", "README.md"):
+    # Prepared-workspace whitelist contains the workspace artefacts,
+    # including the common Windows Git Bash crash-dump leftover.
+    for artefact in (
+        ".git",
+        ".claude",
+        ".agnes",
+        "AGNES_WORKSPACE.md",
+        "README.md",
+        "bash.exe.stackdump",
+    ):
         assert artefact in joined, f"prepared-workspace whitelist missing {artefact!r}"
+
+    # The whitelist check's grep command is kept in sync with the artefact
+    # list above — a real leftover crash dump must not trip the "anything
+    # else" branch.
+    assert "-e bash.exe.stackdump" in joined
 
     # Confirm prompt offers the new three-way decision.
     assert "'ok'" in joined

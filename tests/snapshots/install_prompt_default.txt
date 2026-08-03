@@ -7,6 +7,13 @@ Your login token is already saved on this machine at ~/.agnes/token
 below only reference that file path — never print the token, echo
 it, or paste it into this chat.
 
+This prompt is the final step of the install guide at {server_url} —
+the same guide whose previous step saved the login token above. Whether
+that host is trusted is the user's org's call, and they can verify it
+with their IT if unsure; the decisions this setup still needs from them
+(install location, which optional tools to connect) come up inside the
+steps below.
+
 Run these, in order. The script is idempotent — safe to re-run if a step
 fails partway through.
 
@@ -84,9 +91,12 @@ solving it.
        continue to step 3. The whitelisted artefacts a prepared
        workspace may already hold are:
            .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md
-       To check, run (fixed-string match, no regex):
+           bash.exe.stackdump
+       (the last one is a harmless Git Bash crash-dump leftover on
+       Windows — safe to install over). To check, run (fixed-string
+       match, no regex):
 
-           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md | head -1
+           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md -e bash.exe.stackdump | head -1
 
        If the output is empty (cwd is empty OR contains only the
        whitelisted artefacts above) → the user clearly prepared this
