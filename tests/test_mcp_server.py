@@ -395,3 +395,81 @@ class TestServerInfoTool:
         assert result["server_url"] == "http://localhost:8000"
         assert result["authenticated"] is True
         assert result["user_email"] == "analyst@test.com"
+
+
+# ── tool_docs + progressive descriptions + output guard ─────────────────────
+
+
+class TestToolDocs:
+    def test_returns_full_docstring(self):
+        srv = _import_server()
+        result = srv.tool_docs("query")
+        assert result["tool"] == "query"
+        assert "Args:" in result["docs"]
+
+    def test_unknown_tool_lists_valid_names(self):
+        srv = _import_server()
+        with pytest.raises(ValueError, match="Valid tool names"):
+            srv.tool_docs("nope")
+
+
+class TestWireDescriptions:
+    def test_all_descriptions_stay_short(self):
+        # Ratchet: tools/list must never re-bloat. 500 chars per description.
+        srv = _import_server()
+        for t in srv.mcp._tool_manager.list_tools():
+            assert t.description, f"{t.name} has no description"
+            assert len(t.description) <= 500, (
+                f"{t.name}: {len(t.description)} chars (>500) — trim the "
+                f"docstring's first paragraph"
+            )
+
+    def test_query_description_points_to_tool_docs(self):
+        srv = _import_server()
+        t = srv.mcp._tool_manager.get_tool("query")
+        assert "tool_docs('query')" in t.description
+
+
+class TestOutputGuard:
+    def test_query_over_cap_raises(self, monkeypatch):
+        srv = _import_server()
+        from src.mcp_tooling import MCPOutputTooLarge
+
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "1000")
+        big = {"columns": ["x"], "rows": [["y" * 5000]], "truncated": False}
+        with patch("cli.mcp.server.api_post_json", return_value=big):
+            with pytest.raises(MCPOutputTooLarge, match="output cap"):
+                srv.query("SELECT x FROM t")
+
+    def test_query_under_cap_passes(self, monkeypatch):
+        srv = _import_server()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "1000")
+        small = {"columns": ["x"], "rows": [[1]], "truncated": False}
+        with patch("cli.mcp.server.api_post_json", return_value=small):
+            assert srv.query("SELECT x FROM t") == small
+
+    def test_query_local_over_cap_raises(self, monkeypatch, tmp_path):
+        import duckdb
+
+        srv = _import_server()
+        from src.mcp_tooling import MCPOutputTooLarge
+
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "500")
+        db_path = tmp_path / "user" / "duckdb" / "analytics.duckdb"
+        db_path.parent.mkdir(parents=True)
+        with duckdb.connect(str(db_path)) as conn:
+            conn.execute("CREATE TABLE t AS SELECT repeat('y', 5000) AS x")
+
+        with patch.dict("os.environ", {"AGNES_LOCAL_DIR": str(tmp_path)}):
+            with pytest.raises(MCPOutputTooLarge, match="output cap"):
+                srv.query_local("SELECT x FROM t")
+
+    def test_describe_over_cap_mentions_rows_hint(self, monkeypatch):
+        srv = _import_server()
+        from src.mcp_tooling import MCPOutputTooLarge
+
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "500")
+        wide = {"columns": [{"name": "x", "blob": "z" * 5000}]}
+        with patch("cli.mcp.server.api_get_json", return_value=wide):
+            with pytest.raises(MCPOutputTooLarge, match="rows"):
+                srv.describe("t1")
