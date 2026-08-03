@@ -78,6 +78,9 @@ const _previewToolCallIds = new Map();
 // isn't stamped) are simply skipped either way — "a client that ignores
 // seq works exactly as today" still holds for those.
 let lastSeenSeqByChat = new Map();
+// Frame types whose handlers are idempotent (keyed by request_id) and
+// which therefore must survive the seq-dedup guard on a reconnect replay.
+const REPLAYABLE_FRAME_TYPES = new Set(["approval_request", "approval_resolved"]);
 
 // §5.3 Co-presence: the current user's email for per-message sender attribution.
 // Sourced from <body data-user-email="..."> set by the server-rendered template.
@@ -593,10 +596,19 @@ function handleFrame(frame) {
   // not a bug signal.
   if (currentChatId && typeof frame.seq === "number") {
     const seen = lastSeenSeqByChat.get(currentChatId);
-    if (seen !== undefined && frame.seq <= seen) {
+    const alreadySeen = seen !== undefined && frame.seq <= seen;
+    // Approval frames are exempt: a reconnect wipes and re-draws the
+    // conversation, so dropping the re-sent request would leave the user
+    // with no Allow/Deny buttons and the command stalled until the gate's
+    // own timeout denies it. Both handlers are keyed by request_id and
+    // already no-op on a card that exists / is gone, so re-delivery cannot
+    // double-render (review finding on #1145).
+    if (alreadySeen && !REPLAYABLE_FRAME_TYPES.has(frame.type)) {
       return;
     }
-    lastSeenSeqByChat.set(currentChatId, frame.seq);
+    if (!alreadySeen) {
+      lastSeenSeqByChat.set(currentChatId, frame.seq);
+    }
   }
   switch (frame.type) {
     case "ready":
