@@ -13,16 +13,18 @@ from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from jinja2 import Environment, StrictUndefined, TemplateError
+from jinja2 import TemplateError
 from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from src.claude_md import build_claude_md_context, compute_default_claude_md, render_claude_md
+from src.prompt_render import make_prompt_env
 
 from src.repositories import (
     claude_md_template_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,6 +128,7 @@ class TemplatePreviewRequest(BaseModel):
 # Analyst-facing endpoint — returns rendered CLAUDE.md
 # ---------------------------------------------------------------------------
 
+
 @router.get("/api/welcome", response_model=ClaudeMdResponse)
 def get_welcome(
     request: Request,
@@ -158,6 +161,7 @@ def get_welcome(
 # ---------------------------------------------------------------------------
 # Admin endpoints — CRUD for the workspace-prompt template override
 # ---------------------------------------------------------------------------
+
 
 @router.get("/api/admin/workspace-prompt-template", response_model=TemplateGetResponse)
 def admin_get_workspace_template(
@@ -232,7 +236,7 @@ def admin_put_workspace_template(
             },
         )
 
-    env = Environment(undefined=StrictUndefined, autoescape=False)
+    env = make_prompt_env()
     try:
         template = env.from_string(payload.content)
         template.render(**_VALIDATION_STUB_CONTEXT)
@@ -288,12 +292,10 @@ def admin_preview_workspace_template(
     """Render arbitrary template content against the live RBAC context for the
     calling admin, without persisting. Used by the /admin/workspace-prompt editor's
     Preview button so admins can see their edits before saving."""
-    env = Environment(undefined=StrictUndefined, autoescape=False)
+    env = make_prompt_env()
     try:
         template = env.from_string(payload.content)
-        ctx = build_claude_md_context(
-            conn, user=user, server_url=str(request.base_url).rstrip("/")
-        )
+        ctx = build_claude_md_context(conn, user=user, server_url=str(request.base_url).rstrip("/"))
         rendered = template.render(**ctx)
     except TemplateError as e:
         raise HTTPException(status_code=400, detail=f"Template invalid: {e}")
