@@ -94,6 +94,10 @@ class MCPSourceOAuthClientRepository:
         d = dict(zip(cols, row))
         secret_enc = d.pop("client_secret_enc")
         rat_enc = d.pop("registration_access_token_enc")
+        # Ciphertext PRESENCE, independent of whether the current vault key can
+        # still open it. `client_secret` alone cannot tell "no secret" from
+        # "secret we can no longer read" (Devin Review on #1124).
+        d["client_secret_present"] = secret_enc is not None
         d["client_secret"] = decrypt_optional(
             secret_enc, context=f"mcp_source_oauth_clients.client_secret[{source_id}]"
         )

@@ -372,3 +372,48 @@ def test_flow_delete_for_source_drops_only_that_source(flows_repo, monkeypatch):
     assert flows_repo.consume("n1") is None
     assert flows_repo.consume("n3") is not None
     assert flows_repo.delete_for_source("src-1") == 0
+
+
+def test_oauth_client_secret_presence_survives_a_vault_key_rotation(oauth_clients_repo, monkeypatch):
+    """`client_secret_present` reports the CIPHERTEXT, so a rotated vault key
+    cannot make a confidential registration look like a public one — the
+    decrypted value goes None, the presence flag does not (Devin Review
+    on #1124). Both backends must agree.
+    """
+    monkeypatch.setenv("AGNES_VAULT_KEY", "TWMxHbnAmXbo9lHXNfLC8_ItqIYWatKQ_rOx1Vgg1yA=")
+    oauth_clients_repo.upsert(
+        "src-rotate",
+        issuer="https://as.example.com",
+        client_id="conf-client",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+        client_secret="s3cr3t",
+    )
+    row = oauth_clients_repo.get("src-rotate")
+    assert row["client_secret"] == "s3cr3t"
+    assert row["client_secret_present"] is True
+
+    # Rotate the key: the ciphertext no longer authenticates.
+    monkeypatch.setenv("AGNES_VAULT_KEY", "kQ9WkkFvvQ0dQXKtGZLUpb0N7cHRTiDSCNSHKmZfXBg=")
+    from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+    _reset_ephemeral_key_for_tests()
+    rotated = oauth_clients_repo.get("src-rotate")
+    assert rotated["client_secret"] is None, "an unreadable secret must not decrypt"
+    assert rotated["client_secret_present"] is True, "…but it is still stored"
+
+
+def test_oauth_client_secret_absent_reports_not_present(oauth_clients_repo, monkeypatch):
+    """The other side of the same contract: a genuinely public client reports
+    the flag False, so callers can tell the two states apart."""
+    monkeypatch.setenv("AGNES_VAULT_KEY", "TWMxHbnAmXbo9lHXNfLC8_ItqIYWatKQ_rOx1Vgg1yA=")
+    oauth_clients_repo.upsert(
+        "src-pub2",
+        issuer="https://as.example.com",
+        client_id="pub-client",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+    )
+    row = oauth_clients_repo.get("src-pub2")
+    assert row["client_secret"] is None
+    assert row["client_secret_present"] is False
