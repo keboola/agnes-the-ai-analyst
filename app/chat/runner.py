@@ -116,6 +116,11 @@ def _hook_output(decision: str, reason: str = "") -> dict:
 
 APPROVAL_DECISIONS = ("allow", "allow_session", "deny")
 
+#: Total budget for winding the stream down after the idle watchdog
+#: interrupts a wedged turn. Bounds how long the user waits before their
+#: next message is served.
+_WEDGE_DRAIN_SECONDS = 5.0
+
 
 class ApprovalGate:
     """In-process PreToolUse gate that makes the workspace hook's ``ask``
@@ -170,7 +175,28 @@ class ApprovalGate:
                 text=True,
                 timeout=10,
             )
-            return json.loads(proc.stdout or "{}")
+            out = json.loads(proc.stdout or "{}")
+            if not isinstance(out, dict):
+                return {}
+            # Claude Code allows the verdict either at the top level or
+            # nested under hookSpecificOutput. The bundled hook emits the
+            # flat shape, but an operator override written against the
+            # nested spec shape would otherwise read as "no opinion" and
+            # have its ask/deny rules silently ignored (review on #1145).
+            if "permissionDecision" not in out:
+                nested = out.get("hookSpecificOutput")
+                if isinstance(nested, dict) and "permissionDecision" in nested:
+                    merged = {**out, **nested}
+                    merged.pop("hookSpecificOutput", None)
+                    return merged
+                if out:
+                    print(
+                        "approval gate: file hook returned JSON with no permissionDecision; "
+                        f"treating as no opinion: {sorted(out)[:8]}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            return out
         except Exception as exc:  # noqa: BLE001
             print(f"approval gate: file hook failed: {exc}", file=sys.stderr, flush=True)
             return {}
@@ -1036,15 +1062,25 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50, gate: "Approva
             # could consume it and terminate before the real answer.
             # Bounded per message so a truly wedged stream can't re-wedge
             # the watchdog itself.
+            # Bound the drain as a WHOLE, not per message: the stream we are
+            # draining is by definition the one that just wedged, so a
+            # per-message budget is time the user waits before their next
+            # message is served. Short enough not to hold the chat, long
+            # enough for the interrupt tail that normally arrives at once
+            # (review finding on #1145).
+            drain_deadline = time.monotonic() + _WEDGE_DRAIN_SECONDS
             try:
                 while True:
+                    left = drain_deadline - time.monotonic()
+                    if left <= 0:
+                        break
                     # Reuse the in-flight __anext__ rather than starting a
                     # second one: two concurrent __anext__ calls on the same
                     # iterator are an error, and this path is reached with
                     # one still pending by construction.
                     if pending is None:
                         pending = asyncio.ensure_future(stream.__anext__())
-                    await asyncio.wait_for(asyncio.shield(pending), timeout=15)
+                    await asyncio.wait_for(asyncio.shield(pending), timeout=left)
                     pending = None
             except (StopAsyncIteration, asyncio.TimeoutError):
                 pass

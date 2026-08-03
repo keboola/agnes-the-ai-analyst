@@ -377,3 +377,35 @@ def test_shielded_pending_anext_survives_repeated_timeouts():
         assert got == ["a", "b"], got
 
     asyncio.run(drive())
+
+
+def test_file_hook_accepts_the_nested_verdict_shape(tmp_path, monkeypatch):
+    """Claude Code allows the verdict nested under hookSpecificOutput.
+
+    The bundled hook emits the flat shape, but an operator override written
+    against the nested spec shape must not read as "no opinion" — its
+    ask/deny rules would be silently inert.
+    """
+    import app.chat.runner as runner
+
+    hook = tmp_path / "hook.py"
+    hook.write_text(
+        "import json,sys\n"
+        'print(json.dumps({"hookSpecificOutput": {"permissionDecision": "deny",'
+        ' "permissionDecisionReason": "nope"}}))\n'
+    )
+    gate = runner.ApprovalGate.__new__(runner.ApprovalGate)
+    gate._hook_path = hook
+    out = gate.run_file_hook({"tool_name": "Bash", "tool_input": {"command": "x"}})
+    assert out.get("permissionDecision") == "deny"
+    assert out.get("permissionDecisionReason") == "nope"
+
+
+def test_file_hook_flat_shape_still_wins(tmp_path):
+    import app.chat.runner as runner
+
+    hook = tmp_path / "hook.py"
+    hook.write_text("import json\nprint(json.dumps({'permissionDecision': 'allow'}))\n")
+    gate = runner.ApprovalGate.__new__(runner.ApprovalGate)
+    gate._hook_path = hook
+    assert gate.run_file_hook({"tool_name": "Bash"}).get("permissionDecision") == "allow"
