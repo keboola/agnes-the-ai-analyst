@@ -127,8 +127,9 @@ def test_unshared_collection_stays_private_to_owner(seeded_app):
 
 def test_files_of_every_format_share_one_files_section(seeded_app):
     """Images, documents and every other format now live in ONE top-level
-    "Files" section (the per-format sections were merged), while the row's own
-    Type label still names the real format so nothing is lost."""
+    "Files" section (the per-format sections were merged), while the row itself
+    still names the real format — on the name's second line, now that the Type
+    column is gone — so nothing is lost."""
     col = _create(seeded_app, "Diagram", seeded_app["admin_token"])
     r = _upload(
         seeded_app, col["id"], "diagram.png", b"\x89PNG\r\n\x1a\n" + b"0" * 40, "image/png", seeded_app["admin_token"]
@@ -141,8 +142,9 @@ def test_files_of_every_format_share_one_files_section(seeded_app):
     assert ">Files<" in text
     for retired in ("image", "document", "collection", "spreadsheet"):
         assert f'data-lib-sec="{retired}"' not in text
-    # The row still says what the file actually is.
-    assert ">Image<" in text
+    # The row still says what the file actually is — its format, on the second
+    # line of the name cell (the Type chip that used to say "Image" is retired).
+    assert 'lib-name-desc">PNG<' in text
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +179,24 @@ def test_stack_filter_is_a_single_in_stack_only_toggle(seeded_app):
     # Row attribute the toggle slices on, in both states.
     assert 'data-stack="in_stack"' in text
     assert 'data-stack="available"' in text
+
+
+def test_stack_deep_link_arrives_with_the_toggle_applied(seeded_app):
+    """``/library?stack=in_stack`` is the landing the chat empty state's Stack
+    status line uses now that /stack is off the rail (#1088): the page arrives
+    with the "In stack only" filter applied. Plain ``/library`` — and any other
+    value of the param — must not."""
+    tok = seeded_app["admin_token"]
+    added = _create(seeded_app, "Deep Link Added", tok)
+    _create(seeded_app, "Deep Link Not Added", tok)
+    assert _add_to_stack(seeded_app, added["id"], tok).status_code == 200
+
+    c = seeded_app["client"]
+    assert "const STACK_ONLY = true;" in c.get("/library?stack=in_stack", headers=_auth(tok)).text
+    assert "const STACK_ONLY = false;" in c.get("/library", headers=_auth(tok)).text
+    # Not a free-text hook into the page's JS — anything but the facet's one
+    # legal value is simply off.
+    assert "const STACK_ONLY = false;" in c.get("/library?stack=whatever", headers=_auth(tok)).text
 
 
 def test_stack_toggle_shows_the_matching_item_count(seeded_app):
@@ -232,7 +252,7 @@ def test_stack_toggle_keeps_locked_admin_required_items(seeded_app):
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     start = text.rindex("<tr", 0, text.index("Mandated Toggle Package"))
     row = text[start : text.index("</tr>", start)]
-    assert "lib-instack--required" in row  # locked membership
+    assert "lib-instack--locked" in row  # locked membership
     assert 'data-stack="in_stack"' in row  # …and the toggle keeps it
 
 
@@ -315,9 +335,10 @@ def test_every_row_carries_a_stack_state(seeded_app):
 
 def test_sortable_columns_are_name_owner_and_sharing(seeded_app):
     """A column header is where a reader asks "order by this", so sorting moved
-    out of the toolbar and onto the columns. Type is excluded by design: the
-    list is already GROUPED by type into these very sections, so ordering by it
-    inside one of them is a no-op. Actions is not data."""
+    out of the toolbar and onto the columns. Every column that remains sorts
+    except Actions, which is not data — the unsortable Type column is gone
+    entirely, for the same reason it could not sort: the list is already GROUPED
+    by type into these very sections."""
     import re
 
     _create(seeded_app, "Sort Columns", seeded_app["admin_token"])
@@ -326,10 +347,10 @@ def test_sortable_columns_are_name_owner_and_sharing(seeded_app):
     head = text.split("<thead>", 1)[1].split("</thead>", 1)[0]
     keys = re.findall(r'data-sort-key="([^"]+)"', head)
     assert keys == ["name", "owner", "sharing"], f"sortable columns drifted: {keys}"
-    for dead in ("Type", "Actions"):
-        before, _, _ = head.partition(f">{dead}<")
-        assert _, f"{dead} header missing"
-        assert "lib-sort" not in before.rsplit("<th", 1)[-1], f"{dead} must not be sortable"
+    assert ">Type<" not in head, "the Type column should be gone, not merely unsortable"
+    before, marker, _ = head.partition(">Actions<")
+    assert marker, "Actions header missing"
+    assert "lib-sort" not in before.rsplit("<th", 1)[-1], "Actions must not be sortable"
 
 
 def test_every_sortable_column_opens_a_to_z(seeded_app):

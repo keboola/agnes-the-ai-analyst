@@ -5,6 +5,11 @@
    partial. No {% extends %} / {% block %} — this is an {% include %}-d
    fragment. #}
 <style>
+  /* Renders inside profile.html's `.pf-sec-body`, so the surrounding card,
+     padding and hairlines are the section's; these rules only cover the
+     nested sub-sections and their key/value read-outs. Colours ride --ds-*
+     tokens so the block follows the theme — it used fixed greys, which read
+     as disabled text on the paper canvas and vanished in dark. */
   .troubleshoot-kv {
     display: grid;
     grid-template-columns: 200px 1fr;
@@ -12,46 +17,66 @@
     font-size: 13px;
   }
   .troubleshoot-kv .k {
-    color: var(--text-secondary, #6b7280);
+    color: var(--ds-text-secondary);
     font-weight: 500;
   }
   .troubleshoot-kv .v {
-    color: var(--text-primary, #111827);
-    font-family: ui-monospace, SFMono-Regular, monospace;
+    color: var(--ds-text-primary);
+    font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, monospace);
     word-break: break-all;
   }
-  .troubleshoot-kv .v.muted { color: #9ca3af; font-style: italic; }
+  .troubleshoot-kv .v.muted { color: var(--ds-text-muted); font-style: italic; }
 
+  /* Deliberately dark under every theme, and deliberately a fixed pair: this
+     is a terminal-style dump of raw values (the "night" surface the design
+     system keeps for terminal mockups), so it must not follow the page from
+     light to dark and back. */
   .troubleshoot-pre {
     background: #0b1220;
     color: #d1d5db;
     padding: 10px 14px;
     border-radius: 8px;
-    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, monospace);
     font-size: 12px;
     line-height: 1.5;
     overflow: auto;
     max-height: 320px;
   }
 
-  .troubleshoot-section { margin-bottom: 20px; }
+  .troubleshoot-section { margin-bottom: 22px; }
   /* :last-of-type, not :last-child — when DEBUG_AUTH_ENABLED the trailing
      <script> block is the parent's last child, so :last-child never fires. */
   .troubleshoot-section:last-of-type { margin-bottom: 0; }
   .troubleshoot-section h3 {
-    /* Override .section-card h3 margin for nested sub-section headers */
+    /* Sub-heading INSIDE a section body — one step down from the card's own
+       15px title, so the hierarchy reads without a second card. */
+    margin: 0 0 10px;
+    font-size: 13.5px;
+    font-weight: 650;
+    color: var(--ds-text-primary);
+  }
+  .troubleshoot-hint {
+    font-size: 12.5px;
+    color: var(--ds-text-secondary);
     margin: 0 0 10px;
   }
+  .troubleshoot-hint code {
+    background: var(--ds-surface-sunken);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
 
+  .troubleshoot-refetch-row { display: flex; align-items: center; margin-top: 14px; }
   .troubleshoot-refetch-result { margin-top: 14px; }
   .troubleshoot-sub-head {
-    font-size: 12px;
+    font-size: 11px;
     margin: 14px 0 6px;
-    color: #6b7280;
-    font-weight: 600;
+    color: var(--ds-text-muted);
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.4px;
   }
+  .troubleshoot-refetch-status { margin-left: 10px; font-size: 12.5px; color: var(--ds-text-secondary); }
 </style>
 
 {# ---- User record ---- #}
@@ -69,7 +94,7 @@
 {# ---- Session JWT (decoded) ---- #}
 <div class="troubleshoot-section">
   <h3>Session JWT (decoded)</h3>
-  <p style="font-size:12px;color:#6b7280;margin:0 0 10px;">
+  <p class="troubleshoot-hint">
     Raw token never displayed; fingerprint correlates with logs.
   </p>
   {% if claims %}
@@ -97,7 +122,7 @@
 {# ---- Last Google sync snapshot ---- #}
 <div class="troubleshoot-section">
   <h3>Last Google sync snapshot</h3>
-  <p style="font-size:12px;color:#6b7280;margin:0 0 10px;">
+  <p class="troubleshoot-hint">
     Read from <code>user_group_members</code>.
   </p>
   <div class="troubleshoot-kv">
@@ -110,11 +135,11 @@
   </div>
 
   {% if config.DEBUG_AUTH_ENABLED %}
-  <div style="margin-top:14px;">
-    <button id="troubleshoot-refetch-btn" class="btn btn-primary btn-sm" type="button">
+  <div class="troubleshoot-refetch-row">
+    <button id="troubleshoot-refetch-btn" class="cc-btn" type="button">
       Refetch from Google (dry-run)
     </button>
-    <span id="troubleshoot-refetch-status" style="margin-left:10px; font-size:12px; color:#6b7280;"></span>
+    <span id="troubleshoot-refetch-status" class="troubleshoot-refetch-status"></span>
   </div>
 
   <div id="troubleshoot-refetch-result" class="troubleshoot-refetch-result" hidden>

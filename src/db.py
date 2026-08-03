@@ -52,7 +52,7 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # paper-theme branch's schema additions restacked on top: 109
 # file_corpora.origin, 110 store_entities trust columns, 111 agents builder
 # superset columns, 112 chat_sessions.pinned_at.
-SCHEMA_VERSION = 112
+SCHEMA_VERSION = 113
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -761,9 +761,25 @@ CREATE TABLE IF NOT EXISTS data_packages (
     --   example_questions       — JSON list of analyst questions
     --                             surfaced as a package-level prompt
     --                             panel.
-    -- Badges (`curated` / `new`) are NOT persisted columns — they're
-    -- derived at render time from creator group + created_at age, so
-    -- backdating or admin-status changes pick up automatically.
+    -- v113: publisher_kind ('user' | 'organization') — the SAME stored
+    -- trust axis store_entities carries, so a package and a skill make
+    -- the same claim the same way and the Library / catalog / detail
+    -- surfaces can render one shared marker for both.
+    --
+    -- This REPLACES the derived `curated` badge, which was computed at
+    -- render time from "is the creator currently in the Admin group".
+    -- That reading is not a property of the PACKAGE: an admin who leaves
+    -- the Admin group silently un-curated everything they had ever
+    -- created. It is the exact derivation ``store_entities.publisher_kind``
+    -- was introduced to avoid (see the v104 columns below) — group
+    -- membership is mutable and re-synced from the identity provider, so
+    -- a derived trust claim reclassifies published content behind the
+    -- admin's back. Stored, set explicitly, and migrated from whatever the
+    -- derivation happened to say at upgrade time.
+    --
+    -- `new` REMAINS derived from created_at age — that one genuinely is a
+    -- function of the clock and nothing else.
+    publisher_kind  VARCHAR DEFAULT 'user',
     owner_name      VARCHAR,
     owner_team      VARCHAR,
     tags            VARCHAR,
@@ -6868,6 +6884,127 @@ def _v111_to_v112(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 112")
 
 
+def _add_data_package_publisher_column(conn: duckdb.DuckDBPyConnection) -> None:
+    """The v113 column DDL + backfill, with no version stamp.
+
+    Split from the versioned step for the same reason as
+    :func:`_add_store_entity_trust_columns`: a stamp in here would downgrade
+    any instance already past 113 if a repair ever called it.
+
+    The backfill is the whole point of the step. Before v113 a package's trust
+    claim was *derived* on every render from "is ``created_by`` currently in the
+    Admin group", so the upgrade must freeze whatever that derivation said at
+    this moment into the column — otherwise every existing admin-created package
+    would silently drop from Organization to Community on upgrade, which is a
+    visible downgrade of a claim nobody asked to change.
+
+    It resolves Admin membership through the same repositories the API uses
+    rather than a hand-written JOIN: ``created_by`` holds a user id on some rows
+    and an email on others (the API looks up both — see ``_badges_for``), and the
+    Admin group is seeded ``is_system`` with its membership possibly written by
+    the Google sync, so a raw two-table JOIN gets this wrong on a Postgres
+    instance exactly as it did before (that bug is why ``_badges_for`` routes
+    through the factory today).
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'data_packages'").fetchone()
+    if not exists:
+        return
+    conn.execute("ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS publisher_kind VARCHAR DEFAULT 'user'")
+    # Pre-existing rows read NULL, not the DEFAULT (which applies to inserts
+    # only), so normalize first and let the backfill promote from there.
+    conn.execute("UPDATE data_packages SET publisher_kind = 'user' WHERE publisher_kind IS NULL")
+
+    # Backfill in PLAIN SQL, on this same connection.
+    #
+    # It must NOT go through the repositories, however much the request-time
+    # equivalent (``_badges_for``) has to: this runs inside ``_ensure_schema``,
+    # while the single DuckDB writer is already held by ``conn``. Calling
+    # ``users_repo()`` here re-enters the connection layer and asks for that same
+    # writer, and the process hangs before "Application startup complete" — no
+    # error, no traceback, just a server that never comes up. Learned the hard
+    # way; the v104 sibling below is pure SQL for the same reason.
+    #
+    # Matches the Alembic sibling's predicate, including both shapes of
+    # ``created_by`` seen in the wild — a user id on some rows, an email on
+    # others. Guarded on the RBAC tables: without them every row stays 'user'.
+    have = {
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_name IN ('users', 'user_groups', 'user_group_members')"
+        ).fetchall()
+    }
+    if not {"users", "user_groups", "user_group_members"} <= have:
+        return
+    conn.execute(
+        """
+        UPDATE data_packages
+           SET publisher_kind = 'organization'
+         WHERE created_by IS NOT NULL
+           AND EXISTS (
+                 SELECT 1
+                   FROM users u
+                   JOIN user_group_members m ON m.user_id = u.id
+                   JOIN user_groups g        ON g.id = m.group_id
+                  WHERE g.name = 'Admin'
+                    AND (u.id = data_packages.created_by OR u.email = data_packages.created_by)
+               )
+        """
+    )
+
+
+def _heal_data_package_publisher_column(conn: duckdb.DuckDBPyConnection) -> None:
+    """Ensure ``data_packages.publisher_kind`` exists, whatever the stamp says.
+
+    Same repair, same reason, as :func:`_heal_store_entity_trust_columns`:
+    ``schema_version`` is not evidence that a versioned step ran. The ladder's
+    tail stamps ``SCHEMA_VERSION`` unconditionally, so a database opened by a
+    build where the constant had already been bumped to 113 but ``_v112_to_v113``
+    did not yet exist (or was not yet wired into the ladder) gets marked 113
+    **without** the column — and is then skipped forever, because
+    ``current < 113`` is false.
+
+    It fails at query time with ``Binder Error: Referenced column
+    "publisher_kind" not found``, and only on the paths that name the column, so
+    it looks intermittent: the catalog and the package detail page 500 while a
+    bare ``SELECT *`` keeps working. This is not hypothetical — it happened
+    during development of v113 itself, in the window between bumping the
+    constant and wiring the step.
+
+    Deployed instances cannot hit it (constant and step ship in one commit), but
+    development and multi-worktree checkouts can. Presence of the column is
+    checked directly: one ``information_schema`` read per boot, authoritative,
+    and immune to a wrong stamp in either direction.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'data_packages'").fetchone()
+    if not exists:
+        return
+    has_col = conn.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'data_packages' AND column_name = 'publisher_kind'"
+    ).fetchone()
+    if has_col:
+        return
+    _add_data_package_publisher_column(conn)
+
+
+def _v112_to_v113(conn: duckdb.DuckDBPyConnection) -> None:
+    """v112→v113: add ``data_packages.publisher_kind`` and backfill it.
+
+    Turns the render-time-derived `curated` badge into the same stored trust
+    axis ``store_entities`` already carries, so every surface can render one
+    shared Organization / Verified / Community marker instead of four different
+    vocabularies for overlapping claims. See
+    :func:`_add_data_package_publisher_column` for why the derivation had to go
+    and what the backfill preserves.
+
+    Idempotent: ``ADD COLUMN IF NOT EXISTS`` guarded on table existence, and a
+    no-op on fresh installs where ``_SYSTEM_SCHEMA`` already declares the column
+    (the backfill then finds no rows).
+    """
+    _add_data_package_publisher_column(conn)
+    conn.execute("UPDATE schema_version SET version = 113")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v104 column DDL on its own, with no version stamp.
 
@@ -7721,6 +7858,11 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v111→v112: chat_sessions.pinned_at (pinned conversations). No-op
             # on fresh installs — _SYSTEM_SCHEMA already declares the column.
             _v111_to_v112(conn)
+            # v112→v113: data_packages.publisher_kind, replacing the derived
+            # `curated` badge with the stored trust axis store_entities uses.
+            # No-op on fresh installs — _SYSTEM_SCHEMA already declares the
+            # column, and the backfill then finds no rows to promote.
+            _v112_to_v113(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7998,6 +8140,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v110_to_v111(conn)
             if current < 112:
                 _v111_to_v112(conn)
+            if current < 113:
+                _v112_to_v113(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
@@ -8072,6 +8216,7 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # columns directly rather than trusting the version.
     if not _state_backend_is_pg():
         _heal_store_entity_trust_columns(conn)
+        _heal_data_package_publisher_column(conn)
         _heal_legacy_agents_table(conn)
 
 

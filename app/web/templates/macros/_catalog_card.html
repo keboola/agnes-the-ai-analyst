@@ -99,6 +99,7 @@
   {%- endif -%}
 {%- endmacro -%}
 
+{% import "macros/_trustmark.html" as _cc_trust %}
 {% macro catalog_card(c) %}
 {% set _tags = c.tags or [] %}
 <article class="cc-card" data-search="{{ (c.title ~ ' ' ~ (c.description or '')) | lower }}">
@@ -116,14 +117,19 @@
         {% if _pub.name %}
           <span class="cc-sep">·</span>
           <span class="cc-pub">{% if _pub.kind != 'organization' %}by {% endif %}{{ _pub.name }}</span>
-          {% if _pub.kind == 'organization' %}
-            <span class="cc-trust cc-trust--org">Organization</span>
-          {% elif c.verified %}
-            {# Positive state only — see the macro header on why there is no
-               "Unverified" counterpart. #}
-            <span class="cc-trust cc-trust--verified" title="Verified by your organization">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Verified</span>
-          {% endif %}
+          {# v113: the shared marker, icon form — a card's meta line is a single
+             row of small type, so the word would crowd the byline it sits next
+             to. Same glyph/colour/sentence as the Library row and the detail
+             hero, from the same stored fields, so a card can no longer disagree
+             with the page it links to. The hand-inlined check SVG and the
+             card-only `.cc-trust` pair are gone with it.
+
+             Community is deliberately NOT rendered here (`show_unverified=False`):
+             a catalog shelf is mostly other people's unverified work, so the
+             marker would be on nearly every card and distinguish nothing — the
+             Library is the surface where per-row provenance is the point. #}
+          {{ _cc_trust.mark(
+               _cc_trust.level_for(_pub.kind, 'verified' if c.verified else 'none', False)) }}
         {% endif %}
         {% if c.category %}<span class="cc-sep">·</span><span>{{ c.category }}</span>{% endif %}
       </div>

@@ -37,6 +37,10 @@ class DataPackagesRepository:
         "cover_image_url",
         "status",
         "category",
+        # v113: stored trust axis, same vocabulary as store_entities
+        # ('user' | 'organization'). Replaces the render-time-derived
+        # `curated` badge — see the DDL comment in src/db.py.
+        "publisher_kind",
         # v56: extended content surface for /catalog/p/<slug> rewrite.
         # JSON columns ("tags", "when_to_use", "when_not_to_use",
         # "example_questions") are stored as VARCHAR and decoded on read
@@ -68,6 +72,11 @@ class DataPackagesRepository:
         cover_image_url: Optional[str] = None,
         status: str = "prod",
         category: Optional[str] = None,
+        # v113: 'user' | 'organization'. Defaults to 'user' so a package is
+        # never silently promoted — the caller (the admin create endpoint)
+        # decides, which is the whole point of storing it rather than
+        # deriving it from the creator's current group membership.
+        publisher_kind: str = "user",
         # v56 extended content — all optional, all NULL when unset.
         owner_name: Optional[str] = None,
         owner_team: Optional[str] = None,
@@ -89,10 +98,10 @@ class DataPackagesRepository:
         self.conn.execute(
             "INSERT INTO data_packages"
             "(id, slug, name, description, icon, color, cover_image_url, "
-            " status, category, owner_name, owner_team, tags, "
+            " status, category, publisher_kind, owner_name, owner_team, tags, "
             " long_description, when_to_use, when_not_to_use, "
             " example_questions, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 pkg_id,
                 slug,
@@ -103,6 +112,7 @@ class DataPackagesRepository:
                 cover_image_url,
                 status or "prod",
                 category,
+                publisher_kind if publisher_kind in ("user", "organization") else "user",
                 owner_name,
                 owner_team,
                 _json.dumps(tags) if tags is not None else None,
@@ -117,9 +127,19 @@ class DataPackagesRepository:
 
     @classmethod
     def _decode_row(cls, row_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """v56: decode JSON-list columns to Python lists. NULL → []."""
+        """v56: decode JSON-list columns to Python lists. NULL → [].
+
+        v113: also normalizes ``publisher_kind`` to the closed enum, so every
+        read path can treat it as non-null. A row written before the column
+        existed reads NULL (the DEFAULT applies to inserts only), and the
+        migration's own normalize does not help a database whose ladder has
+        not run yet — a template comparing NULL to 'organization' would
+        silently render the wrong marker rather than fail.
+        """
         import json as _json
 
+        if row_dict.get("publisher_kind") not in ("user", "organization"):
+            row_dict["publisher_kind"] = "user"
         for k in cls._JSON_LIST_COLS:
             v = row_dict.get(k)
             if v is None or v == "":
@@ -180,6 +200,10 @@ class DataPackagesRepository:
         status: Optional[str] = None,
         category: Optional[str] = None,
         clear_category: bool = False,
+        # v113: 'user' | 'organization'. Same Optional-is-no-op contract; an
+        # unrecognized value is ignored rather than written, so the column
+        # stays a closed enum every read path can trust.
+        publisher_kind: Optional[str] = None,
         # v56 extended content. Optional-is-no-op; pass an empty list
         # explicitly to clear a JSON-list column (json.dumps([]) writes
         # "[]" which decodes back to []).
@@ -224,6 +248,9 @@ class DataPackagesRepository:
         if status is not None:
             fields.append("status = ?")
             params.append(status)
+        if publisher_kind in ("user", "organization"):
+            fields.append("publisher_kind = ?")
+            params.append(publisher_kind)
         if clear_category:
             fields.append("category = NULL")
         elif category is not None:

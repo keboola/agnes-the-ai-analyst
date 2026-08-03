@@ -207,3 +207,64 @@ def test_update_tags_jsonb_round_trip(repo):
     repo.update(pkg_id, tags=["c"])
     row = repo.get(pkg_id)
     assert row["tags"] == ["c"]
+
+
+# ---------------------------------------------------------------------------
+# v113 — publisher_kind, the stored trust axis
+# ---------------------------------------------------------------------------
+
+
+def test_publisher_kind_defaults_to_user_on_both_engines(repo):
+    """A package is never silently promoted. The default matters: it is the
+    difference between "nobody said" and "the organization stands behind this",
+    and the derived badge this column replaces could not express the former."""
+    pkg_id = repo.create(name="P", slug="p", description=None, icon=None, color=None, created_by="u")
+    assert repo.get(pkg_id)["publisher_kind"] == "user"
+
+
+def test_publisher_kind_round_trips_organization(repo):
+    pkg_id = repo.create(
+        name="Org Pkg",
+        slug="org-pkg",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
+        publisher_kind="organization",
+    )
+    assert repo.get(pkg_id)["publisher_kind"] == "organization"
+    assert repo.get_by_slug("org-pkg")["publisher_kind"] == "organization"
+    # …and through the list projection, which uses a different SELECT.
+    listed = {r["id"]: r for r in repo.list()}
+    assert listed[pkg_id]["publisher_kind"] == "organization"
+
+
+def test_publisher_kind_is_updatable_in_both_directions(repo):
+    pkg_id = repo.create(name="U", slug="u-pkg", description=None, icon=None, color=None, created_by="u")
+    repo.update(pkg_id, publisher_kind="organization")
+    assert repo.get(pkg_id)["publisher_kind"] == "organization"
+    repo.update(pkg_id, publisher_kind="user")
+    assert repo.get(pkg_id)["publisher_kind"] == "user"
+
+
+def test_publisher_kind_rejects_values_outside_the_enum(repo):
+    """A closed enum, clamped by BOTH repos rather than trusted from the caller —
+    every read path (and every template comparing it to 'organization') depends
+    on it being one of exactly two strings."""
+    pkg_id = repo.create(
+        name="Bad",
+        slug="bad-pkg",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
+        publisher_kind="wharrgarbl",
+    )
+    assert repo.get(pkg_id)["publisher_kind"] == "user"
+    # An unrecognized update is dropped, not written — the prior value survives.
+    repo.update(pkg_id, publisher_kind="organization")
+    repo.update(pkg_id, publisher_kind="nonsense")
+    assert repo.get(pkg_id)["publisher_kind"] == "organization"
+    # …and Optional-is-no-op still means no-op.
+    repo.update(pkg_id, publisher_kind=None)
+    assert repo.get(pkg_id)["publisher_kind"] == "organization"

@@ -918,13 +918,14 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     "library": {
         "show_unverified_trust": {
             "kind": "bool",
-            "default": False,
+            "default": True,
             "hint": (
-                "Show a muted amber 'Community' trust chip in the Library's "
-                "Owner column for user-authored Store items your organization "
-                "has not yet verified. Off by default — absence of a chip is "
-                "the neutral default. Organization and Verified chips are "
-                "unaffected."
+                "Show the 'Community' trust marker beside the name of a "
+                "user-authored Store item your organization has not verified. "
+                "On by default, so every Library row states its provenance — "
+                "Organization, Verified, or Community. Turn it off to restore "
+                "the older look, where an unverified item is marked only by the "
+                "absence of a marker. Organization and Verified are unaffected."
             ),
         },
     },

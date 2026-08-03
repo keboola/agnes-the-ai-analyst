@@ -5,8 +5,8 @@ Covers the three axes this feature keeps deliberately separate:
 * **Publisher** — who stands behind an item. Stored, admin-set, and the basis
   for the unified Browse shelf that replaced the Curated / Flea tabs.
 * **Verification** — the org's *advisory* verdict on a user-published item.
-  Must never gate a read, is off by default per instance, and never renders a
-  negative label.
+  Must never gate a read, is per-instance (on by default, opt-out-able), and
+  never renders a negative label.
 * **Required** — "In stack, locked", admissible only on organization-published
   items.
 
@@ -202,10 +202,11 @@ def test_invalid_facet_values_are_rejected(fresh_db):
 # ---------------------------------------------------------------------------
 
 
-def test_verification_endpoints_absent_when_disabled(fresh_db):
-    """Default-off. An instance with no reviewer must not show the vocabulary at
-    all — a request button with no queue behind it is the rotting promise this
-    design exists to remove."""
+def test_verification_endpoints_absent_when_disabled(fresh_db, monkeypatch):
+    """The axis is on by default now that the Library states all three trust levels
+    positively, but an instance can still opt out entirely — and opting out must
+    remove the endpoints, not merely hide the buttons that call them."""
+    monkeypatch.setattr("app.instance_config.get_store_verification_enabled", lambda: False, raising=False)
     from src.db import close_system_db, get_system_db
 
     conn = get_system_db()
