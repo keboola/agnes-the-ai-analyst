@@ -4,7 +4,18 @@
 Reads a JSON payload from stdin per the Claude Code hook spec, returns
 a JSON decision object on stdout. Refuses workspace-destructive Bash
 commands, hosts outside the Agnes egress allowlist, and prompts for
-admin mutations.
+admin mutations. A small set of org floor rules additionally denies
+irreversibly destructive commands (mkfs, fork bomb) and requires user
+confirmation for high-blast-radius ones (recursive force delete, git
+force-push, destructive SQL, pipe-to-shell).
+
+Commands are scanned per shell segment (split on ``;``, ``&&``, ``||``,
+``&`` and newlines, with common wrappers like ``sudo``/``nohup``
+stripped) so a chained command can't slip a match past a prefix check.
+The splitter is deliberately quote-naive: a separator inside a quoted
+string still starts a new scan segment, which can over-ask (e.g. on an
+echoed string containing ``rm -rf``) but never under-blocks — the safe
+failure direction.
 
 Operators with an Initial Workspace Template override take
 responsibility for shipping an equivalent hook (admin UI warns at
@@ -143,17 +154,72 @@ _WGET_VALUE_FLAGS = {
 }
 _VALUE_TAKING_FLAGS = {"curl": _CURL_VALUE_FLAGS, "wget": _WGET_VALUE_FLAGS}
 
+# Org floor rules — hold regardless of chaining or workspace-template intent.
+# Deny: irreversible, no legitimate analyst use. Ask: legitimate but
+# high-blast-radius, so the user confirms in chat before it runs.
+_FORK_BOMB_RE = re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:")
+_DESTRUCTIVE_SQL_RE = re.compile(r"\bdrop\s+(?:table|schema|database)\b|\btruncate\s+table\b", re.IGNORECASE)
+# downloader output piped into a shell (optionally via sudo/env)
+_PIPE_TO_SHELL_RE = re.compile(r"\b(?:curl|wget)\b[^|;&]*\|\s*(?:sudo\s+)?(?:env\s+\S+\s+)?(?:ba|z|da)?sh\b")
+_FORCE_PUSH_FLAGS = {"-f", "--force", "--force-with-lease"}
 
-def _hosts_in_command(cmd: str) -> list[str]:
-    hosts = []
-    # schemed URLs
-    for u in re.findall(r"https?://([^/\s'\"]+)", cmd):
-        hosts.append(u.split(":")[0])
-    # bare hosts as curl/wget arguments (scheme-defaulting)
+# Wrappers that prefix the real command; stripped before token checks so
+# `sudo rm -rf` matches the same rules as `rm -rf`. timeout's duration and
+# leading VAR=val assignments after env are skipped too. Anything fancier
+# (nested `sh -c`, eval, command substitution) is out of scope for this
+# hook — network-layer controls remain the enforcement backstop.
+_WRAPPERS = {"sudo", "nohup", "command", "exec", "time", "nice", "env", "timeout", "stdbuf"}
+
+
+def _split_segments(cmd: str) -> list[str]:
+    """Split a command line into independently-scanned shell segments."""
+    parts = re.split(r"\|\||[;&\n]", cmd)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _tokens(seg: str) -> list[str]:
     try:
-        toks = shlex.split(cmd)
+        return shlex.split(seg)
     except ValueError:
-        toks = cmd.split()
+        return seg.split()
+
+
+def _unwrap(toks: list[str]) -> list[str]:
+    """Strip leading wrapper commands / their immediate args / VAR=val."""
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t in _WRAPPERS:
+            i += 1
+            if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+[smhd]?", toks[i]):
+                i += 1
+            continue
+        if "=" in t and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t):
+            i += 1
+            continue
+        if t.startswith("-"):
+            # wrapper flags (nice -n 10, stdbuf -oL, sudo -u): skip the flag;
+            # a following bare number is its value
+            i += 1
+            if i < len(toks) and re.fullmatch(r"\d+|\w+", toks[i]) and toks[i - 1] in ("-n", "-u"):
+                i += 1
+            continue
+        break
+    return toks[i:]
+
+
+def _rm_recursive_force(toks: list[str]) -> bool:
+    if not toks or toks[0] != "rm":
+        return False
+    short = "".join(t[1:] for t in toks[1:] if t.startswith("-") and not t.startswith("--"))
+    has_r = "r" in short or "R" in short or "--recursive" in toks
+    has_f = "f" in short or "--force" in toks
+    return has_r and has_f
+
+
+def _bare_hosts(toks: list[str]) -> list[str]:
+    """Bare hosts given as curl/wget arguments (scheme-defaulting)."""
+    hosts = []
     if toks and toks[0] in ("curl", "wget"):
         value_flags = _VALUE_TAKING_FLAGS[toks[0]]
         skip_next = False
@@ -176,6 +242,103 @@ def _hosts_in_command(cmd: str) -> list[str]:
     return hosts
 
 
+def _scan(cmd: str) -> list[tuple[str, str]]:
+    """Collect every (decision, reason) the command trips, across segments."""
+    verdicts: list[tuple[str, str]] = []
+
+    # Whole-command checks first: these patterns span segment separators
+    # (`:|:&` contains `&`, pipe-to-shell contains `|`) or live inside
+    # quoted SQL strings, so segment-splitting would hide them.
+    if _FORK_BOMB_RE.search(cmd):
+        verdicts.append(("deny", "Refusing a fork bomb."))
+    if _DESTRUCTIVE_SQL_RE.search(cmd):
+        verdicts.append(
+            (
+                "ask",
+                "Destructive SQL (DROP/TRUNCATE) — confirm with the user before running.",
+            )
+        )
+    if _PIPE_TO_SHELL_RE.search(cmd):
+        verdicts.append(
+            (
+                "ask",
+                "Piping a download into a shell executes unreviewed remote code; confirm before running.",
+            )
+        )
+    # schemed URLs anywhere in the command
+    for u in re.findall(r"https?://([^/\s'\"]+)", cmd):
+        host = u.split(":")[0]
+        if host not in ALLOWED_HOSTS:
+            verdicts.append(("deny", _egress_reason(host)))
+
+    for seg in _split_segments(cmd):
+        seg_lower = seg.lower()
+
+        # Env reconnaissance
+        if seg_lower in _ENV_DUMP or seg_lower.startswith("cat /proc/self/environ"):
+            verdicts.append(("deny", "Refusing to dump the process environment."))
+            continue
+
+        toks = _unwrap(_tokens(seg))
+        if not toks:
+            continue
+        unwrapped = " ".join(toks)
+        unwrapped_lower = unwrapped.lower()
+
+        # Destructive ops against persistent workspace dirs
+        if any(p in seg for p in DESTRUCTIVE_PATHS) and any(
+            unwrapped_lower.startswith(pref) for pref in DESTRUCTIVE_PREFIXES
+        ):
+            verdicts.append(
+                (
+                    "deny",
+                    "Refusing to delete from persistent workspace/snapshots or workspace/scripts. "
+                    "Use a fresh path or ask the user explicitly.",
+                )
+            )
+
+        # Filesystem enumeration outside the workspace
+        if any(unwrapped_lower.startswith(p) for p in _ENUM_PREFIXES):
+            verdicts.append(("deny", "Refusing to enumerate outside the working directory."))
+
+        # Floor: irreversible destruction
+        if toks[0].startswith("mkfs"):
+            verdicts.append(("deny", "Refusing to build a filesystem over a device (mkfs)."))
+
+        # Floor: high-blast-radius, user confirms
+        if _rm_recursive_force(toks):
+            verdicts.append(
+                (
+                    "ask",
+                    "Recursive force delete (rm -rf) — confirm with the user before running.",
+                )
+            )
+        if toks[:2] == ["git", "push"] and any(t in _FORCE_PUSH_FLAGS for t in toks[2:]):
+            verdicts.append(("ask", "Force push rewrites remote history; confirm with the user before running."))
+
+        # Outbound network — bare curl/wget hosts (scheme-defaulting)
+        for host in _bare_hosts(toks):
+            if host not in ALLOWED_HOSTS:
+                verdicts.append(("deny", _egress_reason(host)))
+
+        # Admin mutations need user confirmation
+        if any(unwrapped_lower.startswith(p) for p in ADMIN_PROMPT_PREFIXES):
+            verdicts.append(
+                (
+                    "ask",
+                    "This command mutates the Agnes access-control layer; confirm before running.",
+                )
+            )
+
+    return verdicts
+
+
+def _egress_reason(host: str) -> str:
+    return f"Outbound network to {host!r} is not in the Agnes egress allowlist. Allowed: " + ", ".join(
+        sorted(ALLOWED_HOSTS)
+    )
+
+
 def _decide(payload: dict) -> dict:
     tool = payload.get("tool_name")
     if tool != "Bash":
@@ -184,46 +347,12 @@ def _decide(payload: dict) -> dict:
     if not isinstance(cmd, str):
         return {"permissionDecision": "allow"}
 
-    lower = cmd.strip().lower()
-
-    # Destructive ops against persistent workspace dirs
-    if any(p in cmd for p in DESTRUCTIVE_PATHS) and any(lower.startswith(pref) for pref in DESTRUCTIVE_PREFIXES):
-        return {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": "Refusing to delete from persistent workspace/snapshots or workspace/scripts. "
-            "Use a fresh path or ask the user explicitly.",
-        }
-
-    # Env reconnaissance
-    if lower in _ENV_DUMP or lower.startswith("cat /proc/self/environ"):
-        return {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": "Refusing to dump the process environment.",
-        }
-
-    # Filesystem enumeration outside the workspace
-    if any(lower.startswith(p) for p in _ENUM_PREFIXES):
-        return {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": "Refusing to enumerate outside the working directory.",
-        }
-
-    # Outbound network — block hosts outside allowlist (schemed OR scheme-less)
-    for host in _hosts_in_command(cmd):
-        if host not in ALLOWED_HOSTS:
-            return {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": f"Outbound network to {host!r} is not in the Agnes egress allowlist. "
-                "Allowed: " + ", ".join(sorted(ALLOWED_HOSTS)),
-            }
-
-    # Admin mutations need user confirmation
-    if any(lower.startswith(p) for p in ADMIN_PROMPT_PREFIXES):
-        return {
-            "permissionDecision": "ask",
-            "permissionDecisionReason": "This command mutates the Agnes access-control layer; confirm before running.",
-        }
-
+    verdicts = _scan(cmd)
+    # deny beats ask; first reason of the winning class is reported
+    for decision in ("deny", "ask"):
+        for verdict, reason in verdicts:
+            if verdict == decision:
+                return {"permissionDecision": verdict, "permissionDecisionReason": reason}
     return {"permissionDecision": "allow"}
 
 
