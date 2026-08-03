@@ -15,6 +15,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **`SECURITY.md` — public threat model and vulnerability-reporting process.** States the deployment/trust model (single-org per instance; the agent sandbox is never trusted to make authorization decisions), documents the controls that carry the most weight (the secret broker keeping credential material out of the sandbox, live per-request agent scope intersection, server-side data-access checks on every read surface, VM-level sandbox egress, the untrusted-input controls, the Fernet secret vault), and lists known limitations honestly — unscreened prompt injection, `bypassPermissions` inside the sandbox, admin god-mode, non-revocable 30-day session cookies, `SameSite`-only CSRF, coarse data-app isolation, non-tamper-evident audit, unencrypted data at rest, and the unsigned-artifact/unpinned-marketplace supply chain. Closes with an operator security checklist. Linked from `README.md` and `docs/README.md`; reports go through GitHub private vulnerability reporting.
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.77.33] - 2026-07-31
+
+### Added
+
 - Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
   behavior yet): schema v109 adds `mcp_source_oauth_clients`,
   `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
@@ -36,7 +50,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   secret-backed per_user sources. New admin endpoints
   `POST …/mcp-sources/{id}/oauth/register` (discovery + DCR, idempotent) and
   `PUT …/mcp-sources/{id}/oauth/client` (manual client config) plus CLI
-  verbs `agnes admin mcp source oauth-register` / `oauth-client`. Design:
+  verbs `agnes admin mcp source oauth-register` / `oauth-client`. The stored
+  client secret is write-only (never echoed back), so `PUT …/oauth/client`
+  treats an omitted `client_secret` as "leave it alone" and an explicit `""`
+  as a deliberate clear. Per-user tokens are dropped whenever the
+  registration they were issued against stops being the one Agnes refreshes
+  with — source deletion, a re-registration that changed `client_id`,
+  flipping `auth_method` off `oauth`, or repointing the source's `url` at a
+  different upstream (whose AS did not mint those tokens). Design:
   `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
 
 ### Changed
