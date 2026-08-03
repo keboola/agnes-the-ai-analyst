@@ -24,6 +24,8 @@ MENU_JS = Path("app/web/static/js/components/chat_row_menu.js")
 CHAT_CSS = Path("app/web/static/css/chat.css")
 RAIL_CSS = Path("app/web/static/css/rail.css")
 MENU_CSS = Path("app/web/static/css/chat_row_menu.css")
+# The reference dropdown — the detail-page overflow menu this panel must match.
+DETAIL_CSS = Path("app/web/static/css/detail-page.css")
 BASE_DS = Path("app/web/templates/base_ds.html")
 CHAT_HTML = Path("app/web/templates/chat.html")
 RAIL_HTML = Path("app/web/templates/_app_rail.html")
@@ -58,10 +60,10 @@ def test_renderers_no_longer_carry_inline_row_action_buttons():
 
 
 def test_menu_offers_exactly_pin_rename_delete():
-    """The three actions, with the single-letter accelerators the panel shows."""
+    """The three actions, in order."""
     js = _read(MENU_JS)
-    keys = re.findall(r'key:\s*"([a-z])"', js)
-    assert keys == ["p", "r", "d"], f"expected Pin/Rename/Delete accelerators, got {keys}"
+    ids = re.findall(r'id:\s*"([a-z]+)"', js)
+    assert ids == ["pin", "rename", "delete"], f"expected Pin/Rename/Delete, got {ids}"
     assert '"Unpin" : "Pin"' in js, "the pin item must flip its verb on a pinned row"
     assert '"Rename"' in js
     assert '"Delete"' in js
@@ -85,8 +87,9 @@ def test_menu_is_keyboard_operable_and_dismissible():
     assert "aria-haspopup" in js and "aria-expanded" in js
     assert 'setAttribute("role", "menu")' in js
     assert 'setAttribute("role", "menuitem")' in js
-    # Accelerators must not hijack browser shortcuts (Cmd-R etc.).
-    assert "e.metaKey || e.ctrlKey || e.altKey" in js
+    # The modifier guard this used to require went with the letter accelerators
+    # it protected (Cmd-R had to keep reloading); see
+    # test_menu_advertises_no_single_letter_shortcuts.
 
 
 def test_menu_click_does_not_also_open_the_conversation():
@@ -180,6 +183,58 @@ def test_panel_css_is_global_not_chat_only():
     assert "css/chat_row_menu.css" in _read(BASE_DS), "base_ds.html must load the panel sheet"
     # And it must not have been left behind in the /chat-only sheet.
     assert ".chat-rowmenu__item" not in _read(CHAT_CSS)
+
+
+def test_panel_wears_the_house_dropdown_look():
+    """There is ONE dropdown look in the app, and this panel is not exempt.
+
+    The detail-page overflow menu, the Library move menu and the filter menu all
+    agree on four numbers — 6px panel padding on a 12px radius with
+    --ds-shadow-md, and 13.5px rows on an 8px radius. The row menu used to
+    follow the --radius-*/--text-* size ladder instead (6px/4px/12px), which is
+    what made it read as a different component. Asserted against
+    detail-page.css so drift in EITHER sheet fails here rather than shipping as
+    two menus that don't match.
+    """
+    for path, panel_sel, item_sel in (
+        (MENU_CSS, r"\.chat-rowmenu \{", r"\.chat-rowmenu__item \{"),
+        (DETAIL_CSS, r"\.detail-menu__panel \{", r"\.detail-menu__item \{"),
+    ):
+        css = _read(path)
+        panel = re.search(panel_sel + r"([^}]*)\}", css)
+        item = re.search(item_sel + r"([^}]*)\}", css)
+        assert panel and item, f"{path} must declare the menu panel + its rows"
+        assert "padding: 6px" in panel.group(1), f"{path}: panel padding"
+        assert "border-radius: 12px" in panel.group(1), f"{path}: panel radius"
+        assert "box-shadow: var(--ds-shadow-md)" in panel.group(1), f"{path}: panel elevation"
+        assert "font-size: 13.5px" in item.group(1), f"{path}: row type size"
+        assert "border-radius: 8px" in item.group(1), f"{path}: row radius"
+
+
+def test_every_action_carries_a_glyph():
+    """The house menus label each row with a muted leading icon; a menu of bare
+    labels reads as a different component even at matching metrics. The glyph is
+    keyed off the action's own id, so an action can't be added without one."""
+    js = _read(MENU_JS)
+    for name in ("pin", "rename", "delete"):
+        assert f"{name}:" in js, f"ITEM_SVG must define the {name} glyph"
+    assert "ITEM_SVG[action.id]" in js, "the glyph must follow the action id"
+    assert ".chat-rowmenu__item svg" in _read(MENU_CSS), "the glyph needs a size + muted ink"
+
+
+def test_menu_advertises_no_single_letter_shortcuts():
+    """The panel used to print P / R / D beside its rows and bind them off
+    `event.key` — the character the LAYOUT produces, so on a non-Latin layout
+    the same physical keys emit other characters and nothing fired. Hints and
+    bindings were removed together; a hint with no working binding (or a binding
+    with no hint) is the state to guard against."""
+    js = _read(MENU_JS)
+    assert "chat-rowmenu__key" not in js, "no accelerator hint may be rendered"
+    assert "chat-rowmenu__key" not in _read(MENU_CSS), "dead accelerator styles must go too"
+    assert not re.search(r"\bkey:\s*\"[a-z]\"", js), "no action may declare a letter binding"
+    # Layout-independent keyboard support stays.
+    for k in ("Escape", "ArrowDown", "ArrowUp", "Home", "End"):
+        assert f'"{k}"' in js, f"{k} handling must survive"
 
 
 def test_trigger_is_styled_in_both_hosts():

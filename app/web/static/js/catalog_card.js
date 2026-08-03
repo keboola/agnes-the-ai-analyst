@@ -34,6 +34,12 @@
   const ARROW = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   // Verification tick — the ONLY trust glyph on a card. Mirrors the SVG in the
   // Jinja macro's cc-trust--verified branch.
+  /* Which trust vocabulary this instance draws. `.ds-trust` (css/trustmark.css)
+     is scoped to html[data-theme="paper"], so on a default blue instance it
+     would render an unstyled marker — blue keeps the `.cc-trust` chips it has
+     always shown. Read once: the theme is fixed for the document's lifetime. */
+  const IS_PAPER = document.documentElement.getAttribute('data-theme') === 'paper';
+
   const CHECK_GLYPH = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   // Two wordings share the same toggle mechanics (POST/DELETE add_url/
@@ -92,10 +98,21 @@
       eyebrow += '<span class="cc-sep">·</span><span class="cc-pub">' +
         (pub.kind === 'organization' ? '' : 'by ') + esc(pub.name) + '</span>';
       if (pub.kind === 'organization') {
-        eyebrow += '<span class="cc-trust cc-trust--org">Organization</span>';
+        // v113: match whichever vocabulary this theme renders server-side, so a
+        // JS-hydrated card and a Jinja one never disagree WITHIN a theme.
+        // `.ds-trust` is scoped to paper in css/trustmark.css, so emitting it on
+        // a blue instance would produce an unstyled marker.
+        eyebrow += IS_PAPER
+          ? '<span class="ds-trust ds-trust--org ds-trust--label">'
+            + '<span class="ds-trust__word">Organization</span></span>'
+          : '<span class="cc-trust cc-trust--org">Organization</span>';
       } else if (c.verified) {
-        eyebrow += '<span class="cc-trust cc-trust--verified" title="Verified by your organization">' +
-          CHECK_GLYPH + 'Verified</span>';
+        eyebrow += IS_PAPER
+          ? '<span class="ds-trust ds-trust--verified ds-trust--label" '
+            + 'title="Verified by your organization">' + CHECK_GLYPH
+            + '<span class="ds-trust__word">Verified</span></span>'
+          : '<span class="cc-trust cc-trust--verified" '
+            + 'title="Verified by your organization">' + CHECK_GLYPH + 'Verified</span>';
       }
     }
     if (c.category) eyebrow += '<span class="cc-sep">·</span><span>' + esc(c.category) + '</span>';

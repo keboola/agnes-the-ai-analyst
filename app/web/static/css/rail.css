@@ -116,6 +116,12 @@ html[data-ui-layout="rail"] .rail {
        dark `sunken` lands darker than `dim` — so if both states ever go neutral
        again, the stronger one must be an ink-mix, not `--ds-surface-sunken`.) */
     --rail-hover-bg: var(--ds-surface-dim);
+    /* The Admin flyout's vertical reach, shared by the panel (its `max-height`)
+       and by the hover bridge that has to cover it (.rail-admin-sub::after).
+       Defined once because the bridge is only correct while it spans the panel
+       it leads to: a bridge shorter than the panel leaves the diagonal move
+       toward a tall panel's TOP item falling out of the hover region. */
+    --rail-admin-flyout-max-h: min(70vh, 420px);
     /* `visible` (not `auto`) so popovers can escape the rail's edges instead
        of being clipped — the user-menu panel below is absolutely positioned
        and depends on this. (It also served the Studio flyout, since retired.)
@@ -668,7 +674,19 @@ html[data-ui-layout="rail"] .rail-admin-sub-row {
     gap: 6px;
     width: 100%;
     min-height: 28px;
-    padding: 4px 8px;
+    /* ONE TEXT COLUMN — the left pad is what lands this row's label on the same
+       x as every `.rail-i` label above it (Library / Agents / Admin / How Agnes
+       works), so the open Admin tree reads as one column of text rather than two
+       stepped ones. It is the last term in a chain that has to add up to the
+       `.rail-i` label offset: the rail's own 12px padding, `.rail-admin-groups`
+       (15px margin + 1px hairline + 8px pad), then this. Change any earlier term
+       and this one owes the difference. The row's BOX still starts left of its
+       label, as a `.rail-i`'s does — the indent belongs to the text, not to the
+       hover fill. */
+    padding: 4px 8px 4px 16px;
+    /* For the `.has-active` dot, which is positioned in the left pad so it
+       cannot displace the label out of that column. */
+    position: relative;
     border: none;
     border-radius: 7px;
     background: none;
@@ -711,15 +729,20 @@ html[data-ui-layout="rail"] .rail-admin-sub-row.has-active {
     font-weight: 600;
 }
 
+/* Positioned in the row's left pad rather than sitting in the flex flow: as a
+   flex child it displaced its own label ~10px to the right, so the ONE row in
+   the tree carrying a dot was the one row whose text left the column. Vertically
+   centred so it holds against the row's min-height. */
 html[data-ui-layout="rail"] .rail-admin-sub-row.has-active::before {
     content: "";
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    transform: translateY(-50%);
     width: 5px;
     height: 5px;
-    margin-left: -2px;
-    margin-right: 1px;
     border-radius: var(--ds-radius-pill, 999px);
     background: var(--ds-primary);
-    flex-shrink: 0;
 }
 
 html[data-ui-layout="rail"] .rail-admin-sub-caret {
@@ -751,7 +774,12 @@ html[data-ui-layout="rail"] .rail-admin-flyout {
        under ~13px here would overlap the border line. */
     margin-left: 14px;
     min-width: 212px;
-    max-height: min(70vh, 420px);
+    max-height: var(--rail-admin-flyout-max-h);
+    /* NOTE for anyone touching the hover bridge below: this is why the bridge
+       cannot live on THIS element. `overflow-y: auto` forces the used value of
+       `overflow-x` to `auto` too (per CSS overflow — `visible` is not honored
+       when the other axis is not `visible`), so any pseudo-element placed
+       outside this padding box is clipped and stops hit-testing. */
     overflow-y: auto;
     padding: 6px;
     background: var(--ds-surface);
@@ -766,16 +794,37 @@ html[data-ui-layout="rail"] .rail-admin-sub:focus-within > .rail-admin-flyout {
     display: block;
 }
 
-/* Hover bridge across the gap between the rail edge and the panel —
-   without it the pointer leaves .rail-admin-sub mid-journey and the panel it
-   was travelling to disappears. */
-html[data-ui-layout="rail"] .rail-admin-flyout::before {
+/* Hover bridge across the 14px gap between the rail edge and the panel —
+   without it the pointer leaves .rail-admin-sub mid-journey and the panel it was
+   travelling to disappears, which makes every Admin destination unreachable by
+   mouse.
+
+   It hangs off the ROW's container, not off the panel. A previous
+   `.rail-admin-flyout::before` version read correctly but never worked: the
+   panel's own `overflow-y: auto` also clips overflow-x (see the note there), so
+   a bridge at `left: -16px` was clipped away and the gap stayed dead space —
+   hit-testing the mid-gap pixels landed on `.rail`, outside .rail-admin-sub.
+   `.rail-admin-sub` has no `overflow` of its own, so an `::after` on it escapes.
+
+   Gated on the same hover/focus-within condition that reveals the panel, so the
+   strip exists only while a panel is actually open — at rest it would sit over
+   page content in the gutter and swallow clicks there. */
+html[data-ui-layout="rail"] .rail-admin-sub:hover::after,
+html[data-ui-layout="rail"] .rail-admin-sub:focus-within::after {
     content: "";
     position: absolute;
-    top: 0;
-    bottom: 0;
-    left: -16px;
+    left: 100%;
+    /* 16px covers the panel's 14px `margin-left` with 2px to spare, so the
+       pointer is never between the two hover regions. */
     width: 16px;
+    /* Anchored to the panel's own anchor (`bottom: -6px`) and as tall as the
+       panel can get, so a diagonal move toward a tall panel's top item stays
+       inside the region too — not just a straight horizontal one. */
+    bottom: -6px;
+    height: var(--rail-admin-flyout-max-h);
+    /* Below the panel (z-index 70) — it must never cover the links it leads
+       to — but above page content, which it has to overlay to work. */
+    z-index: 60;
 }
 
 html[data-ui-layout="rail"] .rail-admin-flyout-item {
@@ -808,9 +857,10 @@ html[data-ui-layout="rail"] .rail-admin-flyout-item:focus-visible {
 }
 
 /* Footer — the profile row alone (onboarding moved up to a card above the
-   bottom nav). Outside .rail-collapsible so the profile stays reachable in the
-   ≤1024px bar with the nav collapsed. margin-top:auto is belt-and-braces: the
-   scroll column above already grows into the slack. */
+   bottom nav, "How {brand} works" up to an icon beside the wordmark). Outside
+   .rail-collapsible so the profile stays reachable in the ≤1024px bar with the
+   nav collapsed. margin-top:auto is belt-and-braces: the scroll column above
+   already grows into the slack. */
 html[data-ui-layout="rail"] .rail-foot {
     margin-top: auto;
     padding-top: 6px;
@@ -1431,6 +1481,7 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
         padding-top: 0;
     }
 
+
     html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
         bottom: auto;
         top: calc(100% + 8px);
@@ -1454,13 +1505,15 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
         margin-top: 6px;
     }
 
-    /* The hover bridge follows the panel — it now spans the gap ABOVE it. */
-    html[data-ui-layout="rail"] .rail-admin-flyout::before {
+    /* The hover bridge follows the panel — the gap it has to span is now the
+       6px ABOVE the panel, across the row's full width rather than beside it. */
+    html[data-ui-layout="rail"] .rail-admin-sub:hover::after,
+    html[data-ui-layout="rail"] .rail-admin-sub:focus-within::after {
         left: 0;
         right: 0;
-        top: -8px;
-        bottom: auto;
         width: auto;
+        top: 100%;
+        bottom: auto;
         height: 8px;
     }
 
@@ -1476,3 +1529,4 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
         width: 280px;
     }
 }
+

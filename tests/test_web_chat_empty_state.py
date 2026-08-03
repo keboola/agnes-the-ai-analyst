@@ -126,6 +126,55 @@ class TestChatEmptyStatePill:
         assert "Operated by" not in body
         assert "Suggested questions" not in body
 
+    def test_context_line_links_to_library_in_stack_filter(self, seeded_app, monkeypatch):
+        """Both counts link to the Library with "In stack only" pre-applied, NOT
+        to /stack: My Stack is not a rail destination any more (#1088), so the
+        old href landed the caller on a page with no nav entry. /library renders
+        every kind that page did and the filter narrows it to what the line
+        counts."""
+        _enable_rail_chat(seeded_app, monkeypatch)
+        pkg_id = _make_pkg("ctx-link-pkg", "Ctx link pkg")
+        _grant("Admin", "data_package", pkg_id)
+        resp = seeded_app["client"].get("/chat", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "Agnes is using" in body
+        # The status line's own markup — scoped so a stray /stack link elsewhere
+        # in the page can't pass this off as fixed.
+        line = body[body.index('<p class="rdb-context">') :]
+        line = line[: line.index("</p>")]
+        assert line.count('href="/library?stack=in_stack"') == 2
+        assert 'href="/stack"' not in line
+
+    def test_dashboard_carries_the_first_run_orientation_line(self, seeded_app, monkeypatch):
+        """ "New here? See how Agnes works" — the PROMINENT path to
+        /how-it-works, which the rail carries only as a quiet `.rail-meta` row in
+        its foot (_app_rail.html). A newcomer needs the explainer far more than a
+        returning user does, and the empty state is where their eyes already are.
+
+        Below the composer, not above it: directly over the input is the moment
+        of INTENT, and a navigate-away control was retired from there once
+        already (#1108's "Browse metrics & glossary"). Inside
+        `#chat-empty-extras`, so it retires with the rest of the dashboard as
+        soon as a conversation starts.
+        """
+        _enable_rail_chat(seeded_app, monkeypatch)
+        resp = seeded_app["client"].get("/chat", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        extras = body[body.index('id="chat-empty-extras"') :]
+        extras = extras[: extras.index('id="chat-empty-banner"')]
+        assert 'class="rdb-orient"' in extras
+        assert "New here?" in extras
+        assert 'href="/how-it-works"' in extras
+        assert "See how Agnes works" in extras  # brand-templated, seeded default
+        # Below the Stack status line it shares a register with — the two read as
+        # a pair of quiet notes under the input, in that order.
+        assert extras.index('class="rdb-context"') < extras.index('class="rdb-orient"')
+        # And it is NOT a third CTA in the hero, which keeps "Connect your tools"
+        # as its single action (see tests/test_ui_layout_theme.py).
+        assert "rdb-orient" not in body[: body.index('id="chat-empty-extras"')]
+
     def test_context_line_hidden_at_zero(self, seeded_app, monkeypatch):
         """analyst1 has no data/plugin grants → both counts are 0 and the
         context line hides entirely ("Agnes is using 0 knowledge sources"
@@ -219,12 +268,24 @@ class TestChatEmptyStatePill:
         assert resp.status_code == 302
         assert resp.headers["location"].startswith("/login")
 
-    def test_rail_empty_state_has_semantic_layer_link(self, seeded_app, monkeypatch):
-        """Rail chat empty state exposes a 'Browse metrics & glossary' link to
-        /catalog/semantics (#1108) — the only in-page path to that page in the
-        rail chrome (no rail nav item by design)."""
+    def test_rail_empty_state_has_no_semantic_layer_detour(self, seeded_app, monkeypatch):
+        """The empty state offers NO browse link to /catalog/semantics.
+
+        It carried one (#1108) directly above the composer. Retired: the empty
+        state is the moment of intent — the reader came to ask something — so a
+        control whose only function is to navigate away from the composer,
+        offered before they have an answer to check, is a detour. The semantic
+        layer is reached from the rail's Definitions nav row, the Library's
+        Definitions band, and search.
+
+        Asserted on the button's own wrapper class rather than the bare
+        `/catalog/semantics` URL: the rail chrome carries a Definitions nav row
+        on every page, this one included, so the URL is legitimately in the
+        markup. What must not come back is the in-page control.
+        """
         _enable_rail_chat(seeded_app, monkeypatch)
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200
-        assert 'href="/catalog/semantics"' in resp.text
+        assert "rdb-semantic-links" not in resp.text
+        assert "Browse metrics" not in resp.text
