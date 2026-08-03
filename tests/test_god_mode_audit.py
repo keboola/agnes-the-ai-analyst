@@ -86,3 +86,17 @@ def test_lookup_failure_does_not_break_authorization(system_conn, caplog, monkey
         assert access.can_access("admin1", "table", "keboola.x", conn=system_conn)
     # a warning is fine; no bypass INFO line, and the decision still passed
     assert all(r.levelno != logging.INFO for r in _bypass_lines(caplog))
+
+
+def test_cache_failure_does_not_break_authorization(system_conn, monkeypatch):
+    """The whole observability body is guarded — a dedup-cache race (e.g.
+    RuntimeError from concurrent mutation during the eviction sweep, this
+    runs on FastAPI's thread pool) must degrade to a lost log line, never
+    to an exception out of can_access."""
+
+    class _ExplodingCache(dict):
+        def get(self, *a, **kw):
+            raise RuntimeError("dictionary changed size during iteration")
+
+    monkeypatch.setattr(access, "_god_mode_logged", _ExplodingCache())
+    assert access.can_access("admin1", "table", "keboola.race", conn=system_conn)
