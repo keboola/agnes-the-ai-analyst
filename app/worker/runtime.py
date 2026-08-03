@@ -79,6 +79,16 @@ running; a hard kill at that point leaves the job 'running' with a
 lease that later expires and is recovered via ``claim_next()``'s reclaim
 path, or — if attempts are already exhausted by then — this module's own
 ``reap_exhausted()`` sweep.
+
+The bounded drain above covers *handler* futures only. The poll-path DB
+calls (``claim_next``/``reap_exhausted``/``heartbeat``/``complete``/
+``fail``) go through ``to_thread_drain_on_cancel``
+(``app/api/health_probes.py``) instead: cancellation waits for the
+in-flight single-statement call rather than orphaning its thread, so
+``app/main.py``'s lifespan can't proceed to ``close_system_db()`` while a
+jobs-table statement is still executing — the same
+abandoned-thread-vs-DB-close race the canary/checkpoint loops drain
+against, just with a millisecond window instead of a CHECKPOINT-sized one.
 """
 
 from __future__ import annotations
@@ -92,6 +102,7 @@ import socket
 import time
 
 from app.job_correlation import bind_request_id, unbind_request_id
+from app.api.health_probes import to_thread_drain_on_cancel
 from app.observability import metrics as obs_metrics
 from app.worker import wakeup
 from app.worker.registry import HEAVY_LANE, JOB_KINDS, LIGHT_LANE, JobKind
@@ -239,7 +250,7 @@ async def _heartbeat_loop(job_id: str, worker_id: str, lease_token: str, lease_s
     while True:
         await asyncio.sleep(interval)
         try:
-            ok = await asyncio.to_thread(_jobs_repo().heartbeat, job_id, worker_id, lease_token, lease_seconds)
+            ok = await to_thread_drain_on_cancel(_jobs_repo().heartbeat, job_id, worker_id, lease_token, lease_seconds)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -321,7 +332,7 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             # Persist the outcome before recording it in metrics — if `.fail()`
             # itself raises, this propagates without ever having reported an
             # outcome that was never actually persisted.
-            finalized = await asyncio.to_thread(
+            finalized = await to_thread_drain_on_cancel(
                 _jobs_repo().fail,
                 job["id"],
                 worker_id,
@@ -349,7 +360,9 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             # `handler_result` is the handler's return value — `None` for
             # every kind except `agent_response` (Task 9), which returns a
             # result dict `complete()` merges into `payload_json["result"]`.
-            mutated = await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token, handler_result)
+            mutated = await to_thread_drain_on_cancel(
+                _jobs_repo().complete, job["id"], worker_id, lease_token, handler_result
+            )
             obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
             if mutated:
                 # `complete()` returns `False` for the same stale-lease
@@ -406,7 +419,7 @@ async def _lane_slot(
             # to the claimed job's actual kind.lease_seconds (heartbeat reads
             # the kind fresh after claiming, below).
             max_lease = max((JOB_KINDS[name].lease_seconds for name in kinds), default=120)
-            job = await asyncio.to_thread(
+            job = await to_thread_drain_on_cancel(
                 _jobs_repo().claim_next,
                 kinds=kinds,
                 worker_id=worker_id,
@@ -438,7 +451,7 @@ async def _lane_slot(
                     job["id"],
                 )
                 obs_metrics.record_job_failure(job["kind"], "no-registered-handler")
-                await asyncio.to_thread(
+                await to_thread_drain_on_cancel(
                     _jobs_repo().fail,
                     job["id"],
                     worker_id,
@@ -473,7 +486,7 @@ async def _reap_loop(poll_interval_s: float) -> None:
     """
     while True:
         try:
-            reaped = await asyncio.to_thread(_jobs_repo().reap_exhausted)
+            reaped = await to_thread_drain_on_cancel(_jobs_repo().reap_exhausted)
             if reaped:
                 logger.info("worker: reaped %d stuck job(s) (lease expired at max attempts)", len(reaped))
                 for job in reaped:
@@ -640,9 +653,13 @@ async def worker_loop(*, worker_id: str, poll_interval_s: float = 5.0) -> None:
         # Defensive: make sure every child is actually cancelled/awaited
         # even if gather() returned early for a reason other than our own
         # cancellation (e.g. one task raised and gather fails fast while
-        # siblings are still running).
+        # siblings are still running). Skip tasks already processing a
+        # cancellation (`cancelling() > 0`): they are mid-drain in
+        # `to_thread_drain_on_cancel`, and a second cancel would interrupt
+        # that drain and re-orphan the in-flight DB thread — the exact race
+        # the drain exists to prevent.
         for t in tasks:
-            if not t.done():
+            if not t.done() and t.cancelling() == 0:
                 t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         # Every lane slot has now stopped claiming new work. Any handler
