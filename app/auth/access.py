@@ -149,6 +149,61 @@ def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None
     return admin_id in _user_group_ids(user_id, conn=conn)
 
 
+# ---------------------------------------------------------------------------
+# God-mode observability
+# ---------------------------------------------------------------------------
+# When the Admin short-circuit in ``can_access`` grants a resource the admin
+# holds no explicit group grant for, emit one deduplicated log line. Pure
+# observability — never changes the decision — but it is the data that shows
+# which surfaces actually rely on god-mode before any future narrowing.
+# Best-effort in-process dedup (same pattern as ``_google_resync_last``); a
+# benign race at worst duplicates a line. The grant lookup runs at most once
+# per (user, resource) per cooldown window, so the auth hot path stays cheap.
+_god_mode_logged: dict[str, float] = {}
+_GOD_MODE_LOG_COOLDOWN_SECONDS = 900
+_GOD_MODE_CACHE_MAX = 4096
+
+
+def _note_god_mode_hit(
+    user_id: str,
+    resource_type: str,
+    resource_id: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> None:
+    key = f"{user_id}|{resource_type}|{resource_id}"
+    now = time.time()
+    last = _god_mode_logged.get(key)
+    if last is not None and (now - last) < _GOD_MODE_LOG_COOLDOWN_SECONDS:
+        return
+    if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
+        cutoff = now - _GOD_MODE_LOG_COOLDOWN_SECONDS
+        for k in [k for k, t in _god_mode_logged.items() if t < cutoff]:
+            _god_mode_logged.pop(k, None)
+        if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
+            # pathological churn: reset rather than grow without bound
+            _god_mode_logged.clear()
+    _god_mode_logged[key] = now
+    try:
+        explicit = resource_id in _allowed_ids_for_user(user_id, resource_type, conn=conn)
+    except Exception:
+        # Observability must never break authorization — swallow and move on.
+        logger.warning(
+            "god_mode_bypass: grant lookup failed for %s %s:%s",
+            user_id,
+            resource_type,
+            resource_id,
+            exc_info=True,
+        )
+        return
+    if not explicit:
+        logger.info(
+            "god_mode_bypass: admin %s accessed %s:%s with no explicit group grant",
+            user_id,
+            resource_type,
+            resource_id,
+        )
+
+
 def can_access(
     user_id: str,
     resource_type: str,
@@ -156,6 +211,10 @@ def can_access(
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> bool:
     """Generic access check. Admin short-circuits; otherwise group JOIN.
+
+    God-mode hits on resources the admin has no explicit grant for are
+    logged (deduplicated) via :func:`_note_god_mode_hit` — observability
+    only, the decision is unchanged.
 
     Internal data-source tables (``agnes_sessions``/``_usage``/``_audit``) are
     implicitly granted to every authenticated user. Security there is
@@ -176,6 +235,7 @@ def can_access(
     group_ids = _user_group_ids(user_id, conn=conn)
     admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn=conn)
     if admin_id is not None and admin_id in group_ids:
+        _note_god_mode_hit(user_id, resource_type, resource_id, conn=conn)
         return True
 
     if not group_ids:

@@ -21,6 +21,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+- Admin god-mode observability: when the Admin short-circuit in `can_access` grants a resource the admin holds no explicit group grant for, a deduplicated `god_mode_bypass` log line records who reached what. Observability only — access decisions are unchanged; the data shows which surfaces actually rely on god-mode before any future narrowing.
 
 ## [0.77.33] - 2026-08-03
 
