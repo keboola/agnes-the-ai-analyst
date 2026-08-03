@@ -13,6 +13,7 @@ from src.mcp_tooling import (
     MCPOutputTooLarge,
     ensure_output_size,
     max_output_chars,
+    progressive_tool,
     summarize_docstring,
 )
 
@@ -68,6 +69,61 @@ class TestEnsureOutputSize:
     def test_non_json_values_measured_via_str(self):
         payload = {"rows": [[date(2026, 1, 1)]]}
         assert ensure_output_size(payload, "query", cap=1000) is payload
+
+
+class TestProgressiveTool:
+    def _mcp(self):
+        pytest.importorskip("mcp", reason="mcp package not installed")
+        from mcp.server.fastmcp import FastMCP
+
+        return FastMCP("tooling-test")
+
+    def test_wire_description_is_first_paragraph_plus_pointer(self):
+        mcp = self._mcp()
+        registry: dict[str, str] = {}
+        tool = progressive_tool(mcp, registry)
+
+        @tool()
+        def sample(x: int = 1) -> dict:
+            """Do the thing.
+
+            Args:
+                x: A number.
+            """
+            return {"x": x}
+
+        t = mcp._tool_manager.get_tool("sample")
+        assert t.description == "Do the thing. Full contract: tool_docs('sample')."
+        assert registry["sample"].startswith("Do the thing.")
+        assert "Args:" in registry["sample"]
+
+    def test_single_paragraph_gets_no_pointer(self):
+        mcp = self._mcp()
+        registry: dict[str, str] = {}
+        tool = progressive_tool(mcp, registry)
+
+        @tool()
+        def brief() -> dict:
+            """Just this."""
+            return {}
+
+        assert mcp._tool_manager.get_tool("brief").description == "Just this."
+
+    def test_decorated_function_is_returned_unchanged(self):
+        mcp = self._mcp()
+        tool = progressive_tool(mcp, {})
+
+        @tool()
+        def add_one(x: int) -> dict:
+            """Add one.
+
+            More detail.
+            """
+            return {"x": x + 1}
+
+        # Callable directly (back-compat: mcp_http binds tool fns into globals)
+        assert add_one(3) == {"x": 4}
+        assert mcp._tool_manager.get_tool("add_one").fn is add_one
 
 
 class TestMaxOutputChars:
