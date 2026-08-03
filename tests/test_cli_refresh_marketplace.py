@@ -822,7 +822,7 @@ def test_bootstrap_clone_failure_exits_nonzero(
     # so match the failure on the full 4-element prefix (won't collide with the
     # `git -c <...> -C <dir> fetch` path, whose 4th token is `-C`, not `clone`).
     recorder.script(
-        ("git", "-c", f"credential.helper={rm_module._CREDENTIAL_HELPER}", "clone"),
+        ("git", "-c", "credential.helper=", "-c", f"credential.helper={rm_module._CREDENTIAL_HELPER}", "clone"),
         returncode=1,
         stderr="fatal: TLS error",
     )
@@ -1880,3 +1880,18 @@ def test_prune_drops_stale_enabled_entry_but_keeps_other_marketplaces(
         "grpn-eng@agnes": True,
         "superpowers@claude-plugins-official": True,
     }
+
+
+def test_git_cred_args_reset_chain_before_inline_helper():
+    """`-c credential.helper=X` APPENDS to git's helper chain — it does not
+    disable a globally configured helper. On Windows that global helper is
+    Git Credential Manager, which pops an interactive GUI dialog when it has
+    nothing stored for the marketplace host (GIT_TERMINAL_PROMPT=0 does not
+    suppress it). The chain must therefore be RESET with an empty helper
+    entry before the env-based one, so GCM is never consulted.
+    """
+    args = rm_module._GIT_CRED_ARGS
+    assert args[0] == "-c"
+    assert args[1] == "credential.helper=", "chain reset must come first"
+    assert args[2] == "-c"
+    assert args[3] == f"credential.helper={rm_module._CREDENTIAL_HELPER}"
