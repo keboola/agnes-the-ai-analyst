@@ -463,6 +463,100 @@ class TestStackListParity:
         assert pkg_id in api_ids
 
 
+class TestStackArtefactAddRemoveParity:
+    """``POST/DELETE /api/stack/artefacts/{id}`` ↔ ``agnes stack artefacts add/remove``.
+
+    Artefacts are NOT resource_grants-gated like data_package/memory_domain
+    above — permission is ownership (``file_corpora.created_by``), so the
+    setup seeds a plain collection owned by the analyst instead of a grant.
+    """
+
+    def _seed_collection(self, conn, *, name: str = "Parity Artefact") -> str:
+        from src.repositories.file_corpora import FileCorporaRepository
+
+        return FileCorporaRepository(conn).create(
+            name=name,
+            slug=f"parity-artefact-{uuid.uuid4().hex[:8]}",
+            description=None,
+            created_by="analyst1",
+        )
+
+    def test_add_parity(self, parity_env):
+        conn = get_system_db()
+        _purge_user_state(conn)
+        corpus_id = self._seed_collection(conn)
+        conn.close()
+
+        r = parity_env["client"].post(
+            f"/api/stack/artefacts/{corpus_id}",
+            headers=_auth(parity_env["analyst_token"]),
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        delta_api = _snapshot_table(
+            conn,
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
+            [corpus_id],
+        )
+        conn.execute("DELETE FROM user_stack_subscriptions WHERE resource_id = ?", [corpus_id])
+        conn.close()
+
+        with _admin_auth_swap(parity_env, parity_env["analyst_token"]):
+            parity_env["run_cli"](["stack", "artefacts", "add", corpus_id])
+
+        conn = get_system_db()
+        delta_cli = _snapshot_table(
+            conn,
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
+            [corpus_id],
+        )
+        conn.close()
+
+        assert delta_api == delta_cli == [("analyst1", "collection", corpus_id)]
+
+    def test_remove_parity(self, parity_env):
+        conn = get_system_db()
+        _purge_user_state(conn)
+        corpus_id = self._seed_collection(conn, name="Parity Artefact Remove")
+        conn.execute(
+            "INSERT INTO user_stack_subscriptions(user_id, resource_type, resource_id) "
+            "VALUES ('analyst1', 'collection', ?)",
+            [corpus_id],
+        )
+        conn.close()
+
+        r = parity_env["client"].delete(
+            f"/api/stack/artefacts/{corpus_id}",
+            headers=_auth(parity_env["analyst_token"]),
+        )
+        assert r.status_code == 204
+        conn = get_system_db()
+        delta_api = _snapshot_table(
+            conn,
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
+            [corpus_id],
+        )
+        conn.execute(
+            "INSERT INTO user_stack_subscriptions(user_id, resource_type, resource_id) "
+            "VALUES ('analyst1', 'collection', ?)",
+            [corpus_id],
+        )
+        conn.close()
+
+        with _admin_auth_swap(parity_env, parity_env["analyst_token"]):
+            parity_env["run_cli"](["stack", "artefacts", "remove", corpus_id])
+
+        conn = get_system_db()
+        delta_cli = _snapshot_table(
+            conn,
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
+            [corpus_id],
+        )
+        conn.close()
+
+        assert delta_api == delta_cli == []
+
+
 # ---------------------------------------------------------------------------
 # Data Package admin CRUD
 # ---------------------------------------------------------------------------
@@ -1084,7 +1178,10 @@ class TestGrantUpdateRequirementParity:
         conn.close()
         return gid, pkg_id, grant_id
 
-    def test_downgrade_parity_materializes_subscriptions(self, parity_env):
+    def test_downgrade_parity_no_subscription_fan_out(self, parity_env):
+        """Auto-membership: a required → available downgrade no longer
+        writes user_stack_subscriptions rows on EITHER path — available is
+        already automatically in every granted user's stack."""
         gid, pkg_id, grant_id = self._setup_with_grant("required")
 
         # API path
@@ -1107,15 +1204,11 @@ class TestGrantUpdateRequirementParity:
         )
         conn.close()
 
-        # Reset to required, drop the eager subs, re-run CLI
+        # Reset to required, re-run CLI
         conn = get_system_db()
         conn.execute(
             "UPDATE resource_grants SET requirement = 'required' WHERE id = ?",
             [grant_id],
-        )
-        conn.execute(
-            "DELETE FROM user_stack_subscriptions WHERE resource_id = ?",
-            [pkg_id],
         )
         conn.close()
 
@@ -1138,9 +1231,8 @@ class TestGrantUpdateRequirementParity:
         conn.close()
 
         assert api_grants == cli_grants
-        # Soft-downgrade materialized subscription for analyst1 on BOTH paths.
-        assert api_subs == cli_subs
-        assert ("analyst1", "data_package", pkg_id) in api_subs
+        # Neither path writes a subscription row anymore.
+        assert api_subs == cli_subs == []
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ from typing import Optional
 from src.ingest.chunking import chunk_text
 from src.ingest.tabular import EmptyExtraction, UnsupportedTabular, ingest_tabular
 from src.ingest.text_extract import UnsupportedDocument, extract_text
-from src.repositories import corpus_chunks_repo, corpus_files_repo
+from src.repositories import corpus_chunks_repo, corpus_files_repo, file_corpora_repo
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,18 @@ def ingest_file(file_id: str) -> str:
             return _bundle.ingest_bundle(corpus_id, file_id, storage_path)
 
         if ext in TABULAR_EXTS:
-            table_id = ingest_tabular(corpus_id, file_id, storage_path, file_type, filename=filename)
+            # Stamp the uploader as owner so the derived table is queryable by
+            # them (rbac.can_access_table admits collection-derived tables via the
+            # owning collection's access). Fall back to "ingest" if the corpus
+            # owner can't be resolved.
+            try:
+                _corpus = file_corpora_repo().get(corpus_id)
+                _owner = (_corpus or {}).get("created_by") or "ingest"
+            except Exception:
+                _owner = "ingest"
+            table_id = ingest_tabular(
+                corpus_id, file_id, storage_path, file_type, filename=filename, registered_by=_owner
+            )
             cf_repo.set_status(
                 file_id,
                 status="indexed",

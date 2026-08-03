@@ -110,6 +110,7 @@ __all__ = [
     "memory_domains_repo",
     "recipes_repo",
     "user_stack_subscriptions_repo",
+    "user_journey_repo",
     # MCP / Cowork
     "mcp_sources_repo",
     "per_user_secrets_repo",
@@ -131,6 +132,8 @@ __all__ = [
     "file_corpora_repo",
     "corpus_files_repo",
     "corpus_chunks_repo",
+    # Agent registry (v103) — the Library's agent items
+    "agents_repo",
     # Maintained digests (K4, #799)
     "knowledge_digests_repo",
     # Chat sandbox secret broker tickets
@@ -393,6 +396,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.user_stack_subscriptions", "UserStackSubscriptionsRepository"),
         PG: ("src.repositories.user_stack_subscriptions_pg", "UserStackSubscriptionsPgRepository"),
     },
+    "user_journey": {
+        DUCKDB: ("src.repositories.user_journey", "UserJourneyRepository"),
+        PG: ("src.repositories.user_journey_pg", "UserJourneyPgRepository"),
+    },
     # MCP / Cowork
     "mcp_sources": {
         DUCKDB: ("src.repositories.mcp_sources", "MCPSourceRepository"),
@@ -461,6 +468,11 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "corpus_chunks": {
         DUCKDB: ("src.repositories.corpus_chunks", "CorpusChunksRepository"),
         PG: ("src.repositories.corpus_chunks_pg", "CorpusChunksPgRepository"),
+    },
+    # agent registry (v103)
+    "agents": {
+        DUCKDB: ("src.repositories.agents", "AgentsRepository"),
+        PG: ("src.repositories.agents_pg", "AgentsPgRepository"),
     },
     # Maintained digests (K4, #799)
     "knowledge_digests": {
@@ -703,6 +715,10 @@ def user_stack_subscriptions_repo() -> Any:
     return _build("user_stack_subscriptions")
 
 
+def user_journey_repo() -> Any:
+    return _build("user_journey")
+
+
 # MCP / Cowork
 def mcp_sources_repo() -> Any:
     return _build("mcp_sources")
@@ -764,6 +780,11 @@ def file_corpora_repo() -> Any:
 
 def corpus_files_repo() -> Any:
     return _build("corpus_files")
+
+
+def agents_repo() -> Any:
+    """Agent registry (v103) — server-side agent definitions."""
+    return _build("agents")
 
 
 def corpus_chunks_repo() -> Any:

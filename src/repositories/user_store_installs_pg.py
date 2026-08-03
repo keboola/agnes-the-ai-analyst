@@ -2,12 +2,15 @@
 
 Mirrors ``src/repositories/user_store_installs.py``.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+from src.repositories.store_submissions import BLOCKING_SUBMISSION_STATUS_SQL
 
 
 class UserStoreInstallsPgRepository:
@@ -27,22 +30,47 @@ class UserStoreInstallsPgRepository:
             ).first()
         return row is not None
 
+    def install_for_group_members(self, group_id: str, entity_id: str) -> int:
+        """PG sibling of the DuckDB ``install_for_group_members`` — the Required
+        tier's fan-out. See that docstring."""
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """INSERT INTO user_store_installs (user_id, entity_id)
+                       SELECT m.user_id, :e FROM user_group_members m
+                       WHERE m.group_id = :g
+                       ON CONFLICT (user_id, entity_id) DO NOTHING
+                       RETURNING 1"""
+                ),
+                {"e": entity_id, "g": group_id},
+            ).all()
+        return len(rows)
+
+    def install_required_for_user(self, user_id: str, entity_ids: List[str]) -> int:
+        """PG sibling of the DuckDB ``install_required_for_user``."""
+        created = 0
+        for entity_id in entity_ids:
+            if self.install(user_id, entity_id):
+                created += 1
+        return created
+
     def uninstall(self, user_id: str, entity_id: str) -> bool:
         with self._engine.begin() as conn:
             row = conn.execute(
-                sa.text(
-                    "DELETE FROM user_store_installs "
-                    "WHERE user_id = :u AND entity_id = :e RETURNING 1"
-                ),
+                sa.text("DELETE FROM user_store_installs WHERE user_id = :u AND entity_id = :e RETURNING 1"),
                 {"u": user_id, "e": entity_id},
             ).first()
         return row is not None
 
     def list_for_user(self, user_id: str) -> List[Dict[str, Any]]:
+        """PG sibling of the DuckDB ``list_for_user`` — see that docstring for
+        which visibility states serve and why a hidden entity serves only to
+        its own author."""
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """SELECT
+            rows = (
+                conn.execute(
+                    sa.text(
+                        f"""SELECT
                            se.id, se.owner_user_id, se.owner_username, se.type,
                            se.name, se.description, se.category, se.version,
                            se.photo_path, se.video_url, se.file_size,
@@ -53,20 +81,31 @@ class UserStoreInstallsPgRepository:
                        FROM user_store_installs usi
                        JOIN store_entities se ON se.id = usi.entity_id
                        WHERE usi.user_id = :u
-                         AND se.visibility_status IN ('approved', 'archived')
+                         AND (
+                           se.visibility_status IN ('approved', 'archived')
+                           OR (
+                             se.visibility_status = 'hidden'
+                             AND se.owner_user_id = :u
+                             AND NOT EXISTS (
+                               SELECT 1 FROM store_submissions ss
+                               WHERE ss.entity_id = se.id
+                                 AND ss.status IN ({BLOCKING_SUBMISSION_STATUS_SQL})
+                             )
+                           )
+                         )
                        ORDER BY usi.installed_at DESC, se.id"""
-                ),
-                {"u": user_id},
-            ).mappings().all()
+                    ),
+                    {"u": user_id},
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]
 
     def is_installed(self, user_id: str, entity_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT 1 FROM user_store_installs "
-                    "WHERE user_id = :u AND entity_id = :e"
-                ),
+                sa.text("SELECT 1 FROM user_store_installs WHERE user_id = :u AND entity_id = :e"),
                 {"u": user_id, "e": entity_id},
             ).first()
         return row is not None
@@ -74,9 +113,7 @@ class UserStoreInstallsPgRepository:
     def installer_count(self, entity_id: str) -> int:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT COUNT(*) FROM user_store_installs WHERE entity_id = :e"
-                ),
+                sa.text("SELECT COUNT(*) FROM user_store_installs WHERE entity_id = :e"),
                 {"e": entity_id},
             ).first()
         return int(row[0]) if row else 0
@@ -84,9 +121,7 @@ class UserStoreInstallsPgRepository:
     def delete_all_for_entity(self, entity_id: str) -> int:
         with self._engine.begin() as conn:
             rows = conn.execute(
-                sa.text(
-                    "DELETE FROM user_store_installs WHERE entity_id = :e RETURNING 1"
-                ),
+                sa.text("DELETE FROM user_store_installs WHERE entity_id = :e RETURNING 1"),
                 {"e": entity_id},
             ).all()
         return len(rows)

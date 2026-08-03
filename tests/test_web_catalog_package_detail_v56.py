@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 
 from src.db import get_system_db
 
@@ -39,7 +38,8 @@ def _seed_pkg(**fields) -> str:
         name=fields.pop("name", "Sales bundle"),
         slug=slug,
         description=fields.pop("description", "card desc"),
-        icon=None, color=None,
+        icon=None,
+        color=None,
         created_by=fields.pop("created_by", "admin1"),
         **fields,
     )
@@ -160,8 +160,11 @@ class TestContentSections:
             f"/catalog/p/{slug}",
             headers=_auth(seeded_app["analyst_token"]),
         )
-        # Section header should not appear when the body is empty.
-        assert "What it is" not in r.text
+        # The long-description block is omitted when the body is empty.
+        # Assert on the markup hook, not the literal "What it is" copy —
+        # that phrase also appears in the shared detail-hero CSS comments
+        # (mirrors the data-badge="new" hook used above).
+        assert 'data-section="long-description"' not in r.text
 
     def test_renders_use_it_when_list(self, seeded_app):
         pid, slug = _seed_pkg(

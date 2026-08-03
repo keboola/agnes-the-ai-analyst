@@ -981,24 +981,65 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 
 ### `/api/chat` — Chat sessions
 
+- /api/chat/journey
 - /api/chat/sessions
 - /api/chat/sessions/{chat_id}
 - /api/chat/sessions/{chat_id}/messages
+- /api/chat/sessions/{chat_id}/pin
 - /api/chat/sessions/{chat_id}/ticket
+- /api/chat/sessions/{chat_id}/title
 - /api/chat/skills
+- /api/chat/uploads
 - /api/chat/{session_id}/fork
 - /api/chat/{session_id}/invite
 - /api/chat/{session_id}/join-ticket
 - /api/chat/{session_id}/leave
 - /api/chat/{session_id}/messages
 
+### `/api/agents` — Agent registry (Library items)
+
+Server-side CRUD for the assistants composed in the Agent builder (`/agents`),
+the registry that replaced the builder's browser-only draft store. Reads are
+grant-aware (owner ∪ shared into one of your groups); a grant conveys *use*, so
+only the owner or an admin may edit or delete.
+
+- /api/agents
+- /api/agents/{agent_id}
+
+### `/api/sharing` — Owner-initiated sharing of Library items
+
+The owner-scoped counterpart to `/api/access` (which is admin-only): the creator
+of a Library item may share it with groups they belong to, plus `Everyone`
+(workspace-wide). Writes the same `resource_grants` rows as the admin layer.
+Shareable resource types are `collection` and `agent` — skills are excluded
+because an approved store entity is already readable by every authenticated
+user.
+
+- /api/sharing/groups
+- /api/sharing/{resource_type}/{resource_id}
+
 ### `/api/collections` — File collections (bring-your-files)
+
+The two **preview** endpoints back the Library's file-preview modal.
+`…/preview` answers "what should the viewer show?" — `kind` is `image` /
+`pdf` (fetch `raw_url`), `text` (source for textual uploads, otherwise the
+text ingestion extracted, capped to a glance and flagged `truncated`), or
+`none` with a `reason`. `…/raw` streams the bytes for a **closed** set of
+browser-renderable types (PNG/JPEG/GIF/WebP/PDF) with the media type pinned
+server-side plus `nosniff`; anything else — notably an uploaded `.html` — is
+`415` and previews as source text instead, so an upload can never execute
+inline on this origin. Both read-gate on the parent collection's access OR a
+grant on the `corpus_file` itself, so a file shared out of a folder stays
+viewable by the person it was shared with.
 
 - /api/collections
 - /api/collections/search
 - /api/collections/{collection_id}
 - /api/collections/{collection_id}/files
 - /api/collections/{collection_id}/files/{file_id}
+- /api/collections/{collection_id}/files/{file_id}/move
+- /api/collections/{collection_id}/files/{file_id}/preview
+- /api/collections/{collection_id}/files/{file_id}/raw
 - /api/collections/{collection_id}/files/{file_id}/reingest
 
 ### `/api/connectors` — Connector manifest
@@ -1187,6 +1228,7 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 
 ### `/api/me` — Current user self-service
 
+- /api/me/display-name
 - /api/me/effective-access
 - /api/me/home-stats
 - /api/me/onboarded
@@ -1275,6 +1317,8 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 - /api/stack/browse
 - /api/stack/subscribe
 - /api/stack/subscription/{resource_type}/{resource_id}
+- /api/stack/artefacts/candidates
+- /api/stack/artefacts/{corpus_id}
 
 ### `/api/store` — Marketplace flea-market store
 
@@ -1289,11 +1333,44 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 - /api/store/entities/{entity_id}/files
 - /api/store/entities/{entity_id}/install
 - /api/store/entities/{entity_id}/photo
+- /api/store/entities/{entity_id}/publisher
 - /api/store/entities/{entity_id}/rate
 - /api/store/entities/{entity_id}/status
+- /api/store/entities/{entity_id}/verification
+- /api/store/entities/{entity_id}/verification/request
 - /api/store/entities/{entity_id}/versions/{version_no}/restore
 - /api/store/import-bundle
 - /api/store/owners
+
+#### Publisher & verification (the card's trust line)
+
+Two orthogonal axes on a store entity, both separate from `visibility_status`:
+
+| Endpoint | Who | What |
+|---|---|---|
+| `PUT /api/store/entities/{id}/publisher` | admin | Sets `publisher_kind` to `organization` or `user`. `organization` makes the item speak for the org (label: *Your organization*) and clears any verification state. |
+| `PUT /api/store/entities/{id}/verification` | admin | Sets `verified`, `changes_requested` (with an optional `note` sent to the author), or `none`. `409 publisher_is_organization` on an org-published item. |
+| `POST /api/store/entities/{id}/verification/request` | owner | Asks the org to review. `409 not_discoverable` while nobody else can see the item. |
+
+Both verification endpoints return `404 verification_disabled` unless
+`store.verification_enabled` is true (**default false**) — an instance with no
+reviewer must not offer the vocabulary at all.
+
+`publisher_kind` is **stored**, never derived from the owner's Admin-group
+membership: group membership is mutable and re-synced from the identity
+provider, so a derived value would silently reclassify already-published skills
+when an author changes groups.
+
+**Verification never gates a read.** It feeds the card chip and the
+`?verification=verified|unverified` filter only; an unverified item is fully
+readable by anyone otherwise entitled to see it. `?publisher=organization|me|
+other_users` filters the listing the same way (`me` / `other_users` split
+user-published items against the caller).
+
+Marking a `store_entity` grant `requirement='required'` ("In stack, locked")
+requires `publisher_kind='organization'` — otherwise `422`. Required items are
+fanned out into group members' installs and cannot be uninstalled
+(`409 entity_required`).
 
 ### `/api/sync` — Data sync (CLI)
 

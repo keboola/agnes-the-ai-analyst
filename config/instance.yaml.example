@@ -27,6 +27,14 @@ instance:
                                      # When it differs from `brand`, the /home hero appends
                                      # "Call me <brand_short>." after the title. Defaults to
                                      # `brand`. Env override: AGNES_INSTANCE_BRAND_SHORT.
+  # theme: "blue"                    # UI palette: blue (default) | navy | dark | auto |
+                                     # paper (prototype-derived light look: paper canvas,
+                                     # emerald accent, pill CTAs). Env override:
+                                     # AGNES_INSTANCE_THEME.
+  # ui_layout: "topnav"              # Chrome layout: topnav (default, horizontal header) |
+                                     # rail (fixed left sidebar navigation). Independent of
+                                     # `theme` — pair rail with paper for the full
+                                     # prototype look. Env override: AGNES_UI_LAYOUT.
   # workspace_dir: "FoundryAI"       # Filesystem-safe folder name for the analyst's local
                                      # workspace (~/<workspace_dir>). When unset, derived from
                                      # `brand` by stripping non-alphanumerics ("Foundry AI" ->

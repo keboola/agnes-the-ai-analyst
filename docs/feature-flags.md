@@ -111,3 +111,4 @@ without grepping the codebase.
 | `guardrails` | `guardrails.enabled` | `AGNES_GUARDRAILS_ENABLED` | `true` | Grandfathered. Env override added in #1022 (new, additive). |
 | `chat` | `chat.enabled` | `AGNES_CHAT_ENABLED` | `false` | New feature — off by default. |
 | `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | New feature — off by default. |
+| `library_show_unverified_trust` | `library.show_unverified_trust` | `AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST` | `false` | Opt-in amber 'Community' chip for unverified Store items in the Library. Off by default. |

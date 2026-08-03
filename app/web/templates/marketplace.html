@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Marketplace — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -42,11 +43,9 @@
         </div>
         <button class="search-btn" id="mp-search-btn" type="button">Search</button>
       </div>
-      <div class="scope">
-        <span class="scope-label">Search in:</span>
-        <label><input type="checkbox" id="mp-scope-curated" checked> Curated</label>
-        <label><input type="checkbox" id="mp-scope-flea" checked> Flea Market</label>
-      </div>
+      {# v104: the "Search in: Curated / Flea Market" scope checkboxes are gone.
+         They asked the same question the Publisher facet now answers — who is
+         this from — and two controls for one question can disagree. #}
     </div>
     <img class="mp-hero-cover" src="{{ mp_hero_cover }}"
          alt="" aria-hidden="true">
@@ -55,22 +54,19 @@
   <!-- Tabs + actions -->
   <div class="mp-tabs-row">
     <div class="mp-tabs" role="tablist">
-      {# Tab icons (Heroicons outline 24×24): shield-check signals trust/vetting
-         for curated, building-storefront signals an open shelf for flea, and
-         rectangle-stack signals the user's personal collection for My Stack. #}
-      <button class="is-active" data-tab="curated" role="tab" aria-selected="true">
+      {# v104: one Browse shelf, not two. "Curated" vs "Flea Market" was a
+         provenance split, and provenance is now the Publisher facet — keeping
+         both would mean a user filtering Publisher=Organization on the Flea tab
+         sees an empty grid even though organization-published authored items
+         exist. What remains is the one distinction that is NOT provenance:
+         everything (Browse) vs what I've added (My Stack).
+         Tab icons (Heroicons outline 24×24). #}
+      <button class="is-active" data-tab="browse" role="tab" aria-selected="true">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z"/>
+          <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0 0a8.949 8.949 0 0 0 4.951-1.488A3.987 3.987 0 0 0 13 16h-2a3.987 3.987 0 0 0-3.951 3.512A8.949 8.949 0 0 0 12 21Zm3-11.25a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
         </svg>
-        Curated Marketplace <span class="count" data-count-curated>0</span>
-      </button>
-      <button data-tab="flea" role="tab" aria-selected="false">
-        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M13.5 21v-7.5a.75.75 0 0 1 .75-.75h3a.75.75 0 0 1 .75.75V21m-4.5 0H2.36m11.14 0H18m0 0h3.64m-1.39 0V9.349M3.75 21V9.349m0 0a3.001 3.001 0 0 0 3.75-.615A2.993 2.993 0 0 0 9.75 9.75c.896 0 1.7-.393 2.25-1.016a2.993 2.993 0 0 0 2.25 1.016c.896 0 1.7-.393 2.25-1.016a3.001 3.001 0 0 0 3.75.614m-16.5 0a3.004 3.004 0 0 1-.621-4.72L4.318 3.44A1.5 1.5 0 0 1 5.378 3h13.243a1.5 1.5 0 0 1 1.06.44l1.19 1.189a3 3 0 0 1-.621 4.72M6.75 18h3.75a.75.75 0 0 0 .75-.75V13.5a.75.75 0 0 0-.75-.75H6.75a.75.75 0 0 0-.75.75v3.75c0 .414.336.75.75.75Z"/>
-        </svg>
-        Flea Market <span class="count" data-count-flea>0</span>
+        Browse <span class="count" data-count-browse>0</span>
       </button>
       <button data-tab="my" role="tab" aria-selected="false">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -81,14 +77,18 @@
       </button>
     </div>
     <div class="mp-actions">
+      {# Sends authors straight to the Skill Builder rather than the curated
+         hand-off guide: the guide describes a process, /skills starts one.
+         `?spotlight=new-skill` fires a one-step coach-mark on the "+ New
+         skill" card so a newcomer lands on the affordance, not a grid. #}
       {{ ds.button('Submit a skill or plugin', variant='secondary',
-                   href='/marketplace/guide/curated',
-                   attrs='data-actions-for="curated"') }}
-      {# Flea has a self-service +Upload button below — no second
-         "how to" CTA needed. Anyone uploads via the form directly. #}
+                   href='/skills?spotlight=new-skill',
+                   attrs='data-actions-for="browse"') }}
+      {# Self-service upload. On one merged shelf both CTAs belong to Browse:
+         authoring is authoring regardless of who ends up publishing it. #}
       {{ ds.button('+ Upload', variant='primary',
                    href='/store/new',
-                   attrs='data-actions-for="flea" hidden') }}
+                   attrs='data-actions-for="browse"') }}
     </div>
   </div>
 
@@ -96,26 +96,10 @@
        Goal: signal "someone is accountable for what's in here", without
        prescribing the process (teams may or may not have a curator; we
        don't want the copy to imply a structure the org doesn't follow). -->
-  <div class="mp-curator-block" data-show-on="curated">
+  <div class="mp-curator-block" data-show-on="browse">
     <div class="text">
-      <div class="title">Each plugin here has a named curator accountable for it.</div>
-      <div class="body">Each plugin in this marketplace has a named curator and meets a baseline review bar (security, telemetry hygiene, documentation).</div>
-    </div>
-    {% if curators_url %}
-    <a class="link" href="{{ curators_url }}" target="_blank" rel="noopener">See all curators →</a>
-    {% endif %}
-  </div>
-
-  <!-- Flea Market info block — open-shelf signal, mirror structure of
-       the curated block. The trailing "Tips for sharing" link points at
-       the publication guide; the +Upload button in the actions row above
-       handles the direct CTA, so this link is informational, not a
-       second action. Purple left-border + link colour distinguishes the
-       block from curated. -->
-  <div class="mp-curator-block is-flea" data-show-on="flea">
-    <div class="text">
-      <div class="title">Anyone in the company can upload here.</div>
-      <div class="body">The Flea Market is the community shelf — anyone can share a skill, agent, or plugin. Browse what colleagues have built, or upload something new.</div>
+      <div class="title">Every item says who stands behind it.</div>
+      <div class="body">Items published by your organization are labelled <strong>Organization</strong>. Everything else carries its author’s name — and may also be verified by your organization. Filter by publisher to narrow the shelf.</div>
     </div>
     <a class="link" href="/marketplace/guide/flea">Tips for sharing →</a>
   </div>
@@ -129,7 +113,7 @@
   <div class="mp-curator-block is-mystack" data-show-on="my">
     <div class="text">
       <div class="title">Your AI stack — everything you’ve added.</div>
-      <div class="body">Plugins, skills, and agents you’ve picked from Curated or the Flea Market all live here. They sync to Claude Code on your laptop automatically the next time you start a session.</div>
+      <div class="body">Plugins, skills, and agents you’ve added all live here. They sync to Claude Code on your laptop automatically the next time you start a session.</div>
     </div>
   </div>
 
@@ -144,13 +128,34 @@
     <div class="mp-filter-row" id="mp-cat-row" style="margin-bottom:0; flex:1 1 auto;"></div>
   </div>
 
-  <!-- Type filter (Flea + My — both surface skill/agent/plugin items) -->
+  <!-- Type filter (both tabs surface skill/agent/plugin items) -->
   <div class="mp-type-row" id="mp-type-row" hidden>
     <button class="pill is-active" data-type="">All</button>
     <button class="pill" data-type="skill">Skills</button>
     <button class="pill" data-type="agent">Agents</button>
     <button class="pill" data-type="plugin">Plugins</button>
   </div>
+
+  <!-- Publisher + Verification facets (v104) — the controls that replaced the
+       Curated/Flea shelves. Publisher answers "who is this from"; Verification
+       is an opt-in refinement, and only appears where the instance has the
+       verification axis switched on (an instance with no reviewer must not show
+       the vocabulary at all). -->
+  <div class="mp-type-row" id="mp-publisher-row" hidden>
+    <span class="mp-facet-label">Publisher</span>
+    <button class="pill is-active" data-publisher="">Anyone</button>
+    <button class="pill" data-publisher="organization">Organization</button>
+    <button class="pill" data-publisher="me">Me</button>
+    <button class="pill" data-publisher="other_users">Other users</button>
+  </div>
+  {% if store_verification_enabled %}
+  <div class="mp-type-row" id="mp-verification-row" hidden>
+    <span class="mp-facet-label">Verification</span>
+    <button class="pill is-active" data-verification="">Any</button>
+    <button class="pill" data-verification="verified">Verified</button>
+    <button class="pill" data-verification="unverified">Not verified</button>
+  </div>
+  {% endif %}
 
   <!-- Most Popular section: shown when any curated item has invocations_30d > 0 -->
   <div id="mp-popular-section" hidden>
@@ -193,25 +198,45 @@
 
 const ICON_PATHS = JSON.parse(document.getElementById('category-icons-data').textContent);
 const PAGE_SIZE = 24;
+// The one trust glyph a card ever shows (mirrors .cc-trust--verified in
+// catalog_card.css / the Jinja macro).
+const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 const state = {
-  tab: 'curated',
+  tab: 'browse',
   q: '',
   category: null,
   type: null,
+  // v104 facets. `publisher` is the control the Curated/Flea tabs turned into;
+  // `verification` is an opt-in refinement (null = don't care).
+  publisher: null,
+  verification: null,
   sort: 'recent',
   page: 1,
-  scope: { curated: true, flea: true },
 };
 
 // ── URL state ────────────────────────────────────────────────────────────
 function loadFromURL() {
   const p = new URLSearchParams(window.location.search);
   const tab = p.get('tab');
-  state.tab = (tab === 'flea' || tab === 'my') ? tab : 'curated';
+  // Old links (?tab=curated / ?tab=flea) still resolve: the shelves became
+  // publisher values, so redirect them onto the merged Browse tab with the
+  // matching facet pre-applied instead of 404ing someone's bookmark.
+  if (tab === 'curated') {
+    state.tab = 'browse';
+    state.publisher = 'organization';
+  } else if (tab === 'flea') {
+    state.tab = 'browse';
+  } else {
+    state.tab = tab === 'my' ? 'my' : 'browse';
+  }
   state.q = p.get('q') || '';
   state.category = p.get('category') || null;
   state.type = p.get('type') || null;
+  const rawPublisher = p.get('publisher');
+  if (['organization', 'me', 'other_users'].includes(rawPublisher)) state.publisher = rawPublisher;
+  const rawVerification = p.get('verification');
+  state.verification = ['verified', 'unverified'].includes(rawVerification) ? rawVerification : null;
   const rawSort = p.get('sort') || 'recent';
   state.sort = ['recent','most_used','most_adopted','trending'].includes(rawSort) ? rawSort : 'recent';
   state.page = Math.max(1, parseInt(p.get('page') || '1', 10));
@@ -219,7 +244,7 @@ function loadFromURL() {
 function syncURL() {
   const u = new URL(window.location.href);
   u.searchParams.set('tab', state.tab);
-  ['q','category','type'].forEach(k => {
+  ['q','category','type','publisher','verification'].forEach(k => {
     if (state[k]) u.searchParams.set(k, state[k]);
     else u.searchParams.delete(k);
   });
@@ -294,7 +319,7 @@ function renderCategories(items) {
 
 async function loadCategories() {
   const params = new URLSearchParams({ tab: state.tab });
-  if (state.tab === 'flea' && state.type) params.set('type', state.type);
+  if (state.type) params.set('type', state.type);
   try {
     const res = await fetch('/api/marketplace/categories?' + params);
     if (!res.ok) { renderCategories([]); return; }
@@ -367,7 +392,7 @@ function buildCard(it) {
     const isPending = it.visibility_status === 'pending'
       || it.visibility_status === 'pending_inline'
       || it.visibility_status === 'pending_llm';
-    const label = isPending ? '⟳ Under review' : '⚠ Quarantined';
+    const label = isPending ? '{{ ico.icon('refresh', 13) }} Under review' : '{{ ico.icon('warning', 13) }} Quarantined';
     const palette = isPending
       ? 'background:#fef3c7;color:#92400e;border:1px solid #fde68a;'
       : 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;';
@@ -376,15 +401,25 @@ function buildCard(it) {
       style="position:absolute;top:8px;left:8px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:0.2px;${palette}z-index:2;">${label}</div>`;
   }
 
+  // v104 trust line: publisher first, then at most ONE trust chip.
+  //  - Organization → the bare label + an "Organization" chip. The upstream
+  //    author (curated) or the uploading admin (authored) is deliberately NOT
+  //    the publisher here: the claim is institutional, and naming a person
+  //    would imply they personally vouched.
+  //  - A person → "by <name>", plus a Verified check IF the org verified it.
+  //    Only the positive state renders — there is no "Unverified" label, since
+  //    on an instance with no reviewer it would brand the whole catalogue.
   let ownerLine;
-  if (it.source === 'curated') {
-    const ownerVal = it.owner === 'owner_todo'
-      ? `<span class="todo">owner_todo</span>`
-      : `<span>${esc(it.owner || '')}</span>`;
+  if (it.publisher_kind === 'organization') {
+    const label = esc(it.publisher_name || 'Your organization');
     const mp = it.marketplace_name ? `via <strong>${esc(it.marketplace_name)}</strong> · ` : '';
-    ownerLine = `${mp}${ownerVal}`;
+    ownerLine = `${mp}${label}<span class="mp-trust mp-trust--org">Organization</span>`;
   } else {
-    ownerLine = `by <strong>${esc(it.owner || '')}</strong>`;
+    const who = it.publisher_name || it.owner || '';
+    const verified = it.verification_state === 'verified'
+      ? `<span class="mp-trust mp-trust--verified" title="Verified by your organization">${CHECK_SVG}Verified</span>`
+      : '';
+    ownerLine = `by <strong>${esc(who)}</strong>${verified}`;
   }
   const addedFmt = it.added ? (window.AgnesTime.formatDate(it.added) || '') : '';
   const verFmt = it.version ? `v${esc(it.version)}` : '';
@@ -499,18 +534,25 @@ function fillEmptyState() {
     c.innerHTML = '';
     return;
   }
-  if (state.tab === 'curated') {
-    t.textContent = 'No curated plugins available.';
-    b.textContent = 'Ask your admin to grant your group access.';
-    c.innerHTML = `<a href="/marketplace/guide/curated">Submit a skill or plugin →</a>`;
-  } else if (state.tab === 'flea') {
-    t.textContent = 'No community entities yet.';
-    b.textContent = 'Be the first to share something.';
-    c.innerHTML = `<a href="/store/new">+ Upload</a>`;
+  if (state.tab === 'browse') {
+    // A publisher filter is the likeliest reason a non-empty instance looks
+    // empty, so name it and offer the way back instead of a dead end.
+    if (state.publisher || state.verification) {
+      t.textContent = 'Nothing matches these filters.';
+      b.textContent = 'Try widening the publisher or verification filter.';
+      c.innerHTML = `<a href="/marketplace">Clear filters →</a>`;
+      return;
+    }
+    t.textContent = 'Nothing here yet.';
+    b.textContent = 'Be the first to share a skill, agent, or plugin.';
+    // Same two destinations as the action-row CTAs above, same strings — an
+    // empty shelf is exactly when a newcomer needs the authoring entry point,
+    // and drift between the two surfaces is what the guide test pins.
+    c.innerHTML = `<a href="/skills?spotlight=new-skill">Submit a skill or plugin →</a><a href="/store/new">+ Upload</a>`;
   } else {
     t.textContent = 'My Stack';
-    b.textContent = "Plugins you've added to your stack will show up here. Browse the Curated Marketplace or Flea Market and click “Add to my stack”.";
-    c.innerHTML = `<a href="/marketplace?tab=curated">Browse Curated →</a><a href="/marketplace?tab=flea">Browse Flea Market →</a>`;
+    b.textContent = "Items you've added to your stack show up here. Browse the shelf and click “Add to my stack”.";
+    c.innerHTML = `<a href="/marketplace">Browse →</a>`;
   }
 }
 
@@ -557,45 +599,17 @@ async function loadTabCounts() {
       return data.total || 0;
     } catch { return 0; }
   };
-  const [c, f, m] = await Promise.all([
-    fetchCount('curated'), fetchCount('flea'), fetchCount('my'),
-  ]);
-  document.querySelector('[data-count-curated]').textContent = c;
-  document.querySelector('[data-count-flea]').textContent = f;
-  document.querySelector('[data-count-my]').textContent = m;
+  const [browse, mine] = await Promise.all([fetchCount('browse'), fetchCount('my')]);
+  document.querySelector('[data-count-browse]').textContent = browse;
+  document.querySelector('[data-count-my]').textContent = mine;
 }
 
 // ── Items loader ─────────────────────────────────────────────────────────
 async function loadItems() {
-  // Search-results mode: when user is searching with both scopes checked,
-  // we fan out two requests (one per scope) and merge client-side. With
-  // exactly one scope checked we just hit the matching tab.
-  if (state.q) {
-    const wantC = document.getElementById('mp-scope-curated').checked;
-    const wantF = document.getElementById('mp-scope-flea').checked;
-    if (!wantC && !wantF) {
-      document.getElementById('mp-scope-curated').checked = true;
-      state.scope.curated = true;
-    }
-    const fetches = [];
-    if (wantC) fetches.push(fetchOne('curated'));
-    if (wantF) fetches.push(fetchOne('flea'));
-    const results = await Promise.all(fetches);
-    const merged = [];
-    let total = 0;
-    const availableUnion = new Set();
-    for (const r of results) {
-      merged.push(...(r.items || []));
-      total += r.total || 0;
-      for (const s of (r.available_sorts || [])) availableUnion.add(s);
-    }
-    applyAvailableSorts([...availableUnion]);
-    // Client-side paginate the merged set: backend already paginated each
-    // half so this is an approximate combined view, sufficient for search.
-    renderGrid(merged);
-    renderPager(total);
-    return;
-  }
+  // One request, one shelf. The old code fanned out two fetches (one per
+  // scope checkbox) and merged them here, which made `total` and therefore
+  // pagination approximate. `tab=browse` merges both sources server-side with
+  // exact totals, so search is now just another filter on one query.
   const r = await fetchOne(state.tab);
   applyAvailableSorts(r.available_sorts || []);
   renderGrid(r.items || []);
@@ -633,10 +647,14 @@ async function fetchOne(tab, overrides = {}) {
   });
   if (state.q) params.set('q', state.q);
   if (state.category) params.set('category', state.category);
-  // My stack also surfaces skill/agent/plugin entries (curated subscriptions +
-  // flea installs), so the type filter is meaningful there too. Curated
-  // browse only lists plugins, so we still skip the param for that tab.
-  if ((tab === 'flea' || tab === 'my') && state.type) params.set('type', state.type);
+  // Both tabs mix skill/agent/plugin, so the type filter always applies.
+  if (state.type) params.set('type', state.type);
+  // Facets are a Browse concern: My Stack answers "what do I have", which is
+  // orthogonal to who published it.
+  if (tab === 'browse') {
+    if (state.publisher) params.set('publisher', state.publisher);
+    if (state.verification) params.set('verification', state.verification);
+  }
   const sortVal = overrides.sort ?? state.sort;
   if (sortVal && sortVal !== 'recent') params.set('sort', sortVal);
   try {
@@ -656,7 +674,7 @@ async function loadMostPopular() {
   // by a stale popularity strip. The All-* header stays put
   // regardless — only this section toggles.
   const section = document.getElementById('mp-popular-section');
-  if (!['curated', 'flea'].includes(state.tab) || state.q || state.category || (state.page || 1) > 1) {
+  if (state.tab !== 'browse' || state.q || state.category || (state.page || 1) > 1) {
     section.hidden = true;
     return;
   }
@@ -725,10 +743,10 @@ function setTab(tab) {
   state.type = null;
   state.sort = 'recent';
   state.page = 1;
-  // Scope checkboxes are NOT re-synced to the active tab: search always
-  // defaults to both sources (see the boot-time init below), and the
-  // scope checkboxes only change from direct user interaction — switching
-  // tabs must never silently narrow an in-progress search.
+  // Facets reset on tab switch: they only mean something on Browse, and a
+  // filter left silently applied is how a shelf looks empty for no reason.
+  state.publisher = null;
+  state.verification = null;
   document.querySelectorAll('.mp-tabs button').forEach(b => {
     const active = b.dataset.tab === tab;
     b.classList.toggle('is-active', active);
@@ -740,14 +758,19 @@ function setTab(tab) {
   document.querySelectorAll('[data-show-on]').forEach(el => {
     el.hidden = el.dataset.showOn !== tab;
   });
-  // Category + type filters now show on both flea and my tabs (my surfaces
-  // a mix of plugin/skill/agent entries the user has installed). Curated
-  // browse only lists plugins, so type filter stays hidden there.
-  document.getElementById('mp-type-row').hidden = (tab === 'curated');
+  // Both tabs mix plugin/skill/agent entries, so the type filter always shows.
+  document.getElementById('mp-type-row').hidden = false;
   document.getElementById('mp-cat-row').hidden = false;
-  // Type filter pills always reset to 'All' on tab switch.
+  applyFacetRowVisibility();
+  // Filter pills always reset to their "any" option on tab switch.
   document.querySelectorAll('#mp-type-row .pill').forEach(p => {
     p.classList.toggle('is-active', !p.dataset.type);
+  });
+  document.querySelectorAll('#mp-publisher-row .pill').forEach(p => {
+    p.classList.toggle('is-active', !p.dataset.publisher);
+  });
+  document.querySelectorAll('#mp-verification-row .pill').forEach(p => {
+    p.classList.toggle('is-active', !p.dataset.verification);
   });
   // Reset sort dropdown on tab switch.
   document.getElementById('mp-sort-select').value = 'recent';
@@ -756,14 +779,22 @@ function setTab(tab) {
   Promise.all([loadCategories(), loadItems(), loadMostPopular()]);
 }
 
-// All-plugins section title swaps per tab: curated lists only plugins,
-// flea + my mix skills/agents/plugins so the label needs to broaden.
+// Facet rows are Browse-only. The verification row may not exist at all — it
+// is server-rendered only where the instance has the axis switched on.
+function applyFacetRowVisibility() {
+  const isBrowse = state.tab === 'browse';
+  const pub = document.getElementById('mp-publisher-row');
+  if (pub) pub.hidden = !isBrowse;
+  const ver = document.getElementById('mp-verification-row');
+  if (ver) ver.hidden = !isBrowse;
+}
+
+// Section title per tab. Both tabs mix skills/agents/plugins, so the Browse
+// label stays generic rather than promising "plugins".
 function applyAllSectionTitle() {
   const el = document.getElementById('mp-main-section-title');
   if (!el) return;
-  if (state.tab === 'curated') el.textContent = 'All plugins';
-  else if (state.tab === 'flea') el.textContent = 'All items';
-  else el.textContent = 'Your stack';
+  el.textContent = state.tab === 'browse' ? 'All items' : 'Your stack';
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────
@@ -800,20 +831,30 @@ searchInput.addEventListener('keydown', e => {
 searchBtn.addEventListener('click', () => {
   clearTimeout(searchTimer); runSearch();
 });
-document.getElementById('mp-scope-curated').addEventListener('change', () => {
-  if (state.q) loadItems();
-});
-document.getElementById('mp-scope-flea').addEventListener('change', () => {
-  if (state.q) loadItems();
-});
+// Facet pills. Same shape as the type pills: one active value per row, empty
+// value = "any", and a change resets to page 1 so the user never lands on a
+// page that no longer exists in the narrowed set.
+function wireFacetRow(rowId, key) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+  row.querySelectorAll('.pill').forEach(p => {
+    p.addEventListener('click', () => {
+      row.querySelectorAll('.pill').forEach(x => x.classList.remove('is-active'));
+      p.classList.add('is-active');
+      state[key] = p.dataset[key] || null;
+      state.page = 1;
+      syncURL();
+      Promise.all([loadCategories(), loadItems(), loadMostPopular()]);
+    });
+  });
+}
+wireFacetRow('mp-publisher-row', 'publisher');
+wireFacetRow('mp-verification-row', 'verification');
 
 (async function init() {
   loadFromURL();
   // Restore search input from URL state
   if (state.q) document.getElementById('mp-search').value = state.q;
-  // Scope checkboxes start both-checked (markup default) regardless of the
-  // restored tab — search always fans out to all sources unless the user
-  // has manually unchecked one.
   // Apply tab to UI
   document.querySelectorAll('.mp-tabs button').forEach(b => {
     const active = b.dataset.tab === state.tab;
@@ -827,10 +868,18 @@ document.getElementById('mp-scope-flea').addEventListener('change', () => {
     el.hidden = el.dataset.showOn !== state.tab;
   });
   // Same visibility rule as setTab() — see comment there.
-  document.getElementById('mp-type-row').hidden = (state.tab === 'curated');
+  document.getElementById('mp-type-row').hidden = false;
   document.getElementById('mp-cat-row').hidden = false;
+  applyFacetRowVisibility();
   document.querySelectorAll('#mp-type-row .pill').forEach(p => {
     p.classList.toggle('is-active', (p.dataset.type || null) === state.type);
+  });
+  // Restore facet pills from URL state so a shared link shows its own filters.
+  document.querySelectorAll('#mp-publisher-row .pill').forEach(p => {
+    p.classList.toggle('is-active', (p.dataset.publisher || null) === state.publisher);
+  });
+  document.querySelectorAll('#mp-verification-row .pill').forEach(p => {
+    p.classList.toggle('is-active', (p.dataset.verification || null) === state.verification);
   });
   // Restore sort select
   const sortSel = document.getElementById('mp-sort-select');

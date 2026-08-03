@@ -27,6 +27,15 @@ _UPDATABLE = frozenset(
         "tables_mode",
         "memory_mode",
         "memory_write_mode",
+        # v110 paper-theme agent-builder superset (knowledge/plugins/surfaces
+        # are JSON text the caller encodes).
+        "role",
+        "tone",
+        "greeting",
+        "knowledge",
+        "plugins",
+        "surfaces",
+        "status",
     }
 )
 
@@ -53,6 +62,16 @@ class AgentsPgRepository:
         memory_mode: str = "all",
         memory_write_mode: str = "propose",
         is_default: bool = False,
+        # v110 paper-theme agent-builder superset. knowledge/plugins/surfaces
+        # are opaque JSON text the caller encodes; None falls back to the
+        # column DEFAULT.
+        role: Optional[str] = None,
+        tone: Optional[str] = None,
+        greeting: Optional[str] = None,
+        knowledge: Optional[str] = None,
+        plugins: Optional[str] = None,
+        surfaces: Optional[str] = None,
+        status: Optional[str] = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -62,11 +81,16 @@ class AgentsPgRepository:
                     INSERT INTO agents
                       (id, owner_user_id, name, slug, description, system_prompt, model,
                        token_budget_monthly, plugins_mode, connections_mode, tables_mode,
-                       memory_mode, memory_write_mode, is_default, created_at, updated_at)
+                       memory_mode, memory_write_mode, is_default,
+                       role, tone, greeting, knowledge, plugins, surfaces, status,
+                       created_at, updated_at)
                     VALUES
                       (:id, :owner_user_id, :name, :slug, :description, :system_prompt, :model,
                        :token_budget_monthly, :plugins_mode, :connections_mode, :tables_mode,
-                       :memory_mode, :memory_write_mode, :is_default, :created_at, :updated_at)
+                       :memory_mode, :memory_write_mode, :is_default,
+                       COALESCE(:role, ''), COALESCE(:tone, 'concise'), COALESCE(:greeting, ''),
+                       COALESCE(:knowledge, '[]'), COALESCE(:plugins, '[]'), COALESCE(:surfaces, '{}'),
+                       COALESCE(:status, 'draft'), :created_at, :updated_at)
                     """
                 ),
                 {
@@ -84,6 +108,13 @@ class AgentsPgRepository:
                     "memory_mode": memory_mode,
                     "memory_write_mode": memory_write_mode,
                     "is_default": is_default,
+                    "role": role,
+                    "tone": tone,
+                    "greeting": greeting,
+                    "knowledge": knowledge,
+                    "plugins": plugins,
+                    "surfaces": surfaces,
+                    "status": status,
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -95,14 +126,16 @@ class AgentsPgRepository:
             row = conn.execute(sa.text("SELECT * FROM agents WHERE id = :id"), {"id": agent_id}).mappings().first()
         return dict(row) if row else None
 
-    def get_by_slug(self, owner_user_id: str, slug: str) -> Optional[Dict[str, Any]]:
+    def get_by_slug(self, owner_user_id: str, slug: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        # include_deleted spans soft-deleted rows because the (owner_user_id,
+        # slug) UNIQUE constraint does too — the builder's slug picker must see
+        # tombstones or a create-delete-create reuses a slug and hits the
+        # constraint.
+        clause = "" if include_deleted else " AND deleted_at IS NULL"
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
-                    sa.text(
-                        "SELECT * FROM agents "
-                        "WHERE owner_user_id = :owner_user_id AND slug = :slug AND deleted_at IS NULL"
-                    ),
+                    sa.text("SELECT * FROM agents WHERE owner_user_id = :owner_user_id AND slug = :slug" + clause),
                     {"owner_user_id": owner_user_id, "slug": slug},
                 )
                 .mappings()
@@ -126,6 +159,22 @@ class AgentsPgRepository:
                 .mappings()
                 .all()
             )
+        return [dict(r) for r in rows]
+
+    def list(self, *, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """All live (non-soft-deleted) agents across owners, ordered by name.
+
+        Used by the ``/admin/access`` AGENT grant projection (see
+        ``app/resource_types.py``) so an admin can see and correct agent
+        grants that owners usually write through the Library's Share action.
+        """
+        sql = "SELECT * FROM agents WHERE deleted_at IS NULL ORDER BY name"
+        params: Dict[str, Any] = {}
+        if limit is not None:
+            sql += " LIMIT :limit"
+            params["limit"] = limit
+        with self._engine.connect() as conn:
+            rows = conn.execute(sa.text(sql), params).mappings().all()
         return [dict(r) for r in rows]
 
     def update(self, agent_id: str, **fields: Any) -> None:
@@ -152,7 +201,35 @@ class AgentsPgRepository:
                 {"deleted_at": datetime.now(timezone.utc), "id": agent_id},
             )
 
+    def _free_default_slug(self, owner_user_id: str) -> str:
+        """First unused slug in ``default``, ``default-2``, ``default-3``, …
+
+        See ``src/repositories/agents.py``'s sibling — the scan must include
+        soft-deleted rows because ``uq_agents_owner_slug`` spans them.
+        """
+        with self._engine.connect() as conn:
+            taken = {
+                r[0]
+                for r in conn.execute(
+                    sa.text("SELECT slug FROM agents WHERE owner_user_id = :owner_user_id AND slug LIKE 'default%'"),
+                    {"owner_user_id": owner_user_id},
+                ).all()
+            }
+        if "default" not in taken:
+            return "default"
+        for n in range(2, 1000):
+            candidate = f"default-{n}"
+            if candidate not in taken:
+                return candidate
+        return f"default-{uuid4().hex[:8]}"
+
     def get_or_create_default(self, owner_user_id: str) -> Dict[str, Any]:
+        """The owner's default agent, seeding one on first touch.
+
+        Parity sibling of ``src/repositories/agents.py`` — see that docstring
+        for why the soft-deleted-default revive and the free-slug fallback
+        exist (a permanent 500 on every web chat session create).
+        """
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
@@ -168,12 +245,32 @@ class AgentsPgRepository:
         if row:
             return dict(row)
 
+        with self._engine.begin() as conn:
+            stale = conn.execute(
+                sa.text(
+                    "SELECT id FROM agents WHERE owner_user_id = :owner_user_id "
+                    "AND is_default AND deleted_at IS NOT NULL "
+                    "ORDER BY deleted_at DESC LIMIT 1"
+                ),
+                {"owner_user_id": owner_user_id},
+            ).first()
+            if stale:
+                conn.execute(
+                    sa.text(
+                        "UPDATE agents SET deleted_at = NULL, is_default = TRUE, "
+                        "updated_at = :updated_at WHERE id = :id"
+                    ),
+                    {"updated_at": datetime.now(timezone.utc), "id": stale[0]},
+                )
+        if stale:
+            return self.get_by_id(stale[0])  # type: ignore[return-value]
+
         agent_id = str(uuid4())
         self.create(
             id=agent_id,
             owner_user_id=owner_user_id,
             name="Default",
-            slug="default",
+            slug=self._free_default_slug(owner_user_id),
             plugins_mode="all",
             connections_mode="all",
             tables_mode="all",

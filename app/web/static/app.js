@@ -45,10 +45,17 @@
             }
         });
         document.addEventListener("keydown", function (e) {
-            if (e.key === "Escape") {
-                setOpen(false);
-                trigger.focus();
-            }
+            if (e.key !== "Escape") return;
+            // Only react when THIS dropdown is actually open. The handler used
+            // to close-and-focus unconditionally, so ANY Escape anywhere on the
+            // page pulled focus onto this trigger — Escaping out of an
+            // unrelated menu or dialog dumped the user on the profile row, and
+            // any component that returns focus to its own trigger on Escape had
+            // it stolen straight back (this is registered on `document`, so it
+            // runs after the component's own handler).
+            if (trigger.getAttribute("aria-expanded") !== "true") return;
+            setOpen(false);
+            trigger.focus();
         });
     }
 
@@ -211,6 +218,16 @@
         wireDropdown("navMoreTrigger", "navMorePanel");
         initPriorityNav();
         wireThemeToggle();
+        // Drain any cross-navigation flash toast written to sessionStorage
+        // before a redirect (e.g. store upload success). Written via
+        // sessionStorage.setItem('agnes.flash.toast', JSON.stringify({kind,msg})).
+        try {
+            var flash = sessionStorage.getItem("agnes.flash.toast");
+            if (flash) {
+                sessionStorage.removeItem("agnes.flash.toast");
+                appToast(JSON.parse(flash));
+            }
+        } catch (_) {}
     }
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", init);

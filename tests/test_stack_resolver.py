@@ -1,11 +1,13 @@
-"""Tests for ``app.services.stack_resolver.StackResolver`` (v49).
+"""Tests for ``app.services.stack_resolver.StackResolver``.
 
-Covers Section 4 of the unified-stack design:
-* 4.1 API surface — browse / stack / is_required / add_to_stack /
+Covers the auto-membership stack model:
+* API surface — browse / stack / is_required / add_to_stack /
   remove_from_stack / memory_item_is_required
-* 4.2 Resolution algorithm — grants ∪ subscriptions
-* 4.3 Required precedence — OR across grants
-* 4.4 Memory item-level Required precedence — per-group MEMORY_ITEM
+* Resolution algorithm — stack membership = required ∪ available grants
+  (auto, no subscription needed); ``materialized`` = required ∪ subscribed
+  (local-download opt-in)
+* Required precedence — OR across grants
+* Memory item-level Required precedence — per-group MEMORY_ITEM
   override, then global item.is_required
 """
 
@@ -29,10 +31,8 @@ def conn():
     c.execute("INSERT INTO user_groups(id, name) VALUES ('g_sales', 'Sales')")
     c.execute("INSERT INTO user_groups(id, name) VALUES ('g_eng', 'Engineering')")
     # User is in both groups
-    c.execute("INSERT INTO user_group_members(user_id, group_id, source) "
-              "VALUES ('u1', 'g_sales', 'admin')")
-    c.execute("INSERT INTO user_group_members(user_id, group_id, source) "
-              "VALUES ('u1', 'g_eng', 'admin')")
+    c.execute("INSERT INTO user_group_members(user_id, group_id, source) VALUES ('u1', 'g_sales', 'admin')")
+    c.execute("INSERT INTO user_group_members(user_id, group_id, source) VALUES ('u1', 'g_eng', 'admin')")
     # Two data packages
     c.execute(
         "INSERT INTO data_packages(id, slug, name, description, icon, color) "
@@ -48,6 +48,7 @@ def conn():
 def _grant(conn, group_id, resource_type, resource_id, requirement="available"):
     """Insert one resource_grant row."""
     import uuid
+
     conn.execute(
         "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
         "requirement, assigned_at, assigned_by) "
@@ -74,44 +75,72 @@ class TestBrowse:
         comp = next(e for e in entries if e.id == "pkg_compliance")
         assert comp.requirement == "required"
         assert comp.in_stack is True  # required entries are always in_stack
+        assert comp.materialized is True  # required is always downloaded
 
-    def test_browse_in_stack_reflects_subscription(self, conn):
+    def test_browse_available_grant_is_always_in_stack(self, conn):
+        """Auto-membership: an available grant is in_stack immediately,
+        with no subscription needed — this replaced the old opt-in model
+        where in_stack stayed False until an explicit subscribe."""
         _grant(conn, "g_sales", "data_package", "pkg_sales", "available")
         resolver = StackResolver(conn)
-        # No subscription yet → in_stack = False
-        entries = resolver.browse("u1", ResourceType.DATA_PACKAGE)
-        e = next(x for x in entries if x.id == "pkg_sales")
-        assert e.in_stack is False
-        # Add subscription → in_stack flips to True
-        resolver.add_to_stack("u1", ResourceType.DATA_PACKAGE, "pkg_sales")
         entries = resolver.browse("u1", ResourceType.DATA_PACKAGE)
         e = next(x for x in entries if x.id == "pkg_sales")
         assert e.in_stack is True
 
-
-class TestStack:
-    def test_stack_excludes_available_without_subscription(self, conn):
+    def test_browse_materialized_reflects_subscription(self, conn):
+        """``materialized`` (local-download opt-in) still requires an
+        explicit subscribe — only ``in_stack`` is automatic now."""
         _grant(conn, "g_sales", "data_package", "pkg_sales", "available")
         resolver = StackResolver(conn)
-        ids = {e.id for e in resolver.stack("u1", ResourceType.DATA_PACKAGE)}
-        assert "pkg_sales" not in ids
+        # No subscription yet → not materialized, though already in_stack.
+        entries = resolver.browse("u1", ResourceType.DATA_PACKAGE)
+        e = next(x for x in entries if x.id == "pkg_sales")
+        assert e.in_stack is True
+        assert e.materialized is False
+        # Subscribe (= "download locally") → materialized flips to True.
+        resolver.add_to_stack("u1", ResourceType.DATA_PACKAGE, "pkg_sales")
+        entries = resolver.browse("u1", ResourceType.DATA_PACKAGE)
+        e = next(x for x in entries if x.id == "pkg_sales")
+        assert e.in_stack is True
+        assert e.materialized is True
+
+
+class TestStack:
+    def test_stack_includes_available_without_subscription(self, conn):
+        """Auto-membership: an available grant is in the effective stack
+        immediately, no subscription needed."""
+        _grant(conn, "g_sales", "data_package", "pkg_sales", "available")
+        resolver = StackResolver(conn)
+        entries = list(resolver.stack("u1", ResourceType.DATA_PACKAGE))
+        ids = {e.id for e in entries}
+        assert "pkg_sales" in ids
+        e = next(x for x in entries if x.id == "pkg_sales")
+        assert e.in_stack is True
+        assert e.materialized is False
 
     def test_stack_includes_available_with_subscription(self, conn):
         _grant(conn, "g_sales", "data_package", "pkg_sales", "available")
         resolver = StackResolver(conn)
         resolver.add_to_stack("u1", ResourceType.DATA_PACKAGE, "pkg_sales")
-        ids = {e.id for e in resolver.stack("u1", ResourceType.DATA_PACKAGE)}
+        entries = list(resolver.stack("u1", ResourceType.DATA_PACKAGE))
+        ids = {e.id for e in entries}
         assert "pkg_sales" in ids
+        e = next(x for x in entries if x.id == "pkg_sales")
+        assert e.materialized is True
 
     def test_stack_includes_required_grants(self, conn):
         _grant(conn, "g_sales", "data_package", "pkg_compliance", "required")
         resolver = StackResolver(conn)
-        ids = {e.id for e in resolver.stack("u1", ResourceType.DATA_PACKAGE)}
+        entries = list(resolver.stack("u1", ResourceType.DATA_PACKAGE))
+        ids = {e.id for e in entries}
         assert "pkg_compliance" in ids
+        e = next(x for x in entries if x.id == "pkg_compliance")
+        assert e.materialized is True  # required is always downloaded
 
     def test_zombie_subscription_filtered_when_no_grant(self, conn):
-        """Subscription exists but the grant has been revoked — the entry
-        is excluded from stack() (it's not effective)."""
+        """Subscription exists but there is no grant at all — the entry
+        is excluded from stack() (it's not authorized, regardless of the
+        local-download subscription row)."""
         resolver = StackResolver(conn)
         # Hand-insert a subscription without a corresponding grant.
         conn.execute(
@@ -183,9 +212,7 @@ class TestRemoveFromStack:
         _grant(conn, "g_sales", "data_package", "pkg_compliance", "required")
         resolver = StackResolver(conn)
         with pytest.raises(HTTPException) as exc_info:
-            resolver.remove_from_stack(
-                "u1", ResourceType.DATA_PACKAGE, "pkg_compliance"
-            )
+            resolver.remove_from_stack("u1", ResourceType.DATA_PACKAGE, "pkg_compliance")
         assert exc_info.value.status_code == 400
 
 
@@ -194,10 +221,10 @@ class TestRemoveFromStack:
 
 class TestMemoryItemIsRequired:
     """Top-down precedence:
-       1) any grant(MEMORY_ITEM, requirement='required')  → True
-       2) any grant(MEMORY_ITEM, requirement='available') → False
-       3) item.is_required = TRUE                          → True
-       4) otherwise                                        → False
+    1) any grant(MEMORY_ITEM, requirement='required')  → True
+    2) any grant(MEMORY_ITEM, requirement='available') → False
+    3) item.is_required = TRUE                          → True
+    4) otherwise                                        → False
     """
 
     def test_global_flag_true_makes_item_required(self, conn):
@@ -233,9 +260,7 @@ class TestMemoryItemIsRequired:
 
 class TestBrowseMemoryDomain:
     def test_memory_domain_entries_carry_metadata(self, conn):
-        md_id = conn.execute(
-            "SELECT id FROM memory_domains WHERE slug='finance'"
-        ).fetchone()[0]
+        md_id = conn.execute("SELECT id FROM memory_domains WHERE slug='finance'").fetchone()[0]
         _grant(conn, "g_sales", "memory_domain", md_id, "required")
         resolver = StackResolver(conn)
         entries = resolver.browse("u1", ResourceType.MEMORY_DOMAIN)
@@ -251,4 +276,5 @@ class TestResourceEntryShape:
     def test_dataclass_default_in_stack_false(self):
         e = ResourceEntry(id="x", name="X")
         assert e.in_stack is False
+        assert e.materialized is False
         assert e.requirement == "available"

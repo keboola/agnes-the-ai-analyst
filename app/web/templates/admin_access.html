@@ -421,6 +421,15 @@ async function toggleGrant(checkbox, cell, resource_type, resource_id) {
     } else {
       const existing = findGrant(state.activeGroupId, resource_type, resource_id);
       if (!existing) { return; }
+      if (!await confirmModal({
+        title: "Revoke access?",
+        message: "This group will lose access to this resource.",
+        confirmText: "Revoke",
+        danger: true,
+      })) {
+        checkbox.checked = true; // user cancelled — undo the visual uncheck
+        return;
+      }
       const r = await fetch(`${GRANTS_API}/${encodeURIComponent(existing.id)}`, {
         method: "DELETE", credentials: "include",
       });

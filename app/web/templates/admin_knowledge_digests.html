@@ -33,13 +33,13 @@
     font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.4px; cursor: default;
   }
-  .status-fresh   { background: #dcfce7; color: #166534; }
-  .status-stale   { background: #fef3c7; color: #92400e; }
-  .status-pending { background: #f3f4f6; color: #6b7280; }
+  .status-fresh   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .status-stale   { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .status-pending { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
 
   .kd-sources-count {
     display: inline-block; min-width: 22px; padding: 2px 8px;
-    border-radius: 999px; background: #ede9fe; color: #5b21b6;
+    border-radius: 999px; background: var(--ds-kind-plugin-soft, #ede9fe); color: var(--ds-kind-plugin, #5b21b6);
     font-size: 11px; font-weight: 600; text-align: center;
   }
 
@@ -50,10 +50,10 @@
     color: var(--text-secondary, #6b7280); transition: all 0.15s;
     text-decoration: none; line-height: 1.4; white-space: nowrap;
   }
-  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
-  .icon-btn.primary { color: var(--ds-primary); border-color: #c7d2fe; }
-  .icon-btn.primary:hover { background: #eef2ff; }
-  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn:hover { color: var(--text-primary, #111827); border-color: var(--ds-border); background: var(--ds-surface-dim); }
+  .icon-btn.primary { color: var(--ds-primary); border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent); }
+  .icon-btn.primary:hover { background: var(--ds-primary-light); }
+  .icon-btn.danger:hover { color: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-line); background: var(--ds-accent-danger-bg); }
   .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
 
   .kd-empty, .kd-loading {
@@ -102,8 +102,8 @@
     pointer-events: auto; max-width: 380px;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
-  .toast.success { background: #047857; }
-  .toast.error { background: #b91c1c; }
+  .toast.success { background: var(--ds-accent-success-ink); }
+  .toast.error { background: var(--ds-accent-danger-ink); }
 </style>
 {% endblock %}
 
@@ -265,12 +265,12 @@ function renderDigests() {
   for (const d of filtered) {
     const tr = document.createElement("tr");
     const sourceCount = (d.source_corpus_ids || []).length;
-    const generated = d.generated_at ? esc(d.generated_at) : "<span style='color:#9ca3af'>never</span>";
-    const model = d.model ? esc(d.model) : "<span style='color:#9ca3af'>—</span>";
+    const generated = d.generated_at ? esc(d.generated_at) : "<span style='color:var(--ds-text-muted)'>never</span>";
+    const model = d.model ? esc(d.model) : "<span style='color:var(--ds-text-muted)'>—</span>";
     tr.innerHTML = `
       <td><span class="kd-title">${esc(d.title)}</span></td>
       <td><span class="kd-slug">${esc(d.slug)}</span></td>
-      <td>${sourceCount > 0 ? `<span class="kd-sources-count">${sourceCount}</span>` : `<span style="color:#9ca3af">0</span>`}</td>
+      <td>${sourceCount > 0 ? `<span class="kd-sources-count">${sourceCount}</span>` : `<span style="color:var(--ds-text-muted)">0</span>`}</td>
       <td>${statusBadge(d)}</td>
       <td>${generated}</td>
       <td>${model}</td>

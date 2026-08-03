@@ -36,3 +36,21 @@ document.addEventListener('DOMContentLoaded', function () {
     {% endif %}
 </div>
 {% endblock %}
+
+{% block scripts %}
+{% if news and can_chat %}
+<script>
+// Clear the rail's "What's new" unread dot by advancing the caller's
+// news_seen_version to the version just rendered. Mirrors chat_onboarding.js's
+// patchJourney: fire-and-forget, soft state — a dropped write just leaves the
+// dot lit until the next visit. Gated on can_chat because the endpoint is
+// chat-gated (see app/web/router.py::_compute_has_unread_news for why the
+// dot itself is too).
+fetch("/api/chat/journey", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ news_seen_version: {{ news.version }} }),
+}).catch(function () { /* soft state — ignore */ });
+</script>
+{% endif %}
+{% endblock %}

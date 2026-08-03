@@ -16,6 +16,75 @@
 .group-chip.is-everyone    { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
 .group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
 .group-chip.is-custom      { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+
+/* Inline display-name editor (issue #1036). */
+.pf-name-row      { display: flex; align-items: center; gap: 8px; }
+.pf-name-view     { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.pf-name-edit     { display: none; align-items: center; gap: 8px; flex: 1; }
+.pf-name-edit.visible { display: flex; }
+.pf-name-view.hidden  { display: none; }
+.pf-name-input    { font: inherit; font-size: 14px; flex: 1; max-width: 260px;
+                    padding: 5px 10px; border: 1px solid var(--ds-primary);
+                    border-radius: 8px; background: var(--ds-surface);
+                    color: var(--ds-text-primary); outline: none; }
+.pf-name-input:focus { box-shadow: 0 0 0 3px var(--ds-accent-info-bg); }
+.pf-edit-btn      { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+                    padding: 4px 10px; border-radius: 7px;
+                    border: 1px solid var(--ds-border);
+                    background: transparent; color: var(--ds-text-secondary); }
+.pf-edit-btn:hover { background: var(--ds-surface-dim); }
+.pf-save-btn      { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+                    padding: 4px 10px; border-radius: 7px;
+                    border: 1px solid var(--ds-primary);
+                    background: var(--ds-primary); color: var(--ds-text-inverse); }
+.pf-save-btn:hover { background: var(--ds-primary-dark); border-color: var(--ds-primary-dark); }
+.pf-cancel-btn    { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+                    padding: 4px 10px; border-radius: 7px;
+                    border: 1px solid var(--ds-border);
+                    background: transparent; color: var(--ds-text-secondary); }
+.pf-cancel-btn:hover { background: var(--ds-surface-dim); }
+.pf-name-err      { display: none; font-size: 12px; color: var(--ds-accent-warn-ink);
+                    margin-top: 4px; }
+
+/* Notification channels (moved off the retired /dashboard, issue 896). Self-
+   contained + --ds-* tokens only, so it rides light/dark + paper themes and
+   passes the design-system contract guard (only --ds-* tokens, no raw hex colours). */
+.pf-notif-intro   { margin: 0 0 14px; color: var(--ds-text-secondary); font-size: 13px; }
+.pf-notif-list    { list-style: none; margin: 0; padding: 0; }
+.pf-notif-row     { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+.pf-notif-row + .pf-notif-row,
+.pf-notif-verify + .pf-notif-row { border-top: 1px solid var(--ds-border); }
+.pf-notif-icon    { width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+                    display: grid; place-items: center;
+                    background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+.pf-notif-meta    { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.pf-notif-name    { font-weight: 600; font-size: 14px; color: var(--ds-text-primary); }
+.pf-notif-beta    { margin-left: 6px; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+                    text-transform: uppercase; padding: 2px 6px; border-radius: 5px;
+                    background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+.pf-notif-state   { font-size: 12px; }
+.pf-notif-state.is-linked { color: var(--ds-accent-success-ink); font-weight: 600; }
+.pf-notif-state.is-off    { color: var(--ds-text-secondary); }
+.pf-notif-btn     { font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+                    padding: 7px 14px; border-radius: 8px; border: 1px solid var(--ds-primary);
+                    background: var(--ds-primary); color: var(--ds-text-inverse); }
+.pf-notif-btn:hover { background: var(--ds-primary-dark); border-color: var(--ds-primary-dark); }
+.pf-notif-btn.ghost { background: transparent; color: var(--ds-text-secondary);
+                    border-color: var(--ds-border); }
+.pf-notif-btn.ghost:hover { background: var(--ds-surface-dim); border-color: var(--ds-border); }
+.pf-notif-verify  { display: none; padding: 4px 0 12px; }
+.pf-notif-verify.visible { display: block; }
+.pf-notif-verify ol { margin: 0 0 10px; padding-left: 18px; color: var(--ds-text-secondary);
+                    font-size: 13px; line-height: 1.6; }
+.pf-notif-verify code { background: var(--ds-surface-dim); padding: 1px 5px; border-radius: 4px; }
+.pf-notif-verify-row { display: flex; gap: 8px; }
+.pf-notif-verify-row input { flex: 1; max-width: 160px; font: inherit; padding: 7px 10px;
+                    border: 1px solid var(--ds-border); border-radius: 8px;
+                    background: var(--ds-surface); color: var(--ds-text-primary); }
+.pf-notif-err     { display: none; margin-top: 8px; font-size: 13px;
+                    color: var(--ds-accent-warn-ink); }
+.pf-notif-note    { margin: 12px 0 0; padding-top: 12px; font-size: 13px;
+                    border-top: 1px solid var(--ds-border); color: var(--ds-text-muted); }
 </style>
 {% endblock %}
 
@@ -35,7 +104,20 @@
       <span class="k">Email</span>
       <span class="v">{{ user.email or "—" }}</span>
       <span class="k">Name</span>
-      <span class="v">{{ user.name or "—" }}</span>
+      <span class="v pf-name-row" id="pf-name-cell">
+        <span class="pf-name-view" id="pf-name-view">
+          <span id="pf-name-text">{{ user.name or "—" }}</span>
+          <button type="button" class="pf-edit-btn" onclick="pfEditName()" aria-label="Edit display name">Edit</button>
+        </span>
+        <span class="pf-name-edit" id="pf-name-edit" aria-label="Edit display name form">
+          <input type="text" id="pf-name-input" class="pf-name-input"
+                 value="{{ user.name or '' }}" maxlength="120"
+                 aria-label="Display name" autocomplete="off">
+          <button type="button" class="pf-save-btn" id="pf-save-btn" onclick="pfSaveName()">Save</button>
+          <button type="button" class="pf-cancel-btn" onclick="pfCancelName()">Cancel</button>
+        </span>
+        <span class="pf-name-err" id="pf-name-err" role="alert"></span>
+      </span>
     </div>
   {% endcall %}
 
@@ -83,6 +165,83 @@
 
   {% include "_profile_tokens.html" %}
 
+  {# Notification channels — moved here from the retired /dashboard landing
+     (issue 896). Telegram link/unlink hit the existing /api/telegram/* endpoints;
+     the desktop row is an informational private-beta placeholder (no self-
+     serve link flow yet). `telegram_status` / `desktop_status` come from the
+     /me/profile route. #}
+  {# `id="notifications"` is a PUBLIC ANCHOR: the in-chat notification nudge and
+     the onboarding checklist's "Choose where Agnes reaches you" sub-action both
+     deep-link `/me/profile#notifications`. Don't rename it. #}
+  {% call ds.panel(title='Notifications', tag='section',
+                   klass='section-card',
+                   attrs='id="notifications" aria-label="Notification channels"') %}
+    <p class="pf-notif-intro">Choose where Agnes reaches you when a long-running analysis finishes or needs input.</p>
+    <ul class="pf-notif-list" role="list">
+      {# The Telegram row is CONFIGURATION-GATED. Without TELEGRAM_BOT_USERNAME the
+         link instructions used to read "message @your-bot", i.e. a dead end — and
+         since Agnes now actively offers this channel mid-run, a dead end would be
+         offered rather than merely stumbled upon. An already-linked user keeps the
+         row (and its Unlink) even if the operator later drops the env var, so the
+         link never becomes un-manageable. #}
+      {% if config.TELEGRAM_BOT_USERNAME or telegram_status.linked %}
+      <li class="pf-notif-row">
+        <span class="pf-notif-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+        </span>
+        <span class="pf-notif-meta">
+          <span class="pf-notif-name">Telegram</span>
+          {% if telegram_status.linked %}
+          <span class="pf-notif-state is-linked">Connected</span>
+          {% else %}
+          <span class="pf-notif-state is-off">Not linked</span>
+          {% endif %}
+        </span>
+        {% if telegram_status.linked %}
+        <button type="button" class="pf-notif-btn ghost" onclick="unlinkChannel('telegram')">Unlink</button>
+        {% elif config.TELEGRAM_BOT_USERNAME %}
+        <button type="button" class="pf-notif-btn" onclick="showTelegramVerify()">Link</button>
+        {% endif %}
+      </li>
+      {% if config.TELEGRAM_BOT_USERNAME %}
+      <li id="telegramVerify" class="pf-notif-verify">
+        <ol>
+          <li>Message <code>/start</code> to <strong>@{{ config.TELEGRAM_BOT_USERNAME }}</strong> on Telegram</li>
+          <li>Enter the 6-digit verification code it replies with</li>
+        </ol>
+        <div class="pf-notif-verify-row">
+          <input type="text" id="verifyCode" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+          <button type="button" class="pf-notif-btn" id="verifyBtn" onclick="verifyTelegram()">Verify</button>
+        </div>
+        <div id="telegramError" class="pf-notif-err" role="alert"></div>
+      </li>
+      {% endif %}
+      {% endif %}
+      <li class="pf-notif-row">
+        <span class="pf-notif-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </span>
+        <span class="pf-notif-meta">
+          <span class="pf-notif-name">macOS app<span class="pf-notif-beta">private beta</span></span>
+          {% if desktop_status.linked %}
+          <span class="pf-notif-state is-linked">Connected</span>
+          {% else %}
+          <span class="pf-notif-state is-off">Not linked</span>
+          {% endif %}
+        </span>
+        {% if desktop_status.linked %}
+        <button type="button" class="pf-notif-btn ghost" onclick="unlinkChannel('desktop')">Unlink</button>
+        {% endif %}
+      </li>
+    </ul>
+    {# With Telegram unconfigured and the macOS app still invite-only, this panel
+       has no actionable row at all — say why rather than leaving a heading over
+       two inert lines. #}
+    {% if not config.TELEGRAM_BOT_USERNAME and not telegram_status.linked %}
+    <p class="pf-notif-note">Telegram isn't configured on this instance yet — ask your admin to enable it if you'd like Agnes to reach you there.</p>
+    {% endif %}
+  {% endcall %}
+
   {# `<details>` can't go through `ds.panel` (the macro doesn't render
      <details>/<summary>); add `.ds-card` explicitly so the same surface
      treatment applies. `.section-card` rules override radius+padding. #}
@@ -93,6 +252,60 @@
 </div>
 
 <script>
+// ── Display name inline edit (issue #1036) ──────────────────────────────────
+function pfEditName() {
+  document.getElementById("pf-name-view").classList.add("hidden");
+  const editEl = document.getElementById("pf-name-edit");
+  editEl.classList.add("visible");
+  const inp = document.getElementById("pf-name-input");
+  // Always seed the input from the currently displayed name, so reopening the
+  // editor after a Cancel (or a Save) never shows abandoned/stale text. The
+  // view renders "—" (em dash) as the empty-name placeholder — treat it as "".
+  const cur = document.getElementById("pf-name-text").textContent;
+  inp.value = (cur === "—") ? "" : cur;
+  inp.focus();
+  inp.select();
+}
+
+function pfCancelName() {
+  document.getElementById("pf-name-edit").classList.remove("visible");
+  document.getElementById("pf-name-view").classList.remove("hidden");
+  document.getElementById("pf-name-err").style.display = "none";
+}
+
+async function pfSaveName() {
+  const inp = document.getElementById("pf-name-input");
+  const errEl = document.getElementById("pf-name-err");
+  const btn = document.getElementById("pf-save-btn");
+  const name = inp.value;
+  errEl.style.display = "none";
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  try {
+    const resp = await fetch("/api/me/display-name", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      const saved = data.name ?? name.trim();
+      document.getElementById("pf-name-text").textContent = saved || "—";
+      btn.disabled = false;
+      btn.textContent = "Save";
+      pfCancelName();
+      return;
+    }
+    errEl.textContent = data.detail || "Failed to save name.";
+    errEl.style.display = "block";
+  } catch (_e) {
+    errEl.textContent = "Network error. Please try again.";
+    errEl.style.display = "block";
+  }
+  btn.disabled = false;
+  btn.textContent = "Save";
+}
+
 (function () {
   const host = document.getElementById("effective-access-host");
   fetch("/api/me/effective-access", { credentials: "include" })
@@ -133,5 +346,65 @@
     });
   function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 })();
+
+// ── Notification channels (ported from the retired /dashboard, issue 896). ──
+// Hit the same /api/telegram/* + /api/{channel}/unlink endpoints; reload on
+// success so the server-rendered link state re-derives.
+function showTelegramVerify() {
+  const el = document.getElementById("telegramVerify");
+  if (el) { el.classList.toggle("visible"); }
+}
+
+async function verifyTelegram() {
+  const code = (document.getElementById("verifyCode").value || "").trim();
+  const errorEl = document.getElementById("telegramError");
+  const btn = document.getElementById("verifyBtn");
+  errorEl.style.display = "none";
+  if (!code || code.length !== 6) {
+    errorEl.textContent = "Please enter a 6-digit code.";
+    errorEl.style.display = "block";
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Verifying…";
+  try {
+    const resp = await fetch("/api/telegram/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      location.reload();
+      return;
+    }
+    errorEl.textContent = data.error || "Verification failed.";
+    errorEl.style.display = "block";
+  } catch (e) {
+    errorEl.textContent = "Network error. Please try again.";
+    errorEl.style.display = "block";
+  }
+  btn.disabled = false;
+  btn.textContent = "Verify";
+}
+
+async function unlinkChannel(channel) {
+  const label = channel === "telegram" ? "Telegram" : "macOS app";
+  if (!(await confirmModal(`Unlink ${label}? You will stop receiving notifications.`))) return;
+  try {
+    const resp = await fetch(`/api/${channel}/unlink`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (resp.ok) {
+      location.reload();
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      await alertModal(data.error || "Failed to unlink.");
+    }
+  } catch (e) {
+    await alertModal("Failed to unlink. Please try again.");
+  }
+}
 </script>
 {% endblock %}

@@ -113,6 +113,18 @@ class MarketplaceItem(BaseModel):
     invocations_7d: int = 0
     distinct_users_7d: int = 0
     trend_pct: Optional[float] = None
+    # v104 trust line — one vocabulary across BOTH sources, which is what lets
+    # the Curated / Flea shelves collapse into a single Publisher facet.
+    #   * curated plugins are organization-published by construction: an admin
+    #     registered the marketplace, and that act IS the institutional claim.
+    #     Their upstream `author_name` is the AUTHOR, not the publisher — showing
+    #     it as the publisher would imply someone in this instance vouched.
+    #   * authored (flea) entities carry their stored publisher_kind.
+    # `verification_state` is advisory and only ever meaningful on
+    # user-published items; nothing here gates access.
+    publisher_kind: str = "user"
+    publisher_name: Optional[str] = None
+    verification_state: str = "none"
     # stack_count = how many users have this item in their stack.
     # - Curated: COUNT(*) on user_plugin_optouts (post-v28 PRESENCE = subscribed).
     #   System pluginy are fanned out to every user via
@@ -539,6 +551,8 @@ def _curated_to_item(
     # `usage_marketplace_item_window.name` carries the plain plugin name —
     # the marketplace_id is implicit in the curated source.
     stat = (stats or {}).get(plugin_name, {})
+    from app.api.store import ORGANIZATION_PUBLISHER_LABEL
+
     return MarketplaceItem(
         id=f"curated-{marketplace_id}/{plugin_name}",
         source="curated",
@@ -567,6 +581,12 @@ def _curated_to_item(
         distinct_users_7d=stat.get("distinct_users_7d", 0),
         trend_pct=stat.get("trend_pct"),
         stack_count=(stack_counts or {}).get((marketplace_id, plugin_name), 0),
+        # Organization-published by construction — registering the marketplace
+        # was the admin act. Curated items therefore carry no verification
+        # state: "Organization" already is the stronger claim.
+        publisher_kind="organization",
+        publisher_name=ORGANIZATION_PUBLISHER_LABEL,
+        verification_state="none",
     )
 
 
@@ -612,6 +632,8 @@ def _flea_to_item(
         entity["owner_user_id"],
         entity.get("owner_username") or "",
     )
+    from app.api.store import ORGANIZATION_PUBLISHER_LABEL
+
     return MarketplaceItem(
         id=f"flea-{entity['id']}",
         source="flea",
@@ -641,6 +663,13 @@ def _flea_to_item(
         # by DELETE. Mirrors the curated subscriber count semantically
         # (how many users have this in their stack).
         stack_count=int(entity.get("install_count") or 0),
+        publisher_kind=entity.get("publisher_kind") or "user",
+        publisher_name=(
+            ORGANIZATION_PUBLISHER_LABEL
+            if (entity.get("publisher_kind") or "user") == "organization"
+            else owner_display
+        ),
+        verification_state=entity.get("verification_state") or "none",
     )
 
 
@@ -736,9 +765,164 @@ def _apply_sort(
     return items
 
 
+#: The union the "unverified" FILTER value maps to. Deliberately not a label —
+#: no card prints "Unverified" (see StoreEntitiesRepository's VERIFICATION_STATES).
+_UNVERIFIED_VERIFICATION_STATES = ("none", "requested", "changes_requested")
+
+
+async def _browse_items(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    publisher: Optional[str],
+    verification: Optional[str],
+    q: Optional[str],
+    category: Optional[str],
+    type: Optional[str],
+    sort: str,
+    page: int,
+    page_size: int,
+) -> ItemListResponse:
+    """One shelf, two sources — the unified browse listing (v104).
+
+    Replaces the Curated / Flea tabs. Those tabs and the Publisher facet asked
+    the same question ("who is this from?") with different answers, so a user
+    filtering Publisher=Organization while standing on the Flea tab would see an
+    empty grid even though organization-published authored items exist. The facet
+    wins; the shelves go.
+
+    Pagination is exact, not approximate. Each source reports its own total, and
+    each is over-fetched to ``skip + page_size`` before the merge, so the merged
+    slice is the same one a single UNION query would return — bounded by
+    ``2 * (skip + page_size)`` rows in memory.
+
+    Publisher facet → source selection:
+      * ``organization`` — curated plugins ∪ organization-published entities.
+      * ``me`` / ``other_users`` — authored entities only (a curated plugin can
+        never be "mine" in the publishing sense).
+    """
+    from app.auth.access import is_user_admin
+
+    skip = (page - 1) * page_size
+    window = skip + page_size
+    is_admin = is_user_admin(user["id"], conn)
+
+    # ---- curated side -------------------------------------------------------
+    # Only publisher ∈ {None, 'organization'} can include curated plugins, and a
+    # `type` filter other than 'plugin' excludes them (they are always plugins).
+    include_curated = publisher in (None, "organization") and type in (None, "plugin")
+    # Verification is only ever meaningful on user-published items, so asking for
+    # 'verified' or 'unverified' excludes the curated side entirely rather than
+    # silently treating "no state" as one or the other.
+    if verification is not None:
+        include_curated = False
+    curated_items: List[MarketplaceItem] = []
+    curated_total = 0
+    curated_stats = reports_repo().invocation_stats("curated")
+    if include_curated:
+        group_ids = _user_group_ids(user["id"], conn) or set()
+        subs, required = _curated_stack_sets(conn, user["id"])
+        curated_rows, curated_total = marketplace_plugins_repo().list_with_filters(
+            group_ids=group_ids,
+            search=q or None,
+            category=category or None,
+            skip=0,
+            limit=10000 if sort != "recent" else window,
+        )
+        marketplace_meta: Dict[str, Dict[str, Optional[str]]] = {}
+        for mp_id in {r["marketplace_id"] for r in curated_rows}:
+            marketplace_meta[mp_id] = _resolve_marketplace_meta(conn, mp_id)
+        curated_stack_counts = _load_curated_stack_counts()
+        curated_items = [
+            _curated_to_item(
+                conn,
+                r,
+                subs=subs,
+                marketplace_meta=marketplace_meta,
+                stats=curated_stats,
+                stack_counts=curated_stack_counts,
+                required_keys=required,
+            )
+            for r in curated_rows
+        ]
+
+    # ---- authored side ------------------------------------------------------
+    publisher_kind: Optional[str] = None
+    facet_owner: Optional[str] = None
+    exclude_owner: Optional[str] = None
+    if publisher == "organization":
+        publisher_kind = "organization"
+    elif publisher == "me":
+        publisher_kind = "user"
+        facet_owner = user["id"]
+    elif publisher == "other_users":
+        publisher_kind = "user"
+        exclude_owner = user["id"]
+    verification_states: Optional[List[str]] = None
+    if verification == "verified":
+        verification_states = ["verified"]
+    elif verification == "unverified":
+        verification_states = list(_UNVERIFIED_VERIFICATION_STATES)
+
+    if is_admin:
+        visibility_filter: Optional[List[str]] = None
+        include_owner = None
+    else:
+        visibility_filter = ["approved"]
+        include_owner = user["id"]
+    flea_rows, flea_total = store_entities_repo().list(
+        skip=0,
+        limit=10000 if sort != "recent" else window,
+        type=type,
+        category=category,
+        search=q or None,
+        owner_user_id=facet_owner,
+        visibility_status=visibility_filter,
+        include_owner_id=include_owner,
+        publisher_kind=publisher_kind,
+        exclude_owner_user_id=exclude_owner,
+        verification_state=verification_states,
+    )
+    flea_stats = reports_repo().invocation_stats("flea")
+    installed_set = {row["id"] for row in user_store_installs_repo().list_for_user(user["id"])}
+    flea_users_display = _load_users_display((r["owner_user_id"] for r in flea_rows))
+    flea_items = [
+        _flea_to_item(
+            r,
+            installed_set=installed_set,
+            users_display=flea_users_display,
+            viewer_id=user["id"],
+            stats=flea_stats,
+        )
+        for r in flea_rows
+    ]
+
+    items = curated_items + flea_items
+    if sort == "recent":
+        # Newest first across both sources; items with no `added` sort last
+        # rather than crashing the comparison.
+        items.sort(key=lambda it: (it.added or "", it.name.lower()), reverse=True)
+    else:
+        items = _apply_sort(items, sort)
+    total = curated_total + flea_total
+    if sort == "trending":
+        # `trending` drops rows without trend data, so the source totals would
+        # overstate the result set.
+        total = len(items)
+    return ItemListResponse(
+        items=items[skip : skip + page_size],
+        total=total,
+        page=page,
+        page_size=page_size,
+        available_sorts=_available_sorts([curated_stats, flea_stats]),
+    )
+
+
 @router.get("/items", response_model=ItemListResponse)
 async def list_items(
-    tab: Literal["curated", "flea", "my"] = Query("curated"),
+    tab: Literal["browse", "curated", "flea", "my"] = Query("curated"),
+    publisher: Optional[Literal["organization", "me", "other_users"]] = Query(None),
+    verification: Optional[Literal["verified", "unverified"]] = Query(None),
     q: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     type: Optional[Literal["skill", "agent", "plugin"]] = Query(None),
@@ -773,6 +957,20 @@ async def list_items(
     """
     skip = (page - 1) * page_size
     needs_sort = sort != "recent"
+
+    if tab == "browse":
+        return await _browse_items(
+            conn=conn,
+            user=user,
+            publisher=publisher,
+            verification=verification,
+            q=q,
+            category=category,
+            type=type,
+            sort=sort,
+            page=page,
+            page_size=page_size,
+        )
 
     if tab == "curated":
         group_ids = _user_group_ids(user["id"], conn) or set()
@@ -997,7 +1195,7 @@ async def list_items(
 
 @router.get("/categories", response_model=CategoriesResponse)
 async def list_categories(
-    tab: Literal["curated", "flea", "my"] = Query("curated"),
+    tab: Literal["browse", "curated", "flea", "my"] = Query("curated"),
     type: Optional[Literal["skill", "agent", "plugin"]] = Query(None),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1008,8 +1206,15 @@ async def list_categories(
     ``marketplace_plugins.category`` values in the caller's RBAC scope.
     Categories with zero matching items are omitted (the frontend hides
     them this way).
+
+    ``browse`` (v104, the unified shelf) sums BOTH sources so the category rail
+    annotates the same result set the grid renders.
     """
     counts: Dict[str, int] = {}
+
+    if tab == "browse" and (type is None or type == "plugin"):
+        group_ids = _user_group_ids(user["id"], conn) or set()
+        counts.update(marketplace_plugins_repo().category_counts(group_ids=group_ids))
 
     if tab in ("curated", "my"):
         group_ids = _user_group_ids(user["id"], conn) or set()
@@ -1035,7 +1240,7 @@ async def list_categories(
                 cat = (row.get("category") or "").strip() or "Other"
                 counts[cat] = counts.get(cat, 0) + 1
 
-    if tab == "flea":
+    if tab in ("flea", "browse"):
         # Visibility filter (v32+/v35): non-admin counts approved + own
         # non-archived non-approved (mirrors the listing endpoint so the
         # category counts match what the user actually sees in the

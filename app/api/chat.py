@@ -25,7 +25,7 @@ from app.chat.types import Surface
 from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
 from app.resource_types import ResourceType
-from src.repositories import agents_repo
+from src.repositories import agents_repo, user_journey_repo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -153,9 +153,88 @@ async def list_sessions(
             "last_message_at": s.last_message_at.isoformat() if s.last_message_at else None,
             "message_count": s.message_count,
             "paused": s.sandbox_paused_at is not None,
+            # Pin state for the history panel's Pinned group. `pinned_at` is
+            # also exposed so a client can order pins itself; the repo already
+            # returns pinned-first, so the flag alone is enough for the rail.
+            "pinned": s.pinned_at is not None,
+            "pinned_at": s.pinned_at.isoformat() if s.pinned_at else None,
         }
         for s in rows
     ]
+
+
+class PinSessionBody(BaseModel):
+    pinned: bool
+
+
+@router.put("/sessions/{chat_id}/pin")
+async def set_session_pinned(
+    chat_id: str,
+    body: PinSessionBody,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Pin or unpin a conversation in the caller's history panel.
+
+    Ownership-gated the same way as archive/messages: 404 (never 403) when the
+    session doesn't exist or belongs to someone else, so the endpoint can't be
+    used to probe for other users' session ids. Idempotent — pinning an already
+    pinned session just re-stamps ``pinned_at``, which re-orders it to the front
+    of the Pinned group.
+    """
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    repo.set_pinned(chat_id, body.pinned)
+    return {"id": chat_id, "pinned": body.pinned}
+
+
+# Long enough for a descriptive sentence, short enough that the row's own
+# ellipsis stays the thing that truncates it in the UI. The auto-title path
+# (Haiku) already produces titles well inside this.
+_TITLE_MAX = 200
+
+
+class RenameSessionBody(BaseModel):
+    title: str
+
+
+@router.put("/sessions/{chat_id}/title")
+async def rename_session(
+    chat_id: str,
+    body: RenameSessionBody,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Rename a conversation from the history panel's row menu.
+
+    ``set_title`` already existed for the Haiku auto-title path; this is the
+    user-driven route to the same column. Ownership-gated like the sibling
+    per-session routes (404, never 403).
+
+    The title is stripped and length-capped here rather than in the repo: the
+    auto-title path is a trusted internal caller, this one is user input. An
+    all-whitespace title is a 400 rather than a silent no-op — the row would
+    otherwise render as "Untitled chat" with no explanation.
+    """
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "invalid_title", "hint": "Title cannot be empty."},
+        )
+    if len(title) > _TITLE_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "invalid_title", "hint": f"Title cannot exceed {_TITLE_MAX} characters."},
+        )
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    repo.set_title(chat_id, title)
+    return {"id": chat_id, "title": title}
 
 
 @router.get("/skills")
@@ -184,6 +263,39 @@ async def list_skills(
     """
     skills = merged_skills(BUNDLED_TEMPLATE_DIR, conn, user)
     return {"skills": skills, "commands": list_recognized_commands()}
+
+
+class JourneyUpdateBody(BaseModel):
+    """Partial update — every field optional; only the ones present change."""
+
+    first_asked: Optional[bool] = None
+    stack_setup_done: Optional[bool] = None
+    explored_stack: Optional[bool] = None
+    catalog_discovered: Optional[bool] = None
+    use_anywhere: Optional[bool] = None
+    onboarded: Optional[bool] = None
+    successful_answers: Optional[int] = None
+    news_seen_version: Optional[int] = None
+
+
+@router.get("/journey")
+async def get_journey(
+    user: dict = Depends(require_chat_access),
+):
+    """Return the caller's own onboarding journey state (self-scoped —
+    the RBAC gate is the chat-access resource; there is no cross-user
+    read/write here since the repo call is always keyed off the caller's
+    own ``user["id"]``)."""
+    return user_journey_repo().get(user["id"])
+
+
+@router.put("/journey")
+async def update_journey(
+    body: JourneyUpdateBody,
+    user: dict = Depends(require_chat_access),
+):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    return user_journey_repo().update(user["id"], **fields)
 
 
 @router.post("/sessions/{chat_id}/ticket", status_code=201)

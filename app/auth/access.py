@@ -37,7 +37,7 @@ import duckdb
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.dependencies import _get_db, get_current_user
-from app.auth.session_principal import PRINCIPAL_TYPES, Principal
+from app.auth.session_principal import PRINCIPAL_TYPES, Principal, SessionPrincipal
 from app.resource_types import ResourceType
 from src.db import SYSTEM_ADMIN_GROUP
 
@@ -235,6 +235,42 @@ def _allowed_ids_for_user(
     return frozenset(r["resource_id"] for r in rows)
 
 
+def required_store_entity_ids(
+    user_id: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> frozenset[str]:
+    """Store entities the user's groups hold at ``requirement='required'``.
+
+    Backs the two halves of the Required ("In stack, locked") tier for authored
+    items: refusing an uninstall, and topping up a user who joined the group
+    after the grant was written.
+
+    Deliberately NOT admin-short-circuited: Required is about what a person must
+    carry, not about what they may see, so an admin is subject to exactly the
+    same locks as everyone else in the group. Same backend-split rule as
+    :func:`_allowed_ids_for_user` — reads go through the repository factory.
+    """
+    group_ids = _user_group_ids(user_id, conn=conn)
+    if not group_ids:
+        return frozenset()
+    from app.resource_types import ResourceType
+    from src.repositories import resource_grants_repo, use_pg
+
+    if conn is not None and not use_pg():
+        from src.repositories.resource_grants import ResourceGrantsRepository
+
+        rows = ResourceGrantsRepository(conn).list_for_groups(
+            list(group_ids),
+            ResourceType.STORE_ENTITY.value,
+        )
+    else:
+        rows = resource_grants_repo().list_for_groups(
+            list(group_ids),
+            ResourceType.STORE_ENTITY.value,
+        )
+    return frozenset(r["resource_id"] for r in rows if (r.get("requirement") or "available") == "required")
+
+
 def has_explicit_grant(
     user_id: str,
     resource_type: str,
@@ -388,6 +424,87 @@ def require_resource_access(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(f"Access denied to {resource_type.value} {resource_id!r}"),
+            )
+        return user
+
+    return dep
+
+
+def can_access_collection(
+    user_id: str,
+    collection_id: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> bool:
+    """Collection access = admin OR group grant OR ownership.
+
+    An upload is private to its creator: the user whose
+    ``file_corpora.created_by`` matches can always reach it without a
+    ``resource_grants`` row. Admins and group-granted callers keep access
+    via the generic :func:`can_access` path. Ownership is checked here —
+    not in the generic grant primitives — so it never leaks into other
+    resource types.
+    """
+    if can_access(user_id, ResourceType.COLLECTION.value, collection_id, conn):
+        return True
+    from src.repositories import file_corpora_repo
+
+    row = file_corpora_repo().get(collection_id)
+    return bool(row and row.get("created_by") == user_id)
+
+
+def accessible_collection_ids(user, conn=None):
+    """COLLECTION ids the caller may access — group grants (admin => None,
+    meaning "all") unioned with the collections they own. ``None`` means
+    every collection (admin). The list-surface counterpart to
+    :func:`can_access_collection` (My Stack uploads, /library, search)."""
+    from src.rbac import get_accessible_ids
+
+    granted = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)
+    if granted is None:
+        return None  # admin — sees everything
+    if isinstance(user, SessionPrincipal):
+        return granted
+    user_id = user.get("id")
+    if not user_id:
+        return granted
+    from src.repositories import file_corpora_repo
+
+    owned = frozenset(r["id"] for r in file_corpora_repo().list() if r.get("created_by") == user_id)
+    return frozenset(granted) | owned
+
+
+def require_collection_access(path_template: str):
+    """Dependency factory mirroring :func:`require_resource_access` for
+    COLLECTION, but ownership (``created_by``) also grants access — so a
+    user can manage the files of an upload they created without a group
+    grant. Admin short-circuits; non-admins without grant or ownership
+    raise 403.
+    """
+
+    def dep(
+        request: Request,
+        user=Depends(get_current_user),
+        conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    ):
+        try:
+            resource_id = path_template.format(**request.path_params)
+        except KeyError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"require_collection_access: path_template {path_template!r} references missing path_param {e}"
+                ),
+            )
+        if isinstance(user, SessionPrincipal):
+            allowed = can_access_session(user, ResourceType.COLLECTION.value, resource_id)
+        else:
+            allowed = can_access_collection(user["id"], resource_id, conn)
+            if not allowed and _maybe_resync_google_groups(user["id"], user.get("email", "")):
+                allowed = can_access_collection(user["id"], resource_id, conn)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(f"Access denied to collection {resource_id!r}"),
             )
         return user
 

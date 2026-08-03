@@ -1,0 +1,139 @@
+{% extends "base_ds.html" %}
+{# One file inside a collection — its own detail page.
+
+   A single-file artefact IS its collection and keeps using library_detail.html;
+   this page serves the files *inside* a folder, which had no page of their own
+   before collections became folders in the Library.
+
+   Rendered on the shared entity-detail scaffold (macros/_detail.html) like
+   every other detail page — data package, plugin, table, collection: compact
+   hero + section cards, no bespoke header. It presents the file and nothing
+   more: no in-page ask/search box, and no upload drop-zone (uploading targets
+   a COLLECTION, so that affordance lives on the collection page only).
+
+   Sharing here is the FILE's own (resource type `corpus_file`), independent of
+   the folder's — that's what makes "share an individual file within a
+   collection" real rather than a relabelled folder share. #}
+{% block title %}{{ file.filename }} — {{ collection.name or collection.slug }} — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
+
+{% block body_attrs %}class="detail-page"{% endblock %}
+
+{% block head_extra %}
+{% import "macros/_detail.html" as detail %}
+{{ detail.styles() }}
+<link rel="stylesheet" href="{{ static_url('css/file_preview.css') }}">
+<script src="{{ static_url('js/file_preview.js') }}" defer></script>
+<style>
+  /* Visibility chip — same vocabulary (and tokens) as the Library table. */
+  .lfd-vis {
+    display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+    font-size: 11.5px; font-weight: 700; border-radius: var(--ds-radius-pill);
+    border: 1px solid var(--ds-border); background: var(--ds-surface-dim); color: var(--ds-text-muted);
+  }
+  .lfd-vis--shared, .lfd-vis--workspace {
+    color: var(--ds-primary); background: var(--ds-primary-light);
+    border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent);
+  }
+  .lfd-vis svg { width: 12px; height: 12px; }
+
+  .lfd-status--indexed { color: var(--ds-accent-success-ink); font-weight: 600; }
+  .lfd-status--pending { color: var(--ds-text-secondary); }
+  .lfd-status--rejected { color: var(--ds-warn-ink); font-weight: 600; }
+
+  .lfd-note { margin: 12px 0 0; font-size: 13px; line-height: 1.6; color: var(--ds-text-secondary); }
+  .lfd-note a { color: var(--kind); }
+</style>
+{% endblock %}
+
+{% block content %}
+{% import "macros/_detail.html" as detail %}
+
+{% set _collection_name = collection.name or collection.slug %}
+{% set _type = (file.file_type or '')|upper %}
+{% set _status = file.processing_status or 'pending' %}
+{% set _status_kind = 'indexed' if _status == 'indexed' else ('rejected' if _status in ('rejected', 'needs_review') else 'pending') %}
+
+{% set _meta = [{'icon': 'file', 'text': (_type or 'File') ~ (' · ' ~ file_size_display if file_size_display else '')}] %}
+{% if file.created_at %}{% set _ = _meta.append({'icon': 'clock', 'text': 'Added ' ~ file.created_at.isoformat()[:10]}) %}{% endif %}
+
+{% call detail.hero(
+     kind='library', glyph='doc', name=file.filename, compact=True,
+     description='One file in the ' ~ _collection_name ~ ' collection, with its own sharing.',
+     meta=_meta, back_href='/library/' ~ collection.slug, back_label=_collection_name) %}
+  {# Preview is the primary action: the first thing you want from a file's page
+     is to see the file. It opens the same modal a row click opens on the
+     collection page (file_preview.js), so the file looks the same either way. #}
+  {{ ds.button('Preview', variant='primary', id='lfd-preview-btn') }}
+  {% if can_share %}
+    {{ ds.button('Share this file', variant='secondary', href='/library?share=' ~ file.id ~ '&type=corpus_file') }}
+  {% endif %}
+  {{ detail.ask_agnes('Tell me what is in ' ~ file.filename ~ ' from the ' ~ _collection_name ~ ' collection.') }}
+{% endcall %}
+
+{{ detail.section_open('Details', icon='info') }}
+  <div class="detail-rows">
+    <div class="detail-row">
+      <span class="detail-row__key">Collection</span>
+      <span class="detail-row__val"><a href="/library/{{ collection.slug }}" style="color: var(--kind);">{{ _collection_name }}</a></span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-row__key">Type</span>
+      <span class="detail-row__val">{{ _type or '—' }}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-row__key">Size</span>
+      <span class="detail-row__val">{{ file_size_display or '—' }}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-row__key">Indexing</span>
+      <span class="detail-row__val lfd-status--{{ _status_kind }}">
+        {% if _status == 'indexed' %}Indexed — your agents can search it
+        {% elif _status == 'rejected' %}Rejected
+        {% elif _status == 'needs_review' %}Needs review
+        {% else %}{{ _status|capitalize }}{% endif %}
+      </span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-row__key">Added</span>
+      <span class="detail-row__val">
+        {% if file.created_at %}<time datetime="{{ file.created_at.isoformat() }}">{{ file.created_at.isoformat()[:10] }}</time>{% else %}—{% endif %}
+      </span>
+    </div>
+  </div>
+{{ detail.section_close() }}
+
+{{ detail.section_open('Sharing', icon='key') }}
+  <span class="lfd-vis lfd-vis--{{ file_visibility }}" id="lfd-vis-chip">
+    {% if file_visibility == 'private' %}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.9"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.9"/></svg>Private
+    {% elif file_visibility == 'workspace' %}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Workspace
+    {% else %}
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Shared
+    {% endif %}
+  </span>
+  <p class="lfd-note">
+    This file has its own sharing, separate from
+    <a href="/library/{{ collection.slug }}">{{ _collection_name }}</a>.
+    Sharing the collection shares everything in it; sharing this file shares only
+    this file. Move it between collections by dragging it in the Library.
+  </p>
+{{ detail.section_close() }}
+
+</div>
+
+<script>
+  (function () {
+    var btn = document.getElementById('lfd-preview-btn');
+    if (!btn) return;
+    var opts = {
+      collectionId: {{ collection.id | tojson }},
+      fileId: {{ file.id | tojson }},
+      filename: {{ file.filename | tojson }},
+      fileType: {{ (file.file_type or '') | tojson }},
+      sizeLabel: {{ (file_size_display or '') | tojson }},
+    };
+    btn.addEventListener('click', function () { window.openFilePreview(opts); });
+  })();
+</script>
+{% endblock %}

@@ -263,6 +263,465 @@ body {
 .container--wide   { max-width: var(--width-wide); }     /* 1400px — admin index lists, marketplace grids */
 .container--full   { max-width: none; padding-left: var(--space-4); padding-right: var(--space-4); }
 
+/* Index / resource-list page layout (#896 prototype) — used via
+   base_index.html by My Stack, Catalog, and similar list pages. The
+   header zone (title + description + actions + search + tabs) and the
+   full-width band below it that carries the card grid are one unbroken
+   surface, running to the foot of the page. Shared here so pages carry
+   no per-page background/border styling. Structure/spacing/backgrounds
+   only. */
+.idx {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    /* The header zone reads as part of the page surface, not as a grey
+       band above it: paint the whole shell --ds-surface so the app
+       background never shows behind the title/description/actions row
+       (full-width, so no grey gutters beside the centred header either). */
+    background: var(--ds-surface);
+}
+.idx-head {
+    width: 100%;
+    max-width: var(--width-wide);
+    margin: 0 auto;
+    padding: 32px 32px 0;
+}
+/* The tab strip is the last row of the header; drop its bottom margin
+   so the content band sits flush beneath it. */
+.idx-head > :last-child { margin-bottom: 0; }
+/* No divider above the band: header and body share one surface, so a
+   hairline between them drew a line across the middle of a single page.
+   Spacing alone separates the two zones. */
+.idx-band {
+    flex: 1 0 auto;
+    background: var(--ds-surface);
+}
+.idx-band-inner {
+    width: 100%;
+    max-width: var(--width-wide);
+    margin: 0 auto;
+    padding: 28px 32px 48px;
+}
+/* The global `footer` rule adds a 48px top margin for breathing room on
+   content pages; inside the index shell that margin opened a grey gap
+   between the white band and the footer (the band's flex-grow stops at
+   the margin). Zero it so the white band runs flush to the footer. The
+   hairline `border-top` divider is dropped too — the white band already
+   provides the visual break above the credit. */
+.idx > footer {
+    margin-top: 0;
+    border-top: none;
+    background: var(--ds-surface);
+}
+
+/* Catalog detail pages (package / table / recipe) drop the footer's
+   hairline divider so the credit sits flush below the page body. Rail-
+   scoped so the default topnav chrome renders byte-identically. */
+html[data-ui-layout="rail"] body.detail-page footer {
+    border-top: none;
+}
+
+/* ── Connect-anywhere banner component (macros/_connect_banner.html) ─────
+   Reusable "same knowledge, everywhere" card. Two variants share one
+   light-green, borderless surface and one CTA:
+     .cbn--inline  compact row — copy + tool chips + CTA (e.g. /ask).
+     .cbn--orbit   illustration-led — the Agnes orb as a hub with orbiting
+                   tool satellites, then copy + CTA (e.g. /stack).
+   Colours ride the --ds-* tokens; no raw hex, no per-page banner CSS. */
+.cbn {
+    background: var(--ds-agnes-soft);
+    border: none;
+    border-radius: 16px;
+    text-align: left;
+}
+/* --ds-agnes-soft is a LIGHT-ONLY tint (it has no dark-theme override), so
+   under `data-theme="dark"` the banner kept its near-white #ecfdf5 fill while
+   --ds-text-primary flipped to near-white too — the title landed at ~1:1
+   contrast and disappeared. Tint the current surface with the Agnes green
+   instead, the same idiom `.ag-pv-bubble` (agents.html) already uses for this
+   exact reason, so the fill follows the theme and the text tokens stay legible
+   on it. Dark-scoped: the light + paper themes keep the flat -soft fill.
+   `.cbn--bar` opts out — it paints the Knowledge Layer hero's gradient (see
+   the shared fill rule below), which already follows --ds-surface. */
+:root[data-theme="dark"] .cbn:not(.cbn--bar) {
+    background: color-mix(in srgb, var(--ds-agnes) 18%, var(--ds-surface));
+}
+.cbn-title { color: var(--ds-text-primary); font-weight: 750; letter-spacing: -0.02em; }
+.cbn-copy { color: var(--ds-text-secondary); }
+.cbn-cta {
+    display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0;
+    background: var(--ds-primary); color: var(--ds-text-inverse);
+    border: none; border-radius: var(--ds-radius-pill);
+    padding: 11px 22px; font-size: 14px; font-weight: 650; letter-spacing: -0.01em;
+    text-decoration: none; cursor: pointer;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ds-primary) 25%, transparent);
+    transition: background 0.15s, transform 0.1s;
+}
+.cbn-cta:hover { background: var(--ds-primary-dark); }
+.cbn-cta:active { transform: translateY(1px); }
+
+/* Bar variant — one row: white "plugin" tile (Agnes orb) · copy · CTA right. */
+.cbn--bar { display: flex; align-items: center; gap: 18px; padding: 16px 20px; }
+.cbn-bar-icon {
+    flex-shrink: 0; width: 52px; height: 52px; border-radius: 14px;
+    background: var(--ds-surface); border: 1px solid var(--ds-border-light);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--ds-text-primary) 7%, transparent);
+    display: grid; place-items: center;
+}
+.cbn-bar-orb { width: 30px; height: 30px; display: block; }
+.cbn-bar-text { flex: 1 1 auto; min-width: 0; }
+.cbn--bar .cbn-title { font-size: 17px; line-height: 1.18; margin: 0 0 3px; }
+.cbn--bar .cbn-copy { margin: 0; font-size: 13px; line-height: 1.45; }
+.cbn--bar .cbn-cta { flex-shrink: 0; }
+@media (max-width: 620px) {
+    .cbn--bar { flex-wrap: wrap; }
+    .cbn--bar .cbn-bar-text { flex-basis: 100%; order: 2; }
+    .cbn--bar .cbn-cta { order: 3; }
+}
+
+/* Shared tool chip */
+.cbn-tool {
+    display: grid; place-items: center;
+    background: var(--ds-surface); border: 1px solid var(--ds-agnes-line);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--ds-text-primary) 6%, transparent);
+}
+.cbn-tool img { object-fit: contain; display: block; }
+
+/* Inline variant */
+.cbn--inline { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 15px 18px; }
+.cbn--inline .cbn-lead { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 220px; }
+.cbn--inline .cbn-title { font-size: 14.5px; }
+.cbn--inline .cbn-copy { margin: 0; font-size: 12.5px; line-height: 1.45; }
+.cbn--inline .cbn-tools { display: flex; align-items: center; gap: 12px; }
+.cbn--inline .cbn-tool { width: 38px; height: 38px; border-radius: 11px; }
+.cbn--inline .cbn-tool img { width: 22px; height: 22px; }
+.cbn--inline .cbn-tool svg { width: 20px; height: 20px; color: var(--ds-text-secondary); }
+
+/* Orbit variant */
+.cbn--orbit { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; padding: 18px 26px; }
+.cbn--orbit .cbn-body { flex: 1 1 300px; min-width: 240px; }
+.cbn--orbit .cbn-title { font-size: 20px; line-height: 1.14; margin: 0 0 7px; }
+.cbn--orbit .cbn-copy { margin: 0 0 15px; font-size: 13.5px; line-height: 1.5; max-width: 420px; }
+.cbn-orbit { position: relative; width: 200px; height: 168px; flex-shrink: 0; }
+.cbn-orbit .ring { position: absolute; border-radius: 50%; border: 1.5px dashed var(--ds-agnes-line); }
+.cbn-orbit .r1 { width: 156px; height: 156px; left: 22px; top: 6px; opacity: 0.8; }
+.cbn-orbit .r2 {
+    width: 106px; height: 106px; left: 47px; top: 31px; border-style: solid; border-color: transparent;
+    background: radial-gradient(circle, color-mix(in srgb, var(--ds-agnes) 10%, transparent), transparent 70%);
+}
+.cbn-orbit .hub {
+    position: absolute; left: 68px; top: 52px; width: 64px; height: 64px; border-radius: 17px;
+    background: var(--ds-surface); border: 1px solid var(--ds-agnes-line); overflow: hidden;
+    display: grid; place-items: center;
+    box-shadow: 0 10px 22px color-mix(in srgb, var(--ds-agnes) 22%, transparent);
+}
+.cbn-orbit .hub img { width: 46px; height: 46px; object-fit: contain; display: block; }
+.cbn-orbit .sat {
+    position: absolute; width: 36px; height: 36px; border-radius: 11px;
+    background: var(--ds-surface); border: 1px solid var(--ds-agnes-line);
+    display: grid; place-items: center;
+    box-shadow: 0 5px 13px color-mix(in srgb, var(--ds-text-primary) 12%, transparent);
+}
+.cbn-orbit .sat img { width: 19px; height: 19px; object-fit: contain; display: block; }
+.cbn-orbit .s1 { left: 108px; top: 1px; }
+.cbn-orbit .s2 { left: 2px; top: 66px; }
+.cbn-orbit .s3 { left: 52px; top: 130px; }
+.cbn-orbit .dot { position: absolute; width: 4px; height: 4px; border-radius: 50%; background: color-mix(in srgb, var(--ds-agnes) 45%, transparent); }
+.cbn-orbit .d1 { left: 154px; top: 32px; }
+.cbn-orbit .d2 { left: 28px; top: 126px; }
+.cbn-orbit .d3 { left: 108px; top: 150px; }
+@media (max-width: 720px) {
+    .cbn-orbit { display: none; }
+    .cbn--orbit { padding: 18px 20px; }
+}
+
+/* ── Product notice (macros/_page_notice.html) ───────────────────────────
+   The quiet "still being finished" caveat that closes a page head. Tuned to
+   be secondary on purpose: the treatment it replaced filled the panel with
+   --ds-warn-bg, then stacked a 34px tinted icon tile, a warn-ink 15px/650
+   heading and a bordered pill on top of it — four amber signals for copy
+   nobody has to act on, which read as a system error rather than a note.
+   Here the amber survives as ONE carrier (a 15px glyph) over a
+   half-strength wash, with neutral type on top. All three themes are covered
+   by the tokens: --ds-warn-* is redefined per theme (dark maps to the
+   translucent accent tints), so the mixes below follow the theme instead of
+   pinning a light-only pastel. */
+.pnote {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0 0 10px;
+    padding: 10px 13px;
+    background: color-mix(in srgb, var(--ds-warn-bg) 45%, var(--ds-surface));
+    border: 1px solid color-mix(in srgb, var(--ds-warn-line) 50%, transparent);
+    border-radius: 10px;
+}
+/* Optical alignment: the glyph centres on the title's x-height rather than
+   its line box, so it reads as sitting ON the first line. */
+.pnote-icon {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    margin-top: 2px;
+    /* Full-strength ink: this glyph is the ONE amber carrier, so it should be
+       the most saturated thing in the panel. Measured 4.8:1 against the wash
+       in the weakest theme (paper) — comfortably over the 3:1 floor for a
+       graphic, and it does not need to carry meaning on its own (aria-hidden;
+       the title says the same thing in words). */
+    color: var(--ds-warn-ink);
+}
+.pnote-body { min-width: 0; }
+.pnote-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--ds-text-primary);
+}
+.pnote-text {
+    margin: 3px 0 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+    max-width: 78ch;
+}
+/* Flat marker, not a chip — see the macro's note on why. At 9.5px this is
+   "small text" for contrast purposes however bold it is, so the amber is
+   pulled toward the text colour rather than thinned with alpha: warn-ink
+   alone measures only 4.8:1 on the paper theme's wash, and alpha took it to
+   4.0 — under the 4.5 floor. This mix keeps the amber cast and measures
+   5.9 / 8.8 / 11.5 across paper / blue / dark. */
+.pnote-badge {
+    flex-shrink: 0;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--ds-warn-ink) 85%, var(--ds-text-primary));
+}
+
+/* ── Knowledge Layer hero (macros/_knowledge_layer.html) ─────────────────
+   A single premium horizontal banner: a text lead + green CTA on the left,
+   the Agnes orb as the visual anchor in the centre, and lightweight floating
+   integration chips (dotted connectors fanning back to the orb) on the right.
+   No inner cards, no hard borders — depth is carried by soft layered
+   gradients and generous spacing. Shared component; the rail chat dashboard
+   is the first consumer. All colours ride --ds-* tokens so it follows every
+   palette theme. */
+.klb {
+    position: relative;
+    overflow: hidden;
+    border-radius: 24px;
+    padding: 38px 46px;
+}
+
+/* Shared knowledge-surface fill — the near-white layered gradient + soft lift.
+   Both banners that speak for the Knowledge Layer paint the SAME surface: the
+   full hero (`.klb`, chat landing) and the compact connect bar (`.cbn--bar`,
+   Library / Workspace). One rule, so the two can only differ in geometry.
+   Almost-white base with a whisper of mint on the left, a very light purple on
+   the right, and subtle radial blues — an expensive-SaaS gradient, no hard
+   edges. Kept faint so it reads as near-white. Every layer rides --ds-surface
+   or a color-mix into it, so the fill follows every palette theme (which is
+   why `.cbn--bar` needs no dark-theme override of its own). */
+.klb,
+.cbn--bar {
+    background:
+        radial-gradient(60% 120% at 84% 12%, color-mix(in srgb, var(--ds-kind-agent) 7%, transparent), transparent 60%),
+        radial-gradient(58% 120% at 6% 92%, color-mix(in srgb, var(--ds-primary) 9%, transparent), transparent 60%),
+        radial-gradient(90% 140% at 50% -20%, color-mix(in srgb, var(--ds-assistant) 6%, transparent), transparent 62%),
+        linear-gradient(108deg,
+            color-mix(in srgb, var(--ds-agnes) 5%, var(--ds-surface)) 0%,
+            var(--ds-surface) 48%,
+            color-mix(in srgb, var(--ds-kind-agent) 5%, var(--ds-surface)) 100%);
+    /* Depth through light, not a heavy card: a whisper of a shadow + a soft
+       coloured lift. */
+    box-shadow:
+        0 1px 2px color-mix(in srgb, var(--ds-text-primary) 4%, transparent),
+        0 22px 52px -42px color-mix(in srgb, var(--ds-primary) 34%, transparent);
+}
+
+/* Decorative layers — dotted field fading in from the far left, thin curved
+   lines in the top-right corner. */
+.klb-decor { position: absolute; inset: 0; pointer-events: none; }
+.klb-decor-dots {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 260px;
+    background-image: radial-gradient(color-mix(in srgb, var(--ds-primary) 30%, transparent) 1.3px, transparent 1.4px);
+    background-size: 17px 17px;
+    -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, .55), transparent 76%);
+    mask-image: linear-gradient(90deg, rgba(0, 0, 0, .55), transparent 76%);
+    opacity: .55;
+}
+.klb-decor-curves {
+    position: absolute; top: -10px; right: -10px; width: 320px; height: 220px;
+    color: color-mix(in srgb, var(--ds-kind-agent) 22%, transparent);
+    opacity: .6;
+}
+
+/* Composition — text lead | centred orb | floating chips. */
+.klb-inner {
+    position: relative; z-index: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 185px);
+    align-items: center;
+    gap: 26px;
+}
+
+/* LEFT — text lead. */
+.klb-lead { max-width: 460px; min-width: 0; }
+.klb-pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px;
+    border-radius: var(--ds-radius-pill, 999px);
+    background: color-mix(in srgb, var(--ds-assistant) 12%, var(--ds-surface));
+    color: var(--ds-assistant-dark);
+    font-size: 12.5px; font-weight: 650; letter-spacing: -0.005em;
+}
+.klb-pill svg { width: 15px; height: 15px; }
+.klb-headline {
+    margin: 14px 0 0;
+    font-size: clamp(22.5px, 2vw, 30px);
+    line-height: 1.05;
+    font-weight: 760;
+    letter-spacing: -0.032em;
+    color: var(--ds-text-primary);
+}
+/* Second line — blue → purple accent gradient. */
+.klb-headline-grad {
+    background: linear-gradient(96deg, var(--ds-assistant) 6%, var(--ds-kind-agent) 94%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+.klb-sub {
+    margin: 12px 0 0;
+    max-width: 460px;
+    font-size: 14.5px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+}
+.klb-cta {
+    display: inline-flex; align-items: center; gap: 8px;
+    margin-top: 20px;
+    padding: 10px 14px;
+    border-radius: var(--ds-radius-pill, 999px);
+    background: var(--ds-primary); color: var(--ds-text-inverse);
+    font-size: 14.5px; font-weight: 650; text-decoration: none;
+    box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--ds-primary) 50%, transparent);
+    transition: background var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease),
+                transform var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease);
+}
+.klb-cta svg { width: 15px; height: 15px; }
+.klb-cta:hover { background: var(--ds-primary-dark); }
+.klb-cta:active { transform: translateY(1px); }
+
+/* CENTER — the orb, visual anchor: glow + dotted halo ring, gentle float.
+   Nudged down a touch so its centre sits at the optical midpoint of the
+   headline → description → CTA block (rather than the whole column, whose
+   pill sits higher), keeping the composition from feeling top-heavy. */
+.klb-orb { position: relative; display: grid; place-items: center; transform: translateY(22px); }
+.klb-orb-glow {
+    position: absolute; width: 204px; height: 204px; border-radius: 50%;
+    background: radial-gradient(circle,
+        color-mix(in srgb, var(--ds-primary) 16%, transparent),
+        color-mix(in srgb, var(--ds-kind-agent) 10%, transparent) 42%,
+        transparent 68%);
+    filter: blur(6px);
+}
+.klb-orb-ring {
+    position: relative;
+    width: 176px; height: 176px; border-radius: 50%;
+    border: 1.5px dashed color-mix(in srgb, var(--ds-primary) 22%, transparent);
+    display: grid; place-items: center;
+    background: radial-gradient(circle, color-mix(in srgb, var(--ds-surface) 55%, transparent), transparent 70%);
+}
+.klb-orb-img {
+    display: block;
+    filter: drop-shadow(0 14px 30px color-mix(in srgb, var(--ds-primary) 28%, transparent));
+    animation: klb-orb-float 4s ease-in-out infinite;
+    will-change: transform;
+}
+@keyframes klb-orb-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .klb-orb-img { animation: none; }
+}
+
+/* RIGHT — floating chips + dotted connectors. */
+.klb-integrations {
+    position: relative;
+    display: flex; flex-direction: column; gap: 14px;
+    align-items: stretch;
+}
+.klb-connectors {
+    position: absolute; top: 0; bottom: 0; right: calc(100% + 2px);
+    width: clamp(30px, 3.4vw, 52px); height: 100%;
+    overflow: visible; pointer-events: none;
+}
+.klb-connectors path {
+    fill: none;
+    stroke: color-mix(in srgb, var(--ds-primary) 18%, transparent);
+    stroke-width: 1;
+    stroke-linecap: round;
+    stroke-dasharray: 1.4 5;
+    vector-effect: non-scaling-stroke;
+}
+.klb-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; align-items: flex-end; }
+.klb-chip {
+    display: inline-flex; align-items: center; gap: 11px;
+    padding: 10px 18px 10px 11px;
+    border-radius: var(--ds-radius-pill, 999px);
+    background: var(--ds-surface);
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--ds-border) 70%, transparent),
+        0 6px 18px -8px color-mix(in srgb, var(--ds-text-primary) 22%, transparent);
+    font-size: 14.5px; font-weight: 600; color: var(--ds-text-primary);
+    white-space: nowrap;
+}
+.klb-chip-logo {
+    flex-shrink: 0; width: 30px; height: 30px; border-radius: 9px;
+    display: grid; place-items: center;
+    background: color-mix(in srgb, var(--ds-bg-dim, var(--ds-border)) 40%, var(--ds-surface));
+    color: var(--ds-text-secondary);
+}
+.klb-chip-logo img { width: 19px; height: 19px; object-fit: contain; display: block; }
+.klb-chip-logo svg { width: 18px; height: 18px; }
+
+/* The trust caption ("Secure. Private. Always in sync.") — rendered on its
+   own beneath the hero by the rail chat dashboard. */
+.klb-hub-title { margin-top: 14px; font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em; color: var(--ds-text-primary); }
+.klb-hub-caption {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12.5px; color: var(--ds-text-muted);
+}
+.klb-lock { width: 13px; height: 13px; flex-shrink: 0; }
+
+/* Stack below tablet width: lead → orb → chips, connectors off. */
+@media (max-width: 980px) {
+    .klb { padding: 34px 26px; border-radius: 22px; }
+    .klb-inner {
+        grid-template-columns: minmax(0, 1fr);
+        justify-items: center;
+        text-align: center;
+        gap: 28px;
+    }
+    .klb-lead { max-width: 540px; }
+    .klb-sub { max-width: none; margin-left: auto; margin-right: auto; }
+    .klb-decor-dots { display: none; }
+    .klb-connectors { display: none; }
+    .klb-chips { flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: center; }
+}
+@media (max-width: 560px) {
+    .klb { padding: 26px 18px; border-radius: 18px; }
+    .klb-orb-ring { width: 176px; height: 176px; }
+    .klb-orb-glow { width: 200px; height: 200px; }
+}
+
 /* Dashboard */
 .dashboard h2 {
     font-size: var(--text-xl);
@@ -5662,3 +6121,8 @@ details.section-card > summary {
    prompt rendered \n as line breaks (e.g. bulleted error lists). The
    page-local admin_users copy never needed this (its modals are static). */
 .modal-card h3, .modal-card p.sub { white-space: pre-wrap; }
+
+/* Shared inline-icon glyphs (macros/_icon.html) — replaces the pictographic
+   emoji we used to inline. Nudge the baseline so an icon sits centered next
+   to heading/label text. Block-level empty-state icons ignore this. */
+.ui-ico { vertical-align: -0.18em; }

@@ -27,6 +27,7 @@ class FileCorporaRepository:
         "name",
         "description",
         "created_by",
+        "origin",
         "created_at",
         "updated_at",
         "deleted_at",
@@ -44,15 +45,19 @@ class FileCorporaRepository:
         slug: str,
         description: Optional[str],
         created_by: str,
+        origin: str = "uploaded",
     ) -> str:
         """Insert a new corpus; returns the generated ``col_*`` id.
+
+        ``origin`` records provenance — ``'uploaded'`` (a user brought the
+        file in, the default) or ``'generated'`` (an agent authored it).
 
         Raises ``duckdb.ConstraintException`` if ``slug`` collides.
         """
         corpus_id = "col_" + secrets.token_hex(8)
         self.conn.execute(
-            "INSERT INTO file_corpora (id, slug, name, description, created_by) VALUES (?, ?, ?, ?, ?)",
-            [corpus_id, slug, name, description, created_by],
+            "INSERT INTO file_corpora (id, slug, name, description, created_by, origin) VALUES (?, ?, ?, ?, ?, ?)",
+            [corpus_id, slug, name, description, created_by, origin],
         )
         return corpus_id
 

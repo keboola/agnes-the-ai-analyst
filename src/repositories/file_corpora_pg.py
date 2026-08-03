@@ -31,8 +31,12 @@ class FileCorporaPgRepository:
         slug: str,
         description: Optional[str],
         created_by: str,
+        origin: str = "uploaded",
     ) -> str:
         """Insert a new corpus; returns the generated ``col_*`` id.
+
+        ``origin`` records provenance — ``'uploaded'`` (default) or
+        ``'generated'`` (an agent authored it).
 
         Raises ``IntegrityError`` on slug collision.
         """
@@ -41,8 +45,8 @@ class FileCorporaPgRepository:
             conn.execute(
                 sa.text(
                     "INSERT INTO file_corpora "
-                    "(id, slug, name, description, created_by) "
-                    "VALUES (:id, :slug, :name, :description, :created_by)"
+                    "(id, slug, name, description, created_by, origin) "
+                    "VALUES (:id, :slug, :name, :description, :created_by, :origin)"
                 ),
                 {
                     "id": corpus_id,
@@ -50,6 +54,7 @@ class FileCorporaPgRepository:
                     "name": name,
                     "description": description,
                     "created_by": created_by,
+                    "origin": origin,
                 },
             )
         return corpus_id

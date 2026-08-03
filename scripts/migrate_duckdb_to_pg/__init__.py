@@ -120,6 +120,8 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "oauth_auth_codes": ["code"],
     "oauth_access_tokens": ["token"],
     "oauth_refresh_tokens": ["token"],
+    # v92 chat-driven onboarding — journey state keyed by user_id.
+    "user_journey_state": ["user_id"],
     # v96 agent profiles + agent-as-API — composite PKs.
     "agent_scope": ["agent_id", "item_type", "item_id"],
     "idempotency_keys": ["key", "owner_user_id", "agent_id"],

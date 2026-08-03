@@ -7,12 +7,12 @@
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
   }
-  .src-back { font-size: 12px; color: var(--text-secondary, #6b7280); text-decoration: none; }
+  .src-back { font-size: 12px; color: var(--ds-text-secondary); text-decoration: none; }
   .src-back:hover { color: var(--ds-primary); }
 
   .src-card {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     margin-bottom: 18px;
     overflow: hidden;
@@ -20,8 +20,8 @@
   .src-card-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px 18px;
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--ds-border);
+    background: var(--ds-surface-dim);
   }
   .src-card-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
   .src-card-body { padding: 18px; }
@@ -30,18 +30,18 @@
   .cfg-table { width: 100%; font-size: 13px; border-collapse: collapse; }
   .cfg-table th {
     text-align: left; padding: 8px 12px;
-    font-weight: 500; color: var(--text-secondary, #6b7280);
+    font-weight: 500; color: var(--ds-text-secondary);
     font-size: 12px; width: 180px; vertical-align: top;
   }
   .cfg-table td {
     padding: 8px 12px;
-    color: var(--text-primary, #111827);
+    color: var(--ds-text-primary);
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 12px;
     word-break: break-all;
   }
   .cfg-table tr + tr th, .cfg-table tr + tr td {
-    border-top: 1px solid var(--border-light, #f3f4f6);
+    border-top: 1px solid var(--ds-border-light);
   }
 
   .transport-pill {
@@ -49,27 +49,27 @@
     font-size: 11px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.4px;
   }
-  .transport-stdio { background: #e0e7ff; color: #3730a3; }
-  .transport-http  { background: #dcfce7; color: #166534; }
-  .transport-sse   { background: #fef3c7; color: #92400e; }
+  .transport-stdio { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
+  .transport-http  { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .transport-sse   { background: var(--ds-accent-warn-bg);   color: var(--ds-accent-warn-ink); }
 
   .mode-pill {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.4px;
   }
-  .mode-materialize { background: #dcfce7; color: #166534; }
-  .mode-passthrough { background: #e0e7ff; color: #3730a3; }
-  .mode-skip { background: #f3f4f6; color: #6b7280; }
+  .mode-materialize { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .mode-passthrough { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
+  .mode-skip        { background: var(--ds-surface-dim);       color: var(--ds-text-secondary); }
 
   /* Edit form */
   .edit-form { display: none; }
   .edit-form.is-active { display: block; }
-  .edit-form label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 10px 0 4px; }
+  .edit-form label { display: block; font-size: 12px; font-weight: 500; color: var(--ds-text-secondary); margin: 10px 0 4px; }
   .edit-form input[type="text"], .edit-form input[type="url"], .edit-form select, .edit-form textarea {
-    width: 100%; padding: 8px 11px; border: 1px solid var(--border, #e5e7eb);
+    width: 100%; padding: 8px 11px; border: 1px solid var(--ds-border);
     border-radius: 6px; font-size: 13px; box-sizing: border-box;
-    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    background: var(--ds-surface); color: var(--ds-text-primary);
     font-family: inherit;
   }
   .edit-form textarea { min-height: 56px; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); }
@@ -82,14 +82,14 @@
   .tool-name {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 12px; font-weight: 600;
-    color: var(--text-primary, #111827);
+    color: var(--ds-text-primary);
   }
   .tool-desc {
-    margin-top: 4px; font-size: 12px; color: var(--text-secondary, #6b7280);
+    margin-top: 4px; font-size: 12px; color: var(--ds-text-secondary);
     line-height: 1.4;
   }
   .tool-reason {
-    margin-top: 4px; font-size: 11px; color: var(--text-secondary, #9ca3af);
+    margin-top: 4px; font-size: 11px; color: var(--ds-text-muted);
     font-style: italic;
   }
 
@@ -99,37 +99,37 @@
   .mode-radio-group label {
     display: inline-flex; align-items: center; gap: 4px;
     font-size: 12px; cursor: pointer;
-    color: var(--text-secondary, #6b7280);
+    color: var(--ds-text-secondary);
   }
   .mode-radio-group input[type="radio"] { margin: 0; cursor: pointer; }
 
   .exposed-name-input {
     width: 180px; padding: 4px 8px; font-size: 12px;
     font-family: var(--font-mono, ui-monospace, monospace);
-    border: 1px solid var(--border, #e5e7eb); border-radius: 4px;
+    border: 1px solid var(--ds-border); border-radius: 4px;
   }
   .schedule-input {
     width: 140px; padding: 4px 8px; font-size: 12px;
     font-family: var(--font-mono, ui-monospace, monospace);
-    border: 1px solid var(--border, #e5e7eb); border-radius: 4px;
+    border: 1px solid var(--ds-border); border-radius: 4px;
   }
 
   .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
   .icon-btn {
-    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    background: transparent; border: 1px solid var(--ds-border); border-radius: 6px;
     padding: 5px 10px; font-size: 12px; cursor: pointer;
-    color: var(--text-secondary, #6b7280); transition: all 0.15s;
+    color: var(--ds-text-secondary); transition: all 0.15s;
     text-decoration: none; line-height: 1.4; white-space: nowrap;
   }
-  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
-  .icon-btn.primary { color: var(--ds-primary); border-color: #c7d2fe; }
-  .icon-btn.primary:hover { background: #eef2ff; }
-  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn:hover { color: var(--ds-text-primary); border-color: var(--ds-border); background: var(--ds-surface-dim); }
+  .icon-btn.primary { color: var(--ds-primary); border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent); }
+  .icon-btn.primary:hover { background: var(--ds-primary-light); }
+  .icon-btn.danger:hover { color: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-line); background: var(--ds-accent-danger-bg); }
   .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
 
   .empty-row {
     text-align: center; padding: 32px 12px;
-    color: var(--text-secondary, #6b7280); font-size: 13px;
+    color: var(--ds-text-secondary); font-size: 13px;
   }
 
   .test-result {
@@ -137,8 +137,8 @@
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 12px; display: none;
   }
-  .test-result.ok { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; display: block; }
-  .test-result.err { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; display: block; }
+  .test-result.ok  { background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); color: var(--ds-accent-success-ink); display: block; }
+  .test-result.err { background: var(--ds-accent-danger-bg);  border: 1px solid var(--ds-accent-danger-line);  color: var(--ds-accent-danger-ink);  display: block; }
 
   /* Toast */
   .toast-stack {
@@ -227,11 +227,11 @@
 
         <label for="edit-connect-hint">Connect hint</label>
         <textarea id="edit-connect-hint" autocomplete="off" placeholder="Generate a token in Settings → API, then paste it below."></textarea>
-        <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Shown to analysts on the connect page for a per_user source — where to obtain their personal token. Markdown supported.</div>
+        <div class="help" style="font-size:11px; color: var(--ds-text-muted); margin-top:4px;">Shown to analysts on the connect page for a per_user source — where to obtain their personal token. Markdown supported.</div>
 
         <label for="edit-env">Environment variables (KEY=VALUE per line)</label>
         <textarea id="edit-env" autocomplete="off" placeholder="CRM_API_URL=https://api.example.com&#10;REGION=eu"></textarea>
-        <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Non-secret env vars passed to the stdio subprocess (KEY=VALUE per line).</div>
+        <div class="help" style="font-size:11px; color: var(--ds-text-muted); margin-top:4px;">Non-secret env vars passed to the stdio subprocess (KEY=VALUE per line).</div>
 
         <label for="edit-auth-method">Auth method</label>
         <select id="edit-auth-method">
@@ -242,9 +242,9 @@
 
         <label for="edit-auth-secret-env" style="margin-top:16px;">Auth secret env var — Advanced (legacy)</label>
         <input id="edit-auth-secret-env" type="text" autocomplete="off">
-        <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Advanced/legacy: names a host env var holding the secret. Prefer the vault — set the secret value below so no host env var is needed.</div>
+        <div class="help" style="font-size:11px; color: var(--ds-text-muted); margin-top:4px;">Advanced/legacy: names a host env var holding the secret. Prefer the vault — set the secret value below so no host env var is needed.</div>
 
-        <label style="display:inline-flex; align-items:center; gap:6px; margin-top:14px; font-weight:500; color: var(--text-primary, #111827);">
+        <label style="display:inline-flex; align-items:center; gap:6px; margin-top:14px; font-weight:500; color: var(--ds-text-primary);">
           <input id="edit-enabled" type="checkbox"> Enabled
         </label>
 
@@ -262,17 +262,17 @@
   <div class="src-card">
     <div class="src-card-head">
       <h3>Vault secret</h3>
-      <span id="secret-status" style="font-size: 12px; color: var(--text-secondary, #6b7280);">…</span>
+      <span id="secret-status" style="font-size: 12px; color: var(--ds-text-secondary);">…</span>
     </div>
     <div class="src-card-body">
-      <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
+      <p style="margin: 0 0 12px; font-size: 13px; color: var(--ds-text-secondary);">
         Store this source's secret encrypted at rest in the vault — no host env var needed.
         The value is write-only: it can be set, rotated, or cleared, but never read back.
       </p>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         <input id="set-vault-secret" type="password" autocomplete="new-password"
                placeholder="Enter secret value to set or rotate"
-               style="flex:1; min-width:240px; padding:8px 11px; border:1px solid var(--border, #e5e7eb); border-radius:6px; font-size:13px; box-sizing:border-box;">
+               style="flex:1; min-width:240px; padding:8px 11px; border:1px solid var(--ds-border); border-radius:6px; font-size:13px; box-sizing:border-box;">
         {{ ds.button('Set / rotate', variant='primary', id='set-secret-btn') }}
         {{ ds.button('Clear', variant='danger', id='clear-secret-btn') }}
       </div>
@@ -317,11 +317,11 @@
       </div>
     </div>
     <div class="src-card-body">
-      <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
+      <p style="margin: 0 0 12px; font-size: 13px; color: var(--ds-text-secondary);">
         Connect to the upstream MCP server, list its tools, and run the heuristic classifier.
         Pick a mode per tool, optionally override the exposed name, and click <strong>Save selected tools</strong>.
       </p>
-      <div id="discover-status" style="font-size: 12px; color: var(--text-secondary, #6b7280); margin-bottom: 10px;"></div>
+      <div id="discover-status" style="font-size: 12px; color: var(--ds-text-secondary); margin-bottom: 10px;"></div>
       <div id="discover-body">
         <div class="empty-row">No tools discovered yet — click <strong>Introspect now</strong> to fetch them from the upstream server.</div>
       </div>
@@ -335,7 +335,7 @@
   <div class="src-card">
     <div class="src-card-head">
       <h3>Registered tools for this source</h3>
-      <span id="registered-count" style="font-size: 12px; color: var(--text-secondary, #6b7280);"></span>
+      <span id="registered-count" style="font-size: 12px; color: var(--ds-text-secondary);"></span>
     </div>
     <div class="src-card-body" style="padding:0;">
       <table class="ds-table" id="registered-table">
@@ -436,14 +436,14 @@ function renderSecretStatus() {
   const el = document.getElementById("secret-status");
   if (!el || !source) return;
   if (source.has_vault_secret) {
-    el.textContent = "🔒 Vault secret set";
-    el.style.color = "#166534";
+    el.textContent = "Vault secret set";
+    el.style.color = "var(--ds-accent-success-ink)";
   } else if (source.auth_secret_env) {
     el.textContent = `Host env var (legacy): ${source.auth_secret_env}`;
-    el.style.color = "var(--text-secondary, #6b7280)";
+    el.style.color = "var(--ds-text-secondary)";
   } else {
     el.textContent = "No secret";
-    el.style.color = "var(--text-secondary, #6b7280)";
+    el.style.color = "var(--ds-text-secondary)";
   }
 }
 
@@ -599,6 +599,12 @@ document.getElementById("set-secret-btn").addEventListener("click", async () => 
 });
 
 document.getElementById("clear-secret-btn").addEventListener("click", async () => {
+  if (!await confirmModal({
+    title: "Clear vault secret?",
+    message: "The stored secret will be removed. This source will fall back to its host env var (if any).",
+    confirmText: "Clear",
+    danger: true,
+  })) return;
   const btn = document.getElementById("clear-secret-btn");
   document.getElementById("secret-result").className = "test-result";
   btn.disabled = true;
@@ -645,7 +651,7 @@ async function renderMyConnection() {
     if (!r.ok) throw new Error(r.statusText);
     const st = await r.json();
     if (st.has_secret) {
-      el.textContent = "🔗 Connected" + (st.updated_at ? ` (since ${st.updated_at.slice(0, 10)})` : "");
+      el.textContent = "Connected" + (st.updated_at ? ` (since ${st.updated_at.slice(0, 10)})` : "");
       el.style.color = "#166534";
     } else {
       el.textContent = "Not connected — Introspect will run without your credential";
@@ -766,7 +772,7 @@ function renderProposals() {
           <div class="tool-name">${esc(p.name)}</div>
           ${p.description ? `<div class="tool-desc">${esc(p.description)}</div>` : ""}
           ${p.reason ? `<div class="tool-reason">Classifier: ${esc(p.reason)}</div>` : ""}
-          ${alreadyRegistered ? `<div class="tool-reason" style="color:#92400e">Already registered — choose a mode to re-overwrite.</div>` : ""}
+          ${alreadyRegistered ? `<div class="tool-reason" style="color:var(--ds-accent-warn-ink)">Already registered — choose a mode to re-overwrite.</div>` : ""}
         </td>
         <td>
           <div class="mode-radio-group">
@@ -931,7 +937,7 @@ function renderRegistered() {
       <td><span class="tool-name">${esc(t.original_name)}</span></td>
       <td><span class="tool-name">${esc(t.exposed_name)}</span></td>
       <td><span class="mode-pill mode-${esc(t.mode)}">${esc(t.mode)}</span></td>
-      <td>${t.schedule ? `<span class="tool-name">${esc(t.schedule)}</span>` : `<span style="color:#9ca3af">—</span>`}</td>
+      <td>${t.schedule ? `<span class="tool-name">${esc(t.schedule)}</span>` : `<span style="color:var(--ds-text-muted)">—</span>`}</td>
       <td>
         <div class="row-actions">
           ${grantsLink}

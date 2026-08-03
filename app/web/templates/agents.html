@@ -1,439 +1,789 @@
-{% extends "base_page.html" %}
-{% block title %}My agents — {{ instance_brand }}{% endblock %}
+{% extends "base_index.html" %}
+{% from "macros/_page_notice.html" import page_notice %}
+{% import "macros/_icon.html" as ico %}
+{# Agents — build a focused assistant out of the caller's own stack (#draft
+   prototype: evviku.github.io/agnes-the-ai-analyst, Build Agent module).
 
+   Two in-page views, no extra routes:
+     - LIST     — the caller's agents as cards + a "New agent" affordance.
+     - BUILDER  — numbered sections (Identity · Knowledge · Capabilities ·
+                  Surfaces · Boundaries) with a live preview aside.
+
+   The ingredient lists are REAL and RBAC-scoped: Knowledge renders the data
+   packages + memory domains resolved from the caller's stack (server-side,
+   same reads as /stack); Capabilities hydrate from
+   /api/marketplace/items?tab=my (the caller's subscribed plugins). Agent
+   definitions persist SERVER-SIDE in the v103 `agents` registry via
+   /api/agents, so they follow the user across devices — but this page is their
+   only home: they are not Library entries and the UI exposes no sharing
+   affordance yet (the API can read group-granted agents; nothing grants them).
+   (They previously lived in localStorage; the page says plainly what is still
+   missing instead of promising surfaces that don't work yet.) #}
+{% block title %}Agents — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block container_modifier %}container--wide{% endblock %}
 
-{% set page_hero_eyebrow = "Builder" %}
-{% set page_hero_title = "My agents" %}
-{% set page_hero_subtitle = "Agent profiles you own — each is a scoped identity with its own plugins/connections/tables/memory access and, optionally, its own API token." %}
-
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
 <style>
-  .ag-create {
-    border: 1px solid var(--ds-border);
-    border-radius: var(--ds-radius-md, 8px);
-    background: var(--ds-surface);
-    padding: var(--space-5) var(--space-6);
-    margin-bottom: var(--space-6);
-  }
-  .ag-create h2 {
-    font-size: var(--text-15);
-    margin: 0 0 var(--space-4);
-  }
-  .ag-create-row {
-    display: flex;
-    gap: var(--space-4);
-    flex-wrap: wrap;
-    margin-bottom: var(--space-3);
-  }
-  .ag-create-field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    flex: 1 1 220px;
-  }
-  .ag-create-field label {
-    font-size: var(--text-13);
-    color: var(--ds-text-secondary);
-    font-weight: 600;
-  }
-  .ag-create-field input,
-  .ag-create-field textarea {
-    border: 1px solid var(--ds-border);
-    border-radius: var(--ds-radius-md, 8px);
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--text-13);
-    font-family: inherit;
-    color: var(--ds-text-primary);
-    background: var(--ds-surface);
-  }
-  .ag-create-field textarea { flex-basis: 100%; min-height: 64px; resize: vertical; }
-  .ag-create-field--prompt { flex: 1 1 100%; }
-  .ag-create-error {
-    display: none;
-    color: var(--ds-accent-danger-ink);
-    font-size: var(--text-13);
-    margin-top: var(--space-2);
-  }
-  .ag-create-error.is-visible { display: block; }
-  .ag-modes {
-    font-size: var(--text-13);
-    color: var(--ds-text-secondary);
-    white-space: nowrap;
-  }
-  .ag-modes .mode-selected { color: var(--ds-accent-success-ink); font-weight: 600; }
-  .ag-actions { display: flex; gap: var(--space-2); justify-content: flex-end; flex-wrap: wrap; }
-  .ag-slug { font-family: var(--ds-font-mono); font-size: var(--text-13); color: var(--ds-text-secondary); }
-  .ag-row-error {
-    display: none;
-    color: var(--ds-accent-danger-ink);
-    font-size: var(--text-13);
-    margin-top: var(--space-1);
-  }
-  .ag-row-error.is-visible { display: block; }
+  /* Page chrome only — all colors ride --ds-* tokens. The agent's own
+     identity (avatar chip, preview greeting) uses the --ds-agnes assistant
+     accent; actions stay on --ds-primary; entity-kind tags keep the
+     categorical --ds-kind-* palette. */
+  .ag-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 8px 0 0; padding-bottom: 24px; }
+  .ag-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
+  .ag-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
 
-  /* ── Token modal — secret shown exactly once ────────────────────────── */
-  .ag-modal-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(15, 23, 42, 0.55);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: var(--space-4);
-  }
-  .ag-modal-backdrop.is-open { display: flex; }
-  .ag-modal-card {
-    background: var(--ds-surface);
-    border-radius: var(--ds-radius-md, 8px);
-    padding: var(--space-6);
-    width: 100%;
-    max-width: 480px;
-    box-shadow: var(--ds-shadow-lg);
-  }
-  .ag-modal-card h3 { margin: 0 0 var(--space-2); font-size: var(--text-15); }
-  .ag-modal-card p { margin: 0 0 var(--space-4); font-size: var(--text-13); color: var(--ds-text-secondary); }
-  .ag-token-value {
-    width: 100%;
-    font-family: var(--ds-font-mono);
-    font-size: var(--text-13);
-    padding: var(--space-2) var(--space-3);
-    border-radius: var(--ds-radius-md, 8px);
-    border: 1px solid var(--ds-border);
-    background: var(--ds-bg);
-    color: var(--ds-text-primary);
-    word-break: break-all;
-    margin-bottom: var(--space-4);
-  }
-  .ag-modal-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+  /* ── List view ── */
+  .ag-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .ag-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; cursor: pointer; transition: border-color var(--ds-motion-fast) var(--ds-ease-standard), box-shadow var(--ds-motion-fast) var(--ds-ease-standard); }
+  .ag-card:hover { border-color: var(--ds-border); box-shadow: var(--ds-shadow-md); }
+  .ag-card-top { display: flex; align-items: center; gap: 11px; }
+  .ag-ava { width: 38px; height: 38px; border-radius: 10px; background: var(--ds-agnes-soft); color: var(--ds-agnes); display: grid; place-items: center; flex-shrink: 0; }
+  .ag-ava svg { width: 21px; height: 21px; }
+  .ag-card h3 { font-size: 15px; margin: 0; line-height: 1.25; }
+  .ag-card-role { font-size: 13px; color: var(--ds-text-secondary); line-height: 1.5; min-height: 39px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ag-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--ds-border); padding-top: 11px; margin-top: auto; }
+  .ag-card-count { font-size: 12.5px; color: var(--ds-text-muted); font-weight: 500; }
+  /* Occupies the slot the delete control would hold on the seeded default
+     agent, which cannot be deleted — a label, not a disabled button, since
+     there is no state in which pressing it would work. */
+  .ag-card-locked { font-size: 12.5px; color: var(--ds-text-muted); font-weight: 500; padding: 2px 6px; }
+  .ag-del { border: none; background: none; color: var(--ds-text-muted); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 8px; font-family: inherit; }
+  .ag-del:hover { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
+  .ag-new { border: 1.5px dashed var(--ds-border); background: var(--ds-surface-sunken); color: var(--ds-text-secondary); border-radius: 14px; padding: 16px 18px; display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 14px; font-weight: 600; cursor: pointer; min-height: 158px; font-family: inherit; transition: color var(--ds-motion-fast) var(--ds-ease-standard), border-color var(--ds-motion-fast) var(--ds-ease-standard); }
+  .ag-new:hover { border-color: var(--ds-primary); color: var(--ds-primary); background: var(--ds-primary-light); }
+  .ag-empty { text-align: center; padding: 48px 20px; border: 1px dashed var(--ds-border); border-radius: 14px; }
+  .ag-empty .ag-ava { margin: 0 auto 12px; width: 46px; height: 46px; }
+  .ag-empty h3 { margin: 0 0 6px; font-size: 16px; color: var(--ds-text-primary); }
+  .ag-empty p { margin: 0 0 16px; color: var(--ds-text-secondary); font-size: 14px; }
+  /* The work-in-progress caveat rides the shared `.pnote` component
+     (macros/_page_notice.html, styled in style-custom.css). In the page head
+     it needs to stand clear of the lede above it; the builder's own copy
+     (rendered in JS, the head is hidden there) sits after the columns. */
+  .ag-head + .pnote { margin-top: 16px; }
+  #ag-builder-view .pnote { margin: 18px 0 0; }
 
-  /* ── Memory panel ─────────────────────────────────────────────────── */
-  .ag-memories { margin-top: var(--space-6); }
-  .ag-memories h2 { font-size: var(--text-15); margin: 0 0 var(--space-4); }
-  .ag-memory-card {
-    border: 1px solid var(--ds-border);
-    border-radius: var(--ds-radius-md, 8px);
-    background: var(--ds-surface);
-    padding: var(--space-4) var(--space-5);
-    margin-bottom: var(--space-4);
-  }
-  .ag-memory-card h3 { font-size: var(--text-13); margin: 0 0 var(--space-3); color: var(--ds-text-secondary); }
-  .ag-memory-empty { color: var(--ds-text-secondary); font-size: var(--text-13); margin: 0; }
-  .ag-memory-content {
-    max-width: 420px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  /* Status pill — draft vs ready. */
+  .ag-status { font-size: 12px; font-weight: 600; border-radius: var(--ds-radius-pill); padding: 2px 10px; flex-shrink: 0; white-space: nowrap; }
+  .ag-status--draft { color: var(--ds-text-secondary); background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); }
+  .ag-status--ready { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); }
+
+  /* ── Builder ── */
+  .ag-back { border: none; background: none; color: var(--ds-text-secondary); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer; padding: 4px 8px 4px 0; margin-bottom: 6px; }
+  .ag-back:hover { color: var(--ds-primary); }
+  .ag-build-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 2px 0 18px; }
+  .ag-build-kicker { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ds-agnes); }
+  .ag-build-head h2 { font-size: 24px; margin: 2px 0 0; }
+  .ag-build-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-top: 4px; }
+  /* Delete sits left of the status button — a real button so it reads as an
+     action next to "Mark ready", but danger-tinted only on hover/focus so it
+     never competes with the primary affordance. */
+  .ag-build-actions .ag-del-btn:hover,
+  .ag-build-actions .ag-del-btn:focus-visible { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); border-color: var(--ds-accent-danger-line); }
+  .ag-bgrid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }
+  @media (max-width: 980px) { .ag-bgrid { grid-template-columns: 1fr; } }
+
+  /* Numbered collapsible sections. */
+  .ag-sec { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; margin-bottom: 14px; overflow: hidden; }
+  .ag-sec-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; cursor: pointer; user-select: none; }
+  .ag-sec-no { width: 26px; height: 26px; border-radius: 50%; background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); color: var(--ds-text-secondary); font-size: 12.5px; font-weight: 700; display: grid; place-items: center; flex-shrink: 0; }
+  .ag-sec-head h3 { font-size: 15px; margin: 0; }
+  .ag-sec-head h3 .ag-sec-note { font-weight: 400; color: var(--ds-text-muted); font-size: 13px; margin-left: 4px; }
+  .ag-sec-sub { margin: 2px 0 0; font-size: 12.5px; color: var(--ds-text-secondary); }
+  .ag-sec-grow { flex: 1; min-width: 0; }
+  .ag-sec-sum { font-size: 12.5px; color: var(--ds-text-muted); white-space: nowrap; }
+  .ag-sec-chev { color: var(--ds-text-muted); transition: transform var(--ds-motion-fast) var(--ds-ease-standard); }
+  .ag-sec-chev svg { width: 16px; height: 16px; display: block; }
+  .ag-sec.collapsed .ag-sec-chev { transform: rotate(-90deg); }
+  .ag-sec-body { padding: 4px 18px 18px; border-top: 1px solid var(--ds-border); }
+  .ag-sec.collapsed .ag-sec-body { display: none; }
+  .ag-sec.collapsed .ag-sec-head { padding-bottom: 14px; }
+
+  /* Fields. */
+  .ag-field { display: block; margin: 14px 0 0; }
+  .ag-field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--ds-text-primary); }
+  .ag-field > span em { font-weight: 400; color: var(--ds-text-muted); font-style: normal; }
+  .ag-field input[type=text], .ag-field textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); resize: vertical; }
+  .ag-field input:focus, .ag-field textarea:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .ag-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ag-chip { font-size: 13px; font-weight: 500; padding: 5px 13px; border-radius: var(--ds-radius-pill); border: 1px solid var(--ds-border); background: var(--ds-surface); color: var(--ds-text-secondary); cursor: pointer; font-family: inherit; }
+  .ag-chip.on { border-color: var(--ds-primary); color: var(--ds-primary); background: var(--ds-primary-light); font-weight: 600; }
+
+  /* Ingredient rows (knowledge / capabilities / surfaces). */
+  .ag-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--ds-border); }
+  .ag-row:last-child { border-bottom: none; padding-bottom: 2px; }
+  .ag-row-body { flex: 1; min-width: 0; }
+  .ag-row-name { font-size: 14px; font-weight: 600; color: var(--ds-text-primary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ag-row-desc { font-size: 12.5px; color: var(--ds-text-secondary); margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ag-row-meta { font-size: 12px; color: var(--ds-text-muted); margin-left: 4px; }
+  .ag-kind { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-radius: var(--ds-radius-pill); padding: 1px 8px; }
+  .ag-kind--data { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
+  .ag-kind--memory { background: var(--ds-kind-memory-soft); color: var(--ds-kind-memory); }
+  .ag-kind--plugin { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
+  .ag-kind--skill { background: var(--ds-kind-skill-soft); color: var(--ds-kind-skill); }
+  .ag-kind--agent { background: var(--ds-kind-agent-soft); color: var(--ds-kind-agent); }
+  .ag-kind--file { background: var(--ds-kind-library-soft); color: var(--ds-kind-library); }
+
+  /* Ingredient toolbar — a search box over the (now workspace-wide) pool, so
+     data · memory · files and every available plugin/skill stay scannable. */
+  .ag-toolbar { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; }
+  .ag-search { flex: 1; min-width: 0; padding: 8px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; font-size: 13.5px; background: var(--ds-surface); color: var(--ds-text-primary); }
+  .ag-search:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .ag-toolcount { font-size: 12.5px; color: var(--ds-text-muted); white-space: nowrap; flex-shrink: 0; }
+  .ag-emptyrows { padding: 16px 2px; font-size: 13px; color: var(--ds-text-muted); }
+  /* "Already in your stack" marker — the axis the caller cares about now that
+     the pool is everything available, not just the stack. */
+  .ag-instack { font-size: 11px; font-weight: 600; border-radius: var(--ds-radius-pill); padding: 1px 8px; color: var(--ds-agnes); background: var(--ds-agnes-soft); border: 1px solid var(--ds-agnes-line); white-space: nowrap; }
+  .ag-tglbtn { flex-shrink: 0; font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--ds-border); background: var(--ds-surface); color: var(--ds-text-secondary); cursor: pointer; }
+  .ag-tglbtn.on { border-color: var(--ds-primary); color: var(--ds-primary); background: var(--ds-primary-light); }
+  .ag-note { font-size: 12.5px; color: var(--ds-text-secondary); background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 9px; padding: 8px 12px; margin: 12px 0 0; }
+  .ag-note a { color: var(--ds-primary); }
+
+  /* Boundaries (read-only, admin-managed). */
+  .ag-bnd { margin-top: 12px; border: 1px solid var(--ds-border); border-radius: 10px; overflow: hidden; }
+  .ag-bnd-row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 13px; font-size: 13px; border-bottom: 1px solid var(--ds-border); }
+  .ag-bnd-row:last-child { border-bottom: none; }
+  .ag-bnd-k { color: var(--ds-text-secondary); }
+  .ag-bnd-v { color: var(--ds-text-primary); font-weight: 550; text-align: right; }
+
+  /* Preview aside. */
+  .ag-preview { position: sticky; top: 18px; }
+  .ag-preview h3 { font-size: 14px; margin: 0 0 10px; }
+  .ag-pv-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; box-shadow: var(--ds-shadow-md); overflow: hidden; }
+  .ag-pv-hd { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--ds-border); }
+  .ag-pv-hd .ag-ava { width: 32px; height: 32px; border-radius: 9px; }
+  .ag-pv-name { font-size: 14px; font-weight: 650; color: var(--ds-text-primary); }
+  .ag-pv-role { font-size: 12px; color: var(--ds-text-muted); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+  .ag-pv-body { padding: 14px; }
+  /* Theme-aware tint (not the light-only --ds-agnes-soft) so the greeting
+     stays readable against the assistant bubble in dark mode too. */
+  .ag-pv-bubble { background: color-mix(in srgb, var(--ds-agnes) 9%, var(--ds-surface)); border: 1px solid var(--ds-agnes-line); color: var(--ds-text-primary); border-radius: 12px 12px 12px 4px; padding: 10px 13px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; }
+  .ag-pv-input { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 8px 8px 8px 14px; color: var(--ds-text-muted); font-size: 13px; }
+  .ag-pv-send { width: 26px; height: 26px; border-radius: 50%; background: var(--ds-primary); color: var(--ds-text-inverse); display: grid; place-items: center; font-size: 14px; flex-shrink: 0; }
+  .ag-pv-meta { margin-top: 12px; border: 1px solid var(--ds-border); border-radius: 10px; overflow: hidden; }
+  .ag-pv-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-size: 12.5px; border-bottom: 1px solid var(--ds-border); }
+  .ag-pv-row:last-child { border-bottom: none; }
+  .ag-pv-k { color: var(--ds-text-secondary); }
+  .ag-pv-v { color: var(--ds-text-primary); font-weight: 550; }
 </style>
 {% endblock %}
 
-{% block toolbar %}{% endblock %}
-
-{% block page %}
-<section class="ag-create">
-  <h2>Create a new agent</h2>
-  <form id="ag-create-form">
-    <div class="ag-create-row">
-      <div class="ag-create-field">
-        <label for="ag-name">Name</label>
-        <input type="text" id="ag-name" name="name" required maxlength="200" placeholder="Sales Analyst">
-      </div>
-      <div class="ag-create-field">
-        <label for="ag-slug">Slug</label>
-        <input type="text" id="ag-slug" name="slug" required maxlength="64" pattern="[a-z0-9][a-z0-9-]*" placeholder="sales-analyst">
-      </div>
-    </div>
-    <div class="ag-create-row">
-      <div class="ag-create-field ag-create-field--prompt">
-        <label for="ag-prompt">System prompt (optional)</label>
-        <textarea id="ag-prompt" name="system_prompt" placeholder="What should this agent do?"></textarea>
-      </div>
-    </div>
-    <div class="page-header__actions" style="justify-content: flex-end;">
-      {{ ds.button('Create agent', variant='primary', type='submit') }}
-    </div>
-    <p class="ag-create-error" id="ag-create-error"></p>
-  </form>
-</section>
-
-{% if not agents %}
-<div class="empty-state">You have no agents yet — create one above.</div>
-{% else %}
-<table class="data-table">
-  <thead>
-    <tr>
-      <th>Name</th>
-      <th>Slug</th>
-      <th>Scope modes (plugins / connections / tables / memory)</th>
-      <th>Model</th>
-      <th>Monthly budget</th>
-      <th style="text-align:right">Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for agent in agents %}
-    <tr data-agent-row="{{ agent.id }}">
-      <td>
-        {{ agent.name }}
-        {% if agent.is_default %}<span class="badge badge--info">Default</span>{% endif %}
-      </td>
-      <td><span class="ag-slug">{{ agent.slug }}</span></td>
-      <td class="ag-modes">
-        <span class="{{ 'mode-selected' if agent.plugins_mode == 'selected' else '' }}">{{ agent.plugins_mode }}</span> /
-        <span class="{{ 'mode-selected' if agent.connections_mode == 'selected' else '' }}">{{ agent.connections_mode }}</span> /
-        <span class="{{ 'mode-selected' if agent.tables_mode == 'selected' else '' }}">{{ agent.tables_mode }}</span> /
-        <span class="{{ 'mode-selected' if agent.memory_mode == 'selected' else '' }}">{{ agent.memory_mode }}</span>
-      </td>
-      <td>{{ agent.model or "—" }}</td>
-      <td>{{ agent.token_budget_monthly if agent.token_budget_monthly is not none else "—" }}</td>
-      <td>
-        <div class="ag-actions">
-          {% if agent.token_ready %}
-          <button type="button" class="btn btn-secondary btn-sm" data-issue-token
-                  data-agent-id="{{ agent.id }}" data-agent-slug="{{ agent.slug }}">Issue token</button>
-          {% else %}
-          <button type="button" class="btn btn-secondary btn-sm" data-issue-token disabled
-                  title="All four scope modes must be &#39;selected&#39; to mint a token — set scope on this agent first">Issue token</button>
-          {% endif %}
-          {% if not agent.is_default %}
-          <button type="button" class="btn btn-danger btn-sm" data-delete-agent
-                  data-agent-id="{{ agent.id }}" data-agent-name="{{ agent.name }}">Delete</button>
-          {% endif %}
-        </div>
-        <p class="ag-row-error" data-row-error></p>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endif %}
-
-{% if agents %}
-<section class="ag-memories">
-  <h2>Memory</h2>
-  {% for agent in agents %}
-  <div class="ag-memory-card" data-memory-agent="{{ agent.id }}">
-    <h3>{{ agent.name }}</h3>
-    {% if not agent.memories %}
-    <p class="ag-memory-empty">No memories yet.</p>
-    {% else %}
-    <table class="data-table ag-memory-table">
-      <thead>
-        <tr>
-          <th>Content</th>
-          <th>Status</th>
-          <th>In effect</th>
-          <th>Created</th>
-          <th style="text-align:right">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for memory in agent.memories %}
-        <tr data-memory-row="{{ memory.id }}">
-          <td class="ag-memory-content" title="{{ memory.content }}">{{ memory.content }}</td>
-          <td>
-            {% if memory.status == 'pending' %}
-            <span class="badge badge--warn">Pending</span>
-            {% elif memory.status == 'active' %}
-            <span class="badge badge--success">Active</span>
-            {% else %}
-            <span class="badge">Archived</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if memory.status == 'active' %}
-              {% if memory.in_budget %}
-              <span class="badge badge--success">In effect</span>
-              {% else %}
-              <span class="badge badge--warn">Shadowed</span>
-              {% endif %}
-            {% else %}
-            &mdash;
-            {% endif %}
-          </td>
-          <td>{{ memory.created_at }}</td>
-          <td>
-            <div class="ag-actions">
-              {% if memory.status == 'pending' %}
-              <button type="button" class="btn btn-secondary btn-sm" data-approve-memory
-                      data-agent-id="{{ agent.id }}" data-memory-id="{{ memory.id }}">Approve</button>
-              {% endif %}
-              <button type="button" class="btn btn-danger btn-sm" data-delete-memory
-                      data-agent-id="{{ agent.id }}" data-memory-id="{{ memory.id }}">Delete</button>
-            </div>
-            <p class="ag-row-error" data-row-error></p>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
-  </div>
-  {% endfor %}
-</section>
-{% endif %}
-
-<!-- ═════════ TOKEN-ISSUED MODAL — secret shown exactly once ═════════ -->
-<div class="ag-modal-backdrop" id="ag-token-modal" role="dialog" aria-modal="true" aria-labelledby="ag-token-modal-title">
-  <div class="ag-modal-card">
-    <h3 id="ag-token-modal-title">Agent token created</h3>
-    <p>Copy it now — it will not be shown again.</p>
-    <input class="ag-token-value" id="ag-token-value" type="text" readonly aria-label="Agent API token">
-    <div class="ag-modal-actions">
-      {{ ds.button('Copy', variant='secondary', size='sm', id='ag-token-copy-btn') }}
-      {{ ds.button('Close', variant='primary', size='sm', id='ag-token-close-btn') }}
-    </div>
+{% block page_head %}
+<div class="ag-head" id="ag-page-head">
+  <div>
+    <h1>Agents</h1>
+    <p class="lede">Build a focused assistant from anything you can access — governed data, memory, and your files for what it knows, plus any plugin or skill for what it can do. Everything here respects your existing permissions.</p>
   </div>
 </div>
+{# The "not wired to the surfaces yet" caveat belongs under the description,
+   not at the foot of the grid: it qualifies the whole page, and a caller who
+   reads it before building an agent learns the limit before investing in one
+   — at the bottom it landed after the work, and below the fold once the grid
+   filled. Shared `.pnote` component, so it reads identically to the Library's
+   caveats. #}
+{{ page_notice('Work in progress',
+     'Your agents are saved to your workspace and live on this page. Actually running them on the surfaces you pick is the next step.') }}
+{% endblock %}
+
+{% block page_surface %}
+{# Server-rendered, RBAC-scoped ingredients for the builder. #}
+<script type="application/json" id="ag-knowledge-data">{{ knowledge_sources | tojson }}</script>
+
+<div id="ag-list-view"></div>
+<div id="ag-builder-view" hidden></div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 (function () {
-  function api(method, path, body) {
-    return fetch(path, {
-      method: method,
-      credentials: "same-origin",
-      headers: body ? { "Content-Type": "application/json" } : {},
-      body: body ? JSON.stringify(body) : undefined,
+  'use strict';
+
+  /* ── State ─────────────────────────────────────────────────────────────
+     Agents live in the server-side v103 registry (`agents` table) behind
+     /api/agents. The in-page `agents` array is a working copy of that: reads
+     hydrate it on boot, and every mutation writes back (debounced PATCH for
+     field edits, POST/DELETE for create/remove). The object shape is the one
+     the API returns, which is why it needed no reshaping when the registry
+     replaced the old localStorage store. */
+  var KNOWLEDGE = JSON.parse(document.getElementById('ag-knowledge-data').textContent || '[]');
+  var SURFACE_DEFS = [
+    { id: 'web',      name: 'Web chat',       hint: 'The chat on this site', base: true },
+    { id: 'slack',    name: 'Slack',          hint: 'As a Slack app in your workspace' },
+    { id: 'telegram', name: 'Telegram',       hint: 'As a Telegram bot' },
+    { id: 'cli',      name: 'Claude Code / CLI', hint: 'In analyst workspaces via agnes' },
+    { id: 'mcp',      name: 'MCP',            hint: 'As a tool server for other AI clients' }
+  ];
+  var TONES = [['concise', 'Concise'], ['friendly', 'Friendly'], ['formal', 'Formal'], ['playful', 'Playful']];
+
+  var agents = [];
+  var currentId = null;
+  var collapsed = {};           // sectionKey -> bool, per open agent
+  var plugins = null;           // all marketplace items available to the caller
+  var pluginsErr = false;
+  var query = { knowledge: '', capabilities: '' };  // per-section search text
+
+  /* Persist one agent with a short debounce: field edits fire on every
+     keystroke, so a naive PATCH-per-input would hammer the API. Keyed by id so
+     two agents edited in one session never share a timer. */
+  var saveTimers = {};
+  function persist(a) {
+    if (!a || !a.id) return;
+    clearTimeout(saveTimers[a.id]);
+    saveTimers[a.id] = setTimeout(function () {
+      fetch('/api/agents/' + encodeURIComponent(a.id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          name: a.name, role: a.role, instructions: a.instructions,
+          tone: a.tone, greeting: a.greeting, knowledge: a.knowledge,
+          plugins: a.plugins, surfaces: a.surfaces, status: a.status
+        })
+      }).catch(function (e) { console.error('agents: save failed', e); });
+    }, 400);
+  }
+  /* Every existing call site means "persist what the user just changed", which
+     is always the open agent — so save() keeps its old no-arg signature. */
+  function save() { persist(current()); }
+  function current() { return agents.find(function (a) { return a.id === currentId; }) || null; }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
 
-  async function errorText(resp) {
-    try {
-      var data = await resp.json();
-      var detail = data && data.detail;
-      if (detail && typeof detail === "object") {
-        return (detail.code || "error") + ": " + (detail.message || "request failed");
+  function makeAgent() {
+    return {
+      name: '', role: '', instructions: '', tone: 'concise',
+      greeting: "Hi! How can I help?",
+      knowledge: [], plugins: [],
+      surfaces: { web: true, slack: false, telegram: false, cli: false, mcp: false },
+      status: 'draft',
+      updated: new Date().toISOString()
+    };
+  }
+
+  /* ── Capabilities — every marketplace item AVAILABLE to the caller, not just
+     the ones already in their stack. Curated (RBAC-scoped to the caller's
+     groups) ∪ community store, merged + de-duped; each item's `installed` flag
+     tells us which are already in the stack so we can mark them. There is no
+     single "all" tab, so the two are fetched in parallel and merged here. */
+  function loadPlugins() {
+    if (plugins !== null) return Promise.resolve();
+    var pull = function (tab) {
+      return fetch('/api/marketplace/items?tab=' + tab + '&page_size=100', { credentials: 'same-origin' })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function (d) { return d.items || []; })
+        .catch(function () { return null; });
+    };
+    return Promise.all([pull('curated'), pull('flea')]).then(function (res) {
+      if (res[0] === null && res[1] === null) { plugins = []; pluginsErr = true; return; }
+      var seen = {}, out = [];
+      (res[0] || []).concat(res[1] || []).forEach(function (p) {
+        if (p && p.id && !seen[p.id]) { seen[p.id] = 1; out.push(p); }
+      });
+      // In-stack items first, then alphabetical — the caller scans for what
+      // they already have before reaching for something new.
+      out.sort(function (a, b) {
+        return (b.installed ? 1 : 0) - (a.installed ? 1 : 0) ||
+          String(a.name || '').localeCompare(String(b.name || ''));
+      });
+      plugins = out;
+    });
+  }
+
+  /* Case-insensitive substring match over an item's visible text. */
+  function matchesQuery(q, parts) {
+    q = (q || '').trim().toLowerCase();
+    if (!q) return true;
+    return parts.filter(Boolean).join(' ').toLowerCase().indexOf(q) >= 0;
+  }
+
+  /* ── List view ── */
+  var listView = document.getElementById('ag-list-view');
+  var builderView = document.getElementById('ag-builder-view');
+
+  function agentCounts(a) {
+    var sn = Object.keys(a.surfaces).filter(function (k) { return a.surfaces[k]; }).length;
+    return a.knowledge.length + ' knowledge · ' + a.plugins.length + ' tool' + (a.plugins.length === 1 ? '' : 's') + ' · ' + sn + ' surface' + (sn === 1 ? '' : 's');
+  }
+
+  var AVA_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>';
+  /* Rendered from the shared icon macro rather than hand-copied path data, so
+     the builder's notice glyph cannot drift from the head's. */
+  var WARN_SVG = {{ ico.icon('warning', 15) | tojson }};
+  function statusPill(a) {
+    return a.status === 'ready'
+      ? '<span class="ag-status ag-status--ready">● Ready</span>'
+      : '<span class="ag-status ag-status--draft">○ Draft</span>';
+  }
+
+  var pageHead = document.getElementById('ag-page-head');
+  // Collapse the whole .idx-head band (not just its content) so the builder
+  // view doesn't leave an empty grey strip above the white surface band.
+  var pageHeadBand = pageHead ? pageHead.closest('.idx-head') : null;
+  function setPageHead(show) {
+    if (pageHead) pageHead.hidden = !show;
+    if (pageHeadBand) pageHeadBand.hidden = !show;
+  }
+
+  function renderList() {
+    setPageHead(true);
+    builderView.hidden = true;
+    listView.hidden = false;
+    if (!agents.length) {
+      listView.innerHTML =
+        '<div class="ag-empty">' +
+          '<span class="ag-ava">' + AVA_SVG + '</span>' +
+          '<h3>No agents yet</h3>' +
+          '<p>Build your first agent — pick what it knows from your stack, what it can do from your plugins, and where it runs.</p>' +
+          '<button type="button" class="cc-btn cc-btn--primary" data-ag-new>+ Build an agent</button>' +
+        '</div>';
+      return;
+    }
+    var cards = agents.map(function (a) {
+      return '<div class="ag-card" data-ag-open="' + esc(a.id) + '" role="button" tabindex="0">' +
+        '<div class="ag-card-top">' +
+          '<span class="ag-ava">' + AVA_SVG + '</span>' +
+          '<div style="min-width:0;flex:1"><h3>' + (esc(a.name) || 'Untitled') + '</h3></div>' +
+          statusPill(a) +
+        '</div>' +
+        '<div class="ag-card-role">' + (esc(a.role) || '<span style="color:var(--ds-text-muted)">No role yet — open to configure.</span>') + '</div>' +
+        '<div class="ag-card-foot">' +
+          '<span class="ag-card-count">' + agentCounts(a) + '</span>' +
+          // The seeded default agent is not deletable (the API refuses it with
+          // 400 default_agent_undeletable) — every chat session is attributed
+          // to it. Render the reason in place of a control that cannot work.
+          (a.is_default
+            ? '<span class="ag-card-locked" title="Every chat is attributed to this agent">Default</span>'
+            : '<button type="button" class="ag-del" data-ag-del="' + esc(a.id) + '">Delete</button>') +
+        '</div>' +
+      '</div>';
+    }).join('');
+    /* "New agent" leads the grid — the create affordance stays in the same
+       first-cell position no matter how many agents the caller already has,
+       instead of drifting to the end of a growing list (and below the fold). */
+    listView.innerHTML = '<div class="ag-grid">' +
+      '<button type="button" class="ag-new" data-ag-new><span style="font-size:18px">+</span> New agent</button>' +
+      cards + '</div>';
+  }
+
+  /* The list view no longer appends this — the page head carries the caveat
+     server-rendered, under the description (macros/_page_notice.html). The
+     BUILDER still needs its own copy: setPageHead(false) hides the whole
+     `.idx-head` there, and the builder is where the limit actually bites, one
+     section below "Surfaces". Same `.pnote` markup as the macro so the two
+     placements are visually identical — keep them in step if either moves. */
+  function localNote() {
+    return '<div class="pnote" role="note">' +
+      '<span class="pnote-icon" aria-hidden="true">' + WARN_SVG + '</span>' +
+      '<div class="pnote-body">' +
+        '<p class="pnote-title">Work in progress</p>' +
+        '<p class="pnote-text">Your agents are saved to your workspace and live on this page. ' +
+        'Actually running them on the surfaces you pick is the next step.</p>' +
+      '</div></div>';
+  }
+
+  /* ── Builder view ── */
+  var SECTION_KEYS = ['identity', 'knowledge', 'capabilities', 'surfaces', 'boundaries'];
+
+  function openBuilder(id) {
+    currentId = id;
+    collapsed = { identity: false, knowledge: true, capabilities: true, surfaces: true, boundaries: true };
+    loadPlugins().then(renderBuilder);
+    renderBuilder();
+    window.scrollTo(0, 0);
+  }
+  function closeBuilder() { currentId = null; renderList(); window.scrollTo(0, 0); }
+
+  function section(key, no, title, note, sub, summary, body) {
+    var isC = !!collapsed[key];
+    return '<div class="ag-sec' + (isC ? ' collapsed' : '') + '" data-sec="' + key + '">' +
+      '<div class="ag-sec-head" data-ag-toggle-sec="' + key + '" role="button" tabindex="0" aria-expanded="' + (!isC) + '">' +
+        '<span class="ag-sec-no">' + no + '</span>' +
+        '<div class="ag-sec-grow"><h3>' + title + (note ? ' <span class="ag-sec-note">' + note + '</span>' : '') + '</h3>' +
+          (sub ? '<p class="ag-sec-sub">' + sub + '</p>' : '') + '</div>' +
+        '<span class="ag-sec-sum">' + (summary || '') + '</span>' +
+        '<span class="ag-sec-chev"><svg viewBox="0 0 24 24" fill="none"><path d="M5 8.5l7 7 7-7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' +
+      '</div>' +
+      '<div class="ag-sec-body">' + body + '</div>' +
+    '</div>';
+  }
+
+  function identityBody(a) {
+    return '<label class="ag-field"><span>Name</span>' +
+        '<input type="text" data-ag-field="name" value="' + esc(a.name) + '" placeholder="e.g. Revenue Analyst" maxlength="40" autocomplete="off"></label>' +
+      '<label class="ag-field"><span>Role <em>— one line</em></span>' +
+        '<input type="text" data-ag-field="role" value="' + esc(a.role) + '" placeholder="e.g. Answers revenue questions from our governed metrics." maxlength="90" autocomplete="off"></label>' +
+      '<label class="ag-field"><span>Instructions <em>— what it should do, and what it should avoid</em></span>' +
+        '<textarea rows="4" data-ag-field="instructions" placeholder="e.g. Always use canonical metric definitions. Cite the table you queried. Never invent numbers.">' + esc(a.instructions) + '</textarea></label>' +
+      '<div class="ag-field"><span>Tone</span><div class="ag-chips">' +
+        TONES.map(function (t) {
+          return '<button type="button" class="ag-chip' + (a.tone === t[0] ? ' on' : '') + '" data-ag-tone="' + t[0] + '">' + t[1] + '</button>';
+        }).join('') + '</div></div>' +
+      '<label class="ag-field"><span>Greeting</span>' +
+        '<textarea rows="2" data-ag-field="greeting" placeholder="Hi, I&#39;m …">' + esc(a.greeting) + '</textarea></label>';
+  }
+
+  /* A searchable ingredient list = toolbar (search + live count) + a rows
+     container that partial-renders on keystroke, so typing never loses focus
+     or rebuilds the whole section. `key` names both the query slot and the
+     data-rows target. */
+  function toolbar(key, placeholder, shown, total) {
+    return '<div class="ag-toolbar">' +
+        '<input type="text" class="ag-search" data-ag-search="' + key + '" value="' + esc(query[key]) + '" placeholder="' + esc(placeholder) + '" autocomplete="off">' +
+        '<span class="ag-toolcount" data-count="' + key + '">' + shown + ' of ' + total + '</span>' +
+      '</div>';
+  }
+
+  var KIND_LABEL = { data: 'Data', memory: 'Memory', file: 'File' };
+
+  function knowledgeRows(a) {
+    var q = query.knowledge;
+    var list = KNOWLEDGE.filter(function (k) { return matchesQuery(q, [k.name, k.description, KIND_LABEL[k.kind]]); });
+    if (!list.length) {
+      return '<p class="ag-emptyrows">' + (KNOWLEDGE.length
+        ? 'No data, memory, or files match “' + esc(q) + '”.'
+        : 'Nothing you can access yet — add data or memory from the <a href="/catalog">Catalog</a>, or upload files in <a href="/artefacts">Artefacts</a>.') + '</p>';
+    }
+    return list.map(function (k) {
+      var on = a.knowledge.indexOf(k.id) >= 0;
+      return '<div class="ag-row">' +
+        '<div class="ag-row-body">' +
+          '<div class="ag-row-name">' + esc(k.name) +
+            '<span class="ag-kind ag-kind--' + esc(k.kind) + '">' + (KIND_LABEL[k.kind] || 'Data') + '</span>' +
+            (k.meta ? '<span class="ag-row-meta">' + esc(k.meta) + '</span>' : '') + '</div>' +
+          '<div class="ag-row-desc">' + esc(k.description) + '</div>' +
+        '</div>' +
+        '<button type="button" class="ag-tglbtn' + (on ? ' on' : '') + '" data-ag-kn="' + esc(k.id) + '">' + (on ? '✓ Grounded' : '+ Ground') + '</button>' +
+      '</div>';
+    }).join('');
+  }
+
+  function knowledgeBody(a) {
+    var shown = KNOWLEDGE.filter(function (k) { return matchesQuery(query.knowledge, [k.name, k.description, KIND_LABEL[k.kind]]); }).length;
+    return toolbar('knowledge', 'Search data, memory & files…', shown, KNOWLEDGE.length) +
+      '<div class="ag-rows" data-rows="knowledge">' + knowledgeRows(a) + '</div>' +
+      '<div class="ag-note">Everything you can access — your workspace’s governed data and memory, plus files from your <a href="/artefacts">Artefacts</a>. Discover more in the <a href="/catalog">Catalog</a>.</div>';
+  }
+
+  function capabilityRows(a) {
+    var q = query.capabilities;
+    var list = plugins.filter(function (p) { return matchesQuery(q, [p.name, p.description, p.category, p.type]); });
+    if (!list.length) {
+      return '<p class="ag-emptyrows">' + (plugins.length
+        ? 'No plugins or skills match “' + esc(q) + '”.'
+        : 'No plugins or skills are available to you yet — browse the <a href="/catalog?kind=plugins">Catalog</a>.') + '</p>';
+    }
+    return list.map(function (p) {
+      var on = a.plugins.indexOf(p.id) >= 0;
+      var type = p.type || 'plugin';
+      return '<div class="ag-row">' +
+        '<div class="ag-row-body">' +
+          '<div class="ag-row-name">' + esc(p.name) +
+            '<span class="ag-kind ag-kind--' + esc(type) + '">' + esc(type) + '</span>' +
+            (p.installed ? '<span class="ag-instack">In your stack</span>' : '') +
+            (p.category ? '<span class="ag-row-meta">' + esc(p.category) + '</span>' : '') + '</div>' +
+          '<div class="ag-row-desc">' + esc(p.description || '') + '</div>' +
+        '</div>' +
+        '<button type="button" class="ag-tglbtn' + (on ? ' on' : '') + '" data-ag-cap="' + esc(p.id) + '">' + (on ? '✓ Enabled' : '+ Enable') + '</button>' +
+      '</div>';
+    }).join('');
+  }
+
+  function capabilitiesBody(a) {
+    if (plugins === null) return '<p class="ag-row-desc" style="padding:12px 0">Loading everything available to you…</p>';
+    if (pluginsErr) return '<div class="ag-note">Could not load the marketplace right now — try reloading the page.</div>';
+    var shown = plugins.filter(function (p) { return matchesQuery(query.capabilities, [p.name, p.description, p.category, p.type]); }).length;
+    return toolbar('capabilities', 'Search plugins & skills…', shown, plugins.length) +
+      '<div class="ag-rows" data-rows="capabilities">' + capabilityRows(a) + '</div>' +
+      '<div class="ag-note">Any plugin or skill available to you — not just what’s in your stack; items already added are marked. Browse the full set in the <a href="/catalog?kind=plugins">Catalog</a>.</div>';
+  }
+
+  function surfacesBody(a) {
+    return SURFACE_DEFS.map(function (d) {
+      var on = !!a.surfaces[d.id];
+      return '<div class="ag-row">' +
+        '<div class="ag-row-body">' +
+          '<div class="ag-row-name">' + d.name + (d.base ? ' <span class="ag-kind ag-kind--data">base</span>' : '') + '</div>' +
+          '<div class="ag-row-desc">' + d.hint + '</div>' +
+        '</div>' +
+        '<button type="button" class="ag-tglbtn' + (on ? ' on' : '') + '"' + (d.base ? ' disabled' : '') + ' data-ag-surf="' + d.id + '">' + (on ? '✓ On' : '+ Enable') + '</button>' +
+      '</div>';
+    }).join('') +
+    '<div class="ag-note">Where the agent will be reachable once publishing lands. Web chat is the base surface.</div>';
+  }
+
+  function boundariesBody() {
+    return '<div class="ag-bnd">' +
+        '<div class="ag-bnd-row"><span class="ag-bnd-k">Model</span><span class="ag-bnd-v">Workspace default</span></div>' +
+        '<div class="ag-bnd-row"><span class="ag-bnd-k">Data access</span><span class="ag-bnd-v">Scoped to each user’s permissions</span></div>' +
+        '<div class="ag-bnd-row"><span class="ag-bnd-k">Sensitive actions</span><span class="ag-bnd-v">Require confirmation</span></div>' +
+      '</div>' +
+      '<div class="ag-note">Inherited from the workspace — you build within them. Ask an admin to change a boundary.</div>';
+  }
+
+  function previewHtml(a) {
+    var kn = a.knowledge.length, cp = a.plugins.length;
+    var sn = Object.keys(a.surfaces).filter(function (k) { return a.surfaces[k]; }).length;
+    return '<h3>Preview</h3>' +
+      '<div class="ag-pv-card">' +
+        '<div class="ag-pv-hd">' +
+          '<span class="ag-ava">' + AVA_SVG + '</span>' +
+          '<div style="min-width:0"><div class="ag-pv-name" id="ag-pv-name">' + (esc(a.name) || 'Your agent') + '</div>' +
+          '<div class="ag-pv-role" id="ag-pv-role">' + (esc(a.role) || '—') + '</div></div>' +
+        '</div>' +
+        '<div class="ag-pv-body">' +
+          '<div class="ag-pv-bubble" id="ag-pv-greeting">' + (esc(a.greeting) || '…') + '</div>' +
+          '<div class="ag-pv-input"><span id="ag-pv-ph">Ask ' + (esc(a.name) || 'your agent') + '…</span><span class="ag-pv-send">↑</span></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ag-pv-meta">' +
+        '<div class="ag-pv-row"><span class="ag-pv-k">Grounded in</span><span class="ag-pv-v">' + kn + ' source' + (kn === 1 ? '' : 's') + '</span></div>' +
+        '<div class="ag-pv-row"><span class="ag-pv-k">Can use</span><span class="ag-pv-v">' + cp + ' tool' + (cp === 1 ? '' : 's') + '</span></div>' +
+        '<div class="ag-pv-row"><span class="ag-pv-k">Tone</span><span class="ag-pv-v" style="text-transform:capitalize">' + esc(a.tone) + '</span></div>' +
+        '<div class="ag-pv-row"><span class="ag-pv-k">Surfaces</span><span class="ag-pv-v">' + sn + '</span></div>' +
+      '</div>';
+  }
+
+  function renderBuilder() {
+    var a = current();
+    if (!a) { renderList(); return; }
+    setPageHead(false);
+    listView.hidden = true;
+    builderView.hidden = false;
+    var sn = Object.keys(a.surfaces).filter(function (k) { return a.surfaces[k]; }).length;
+    builderView.innerHTML =
+      '<button type="button" class="ag-back" data-ag-back>← All agents</button>' +
+      '<div class="ag-build-head">' +
+        '<div style="min-width:0">' +
+          '<div class="ag-build-kicker">Configuring agent</div>' +
+          '<h2 id="ag-build-title">' + (esc(a.name) || 'Untitled') + '</h2>' +
+        '</div>' +
+        '<div class="ag-build-actions">' + statusPill(a) +
+          // Same reason as the list card: the default agent has no delete.
+          (a.is_default ? '' : '<button type="button" class="cc-btn ag-del-btn" data-ag-del="' + esc(a.id) + '">Delete</button>') +
+          '<button type="button" class="cc-btn' + (a.status === 'ready' ? '' : ' cc-btn--primary') + '" data-ag-status>' +
+            (a.status === 'ready' ? 'Back to draft' : 'Mark ready') + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ag-bgrid">' +
+        '<div>' +
+          section('identity', 1, 'Identity', '', 'Who it is and how it behaves.',
+            (esc(a.name) || 'Unnamed') + ' · ' + a.tone, identityBody(a)) +
+          section('knowledge', 2, 'Knowledge', 'what it knows',
+            'Ground it in anything you can access — governed data, memory, and your files.',
+            a.knowledge.length + ' source' + (a.knowledge.length === 1 ? '' : 's'), knowledgeBody(a)) +
+          section('capabilities', 3, 'Capabilities', 'what it can do',
+            'Give it tools — any plugin or skill available to you, not only what’s in your stack.',
+            a.plugins.length + ' enabled', capabilitiesBody(a)) +
+          section('surfaces', 4, 'Surfaces', 'where it runs',
+            'The same agent, reachable where your team already works.',
+            'On ' + sn, surfacesBody(a)) +
+          section('boundaries', 5, 'Boundaries', 'set by admin',
+            'Guardrails managed by your workspace admin — you build within them.',
+            'Admin-managed', boundariesBody()) +
+        '</div>' +
+        '<aside class="ag-preview" id="ag-preview">' + previewHtml(a) + '</aside>' +
+      '</div>' + localNote();
+  }
+
+  /* Light-touch preview sync while typing (no re-render → keeps focus). */
+  function syncPreview() {
+    var a = current(); if (!a) return;
+    var el;
+    if ((el = document.getElementById('ag-pv-name'))) el.textContent = a.name || 'Your agent';
+    if ((el = document.getElementById('ag-pv-role'))) el.textContent = a.role || '—';
+    if ((el = document.getElementById('ag-pv-greeting'))) el.textContent = a.greeting || '…';
+    if ((el = document.getElementById('ag-pv-ph'))) el.textContent = 'Ask ' + (a.name || 'your agent') + '…';
+    if ((el = document.getElementById('ag-build-title'))) el.textContent = a.name || 'Untitled';
+    if ((el = document.querySelector('[data-sec="identity"] .ag-sec-sum'))) el.textContent = (a.name || 'Unnamed') + ' · ' + a.tone;
+  }
+
+  /* Mint a blank agent and open its builder. The server owns the id, so
+     creation is a round-trip before the builder can render — which is why the
+     `?new=1` deep link shares this path instead of rendering an unsaved shell.
+     `btn`, when given, is disabled for the duration so a double-click can't
+     create two agents. */
+  function createAgent(btn) {
+    if (btn) btn.disabled = true;
+    return fetch('/api/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(makeAgent())
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (created) {
+      agents.push(created);
+      openBuilder(created.id);
+    }).catch(function (err) {
+      console.error('agents: create failed', err);
+      if (window.appToast) window.appToast({ kind: 'error', msg: 'Could not create the agent: ' + err.message });
+      renderList();
+    }).finally(function () { if (btn) btn.disabled = false; });
+  }
+
+  /* ── Event delegation ── */
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-ag-new],[data-ag-open],[data-ag-del],[data-ag-back],[data-ag-status],[data-ag-toggle-sec],[data-ag-tone],[data-ag-kn],[data-ag-cap],[data-ag-surf]');
+    if (!t) return;
+    var a = current();
+    if (t.hasAttribute('data-ag-new')) {
+      createAgent(t);
+    } else if (t.hasAttribute('data-ag-del')) {
+      e.stopPropagation();
+      var id = t.getAttribute('data-ag-del');
+      var removed = agents.filter(function (x) { return x.id === id; })[0];
+      // From the builder the caller is deleting the agent they are looking at,
+      // one button away from "Mark ready" — ask first. The list card keeps its
+      // unconfirmed click: there the row is just a summary and the button is
+      // not adjacent to a primary action.
+      if (t.classList.contains('ag-del-btn') &&
+          !window.confirm('Delete "' + ((removed && removed.name) || 'Untitled') + '"? This cannot be undone.')) return;
+      // Optimistic removal: the row disappears at once, and a failed DELETE
+      // restores it rather than leaving the list lying about what exists.
+      agents = agents.filter(function (x) { return x.id !== id; });
+      // A pending debounced PATCH would land on a row we just removed — drop it
+      // (deleting straight after an edit is now one click away in the builder).
+      clearTimeout(saveTimers[id]);
+      if (currentId === id) currentId = null;
+      renderList();
+      fetch('/api/agents/' + encodeURIComponent(id), {
+        method: 'DELETE', credentials: 'same-origin'
+      }).then(function (r) {
+        if (!r.ok && r.status !== 204) throw new Error('HTTP ' + r.status);
+      }).catch(function (err) {
+        console.error('agents: delete failed', err);
+        if (removed) { agents.push(removed); renderList(); }
+        if (window.appToast) window.appToast({ kind: 'error', msg: 'Could not delete the agent: ' + err.message });
+      });
+    } else if (t.hasAttribute('data-ag-open')) {
+      openBuilder(t.getAttribute('data-ag-open'));
+    } else if (t.hasAttribute('data-ag-back')) {
+      closeBuilder();
+    } else if (t.hasAttribute('data-ag-status') && a) {
+      a.status = a.status === 'ready' ? 'draft' : 'ready';
+      a.updated = new Date().toISOString(); save(); renderBuilder();
+    } else if (t.hasAttribute('data-ag-toggle-sec')) {
+      var key = t.getAttribute('data-ag-toggle-sec');
+      collapsed[key] = !collapsed[key]; renderBuilder();
+    } else if (t.hasAttribute('data-ag-tone') && a) {
+      a.tone = t.getAttribute('data-ag-tone'); save(); renderBuilder();
+    } else if (t.hasAttribute('data-ag-kn') && a) {
+      var kid = t.getAttribute('data-ag-kn');
+      var ki = a.knowledge.indexOf(kid);
+      ki >= 0 ? a.knowledge.splice(ki, 1) : a.knowledge.push(kid);
+      save(); renderBuilder();
+    } else if (t.hasAttribute('data-ag-cap') && a) {
+      var pid = t.getAttribute('data-ag-cap');
+      var pi = a.plugins.indexOf(pid);
+      pi >= 0 ? a.plugins.splice(pi, 1) : a.plugins.push(pid);
+      save(); renderBuilder();
+    } else if (t.hasAttribute('data-ag-surf') && a) {
+      var sid = t.getAttribute('data-ag-surf');
+      var def = SURFACE_DEFS.find(function (d) { return d.id === sid; });
+      if (def && !def.base) { a.surfaces[sid] = !a.surfaces[sid]; save(); renderBuilder(); }
+    }
+  });
+
+  document.addEventListener('input', function (e) {
+    // Ingredient search — partial-render only the rows + count so the input
+    // keeps focus and caret while typing (a full renderBuilder would not).
+    var sk = e.target.getAttribute && e.target.getAttribute('data-ag-search');
+    if (sk) {
+      query[sk] = e.target.value;
+      var a2 = current(); if (!a2) return;
+      var rowsEl = document.querySelector('[data-rows="' + sk + '"]');
+      if (rowsEl) rowsEl.innerHTML = sk === 'knowledge' ? knowledgeRows(a2) : capabilityRows(a2);
+      var cntEl = document.querySelector('[data-count="' + sk + '"]');
+      if (cntEl) {
+        var pool = sk === 'knowledge' ? KNOWLEDGE : (plugins || []);
+        var shown = pool.filter(function (it) {
+          return sk === 'knowledge'
+            ? matchesQuery(query.knowledge, [it.name, it.description, KIND_LABEL[it.kind]])
+            : matchesQuery(query.capabilities, [it.name, it.description, it.category, it.type]);
+        }).length;
+        cntEl.textContent = shown + ' of ' + pool.length;
       }
-      return String(detail || ("HTTP " + resp.status));
-    } catch (e) {
-      return "HTTP " + resp.status;
-    }
-  }
-
-  // ── Create form ──────────────────────────────────────────────────────
-  var createForm = document.getElementById("ag-create-form");
-  var createError = document.getElementById("ag-create-error");
-  createForm.addEventListener("submit", async function (ev) {
-    ev.preventDefault();
-    createError.classList.remove("is-visible");
-    var name = document.getElementById("ag-name").value.trim();
-    var slug = document.getElementById("ag-slug").value.trim();
-    var systemPrompt = document.getElementById("ag-prompt").value.trim();
-    if (!name || !slug) {
-      createError.textContent = "Name and slug are required.";
-      createError.classList.add("is-visible");
       return;
     }
-    var r = await api("POST", "/api/v1/agents", {
-      name: name,
-      slug: slug,
-      system_prompt: systemPrompt || null,
-    });
-    if (!r.ok) {
-      createError.textContent = await errorText(r);
-      createError.classList.add("is-visible");
-      return;
-    }
-    location.reload();
+    var f = e.target.getAttribute && e.target.getAttribute('data-ag-field');
+    if (!f) return;
+    var a = current(); if (!a) return;
+    a[f] = e.target.value;
+    a.updated = new Date().toISOString();
+    save(); syncPreview();
   });
 
-  // ── Per-row actions ───────────────────────────────────────────────────
-  document.querySelectorAll("[data-agent-row]").forEach(function (row) {
-    var rowError = row.querySelector("[data-row-error]");
-    function showRowError(msg) {
-      rowError.textContent = msg;
-      rowError.classList.add("is-visible");
-    }
-
-    var issueBtn = row.querySelector("[data-issue-token]");
-    if (issueBtn && !issueBtn.disabled) {
-      issueBtn.addEventListener("click", async function () {
-        var agentId = issueBtn.getAttribute("data-agent-id");
-        var slug = issueBtn.getAttribute("data-agent-slug");
-        var r = await api("POST", "/api/v1/agents/" + encodeURIComponent(agentId) + "/tokens", {
-          name: slug + " token",
-          expires_in_days: 90,
-        });
-        if (!r.ok) { showRowError(await errorText(r)); return; }
-        var data = await r.json();
-        openTokenModal(data.token || "");
-      });
-    }
-
-    var deleteBtn = row.querySelector("[data-delete-agent]");
-    if (deleteBtn) {
-      deleteBtn.addEventListener("click", async function () {
-        var agentId = deleteBtn.getAttribute("data-agent-id");
-        var name = deleteBtn.getAttribute("data-agent-name");
-        if (!confirm("Delete agent \"" + name + "\"? This revokes its tokens and cannot be undone.")) return;
-        var r = await api("DELETE", "/api/v1/agents/" + encodeURIComponent(agentId));
-        if (!r.ok && r.status !== 204) { showRowError(await errorText(r)); return; }
-        location.reload();
-      });
-    }
+  /* Keyboard access for the div-based cards/section headers. */
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var t = e.target.closest && e.target.closest('[data-ag-open],[data-ag-toggle-sec]');
+    if (t) { e.preventDefault(); t.click(); }
   });
 
-  // ── Memory panel actions ────────────────────────────────────────────
-  document.querySelectorAll("[data-memory-row]").forEach(function (row) {
-    var rowError = row.querySelector("[data-row-error]");
-    function showRowError(msg) {
-      rowError.textContent = msg;
-      rowError.classList.add("is-visible");
-    }
+  /* ── Deep links ──
+     The builder is an in-page view, so it had no address of its own — every
+     route into it had to be "load /agents, then click". These params give it
+     one, so a link (or a bookmark) can land in the builder directly:
 
-    var approveBtn = row.querySelector("[data-approve-memory]");
-    if (approveBtn) {
-      approveBtn.addEventListener("click", async function () {
-        var agentId = approveBtn.getAttribute("data-agent-id");
-        var memoryId = approveBtn.getAttribute("data-memory-id");
-        var r = await api(
-          "PATCH",
-          "/api/v1/agents/" + encodeURIComponent(agentId) + "/memories/" + encodeURIComponent(memoryId),
-          { action: "approve" }
-        );
-        if (!r.ok) { showRowError(await errorText(r)); return; }
-        location.reload();
-      });
-    }
+       /agents?new=1     → land straight in the builder on a fresh agent
+       /agents?open=<id> → open that agent's builder
 
-    var deleteMemoryBtn = row.querySelector("[data-delete-memory]");
-    if (deleteMemoryBtn) {
-      deleteMemoryBtn.addEventListener("click", async function () {
-        var agentId = deleteMemoryBtn.getAttribute("data-agent-id");
-        var memoryId = deleteMemoryBtn.getAttribute("data-memory-id");
-        if (!confirm("Delete this memory? This cannot be undone.")) return;
-        var r = await api(
-          "DELETE",
-          "/api/v1/agents/" + encodeURIComponent(agentId) + "/memories/" + encodeURIComponent(memoryId)
-        );
-        if (!r.ok && r.status !== 204) { showRowError(await errorText(r)); return; }
-        location.reload();
-      });
+     One-shot: the param is stripped before the view opens, so a reload or a
+     back-button return doesn't mint a second agent. An `open` id that isn't in
+     the caller's registry falls through to the list rather than erroring — a
+     link to a deleted or unshared agent must not dead-end the page. */
+  function routeFromQuery() {
+    var params = new URLSearchParams(window.location.search);
+    var openId = params.get('open');
+    var wantNew = params.get('new');
+    if (!openId && !wantNew) return false;
+    params.delete('open');
+    params.delete('new');
+    var qs = params.toString();
+    try {
+      history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    } catch (e) { /* history unavailable — non-fatal */ }
+    if (openId && agents.some(function (a) { return a.id === openId; })) {
+      openBuilder(openId);
+      return true;
     }
-  });
-
-  // ── Token modal ───────────────────────────────────────────────────────
-  var tokenModal = document.getElementById("ag-token-modal");
-  var tokenValue = document.getElementById("ag-token-value");
-  function openTokenModal(token) {
-    tokenValue.value = token;
-    tokenModal.classList.add("is-open");
+    if (wantNew) { createAgent(null); return true; }
+    return false;
   }
-  function closeTokenModal() {
-    tokenModal.classList.remove("is-open");
-    tokenValue.value = ""; // do not retain the secret in the DOM
-  }
-  document.getElementById("ag-token-close-btn").addEventListener("click", closeTokenModal);
-  document.getElementById("ag-token-copy-btn").addEventListener("click", async function () {
-    try { await navigator.clipboard.writeText(tokenValue.value); }
-    catch (e) { tokenValue.select(); document.execCommand("copy"); }
-  });
-  tokenModal.addEventListener("click", function (ev) {
-    if (ev.target === tokenModal) closeTokenModal();
-  });
+
+  /* Boot: hydrate the working copy from the registry, then render. A failed
+     load renders the empty list rather than a blank page, and says so. */
+  fetch('/api/agents', { credentials: 'same-origin' })
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (d) { agents = (d && d.agents) || []; })
+    .catch(function (e) {
+      console.error('agents: load failed', e);
+      if (window.appToast) window.appToast({ kind: 'error', msg: 'Could not load your agents.' });
+    })
+    .finally(function () { if (!routeFromQuery()) renderList(); });
 })();
+</script>
+{# First-visit coach-mark (TOURS.agents) — one card, explaining what an agent
+   here IS before the reader is asked to build one.
+
+   It belongs on arrival rather than in the welcome walkthrough: as a step of
+   that tour it dragged every newcomer off the Library onto a page they hadn't
+   asked for, to explain a surface most people don't need on day one. Here the
+   reader chose to come, and the thing being explained is what they are looking
+   at.
+
+   `autoLaunchTour` owns the once-only gate (localStorage) and refuses to stack
+   over a tour already running or mid-hop, so this is safe to fire on every
+   /agents load. The card's anchor is the client-rendered "+ Build an agent"
+   control, which is why its step declares `awaitAnchor` — the fetch above has
+   not resolved when this runs. #}
+<script type="module">
+  import("{{ static_url('js/tour.js') }}")
+    .then((mod) => mod.autoLaunchTour("agents"))
+    .catch(() => { /* the coach-mark is additive — never block the page */ });
 </script>
 {% endblock %}

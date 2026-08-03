@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import zipfile
 from pathlib import Path
 
@@ -2837,30 +2836,79 @@ class TestFullLifecycleFromInstaller:
 
 
 class TestItemDetailHeroPlaceholder:
-    """The flea skill/agent detail hero must reuse the card grid's
-    name-derived, type-tinted placeholder (#791). Regression guard for the
-    hardcoded ``{{ 'SK' if kind == 'skill' else 'AG' }}`` that survived on
-    marketplace_item_detail.html after #791 tinted every other surface —
-    the detail hero showed a generic dark "SK" glyph instead of the same
-    name-derived initials + type tint as the tile the user clicked from.
+    """The flea skill/agent detail hero rides the shared detail scaffold
+    (#896): a per-kind dark gradient whose accent resolves from the
+    ``--ds-kind-<kind>`` token on the ``.detail`` scope, with the shared
+    per-kind glyph tile as the cover placeholder (JS overlays a curator
+    cover when present). Regression guard against a future revert to the
+    bespoke macOS-"window" hero + hardcoded initials placeholder.
     """
 
-    def test_flea_skill_hero_name_derived_initials_and_type_tint(self, web_client):
+    def test_flea_skill_hero_uses_shared_kind_scaffold(self, web_client):
         _, owner_cookies = _create_user(web_client, "heroinit@x.com")
-        # Multi-word slug → distinctive derived glyph ("SD"), not "SK".
         eid = _upload_clean(web_client, owner_cookies, name="sales-dashboard")
         r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
         assert r.status_code == 200, r.text
 
-        m = re.search(
-            r'<div\s+class="([^"]*)"\s+id="hero-window-body"\s*>([^<]*)</div>',
-            r.text,
-        )
-        assert m, "hero-window-body element not found in rendered detail HTML"
-        cls, text = m.group(1), m.group(2).strip()
+        # Root .detail scope carries the per-kind token so the shared dark
+        # hero renders green for skills.
+        assert 'data-kind="skill"' in r.text
+        assert "var(--ds-kind-skill)" in r.text
+        # The shared icon tile is the cover placeholder; the bespoke macOS
+        # window + name-derived initials are gone.
+        assert 'id="hero-icon"' in r.text
+        assert 'id="hero-window-body"' not in r.text
 
-        assert "hero-window-body--skill" in cls, f"skill hero must carry the type-tint class (green); got class={cls!r}"
-        assert text == "SD", (
-            "hero placeholder must show name-derived initials 'SD' for "
-            f"'sales-dashboard', not a generic per-kind glyph; got {text!r}"
-        )
+
+class TestDetailBackLink:
+    """The detail-page back link is pinned to the top (above the review banner
+    + versions card, not mid-page) and honors ?from=skills → Skill builder."""
+
+    def test_back_link_renders_above_versions_card(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backpos@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backpos")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        # Owner sees the versions card; the back link must render BEFORE it
+        # (top of page) rather than after it (the mid-page regression).
+        assert "detail-back" in r.text and "versions-card" in r.text
+        assert r.text.index("detail-back") < r.text.index("versions-card")
+
+    def test_from_skills_returns_to_skill_builder(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backfrom@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backfrom")
+        r = web_client.get(f"/marketplace/flea/{eid}?from=skills", cookies=owner_cookies)
+        assert r.status_code == 200
+        assert 'href="/skills"' in r.text
+        assert "Skill builder" in r.text
+
+    def test_default_back_link_is_not_skill_builder(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backdef@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backdef")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        # No ?from → the back link targets the marketplace, never /skills.
+        assert 'href="/skills"' not in r.text
+
+
+class TestDetailHeroOrdering:
+    """The kind-tinted hero IS the page header, so it renders first — the
+    owner/admin strip (actions + versions card) follows it. Previously the
+    strip rendered above the hero, pushing the header of a freshly published
+    skill below three other cards."""
+
+    def test_hero_renders_above_owner_strip(self, web_client):
+        _, owner_cookies = _create_user(web_client, "heropos@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="heropos")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        body = r.text
+        # Anchor on the markup, not the class name — the same names also
+        # appear in the page's <style> blocks.
+        back = '<a class="detail-back"'
+        hero = '<div class="detail-hero detail-hero--paneled">'
+        strip = '<div class="owner-actions">'
+        versions = '<div class="versions-card">'
+        for marker in (back, hero, strip, versions):
+            assert marker in body, marker
+        assert body.index(back) < body.index(hero) < body.index(strip) < body.index(versions)

@@ -86,6 +86,8 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "admin_knowledge_digest_create",
     "admin_knowledge_digest_update",
     "admin_knowledge_digest_delete",
+    # Chat workspace file upload — any authenticated user.
+    "chat_upload_file",
     # Per-user MCP credential connectivity check (triple-surface with
     # /api/mcp/sources/{id}/my-secret/test + `agnes mcp my-secret test`).
     "my_secret_test",
@@ -112,6 +114,15 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
+    # "Add artefacts to My Stack" — triple-surface with
+    # /api/stack/artefacts* + `agnes stack artefacts list/add/remove`. Adds
+    # Stack MEMBERSHIP data only (see the module note on stack_subscribe) —
+    # NOT a retrieval gate: knowledge_search/collections_search below still
+    # fan out over every RBAC-accessible collection regardless of Stack
+    # membership (see their docstrings for the deferred-gating note).
+    "stack_artefacts_candidates",
+    "stack_artefact_add",
+    "stack_artefact_remove",
     # Wave 3B draft-iteration model (Task 8) — create/delete a draft copy of
     # a prod app on an iteration branch, and mint a fresh git push credential.
     # Triple-surface with /api/data-apps/{slug}/drafts* + /git-credential and
@@ -260,6 +271,14 @@ def register_foundation_tools(
         ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
         mode when the server has no embedding model installed.
 
+        NOTE (deferred follow-up, "Add artefacts to My Stack" spec): this
+        fans out over every RBAC-accessible collection — it does NOT gate by
+        the caller's Stack membership (``user_stack_subscriptions``,
+        ``stack_artefacts_candidates``/``stack_artefact_add``). Wiring that
+        gate here (and in ``knowledge_search``) is an intentionally separate,
+        higher-risk change since other features (e.g. the /agents knowledge
+        picker) share this endpoint.
+
         Args:
             query: Natural-language or keyword query.
             k: Max results (default 10).
@@ -283,13 +302,20 @@ def register_foundation_tools(
         """One query across documents, the knowledge base, and the data catalog.
 
         Fans out server-side over Collections chunks (hybrid lexical+vector),
-        corporate-memory knowledge items (fulltext), and table catalog cards —
-        all RBAC-filtered. Results are typed ``chunk | knowledge | table``;
+        corporate-memory knowledge items (fulltext), table catalog cards,
+        business metrics, and the glossary — all RBAC-filtered (glossary is
+        public). Results are typed ``chunk | knowledge | table | metric | glossary``;
         a ``table`` hit means structured data: pivot to SQL via the ``query``
         tool with the hit's ``table_id`` instead of reading text chunks.
+        A ``metric`` hit links to /catalog/semantics#metrics; a ``glossary``
+        hit carries the term definition inline.
         The response's ``retrieval`` field labels the chunk engine's mode:
         ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
         mode when the server has no embedding model installed.
+
+        NOTE (deferred follow-up, "Add artefacts to My Stack" spec): the
+        Collections leg of this fan-out is not gated by Stack membership
+        either — see ``collections_search``'s note.
 
         Args:
             query: Natural-language or keyword query.
@@ -466,19 +492,21 @@ def register_foundation_tools(
 
     @mcp.tool()
     async def stack_browse(resource_type: str) -> dict:
-        """List resources you could add to your stack (RBAC-granted candidates).
+        """List every data package or memory domain your groups are granted.
 
-        Unlike ``catalog`` (which lists tables already in your stack), this is the
-        discovery surface: every data package or memory domain your groups are
-        granted, each annotated with an ``in_stack`` flag so you can tell what is
-        already subscribed and what is still available to add.
+        Every granted resource is automatically in your stack (auto-
+        membership — no subscribe step needed to see or query it); each item
+        is annotated ``in_stack: true`` plus a ``materialized`` flag telling
+        you whether it's ALSO downloaded locally (`agnes pull` fetches it)
+        vs. only queryable server-side. ``catalog`` lists what's actually
+        synced to this workspace; this is the broader discovery surface.
 
         Args:
             resource_type: ``data_package`` or ``memory_domain``.
 
         Returns ``{"items": [{"id", "name", "description", "requirement",
-        "in_stack", ...}]}``. Subscribe to an available item with
-        ``stack_subscribe``.
+        "in_stack", "materialized", ...}]}``. Download a local copy of a
+        not-yet-materialized item with ``stack_subscribe``.
         """
         async with httpx.AsyncClient() as c:
             r = await c.get(
@@ -492,19 +520,22 @@ def register_foundation_tools(
 
     @mcp.tool()
     async def stack_subscribe(resource_type: str, resource_id: str) -> dict:
-        """Subscribe to an available data package or memory domain.
+        """Download a local copy of a data package or memory domain already
+        granted to you.
 
-        Adds the resource to your persistent stack — the same effect as clicking
-        "Add to stack" in the web UI; it applies to all future sessions. Use
-        ``stack_browse`` first to find the ``resource_id`` of an available
-        (``in_stack: false``) item.
+        The resource is already in your stack and server-side queryable the
+        moment it's granted (auto-membership) — this only controls whether
+        `agnes pull` ALSO keeps a local copy on disk, the same effect as
+        clicking "Download locally" in the web UI; it applies to all future
+        sessions. Use ``stack_browse`` first to find the ``resource_id`` of a
+        not-yet-materialized (``materialized: false``) item.
 
         Args:
             resource_type: ``data_package`` or ``memory_domain``.
             resource_id:   The resource id from ``stack_browse``.
 
         Returns ``{"subscribed": true, "next_step": "..."}`` — ``next_step`` tells
-        you what to run so the new resource becomes usable in this conversation.
+        you what to run so the local copy is fetched.
         """
         async with httpx.AsyncClient() as c:
             r = await c.post(
@@ -524,15 +555,19 @@ def register_foundation_tools(
 
     @mcp.tool()
     async def stack_unsubscribe(resource_type: str, resource_id: str) -> dict:
-        """Unsubscribe from a data package or memory domain in your stack.
+        """Remove the local copy of a data package or memory domain.
 
-        Removes a previously-subscribed resource. Required resources cannot be
-        removed (the server returns an error) — only ``available`` ones you opted
-        into. The local copy persists until the next ``agnes pull`` prunes it.
+        The resource STAYS in your stack (still server-side queryable via
+        ``agnes query --scope auto`` falling back to remote execution) — this
+        only stops `agnes pull` from downloading its parquet/bundle going
+        forward. Required resources cannot be removed this way (the server
+        returns an error) — they're always downloaded, no opt-out. The
+        already-downloaded local copy persists on disk until the next
+        ``agnes pull`` prunes it.
 
         Args:
             resource_type: ``data_package`` or ``memory_domain``.
-            resource_id:   The resource id to unsubscribe from.
+            resource_id:   The resource id to remove the local copy of.
 
         Returns ``{"unsubscribed": true}`` on success.
         """
@@ -544,6 +579,71 @@ def register_foundation_tools(
             )
             r.raise_for_status()
         return {"unsubscribed": True}
+
+    @mcp.tool()
+    async def stack_artefacts_candidates() -> dict:
+        """List artefacts (file Collections) you could add to your Stack.
+
+        Candidates are accessible to you (owned, shared with you/your team,
+        or workspace-published) and NOT already in your Stack. Adding one to
+        your Stack (``stack_artefact_add``) is what makes the default agent
+        able to use it — being accessible to you is not the same as being in
+        your Stack.
+
+        Returns ``{"items": [{"id", "title", "type_label", "description",
+        "owner_label", "mine", "visibility", "visibility_label",
+        "updated_iso", "href"}], "total_accessible": int}``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/stack/artefacts/candidates",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def stack_artefact_add(corpus_id: str) -> dict:
+        """Add an artefact (file Collection) to your Stack.
+
+        Makes the default agent able to use it. 404 if the artefact doesn't
+        exist; 403 if you don't have access to it (not owned, not shared
+        with you/your team, not workspace-published). Idempotent.
+
+        Args:
+            corpus_id: The artefact id, from ``stack_artefacts_candidates``.
+
+        Returns ``{"added": true, "card": {...}}``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/stack/artefacts/{corpus_id}",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @mcp.tool()
+    async def stack_artefact_remove(corpus_id: str) -> dict:
+        """Remove an artefact from your Stack — drops the default agent's
+        access only. The artefact itself, its files, ownership, and sharing
+        are unaffected.
+
+        Args:
+            corpus_id: The artefact id to remove from your Stack.
+
+        Returns ``{"removed": true}`` on success.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.delete(
+                f"{base_url}/api/stack/artefacts/{corpus_id}",
+                headers=headers_fn(),
+                timeout=30,
+            )
+            r.raise_for_status()
+        return {"removed": True}
 
     @mcp.tool()
     async def store_rate(entity_id: str, vote: int) -> dict:
@@ -1186,6 +1286,44 @@ def register_foundation_tools(
             )
             r.raise_for_status()
         return {"deleted": digest_id}
+
+    @mcp.tool()
+    async def chat_upload_file(
+        file_path: str,
+        kind: str = "data",
+        register_as_table: bool = False,
+        table_name: str = "",
+    ) -> dict:
+        """Upload a local file into your chat workspace (client-side only).
+
+        Uploading a file by naming a path is inherently a CLIENT-SIDE action:
+        the path is resolved on the machine that runs the MCP server.  This
+        HTTP/server-hosted MCP surface therefore does NOT read files by path —
+        doing so would let a caller name any path the Agnes server can read
+        (``/etc/passwd``, the state DB, …) and exfiltrate it into their
+        workspace.  It is disabled here on purpose.
+
+        To upload a file into your chat workspace, use one of:
+          * ``agnes chat upload <file>`` — the CLI reads the file from your
+            laptop and POSTs it to ``POST /api/chat/uploads``.
+          * the local (stdio) ``chat_upload_file`` MCP tool, which runs on your
+            machine and reads your local filesystem.
+
+        Args:
+            file_path: (unused on this surface) path to the local file.
+            kind: One of ``data``, ``image``, ``document``.
+            register_as_table: Register a data file as a workspace-local table.
+            table_name: Optional table name for registration.
+
+        Mirrors ``POST /api/chat/uploads`` and ``agnes chat upload``; the actual
+        byte upload happens through those client-side surfaces.
+        """
+        raise ValueError(
+            "chat_upload_file by path is not available on the server-hosted MCP "
+            "surface (it would allow reading arbitrary server files). Upload the "
+            "file with `agnes chat upload <file>` from your machine, or use the "
+            "local stdio MCP tool which reads your local filesystem."
+        )
 
     @mcp.tool()
     async def my_secret_test(source_id: str) -> dict:

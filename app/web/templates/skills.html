@@ -1,0 +1,1539 @@
+{% extends "base_index.html" %}
+{# Builder — one authoring surface for the three things a person can add to
+   the Library: a Skill, a Plugin, or a shareable Agent.
+
+   This replaces the single-type Skill Builder. ONE view, no navigation
+   between states — the form grows downward as it is answered:
+
+     1 TYPE       Three cards. Expanded on arrival (so the taxonomy still gets
+                  a proper moment), then COLLAPSED to a one-line summary with a
+                  Change affordance once answered. It was briefly a separate
+                  picker screen; that made the numbering lie (a "step 1 of 2"
+                  followed by sections numbered 1 and 2) and made revising the
+                  choice feel like abandoning the draft rather than editing a
+                  field. Sections 2-3 render only once a type exists.
+     2 IDENTITY   Name, description, category — identical for every type, so
+                  switching never moves the name field out from under you.
+     3 CONTENT    The type's own thing: a Markdown body, or a .zip bundle.
+                  A Markdown body can be WRITTEN or UPLOADED, offered as an
+                  explicit two-button choice rather than as a hint above the
+                  textarea. Both routes fill the same `draft.body`, so upload
+                  is an input method, not a mode: an uploaded file can always
+                  be opened in the editor ("Edit as text"), and a .md carrying
+                  YAML frontmatter fills in step 2 on the way in.
+
+   Switching type is non-destructive BY CONSTRUCTION: the outgoing draft is
+   persisted to its own type slot before the incoming one loads, so no type can
+   overwrite another. The expanded step says so before the click, not after.
+
+   Per-type differences, all of them driven by the TYPES table below:
+
+     skill   markdown body -> POST /api/store/entities/from-markdown
+             Check runs the skill linter (dry_run) — the only type with one.
+     agent   markdown body -> the same endpoint with type=agent.
+             A SHAREABLE agent: a Library resource other people install. It is
+             NOT the personal agent a user configures on /agents, and the copy
+             says so in three places (picker card, builder callout, preview
+             row) because the two are one word apart and a wrong guess here
+             wastes real authoring effort.
+     plugin  .zip bundle  -> POST /api/store/entities (multipart).
+             The bundle is validated server-side by /entities/preview, whose
+             component rows double as this type's Check result.
+
+   Drafts are per-type and live in localStorage only (never the store) — the
+   same honesty-about-persistence pattern the single-type builder used, now
+   keyed by type so starting a plugin can't clobber a half-written skill. A
+   plugin draft keeps its metadata but NOT its .zip: a File cannot be
+   serialized, so resuming one says so and asks for the bundle again. #}
+{% block title %}Builder — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--wide{% endblock %}
+
+{% block head_extra %}
+{# catalog_card.css defines the shared .cc-btn / .cc-btn--primary button used
+   by the builder actions (same as /agents) — without it the buttons fall back
+   to the unstyled browser default. #}
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+<style>
+  /* Page chrome only — all colors ride --ds-* tokens. Each type carries its
+     own categorical accent (--ds-kind-skill / -plugin / -agent) on the avatar,
+     kicker and preview; actions stay on --ds-primary so the primary action
+     never changes colour as you switch type. */
+
+  /* ── Step 1: type picker ── */
+  .sk-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin: 2px 0 0; padding-bottom: 24px; }
+  .sk-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
+  .sk-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 64ch; }
+  .sk-wip { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-warn-ink); background: var(--ds-warn-bg); border: 1px solid var(--ds-warn-line); border-radius: var(--ds-radius-pill); padding: 2px 9px; }
+
+  .sk-types { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 14px 0 0; }
+  .sk-type { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; padding: 18px; text-align: left; font: inherit; color: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 10px; transition: border-color var(--ds-motion-fast) var(--ds-ease-standard), box-shadow var(--ds-motion-fast) var(--ds-ease-standard); }
+  .sk-type:hover { border-color: var(--ds-primary); box-shadow: var(--ds-shadow-md); }
+  .sk-type:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; }
+  /* The current type when the step is re-opened. Carried by aria-current too,
+     so the state is not colour-only. */
+  .sk-type.is-on { border-color: var(--ds-primary); background: var(--ds-primary-light); }
+  .sk-type h3 { font-size: 16px; margin: 0; }
+  .sk-type-what { font-size: 13.5px; color: var(--ds-text-secondary); line-height: 1.5; margin: 0; flex: 1; }
+  .sk-type-takes { font-size: 12.5px; color: var(--ds-text-muted); margin: 0; border-top: 1px solid var(--ds-border); padding-top: 10px; }
+  .sk-type-takes strong { color: var(--ds-text-secondary); font-weight: 650; }
+  .sk-type-draft { font-size: 12px; font-weight: 600; color: var(--ds-primary); margin: 0; }
+  .sk-types-note { margin-top: 12px; }
+
+  /* Step 1 once answered: a one-line summary that keeps the choice visible
+     and revisable without spending the room the three cards need. */
+  .sk-sec--done .sk-sec-head { padding: 12px 18px; }
+  .sk-sec-no--done { background: var(--ds-accent-success-bg); border-color: var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
+  .sk-sec-collapsed { display: flex; align-items: center; gap: 11px; }
+  .sk-sec-collapsed .sk-ava { width: 30px; height: 30px; border-radius: 9px; }
+  .sk-sec-collapsed .sk-ava svg { width: 17px; height: 17px; }
+  .sk-sec-collapsed-txt { min-width: 0; }
+  /* 9px, not pill: it is a secondary action sitting a few centimetres from the
+     .cc-btn row, and two button shapes in one band read as two systems. */
+  .sk-sec-change { border: 1px solid var(--ds-border); background: var(--ds-surface); color: var(--ds-text-secondary); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; padding: 5px 12px; border-radius: 9px; flex-shrink: 0; }
+  .sk-sec-change:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
+
+  /* Type avatar — the accent is set per type via a modifier class so the
+     picker, the builder head and the preview all read the same colour. */
+  .sk-ava { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; background: var(--ds-kind-skill-soft); color: var(--ds-kind-skill); }
+  .sk-ava svg { width: 20px; height: 20px; }
+  .sk-ava--skill { background: var(--ds-kind-skill-soft); color: var(--ds-kind-skill); }
+  .sk-ava--plugin { background: var(--ds-kind-plugin-soft); color: var(--ds-kind-plugin); }
+  .sk-ava--agent { background: var(--ds-kind-agent-soft); color: var(--ds-kind-agent); }
+
+  /* Discard — the only destructive control here, so it is deliberately the
+     lowest-emphasis thing in the action row until you hover it. */
+  .sk-draft-discard { border: none; background: none; color: var(--ds-text-muted); cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; padding: 5px 10px; border-radius: 8px; }
+  .sk-draft-discard:hover { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
+
+  /* ── Step 2: builder shell (shared by every type) ── */
+  /* Back link — the shared detail-page treatment (macros/_detail.html
+     `.detail-back`): inline-flex, 6px gap, 13px, 14px below. Matching it
+     matters because this control sits in the same place on every page that
+     has one; it must not invent its own rhythm. It also has to live in the
+     SAME band as the heading it precedes — parked in the head band it was
+     separated from the build head by the shell's 28px inter-band gap. */
+  .sk-back { display: inline-flex; align-items: center; gap: 6px; border: none; background: none; color: var(--ds-text-secondary); font: inherit; font-size: 13px; cursor: pointer; padding: 0; margin: 0 0 14px; text-decoration: none; }
+  .sk-back:hover { color: var(--ds-primary); }
+  .sk-build-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0 0 18px; }
+  .sk-build-kicker { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ds-kind-skill); }
+  .sk-build-kicker--skill { color: var(--ds-kind-skill); }
+  .sk-build-kicker--plugin { color: var(--ds-kind-plugin); }
+  .sk-build-kicker--agent { color: var(--ds-kind-agent); }
+  .sk-build-head h2 { font-size: 24px; margin: 2px 0 0; word-break: break-word; }
+  .sk-build-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 1 1 320px; flex-wrap: wrap; min-width: 0; margin-top: 4px; }
+  .sk-bgrid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }
+  /* Before a type is chosen there is no preview to show, so step 1 gets the
+     full width rather than sitting next to an empty column. */
+  .sk-bgrid--solo { grid-template-columns: minmax(0, 1fr); }
+  @media (max-width: 980px) { .sk-bgrid { grid-template-columns: 1fr; } }
+
+  /* Access picker — a required choice before saving. Private leads because
+     it's the safe default: a new item shouldn't reach the whole org until the
+     author says so. Selection is carried by the radio + an is-on outline,
+     never colour alone. */
+  .sk-access { margin: 14px 0 0; }
+  .sk-access-opt { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 10px; cursor: pointer; }
+  .sk-access-opt + .sk-access-opt { margin-top: 8px; }
+  .sk-access-opt:hover { border-color: var(--ds-text-muted); }
+  .sk-access-opt.is-on { border-color: var(--ds-primary); background: var(--ds-primary-light); }
+  .sk-access-opt input { margin-top: 2px; accent-color: var(--ds-primary); flex-shrink: 0; }
+  .sk-access-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .sk-access-name { font-size: 13.5px; font-weight: 600; color: var(--ds-text-primary); }
+  .sk-access-hint { font-size: 12.5px; line-height: 1.45; color: var(--ds-text-secondary); }
+
+  /* Numbered sections. */
+  .sk-sec { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; margin-bottom: 14px; overflow: hidden; }
+  .sk-sec-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
+  .sk-sec-no { width: 26px; height: 26px; border-radius: 50%; background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); color: var(--ds-text-secondary); font-size: 12.5px; font-weight: 700; display: grid; place-items: center; flex-shrink: 0; }
+  .sk-sec-head h3 { font-size: 15px; margin: 0; }
+  .sk-sec-head h3 .sk-sec-note { font-weight: 400; color: var(--ds-text-muted); font-size: 13px; margin-left: 4px; }
+  .sk-sec-sub { margin: 2px 0 0; font-size: 12.5px; color: var(--ds-text-secondary); }
+  .sk-sec-grow { flex: 1; min-width: 0; }
+  .sk-sec-body { padding: 4px 18px 18px; border-top: 1px solid var(--ds-border); }
+
+  /* Fields. */
+  .sk-field { display: block; margin: 14px 0 0; }
+  .sk-field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--ds-text-primary); }
+  .sk-field > span em { font-weight: 400; color: var(--ds-text-muted); font-style: normal; }
+  .sk-field input[type=text], .sk-field textarea, .sk-field select { width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); resize: vertical; }
+  .sk-field textarea.mono { font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 13px; line-height: 1.55; }
+  .sk-field input:focus, .sk-field textarea:focus, .sk-field select:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .sk-hint { font-size: 12px; color: var(--ds-text-muted); margin: 6px 0 0; }
+  .sk-hint.err { color: var(--ds-accent-danger-ink); }
+  /* Guidance attached to a field. On the sunken surface these read as
+     disabled chrome and get skipped; the blue info vocabulary + an ⓘ badge
+     in the gutter files them as "something you want to know" instead. */
+  .sk-note { position: relative; font-size: 12.5px; line-height: 1.55; color: var(--ds-info-ink); background: var(--ds-info-bg); border: 1px solid color-mix(in srgb, var(--ds-info-line) 32%, transparent); border-left: 3px solid var(--ds-info-line); border-radius: 9px; padding: 9px 12px 9px 33px; margin: 14px 0 0; }
+  .sk-note::before { content: "i"; position: absolute; left: 11px; top: 10px; width: 15px; height: 15px; border-radius: 50%; background: var(--ds-info-line); color: var(--ds-surface); font-size: 11px; font-weight: 700; line-height: 15px; text-align: center; }
+  .sk-note a { color: var(--ds-info-ink); text-decoration: underline; }
+  .sk-note strong { color: var(--ds-info-ink); font-weight: 650; }
+  .sk-note code { background: color-mix(in srgb, var(--ds-info-line) 16%, transparent); color: var(--ds-info-ink); padding: 1px 5px; border-radius: 4px; }
+
+  /* Callout that separates a shareable agent from a personal one. Uses the
+     agent accent as a left rule so it reads as "about agents" without
+     competing with the danger/warn semantics. */
+  .sk-callout { display: flex; gap: 11px; align-items: flex-start; border: 1px solid var(--ds-border); border-left: 3px solid var(--ds-kind-agent); border-radius: 10px; background: var(--ds-surface-sunken); padding: 12px 14px; margin: 0 0 14px; }
+  .sk-callout-body { font-size: 12.5px; color: var(--ds-text-secondary); line-height: 1.5; min-width: 0; }
+  .sk-callout-body strong { color: var(--ds-text-primary); font-weight: 650; }
+  .sk-callout-body a { color: var(--ds-primary); }
+
+  /* ── Content input: write ⇄ upload ──
+     A markdown type can be authored in the textarea OR handed over as a file,
+     and the two are offered as an equal, explicit choice. They were not: the
+     file path was a 12.5px dashed strip sitting on top of a 14-row textarea,
+     which reads as decoration next to a cursor blinking in a big empty box —
+     authors who already had a SKILL.md on disk opened it and pasted, or worse,
+     retyped it. The segmented control puts both routes at the same weight
+     before either input is shown.
+
+     Upload is an INPUT METHOD, not a storage mode: the file's text lands in
+     the same `draft.body` the textarea edits, so "Edit as text" is always
+     available and nothing about the draft depends on which route was used.
+
+     Shape follows the page's control vocabulary — 9px, the same radius as
+     .cc-btn and every input here. Pill radius is reserved for the one
+     prominent CTA per context and for badges; the design system says inputs
+     are never pill-shaped, and this control fills a field. The track and its
+     buttons are concentric by the nested-radius rule (outer = inner +
+     padding: 6 + 3 = 9), so the gap between them stays even at the corners. */
+  .sk-modes { display: inline-flex; gap: 3px; padding: 3px; margin: 14px 0 0; background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 9px; }
+  .sk-mode { display: inline-flex; align-items: center; gap: 7px; border: none; background: none; font: inherit; font-size: 13px; font-weight: 600; color: var(--ds-text-secondary); padding: 7px 14px; border-radius: 6px; cursor: pointer; }
+  .sk-mode svg { width: 15px; height: 15px; flex-shrink: 0; }
+  .sk-mode:hover { color: var(--ds-text-primary); }
+  .sk-mode[aria-pressed="true"] { background: var(--ds-surface); color: var(--ds-primary); box-shadow: var(--ds-shadow-sm); }
+  .sk-mode:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+
+  /* Drop zone — .md for skills/agents, .zip for plugins. The drop TARGET is the
+     whole content section (`#sk-drop`), not just the dashed box, so a file
+     dragged onto the textarea in Write mode is caught rather than opened by the
+     browser; the dashed box is only where the target is visible. */
+  .sk-mdrop { border: 1.5px dashed var(--ds-border); border-radius: 12px; padding: 26px 18px; margin: 14px 0 0; font-size: 13px; color: var(--ds-text-secondary); text-align: center; transition: border-color var(--ds-motion-fast) var(--ds-ease-standard), background var(--ds-motion-fast) var(--ds-ease-standard); }
+  #sk-drop.is-dragover { outline: 2px dashed var(--ds-primary); outline-offset: -6px; border-radius: 12px; }
+  #sk-drop.is-dragover .sk-mdrop { border-color: var(--ds-primary); background: var(--ds-primary-light); color: var(--ds-primary); }
+  .sk-mdrop-ico { display: block; width: 30px; height: 30px; margin: 0 auto 10px; color: var(--ds-text-muted); }
+  .sk-mdrop-lead { font-size: 14px; font-weight: 600; color: var(--ds-text-primary); margin: 0 0 10px; }
+  .sk-mdrop-sub { margin: 10px 0 0; font-size: 12px; color: var(--ds-text-muted); }
+  /* "Choose a file" is a real <button>, not a <label for>. A label is not
+     keyboard-focusable and the input it pointed at is `hidden`, so until this
+     the file route could not be reached without a mouse at all. */
+  .sk-browse { border: 1px solid var(--ds-border); background: var(--ds-surface); color: var(--ds-text-primary); font: inherit; font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 9px; cursor: pointer; }
+  .sk-browse:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
+  .sk-browse--link { border: none; background: none; padding: 0; color: var(--ds-primary); font-size: inherit; text-decoration: underline; }
+  .sk-browse--link:hover { border: none; }
+
+  /* The attached file, once there is one. A solid card, not the dashed box:
+     dashes mean "empty slot", and this slot is full. */
+  .sk-filecard { border: 1px solid var(--ds-border); border-radius: 12px; overflow: hidden; background: var(--ds-surface); margin: 14px 0 0; }
+  .sk-filecard-hd { display: flex; align-items: center; gap: 11px; padding: 12px 14px; }
+  .sk-filecard-ico { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; flex-shrink: 0; background: var(--ds-surface-sunken); color: var(--ds-text-secondary); }
+  .sk-filecard-ico svg { width: 17px; height: 17px; }
+  .sk-filecard-txt { min-width: 0; flex: 1; }
+  .sk-file-name { display: block; font-size: 13.5px; font-weight: 650; color: var(--ds-text-primary); word-break: break-all; }
+  .sk-file-size { display: block; font-size: 12px; color: var(--ds-text-muted); }
+  .sk-filecard-acts { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .sk-filecard-act { border: none; background: none; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ds-text-secondary); cursor: pointer; padding: 5px 9px; border-radius: 8px; }
+  .sk-filecard-act:hover { color: var(--ds-primary); background: var(--ds-surface-sunken); }
+  .sk-filecard-act--danger:hover { color: var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg); }
+  /* What actually arrived. An upload with no visible content is an act of
+     faith; the head of the file is the cheapest possible proof. */
+  .sk-filepv { border-top: 1px solid var(--ds-border); background: var(--ds-surface-sunken); margin: 0; padding: 12px 14px; max-height: 230px; overflow: auto; font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; line-height: 1.55; color: var(--ds-text-secondary); white-space: pre-wrap; word-break: break-word; }
+
+  /* Preview aside. */
+  .sk-preview { position: sticky; top: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .sk-preview h3 { font-size: 14px; margin: 0 0 10px; }
+  .sk-pv-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; box-shadow: var(--ds-shadow-md); overflow: hidden; }
+  .sk-pv-hd { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--ds-border); }
+  .sk-pv-hd .sk-ava { width: 32px; height: 32px; border-radius: 9px; }
+  .sk-pv-name { font-size: 14px; font-weight: 650; color: var(--ds-text-primary); word-break: break-word; }
+  .sk-pv-cat { font-size: 12px; color: var(--ds-text-muted); }
+  .sk-pv-body { padding: 14px; }
+  .sk-pv-desc { font-size: 13.5px; color: var(--ds-text-secondary); line-height: 1.5; white-space: pre-wrap; min-height: 20px; }
+  .sk-pv-meta { margin-top: 12px; border: 1px solid var(--ds-border); border-radius: 10px; overflow: hidden; }
+  .sk-pv-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-size: 12.5px; border-bottom: 1px solid var(--ds-border); }
+  .sk-pv-row:last-child { border-bottom: none; }
+  .sk-pv-k { color: var(--ds-text-secondary); }
+  .sk-pv-v { color: var(--ds-text-primary); font-weight: 550; text-align: right; word-break: break-word; }
+  .sk-pv-v code { font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; }
+
+  /* Check panel — the type-adapted "test it before you ship it" result.
+     Advisory throughout: it never blocks saving. */
+  .sk-lint { border: 1px solid var(--ds-border); border-radius: 12px; padding: 12px 14px; background: var(--ds-surface); }
+  .sk-lint-head { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; font-weight: 700; color: var(--ds-text-muted); margin: 0 0 8px; }
+  .sk-lint-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .sk-lint-row { display: flex; align-items: flex-start; gap: 8px; }
+  .sk-lint-sev { flex: 0 0 auto; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: var(--ds-radius-pill); background: var(--ds-surface-sunken); color: var(--ds-text-secondary); text-transform: capitalize; }
+  .sk-lint-sev--fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+  .sk-lint-sev--pass { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .sk-lint-msg { flex: 1; font-size: 12.5px; color: var(--ds-text-primary); line-height: 1.45; }
+  .sk-lint-msg a { font-size: 12px; white-space: nowrap; color: var(--ds-primary); }
+  .sk-lint-clean { font-size: 12.5px; color: var(--ds-accent-success-ink); }
+  .sk-lint-sub { font-size: 11.5px; color: var(--ds-text-muted); margin: 8px 0 0; }
+
+  /* Result / status line above the actions — takes its own flex row so a long
+     validation message wraps instead of running off the page. */
+  .sk-result { font-size: 13px; color: var(--ds-text-secondary); flex: 1 1 100%; min-width: 0; text-align: right; line-height: 1.45; overflow-wrap: anywhere; }
+  .sk-result:empty { display: none; }
+  .sk-result.err { color: var(--ds-accent-danger-ink); }
+  .sk-result.ok { color: var(--ds-accent-success-ink); font-weight: 600; }
+  .sk-result.checking { color: var(--ds-text-secondary); font-style: italic; }
+
+  /* ── Review status banner (shown above the builder form after save) ── */
+  .sk-review-banner { display: flex; align-items: flex-start; gap: 14px; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; font-size: 14px; line-height: 1.5; }
+  .sk-review-banner.pending { background: var(--ds-accent-warn-bg); border: 1px solid var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink); }
+  .sk-review-banner.ok      { background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
+  .sk-review-banner.err     { background: var(--ds-accent-danger-bg); border: 1px solid var(--ds-accent-danger-line); color: var(--ds-accent-danger-ink); }
+  .sk-review-banner-icon { font-size: 22px; line-height: 1; flex-shrink: 0; margin-top: 1px; }
+  .sk-review-banner-body { flex: 1; min-width: 0; }
+  .sk-review-banner-title { font-weight: 700; margin-bottom: 4px; }
+  .sk-review-banner-hint { font-size: 13px; opacity: 0.85; }
+  .sk-review-pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 6px; animation: sk-pulse 1.4s ease-in-out infinite; }
+  @keyframes sk-pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+  .sk-review-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .sk-review-meta { font-size: 12.5px; color: var(--ds-text-muted); margin-top: 12px; }
+  .sk-review-label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 9px; border-radius: var(--ds-radius-pill); }
+  .sk-review-label.pending { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .sk-review-label.ok      { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .sk-review-label.err     { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+</style>
+{% endblock %}
+
+{% block page_head %}
+{# The EMPTY STATE's header: back link, title, lede. The whole band retires the
+   moment a type is chosen — the build head below ("Authoring skill / <name>")
+   says the same thing but specifically, and re-titles itself as the author
+   types a name, so keeping this would stack a second, inert title on top of it.
+   The back link is re-rendered at the top of the surface in that state, so it
+   stays put visually while sitting in the same band as the heading it
+   precedes. #}
+<div id="sk-page-head">
+  <a class="sk-back" href="/library">← Library</a>
+  <div class="sk-head">
+    <div>
+      <h1>Builder <span class="sk-wip">WIP</span></h1>
+      <p class="lede">Author a skill, a plugin, or a shareable agent. Keep it as a draft while you work, then save it to your Library — privately, or published for everyone here.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_surface %}
+<script type="application/json" id="sk-categories">{{ store_categories | tojson }}</script>
+
+<div id="sk-builder-view"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  var CATEGORIES = JSON.parse(document.getElementById('sk-categories').textContent || '[]');
+  var USER_ID = "{{ session.user.id }}";
+  // True when an LLM guardrail is active on this instance — doSave() runs a
+  // blocking pre-check and gates the real publish on the verdict.
+  var GUARDRAILS_ENABLED = {{ 'true' if guardrails_enabled else 'false' }};
+  var GUARDRAILS_LLM_READY = {{ 'true' if guardrails_llm_ready else 'false' }};
+  // Drafts never touch the store — they live only in this browser, one slot
+  // per type, so an in-progress plugin can't clobber a half-written skill.
+  var DRAFT_KEY = 'agnes_builder_draft_v1_' + USER_ID;
+  // Store name contract: ^[a-z][a-z0-9-]{0,63}$ (mirrors _NAME_RE in
+  // app/api/store.py). The builder validates against it before enabling
+  // Save so the server never rejects on format alone.
+  var NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
+  var MAX_BUNDLE_BYTES = 10 * 1024 * 1024;
+  /* An uploaded markdown body is kept in the draft, and the draft lives in
+     localStorage — so this cap is about the ~5 MB the browser gives all three
+     type slots together, not about what the store would accept. */
+  var MAX_MD_BYTES = 512 * 1024;
+  var MD_EXT_RE = /\.(md|markdown|mdx|txt)$/i;
+  var MD_ACCEPT = '.md,.markdown,.mdx,.txt,text/markdown,text/plain';
+  var PREVIEW_LINES = 14;
+
+  var view = document.getElementById('sk-builder-view');
+  var pageHead = document.getElementById('sk-page-head');
+  var pageHeadBand = pageHead ? pageHead.closest('.idx-head') : null;
+
+  var ICONS = {
+    skill: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4.6a2 2 0 0 1 4 0c0 .5.4 1 1 1h2.4V8c0 .6.4 1 1 1a2 2 0 0 1 0 4c-.6 0-1 .4-1 1v2.4H15c-.6 0-1 .4-1 1a2 2 0 0 1-4 0c0-.6-.4-1-1-1H6.6V14c0-.6-.5-1-1-1a2 2 0 0 1 0-4c.5 0 1-.4 1-1V5.6H9c.6 0 1-.5 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>',
+    plugin: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 20 7v10l-8 4-8-4V7l8-4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 11 20 7M12 11v10M12 11 4 7" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    agent: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>',
+    write: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4.5 19.5h4L19 9a2.1 2.1 0 0 0-3-3L5.5 16.5l-1 3Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m14.5 7.5 2 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+    upload: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+    file: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 3H7a1.6 1.6 0 0 0-1.6 1.6v14.8A1.6 1.6 0 0 0 7 21h10a1.6 1.6 0 0 0 1.6-1.6V7.6L14 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13.8 3.2V8h4.6" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>'
+  };
+
+  /* ── The type table.
+     Everything that differs between a skill, a plugin and a shareable agent
+     is declared here; the render functions below stay type-agnostic and read
+     from it. `source` is the one structural fork: 'markdown' types author a
+     body in a textarea and publish as JSON, 'bundle' types attach a .zip and
+     publish as multipart. ── */
+  var TYPES = {
+    skill: {
+      key: 'skill',
+      label: 'Skill',
+      kicker: 'Authoring skill',
+      newTitle: 'New skill',
+      source: 'markdown',
+      what: 'A step-by-step recipe an agent loads on demand — how to run a report, how to shape a query, how your team does a thing.',
+      takes: 'Markdown instructions',
+      bodyLabel: 'Skill content',
+      bodyNote: 'Markdown',
+      secTitle: 'Instructions',
+      secNote: 'the skill body',
+      secSub: 'The step-by-step Markdown an agent follows once the skill loads.',
+      bodyPlaceholder: '## Steps\n1. …\n2. …\n\nDescribe exactly what the agent should do, step by step.',
+      descLabel: 'Description',
+      descNote: '— the trigger',
+      descPlaceholder: 'Use when … (the situation that should make an agent load this skill).',
+      descPreview: 'Use when … (the trigger that tells an agent to load this skill).',
+      namePlaceholder: 'quarterly-report-recipe',
+      nameExample: 'quarterly-report-recipe',
+      // Only skills have a linter — SL rules assume a SKILL.md body.
+      checkLabel: 'Check',
+      checkTitle: 'Advisory check — doesn’t block publishing'
+    },
+    plugin: {
+      key: 'plugin',
+      label: 'Plugin',
+      kicker: 'Authoring plugin',
+      newTitle: 'New plugin',
+      source: 'bundle',
+      what: 'A packaged bundle — commands, hooks, MCP servers, agents — installed as one unit. Built outside this page and uploaded here.',
+      takes: 'A .zip with .claude-plugin/plugin.json',
+      secTitle: 'Bundle',
+      secNote: 'the plugin .zip',
+      secSub: 'Attach the packaged plugin. The server reads its manifest and lists what’s inside before you save.',
+      descLabel: 'Description',
+      descNote: '— what it does',
+      descPlaceholder: 'What the plugin adds and who should install it.',
+      descPreview: 'What the plugin adds and who should install it.',
+      namePlaceholder: 'my-team-toolkit',
+      nameExample: 'my-team-toolkit',
+      checkLabel: 'Check bundle',
+      checkTitle: 'Bundle contents — advisory'
+    },
+    agent: {
+      key: 'agent',
+      label: 'Agent',
+      kicker: 'Authoring shareable agent',
+      newTitle: 'New shareable agent',
+      source: 'markdown',
+      what: 'A role definition other people can install from the Library — a named specialist with its own brief, shared as a reusable resource.',
+      takes: 'Markdown role definition',
+      bodyLabel: 'Role definition',
+      bodyNote: 'Markdown',
+      secTitle: 'Role & instructions',
+      secNote: 'the agent body',
+      secSub: 'Who this agent is, what it is for, and how it should work. This is what an installer gets.',
+      bodyPlaceholder: 'You are …\n\n## What you do\n- …\n\n## How you work\n- …',
+      descLabel: 'Description',
+      descNote: '— what it does, and when to use it',
+      descPlaceholder: 'What the agent does. Use for … (the situation that calls for it).',
+      descPreview: 'What the agent does. Use for … (the situation that calls for it).',
+      namePlaceholder: 'release-notes-writer',
+      nameExample: 'release-notes-writer',
+      checkLabel: 'Check',
+      checkTitle: 'Advisory check — doesn’t block publishing'
+    }
+  };
+  var TYPE_ORDER = ['skill', 'plugin', 'agent'];
+
+  var type = null;        // null → step 1 expanded, nothing below it yet
+  var typeOpen = false;   // step 1 re-opened via Change while a type is set
+  var draft = null;       // the in-progress item in the builder
+  var bundle = null;      // plugin only: the attached File (never persisted)
+  var check = null;       // last Check result, or null
+  var inFlight = false;
+  var reviewInProgress = false;  // true while a submit is in the review queue; blocks re-save
+  var _reviewBannerHtml = null;  // saved banner HTML — re-inserted after every render()
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function cfg() { return TYPES[type]; }
+
+  /* ── Draft persistence (localStorage only — see DRAFT_KEY note above) ──
+     Shape: { skill: {...}|null, plugin: {...}|null, agent: {...}|null }.
+     Reads tolerate the single-slot shape the old Skill Builder wrote, so an
+     author with an unsaved skill from before this redesign keeps it. ── */
+  function loadDrafts() {
+    try {
+      var raw = localStorage.getItem(DRAFT_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch (e) { /* corrupt / private mode — fall through to the legacy read */ }
+    // Legacy single-slot key from the skill-only builder.
+    try {
+      var legacyRaw = localStorage.getItem('agnes_skill_draft_v1_' + USER_ID);
+      var legacy = legacyRaw ? JSON.parse(legacyRaw) : null;
+      if (legacy) return { skill: legacy };
+    } catch (e) { /* ignore */ }
+    return {};
+  }
+  var drafts = loadDrafts();
+
+  // A draft the author never typed into is not work worth resuming — saving
+  // it would put an "Untitled skill" row in the picker for anyone who opened
+  // a type and backed straight out. `access` is excluded deliberately: it is
+  // pre-selected, so it alone never counts as content.
+  function isBlank() {
+    return !(draft.name || '').trim() && !(draft.description || '').trim() &&
+           !(draft.body || '').trim() && !draft.category && !bundle;
+  }
+  function persist() {
+    if (!type || !draft) return;
+    // After a successful save the review banner is shown and the entity exists
+    // in the DB. Any further edit in the still-visible form must not re-create
+    // a localStorage draft, or the next visit will offer to "resume" a skill
+    // that is already published (and a re-save would fail on a name conflict).
+    if (reviewInProgress) return;
+    // Emptying the last field is a way of throwing work away too — leaving the
+    // old slot behind would resurrect the removed content on the next visit,
+    // which is exactly what someone who just hit Remove did not ask for.
+    if (isBlank()) { if (drafts[type]) discardDraft(type); return; }
+    drafts[type] = JSON.parse(JSON.stringify(draft));
+    drafts[type].saved_at = new Date().toISOString();
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch (e) { /* quota / private mode — soft-fail */ }
+  }
+  function discardDraft(k) {
+    delete drafts[k];
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(drafts));
+      if (k === 'skill') localStorage.removeItem('agnes_skill_draft_v1_' + USER_ID);
+    } catch (e) { /* ignore */ }
+  }
+
+  function relativeSavedAt(iso) {
+    var t = iso ? Date.parse(iso) : NaN;
+    if (isNaN(t)) return 'saved';
+    var mins = Math.round((Date.now() - t) / 60000);
+    if (mins < 1) return 'saved just now';
+    if (mins < 60) return 'saved ' + mins + ' min ago';
+    var hrs = Math.round(mins / 60);
+    if (hrs < 24) return 'saved ' + hrs + ' hr' + (hrs === 1 ? '' : 's') + ' ago';
+    var days = Math.round(hrs / 24);
+    return 'saved ' + days + ' day' + (days === 1 ? '' : 's') + ' ago';
+  }
+
+  function makeDraft() {
+    // `source_mode` is how the body is being GIVEN ('write' | 'upload'), not
+    // where it is stored — both routes fill `body`. `source_file` is the
+    // provenance of an uploaded one; unlike a plugin's .zip it survives a
+    // reload, because the text itself is in the draft.
+    return { name: '', description: '', category: '', body: '', access: 'private',
+             source_mode: 'write', source_file: null };
+  }
+
+  /* Which input the content section shows. Upload mode with a body but no file
+     to show would hide text the author can still edit, so that combination
+     (only reachable from a hand-edited draft) falls back to the editor. */
+  function bodyMode() {
+    if (!draft) return 'write';
+    if (draft.source_mode !== 'upload') return 'write';
+    return (draft.source_file || !(draft.body || '').trim()) ? 'upload' : 'write';
+  }
+
+  /* ── Validation — per type, but one shape so the shell stays type-agnostic ── */
+  function nameState() {
+    var n = (draft.name || '').trim();
+    if (!n) return { ok: false, msg: 'Lowercase letters, numbers and hyphens — e.g. ' + cfg().nameExample + '.' };
+    if (!NAME_RE.test(n)) return { ok: false, msg: 'Must start with a letter and use only lowercase letters, numbers and hyphens.', err: true };
+    return { ok: true, msg: 'Looks good.' };
+  }
+  // Gate for Save to Library: a valid name plus this type's content.
+  function canPublish() {
+    if (!nameState().ok) return false;
+    if (cfg().source === 'bundle') return !!bundle;
+    return (draft.body || '').trim().length > 0;
+  }
+  // Check needs the same inputs as Save — both send the real payload.
+  function canCheck() { return canPublish(); }
+
+  function bodyStats() {
+    if (cfg().source === 'bundle') {
+      return bundle ? fmtSize(bundle.size) : '—';
+    }
+    var t = (draft.body || '').trim();
+    if (!t) return '—';
+    var words = t.split(/\s+/).filter(Boolean).length;
+    var lines = t.split(/\n/).length;
+    return words + ' word' + (words === 1 ? '' : 's') + ' · ' + lines + ' line' + (lines === 1 ? '' : 's');
+  }
+  function fmtSize(bytes) {
+    // Trailing ".0" on a round limit ("512.0 KB") reads like a measurement
+    // rather than the rule it is.
+    function n(v) { return v.toFixed(1).replace(/\.0$/, ''); }
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return n(bytes / 1024) + ' KB';
+    return n(bytes / (1024 * 1024)) + ' MB';
+  }
+
+  function catOptions() {
+    return '<option value="">— none —</option>' + CATEGORIES.map(function (c) {
+      return '<option value="' + esc(c) + '"' + (draft.category === c ? ' selected' : '') + '>' + esc(c) + '</option>';
+    }).join('');
+  }
+
+  /* ── Section 1 — Type.
+     Expanded until a type is chosen (it IS the old picker screen, so the
+     taxonomy still gets a proper moment on first arrival), then collapsed to
+     a one-line summary with a Change affordance. Sections 2 and 3 render only
+     once a type exists, so the page grows downward instead of swapping. ── */
+  function typeCardsHtml() {
+    return TYPE_ORDER.map(function (k) {
+      var t = TYPES[k];
+      var on = (k === type) ? ' is-on' : '';
+      var d = drafts[k];
+      // Surface a saved draft on its own type's card. This is what makes
+      // switching safe to try: you can see your other work is still there.
+      // relativeSavedAt() already returns "saved …", so the prefix is just
+      // "Draft ·" — not "Draft saved ·", which read "Draft saved · saved now".
+      var note = d
+        ? '<p class="sk-type-draft">Draft · ' + esc(relativeSavedAt(d.saved_at)) + '</p>'
+        : '';
+      return '<button type="button" class="sk-type' + on + '" data-sk-type="' + k + '"' +
+        (on ? ' aria-current="true"' : '') + '>' +
+        '<span class="sk-ava sk-ava--' + k + '">' + ICONS[k] + '</span>' +
+        '<h3>' + esc(t.label) + '</h3>' +
+        '<p class="sk-type-what">' + esc(t.what) + '</p>' +
+        '<p class="sk-type-takes"><strong>Takes:</strong> ' + esc(t.takes) + '</p>' +
+        note +
+      '</button>';
+    }).join('');
+  }
+
+  function typeSectionHtml() {
+    // Collapsed: a compact row naming the choice, with Change to reopen.
+    if (type && !typeOpen) {
+      var c = cfg();
+      return '<div class="sk-sec sk-sec--done">' +
+        '<div class="sk-sec-head">' +
+          '<span class="sk-sec-no sk-sec-no--done" aria-hidden="true">✓</span>' +
+          '<div class="sk-sec-grow sk-sec-collapsed">' +
+            '<span class="sk-ava sk-ava--' + type + '">' + ICONS[type] + '</span>' +
+            '<span class="sk-sec-collapsed-txt"><h3>Type</h3>' +
+            '<p class="sk-sec-sub">' + esc(c.label) + ' — ' + esc(c.takes.toLowerCase()) + '</p></span>' +
+          '</div>' +
+          '<button type="button" class="sk-sec-change" data-sk-change>Change</button>' +
+        '</div>' +
+      '</div>';
+    }
+    // Expanded: the three cards. The "keeps your work" promise is stated
+    // BEFORE the click, not after — that is the whole point of saying it.
+    var switchNote = (type && !isBlank())
+      ? '<p class="sk-hint sk-types-note">Picking another type keeps your ' + esc(cfg().label.toLowerCase()) +
+        ' work — each type holds its own draft, and you can switch back.</p>'
+      : '';
+    return '<div class="sk-sec">' +
+      '<div class="sk-sec-head"><span class="sk-sec-no">1</span>' +
+        '<div class="sk-sec-grow"><h3>Type</h3>' +
+        '<p class="sk-sec-sub">What are you building? All three land in your Library and can be shared with everyone here.</p></div>' +
+      '</div>' +
+      '<div class="sk-sec-body">' +
+        // No role="list": the children are buttons, not listitems, and a list
+        // role with non-listitem children is worse for a screen reader than
+        // no role at all. The section heading already names the group.
+        '<div class="sk-types">' + typeCardsHtml() + '</div>' +
+        switchNote +
+      '</div>' +
+    '</div>';
+  }
+
+  /* ── The builder shell ── */
+  function agentCalloutHtml() {
+    if (type !== 'agent') return '';
+    return '<div class="sk-callout">' +
+      '<span class="sk-ava sk-ava--agent">' + ICONS.agent + '</span>' +
+      '<span class="sk-callout-body">This is a <strong>shareable agent</strong> — a Library resource other people install and run for themselves. ' +
+      'It is not one of your <a href="/agents">personal agents</a>: those are configured on the Agents page, hold your own scopes and secrets, and stay yours. ' +
+      'Nothing you write here inherits your access.</span>' +
+    '</div>';
+  }
+
+  /* The file input is `hidden` (never a visible, unstyleable control) and is
+     opened by [data-sk-browse] buttons via .click(). One per render, since the
+     whole section is rebuilt. */
+  function fileInputHtml(accept) {
+    return '<input type="file" id="sk-file-input" accept="' + accept + '" hidden>';
+  }
+
+  function fileCardHtml(name, size, sub, preview) {
+    return '<div class="sk-filecard">' +
+      '<div class="sk-filecard-hd">' +
+        '<span class="sk-filecard-ico">' + ICONS.file + '</span>' +
+        '<span class="sk-filecard-txt">' +
+          '<span class="sk-file-name">' + esc(name) + '</span>' +
+          '<span class="sk-file-size">' + esc(fmtSize(size)) + (sub ? ' · ' + esc(sub) : '') + '</span>' +
+        '</span>' +
+        '<span class="sk-filecard-acts">' +
+          '<button type="button" class="sk-filecard-act" data-sk-browse>Replace</button>' +
+          '<button type="button" class="sk-filecard-act sk-filecard-act--danger" data-sk-removefile>Remove</button>' +
+        '</span>' +
+      '</div>' +
+      (preview ? '<pre class="sk-filepv">' + esc(preview) + '</pre>' : '') +
+    '</div>';
+  }
+
+  function dropZoneHtml(lead, note, sub) {
+    return '<div class="sk-mdrop">' +
+      '<span class="sk-mdrop-ico">' + ICONS.upload + '</span>' +
+      '<p class="sk-mdrop-lead">' + lead + '</p>' +
+      '<button type="button" class="sk-browse" data-sk-browse>Choose a file</button>' +
+      (note ? '<p class="sk-mdrop-sub">' + note + '</p>' : '') +
+      (sub ? '<p class="sk-mdrop-sub">' + sub + '</p>' : '') +
+    '</div>';
+  }
+
+  /* The mode switch. Toggle buttons rather than tabs: two states of one field,
+     no arrow-key contract to honour, and the pressed state is carried by
+     aria-pressed rather than by colour alone. */
+  function modeSwitchHtml() {
+    var m = bodyMode();
+    function btn(k, icon, label) {
+      return '<button type="button" class="sk-mode" data-sk-mode="' + k + '" aria-pressed="' + (m === k) + '">' +
+        icon + '<span>' + label + '</span></button>';
+    }
+    return '<div class="sk-modes" role="group" aria-label="How to provide the ' + esc(cfg().bodyLabel.toLowerCase()) + '">' +
+      btn('write', ICONS.write, 'Write it here') +
+      btn('upload', ICONS.upload, 'Upload a .md file') +
+    '</div>';
+  }
+
+  function bodySectionHtml() {
+    var c = cfg();
+    if (c.source === 'bundle') {
+      var attached = bundle
+        ? fileCardHtml(bundle.name, bundle.size, 'ready to check', '')
+        : dropZoneHtml('Drop the plugin <strong>.zip</strong> here', '', '.zip · up to ' + fmtSize(MAX_BUNDLE_BYTES));
+      return '<div class="sk-sec-body" id="sk-drop">' +
+        attached + fileInputHtml('.zip,application/zip') +
+        '<div class="sk-note">The archive must contain <code>.claude-plugin/plugin.json</code>. ' +
+        '<strong>Check bundle</strong> validates the layout and lists every command, hook and agent the server finds inside — run it before saving.</div>' +
+      '</div>';
+    }
+
+    var src = draft.source_file;
+    var panel;
+    if (bodyMode() === 'upload') {
+      if (src && (draft.body || '').trim()) {
+        var lines = draft.body.split(/\n/);
+        var head = lines.slice(0, PREVIEW_LINES).join('\n') + (lines.length > PREVIEW_LINES ? '\n…' : '');
+        panel = fileCardHtml(src.name, src.size,
+                             lines.length + ' line' + (lines.length === 1 ? '' : 's') + (src.edited ? ' · edited here' : ''),
+                             head) +
+          // The way back. An upload that cannot be corrected without deleting
+          // and re-uploading is a trap — the file is already just text in the
+          // draft, so editing it costs nothing and changes nothing on disk.
+          '<div class="sk-note">This is the ' + esc(c.bodyLabel.toLowerCase()) + ' that will be saved. ' +
+          'Need to change something? <button type="button" class="sk-browse sk-browse--link" data-sk-mode="write">Edit as text</button> — ' +
+          'your copy on disk is left alone.</div>';
+      } else {
+        panel = dropZoneHtml('Drop your <strong>.md</strong> file here',
+                             'A <code>name</code> / <code>description</code> frontmatter block fills in step 2 for you.',
+                             '.md, .markdown or .txt · up to ' + fmtSize(MAX_MD_BYTES));
+      }
+      panel += fileInputHtml(MD_ACCEPT);
+    } else {
+      panel = '<label class="sk-field"><span>' + esc(c.bodyLabel) + ' <em>— ' + esc(c.bodyNote) + '</em></span>' +
+          '<textarea rows="14" class="mono" data-sk-field="body" placeholder="' + esc(c.bodyPlaceholder) + '">' + esc(draft.body) + '</textarea></label>' +
+        (src ? '<p class="sk-hint">From <strong>' + esc(src.name) + '</strong>. Editing here does not touch the file on your computer.</p>' : '') +
+        '<div class="sk-note">Write at least a couple of paragraphs (the store needs ~200+ characters): explain what it does, when to use it, and what inputs it expects. ' +
+        'A YAML frontmatter block (<code>name</code>, <code>description</code>) is added for you if you don’t write one.</div>' +
+        fileInputHtml(MD_ACCEPT);
+    }
+    return '<div class="sk-sec-body" id="sk-drop">' + modeSwitchHtml() + panel + '</div>';
+  }
+
+  function previewHtml() {
+    var c = cfg();
+    var rows =
+      '<div class="sk-pv-row"><span class="sk-pv-k">Type</span><span class="sk-pv-v">' + esc(c.label) + '</span></div>' +
+      (type === 'agent'
+        ? '<div class="sk-pv-row"><span class="sk-pv-k">Kind</span><span class="sk-pv-v">Library resource</span></div>'
+        : '<div class="sk-pv-row"><span class="sk-pv-k">Invoked as</span><span class="sk-pv-v"><code id="sk-pv-inv">' + (esc(draft.name) || '—') + '</code></span></div>') +
+      '<div class="sk-pv-row"><span class="sk-pv-k">' + (c.source === 'bundle' ? 'Bundle' : 'Content') + '</span><span class="sk-pv-v" id="sk-pv-stats">' + bodyStats() + '</span></div>' +
+      // Provenance, once there is any. Which file a body came from is the first
+      // thing an author checks when two drafts start to look alike.
+      (c.source !== 'bundle' && draft.source_file
+        ? '<div class="sk-pv-row"><span class="sk-pv-k">Source</span><span class="sk-pv-v">' + esc(draft.source_file.name) + '</span></div>'
+        : '') +
+      '<div class="sk-pv-row"><span class="sk-pv-k">Visible to</span><span class="sk-pv-v" id="sk-pv-access">' + (draft.access === 'everyone' ? 'Everyone here' : 'Only you') + '</span></div>' +
+      '<div class="sk-pv-row"><span class="sk-pv-k">Status</span><span class="sk-pv-v" id="sk-pv-status">' + (canPublish() ? 'Ready to save' : 'Draft') + '</span></div>';
+
+    return '<div>' +
+      '<h3>Preview</h3>' +
+      '<div class="sk-pv-card">' +
+        '<div class="sk-pv-hd">' +
+          '<span class="sk-ava sk-ava--' + type + '">' + ICONS[type] + '</span>' +
+          '<div style="min-width:0"><div class="sk-pv-name" id="sk-pv-name">' + (esc(draft.name) || 'your-' + type) + '</div>' +
+          '<div class="sk-pv-cat" id="sk-pv-cat">' + (esc(draft.category) || esc(c.label)) + '</div></div>' +
+        '</div>' +
+        '<div class="sk-pv-body">' +
+          '<div class="sk-pv-desc" id="sk-pv-desc">' + (esc(draft.description) || esc(c.descPreview)) + '</div>' +
+          '<div class="sk-pv-meta">' + rows + '</div>' +
+        '</div>' +
+      '</div>' +
+      checkHtml() +
+    '</div>';
+  }
+
+  /* The Check panel. One renderer, three inputs:
+       skill   lint findings (severity + message + optional doc link)
+       agent   inline guardrail checks (manifest / content / security)
+       plugin  the bundle's component rows from /entities/preview
+     Whatever the type, a row is {sev, msg, doc?} so the markup never forks. */
+  function checkRows() {
+    if (!check) return null;
+    var rows = [];
+    (check.lint && check.lint.findings || []).forEach(function (f) {
+      rows.push({ sev: f.severity || 'note', msg: f.message || '', doc: f.doc });
+    });
+    (check.components || []).forEach(function (comp) {
+      var label = (comp.type || 'file') + (comp.name ? ' · ' + comp.name : '');
+      rows.push({
+        sev: comp.ok ? 'ok' : 'fail',
+        msg: label + (comp.issues && comp.issues.length ? ' — ' + comp.issues.join('; ') : '')
+      });
+    });
+    var inline = check.inline || {};
+    ['manifest', 'content', 'static_security', 'quality'].forEach(function (k) {
+      var res = inline[k];
+      if (!res || !res.issues || !res.issues.length) return;
+      res.issues.forEach(function (i) {
+        rows.push({ sev: res.status === 'pass' ? 'note' : (res.status || 'note'), msg: (i.hint || i.code || k) });
+      });
+    });
+    return rows;
+  }
+
+  function checkHtml() {
+    var rows = checkRows();
+    if (rows === null) return '';
+    var body;
+    if (!rows.length) {
+      body = '<li class="sk-lint-clean">✓ No findings — looks good.</li>';
+    } else {
+      body = rows.map(function (r) {
+        var doc = r.doc ? ' <a href="' + esc(r.doc) + '" target="_blank" rel="noopener">docs ↗</a>' : '';
+        var mod = r.sev === 'fail' ? ' sk-lint-sev--fail' : (r.sev === 'ok' ? ' sk-lint-sev--pass' : '');
+        return '<li class="sk-lint-row"><span class="sk-lint-sev' + mod + '">' + esc(r.sev) + '</span>' +
+          '<span class="sk-lint-msg">' + esc(r.msg) + doc + '</span></li>';
+      }).join('');
+    }
+    var sub = cfg().source === 'bundle'
+      ? '<p class="sk-lint-sub">Layout and contents only. The full security review runs when you save.</p>'
+      : '';
+    return '<div class="sk-lint"><p class="sk-lint-head">' + esc(cfg().checkTitle) + '</p>' +
+      '<ul class="sk-lint-list">' + body + '</ul>' + sub + '</div>';
+  }
+
+  /* One render for the whole page. Before a type exists only section 1 is
+     rendered; choosing one collapses it and grows sections 2-3 beneath it.
+     There is no second view and no navigation between the two. */
+  function render() {
+    // The head band is the empty state's header. Once a type is chosen the
+    // build head carries the title, so the whole band collapses — including
+    // its back link, which the surface re-renders directly above the heading
+    // (the shell puts 28px between the two bands, which is right between
+    // zones but far too much between a back link and its heading).
+    if (pageHeadBand) pageHeadBand.hidden = !!type;
+
+    if (!type) {
+      view.innerHTML = '<div class="sk-bgrid sk-bgrid--solo"><div>' + typeSectionHtml() + '</div></div>';
+      return;
+    }
+
+    var c = cfg(), ns = nameState();
+    view.innerHTML =
+      '<a class="sk-back" href="/library">← Library</a>' +
+      '<div class="sk-build-head">' +
+        '<div style="min-width:0">' +
+          '<div class="sk-build-kicker sk-build-kicker--' + type + '">' + esc(c.kicker) + '</div>' +
+          '<h2 id="sk-build-title">' + (esc(draft.name) || esc(c.newTitle)) + '</h2>' +
+        '</div>' +
+        '<div class="sk-build-actions">' +
+          '<span class="sk-result" id="sk-result"></span>' +
+          // Discard replaced the ✕ that used to sit on each row of the picker's
+          // draft list; with the list gone this is the only way to throw work
+          // away, so it has to exist somewhere.
+          (drafts[type] ? '<button type="button" class="sk-draft-discard" id="sk-discard">Discard draft</button>' : '') +
+          '<button type="button" class="cc-btn" id="sk-draft">Save draft</button>' +
+          '<button type="button" class="cc-btn" id="sk-check" ' + (canCheck() && !reviewInProgress ? '' : 'disabled') + '>' + esc(c.checkLabel) + '</button>' +
+          '<button type="button" class="cc-btn cc-btn--primary" id="sk-save" ' + (canPublish() && !reviewInProgress ? '' : 'disabled') + '>Save to Library</button>' +
+        '</div>' +
+      '</div>' +
+      agentCalloutHtml() +
+      '<div class="sk-bgrid">' +
+        '<div id="sk-steps">' +
+          typeSectionHtml() +
+          // Section 2 — Identity. Same fields for every type, so switching
+          // type never moves the name field out from under the author.
+          '<div class="sk-sec">' +
+            '<div class="sk-sec-head"><span class="sk-sec-no">2</span>' +
+              '<div class="sk-sec-grow"><h3>Identity</h3><p class="sk-sec-sub">What it is called and when someone should reach for it.</p></div>' +
+            '</div>' +
+            '<div class="sk-sec-body">' +
+              '<label class="sk-field"><span>Name <em>— lowercase-hyphenated handle</em></span>' +
+                '<input type="text" data-sk-field="name" value="' + esc(draft.name) + '" placeholder="' + esc(c.namePlaceholder) + '" maxlength="64" autocomplete="off" spellcheck="false"></label>' +
+              '<p class="sk-hint' + (ns.err ? ' err' : '') + '" id="sk-name-hint">' + esc(ns.msg) + '</p>' +
+              '<label class="sk-field"><span>' + esc(c.descLabel) + ' <em>' + esc(c.descNote) + '</em></span>' +
+                '<textarea rows="2" data-sk-field="description" placeholder="' + esc(c.descPlaceholder) + '">' + esc(draft.description) + '</textarea></label>' +
+              '<label class="sk-field"><span>Category</span>' +
+                '<select data-sk-field="category">' + catOptions() + '</select></label>' +
+            '</div>' +
+          '</div>' +
+          // Section 3 — the type's content: markdown body, or a .zip bundle.
+          '<div class="sk-sec">' +
+            '<div class="sk-sec-head"><span class="sk-sec-no">3</span>' +
+              '<div class="sk-sec-grow"><h3>' + esc(c.secTitle) + ' <span class="sk-sec-note">' + esc(c.secNote) + '</span></h3>' +
+              '<p class="sk-sec-sub">' + esc(c.secSub) + '</p></div>' +
+            '</div>' +
+            bodySectionHtml() +
+          '</div>' +
+          // Section 4 — Access. It used to sit ABOVE the sections as unnumbered
+          // preamble, which was fine while the sections started at Identity;
+          // once Type became step 1 that put an un-numbered decision in front
+          // of step 1 and broke the sequence. It is a publishing choice, so it
+          // belongs last — pre-answered with the safe default, read right
+          // before Save.
+          '<div class="sk-sec">' +
+            '<div class="sk-sec-head"><span class="sk-sec-no">4</span>' +
+              '<div class="sk-sec-grow"><h3>Access</h3>' +
+              '<p class="sk-sec-sub">Who can use this ' + esc(c.label.toLowerCase()) + ' once it is saved.</p></div>' +
+            '</div>' +
+            '<div class="sk-sec-body">' +
+              '<div class="sk-access" role="radiogroup" aria-label="Who can use this">' +
+                '<label class="sk-access-opt' + (draft.access === 'everyone' ? '' : ' is-on') + '">' +
+                  '<input type="radio" name="sk-access" value="private" ' + (draft.access === 'everyone' ? '' : 'checked') + '>' +
+                  '<span class="sk-access-body"><span class="sk-access-name">Private</span>' +
+                  '<span class="sk-access-hint">Only you. It lands in your Library and nobody else sees it.</span></span>' +
+                '</label>' +
+                '<label class="sk-access-opt' + (draft.access === 'everyone' ? ' is-on' : '') + '">' +
+                  '<input type="radio" name="sk-access" value="everyone" ' + (draft.access === 'everyone' ? 'checked' : '') + '>' +
+                  '<span class="sk-access-body"><span class="sk-access-name">Everyone in the organization</span>' +
+                  '<span class="sk-access-hint">Published to the Library after the automated review, then available to everyone here.</span></span>' +
+                '</label>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="sk-note">Your work is kept in this browser as you type. <strong>Save to Library</strong> makes it real — it lands in your Library with the access you chose above.</div>' +
+        '</div>' +
+        '<aside class="sk-preview" id="sk-preview">' + previewHtml() + '</aside>' +
+      '</div>';
+
+    // Re-insert the review banner if one was shown before this re-render (e.g. the
+    // author changed the access radio after saving — without this the banner disappears).
+    if (_reviewBannerHtml) {
+      var wrap = document.createElement('div');
+      wrap.id = 'sk-review-banner-wrap';
+      wrap.style.marginBottom = '16px';
+      wrap.innerHTML = _reviewBannerHtml;
+      var buildHead = view.querySelector('.sk-build-head');
+      var insertAfter = buildHead ? buildHead.nextSibling : null;
+      if (insertAfter) {
+        view.insertBefore(wrap, insertAfter);
+      } else {
+        view.appendChild(wrap);
+      }
+    }
+  }
+
+  /* Light-touch preview sync while typing (no re-render → keeps focus). */
+  function syncPreview() {
+    var el, c = cfg(), ns = nameState();
+    if ((el = document.getElementById('sk-pv-name'))) el.textContent = draft.name || ('your-' + type);
+    if ((el = document.getElementById('sk-pv-cat'))) el.textContent = draft.category || c.label;
+    if ((el = document.getElementById('sk-pv-desc'))) el.textContent = draft.description || c.descPreview;
+    if ((el = document.getElementById('sk-pv-inv'))) el.textContent = draft.name || '—';
+    if ((el = document.getElementById('sk-pv-stats'))) el.textContent = bodyStats();
+    if ((el = document.getElementById('sk-pv-access'))) el.textContent = draft.access === 'everyone' ? 'Everyone here' : 'Only you';
+    if ((el = document.getElementById('sk-pv-status'))) el.textContent = canPublish() ? 'Ready to save' : 'Draft';
+    if ((el = document.getElementById('sk-build-title'))) el.textContent = draft.name || c.newTitle;
+    if ((el = document.getElementById('sk-name-hint'))) { el.textContent = ns.msg; el.className = 'sk-hint' + (ns.err ? ' err' : ''); }
+    var s = document.getElementById('sk-save'); if (s) s.disabled = !(canPublish() && !reviewInProgress);
+    var ch = document.getElementById('sk-check'); if (ch) ch.disabled = !(canCheck() && !reviewInProgress);
+  }
+
+  /* Choose (or switch to) a type.
+     Switching is non-destructive by construction: the outgoing draft is
+     persisted to ITS OWN type slot first, then the incoming type's draft (if
+     any) is loaded. Nothing is ever overwritten across types, which is what
+     lets the expanded step promise "you can switch back" honestly. */
+  function chooseType(k) {
+    if (type === k) { typeOpen = false; render(); return; }
+    persist();                       // park the outgoing draft under its type
+    var previous = type ? cfg().label : null;
+    var incoming = drafts[k] || null;
+
+    type = k;
+    // Clone rather than reuse the stored reference, so editing a resumed
+    // draft doesn't mutate the persisted copy in place.
+    draft = incoming ? JSON.parse(JSON.stringify(incoming)) : makeDraft();
+    if (!draft.access) draft.access = 'private';
+    // A draft written by the skill-only builder used `skill_md` for the body.
+    if (draft.skill_md != null && !draft.body) { draft.body = draft.skill_md; delete draft.skill_md; }
+    // Drafts saved before the write/upload choice existed have neither field.
+    if (draft.source_mode !== 'upload') draft.source_mode = 'write';
+    if (!draft.source_file) draft.source_file = null;
+    bundle = null;   // a File can't be persisted — plugin drafts resume without one
+    check = null;
+    typeOpen = false;
+    reviewInProgress = false; _reviewBannerHtml = null;
+    // render() must run first — it replaces view.innerHTML and creates a fresh
+    // #sk-result node; setResult() written before render() would be wiped out.
+    render();
+    // Say what happened to the work, in priority order: a restored draft is
+    // the most surprising state, then a parked one.
+    if (incoming && cfg().source === 'bundle') {
+      setResult('Draft restored — re-attach the .zip to save it.');
+    } else if (incoming) {
+      setResult('Restored your saved ' + cfg().label.toLowerCase() + ' draft.');
+    } else if (previous) {
+      setResult('Your ' + previous.toLowerCase() + ' draft is saved — switch back any time.');
+    }
+  }
+
+  /* ── Server calls ── */
+  /* The store returns rich errors: a plain string, a FastAPI validation list
+     ([{loc,msg}]), or a structured guardrail object
+     ({code, checks:{<phase>:{issues:[{hint|code}]}}}). Flatten any of them into
+     one readable line so the builder never shows "[object Object]". */
+  function errMessage(detail, status) {
+    if (detail == null) return 'HTTP ' + status;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) return detail.map(function (d) { return d.msg || d.code || JSON.stringify(d); }).join('; ');
+    if (detail.checks) {
+      var msgs = [];
+      Object.keys(detail.checks).forEach(function (phase) {
+        (detail.checks[phase].issues || []).forEach(function (i) { if (i.hint || i.code) msgs.push(i.hint || i.code); });
+      });
+      if (msgs.length) return msgs.join(' ');
+    }
+    return detail.code || detail.detail || ('HTTP ' + status);
+  }
+  function readJson(r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok) throw new Error(errMessage(j && j.detail, r.status));
+      return j;
+    });
+  }
+  function postJson(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(readJson);
+  }
+  function postForm(url, form) {
+    return fetch(url, { method: 'POST', credentials: 'same-origin', body: form }).then(readJson);
+  }
+
+  function markdownPayload(extra) {
+    var p = {
+      type: type,
+      name: (draft.name || '').trim(),
+      description: (draft.description || '').trim(),
+      category: draft.category || null,
+      skill_md: draft.body || ''
+    };
+    if (extra) Object.keys(extra).forEach(function (k) { p[k] = extra[k]; });
+    return p;
+  }
+  function bundleForm(extra) {
+    var fd = new FormData();
+    fd.append('file', bundle, bundle.name);
+    fd.append('type', 'plugin');
+    fd.append('name', (draft.name || '').trim());
+    if ((draft.description || '').trim()) fd.append('description', (draft.description || '').trim());
+    if (draft.category) fd.append('category', draft.category);
+    if (extra) Object.keys(extra).forEach(function (k) { fd.append(k, extra[k]); });
+    return fd;
+  }
+
+  function setResult(msg, cls) {
+    var el = document.getElementById('sk-result');
+    if (el) { el.textContent = msg; el.className = 'sk-result' + (cls ? ' ' + cls : ''); }
+  }
+
+  /* Check — the type-adapted "try it before you ship it" step.
+     Markdown types dry-run the real publish payload (no DB writes server-side);
+     plugins validate the bundle layout and list its components. Both are
+     advisory: a failure here never disables Save. */
+  function doCheck() {
+    if (inFlight || !canCheck()) return;
+    inFlight = true; setResult('Checking…');
+    var call = cfg().source === 'bundle'
+      ? postForm('/api/store/entities/preview', bundleForm())
+          .then(function (res) { return { components: (res && res.components) || [] }; })
+      : postJson('/api/store/entities/from-markdown', markdownPayload({ dry_run: true }))
+          .then(function (res) { return { lint: (res && res.lint) || null, inline: (res && res.inline) || null }; });
+
+    call
+      .then(function (result) {
+        check = result;
+        // render() recreates #sk-result empty, so the status line has
+        // to be written AFTER the re-render, never before it.
+        render();
+        setResult('Checked — save when ready.', 'ok');
+      })
+      .catch(function (e) {
+        // A bundle that fails validation is a real, actionable answer — show
+        // it as the check result rather than as a vague "unavailable".
+        if (cfg().source === 'bundle') {
+          check = { components: [{ type: 'bundle', file: '', ok: false, issues: [e.message] }] };
+          render();
+          setResult('Bundle rejected — see the panel.', 'err');
+        } else {
+          setResult('Advisory check unavailable (' + e.message + ') — you can still save.');
+        }
+      })
+      .finally(function () { inFlight = false; });
+  }
+
+  function doSave() {
+    if (inFlight || !canPublish()) return;
+    inFlight = true;
+    var access = draft.access === 'everyone' ? 'everyone' : 'private';
+
+    // Plugin bundles: POST the .zip directly and redirect to the Library.
+    // Server-side async review handles content checking; no synchronous LLM
+    // pre-check is needed for ZIP uploads.
+    if (cfg().source === 'bundle') {
+      setResult('Saving…');
+      postForm('/api/store/entities', bundleForm({ access: access }))
+        .then(function (created) {
+          discardDraft(type);
+          window.location.href = '/library?new=' + encodeURIComponent(created.id);
+        })
+        .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
+      return;
+    }
+
+    // Markdown path (skill / agent): LLM pre-check gate + async review banner.
+    function showReviewPanel(created, chosenAccess) {
+      discardDraft(type);
+      var isPrivate = chosenAccess !== 'everyone';
+      // Set BEFORE render() — render() reads reviewInProgress to decide whether
+      // the Save / Check buttons are disabled.
+      reviewInProgress = true;
+      // Keep draft in memory so render() can display what the user typed.
+      render();
+
+
+      // Insert banner between the build-head and the section grid.
+      var banner = document.createElement('div');
+      banner.id = 'sk-review-banner-wrap';
+      banner.style.marginBottom = '16px';
+      var buildHead = view.querySelector('.sk-build-head');
+      var insertAfter = buildHead ? buildHead.nextSibling : null;
+      if (insertAfter) {
+        view.insertBefore(banner, insertAfter);
+      } else {
+        view.appendChild(banner);
+      }
+
+      function updateBanner(state) {
+        // Re-query the live node: render() may have detached the original element.
+        var node = document.getElementById('sk-review-banner-wrap') || banner;
+        var icon  = state.kind === 'ok' ? '✅' : state.kind === 'err' ? '❌' : '⏳';
+        var pulse = state.kind === 'pending' ? '<span class="sk-review-pulse"></span>' : '';
+        var actionsHtml = '';
+        if (state.kind === 'ok') {
+          actionsHtml =
+            '<div class="sk-review-actions">' +
+              '<a class="cc-btn cc-btn--primary" href="/library?new=' + encodeURIComponent(created.id) + '">Open in Library →</a>' +
+            '</div>';
+        } else if (state.kind === 'err') {
+          // The entity was already written to the DB (showReviewPanel is only
+          // called after a successful commitSave). Re-saving with the same name
+          // would hit a 409 conflict. Keep buttons locked and direct the user to
+          // Library where they can delete the rejected entry before retrying.
+          inFlight = false;
+          actionsHtml =
+            '<div class="sk-review-actions">' +
+              '<a class="cc-btn cc-btn--primary" href="/library">Open Library to delete &amp; retry →</a>' +
+            '</div>';
+        }
+        _reviewBannerHtml =
+          '<div class="sk-review-banner ' + state.kind + '">' +
+            '<div class="sk-review-banner-icon">' + icon + '</div>' +
+            '<div class="sk-review-banner-body">' +
+              '<div class="sk-review-banner-title">' + pulse + esc(state.title) + '</div>' +
+              '<div class="sk-review-banner-hint">' + esc(state.hint) + '</div>' +
+              actionsHtml +
+            '</div>' +
+          '</div>';
+        node.innerHTML = _reviewBannerHtml;
+      }
+
+      if (isPrivate) {
+        updateBanner({ kind: 'ok', title: 'Saved to your private Library.', hint: 'Only you can see and install this skill.' });
+        return;
+      }
+
+      if (!GUARDRAILS_ENABLED) {
+        updateBanner({ kind: 'ok', title: 'Published immediately.', hint: 'Content guardrails are disabled on this instance — the skill is live.' });
+        return;
+      }
+      if (!GUARDRAILS_LLM_READY) {
+        updateBanner({
+          kind: 'pending',
+          title: 'Saved — waiting for admin review.',
+          hint: 'No LLM provider is configured, so the skill sits in the admin queue. An admin can approve it manually or configure an API key.',
+        });
+        return;
+      }
+
+      updateBanner({ kind: 'pending', title: 'Your skill is under review.', hint: 'The automated guardrail is checking the content. This usually takes less than a minute.' });
+
+      var pollTimer = null;
+      var pollCount = 0;
+      function poll() {
+        fetch('/api/store/entities/' + encodeURIComponent(created.id) + '/status', { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (!data) return;
+            var sub = data.submission || {};
+            var vis = data.visibility_status || '';
+            var subStatus = sub.status || '';
+            if (vis === 'approved' || subStatus === 'approved') {
+              clearInterval(pollTimer);
+              updateBanner({ kind: 'ok', title: 'Published! Your skill is live.', hint: data.hint || 'The review passed — your skill is now visible to everyone in the organization.' });
+            } else if (subStatus === 'blocked_llm' || subStatus === 'blocked_inline' || vis === 'quarantined') {
+              clearInterval(pollTimer);
+              var errHint = data.hint || 'The review did not pass. Edit the skill and try saving again.';
+              if (sub.summary) errHint = sub.summary + ' — ' + errHint;
+              updateBanner({ kind: 'err', title: 'Review did not pass.', hint: errHint });
+            } else if (subStatus === 'review_error') {
+              clearInterval(pollTimer);
+              updateBanner({ kind: 'err', title: 'Automated review errored.', hint: data.hint || 'Ask an admin to retry from the admin queue.' });
+            }
+          })
+          .catch(function () { /* network blip — keep polling */ });
+
+        pollCount++;
+        if (pollCount > 75) {
+          clearInterval(pollTimer);
+          inFlight = false;
+          // Entity is in DB — keep reviewInProgress=true so buttons stay locked.
+          // Show a Library link so the user can track the outcome there.
+          _reviewBannerHtml =
+            '<div class="sk-review-banner pending">' +
+              '<div class="sk-review-banner-icon">⏳</div>' +
+              '<div class="sk-review-banner-body">' +
+                '<div class="sk-review-banner-title">Still under review.</div>' +
+                '<div class="sk-review-banner-hint">This is taking longer than usual. Track the outcome in the Library or contact your admin.</div>' +
+                '<div class="sk-review-actions">' +
+                  '<a class="cc-btn cc-btn--primary" href="/library">Open Library →</a>' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+          banner.innerHTML = _reviewBannerHtml;
+        }
+      }
+      pollTimer = setInterval(poll, 4000);
+      poll();
+    }
+
+    function commitSave(verdictToken) {
+      setResult('Saving…');
+      var body = markdownPayload({ access: access });
+      if (verdictToken) { body.precheck_verdict_token = verdictToken; }
+      postJson('/api/store/entities/from-markdown', body)
+        .then(function (created) {
+          showReviewPanel(created, access);
+          inFlight = false;
+        })
+        .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
+    }
+
+    if (!GUARDRAILS_LLM_READY || access !== 'everyone') {
+      // No LLM gate, or private save (can never auto-publish — no point reviewing).
+      commitSave(null);
+      return;
+    }
+
+    // LLM gate is active: run the pre-check synchronously before committing.
+    setResult('Reviewing with AI… (this may take up to 30 seconds)', 'checking');
+    postJson('/api/store/entities/from-markdown', markdownPayload({ dry_run: true, include_llm: true }))
+      .then(function (res) {
+        if (!res.guardrails_active || res.llm_safe || res.llm_error) {
+          // Passed, guardrails toggled off, or reviewer itself errored —
+          // pass the verdict_token so the BG review skips the Anthropic call.
+          commitSave(res.verdict_token || null);
+        } else {
+          // Genuine rejection — extract findings from the verdict.
+          var msg = 'AI review did not pass.';
+          var verdict = res.llm_findings;
+          if (verdict) {
+            var findings = verdict.findings || [];
+            var cqIssues = (verdict.content_quality && verdict.content_quality.issues) || [];
+            if (Array.isArray(findings) && findings.length) {
+              msg = 'AI review failed: ' + findings.map(function (f) {
+                return [f.explanation, f.fix_hint].filter(Boolean).join(' — ');
+              }).join(' ');
+            } else if (Array.isArray(cqIssues) && cqIssues.length) {
+              msg = 'AI review failed: ' + cqIssues.map(function (i) {
+                return typeof i === 'string' ? i : (i.issue || i.hint || JSON.stringify(i));
+              }).join(' ');
+            } else if (typeof verdict.summary === 'string') {
+              msg = 'AI review failed: ' + verdict.summary;
+            }
+          }
+          setResult(msg, 'err');
+          inFlight = false;
+        }
+      })
+      .catch(function (e) {
+        // Pre-check network error — fall through to save so a transient
+        // outage doesn't silently block publishing.
+        commitSave(null);
+      });
+  }
+
+  /* ── File intake — .md fills the body, .zip becomes the bundle ── */
+  function slugFromFilename(filename) {
+    var base = String(filename || '').replace(/\.[^./\\]+$/, '');
+    return base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  }
+  function listWords(a) {
+    if (a.length < 2) return a[0] || '';
+    return a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
+  }
+
+  /* A real SKILL.md already carries its own name and description in YAML
+     frontmatter, so asking the author to retype them into step 2 after
+     uploading is asking them to copy a file they just handed over. Flat
+     `key: value` lines only — this is a convenience read, not a YAML parser,
+     and the block itself is passed through to the server untouched. */
+  function parseFrontmatter(text) {
+    var m = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text || '');
+    if (!m) return {};
+    var out = {};
+    m[1].split(/\r?\n/).forEach(function (line) {
+      var kv = /^([A-Za-z_][A-Za-z0-9_-]{0,63})[ \t]*:[ \t]*(.*)$/.exec(line);
+      if (!kv) return;
+      var v = kv[2].trim().replace(/^["']|["']$/g, '').trim();
+      if (v) out[kv[1].toLowerCase()] = v;
+    });
+    return out;
+  }
+  // Only ever FILLS BLANKS — an upload must never overwrite an identity the
+  // author already typed. Returns the field names it filled, for the receipt.
+  function applyFrontmatter(text) {
+    var fm = parseFrontmatter(text), filled = [];
+    if (!(draft.name || '').trim() && fm.name && NAME_RE.test(fm.name)) { draft.name = fm.name; filled.push('name'); }
+    if (!(draft.description || '').trim() && fm.description) {
+      draft.description = fm.description.slice(0, 500);
+      filled.push('description');
+    }
+    if (!draft.category && fm.category) {
+      var hit = CATEGORIES.filter(function (cat) { return cat.toLowerCase() === fm.category.toLowerCase(); })[0];
+      if (hit) { draft.category = hit; filled.push('category'); }
+    }
+    return filled;
+  }
+
+  function takeFile(file) {
+    if (!file || !draft) return;
+    if (cfg().source === 'bundle') {
+      if (!/\.zip$/i.test(file.name)) { setResult('That is not a .zip archive.', 'err'); return; }
+      if (file.size > MAX_BUNDLE_BYTES) { setResult('That bundle is ' + fmtSize(file.size) + ' — the limit is ' + fmtSize(MAX_BUNDLE_BYTES) + '.', 'err'); return; }
+      bundle = file;
+      check = null;
+      if (!(draft.name || '').trim()) {
+        var slug = slugFromFilename(file.name);
+        if (slug) draft.name = slug;
+      }
+      persist();
+      render();
+      setResult('Attached ' + file.name + ' — run Check bundle before saving.', 'ok');
+      return;
+    }
+
+    // Read as text only what is plausibly text: a .png dropped here used to be
+    // decoded into the textarea as mojibake.
+    if (!MD_EXT_RE.test(file.name) && !/^text\//.test(file.type || '')) {
+      setResult('That is not a Markdown file — choose a .md, .markdown or .txt file.', 'err');
+      return;
+    }
+    if (file.size > MAX_MD_BYTES) {
+      setResult('That file is ' + fmtSize(file.size) + ' — the limit is ' + fmtSize(MAX_MD_BYTES) + '.', 'err');
+      return;
+    }
+    // Replacing written work is the only destructive thing this control does,
+    // and the draft lives nowhere but this browser — so it asks first, and only
+    // when there is actually something to lose.
+    if ((draft.body || '').trim() &&
+        !window.confirm('Replace the ' + cfg().bodyLabel.toLowerCase() + ' you have written with the contents of ' + file.name + '?')) {
+      return;
+    }
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      draft.body = String(reader.result == null ? '' : reader.result);
+      draft.source_mode = 'upload';
+      draft.source_file = { name: file.name, size: file.size };
+      var filled = applyFrontmatter(draft.body);
+      if (!(draft.name || '').trim()) {
+        var slug = slugFromFilename(file.name);
+        if (slug) { draft.name = slug; filled.push('name'); }
+      }
+      check = null;
+      persist();
+      render();
+      // Say what the upload did to the rest of the form — fields that fill
+      // themselves while you are looking somewhere else read as a glitch.
+      setResult('Loaded ' + file.name +
+                (filled.length ? ' — filled in ' + listWords(filled) + ' from the file.' : '.'), 'ok');
+    };
+    reader.onerror = function () { setResult('Could not read that file.', 'err'); };
+    reader.readAsText(file);
+  }
+
+  /* ── Events — all delegated, since the page is re-rendered wholesale ── */
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-sk-type],[data-sk-change],[data-sk-mode],[data-sk-browse],' +
+                             '[data-sk-removefile],#sk-check,#sk-save,#sk-draft,#sk-discard');
+    if (!t) return;
+    if (t.hasAttribute('data-sk-type')) { chooseType(t.getAttribute('data-sk-type')); }
+    else if (t.hasAttribute('data-sk-change')) { typeOpen = true; render(); }
+    else if (t.hasAttribute('data-sk-mode')) {
+      // Switching input method never touches the body — that is what makes it
+      // safe to try both, and what makes "Edit as text" a real way back out of
+      // an upload rather than a restart.
+      var m = t.getAttribute('data-sk-mode');
+      if (draft && bodyMode() !== m) { draft.source_mode = m; persist(); render(); setResult(''); }
+    }
+    else if (t.hasAttribute('data-sk-browse')) {
+      var input = document.getElementById('sk-file-input');
+      if (input) input.click();
+    }
+    else if (t.hasAttribute('data-sk-removefile')) {
+      var isBundle = cfg().source === 'bundle';
+      var label = isBundle ? (bundle && bundle.name) : (draft.source_file && draft.source_file.name);
+      if (!window.confirm('Remove ' + (label || 'this file') + '?' +
+                          (isBundle ? '' : ' Its contents go with it — the file on your computer is not touched.'))) return;
+      if (isBundle) { bundle = null; } else { draft.body = ''; draft.source_file = null; }
+      check = null;
+      persist();
+      render();
+      setResult('Removed ' + (label || 'the file') + '.');
+    }
+    else if (t.id === 'sk-check') { doCheck(); }
+    else if (t.id === 'sk-save') { doSave(); }
+    else if (t.id === 'sk-draft') { persist(); render(); setResult('Draft saved in this browser.', 'ok'); }
+    else if (t.id === 'sk-discard') {
+      // Destructive and unrecoverable — the draft exists nowhere but this
+      // browser, so it gets a confirm rather than an undo we cannot offer.
+      if (!window.confirm('Discard this ' + cfg().label.toLowerCase() + ' draft? It is only saved in this browser and cannot be recovered.')) return;
+      discardDraft(type);
+      draft = makeDraft(); bundle = null; check = null;
+      render();
+      setResult('Draft discarded.');
+    }
+  });
+
+  document.addEventListener('change', function (e) {
+    // Access radios live inside the re-rendered builder — read via delegation.
+    if (draft && e.target.matches && e.target.matches('input[name="sk-access"]')) {
+      draft.access = e.target.value === 'everyone' ? 'everyone' : 'private';
+      persist();
+      render();
+      return;
+    }
+    if (e.target && e.target.id === 'sk-file-input') {
+      takeFile(e.target.files && e.target.files[0]);
+      e.target.value = ''; // allow re-selecting the same file afterwards
+    }
+  });
+
+  document.addEventListener('input', function (e) {
+    var f = e.target.getAttribute && e.target.getAttribute('data-sk-field');
+    if (!f || !draft) return;
+    draft[f] = e.target.value;
+    if (f === 'category') { persist(); var el = document.getElementById('sk-pv-cat'); if (el) el.textContent = draft.category || cfg().label; return; }
+    if (f === 'body') {
+      check = null;   // editing the body invalidates a prior check result
+      // The card no longer shows verbatim what the file contained, and saying
+      // so is cheaper than letting the author assume it does.
+      if (draft.source_file) draft.source_file.edited = true;
+    }
+    persist();
+    syncPreview();
+  });
+
+  /* Drop zone — delegated at the document level (like every other handler
+     here) since #sk-drop is recreated on every render. */
+  document.addEventListener('dragover', function (e) {
+    var z = e.target.closest && e.target.closest('#sk-drop');
+    if (!z) return;
+    e.preventDefault();
+    z.classList.add('is-dragover');
+  });
+  document.addEventListener('dragleave', function (e) {
+    var z = e.target.closest && e.target.closest('#sk-drop');
+    if (z) z.classList.remove('is-dragover');
+  });
+  document.addEventListener('drop', function (e) {
+    var z = e.target.closest && e.target.closest('#sk-drop');
+    if (!z) return;
+    e.preventDefault();
+    z.classList.remove('is-dragover');
+    takeFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+  });
+  // Page-level guard — dropping a file outside the zone must not navigate the
+  // browser away. Mirrors the same guard on the /store/new upload wizard.
+  ['dragover', 'drop'].forEach(function (evt) {
+    window.addEventListener(evt, function (e) {
+      if (!(e.target.closest && e.target.closest('#sk-drop'))) e.preventDefault();
+    });
+  });
+
+  /* ── Spotlight onboarding ──
+     Authors arrive here from the Marketplace's "Submit a skill or plugin"
+     CTA (/skills?spotlight=new-skill). One-shot: the query param is stripped
+     once the coach-mark is up, so a reload or a back-button return doesn't
+     re-pop it. Silent no-op if the anchor is missing or the engine fails to
+     load — onboarding is additive and must never block the page. */
+  function maybeSpotlightNew() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('spotlight') !== 'new-skill') return;
+    // The tour anchors on the type step, which is always rendered — expanded
+    // when unanswered, collapsed (with Change) when the caller deep-linked a
+    // type. Bail only if neither is present.
+    if (!document.querySelector('[data-sk-type],[data-sk-change]')) return;
+    params.delete('spotlight');
+    var qs = params.toString();
+    try {
+      history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    } catch (e) { /* history unavailable — non-fatal */ }
+    import("{{ static_url('js/tour.js') }}")
+      .then(function (mod) { mod.launchTour('skill-builder'); })
+      .catch(function () { /* coach-mark is additive — never block the page */ });
+  }
+
+  /* ── Boot ──
+     `?type=` lands with step 1 already answered and collapsed (the Library's
+     "+ Add" menu deep-links this way — the menu item already made the choice,
+     so re-asking would be redundant). Otherwise step 1 leads, expanded.
+     Either way a saved draft for that type is resumed rather than blanked. */
+  var wanted = new URLSearchParams(window.location.search).get('type');
+  if (wanted && TYPES[wanted]) {
+    chooseType(wanted);
+  } else {
+    // No type yet: if exactly one draft is in flight, resume it — the author
+    // has one obvious piece of unfinished work and making them re-pick its
+    // type would be busywork. More than one, and only they can say which.
+    var resumable = TYPE_ORDER.filter(function (k) { return drafts[k]; });
+    if (resumable.length === 1) chooseType(resumable[0]);
+    else render();
+  }
+  maybeSpotlightNew();
+})();
+</script>
+{% endblock %}

@@ -1,4 +1,14 @@
 // app/web/static/js/chat.js
+import {
+  initChatOnboarding,
+  noteComposerSubmitted as onboardingNoteComposerSubmitted,
+  onUserMessage as onboardingOnUserMessage,
+  noteAnswered as onboardingNoteAnswered,
+  noteTurnStarted as onboardingNoteTurnStarted,
+  noteTurnEnded as onboardingNoteTurnEnded,
+} from "./chat_onboarding.js";
+import { initChatDashboard, updateDashboardSuggestions } from "./chat_dashboard.js";
+
 const $ = (id) => document.getElementById(id);
 
 // --- Safe Markdown rendering (security audit F3) --------------------------
@@ -194,6 +204,18 @@ function setThreadTitle(title) {
   } else {
     header.hidden = true;
   }
+  // Mirror the active-conversation state onto the shell so the rail
+  // layout can reveal the floating +New-chat button only inside a
+  // thread (hidden in the empty state) — see chat.css.
+  const shell = document.querySelector(".cloud-chat-shell");
+  if (shell) shell.classList.toggle("has-thread", !!title);
+  // Rail nav: the "New chat" item is "where you are" exactly when the
+  // pre-conversation dashboard is showing (no thread) — it's the single chat
+  // entry point and the rail landing item (there's no separate Dashboard item).
+  // Server-rendered for the initial load (_app_rail.html); kept in sync here
+  // across in-page open-session / new-chat transitions. Absent on topnav — no-op.
+  const railNewChat = document.getElementById("new-chat");
+  if (railNewChat) railNewChat.classList.toggle("on", !title);
 }
 
 function readCapabilitySnapshot() {
@@ -301,16 +323,32 @@ async function loadSidebar() {
   const list = await api("/api/chat/sessions");
   _sessionsCache = list;
   const ul = $("chat-list");
+  // The row menu is body-appended, not a child of the row — so a panel left
+  // open across a re-render would hover over a row it no longer belongs to.
+  if (window.chatRowMenu) window.chatRowMenu.close();
   ul.innerHTML = "";
-  // Group by recency before rendering — see _groupSessionsByDate. The
-  // groups come back in display order with a label per non-empty
-  // bucket; we inject a small section header above each.
+  // Group by recency before rendering — see _groupSessionsByDate. The groups
+  // come back in display order; each one that carries a label gets a small
+  // section header above it. Not all of them do: the rail runs a two-bucket
+  // set whose recent group is deliberately unlabelled.
   for (const group of _groupSessionsByDate(list)) {
-    const header = document.createElement("li");
-    header.className = "cloud-chat-list-group-header";
-    header.setAttribute("role", "presentation");
-    header.textContent = group.label;
-    ul.appendChild(header);
+    // A null label is a deliberate no-header bucket (the rail's unlabelled
+    // recent group — see _groupSessionsByDate). The rail's "Older" is further
+    // dropped when nothing renders above it: it is a BOUNDARY label, and a
+    // boundary with nothing on the near side is just a word telling someone
+    // returning after a month that all their work is old. Only the rail marks
+    // a bucket `boundaryLabel`, so topnav's leading "Today" — and "Pinned" in
+    // either layout — always render.
+    if (group.label && !(group.boundaryLabel && ul.childElementCount === 0)) {
+      const header = document.createElement("li");
+      header.className = "cloud-chat-list-group-header";
+      // Marks the hoisted "Pinned" group so rail.css can style that header
+      // differently from the date ones.
+      if (group.pinnedGroup) header.classList.add("is-pinned-group");
+      header.setAttribute("role", "presentation");
+      header.textContent = group.label;
+      ul.appendChild(header);
+    }
     for (const s of group.items) ul.appendChild(_makeSidebarItem(s));
   }
   const empty = $("cloud-chat-empty-state");
@@ -333,10 +371,29 @@ async function loadSidebar() {
  *  (the `<li onclick>` pattern doesn't put the element in the focus
  *  ring) — a hard a11y bug that left screen-reader and
  *  keyboard-only users unable to open a session. */
+/** Pushpin glyph for the pin toggle. Duplicated in rail_history.js's copy of
+ *  the row renderer (same reason that whole function is duplicated: the rail
+ *  script must render identical markup on pages where chat.js isn't loaded).
+ *  Outline by default; the CSS fills it on the pressed state. */
+const PIN_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M12 17v5"/>' +
+  '<path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8' +
+  'a2 2 0 0 0-1.1-1.7l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>' +
+  "</svg>";
+
 function _makeSidebarItem(s) {
   const li = document.createElement("li");
   if (s.id === currentChatId) li.classList.add("is-active");
   li.dataset.id = s.id;
+  // `data-pinned` is the cross-renderer contract rail.css keys off (the pin
+  // button stays visible on a pinned row) — rail_history.js stamps it the same
+  // way on the pages where IT draws this list, so both agree.
+  if (s.pinned) {
+    li.dataset.pinned = "1";
+    li.classList.add("is-pinned");
+  }
   li.title = s.title || `Untitled · ${s.id}`;
   li.setAttribute("role", "button");
   li.tabIndex = 0;
@@ -380,24 +437,66 @@ function _makeSidebarItem(s) {
     li.appendChild(pausedBadge);
   }
 
-  const del = document.createElement("button");
-  del.type = "button";
-  del.className = "cloud-chat-list-del";
-  del.setAttribute("aria-label", `Delete ${s.title || "this conversation"}`);
-  del.innerHTML = "&times;";
-  del.onclick = async (e) => {
-    e.stopPropagation();
-    await deleteSession(s.id);
-  };
-  li.appendChild(del);
+  // Pinned-state indicator — not a control (the pin ACTION is in the row menu).
+  // Without it a pinned row is indistinguishable from any other once the
+  // "Pinned" group header has scrolled out of view. aria-hidden: the group
+  // header already names the state.
+  if (s.pinned) {
+    const flag = document.createElement("span");
+    flag.className = "cloud-chat-pin-flag";
+    flag.setAttribute("aria-hidden", "true");
+    flag.innerHTML = PIN_SVG;
+    li.appendChild(flag);
+  }
+
+  // One "⋮" for all three row actions (Pin/Unpin · Rename · Delete), from the
+  // shared component so this menu and rail_history.js's are the same menu.
+  // Guarded: if the component didn't load the row still opens its conversation.
+  if (window.chatRowMenu) {
+    li.appendChild(
+      window.chatRowMenu.trigger({
+        session: s,
+        onPin: (pinned) => setSessionPinned(s.id, pinned),
+        onRename: () => renameSessionPrompt(s),
+        onDelete: () => deleteSession(s.id),
+      }),
+    );
+  }
   return li;
 }
 
 /** Group a flat sessions list into [{label, items}, …] buckets
- *  ordered most-recent-first. Bucket boundaries are local-time
- *  midnight (Today / Yesterday), the current ISO week's Monday
- *  ("Earlier this week"), 30 days ago ("Earlier this month"), and
- *  anything older ("Older").
+ *  ordered most-recent-first.
+ *
+ *  TWO bucket sets, because the two layouts put this list in very
+ *  different amounts of space:
+ *
+ *  - topnav — a full-height column that exists to hold conversations
+ *    and nothing else. Five date buckets (Today / Yesterday / Earlier
+ *    this week / Earlier this month / Older) are worth their rows
+ *    there: you can see twenty titles at once, so the labels are what
+ *    let you scan for "the one from Tuesday".
+ *
+ *  - rail — roughly seven rows of free space between two fixed zones.
+ *    The same five labels put THREE headers among five titles, so more
+ *    than a third of the visible list was chrome, and each header cost
+ *    a full row (14px margin + line + 4px, ≈ the 34px row height). They
+ *    were also telling you what the ordering already tells you: the
+ *    list is strictly most-recent-first, so "Yesterday" over a single
+ *    row is a label, not a group. The rail therefore gets ONE date
+ *    boundary — an unlabelled recent bucket (rolling 7 days, no Monday
+ *    cliff that would drop Friday's work into the archive) and "Older"
+ *    for the rest. That single label marks the one thing the ordering
+ *    can't say: past here, search rather than scroll.
+ *
+ *  A label of `null` renders no header at all (see _renderSidebar).
+ *
+ *  User-pinned sessions are HOISTED out of their date bucket into a
+ *  leading "Pinned" group (never duplicated — a chat appears under
+ *  Pinned or under its date, not both), ordered most-recently-pinned
+ *  first by the server. Pinned keeps its label in BOTH layouts: it is
+ *  the only group that breaks the chronology, so it is the only one a
+ *  reader cannot infer from position.
  *
  *  Buckets with no items are dropped so the sidebar doesn't render
  *  an empty header. Sort within each bucket is by last_message_at
@@ -415,29 +514,107 @@ function _groupSessionsByDate(sessions) {
   startOfWeek.setDate(startOfWeek.getDate() - dow);
   const startOfMonth = new Date(startOfToday);
   startOfMonth.setDate(startOfMonth.getDate() - 30);
+  const startOfRecent = new Date(startOfToday);
+  startOfRecent.setDate(startOfRecent.getDate() - 6); // rolling 7 days, today included
 
-  const groups = [
-    { label: "Today",              items: [], threshold: startOfToday },
-    { label: "Yesterday",          items: [], threshold: startOfYesterday },
-    { label: "Earlier this week",  items: [], threshold: startOfWeek },
-    { label: "Earlier this month", items: [], threshold: startOfMonth },
-    { label: "Older",              items: [], threshold: new Date(0) },
-  ];
+  const isRail = document.documentElement.getAttribute("data-ui-layout") === "rail";
+  const groups = isRail
+    ? [
+        { label: null,    items: [], threshold: startOfRecent },
+        { label: "Older", items: [], threshold: new Date(0), boundaryLabel: true },
+      ]
+    : [
+        { label: "Today",              items: [], threshold: startOfToday },
+        { label: "Yesterday",          items: [], threshold: startOfYesterday },
+        { label: "Earlier this week",  items: [], threshold: startOfWeek },
+        { label: "Earlier this month", items: [], threshold: startOfMonth },
+        { label: "Older",              items: [], threshold: new Date(0) },
+      ];
+  const pinned = { label: "Pinned", items: [], pinnedGroup: true };
   for (const s of sessions) {
+    if (s.pinned) { pinned.items.push(s); continue; }
     const ts = s.last_message_at || s.started_at;
     const d = ts ? new Date(ts) : new Date(0);
     for (const g of groups) {
       if (d >= g.threshold) { g.items.push(s); break; }
     }
   }
-  return groups.filter(g => g.items.length > 0);
+  return [pinned, ...groups].filter(g => g.items.length > 0);
+}
+
+/** Pin or unpin a conversation (PUT /api/chat/sessions/{id}/pin), then
+ *  re-render the sidebar so the row moves into (or out of) the Pinned
+ *  group. Pin state lives on the server, so it follows the user across
+ *  devices and is shared with the rail's own renderer. */
+async function setSessionPinned(chatId, pinned) {
+  try {
+    await api(`/api/chat/sessions/${chatId}/pin`, {
+      method: "PUT",
+      body: JSON.stringify({ pinned }),
+    });
+  } catch (err) {
+    showToast(`Could not ${pinned ? "pin" : "unpin"}: ${err.message}`, "error");
+    return;
+  }
+  await loadSidebar();
+}
+
+/** Rename a conversation (PUT /api/chat/sessions/{id}/title) from the row
+ *  menu. Uses the app-wide promptModal rather than an inline edit so the
+ *  focus/Escape handling is the one every other dialog in the app uses.
+ *  Reuses applySessionRename for the DOM update — the same path the
+ *  server-pushed Haiku auto-title takes — so the sidebar row, the Cmd+K
+ *  cache and the thread header all move together. */
+async function renameSessionPrompt(s) {
+  if (typeof window.promptModal !== "function") return;
+  const next = await window.promptModal({
+    title: "Rename conversation",
+    message: "This is the name shown in the history panel.",
+    defaultValue: s.title || "",
+    placeholder: "Conversation name",
+    confirmText: "Rename",
+  });
+  // null = cancelled/Escape. Unchanged or blank-only is a no-op rather than a
+  // request the server would just 400.
+  if (next === null) return;
+  const title = next.trim();
+  if (!title || title === (s.title || "")) return;
+  try {
+    await api(`/api/chat/sessions/${s.id}/title`, {
+      method: "PUT",
+      body: JSON.stringify({ title }),
+    });
+  } catch (err) {
+    showToast(`Could not rename: ${err.message}`, "error");
+    return;
+  }
+  applySessionRename({ chat_id: s.id, title });
+  // Re-render too: the row may have to move (a rename doesn't change its
+  // bucket, but applySessionRename only patches the label in place and the
+  // cached session object behind the menu still holds the old title).
+  await loadSidebar();
 }
 
 /** Soft-archive a session via DELETE /api/chat/sessions/{id}. If the
  *  caller is currently viewing the session they're deleting, swap them
  *  out to the empty-state shell so the main panel doesn't keep
- *  showing a dead conversation. */
+ *  showing a dead conversation.
+ *
+ *  Confirms first: Delete sits in the row menu one keystroke ("D") away
+ *  from Pin and Rename, so an unconfirmed destructive action would be a
+ *  slip away. Matches rail_history.js's copy of the same flow. */
 async function deleteSession(chatId) {
+  if (typeof window.confirmModal === "function") {
+    const cached = _sessionsCache.find(s => s.id === chatId);
+    const name = (cached && cached.title) || "this conversation";
+    const ok = await window.confirmModal({
+      title: "Delete conversation?",
+      message: `"${name}" will be permanently deleted.`,
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+  }
   try {
     await api(`/api/chat/sessions/${chatId}`, { method: "DELETE" });
   } catch (err) {
@@ -670,18 +847,23 @@ function handleFrame(frame) {
     case "session_renamed":
       applySessionRename(frame);
       break;
+    // The three terminal frames all disarm the long-run notification nudge —
+    // a turn that has stopped is no longer worth offering to be pinged about.
     case "cancelled":
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
+      onboardingNoteTurnEnded();
       break;
     case "error":
       setStatus(`Error: ${frame.kind} (${frame.message || ""})`, "error");
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
+      onboardingNoteTurnEnded();
       break;
     case "done":
       $("cancel-btn").hidden = true;
+      onboardingNoteTurnEnded();
       break;
     case "session_participants":
       // §5.3 Co-presence: full re-render of the participant roster.
@@ -738,8 +920,11 @@ function applySessionRename(frame) {
     }
     li.title = title;
     li.setAttribute("aria-label", `Open ${title}`);
-    const del = li.querySelector(".cloud-chat-list-del");
-    if (del) del.setAttribute("aria-label", `Delete ${title}`);
+    // The row menu's trigger names the conversation in its accessible label.
+    // (Its menu ITEMS don't — they're generic verbs inside a panel already
+    // scoped to this row — so there is nothing else here to re-label.)
+    const kebab = li.querySelector(".chat-rowmenu-btn");
+    if (kebab) kebab.setAttribute("aria-label", `More actions for ${title}`);
   }
   // Main-panel header.
   if (id === currentChatId) setThreadTitle(title);
@@ -794,6 +979,52 @@ const _COPY_ICON_SVG =
   '<path d="M2.75 11V3.25C2.75 2.7 3.2 2.25 3.75 2.25H10"/>' +
   "</svg>";
 
+// Copy text to the clipboard, resolving true on success. The async
+// Clipboard API is the preferred path but is unavailable or rejects in
+// several deployed setups even over HTTPS — a restrictive
+// Permissions-Policy, an <iframe> without `clipboard-write`, a
+// not-fully-trusted cert behind a TLS-terminating proxy, or simply a
+// browser that gates it. When it's missing or throws, fall back to a
+// throwaway off-screen <textarea> + document.execCommand("copy"), which
+// works synchronously from the click gesture in those contexts. Without
+// this fallback the copy buttons just showed "Couldn't copy to clipboard".
+async function copyTextToClipboard(text) {
+  const value = text || "";
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch (_) {
+      /* blocked despite a secure context — fall through to execCommand */
+    }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    // Off-screen but still rendered — execCommand("copy") can't read from a
+    // display:none element, so park it out of view instead of hiding it.
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.left = "0";
+    document.body.appendChild(ta);
+    const sel = document.getSelection();
+    const prevRange = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    ta.select();
+    ta.setSelectionRange(0, value.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    // Restore any pre-existing user selection we clobbered.
+    if (prevRange && sel) {
+      sel.removeAllRanges();
+      sel.addRange(prevRange);
+    }
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
+
 // Tracks the most recent user message text so the "↻ Ask again"
 // button on the latest assistant turn can re-fire it. Updated by
 // submitUserMessage() on every send.
@@ -844,13 +1075,11 @@ function attachMessageActions(article, copyText) {
   copy.innerHTML = _COPY_ICON_SVG;
   copy.onclick = async (e) => {
     e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(copyText || "");
+    if (await copyTextToClipboard(copyText || "")) {
       copy.classList.add("is-copied");
       setTimeout(() => copy.classList.remove("is-copied"), 1400);
       showToast("Message copied", "ok");
-    } catch (err) {
-      console.warn("clipboard write failed", err);
+    } else {
       showToast("Couldn't copy to clipboard", "error");
     }
   };
@@ -1101,13 +1330,11 @@ function enhanceCodeBlocks(root) {
     btn.innerHTML = _COPY_ICON_SVG;
     btn.onclick = async (e) => {
       e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(code.innerText);
+      if (await copyTextToClipboard(code.innerText)) {
         btn.classList.add("is-copied");
         setTimeout(() => btn.classList.remove("is-copied"), 1400);
         showToast("Code copied", "ok");
-      } catch (err) {
-        console.warn("clipboard write failed", err);
+      } else {
         showToast("Couldn't copy code", "error");
       }
     };
@@ -1189,6 +1416,9 @@ function appendToken(text) {
 
 function finalizeAssistantMessage(frame) {
   clearThinkingPlaceholder();
+  // A completed assistant message is a successful answer — advance the
+  // journey counter (errors arrive on the separate "error" frame).
+  onboardingNoteAnswered();
   const content = (frame && frame.content) || currentAssistantText;
   if (currentAssistantArticle && currentAssistantBody) {
     currentAssistantArticle.classList.remove("is-streaming");
@@ -1869,6 +2099,11 @@ async function submitUserMessage(text) {
     ta.value = "";
     autosizeComposer();
   }
+  //    Part of that same synchronous feedback: if the newcomer coach-mark is
+  //    up over this composer, take it down now. It sits BEFORE the socket
+  //    wait deliberately — a runner that boots slowly, or fails outright,
+  //    must not leave the card hanging over the input they just used.
+  onboardingNoteComposerSubmitted();
 
   // 2. Make sure we have an open WS. For a brand-new chat this calls
   //    newChat() -> openSession(), and openSession wipes
@@ -1891,8 +2126,28 @@ async function submitUserMessage(text) {
   //    and the agent is working on it.
   renderMessage({ role: "user", content: text });
   lastUserText = text;
+
+  // Chat-driven onboarding: greet once, advance the journey, and — on an empty
+  // Stack — resolve the knowledge gap right here before the model runs. When it
+  // takes over the turn (gap-resolver card shown, or an "add X" command
+  // handled) we skip the model send; the card's CTA calls submitUserMessage
+  // again once the Stack is ready.
+  try {
+    if (await onboardingOnUserMessage(text, {})) {
+      $("cancel-btn").hidden = true;
+      return;
+    }
+  } catch (_) {
+    /* onboarding is best-effort — never block the chat on it */
+  }
+
   showThinkingPlaceholder();
   $("cancel-btn").hidden = false;
+  // Arm the long-run nudge here — AFTER the onboarding takeover check, so a
+  // turn that never reaches the model (gap resolver, "add X") doesn't start a
+  // clock, and BEFORE the runner-ready wait, because a slow runner is exactly
+  // the kind of wait worth being pinged about.
+  onboardingNoteTurnStarted();
 
   // 4. Wait for the server's ``ready`` frame before sending the first
   //    ``user_msg`` — see ``serverReadyPromise`` definition for why.
@@ -1907,11 +2162,16 @@ async function submitUserMessage(text) {
   } catch (err) {
     setStatus(`Runner did not become ready: ${err.message}`, "error");
     clearThinkingPlaceholder();
+    // These two bail out before any frame is ever received, so the terminal-frame
+    // handlers above never fire — disarm the nudge here or it would fire 45 s
+    // later against a turn that died at the door.
+    onboardingNoteTurnEnded();
     return;
   }
   if (!ws || ws.readyState !== 1) {
     setStatus("WebSocket dropped before runner became ready.", "error");
     clearThinkingPlaceholder();
+    onboardingNoteTurnEnded();
     return;
   }
   ws.send(JSON.stringify({ type: "user_msg", text }));
@@ -1924,13 +2184,40 @@ function autosizeComposer() {
   const ta = $("chat-input");
   if (!ta) return;
   ta.style.height = "auto";
+  // Empty composer → keep the CSS height (rows / min-height). In the
+  // centered empty-state column a textarea's scrollHeight comes back as
+  // the column height rather than its single-line content height, which
+  // would pin the composer at its 220px max on load. Only measure to
+  // grow once there is actual content.
+  if (ta.value.trim() === "") return;
   ta.style.height = Math.min(ta.scrollHeight, 220) + "px";
 }
 
-$("new-chat").onclick = async () => {
+// #new-chat is the sidebar's +New chat button (topnav) OR the rail's
+// "New chat" nav item, which is an <a href="/chat">. On /chat we start a
+// fresh conversation IN PLACE, so preventDefault() stops the anchor from
+// also navigating (a no-op for the topnav <button>). On every other page
+// chat.js isn't loaded, so that same rail anchor just navigates to /chat.
+$("new-chat")?.addEventListener("click", async (e) => {
+  e.preventDefault();
   hideCapabilities();
-  await newChat();
-};
+  try {
+    await newChat();
+  } catch (err) {
+    // Session creation failed (backend down / chat disabled): restore the
+    // pre-conversation state instead of leaving a blank panel, and say why.
+    // Fully reset the session pointers too — otherwise the next submit
+    // would silently continue the PREVIOUS conversation over its old WS
+    // while the user believes they're starting fresh.
+    if (ws) { ws.close(); ws = null; }
+    currentChatId = null;
+    markActiveSidebar(null);
+    $("chat-messages").innerHTML = "";
+    showCapabilities();
+    setThreadTitle(null);
+    setStatus(`Could not start chat: ${err.message}`, "error");
+  }
+});
 
 $("chat-form").onsubmit = async (e) => {
   e.preventDefault();
@@ -2214,6 +2501,12 @@ function applySidebarCollapse(collapsed) {
 }
 
 function isSidebarCollapsed() {
+  // Rail has no mini-collapse: the conversations column is a slide-open
+  // panel (`history-open`), and the rail layout hides the un-collapse
+  // toggle (chat.css). A stored "collapsed" flag would therefore trap the
+  // user on an initials-only rail with no UI way back to the titled list.
+  // Always report expanded under rail; the mini feature stays for topnav.
+  if (document.documentElement.getAttribute("data-ui-layout") === "rail") return false;
   try { return localStorage.getItem(_SIDEBAR_KEY) === "1"; }
   catch (_) { return false; }
 }
@@ -2464,12 +2757,684 @@ function renderCoPresence(host, participants) {
   host.appendChild(btn);
 }
 
+// ---------------------------------------------------------------------------
+// §6 "+" upload menu and file-upload dialogs
+// ---------------------------------------------------------------------------
+// Three upload paths:
+//   data   → POST /api/chat/uploads  kind=data   (+ optional register_as_table)
+//   store  → POST /api/store/entities             (mirrors store_upload.html)
+//   media  → POST /api/chat/uploads  kind=image|document
+//
+// Menu is a popover anchored inside the composer form (position: relative).
+// Dialogs are full-screen overlays (position: fixed, z-index: 50).
+
+(function () {
+  // ── helpers ──────────────────────────────────────────────────────────────
+
+  function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+    );
+  }
+
+  function fmtSize(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+
+  // ── "+" button + menu ─────────────────────────────────────────────────────
+
+  const plusBtn  = $("chat-plus-btn");
+  const plusMenu = $("chat-plus-menu");
+
+  function closePlusMenu() {
+    if (!plusMenu || !plusBtn) return;
+    plusMenu.hidden = true;
+    plusBtn.classList.remove("is-open");
+    plusBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function openPlusMenu() {
+    if (!plusMenu || !plusBtn) return;
+    plusMenu.hidden = false;
+    plusBtn.classList.add("is-open");
+    plusBtn.setAttribute("aria-expanded", "true");
+    // Focus first item for keyboard users.
+    const first = plusMenu.querySelector("[role=menuitem]");
+    if (first) first.focus();
+  }
+
+  if (plusBtn) {
+    plusBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (plusMenu && !plusMenu.hidden) { closePlusMenu(); return; }
+      openPlusMenu();
+    });
+  }
+
+  // Close on Esc or outside click.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && plusMenu && !plusMenu.hidden) {
+      closePlusMenu();
+      if (plusBtn) plusBtn.focus();
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!plusMenu || plusMenu.hidden) return;
+    if (plusMenu.contains(e.target) || e.target === plusBtn) return;
+    closePlusMenu();
+  });
+
+  // Keyboard nav inside the menu (arrow keys).
+  if (plusMenu) {
+    plusMenu.addEventListener("keydown", (e) => {
+      const items = Array.from(plusMenu.querySelectorAll("[role=menuitem]"));
+      const idx   = items.indexOf(document.activeElement);
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (idx < items.length - 1) items[idx + 1].focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (idx > 0) items[idx - 1].focus();
+      } else if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (items[idx]) items[idx].click();
+      } else if (e.key === "Escape") {
+        closePlusMenu();
+        if (plusBtn) plusBtn.focus();
+      }
+    });
+  }
+
+  // ── generic dialog helpers ────────────────────────────────────────────────
+
+  // Per-overlay Esc-handler cleanup, so closing via Cancel / backdrop / a
+  // successful upload also detaches the document listener — not just Escape
+  // (otherwise handlers accumulate across repeated opens).
+  const _overlayCleanups = {};
+
+  // Open an upload overlay.  Returns a cleanup fn.
+  function openOverlay(overlayId) {
+    const overlay = $(overlayId);
+    if (!overlay) return;
+    closePlusMenu();
+    overlay.hidden = false;
+    // Focus the first focusable element in the panel.
+    const first = overlay.querySelector(
+      'button, [href], input, [tabindex]:not([tabindex="-1"])'
+    );
+    if (first) first.focus();
+
+    // Esc closes. Replace any stale handler for this overlay first.
+    if (_overlayCleanups[overlayId]) _overlayCleanups[overlayId]();
+    function onKey(e) {
+      if (e.key === "Escape") closeOverlay(overlayId);
+    }
+    document.addEventListener("keydown", onKey);
+    _overlayCleanups[overlayId] = function cleanup() {
+      document.removeEventListener("keydown", onKey);
+      delete _overlayCleanups[overlayId];
+    };
+    return _overlayCleanups[overlayId];
+  }
+
+  function closeOverlay(overlayId) {
+    const overlay = $(overlayId);
+    if (overlay) overlay.hidden = true;
+    // Detach the Esc handler however the overlay was closed.
+    if (_overlayCleanups[overlayId]) _overlayCleanups[overlayId]();
+  }
+
+  // Wire all [data-close-upload] buttons inside a given overlay.
+  function wireCloseButtons(overlayId) {
+    const overlay = $(overlayId);
+    if (!overlay) return;
+    overlay.querySelectorAll("[data-close-upload]").forEach((btn) => {
+      btn.addEventListener("click", () => closeOverlay(overlayId));
+    });
+    // Click on backdrop (the overlay itself, not the panel) also closes.
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeOverlay(overlayId);
+    });
+  }
+
+  // Generic drop-zone wiring.
+  function wireDropZone(dropEl, fileInput, onFile) {
+    if (!dropEl || !fileInput) return;
+
+    // Click anywhere on the zone → open picker.
+    dropEl.addEventListener("click", (e) => {
+      if (e.target.tagName !== "BUTTON") fileInput.click();
+    });
+    dropEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+    });
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files[0]) onFile(fileInput.files[0]);
+    });
+
+    dropEl.addEventListener("dragenter", (e) => { e.preventDefault(); dropEl.classList.add("is-dragover"); });
+    dropEl.addEventListener("dragover",  (e) => { e.preventDefault(); e.stopPropagation(); dropEl.classList.add("is-dragover"); });
+    dropEl.addEventListener("dragleave", (e) => {
+      if (dropEl.contains(e.relatedTarget)) return;
+      dropEl.classList.remove("is-dragover");
+    });
+    dropEl.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropEl.classList.remove("is-dragover");
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) onFile(f);
+    });
+  }
+
+  function showDropFile(dropEl, filenameEl, file) {
+    dropEl.classList.add("has-file");
+    if (filenameEl) {
+      // textContent is already XSS-safe; escHtml would double-escape and show
+      // literal entities (e.g. "a&amp;b.csv"). Assign the raw name.
+      filenameEl.textContent = file.name + " (" + fmtSize(file.size) + ")";
+      filenameEl.hidden = false;
+    }
+  }
+
+  function clearDropFile(dropEl, filenameEl) {
+    dropEl.classList.remove("has-file");
+    if (filenameEl) { filenameEl.textContent = ""; filenameEl.hidden = true; }
+  }
+
+  function showDialogError(errorEl, msg) {
+    if (!errorEl) return;
+    errorEl.textContent = msg;
+    errorEl.hidden = false;
+  }
+
+  function clearDialogError(errorEl) {
+    if (!errorEl) return;
+    errorEl.textContent = "";
+    errorEl.hidden = true;
+  }
+
+  function setSubmitBusy(btn, busy, label) {
+    if (!btn) return;
+    btn.disabled = busy;
+    if (busy) {
+      btn.innerHTML = '<span class="cloud-chat-upload-spinner" aria-hidden="true"></span>' + escHtml(label || "Uploading…");
+    } else {
+      btn.textContent = label || "Upload";
+    }
+  }
+
+  // ── Dialog 1: Data file ───────────────────────────────────────────────────
+
+  const DATA_OVERLAY = "chat-upload-data-overlay";
+  wireCloseButtons(DATA_OVERLAY);
+
+  const dataDropEl      = $("chat-data-drop");
+  const dataFileInput   = $("chat-data-file");
+  const dataFilenameEl  = $("chat-data-drop-filename");
+  const dataRegisterCb  = $("chat-data-register");
+  const dataTableNameRow = $("chat-data-table-name-row");
+  const dataTableNameIn = $("chat-data-table-name");
+  const dataErrorEl     = $("chat-data-error");
+  const dataSubmitBtn   = $("chat-data-submit");
+
+  let _dataFile = null;
+
+  // Show/hide table-name field when checkbox changes.
+  if (dataRegisterCb) {
+    dataRegisterCb.addEventListener("change", () => {
+      if (dataTableNameRow) dataTableNameRow.hidden = !dataRegisterCb.checked;
+    });
+  }
+
+  function resetDataDialog() {
+    _dataFile = null;
+    if (dataDropEl) clearDropFile(dataDropEl, dataFilenameEl);
+    if (dataFileInput) dataFileInput.value = "";
+    if (dataRegisterCb) dataRegisterCb.checked = false;
+    if (dataTableNameRow) dataTableNameRow.hidden = true;
+    if (dataTableNameIn) dataTableNameIn.value = "";
+    if (dataErrorEl) clearDialogError(dataErrorEl);
+    if (dataSubmitBtn) { dataSubmitBtn.disabled = true; dataSubmitBtn.textContent = "Upload"; }
+  }
+
+  wireDropZone(dataDropEl, dataFileInput, (file) => {
+    const MAX = 20 * 1024 * 1024;
+    if (file.size > MAX) {
+      showDialogError(dataErrorEl, "File is too large — max 20 MB per upload.");
+      return;
+    }
+    clearDialogError(dataErrorEl);
+    _dataFile = file;
+    showDropFile(dataDropEl, dataFilenameEl, file);
+    if (dataSubmitBtn) dataSubmitBtn.disabled = false;
+    // Auto-fill table name from filename stem.
+    if (dataTableNameIn) {
+      const stem = file.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "upload";
+      dataTableNameIn.value = stem;
+    }
+  });
+
+  if (dataSubmitBtn) {
+    dataSubmitBtn.addEventListener("click", async () => {
+      if (!_dataFile) return;
+      clearDialogError(dataErrorEl);
+      setSubmitBusy(dataSubmitBtn, true, "Uploading…");
+
+      try {
+        const fd = new FormData();
+        fd.append("file", _dataFile);
+        fd.append("kind", "data");
+        if (dataRegisterCb && dataRegisterCb.checked) {
+          fd.append("register_as_table", "true");
+          const tname = (dataTableNameIn && dataTableNameIn.value.trim()) || "";
+          if (tname) fd.append("table_name", tname);
+        }
+
+        const res = await fetch("/api/chat/uploads", {
+          method: "POST", body: fd, credentials: "same-origin",
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          closeOverlay(DATA_OVERLAY);
+          resetDataDialog();
+          showToast(data.hint || "File uploaded to your workspace.", "ok", { durationMs: 5000 });
+        } else {
+          let msg = "Upload failed.";
+          if (res.status === 413) {
+            msg = "File too large — max 20 MB per chat upload.";
+          } else if (res.status === 415) {
+            msg = "File type not allowed for data uploads. Use CSV, Parquet, or Excel.";
+          } else {
+            try {
+              const j = await res.json();
+              msg = (j && j.detail) ? String(j.detail) : msg;
+            } catch (_) {}
+          }
+          showDialogError(dataErrorEl, msg);
+        }
+      } catch (err) {
+        showDialogError(dataErrorEl, "Upload failed: " + String(err));
+      } finally {
+        setSubmitBusy(dataSubmitBtn, false, "Upload");
+      }
+    });
+  }
+
+  // ── Dialog 2: Store submission ────────────────────────────────────────────
+
+  const STORE_OVERLAY = "chat-upload-store-overlay";
+  wireCloseButtons(STORE_OVERLAY);
+
+  const storeDropEl     = $("chat-store-drop");
+  const storeFileInput  = $("chat-store-file");
+  const storeFilenameEl = $("chat-store-drop-filename");
+  const storeErrorEl    = $("chat-store-error");
+  const storeSubmitBtn  = $("chat-store-submit");
+  const storeTiles      = $("chat-store-type-tiles");
+  const storeStackCb    = $("chat-store-stack");
+  const storeShareCb    = $("chat-store-share");
+
+  let _storeFile = null;
+
+  // The primary action names the destination the checkboxes actually chose:
+  // sharing is the only one that leaves the uploader's account, so it takes
+  // the label. Everything else is a Library save.
+  function storeSubmitLabel() {
+    return (storeShareCb && storeShareCb.checked) ? "Submit to Store" : "Save to Library";
+  }
+
+  if (storeShareCb) {
+    storeShareCb.addEventListener("change", () => {
+      if (storeSubmitBtn && !storeSubmitBtn.disabled) {
+        storeSubmitBtn.textContent = storeSubmitLabel();
+      }
+    });
+  }
+
+  // Store type-tile interaction (radio + visual active class).
+  if (storeTiles) {
+    storeTiles.querySelectorAll("label").forEach((lbl) => {
+      lbl.addEventListener("click", () => {
+        storeTiles.querySelectorAll("label").forEach((l) => l.classList.remove("is-active"));
+        lbl.classList.add("is-active");
+      });
+    });
+  }
+
+  function resetStoreDialog() {
+    _storeFile = null;
+    if (storeDropEl) clearDropFile(storeDropEl, storeFilenameEl);
+    if (storeFileInput) storeFileInput.value = "";
+    if (storeErrorEl) clearDialogError(storeErrorEl);
+    // Destination defaults: Library + Stack on, sharing off (Private is the
+    // default for anything uploaded through chat).
+    if (storeStackCb) storeStackCb.checked = true;
+    if (storeShareCb) storeShareCb.checked = false;
+    if (storeSubmitBtn) { storeSubmitBtn.disabled = true; storeSubmitBtn.textContent = storeSubmitLabel(); }
+    // Reset type to skill.
+    if (storeTiles) {
+      storeTiles.querySelectorAll("label").forEach((l) => l.classList.remove("is-active"));
+      const first = storeTiles.querySelector("label");
+      if (first) first.classList.add("is-active");
+      const radio = storeTiles.querySelector('input[value="skill"]');
+      if (radio) radio.checked = true;
+    }
+  }
+
+  wireDropZone(storeDropEl, storeFileInput, (file) => {
+    const MAX = 50 * 1024 * 1024;
+    if (file.size > MAX) {
+      showDialogError(storeErrorEl, "File too large — max 50 MB for store submissions.");
+      return;
+    }
+    if (!/\.(zip|skill)$/i.test(file.name)) {
+      showDialogError(storeErrorEl, "Only .zip or .skill files are accepted for store submissions.");
+      return;
+    }
+    clearDialogError(storeErrorEl);
+    _storeFile = file;
+    showDropFile(storeDropEl, storeFilenameEl, file);
+    if (storeSubmitBtn) {
+      storeSubmitBtn.disabled = false;
+      storeSubmitBtn.textContent = storeSubmitLabel();
+    }
+  });
+
+  if (storeSubmitBtn) {
+    storeSubmitBtn.addEventListener("click", async () => {
+      if (!_storeFile) return;
+      clearDialogError(storeErrorEl);
+      const share = !!(storeShareCb && storeShareCb.checked);
+      const wantStack = !!(storeStackCb && storeStackCb.checked);
+      setSubmitBusy(storeSubmitBtn, true, share ? "Submitting…" : "Saving…");
+
+      try {
+        // Step 1: run /preview to extract frontmatter (name, description).
+        const type = storeTiles
+          ? (storeTiles.querySelector('input[name="chat-store-type"]:checked') || {}).value || "skill"
+          : "skill";
+
+        const previewFd = new FormData();
+        previewFd.append("file", _storeFile);
+        previewFd.append("type", type);
+        const previewRes = await fetch("/api/store/entities/preview", {
+          method: "POST", body: previewFd, credentials: "same-origin",
+        });
+
+        let name = "", description = "", title = "";
+        if (previewRes.ok) {
+          const preview = await previewRes.json();
+          name        = preview.name        || "";
+          description = preview.description || "";
+          title       = preview.title       || name;
+        } else {
+          // Validation failed (e.g. wrong type or malformed zip) — surface error.
+          let msg = "Bundle validation failed.";
+          try {
+            const j = await previewRes.json();
+            if (j && j.detail) {
+              msg = typeof j.detail === "object"
+                ? (j.detail.code || "validation_failed")
+                : String(j.detail);
+            }
+          } catch (_) {}
+          showDialogError(storeErrorEl, msg + " Check the bundle layout and try again.");
+          return;
+        }
+
+        // Step 2: create the entity. Mirror the shape from store_upload.html.
+        const fd = new FormData();
+        fd.append("file", _storeFile);
+        fd.append("type", type);
+        fd.append("name", name);
+        fd.append("description", description);
+        fd.append("title", title || name);
+        // The "Share with everyone" checkbox IS the access choice: unchecked
+        // keeps the entity private to its author's Library, checked submits it
+        // to the Store for review. Same field the /skills builder writes.
+        fd.append("access", share ? "everyone" : "private");
+        // No photo, docs, category, video_url in the quick-submit path — the user
+        // can edit those on the item's page in the Library afterwards.
+
+        const res = await fetch("/api/store/entities", {
+          method: "POST", body: fd, credentials: "same-origin",
+        });
+
+        if (res.ok) {
+          const entity = await res.json();
+
+          // Step 3: the Stack checkbox. A private entity is installable by its
+          // own author; a shared one is still under review, so the install is
+          // refused with 409 until it is approved — say so instead of
+          // pretending it landed.
+          let stackOk = false, stackPending = false;
+          if (wantStack) {
+            try {
+              const ir = await fetch(
+                "/api/store/entities/" + encodeURIComponent(entity.id) + "/install",
+                { method: "POST", credentials: "same-origin" },
+              );
+              stackOk = ir.ok;
+              stackPending = ir.status === 409;
+            } catch (_) { /* network — reported as "not added" below */ }
+          }
+
+          closeOverlay(STORE_OVERLAY);
+          resetStoreDialog();
+
+          let msg = share
+            ? "Submitted to the Store for review. It's in your Library now."
+            : "Saved to your Library, private to you.";
+          if (wantStack && stackOk) {
+            msg += " Added to your stack.";
+          } else if (wantStack && stackPending) {
+            msg += " Add it to your stack once the review approves it.";
+          } else if (wantStack) {
+            msg += " Could not add it to your stack — do it from the Library.";
+          }
+          showToast(msg, "ok", { durationMs: 6000 });
+          setTimeout(() => {
+            window.open("/library?new=" + encodeURIComponent(entity.id), "_blank", "noopener");
+          }, 600);
+        } else {
+          let msg = share ? "Submission failed." : "Save failed.";
+          if (res.status === 409) {
+            msg = "A Store entity with this name already exists under your account.";
+          } else {
+            try {
+              const j = await res.json();
+              const d = j && j.detail;
+              if (d && typeof d === "object") {
+                msg = d.code === "validation_failed"
+                  ? "Bundle did not pass review. Fix the issues and upload again."
+                  : d.code === "security_blocked"
+                  ? "Upload blocked: security review found risky patterns."
+                  : d.code || msg;
+              } else if (d) {
+                msg = String(d);
+              }
+            } catch (_) {}
+          }
+          showDialogError(storeErrorEl, msg);
+        }
+      } catch (err) {
+        showDialogError(storeErrorEl, "Upload failed: " + String(err));
+      } finally {
+        setSubmitBusy(storeSubmitBtn, false, storeSubmitLabel());
+      }
+    });
+  }
+
+  // ── Dialog 3: Image / Document ────────────────────────────────────────────
+
+  const MEDIA_OVERLAY = "chat-upload-media-overlay";
+  wireCloseButtons(MEDIA_OVERLAY);
+
+  const mediaDropEl     = $("chat-media-drop");
+  const mediaFileInput  = $("chat-media-file");
+  const mediaFilenameEl = $("chat-media-drop-filename");
+  const mediaErrorEl    = $("chat-media-error");
+  const mediaSubmitBtn  = $("chat-media-submit");
+
+  let _mediaFile = null;
+
+  // Derive kind from mime / extension.
+  function _mediaKind(file) {
+    const ct = (file.type || "").toLowerCase();
+    if (ct.startsWith("image/")) return "image";
+    if (ct === "application/pdf") return "document";
+    const ext = (file.name || "").toLowerCase().match(/\.[^.]+$/);
+    if (ext && [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext[0])) return "image";
+    return "document";  // txt, md, pdf → document
+  }
+
+  function resetMediaDialog() {
+    _mediaFile = null;
+    if (mediaDropEl) clearDropFile(mediaDropEl, mediaFilenameEl);
+    if (mediaFileInput) mediaFileInput.value = "";
+    if (mediaErrorEl) clearDialogError(mediaErrorEl);
+    if (mediaSubmitBtn) { mediaSubmitBtn.disabled = true; mediaSubmitBtn.textContent = "Upload"; }
+  }
+
+  wireDropZone(mediaDropEl, mediaFileInput, (file) => {
+    const MAX = 20 * 1024 * 1024;
+    if (file.size > MAX) {
+      showDialogError(mediaErrorEl, "File too large — max 20 MB per chat upload.");
+      return;
+    }
+    clearDialogError(mediaErrorEl);
+    _mediaFile = file;
+    showDropFile(mediaDropEl, mediaFilenameEl, file);
+    if (mediaSubmitBtn) mediaSubmitBtn.disabled = false;
+  });
+
+  if (mediaSubmitBtn) {
+    mediaSubmitBtn.addEventListener("click", async () => {
+      if (!_mediaFile) return;
+      clearDialogError(mediaErrorEl);
+      setSubmitBusy(mediaSubmitBtn, true, "Uploading…");
+
+      try {
+        const kind = _mediaKind(_mediaFile);
+        const fd = new FormData();
+        fd.append("file", _mediaFile);
+        fd.append("kind", kind);
+
+        const res = await fetch("/api/chat/uploads", {
+          method: "POST", body: fd, credentials: "same-origin",
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          closeOverlay(MEDIA_OVERLAY);
+          resetMediaDialog();
+          showToast(data.hint || "File uploaded to your workspace.", "ok", { durationMs: 5000 });
+        } else {
+          let msg = "Upload failed.";
+          if (res.status === 413) {
+            msg = "File too large — max 20 MB per chat upload.";
+          } else if (res.status === 415) {
+            msg = "File type not allowed. Accepted: images (PNG, JPEG, WebP, SVG, GIF), PDF, plain text, Markdown.";
+          } else {
+            try {
+              const j = await res.json();
+              msg = (j && j.detail) ? String(j.detail) : msg;
+            } catch (_) {}
+          }
+          showDialogError(mediaErrorEl, msg);
+        }
+      } catch (err) {
+        showDialogError(mediaErrorEl, "Upload failed: " + String(err));
+      } finally {
+        setSubmitBusy(mediaSubmitBtn, false, "Upload");
+      }
+    });
+  }
+
+  // ── Wire menu items → dialogs ─────────────────────────────────────────────
+
+  if (plusMenu) {
+    plusMenu.querySelectorAll("[data-upload-action]").forEach((item) => {
+      const action = item.dataset.uploadAction;
+      const handler = () => {
+        closePlusMenu();
+        if (action === "data") {
+          resetDataDialog();
+          openOverlay(DATA_OVERLAY);
+        } else if (action === "store") {
+          resetStoreDialog();
+          openOverlay(STORE_OVERLAY);
+        } else if (action === "media") {
+          resetMediaDialog();
+          openOverlay(MEDIA_OVERLAY);
+        }
+      };
+      item.addEventListener("click", handler);
+      item.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handler(); }
+      });
+    });
+  }
+
+})();
+
 (async () => {
   renderCapabilities();
   wireSuggestionButtons();
   autosizeComposer();
-  await loadSidebar();
+  // Rail pre-conversation Dashboard (no-op on topnav): greeting fix-up +
+  // suggested-next-actions wiring, handed submitUserMessage/openSession so
+  // every suggestion starts (or resumes) a conversation through the exact
+  // same flow as a typed message.
+  initChatDashboard({ submitPrompt: submitUserMessage, openSession });
+  // Pre-seeded question (/chat?q=… — the detail pages' "Ask Agnes" links):
+  // prefill the composer and focus, but never auto-send — a GET must stay
+  // side-effect free (a reload would otherwise re-create sessions).
+  const _seededQ = new URLSearchParams(window.location.search).get("q");
+  const _composer = $("chat-input");
+  if (_seededQ && _composer && !_composer.value) {
+    _composer.value = _seededQ;
+    autosizeComposer();
+    _composer.focus();
+  } else if (_composer && $("rdb-actions")) {
+    // Dashboard empty state — the Agnes input is the page's main affordance.
+    _composer.focus();
+  }
+  // Sidebar list — a failed fetch must not break the page: the history list
+  // shows its empty state, the dashboard renders its suggestions without
+  // the personalized resume row (partial data), and boot continues (deep
+  // links + onboarding still work).
+  let _sidebarOk = true;
+  try {
+    await loadSidebar();
+  } catch (_) {
+    _sidebarOk = false;
+    const empty = $("cloud-chat-empty-state");
+    if (empty) empty.hidden = false;
+  }
+  updateDashboardSuggestions(_sidebarOk ? _sessionsCache : null);
   // Sidebar cache (_sessionsCache) is now populated so openSession can
   // resolve the title; fire the one-shot deep-link open.
   _maybeOpenInitialSession();
+  // Chat-driven onboarding — render the journey panel and prime the greeting/
+  // gap-resolver hooks. Best-effort: a failure here never blocks the chat.
+  initChatOnboarding({
+    renderAssistant: (md) => renderMessage({ role: "assistant", content: md }),
+    appendNode: (el) => {
+      const host = $("chat-messages");
+      if (host) host.appendChild(el);
+    },
+    resubmit: (text) => submitUserMessage(text),
+    scrollToBottom: () => maybeScrollToBottom(),
+    // Unconditionally bring the newest message into view — used as a fallback
+    // when maybeScrollToBottom() no-ops (user scrolled up, or the thread was
+    // hidden behind the empty-state hero). chat.js owns #chat-messages.
+    scrollLastIntoView: () =>
+      $("chat-messages")?.lastElementChild?.scrollIntoView({ block: "end" }),
+    revealConversation: () => hideCapabilities(),
+  }).catch(() => {});
 })();

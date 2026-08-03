@@ -73,6 +73,9 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
     # Web chat slash-menu catalog (issue #780).
     "/api/chat/skills": ("chat skills", "chat_skills"),
+    # Chat workspace file upload — any authenticated user can upload data/image/document
+    # files into their per-user workspace so Claude sees them in the next session.
+    "/api/chat/uploads": ("chat upload", "chat_upload_file"),
     # Maintained digests (K4, #799) — admin CRUD, triple-surface. Surfaces
     # (CLI `agnes admin digest …` + MCP tools) land in Task 7 — these two
     # entries are RED until then by design (see the K4 plan's Task 3).
@@ -115,6 +118,13 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/data-apps/{slug}": ("app show", "data_app_get"),
     "/api/data-apps/{slug}/deploy": ("app deploy", "data_app_deploy"),
     "/api/data-apps/{slug}/logs": ("app logs", "data_app_logs"),
+    # "Add artefacts to My Stack" — Stack membership for personal file
+    # Collections (permission = ownership/sharing, not admin-RBAC grants).
+    # POST (add) → stack_artefact_add; DELETE (remove) → stack_artefact_remove
+    # — one cohort row per path, mirrors the /api/store/entities/{entity_id}
+    # PUT/DELETE row above.
+    "/api/stack/artefacts/candidates": ("stack artefacts list", "stack_artefacts_candidates"),
+    "/api/stack/artefacts/{corpus_id}": ("stack artefacts add", "stack_artefact_add"),
     # Wave 3B draft-iteration model (Task 8) — CLI (`agnes app draft
     # create/delete`, `agnes app git-credential`) and MCP tools
     # (`data_app_create_draft`/`data_app_delete_draft`/`data_app_git_credential`)
@@ -227,12 +237,37 @@ _STORE_DRYRUN_REASON = (
     "grandfathered /api/store/entities/preview wizard step); the real "
     "create endpoint carries the triple-surface contract."
 )
+_TRUST_LINE_REASON = (
+    "Publisher + verification (v104) — human judgment made while READING the "
+    "item on its detail page, not a programmable query. An admin decides to "
+    "publish something as the organization, or to verify it, having just looked "
+    "at what it does; a bare `agnes admin verify <id>` would invite exactly the "
+    "rubber-stamping this design removes (a badge nobody audited is what the "
+    "old permanent 'In review' queue amounted to). The verification axis is "
+    "also opt-in per instance (`store.verification_enabled`, default false), so "
+    "on most instances the verbs would not exist at all. The READ side IS "
+    "surfaced everywhere: publisher_kind / verification_state ride the store "
+    "entity and marketplace item payloads that `marketplace_search` / "
+    "`marketplace_detail` already expose, and the ?publisher / ?verification "
+    "facets narrow the same listings."
+)
 _COLLECTIONS_FILES_REASON = (
     "Collections file endpoints (Slice 2) — multipart upload has no MCP/JSON "
     "analogue (binary body), reachable via `agnes collections upload`; file "
     "listing is folded into the collection_get MCP tool + `agnes collections "
     "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
     "analogue. The collection read surfaces carry the triple-surface contract."
+)
+_LIBRARY_PREVIEW_REASON = (
+    "Backs the Library's file-preview modal — a browser viewer, not a data "
+    "product. `…/raw` streams image/PDF bytes for the BROWSER to draw (no "
+    "JSON/MCP analogue), and `…/preview` exists to tell that viewer which "
+    "shape to render; its text is capped at a glance (_PREVIEW_MAX_CHARS), so "
+    "it is deliberately not a faithful read-the-file surface an agent could "
+    "rely on. Agent-facing access to collection text stays `collections_search` "
+    "/ `agnes collections search`. A real 'read this file whole' tool would be "
+    "its own feature (uncapped, paginated) and would then owe all three "
+    "surfaces."
 )
 _AUTHORING_SUGGESTIONS_REASON = (
     "Authoring-studio suggestion queue (v80) — web-form/admin-moderation flow. "
@@ -416,10 +451,43 @@ _DATA_APPS_READINESS_REASON = (
     "analyst action; `agnes app show`/`agnes app open` (Task 10) cover the "
     "human-facing state check. No CLI/MCP analogue planned."
 )
+_LIBRARY_MOVE_REASON = (
+    "Backs the Library's drag-and-drop: moving a file between collections is a "
+    "direct-manipulation gesture on the /library table, not a command an analyst "
+    "would type. The CLI/MCP equivalent of reorganising files is re-uploading "
+    "into the intended collection, which already has surfaces."
+)
+
+_AGENTS_REGISTRY_REASON = (
+    "Web Agent-builder CRUD (v103 `agents` registry). The builder at /agents is "
+    "the only producer and the Library the only consumer; an agent cannot yet be "
+    "RUN on any surface, so there is no analyst CLI/MCP workflow to mirror. "
+    "Revisit when agents become runnable — then `agnes agent …` + an MCP tool "
+    "become the triple-surface obligation."
+)
+
+_LIBRARY_SHARING_REASON = (
+    "Owner-initiated sharing of Library items — a web affordance on /library "
+    "(share dialog). The equivalent grant writing already has analyst-facing "
+    "surfaces on the ADMIN side (`agnes admin grant …`); this endpoint only "
+    "narrows those same `resource_grants` writes to what an item's owner may do, "
+    "so a second CLI/MCP vocabulary for it would duplicate the admin one."
+)
+
 _DATA_APPS_PREVIEW_GRANT_REASON = (
     "preview-grant mints the in-chat iframe cookie for the web chat surface; chat-only, no CLI/MCP analogue (spec §7)"
 )
+
 _EXEMPT: dict[str, str] = {
+    "/api/me/display-name": (
+        "self-service display-name edit (issue #1036) — UI-only affordance on "
+        "/profile; a one-field personal profile edit with no CLI/MCP analogue"
+    ),
+    "/api/collections/{collection_id}/files/{file_id}/move": _LIBRARY_MOVE_REASON,
+    "/api/agents": _AGENTS_REGISTRY_REASON,
+    "/api/agents/{agent_id}": _AGENTS_REGISTRY_REASON,
+    "/api/sharing/groups": _LIBRARY_SHARING_REASON,
+    "/api/sharing/{resource_type}/{resource_id}": _LIBRARY_SHARING_REASON,
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
     "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
     "/api/v1/agents/{agent_id}/tokens": _AGENT_TOKENS_REASON,
@@ -442,6 +510,8 @@ _EXEMPT: dict[str, str] = {
     ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
+    "/api/collections/{collection_id}/files/{file_id}/preview": _LIBRARY_PREVIEW_REASON,
+    "/api/collections/{collection_id}/files/{file_id}/raw": _LIBRARY_PREVIEW_REASON,
     "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
     "/api/admin/memory-mining/run": _MEMORY_MINING_REASON,
     "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,
@@ -451,6 +521,9 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/authoring-suggestions/{sid}/reject": _AUTHORING_SUGGESTIONS_REASON,
     "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
     "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
+    "/api/store/entities/{entity_id}/publisher": _TRUST_LINE_REASON,
+    "/api/store/entities/{entity_id}/verification": _TRUST_LINE_REASON,
+    "/api/store/entities/{entity_id}/verification/request": _TRUST_LINE_REASON,
     "/api/admin/prompts/{kind}": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/source": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/bind-git": _PROMPTS_REASON,
@@ -525,6 +598,28 @@ _EXEMPT: dict[str, str] = {
         "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "
         "run-knowledge-digests exemptions; no analyst CLI/MCP analogue"
+    ),
+    "/api/chat/journey": (
+        "chat-driven onboarding backend foundation — internal state read/write "
+        "for the in-chat onboarding UI (a follow-up task), self-scoped to the "
+        "caller's own journey row; no analyst CLI/MCP analogue"
+    ),
+    # Chat history row menu (pin / rename). Both mutate how the WEB history
+    # panel presents a conversation, not what any agent can read or do: a pin
+    # is a hoist in one rendered list, and a title is the label that list
+    # shows. There is no CLI or MCP notion of "my history panel's ordering" to
+    # mirror them onto — `agnes chat <slug>` streams a session, it does not
+    # render the panel — and the auto-title already writes the same column
+    # server-side. Self-scoped to the caller's own session (404, never 403).
+    "/api/chat/sessions/{chat_id}/pin": (
+        "web chat history-panel affordance — hoists one of the caller's own "
+        "conversations into the Pinned group in the rendered list; no analyst "
+        "CLI/MCP analogue"
+    ),
+    "/api/chat/sessions/{chat_id}/title": (
+        "web chat history-panel affordance — renames one of the caller's own "
+        "conversations, the same column the Haiku auto-title writes; no "
+        "analyst CLI/MCP analogue"
     ),
     # Keboola glossary import (2026-07-17 design). `/api/glossary/search`
     # carries the triple-surface contract in _COHORT; list and get-by-id are

@@ -367,7 +367,7 @@ Current schema version: **108** (auto-migrated from any earlier version on start
 | `data_package_tables` | M:N junction between `data_packages` and `table_registry`. |
 | `memory_domains` | First-class memory domain rows (id, slug, name, icon, color). Replaces the scalar `knowledge_items.domain` column dropped in v49. |
 | `knowledge_item_domains` | M:N junction between `knowledge_items` and `memory_domains`. One item can live in multiple domains. |
-| `user_stack_subscriptions` | Per-user opt-in for available-tier Data Packages + Memory Domains (`(user_id, resource_type, resource_id)`). Marketplace plugins keep their legacy `user_plugin_optouts` table. |
+| `user_stack_subscriptions` | Per-user LOCAL DOWNLOAD opt-in for available-tier Data Packages + Memory Domains (`(user_id, resource_type, resource_id)`) — auto-membership means both tiers are already in the stack/authorized without a row here; a row only additionally flags "keep a local copy" (`agnes pull` fetches it). Marketplace plugins keep their legacy `user_plugin_optouts` table. |
 
 Connections: `get_system_db()` returns a cursor on a **single shared connection** per
 `DATA_DIR` (protected by `threading.Lock`). Callers `close()` the cursor, not the
@@ -457,10 +457,14 @@ in `app/main.py` (catch-all). Route handlers live in `app/web/router.py` and ret
 **Base-template hierarchy (the design-system page shell — #367 / #482).** Every page
 `{% extends %}` one of three bases:
 
-- **`base_ds.html` — the canonical base.** Loads the four stylesheets in the required
-  order (`style-custom` → `design-tokens` → `components` → `stack_card`), sets
-  `<html data-theme="{{ instance_theme | default('blue') }}">` + the favicon, renders the
-  production nav (`_app_header.html`), the canonical `.container` shell, the operator
+- **`base_ds.html` — the canonical base.** Loads the stylesheets in the required
+  order (`style-custom` → `design-tokens` → `components` → `stack_card` → the
+  attribute-scoped `rail`/`paper-skin` sheets), sets
+  `<html data-theme="{{ instance_theme | default('blue') }}"
+  data-ui-layout="{{ ui_layout | default('topnav') }}">` + the favicon, renders the
+  production nav (`_app_header.html`, or `_app_rail.html` when the instance opts into
+  the `rail` chrome via `instance.ui_layout` / `AGNES_UI_LAYOUT`), the canonical
+  `.container` shell, the operator
   `custom_scripts` placements (`head_start` / `head_end` / `body_end`), and the global JS
   (`_app_scripts.html` — undo toast, modal-Esc, command palette, admin shortcuts). It
   **auto-imports `_components.html` as `ds`**, so pages call `{{ ds.button(…) }}` without

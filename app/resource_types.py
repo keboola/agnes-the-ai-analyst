@@ -50,6 +50,9 @@ class ResourceType(StrEnum):
     COLLECTION = "collection"
     KNOWLEDGE_DIGEST = "knowledge_digest"
     DATA_APP = "data_app"
+    AGENT = "agent"
+    CORPUS_FILE = "corpus_file"
+    STORE_ENTITY = "store_entity"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -486,6 +489,121 @@ def _slack_channel_blocks() -> List[Block]:
 # ---------------------------------------------------------------------------
 
 
+def _corpus_file_blocks() -> List[Block]:
+    """Project ``corpus_files`` into the (block → items) shape the admin
+    /access page renders — one block per parent collection.
+
+    A file inside a multi-file collection is independently shareable (the
+    Library lets its owner share one file without sharing the whole folder), so
+    its grants need to be visible and correctable here. Single-file artefacts
+    are NOT listed: they are shared as their collection, which is the same
+    thing, and listing them twice would invite contradictory grants.
+    """
+    from src.repositories import corpus_files_repo, file_corpora_repo
+
+    blocks: List[Block] = []
+    cf_repo = corpus_files_repo()
+    for col in file_corpora_repo().list(limit=_GRANT_PROJECTION_LIMIT):
+        try:
+            files = cf_repo.list_for_corpus(col["id"])
+        except Exception:
+            continue
+        if len(files) < 2:
+            continue  # a lone file IS its collection
+        blocks.append(
+            {
+                "id": col["id"],
+                "name": col.get("name") or col.get("slug"),
+                "items": [
+                    {
+                        "resource_id": f["id"],
+                        "name": f.get("filename") or f["id"],
+                        "slug": None,
+                        "description": None,
+                    }
+                    for f in files
+                ],
+            }
+        )
+    return blocks
+
+
+def _agent_blocks() -> List[Block]:
+    """Project ``agents`` into the (block → items) shape rendered by the
+    admin /access page.
+
+    Agents are assistants a user composes in the Agent builder (v103). One
+    synthetic block ``"Agents"`` holds all live (non-soft-deleted) agents; the
+    ``resource_id`` is ``agents.id``. Unlike most resource types, agent grants
+    are usually written by the OWNER through the Library's Share action rather
+    than by an admin here — this projection exists so an admin can still see
+    and correct them.
+    """
+    from src.repositories import agents_repo
+
+    rows = agents_repo().list(limit=_GRANT_PROJECTION_LIMIT)
+    if not rows:
+        return []
+    return [
+        {
+            "id": "agents",
+            "name": "Agents",
+            "items": [
+                {
+                    "resource_id": r["id"],
+                    "name": r["name"],
+                    "slug": r.get("slug"),
+                    "description": r.get("role") or r.get("instructions") or "",
+                }
+                for r in rows
+            ],
+        }
+    ]
+
+
+def _store_entity_blocks() -> List[Block]:
+    """Project ``store_entities`` into the (block → items) shape rendered by
+    the admin /access page.
+
+    One block per entity type (Skills / Agents / Plugins) so the page groups the
+    way the Library does; ``resource_id`` is ``store_entities.id``.
+
+    The grant that matters most here is the ``requirement='required'`` tier —
+    "In stack, locked". It is admissible ONLY on an organization-published
+    entity (see ``app/api/access.py``), so each item carries ``publisher_kind``
+    and the UI can disable the Required control on user-published rows rather
+    than letting an admin write a grant the API will refuse.
+
+    Archived rows are excluded: they are soft-deleted and must not appear as
+    something an admin can newly hand out.
+    """
+    from src.repositories import store_entities_repo
+
+    rows, _ = store_entities_repo().list(limit=_GRANT_PROJECTION_LIMIT)
+    blocks: dict[str, Block] = {}
+    labels = {"skill": "Skills", "agent": "Agents", "plugin": "Plugins"}
+    for r in rows:
+        if r.get("visibility_status") == "archived":
+            continue
+        kind = r.get("type") or "skill"
+        block = blocks.setdefault(
+            kind,
+            {"id": f"store_{kind}", "name": labels.get(kind, kind.title()), "items": []},
+        )
+        block["items"].append(
+            {
+                "resource_id": r["id"],
+                "name": r.get("title") or r["name"],
+                "description": r.get("tagline") or r.get("description") or "",
+                "publisher_kind": r.get("publisher_kind") or "user",
+                "verification_state": r.get("verification_state") or "none",
+                # Only organization-published items may be made Required.
+                "can_require": (r.get("publisher_kind") or "user") == "organization",
+            }
+        )
+    return [blocks[k] for k in ("skill", "agent", "plugin") if k in blocks]
+
+
 def _collection_blocks() -> List[Block]:
     """Project ``file_corpora`` into the (block → items) shape rendered by
     the admin /access page.
@@ -664,6 +782,40 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         description="A hosted user web application served behind instance auth.",
         id_format="<slug>",
         list_blocks=_data_app_blocks,
+    ),
+    ResourceType.CORPUS_FILE: ResourceTypeSpec(
+        key=ResourceType.CORPUS_FILE,
+        display_name="Files in collections",
+        description=(
+            "A single file inside a multi-file collection. Grant a group access "
+            "to share ONE file without sharing its whole collection. Owners "
+            "normally write these grants themselves from the Library."
+        ),
+        id_format="<corpus_file_id>",
+        list_blocks=_corpus_file_blocks,
+    ),
+    ResourceType.AGENT: ResourceTypeSpec(
+        key=ResourceType.AGENT,
+        display_name="Agents",
+        description=(
+            "An assistant composed in the Agent builder. Grant a group access "
+            "so its members can use the agent. Owners normally write these "
+            "grants themselves via the Library's Share action."
+        ),
+        id_format="<agent_id>",
+        list_blocks=_agent_blocks,
+    ),
+    ResourceType.STORE_ENTITY: ResourceTypeSpec(
+        key=ResourceType.STORE_ENTITY,
+        display_name="Skills, agents & plugins",
+        description=(
+            "An item authored in this instance and published to the Library. "
+            "Grant a group access to it, or mark it Required so its members "
+            "always have it in their stack — Required is admissible only on "
+            "organization-published items."
+        ),
+        id_format="<store_entity_id>",
+        list_blocks=_store_entity_blocks,
     ),
 }
 
