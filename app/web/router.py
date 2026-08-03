@@ -1417,6 +1417,12 @@ def _data_package_entry_dict(
         "owner_name": getattr(entry, "owner_name", None),
         "owner_team": getattr(entry, "owner_team", None),
         "badges": getattr(entry, "badges", None) or [],
+        # v113: the stored trust claim, so the card renders the SAME shared
+        # marker as the Library row and the detail hero. It replaced a derived
+        # `curated` badge that read the creator's current Admin-group
+        # membership, which is how a card and its own detail page could
+        # disagree. None for resource types with no publisher axis.
+        "publisher_kind": getattr(entry, "publisher_kind", None),
         "drilldown_url": drilldown_url,
         "footer_left": (f"View {table_count} table{'s' if table_count != 1 else ''} →" if table_count else "Open →"),
     }
@@ -1616,17 +1622,21 @@ def _catalog_card_stack_artefact(
         "unavailable": not accessible,
         "action": {"mode": "stack", "remove_url": f"/api/stack/artefacts/{rid}"},
     }
-    # Drives the stack_row macro's Source column (stack_source()): Private/
-    # Workspace are a category label; "shared with me" names the owner;
-    # "shared by me" (caller owns it, shared to a non-Everyone group) sets
-    # category too, since shared_by would resolve to "You" and fall through
-    # to the macro's em-dash branch.
-    if visibility == "workspace":
-        c["category"] = "Workspace"
-    elif visibility == "private":
-        c["category"] = "Private"
+    # Drives the stack_row macro's Source column (stack_source()): the scope
+    # words are a category label; "shared with me" names the owner; "shared by
+    # me" (caller owns it, shared to a non-Everyone group) sets category too,
+    # since shared_by would resolve to "You" and fall through to the macro's
+    # em-dash branch.
+    #
+    # Same words as the Library, off the same map: this column and the Library's
+    # Sharing badge state the same fact about the same item, so an item cannot be
+    # "Everyone" on one page and "Workspace" on the other.
+    from app.services.artefact_access import VISIBILITY_LABELS
+
+    if visibility in ("workspace", "private"):
+        c["category"] = VISIBILITY_LABELS[visibility]
     elif owner_label == "You":
-        c["category"] = "Shared"
+        c["category"] = VISIBILITY_LABELS["shared"]
     else:
         c["shared_by"] = owner_label
     return c
@@ -2133,16 +2143,41 @@ _ARTEFACT_TYPE_FACETS: dict[str, tuple[str, str]] = {
 }
 
 
+def _file_ext(first_file: dict | None) -> str:
+    """Lowercased extension for a stored file, from its recorded ``file_type`` or
+    else from its filename. "" when neither carries one."""
+    if not first_file:
+        return ""
+    ext = (first_file.get("file_type") or "").lower().lstrip(".")
+    if not ext:
+        fn = first_file.get("filename") or ""
+        ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+    return ext
+
+
 def _artefact_type(file_count: int, first_file: dict | None) -> tuple[str, str]:
     """(filter_key, label) for the type facet. Multi-file → Collection; a lone
     file → its extension's facet, falling back to a generic File."""
     if file_count != 1 or not first_file:
         return ("collection", "Collection")
-    ext = (first_file.get("file_type") or "").lower().lstrip(".")
-    if not ext:
-        fn = first_file.get("filename") or ""
-        ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
-    return _ARTEFACT_TYPE_FACETS.get(ext, ("file", "File"))
+    return _ARTEFACT_TYPE_FACETS.get(_file_ext(first_file), ("file", "File"))
+
+
+def _artefact_format(first_file: dict | None) -> str:
+    """The file's FORMAT as the Library's Name cell shows it — "PNG", "SVG",
+    "PDF". This is what a file row prints where every other kind prints a
+    description: for a file, "A private file — searchable by your agents." was
+    boilerplate identical on every row, while the format is the one fact about a
+    file the name may not already carry.
+
+    Deliberately the concrete format, not `_artefact_type`'s facet label: the
+    facet buckets svg/png/heic all as "Image", which the row's own glyph already
+    conveys. "" when there is no extension to read, so the caller can fall back
+    to the description rather than print an empty line. Bounded to a plausible
+    extension (short, alphanumeric) so a dotted filename can't push an arbitrary
+    slice of itself into the cell."""
+    ext = _file_ext(first_file)
+    return ext.upper() if ext and len(ext) <= 8 and ext.isalnum() else ""
 
 
 # ---------------------------------------------------------------------------
@@ -2154,9 +2189,17 @@ def _artefact_type(file_count: int, first_file: dict | None) -> tuple[str, str]:
 #: A store entity is readable by every authenticated user once approved, so
 #: "approved" IS workspace-wide sharing; anything else is still private to its
 #: owner. Keys match the artefact/agent visibility vocabulary so one filter and
-#: one chip style covers all three kinds.
+#: one chip style covers all three kinds (the label vocabulary itself is owned
+#: by ``collection_visibility`` — see its docstring for why "Everyone" and not
+#: "Workspace").
+#:
+#: The two REVIEW states carry their own word rather than the scope word, and
+#: that is the point: "In review" and "Archived" are the most actionable things
+#: this slot ever says, and they are only true of a store entity. They are also
+#: why the slot must never be overwritten with an editability phrase like
+#: "Shared with you" — see ``_library_row_base`` callers below.
 _SKILL_VISIBILITY: dict[str, tuple[str, str]] = {
-    "approved": ("workspace", "Workspace"),
+    "approved": ("workspace", "Everyone"),
     "pending": ("private", "In review"),
     # 'hidden' is now the state the builder writes for "Private" access.
     "hidden": ("private", "Private"),
@@ -2214,13 +2257,15 @@ def _library_row_base(
         # the wording can differ from the filtered value. Empty → the template
         # falls back to "In Stack".
         "stack_pill": "",
-        # Membership the caller cannot drop: an admin ``required`` grant. It
-        # reads the SAME "In Stack" as any other member (it is one) and is
-        # marked by a LOCK plus the locked tooltip — the tier is an attribute
-        # of the membership, not a different state, and the separate
-        # Optional/Required facet is where the tier is filterable. Driving the
-        # lock off this flag rather than off the pill's text keeps the wording
-        # and the affordance independent.
+        # Membership the caller cannot drop — any group grant, whichever tier.
+        # It reads the SAME "In Stack" as any other member (it is one) and is
+        # marked by a LOCK plus a tooltip naming who *can* remove it. The tier
+        # is an attribute of the membership, not a different state, and the
+        # separate Optional/Required facet is where the tier is filterable.
+        # Driving the lock off this flag rather than off the pill's text keeps
+        # the wording and the affordance independent; driving the FLAG off
+        # droppability rather than off the tier is what keeps a non-removable
+        # row from wearing the removable row's rest state.
         "stack_locked": False,
         # What Add/Remove writes to, and which of the two the caller may do.
         # Artefacts and store entities have different membership APIs, so the row
@@ -2303,7 +2348,11 @@ async def library_page(
     those rows.
     """
     from app.resource_types import ResourceType
-    from app.services.artefact_access import build_artefact_access_context, collection_visibility
+    from app.services.artefact_access import (
+        VISIBILITY_LABELS,
+        build_artefact_access_context,
+        collection_visibility,
+    )
     from app.services.journey import mark_journey
     from src.db import SYSTEM_EVERYONE_GROUP
 
@@ -2460,6 +2509,10 @@ async def library_page(
             # own detail page and their own sharing.
             row["is_folder"] = is_folder
             row["file_kind"] = file_type_key
+            # What a LOOSE FILE's row prints on its second line, in place of the
+            # description every file shared word for word. A collection prints its
+            # file count there instead, so it needs none.
+            row["file_format"] = "" if is_folder else _artefact_format(first_file)
             # A loose file's ROW id is its collection id (a single-file artefact
             # IS its collection), but moving it needs the corpus_files id — so
             # carry that separately rather than making the drag guess.
@@ -2504,6 +2557,12 @@ async def library_page(
                         owner_key="me" if owned else (col.get("created_by") or ""),
                     )
                     child["file_kind"] = ftype_key
+                    # A file inside a folder is titled by its FILENAME and carries
+                    # no description at all, so before this its second line was
+                    # blank. It gets the same format line as a loose file — the
+                    # nested rows are files too, and the retired Type column is
+                    # where their format used to show.
+                    child["file_format"] = _artefact_format(f)
                     child["file_id"] = f["id"]
                     child["file_name"] = f.get("filename") or ""
                     child["slug"] = slug or ""
@@ -2514,10 +2573,10 @@ async def library_page(
                     child["stack_title"] = row["stack_title"]
                     child["stack_pill"] = row["stack_pill"]
                     child["parent_id"] = col["id"]
-                    child["visibility_label"] = {
-                        "workspace": "Workspace",
-                        "shared": "Shared",
-                    }.get(child["visibility"], "Private")
+                    # Same vocabulary as every other row — read off the shared
+                    # map rather than restated here, which is how this slot came
+                    # to hold a fourth spelling of the same three states.
+                    child["visibility_label"] = VISIBILITY_LABELS.get(child["visibility"], VISIBILITY_LABELS["private"])
                     row["children"].append(child)
             items.append(row)
     except Exception as e:
@@ -2572,14 +2631,27 @@ async def library_page(
             if owned:
                 # The caller's own entry reports its real store state, which is
                 # the honest answer for an unpublished one ("In review",
-                # "Private") as well as a published one ("Workspace").
+                # "Private") as well as a published one ("Everyone").
+                #
+                # These rows are read-only in the Library (there is no
+                # access-change endpoint for a store entity yet — see the TODO
+                # on the badge in library.html), and they are exactly why
+                # "cannot change" must NOT be labelled "Shared with you": this
+                # entry is the caller's OWN, so that phrase would be false, and
+                # it would erase "In review" — the one state whose whole value
+                # is being visible at a glance.
                 visibility, visibility_label = _SKILL_VISIBILITY.get(status, ("private", "Private"))
                 owner_label, owner_key = "You", "me"
                 ownership = "shared_by_me" if visibility == "workspace" else "mine"
                 origin, origin_label = "built", "Built here"
             else:
                 # Someone else's approved entry: shared with everyone here.
-                visibility, visibility_label = "workspace", "Workspace"
+                # The label says the SCOPE ("Everyone"), not how the caller came
+                # by it: an approved store entity is readable by every
+                # authenticated user, so "Shared with you" would understate it —
+                # it implies somebody picked this caller. The scope is known
+                # here, so the more specific true thing wins.
+                visibility, visibility_label = "workspace", "Everyone"
                 owner_label = owner_name.get(s.get("owner_user_id"), "Someone")
                 owner_key = s.get("owner_user_id") or ""
                 ownership = "shared_with_me"
@@ -2724,15 +2796,22 @@ async def library_page(
         # `browse`), so these rows are always "In Stack" — never addable.
         items[-1]["stack_state"] = "in_stack"
         # Every granted row says the same thing about membership — "In Stack",
-        # because it is. A REQUIRED grant differs only in that the caller
-        # cannot drop it (the unsubscribe API answers 400
-        # ``cannot_remove_required``), which the LOCK and its tooltip carry.
+        # because it is — and every one of them is LOCKED, because the grant IS
+        # the membership: there is no per-user membership to drop, only a grant
+        # an admin can revoke. So the lock is driven by *droppability*, not by
+        # the grant tier. Keying it on ``requirement == 'required'`` (as this
+        # did) left an optional grant rendering the success-tinted check that a
+        # REMOVABLE row wears at rest — pixel-identical to a control that turns
+        # into "Remove from Stack" on hover, so the only way to learn it wasn't
+        # one was to hover it and watch nothing happen. The tier still differs,
+        # but in the two places where it's legible: the tooltip below, and the
+        # Optional/Required facet where it is actually filterable.
         items[-1]["stack_pill"] = "In Stack"
+        items[-1]["stack_locked"] = True
         if requirement == "required":
-            items[-1]["stack_locked"] = True
             items[-1]["stack_title"] = "Required by your admin and cannot be removed from your stack."
         else:
-            items[-1]["stack_title"] = "Granted to your group, so it's in your Stack"
+            items[-1]["stack_title"] = "Granted to your group — only an admin can remove it from your Stack."
 
     # Governed data packages + memory domains — StackResolver.browse() is
     # exactly "required ∪ available for my groups" for these two types.
@@ -2878,6 +2957,74 @@ async def library_page(
             items[-1]["stack_title"] = "The default agent can use this — click to remove it"
     except Exception as e:
         logger.warning("/library: could not resolve installed agents: %s", e)
+
+    # ── Definitions — the semantic layer, as a page FOOTER ────────────────
+    # Deliberately NOT rows in the list above. Metrics and glossary terms are
+    # the one thing here nobody owns, shares, installs, drops or edits: they
+    # are the organization's agreed vocabulary, maintained by an admin and
+    # readable by everyone unconditionally. Modelled as inventory they had to
+    # neuter all four of the table's columns at once — Owner said "Your
+    # workspace" (true of nothing in particular), Sharing said "Workspace" but
+    # refused to change, Stack said "In Stack" but locked, Actions was empty —
+    # and four special-cased columns is the table saying the object is not one
+    # of its rows. A data package looks similar but is genuinely different:
+    # access to it VARIES per caller, which is what makes it "what I have".
+    # Everyone has the whole glossary, so there is no having involved.
+    #
+    # So it closes the page instead: an adjacent destination under the
+    # inventory, carrying its two counts and a door into each tab. The counts
+    # are computed here (RBAC-filtered on the metric side exactly as
+    # /catalog/semantics filters it, so the page never advertises definitions
+    # the caller cannot open); the glossary is deliberately ungated there
+    # (business vocabulary, not data), so its count is instance-wide.
+    definitions_footer: dict = {}
+    try:
+        from app.api.metrics import _first_inaccessible_table
+        from src.rbac import get_accessible_tables
+
+        # No `conn` argument: /library takes no raw ``Depends(_get_db)``
+        # connection, and passing one would be the backend-split bug class on a
+        # Postgres instance. The default path reads through the repo factory.
+        _accessible = get_accessible_tables(user)
+        _allowed = None if _accessible is None else set(_accessible)
+        _visible_metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, _allowed) is None]
+        # 500 is GET /api/glossary's own max limit and the repo has no
+        # unbounded mode (it bounds a full-table scan) — above the scale this
+        # feature targets, so an exact count in practice.
+        _glossary_terms = glossary_repo().list(limit=500)
+
+        # What the page's search box matches the footer on. The reader types
+        # the TERM they want — "ARR", "active account" — not the word
+        # "definitions", so the block carries its contents' vocabulary: every
+        # metric name, display name and synonym (synonyms are what make "MRR"
+        # reach "Monthly Recurring Revenue"), and every glossary term.
+        #
+        # Names only, never the definition bodies. This ships in an attribute
+        # on every page load, and matching on prose would surface the block for
+        # words that merely appear inside some definition. The metric side
+        # inherits the RBAC filter above for free.
+        def _index_words(values) -> str:
+            seen: dict[str, None] = {}
+            for v in values:
+                for word in str(v or "").split():
+                    w = word.strip().lower()
+                    if w:
+                        seen.setdefault(w, None)
+            return " ".join(seen)
+
+        if _visible_metrics or _glossary_terms:
+            definitions_footer = {
+                "metric_count": len(_visible_metrics),
+                "glossary_count": len(_glossary_terms),
+                "search": _index_words(
+                    [m.get("display_name") for m in _visible_metrics]
+                    + [m.get("name") for m in _visible_metrics]
+                    + [s for m in _visible_metrics for s in (m.get("synonyms") or [])]
+                    + [g.get("term") for g in _glossary_terms]
+                ),
+            }
+    except Exception as e:
+        logger.warning("/library: could not resolve the semantic layer: %s", e)
 
     # Default order = recently added first (undated rows sort last).
     items.sort(key=lambda c: c.get("added_iso") or "", reverse=True)
@@ -3036,6 +3183,7 @@ async def library_page(
         user=user,
         library_items=items,
         library_sections=library_sections,
+        definitions_footer=definitions_footer,
         library_origins=library_origins,
         library_requirements=library_requirements,
         library_in_stack_count=library_in_stack_count,
@@ -3052,12 +3200,24 @@ async def library_page(
         library_open_section=(
             request.query_params.get("section") if request.query_params.get("section") in _SECTION_LABELS else ""
         ),
-        # Opt-in flag: when true, show amber chip for unverified Store items.
+        # Arrive with "In stack only" already pressed — /library?stack=in_stack.
+        # The chat empty state's Stack status line ("Agnes is using N knowledge
+        # sources and M capabilities from your Stack") points here instead of at
+        # the de-railed /stack page (#1088); this list spans every kind that
+        # page did, and the toggle narrows it to what the line counts. The value
+        # is compared against the facet's one legal value, so what reaches the
+        # page's JS is a boolean, never caller text.
+        library_stack_only=request.query_params.get("stack") == "in_stack",
+        # Default ON: an unverified Store item states so ("Community"), rather
+        # than being marked by the absence of a marker. Must stay in step with
+        # the FEATURE_FLAGS registry default — `feature_enabled` takes the
+        # CALLSITE default, so the registry entry is display metadata only
+        # (guarded by tests/test_feature_flags.py).
         show_unverified_trust=feature_enabled(
             "library",
             "show_unverified_trust",
             env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-            default=False,
+            default=True,
         ),
     )
     return templates.TemplateResponse(request, "library.html", ctx)
@@ -3358,22 +3518,18 @@ async def catalog_package_detail(
             }
         )
 
-    # v56 virtual badges. Derived in-template-aware here so the router
-    # owns the policy (creator-in-admin + 30-day window) and the
-    # template stays presentational.
+    # v56 virtual badges, v113: ONE badge left. The router still owns the policy
+    # (a 30-day window) and the template stays presentational.
+    #
+    # `curated` used to be derived right here from "is the creator currently in
+    # the Admin group" — a second copy of the same derivation in
+    # data_packages._badges_for, which is precisely how the two could disagree.
+    # Both are gone: the trust claim is now the STORED publisher_kind below,
+    # read off the row like any other column, and rendered by the shared trust
+    # marker every other surface uses.
     from datetime import datetime, timedelta, timezone as _tz
 
     badges: list[str] = []
-    created_by = pkg.get("created_by")
-    if created_by:
-        # Backend-aware (mirrors data_packages._badges_for): resolve creator +
-        # Admin membership through the factory, not a raw DuckDB conn — the
-        # JOIN was empty on a Postgres instance so the badge silently vanished.
-        # is_user_admin is module-imported (line 20); no local import (would
-        # shadow it and break the earlier access check in this function).
-        u = users_repo().get_by_id(created_by) or users_repo().get_by_email(created_by)
-        if u and is_user_admin(u["id"]):
-            badges.append("curated")
     created_at = pkg.get("created_at")
     if isinstance(created_at, datetime):
         ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
@@ -4761,6 +4917,16 @@ async def marketplace_flea_detail(
         is_admin=is_admin,
         entity_owner_label=entity_owner_label,
         store_verification_enabled=get_store_verification_enabled(),
+        # v113: the same flag /library resolves, so this entity's detail page and
+        # its Library row agree about whether the Community marker shows. They
+        # previously could not: the detail page rendered only the two positive
+        # claims and had no notion of the third.
+        library_show_unverified_trust=feature_enabled(
+            "library",
+            "show_unverified_trust",
+            env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
+            default=True,
+        ),
         quarantine_sub=quarantine_sub,
         edit_in_flight=edit_in_flight,
         # Where the visitor came from, so the detail page's back link can point

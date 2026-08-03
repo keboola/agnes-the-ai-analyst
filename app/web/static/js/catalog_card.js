@@ -92,10 +92,15 @@
       eyebrow += '<span class="cc-sep">·</span><span class="cc-pub">' +
         (pub.kind === 'organization' ? '' : 'by ') + esc(pub.name) + '</span>';
       if (pub.kind === 'organization') {
-        eyebrow += '<span class="cc-trust cc-trust--org">Organization</span>';
+        // v113: same classes the Jinja macro emits (macros/_trustmark.html),
+        // so a JS-hydrated card and a server-rendered one cannot speak two
+        // different trust vocabularies for the same stored claim.
+        eyebrow += '<span class="ds-trust ds-trust--org ds-trust--label">'
+          + '<span class="ds-trust__word">Organization</span></span>';
       } else if (c.verified) {
-        eyebrow += '<span class="cc-trust cc-trust--verified" title="Verified by your organization">' +
-          CHECK_GLYPH + 'Verified</span>';
+        eyebrow += '<span class="ds-trust ds-trust--verified ds-trust--label" '
+          + 'title="Verified by your organization">' + CHECK_GLYPH
+          + '<span class="ds-trust__word">Verified</span></span>';
       }
     }
     if (c.category) eyebrow += '<span class="cc-sep">·</span><span>' + esc(c.category) + '</span>';

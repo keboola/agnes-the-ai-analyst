@@ -70,6 +70,9 @@ class DataPackagesPgRepository:
         cover_image_url: Optional[str] = None,
         status: str = "prod",
         category: Optional[str] = None,
+        # v113: 'user' | 'organization'. Defaults to 'user' so a package is
+        # never silently promoted — mirrors the DuckDB sibling.
+        publisher_kind: str = "user",
         owner_name: Optional[str] = None,
         owner_team: Optional[str] = None,
         tags: Optional[List[str]] = None,
@@ -90,14 +93,14 @@ class DataPackagesPgRepository:
                     """
                     INSERT INTO data_packages
                       (id, slug, name, description, icon, color,
-                       cover_image_url, status, category,
+                       cover_image_url, status, category, publisher_kind,
                        owner_name, owner_team,
                        tags, long_description,
                        when_to_use, when_not_to_use, example_questions,
                        created_by)
                     VALUES
                       (:id, :slug, :name, :description, :icon, :color,
-                       :cover_image_url, :status, :category,
+                       :cover_image_url, :status, :category, :publisher_kind,
                        :owner_name, :owner_team,
                        CAST(:tags AS JSONB), :long_description,
                        CAST(:when_to_use AS JSONB),
@@ -116,6 +119,7 @@ class DataPackagesPgRepository:
                     "cover_image_url": cover_image_url,
                     "status": status or "prod",
                     "category": category,
+                    "publisher_kind": (publisher_kind if publisher_kind in ("user", "organization") else "user"),
                     "owner_name": owner_name,
                     "owner_team": owner_team,
                     "tags": _json_param(tags),
@@ -135,7 +139,14 @@ class DataPackagesPgRepository:
         psycopg returns JSONB as native Python lists/dicts already, so
         the only normalisation needed is the NULL-to-empty-list defaulting
         that mirrors the DuckDB sibling's ``_decode_row``.
+
+        v113: also clamps ``publisher_kind`` to the closed enum, for the same
+        reason as the DuckDB sibling — a pre-column row reads NULL, and a
+        template comparing NULL to 'organization' renders the wrong marker
+        silently instead of failing.
         """
+        if "publisher_kind" in row and row.get("publisher_kind") not in ("user", "organization"):
+            row["publisher_kind"] = "user"
         for k in _JSON_COLUMNS:
             v = row.get(k)
             if v is None:
@@ -202,6 +213,9 @@ class DataPackagesPgRepository:
         status: Optional[str] = None,
         category: Optional[str] = None,
         clear_category: bool = False,
+        # v113: 'user' | 'organization'; an unrecognized value is ignored
+        # rather than written, mirroring the DuckDB sibling.
+        publisher_kind: Optional[str] = None,
         owner_name: Optional[str] = None,
         owner_team: Optional[str] = None,
         tags: Optional[List[str]] = None,
@@ -240,6 +254,12 @@ class DataPackagesPgRepository:
             if val is not None:
                 fields.append(f"{col} = :{col}")
                 params[col] = val
+
+        # Not in plain_candidates: this one is a closed enum, so an
+        # unrecognized value must be dropped rather than written.
+        if publisher_kind in ("user", "organization"):
+            fields.append("publisher_kind = :publisher_kind")
+            params["publisher_kind"] = publisher_kind
 
         # cover_image_url has the active-clear escape hatch
         if clear_cover_image:
