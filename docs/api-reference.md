@@ -1006,6 +1006,17 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/connectors/manifest
 - /api/connectors/params
 
+`/api/connectors/params` serves per-tenant connector params (the
+`connectors:` overlay of `instance.yaml`, filtered against the seed
+manifest) as plain string values; `agnes init`/`agnes update` write them
+to the workspace's `.claude/agnes/.env`. When the operator provisioned a
+shared Google Workspace OAuth client, the response backfills
+`connector-gws` params including the client-secret value (a Desktop-app
+OAuth client secret is an app identifier, not a user credential); the
+legacy `*_ENV` pointer key is still emitted alongside the value for
+backward compatibility with seed skills that read the pointer shape.
+Overlay keys win over server-resolved ones.
+
 ### `/api/data-apps` — Hosted data apps control plane
 
 Control-plane REST for hosted user web apps (`data_apps` registry, v96) — a

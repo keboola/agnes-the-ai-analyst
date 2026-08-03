@@ -162,6 +162,18 @@ Two consequences for operators:
 The `globals:` block bypasses the allowlist (it's not slug-scoped) and
 is always emitted as-is.
 
+Value shape: params are plain `KEY: value` string pairs, passed through
+to the analyst's `.claude/agnes/.env` verbatim. That includes connector
+app credentials — the server-resolved GWS fallback ships
+`AGNES_GWS_CLIENT_SECRET: <value>` (a Desktop-app OAuth client secret
+is an app identifier, not a user credential; the seed's `.gitignore`
+covers `.claude/agnes/`). The `*_ENV` convention — shipping the NAME of
+a shell env var instead of the value — is legacy: the GWS fallback still
+emits the pointer alongside the value for backward compatibility, and an
+operator-set pointer passes through unchanged, but nothing populates
+such env vars on analyst laptops, so seed skills should read values from
+the params file first.
+
 ---
 
 ## 5. `install-prompt/template.md.tmpl` placeholders

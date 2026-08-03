@@ -292,6 +292,38 @@ def test_write_agnes_env_escapes_newlines_in_value(workspace: Path):
         )
 
 
+def test_write_agnes_env_gws_secret_value_lands_verbatim(workspace: Path):
+    """The server's GWS fallback now ships the client-secret VALUE
+    (`AGNES_GWS_CLIENT_SECRET=<value>`) instead of the legacy `*_ENV`
+    pointer. The writer is a pure pass-through: the value must land in
+    `.env` verbatim so the connector-gws seed skill can read it without
+    any shell-env indirection.
+    """
+    payload = {
+        "params": {
+            "connector-gws": {
+                "AGNES_GWS_CLIENT_ID": "123456789012-abc.apps.googleusercontent.com",
+                "AGNES_GWS_CLIENT_SECRET": "GOCSPX-fake-test-value",
+            },
+        },
+        "globals": {},
+    }
+    patchers = _patch_api_get(payload)
+    for p in patchers:
+        p.start()
+    try:
+        from cli.lib.initial_workspace import write_agnes_env
+
+        env_path = write_agnes_env(workspace, "https://srv", "tok")
+    finally:
+        for p in patchers:
+            p.stop()
+
+    assert env_path is not None
+    body = env_path.read_text(encoding="utf-8")
+    assert "AGNES_GWS_CLIENT_SECRET=GOCSPX-fake-test-value" in body
+
+
 def test_write_agnes_env_chmod_failure_does_not_abort(workspace: Path, monkeypatch):
     """Devin Review on PR #462: on Windows `os.fchmod` doesn't exist
     (raises AttributeError); on some filesystems it raises OSError.

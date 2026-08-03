@@ -579,9 +579,14 @@ def write_agnes_env(
     that as a soft signal that seed skills should fall back to their
     interactive prompts.
 
-    Never contains secret VALUES — the file carries the names of env
-    vars that hold secrets (e.g. ``AGNES_GWS_CLIENT_SECRET_ENV``), not
-    the secrets themselves.
+    The file is a verbatim pass-through of the server's params payload
+    and may carry the GWS OAuth client-secret value
+    (``AGNES_GWS_CLIENT_SECRET`` — an app identifier for a Desktop-app
+    OAuth client, not a user credential). Guarded by the 0600 chmod +
+    atomic write here, and by the seed template's ``.gitignore`` entry
+    for ``.claude/agnes/``. Legacy ``*_ENV`` pointer keys also pass
+    through unchanged — the server's GWS fallback keeps emitting the
+    pointer alongside the value for backward compatibility.
     """
     import hashlib
     import os
