@@ -385,3 +385,22 @@ def test_ask_endpoint_row_cap_truncation(seeded_app, admin_user, monkeypatch):
     assert body["truncated"] is True
     assert body["row_count"] == 1000
     assert len(body["rows"]) == 1000
+
+
+def test_ask_endpoint_maps_client_construction_failure_to_502(seeded_app, admin_user, monkeypatch):
+    """A failure constructing the extractor is an LLM failure, not an unhandled 500.
+
+    The SDK import is deferred to first use, so `AnthropicExtractor(...)` is
+    itself a failure point — it must be raised inside the endpoint's error
+    boundary like the call it precedes.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    with patch("app.api.admin_usage.AnthropicExtractor") as mock_cls:
+        mock_cls.side_effect = ModuleNotFoundError("No module named 'anthropic'")
+        resp = seeded_app["client"].post(
+            "/api/admin/telemetry/ask",
+            json={"question": "how many events"},
+            headers=admin_user,
+        )
+    assert resp.status_code == 502
+    assert "LLM call failed" in resp.json()["detail"]
