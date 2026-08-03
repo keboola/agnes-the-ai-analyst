@@ -23,7 +23,9 @@ Two FastAPI dependencies cover the API surface:
 The resolver is intentionally cache-less: every authorization check does one
 or two DuckDB queries. DuckDB is in-process, so a per-request DB hit costs
 sub-millisecond — the upstream session.internal_roles cache + dual-path
-fallback solved a problem we don't have.
+fallback solved a problem we don't have. (The god-mode observability layer
+below keeps its own short-lived caches, but they only dedupe log lines — the
+access decision itself stays cache-less.)
 """
 
 from __future__ import annotations
@@ -166,7 +168,7 @@ def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None
 # still counted as a god-mode hit — table bypass counts are an UPPER BOUND
 # (over-counts reliance, the safe direction for "which surfaces need god-mode"
 # data). (review note on #1143.)
-_god_mode_logged: dict[str, float] = {}
+_god_mode_logged: "dict[tuple[str, str, str], float]" = {}
 _GOD_MODE_LOG_COOLDOWN_SECONDS = 900
 _GOD_MODE_CACHE_MAX = 4096
 
@@ -174,7 +176,7 @@ _GOD_MODE_CACHE_MAX = 4096
 # list-style endpoint that checks N distinct resource_ids in a tight loop
 # pays ONE grant query, not N — the observability lookup must not add a
 # per-item DB round trip to the auth hot path (review finding on #1143).
-_god_mode_grants: "dict[str, tuple[float, frozenset[str]]]" = {}
+_god_mode_grants: "dict[tuple[str, str], tuple[float, frozenset[str]]]" = {}
 _GOD_MODE_GRANTS_TTL_SECONDS = 5.0
 
 
@@ -192,7 +194,7 @@ def _god_mode_allowed_ids(
     # cache entirely and read fresh (review finding on #1143).
     if conn is not None:
         return _allowed_ids_for_user(user_id, resource_type, conn=conn)
-    key = f"{user_id}|{resource_type}"
+    key = (user_id, resource_type)
     cached = _god_mode_grants.get(key)
     if cached is not None and (now - cached[0]) < _GOD_MODE_GRANTS_TTL_SECONDS:
         return cached[1]
@@ -216,8 +218,10 @@ def _note_god_mode_hit(
     # RuntimeError — and any such failure must degrade to a lost log line,
     # never to an exception out of ``can_access``.
     try:
-        key = f"{user_id}|{resource_type}|{resource_id}"
-        now = time.time()
+        key = (user_id, resource_type, resource_id)
+        # monotonic, matching _google_resync_last above: a wall-clock jump
+        # (NTP step) must not widen or collapse a dedup window.
+        now = time.monotonic()
         last = _god_mode_logged.get(key)
         if last is not None and (now - last) < _GOD_MODE_LOG_COOLDOWN_SECONDS:
             return
