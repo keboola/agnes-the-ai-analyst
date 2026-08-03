@@ -168,3 +168,30 @@ def test_remove_hook_absent(tmp_path, monkeypatch):
     _fake_user_settings(tmp_path, monkeypatch, None)
     assert remove_user_session_hook() == "absent"
     assert user_session_hook_state() == "missing"
+
+
+def test_user_claude_md_follows_claude_config_dir(tmp_path, monkeypatch):
+    """Review finding: the rails path must ride CLAUDE_CONFIG_DIR like the
+    settings/hook writers do, or the block lands in a file Claude never reads."""
+    import importlib
+
+    import cli.lib.user_scope as us
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "relocated"))
+    importlib.reload(us)
+    try:
+        assert us.user_claude_md_path() == tmp_path / "relocated" / "CLAUDE.md"
+    finally:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+        importlib.reload(us)
+
+
+def test_remove_round_trip_preserves_trailing_blank_lines(tmp_path):
+    """Review finding: enable→disable must be byte-exact for newline-terminated
+    files, including trailing blank lines."""
+    md = tmp_path / "CLAUDE.md"
+    original = "mine\n\n\n"
+    md.write_text(original, encoding="utf-8")
+    upsert_rails_block(md, RAILS)
+    assert remove_rails_block(md) == "removed"
+    assert md.read_text(encoding="utf-8") == original
