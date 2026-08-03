@@ -1784,6 +1784,9 @@ class ChatManager:
             # ApprovalGate window for a pending approval_request (runner
             # denies the suspended tool call on expiry).
             "AGNES_APPROVAL_TIMEOUT_SECONDS": str(self._config.approval_timeout_seconds),
+            # Which agent engine drives the session (app/chat/harness.py
+            # seam; boot-validated against APPROVED_HARNESSES).
+            "AGNES_HARNESS": getattr(self._config, "harness", "claude-code"),
             # Opt-in: bootstrap the user's marketplace plugins into the sandbox
             # at spawn and load them via setting_sources. Off by default (adds
             # per-spawn latency; only useful once the marketplace ships real
