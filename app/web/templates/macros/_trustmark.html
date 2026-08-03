@@ -1,0 +1,91 @@
+{# ── Trust marker — the ONE place the three trust claims are spelled ─────────
+   v113. Usage:
+
+     {% import "macros/_trustmark.html" as trust %}
+
+     trust.mark(level, own=is_mine)                  -> icon, for a table cell
+                                                        or a card head
+     trust.mark(level, own=is_mine, form='label')    -> icon + word, for a
+                                                        detail-page hero
+
+   (Written without braces on purpose: a nested comment would close this one —
+   Jinja comments do not nest.)
+
+   `level` is 'org' | 'verified' | 'community' | anything-else (renders nothing,
+   which is what an instance that has opted out of the community marker wants).
+   Use `level_for()` below to derive it from a row rather than re-implementing
+   the precedence at each callsite — that duplication is exactly how the four
+   old vocabularies came to disagree.
+
+   `own` only affects the community sentence: "shared by other users" is simply
+   untrue of the thing the reader uploaded ten minutes ago, and a marker that
+   misdescribes what it sits on is worse than none. Same glyph, same meaning
+   ("nobody has verified this"), one honest sentence each.
+
+   The sentence is carried by BOTH `data-tip` (the page's fast tooltip — the
+   native `title` delay is OS-controlled at 600ms+, far too slow for the only
+   affordance that explains a glyph nobody can read on sight) and `aria-label`
+   (the accessible name, which is what a screen reader actually reads). Never
+   `title`: two bubbles for one glyph, the slow one landing on top of the fast
+   one, is worse than either.
+
+   `data-tip-instant` drops the shared 120ms anti-flicker delay. That delay is
+   for WIDE targets a crossing pointer sweeps; these are too small to hit by
+   accident. Styling + the full rationale for the ladder: css/trustmark.css. #}
+
+{% import "macros/_icon.html" as _trust_ico %}
+
+{%- macro level_for(publisher_kind, verification_state='none', show_unverified=True) -%}
+{#- Precedence, once, for every surface. Organization outranks verified (and the
+    store pins verification_state='none' on org-published rows anyway, so a
+    verified+org row cannot exist); unverified is last and opt-outable. -#}
+{%- if publisher_kind == 'organization' -%}org
+{%- elif verification_state == 'verified' -%}verified
+{%- elif show_unverified -%}community
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro _tip(level, own) -%}
+{%- if level == 'org' -%}Published by your organization.
+{%- elif level == 'verified' -%}Verified by your organization.
+{%- elif level == 'community' and own -%}Community item — yours, and not verified by your organization.
+{%- elif level == 'community' -%}Community item — shared by other users and not verified by your organization.
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro _word(level) -%}
+{%- if level == 'org' -%}Organization
+{%- elif level == 'verified' -%}Verified
+{%- elif level == 'community' -%}Community
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro _glyph(level) -%}
+{%- if level == 'org' -%}building
+{%- elif level == 'verified' -%}shield-check
+{%- elif level == 'community' -%}users
+{%- endif -%}
+{%- endmacro -%}
+
+{#- ``paper`` gates the whole vocabulary, and it is a PARAMETER rather than a
+    context read on purpose. This macro is imported WITHOUT ``with context`` at
+    several callsites (e.g. catalog_package_detail.html), where ``instance_theme``
+    would resolve to Undefined — falsey, so the gate would appear to work while
+    gating nothing, which is exactly how the unscoped-sheet leak happened.
+
+    It defaults to False so a callsite that forgets to pass it renders NOTHING.
+    The failure mode is then "paper loses a marker" — visible immediately to
+    whoever is working on paper — rather than "a default blue instance silently
+    gets a restyle", which is the one thing the design system forbids. Blue keeps
+    the legacy spelling each surface already had, rendered by the callsite's own
+    {% raw %}{% else %}{% endraw %} branch off the same stored publisher_kind. -#}
+{%- macro mark(level, own=False, form='icon', extra_class='', paper=False) -%}
+{%- set lvl = (level | trim) -%}
+{%- if paper and lvl in ('org', 'verified', 'community') -%}
+{%- set tip = _tip(lvl, own) | trim -%}
+{%- set labelled = (form == 'label') -%}
+<span class="ds-trust ds-trust--{{ lvl }}{% if labelled %} ds-trust--label{% endif %}{% if extra_class %} {{ extra_class }}{% endif %}"
+      role="img" data-tip-instant data-tip="{{ tip }}" aria-label="{{ tip }}"
+      >{{ _trust_ico.icon(_glyph(lvl) | trim, 13 if labelled else 14) }}{% if labelled %}<span class="ds-trust__word">{{ _word(lvl) | trim }}</span>{% endif %}</span>
+{%- endif -%}
+{%- endmacro -%}

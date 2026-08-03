@@ -40,9 +40,33 @@
     '<circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/>' +
     "</svg>";
 
+  // Leading glyphs, one per action — the house menus (detail-page's overflow
+  // menu, the Library move menu) all label their rows with one, and a menu
+  // without them reads as a different component. Line icons at the same
+  // stroke weight as macros/_detail.html's `ico()` set, which is where the
+  // pencil and bin come from; the pushpin matches the row's own pin flag.
+  const ITEM_SVG = {
+    pin:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M12 17v5"/>' +
+      '<path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8' +
+      'a2 2 0 0 0-1.1-1.7l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>' +
+      "</svg>",
+    rename:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>' +
+      "</svg>",
+    delete:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/>' +
+      "</svg>",
+  };
+
   let menu = null; // the single reused panel
   let openTrigger = null; // the ⋮ button it currently belongs to
-  let openActions = null; // [{key, label, run, danger}] for the open menu
 
   function ensureMenu() {
     if (menu) return menu;
@@ -66,7 +90,6 @@
       if (restoreFocus && openTrigger.isConnected) openTrigger.focus();
     }
     openTrigger = null;
-    openActions = null;
   }
 
   function items() {
@@ -81,7 +104,6 @@
     }
     close(false);
     const el = ensureMenu();
-    openActions = actions;
 
     for (const action of actions) {
       const item = document.createElement("button");
@@ -89,21 +111,17 @@
       item.className = "chat-rowmenu__item";
       if (action.danger) item.classList.add("is-danger");
       item.setAttribute("role", "menuitem");
-      item.dataset.key = action.key;
+      item.dataset.action = action.id;
+
+      // Static markup from ITEM_SVG above — a fixed string, no interpolation,
+      // so no untrusted input reaches the HTML parser here.
+      const glyph = ITEM_SVG[action.id];
+      if (glyph) item.insertAdjacentHTML("afterbegin", glyph);
 
       const label = document.createElement("span");
       label.className = "chat-rowmenu__label";
       label.textContent = action.label;
       item.appendChild(label);
-
-      // The single-letter accelerator, shown the way the reference UI does:
-      // right-aligned and muted. aria-hidden — the shortcut is a convenience,
-      // and screen readers get the action from the label.
-      const hint = document.createElement("span");
-      hint.className = "chat-rowmenu__key";
-      hint.textContent = action.key.toUpperCase();
-      hint.setAttribute("aria-hidden", "true");
-      item.appendChild(hint);
 
       item.addEventListener("click", (e) => {
         e.preventDefault();
@@ -154,13 +172,9 @@
     btn.innerHTML = KEBAB_SVG;
 
     const actions = [
-      {
-        key: "p",
-        label: s.pinned ? "Unpin" : "Pin",
-        run: () => opts.onPin(!s.pinned),
-      },
-      { key: "r", label: "Rename", run: () => opts.onRename() },
-      { key: "d", label: "Delete", danger: true, run: () => opts.onDelete() },
+      { id: "pin", label: s.pinned ? "Unpin" : "Pin", run: () => opts.onPin(!s.pinned) },
+      { id: "rename", label: "Rename", run: () => opts.onRename() },
+      { id: "delete", label: "Delete", danger: true, run: () => opts.onDelete() },
     ];
 
     btn.addEventListener("click", (e) => {
@@ -212,19 +226,14 @@
       if (!list.length) return;
       e.preventDefault();
       (e.key === "Home" ? list[0] : list[list.length - 1]).focus();
-      return;
     }
-    // Single-letter accelerators (P / R / D), matching the hints in the panel.
-    // Modifier-free only, so Cmd-R still reloads the page.
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const key = e.key.toLowerCase();
-    const hit = (openActions || []).find((a) => a.key === key);
-    if (!hit) return;
-    e.preventDefault();
-    close(false);
-    Promise.resolve(hit.run()).catch(() => {
-      /* see the click handler */
-    });
+    // No single-letter accelerators: the P / R / D bindings this menu used to
+    // advertise were removed with the hints that advertised them. They keyed off
+    // `event.key`, which is the CHARACTER the layout produces — on any
+    // non-Latin layout the same physical keys emit different characters and the
+    // shortcut silently did nothing, so the panel promised three bindings it
+    // could not honour. Arrow / Home / End / Escape above are layout-independent
+    // and stay.
   });
 
   window.chatRowMenu = { trigger: makeTrigger, close: () => close(false) };

@@ -5,8 +5,8 @@ Covers the three axes this feature keeps deliberately separate:
 * **Publisher** — who stands behind an item. Stored, admin-set, and the basis
   for the unified Browse shelf that replaced the Curated / Flea tabs.
 * **Verification** — the org's *advisory* verdict on a user-published item.
-  Must never gate a read, is off by default per instance, and never renders a
-  negative label.
+  Must never gate a read, is per-instance (on by default, opt-out-able), and
+  never renders a negative label.
 * **Required** — "In stack, locked", admissible only on organization-published
   items.
 
@@ -202,10 +202,11 @@ def test_invalid_facet_values_are_rejected(fresh_db):
 # ---------------------------------------------------------------------------
 
 
-def test_verification_endpoints_absent_when_disabled(fresh_db):
-    """Default-off. An instance with no reviewer must not show the vocabulary at
-    all — a request button with no queue behind it is the rotting promise this
-    design exists to remove."""
+def test_verification_endpoints_absent_when_disabled(fresh_db, monkeypatch):
+    """The axis is on by default now that the Library states all three trust levels
+    positively, but an instance can still opt out entirely — and opting out must
+    remove the endpoints, not merely hide the buttons that call them."""
+    monkeypatch.setattr("app.instance_config.get_store_verification_enabled", lambda: False, raising=False)
     from src.db import close_system_db, get_system_db
 
     conn = get_system_db()
@@ -581,3 +582,53 @@ def test_browse_categories_endpoint_accepts_the_new_tab(fresh_db):
     )
     assert r.status_code == 200, r.text
     assert any(c["name"] == "Productivity" for c in r.json()["items"])
+
+
+def test_show_unverified_trust_global_respects_the_off_switch(monkeypatch):
+    """The Community marker's opt-out must hold on EVERY surface.
+
+    `show_unverified_trust` is an opt-out, and it is resolved by a Jinja global
+    (`app.web.router._show_unverified_trust`) rather than threaded through each
+    route's context. That is deliberate: it briefly rode
+    `library_show_unverified_trust|default(true)` in
+    `marketplace_item_detail.html`, which fixed the marker disappearing on routes
+    that omitted the value and broke the off switch instead — any such route then
+    rendered the marker on an instance that had explicitly disabled it. Resolving
+    it centrally removes both failure modes, because no per-route value is left
+    to forget.
+    """
+    from app.web.router import _show_unverified_trust
+
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "false")
+    assert not _show_unverified_trust(), "the off switch must actually turn it off"
+
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
+    assert _show_unverified_trust()
+
+    # Absent config is the documented on-by-default, so every row states its
+    # provenance unless an operator opts out.
+    monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
+    assert _show_unverified_trust()
+
+
+def test_no_template_applies_a_jinja_default_to_the_unverified_trust_flag():
+    """Guard the bug class, not just the one line that had it.
+
+    A `|default(...)` on an OPT-OUT flag inverts its meaning wherever the
+    variable is missing: the fallback wins and the operator's "off" is ignored,
+    silently. Opt-IN flags do not have this hazard, which is why this guard names
+    one flag rather than banning the filter.
+    """
+    from pathlib import Path
+
+    offenders = []
+    for path in sorted(Path("app/web/templates").rglob("*.html")):
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if "show_unverified_trust" in line and "default(" in line:
+                offenders.append(f"{path}:{lineno}: {line.strip()[:100]}")
+    assert not offenders, (
+        "show_unverified_trust is an opt-out flag; a Jinja default() makes the off "
+        "switch ignorable on any route that omits the variable. Call the "
+        "show_unverified_trust_enabled() global instead:\n" + "\n".join(offenders)
+    )

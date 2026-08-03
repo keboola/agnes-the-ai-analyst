@@ -126,6 +126,12 @@
    complete selection. A toggle facet's chip carries only its condition ("In
    stack only") — no colon, no values span. */
 .fbar-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 22rem; height: 28px; padding: 0 5px 0 11px; font-size: 12.5px; font-weight: 600; color: var(--ds-primary); background: var(--ds-primary-light); border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent); border-radius: var(--ds-radius-pill); }
+/* Explicit, matching `.fbar-chips[hidden]` above: the `display: inline-flex`
+   on the line before is an author rule and would otherwise be at the mercy of
+   how a given engine weights the UA `[hidden]` rule. A caller that renders a
+   fixed set of chips and toggles `hidden` per filter (the tokens toolbar on
+   /me/profile) needs this; callers that build chips dynamically never hit it. */
+.fbar-chip[hidden] { display: none; }
 .fbar-chip:hover { border-color: var(--ds-primary); }
 .fbar-chip__edit { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 0; border: none; background: none; font: inherit; color: inherit; cursor: pointer; }
 .fbar-chip__label { flex: none; color: var(--ds-text-secondary); font-weight: 500; }
@@ -278,25 +284,75 @@
 .fbar-card__tag { flex: none; max-width: 11ch; padding: 1px 7px; font-size: 11px; font-weight: 600; color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-primary) 7%, transparent); border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fbar-card__tag--more { color: var(--ds-text-muted); background: none; padding-left: 2px; }
 
-/* Access state — the footer's LEFT half. Unboxed on purpose: an icon and the
-   plain words, not another pill competing with the tag chips above or with the
-   stack control opposite it. It is a BUTTON where the caller can change it, and
-   plain text where only the owner can. `flex: 0 1 auto` + the ellipsis on the
-   label let a long state ("Shared with you") give way to the stack control
-   rather than pushing it off the card. */
-.fbar-card__access { flex: 0 1 auto; display: flex; align-items: center; gap: 6px; min-height: 20px; padding: 0; border: none; background: none; font: inherit; font-size: 12px; color: var(--ds-text-secondary); text-align: left; min-width: 0; }
+/* Access state — the footer's LEFT half. `flex: 0 1 auto` + the ellipsis on the
+   label let a long state ("Shared with you") give way to the stack control rather
+   than pushing it off the card. */
+.fbar-card__access { flex: 0 1 auto; display: flex; align-items: center; gap: 6px; min-height: 20px; padding: 0; border: 1px solid transparent; background: none; font: inherit; font-size: 12px; color: var(--ds-text-secondary); text-align: left; min-width: 0; }
 .fbar-card__access svg { flex: none; width: 13px; height: 13px; color: var(--ds-text-muted); }
 .fbar-card__access span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button.fbar-card__access { cursor: pointer; }
-button.fbar-card__access:hover { color: var(--ds-primary); }
-button.fbar-card__access:hover svg { color: var(--ds-primary); }
-button.fbar-card__access:focus-visible { outline: var(--ds-focus-outline); outline-offset: 2px; border-radius: 4px; }
-/* "Shared with you" — read-only, so it carries the read-only sharing hue
-   instead of reading like the states the caller can change (those are the
-   BUTTON above, which goes primary on hover). Same colour as the table's
-   `.lib-vis--readonly` badge, so switching view doesn't recolour the state. */
-.fbar-card__access--fixed { cursor: help; color: var(--ds-readonly-ink); }
-.fbar-card__access--fixed svg { color: var(--ds-readonly-ink); }
+button.fbar-card__access:focus-visible { outline: var(--ds-focus-outline); outline-offset: 2px; }
+
+/* CHANGEABLE vs NOT is carried by the BOX, not by the ink:
+     `--editable` (opens the dialog that changes access) → a bordered chip with a
+       chevron, the same anatomy as the table's `.lib-vis--editable` badge;
+     `--fixed`    (nothing to change — "Shared with you", or a store entity whose
+       access follows from its review state) → bare text, no box, no chevron.
+
+   Ink used to carry it — primary blue at rest, no box, no chevron — and that
+   could not work on this card: `.fbar-card:hover` already turns the title primary
+   and `:focus-within` draws a primary ring, so "this is a control" was competing
+   with the card's own ambient "the pointer is here". Beside a filled, semibold
+   `Add to stack` pill, blue 12px/400 text with no container read as coloured
+   metadata; and the entire hover response was primary → primary-dark, one step of
+   the same hue, invisible at that size and quieter than the card-level hover it was
+   supposed to stand out from.
+
+   OUTLINED rather than filled like the table's badge: there, the chip owns a
+   column and a tint reads as one item's state. Here it shares a 40px bar with the
+   primary action, and two primary-light fills 10px apart is the wall of blue this
+   is fixing. Three levels in one glance: filled = the action, outlined = a state
+   you can change, bare text = a state you cannot.
+
+   26px tall, matching `.lib-stackpill`, so the two controls sit on one box height
+   and the target clears WCAG 2.2 SC 2.5.8 (the old 20px did not, and the 26px
+   pill 10px away denied it the spacing exemption). */
+/* `color` is restated rather than left to the base rule so that both variants name
+   the token explicitly — the read-only one below already did, and having one
+   variant inherit while its sibling declares is the kind of asymmetry that makes a
+   later theme change land on only half the control. Not a fix for a known bug:
+   inheriting resolved correctly under every theme when checked. */
+.fbar-card__access--editable {
+  box-sizing: border-box; min-height: 26px; padding: 0 7px;
+  color: var(--ds-text-secondary);
+  border-color: var(--ds-border); border-radius: var(--ds-radius-btn);
+  transition: background var(--ds-motion-fast, .14s) ease, border-color var(--ds-motion-fast, .14s) ease, color var(--ds-motion-fast, .14s) ease;
+}
+.fbar-card__access--editable .fbar-card__access-caret { width: 12px; height: 12px; margin-left: -1px; opacity: .75; }
+/* Hover/focus answers with a FILL — a different channel from the card's own
+   elevation hover, so a local response can't be mistaken for the ambient one, and
+   it is perceptible peripherally in a way a hue nudge is not. This is also where
+   the blue finally means something: "you are on the control". */
+button.fbar-card__access--editable:hover,
+button.fbar-card__access--editable:focus-visible {
+  color: var(--ds-primary);
+  background: var(--ds-primary-light);
+  border-color: color-mix(in srgb, var(--ds-primary) 35%, transparent);
+}
+button.fbar-card__access--editable:hover svg,
+button.fbar-card__access--editable:focus-visible svg { color: var(--ds-primary); }
+button.fbar-card__access--editable:hover .fbar-card__access-caret { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .fbar-card__access--editable { transition: none; } }
+
+/* Not changeable: bare text. `help` matches what it offers — a tooltip naming who
+   controls access — and the explains-only store-entity button keeps its pointer
+   through the more specific `button.fbar-card__access` rule above. */
+.fbar-card__access--fixed { cursor: help; color: var(--ds-text-secondary); }
+.fbar-card__access--fixed svg { color: var(--ds-text-muted); }
+/* The explains-only button still answers a hover — just in the neutral family, so
+   it reads as "this tells you something", never as "this changes something". */
+button.fbar-card__access--fixed:hover { color: var(--ds-text-primary); }
+button.fbar-card__access--fixed:hover svg { color: var(--ds-text-secondary); }
 
 /* Foot — a compact two-slot bar above its own rule: who can see the item on the
    LEFT, the stack control on the RIGHT.

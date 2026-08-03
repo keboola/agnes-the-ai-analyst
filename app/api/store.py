@@ -3390,7 +3390,7 @@ def _require_verification_enabled() -> None:
 
     An instance with no reviewer must not show the vocabulary at all — a
     "request verification" button with nothing behind it is the same rotting
-    promise as the old permanent "In review" badge. Off by default.
+    promise as the old permanent "In review" badge. On by default (opt-out per instance).
     """
     from app.instance_config import get_store_verification_enabled
 

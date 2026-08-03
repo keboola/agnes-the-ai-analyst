@@ -93,13 +93,20 @@ class ResourceEntry:
     status: Optional[str] = "prod"
     category: Optional[str] = None
     # v56: extended content surfaced on the Browse-grid card. Owner
-    # renders as a small chip; tags as inline pills; badges (curated /
-    # new) derived in :meth:`_fetch_entries` from the creator's group
-    # membership + ``created_at`` age.
+    # renders as a small chip; tags as inline pills; ``badges`` holds the
+    # DERIVED ones only — as of v113 that is ``new`` alone, from
+    # ``created_at`` age in :meth:`_fetch_entries`.
     owner_name: Optional[str] = None
     owner_team: Optional[str] = None
     tags: List[str] = field(default_factory=list)
     badges: List[str] = field(default_factory=list)
+    # v113: the STORED trust claim, passed through so a card renders the same
+    # shared marker as the row and the detail hero. It replaced a `curated`
+    # badge derived here from the creator's CURRENT Admin-group membership —
+    # a fact about the person, not the resource, so it contradicted the
+    # detail page whenever that membership changed. Memory domains carry no
+    # publisher axis and leave this None (the macro then renders nothing).
+    publisher_kind: Optional[str] = None
     requirement: Literal["available", "required"] = "available"
     in_stack: bool = False
     materialized: bool = False
@@ -449,8 +456,6 @@ class StackResolver:
         from datetime import datetime, timedelta, timezone as _tz
         import json as _json
 
-        admin_keys = self._admin_keys()
-
         now = datetime.now(_tz.utc)
         entries: List[ResourceEntry] = []
         for r in rows:
@@ -467,10 +472,13 @@ class StackResolver:
             else:
                 tags_list = []
 
+            # v113: `new` is the only DERIVED badge left. `curated` used to be
+            # appended here from "is created_by in the Admin group right now",
+            # which is a fact about the person rather than the resource — an
+            # admin leaving the group silently un-curated everything they had
+            # created, and the card then disagreed with its own detail page.
+            # The claim is now the stored `publisher_kind` passed through below.
             badges: List[str] = []
-            created_by = r.get("created_by")
-            if created_by and created_by in admin_keys:
-                badges.append("curated")
             created_at = r.get("created_at")
             if isinstance(created_at, datetime):
                 ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
@@ -492,30 +500,14 @@ class StackResolver:
                     owner_team=r.get("owner_team"),
                     tags=tags_list,
                     badges=badges,
+                    # Clamped the same way both repos clamp it, so a NULL or a
+                    # stray value can never render as a false 'organization'.
+                    publisher_kind=(
+                        r.get("publisher_kind") if r.get("publisher_kind") in ("user", "organization") else None
+                    ),
                     requirement=("required" if rid in required_ids else "available"),
                 )
             )
         # The repos return name-ordered rows already; keep that order.
         return entries
 
-    def _admin_keys(self) -> set:
-        """Admin group's member emails + ids, used for the 'curated' badge.
-
-        Best-effort: returns an empty set on any lookup failure so badge
-        derivation never breaks an entry fetch.
-        """
-        keys: set = set()
-        try:
-            from src.db import SYSTEM_ADMIN_GROUP
-
-            admin = self._groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
-            if not admin:
-                return keys
-            for member in self._members_repo().list_members_for_group(admin["id"]):
-                if member.get("email"):
-                    keys.add(member["email"])
-                if member.get("id"):
-                    keys.add(member["id"])
-        except Exception:
-            pass
-        return keys

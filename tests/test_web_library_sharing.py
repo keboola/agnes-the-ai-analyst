@@ -558,28 +558,45 @@ def test_dock_card_hugs_its_controls_in_every_state(seeded_app):
 
 
 def test_library_title_carries_no_setup_caveat(seeded_app):
-    """The whole-Library "content being prepared" caveat is gone: no `.pnote`
-    panel under the lede AND no status pill on the title. The page opens on its
-    own name and inventory — a standing condition that asks nothing of the reader
-    does not earn a permanent marker next to the h1."""
+    """The caveat never rides the TITLE: no `.pnote` panel under the lede, and no
+    status pill beside the `h1`. The page opens on its own name and inventory.
+
+    Narrowed from "this copy appears nowhere on the page". The Library now carries
+    a deliberate, TEMPORARY product statement in `.lib-headnotes`
+    (``library_prep_warning()`` in ``library.html``) — an amber banner telling
+    every reader the inventory is still being filled. That is a product decision,
+    made knowingly, and it reverses the earlier one this test used to enforce:
+    a standing condition does not earn a marker next to the h1.
+
+    Both halves of that reasoning still hold, and both are still asserted — the
+    banner is a sibling of the lede, not an ornament on the title. What is no
+    longer asserted is the blanket copy ban, which cannot distinguish "a pill
+    stapled to the heading" from "a banner in the notes stack". When the content
+    backlog clears, delete ``library_prep_warning()`` and its call site; nothing
+    else depends on it.
+    """
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
     # Neither the panel nor the pill that replaced it — markup, CSS and JS.
     assert 'class="pnote"' not in text
     assert "lib-status" not in text
-    # None of the caveat's copy survives anywhere on the page.
-    assert "Content being prepared" not in text
-    assert "Library content is still being prepared" not in text
-    assert "while we finish adding content" not in text
     # The title stands alone, directly ahead of the lede.
     assert "<h1>Library</h1>" in text
     assert text.index("<h1>Library</h1>") < text.index('class="lede"')
+    # Where the caveat IS allowed to live: the head-notes stack, after the lede.
+    # If it ever moves back onto the heading, the two bans above catch it.
+    assert text.index('class="lede"') < text.index('class="lib-soon lib-soon--warn"')
 
 
 def test_data_apps_note_is_an_info_banner_below_the_list(seeded_app):
-    """The Data apps caveat is an INFO BANNER under the inventory — not a `.pnote`
-    in the page head (which would open the page on the one kind you cannot have),
-    and no longer a band inside `.lib-list` (which dressed a roadmap note in the
-    chrome of the inventory, so it read as a sixth openable section)."""
+    """The Data apps caveat is an INFO BANNER in the page's head-notes stack — not
+    a `.pnote` (which would open the page on the one kind you cannot have), and
+    not a band inside `.lib-list` (which dressed a roadmap note in the chrome of
+    the inventory, so it read as a sixth openable section).
+
+    It moved from below the inventory into `.lib-headnotes` so the head closes on
+    ONE block of asides rather than stranding a note at the foot of a long list.
+    What still matters, and is what this asserts, is that it is outside the
+    list's frame and carries none of the group machinery."""
     _create_collection(seeded_app, "Soon Banner Anchor", seeded_app["admin_token"])
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
     assert 'class="lib-soon__badge">Coming soon<' in text
@@ -590,16 +607,17 @@ def test_data_apps_note_is_an_info_banner_below_the_list(seeded_app):
     assert "This is still in the works" in text
     assert "link an existing one" in text
     assert "Nothing to do yet." in text
-    # Below the list, OUTSIDE its frame: `#lib-noresults` is the first thing after
-    # the list's closing tag, so landing after it is what puts the banner outside.
+    # In the head-notes stack, OUTSIDE the list's frame: after the lede, before
+    # the list opens, so it cannot be read as one of the list's own sections.
+    assert 'class="lib-headnotes"' in text
     assert (
         text.index('class="lede"')
+        < text.index('class="lib-headnotes"')
+        < text.index('class="lib-soon"')
         < text.index('class="lib-list"')
-        # every group section opens before it (the class attribute, so the page's
+        # every group section opens after it (the class attribute, so the page's
         # own `.lib-group` CSS and JS further down don't count)
         < text.rindex('class="fbar-group lib-group')
-        < text.index('id="lib-noresults"')
-        < text.index('class="lib-soon"')
     )
     # One banner, not one per page state: the stocked and empty branches share it.
     assert text.count('class="lib-soon"') == 1
