@@ -960,20 +960,44 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50, gate: "Approva
     # normal while a model generates a long block (no partial streaming on
     # older-template SDKs), so this is a wedge-breaker, not a latency cap.
     idle_seconds = float(os.environ.get("AGNES_TURN_IDLE_SECONDS", "300") or "300")
+    # The watchdog polls in slices instead of arming one long timeout, so
+    # that time the user spends deciding on an approval can be excluded from
+    # the idle budget rather than counted into it (review finding on #1145):
+    # with a single window, a user who deliberates for most of it left the
+    # approved tool only the remainder before a false "stuck tool" abort.
+    idle_poll = min(idle_seconds, 5.0)
     stream = client.receive_response().__aiter__()
+    # The in-flight __anext__ is kept across laps and shielded: asyncio's
+    # wait_for CANCELS its argument on timeout, and a cancellation delivered
+    # while an async generator is suspended at an await CLOSES it — the next
+    # __anext__ then raises StopAsyncIteration and the turn would end
+    # silently, which is exactly what the approval path above would have
+    # triggered (review finding on #1145; verified against a plain async
+    # generator).
+    pending: "asyncio.Future | None" = None
+    deadline = time.monotonic() + idle_seconds
     while True:
+        if pending is None:
+            pending = asyncio.ensure_future(stream.__anext__())
         try:
-            msg = await asyncio.wait_for(stream.__anext__(), timeout=idle_seconds)
+            msg = await asyncio.wait_for(asyncio.shield(pending), timeout=idle_poll)
+            pending = None
+            deadline = time.monotonic() + idle_seconds
         except StopAsyncIteration:
+            pending = None
             break
         except asyncio.TimeoutError:
             # A tool call suspended on a human approval produces no stream
-            # activity by design — that is NOT a wedged tool. Keep waiting;
-            # the ApprovalGate's own timeout (AGNES_APPROVAL_TIMEOUT_SECONDS)
-            # bounds it and resolves to deny, after which the stream resumes
-            # and a genuinely-idle turn trips this watchdog on the next lap
-            # (review finding on #1145).
+            # activity by design — that is NOT a wedged tool, and the time
+            # spent deciding must not eat the budget the approved tool then
+            # needs. The ApprovalGate's own timeout
+            # (AGNES_APPROVAL_TIMEOUT_SECONDS) bounds the wait and resolves
+            # to deny, after which a genuinely-idle turn trips this watchdog
+            # normally.
             if gate is not None and gate.awaiting_approval():
+                deadline = time.monotonic() + idle_seconds
+                continue
+            if time.monotonic() < deadline:
                 continue
             _emit(
                 {
@@ -1014,11 +1038,24 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50, gate: "Approva
             # the watchdog itself.
             try:
                 while True:
-                    await asyncio.wait_for(stream.__anext__(), timeout=15)
+                    # Reuse the in-flight __anext__ rather than starting a
+                    # second one: two concurrent __anext__ calls on the same
+                    # iterator are an error, and this path is reached with
+                    # one still pending by construction.
+                    if pending is None:
+                        pending = asyncio.ensure_future(stream.__anext__())
+                    await asyncio.wait_for(asyncio.shield(pending), timeout=15)
+                    pending = None
             except (StopAsyncIteration, asyncio.TimeoutError):
                 pass
             except Exception as exc:  # noqa: BLE001 — drain is best-effort
                 print(f"idle-watchdog drain ended with: {exc}", file=sys.stderr, flush=True)
+            finally:
+                # Abandoning the turn here is deliberate; don't leave the
+                # shielded task dangling for the loop to complain about.
+                if pending is not None:
+                    pending.cancel()
+                    pending = None
             break
         if budget_hit:
             break
