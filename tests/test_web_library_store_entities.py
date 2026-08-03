@@ -28,6 +28,20 @@ from __future__ import annotations
 import re
 import uuid
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _paper_theme(monkeypatch):
+    """Trust markers are opt-in to the paper theme (css/trustmark.css is scoped
+    to it, and `mark()` renders nothing without `paper=True`), so the assertions
+    in this file only hold under paper. A default blue instance keeps its own
+    spelling — no markers on Library rows at all, which is the pre-v113
+    behaviour and is asserted by
+    tests/test_ui_layout_theme.py::test_default_instance_renders_no_ds_trust_marker.
+    """
+    monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
@@ -223,7 +237,9 @@ def test_admin_required_grant_is_locked_in_stack(seeded_app):
 
 
 # ---------------------------------------------------------------------------
-# Trust chip — opt-in 3-state (org / verified / unverified)
+# Trust markers — two chips in the Owner column (org / verified) plus the
+# opt-in community indicator, which rides the item's NAME rather than the
+# Owner column and is icon-only.
 # ---------------------------------------------------------------------------
 
 
@@ -243,21 +259,38 @@ def _set_publisher_kind(entity_id: str, kind: str) -> None:
     )
 
 
-def test_unverified_chip_absent_when_flag_off(seeded_app):
-    """Default behavior (flag off): no unverified chip ever renders — absence of
-    a chip is the neutral default and the existing instance look is unchanged."""
+def test_unverified_community_marker_renders_by_default(seeded_app, monkeypatch):
+    """Default behavior: an unverified item SAYS it is unverified. Every Library
+    row now states its provenance positively — Organization, Verified, or
+    Community — rather than leaving the reader to infer the third from an
+    absence, which is indistinguishable from a row whose marker failed to
+    render."""
+    monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
+    _entity(owner="admin", owner_name="admin", etype="skill", name="Default On Skill", status="approved")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row(text, "Default On Skill")
+    assert row, "approved skill must appear in library"
+    assert "ds-trust--community" in row
+
+
+def test_unverified_chip_absent_when_flag_explicitly_off(seeded_app, monkeypatch):
+    """The flag survives as an escape hatch: an instance that prefers the older
+    silent default (unverified == no marker) can still have it, and turning it off
+    must suppress the marker completely rather than merely restyling it."""
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "false")
     _entity(owner="admin", owner_name="admin", etype="skill", name="Flag Off Skill", status="approved")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     row = _row(text, "Flag Off Skill")
     assert row, "approved skill must appear in library"
-    assert "lib-trust--unverified" not in row
+    assert "ds-trust--community" not in row
     assert "Community" not in row
 
 
 def test_unverified_chip_renders_when_flag_on(seeded_app, monkeypatch):
     """With the flag enabled, a user-authored unverified Store entity renders the
-    amber 'Community' chip."""
+    community indicator — icon only, with the explanation on hover."""
     monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
     _entity(owner="admin", owner_name="admin", etype="skill", name="Community Skill", status="approved")
     # verification_state defaults to 'none' on create — unverified by definition.
@@ -265,49 +298,141 @@ def test_unverified_chip_renders_when_flag_on(seeded_app, monkeypatch):
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     row = _row(text, "Community Skill")
     assert row, "approved skill must appear in library"
-    assert "lib-trust--unverified" in row
-    assert "Community" in row
-    assert "Community-contributed, not yet verified" in row
+    assert "ds-trust--community" in row
+    # The sentence is both the hover tooltip and the accessible name, so the
+    # marker is never colour- or shape-only. Someone else's item, so the
+    # authorship half of the sentence is the "other users" reading.
+    #
+    # `data-tip`, NOT `title`: the marker rides the page's fast tooltip, because
+    # the native one's OS show delay is too slow for the only affordance that
+    # explains the glyph. A `title` here would also double-fire a second, slower
+    # bubble on top of the first.
+    tip = "Community item — shared by other users and not verified by your organization."
+    assert f'data-tip="{tip}"' in row
+    assert f'aria-label="{tip}"' in row
+    assert f'title="{tip}"' not in row
+    assert "data-tip-instant" in row
+    # ICON ONLY: the word "Community" survives in the tooltip sentence, but the
+    # retired amber text chip must not come back.
+    assert "lib-trust--unverified" not in row  # retired amber text chip
+    assert ">Community<" not in row
 
 
-def test_verified_chip_renders_green_when_flag_on(seeded_app, monkeypatch):
-    """A verified Store entity always renders the green chip regardless of the
-    unverified flag — the flag only gates the amber branch."""
+def test_community_marker_on_your_own_item_does_not_claim_someone_else_shared_it(seeded_app, monkeypatch):
+    """Same glyph, same meaning ("nobody has verified this"), honest sentence: on
+    the caller's OWN unverified upload, "shared by other users" is false."""
     monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
-    eid = _entity(owner="admin", owner_name="admin", etype="skill", name="Verified Skill", status="approved")
-    _set_verification(eid, "verified")
+    _entity(owner="analyst1", owner_name="Analyst", etype="skill", name="My Own Skill", status="approved")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
-    row = _row(text, "Verified Skill")
+    row = _row(text, "My Own Skill")
+    assert row, "the caller's own approved skill must appear in their library"
+    assert "ds-trust--community" in row
+    assert 'data-tip="Community item — yours, and not verified by your organization."' in row
+    assert "shared by other users" not in row
+
+
+def test_trust_markers_ride_the_name_and_the_owner_column_holds_only_a_name(seeded_app, monkeypatch):
+    """Every trust claim is a statement about the ITEM, so all of them sit on the
+    title line inside the name cell — ahead of the Owner cell, which is now a name
+    and nothing else."""
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
+    _entity(owner="admin", owner_name="admin", etype="skill", name="Placement Skill", status="approved")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row(text, "Placement Skill")
     assert row, "approved skill must appear in library"
-    assert "lib-trust--verified" in row
-    assert "lib-trust--unverified" not in row
+    # Inside the title line, which is inside the name cell.
+    assert "lib-name-titlerow" in row
+    assert row.index("lib-name-titlerow") < row.index("ds-trust")
+    # …and before the Owner cell opens, so it cannot be read as part of it.
+    assert row.index("ds-trust") < row.index("lib-owner-name")
+    # No chip of any kind is left in the Owner cell.
+    assert "lib-trust " not in row and 'lib-trust"' not in row
 
 
-def test_org_chip_renders_gray_regardless_of_flag(seeded_app, monkeypatch):
-    """An organization-published item always renders the gray 'Organization'
-    chip — the unverified flag does not affect it."""
-    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "false")
+def test_verified_marker_rides_the_name_and_is_never_gated(seeded_app, monkeypatch):
+    """A verified entity carries the verified marker regardless of the unverified
+    flag — the flag only ever gated the community branch — and it excludes the
+    community marker, the two being mutually exclusive."""
+    for flag, name in (("true", "Verified Flag On"), ("false", "Verified Flag Off")):
+        monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", flag)
+        eid = _entity(owner="admin", owner_name="admin", etype="skill", name=name, status="approved")
+        _set_verification(eid, "verified")
+
+        text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+        row = _row(text, name)
+        assert row, "approved skill must appear in library"
+        assert "ds-trust--verified" in row
+        assert 'data-tip="Verified by your organization."' in row
+        assert "ds-trust--community" not in row
+        # The retired green text chip must not come back.
+        assert "lib-trust--verified" not in row
+        assert ">Verified<" not in row
+
+
+def test_default_theme_renders_no_trust_markers_on_populated_rows(seeded_app, monkeypatch):
+    """The default-look guarantee, asserted against REAL rows.
+
+    Overrides the module's autouse paper fixture. This exists because the
+    equivalent assertion in tests/test_ui_layout_theme.py runs against a client
+    whose Library is empty, so it passes vacuously — no rows, no markers, no
+    information. Here all three trust levels are seeded and the flag is on, so
+    every marker WOULD render under paper; under the default theme none may.
+
+    Library rows carried no trust markers at all before v113, so "none" is the
+    pre-existing look, not a degraded one.
+    """
+    monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
+    org = _entity(owner="admin", owner_name="admin", etype="skill", name="Blue Org", status="approved")
+    _set_publisher_kind(org, "organization")
+    _entity(owner="analyst1", owner_name="analyst1", etype="skill", name="Blue Community", status="approved")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    assert _row(text, "Blue Org"), "seeded org skill must be listed"
+    assert _row(text, "Blue Community"), "seeded community skill must be listed"
+    # Emitted markup only — the page's CSS comments legitimately name the class.
+    assert 'class="ds-trust' not in text
+    assert "ds-trust--org" not in text
+    assert "ds-trust--community" not in text
+
+
+def test_organization_published_item_carries_the_org_marker_on_the_name(seeded_app, monkeypatch):
+    """All three trust levels mark the name, so the strongest one is not the single
+    exception that expresses itself in a different column. The Owner cell still
+    reads "Your organization" as well; that repetition is accepted deliberately in
+    exchange for a trust axis with no hole in it."""
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
     eid = _entity(owner="admin", owner_name="admin", etype="skill", name="Org Skill", status="approved")
     _set_publisher_kind(eid, "organization")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     row = _row(text, "Org Skill")
     assert row, "approved org skill must appear in library"
-    assert "lib-trust--org" in row
-    assert "lib-trust--unverified" not in row
+    assert "ds-trust--org" in row
+    assert 'data-tip="Published by your organization."' in row
+    assert 'aria-label="Published by your organization."' in row
+    assert "data-tip-instant" in row
+    # Icon only, like the other two — the retired grey TEXT chip must not return.
+    assert "lib-trust--org" not in row
+    assert ">Organization<" not in row
+    # It is NOT downgraded to the community marker just because it is unverified:
+    # publisher_kind is checked first, as it always was.
+    assert "ds-trust--community" not in row
 
 
-def test_verified_chip_renders_green_when_flag_off(seeded_app):
-    """The verified (green) chip is NOT gated by the unverified flag — it renders
-    regardless, as it always has."""
-    eid = _entity(owner="admin", owner_name="admin", etype="skill", name="Always Verified", status="approved")
-    _set_verification(eid, "verified")
+def test_org_marker_is_not_gated_by_the_unverified_flag(seeded_app, monkeypatch):
+    """Organization, like Verified, is a positive claim and ungated — the flag only
+    ever gated the community branch."""
+    monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "false")
+    eid = _entity(owner="admin", owner_name="admin", etype="skill", name="Org Skill Flag Off", status="approved")
+    _set_publisher_kind(eid, "organization")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
-    row = _row(text, "Always Verified")
-    assert row
-    assert "lib-trust--verified" in row
+    row = _row(text, "Org Skill Flag Off")
+    assert row, "approved org skill must appear in library"
+    assert "ds-trust--org" in row
 
 
 class TestLibraryDraftsBand:
@@ -367,3 +492,46 @@ class TestLibraryDraftsBand:
         text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
         assert "lib-new-draftcount" not in text
         assert "lib-new__count" not in text
+
+
+# ---------------------------------------------------------------------------
+# The sharing label a row publishes to BOTH views
+# ---------------------------------------------------------------------------
+
+
+def test_row_publishes_its_real_sharing_label_for_the_card_to_print(seeded_app):
+    """`data-sharing` carries the word the reader sees, and the grid card prints
+    it verbatim — which is what stops the two views from disagreeing.
+
+    The regression this guards is not cosmetic. The card used to derive its own
+    label from `data-visibility`, a map of the three SCOPE keys only, so a skill
+    still in review — `visibility='private'`, correctly labelled "In review" on
+    its row — printed "Only you" on its card. Not a wording difference: a false
+    statement about the item, and the loss of the one state whose whole value is
+    being visible at a glance.
+
+    Also pins "Everyone" over the old "Workspace" for the approved case: the key
+    stays `workspace` (nothing downstream re-keys), only the word a user reads
+    changes. See app/services/artefact_access.py :: VISIBILITY_LABELS.
+    """
+    _entity(owner="analyst1", owner_name="analyst1", etype="skill", name="Review Me", status="pending")
+    _entity(owner="admin", owner_name="admin", etype="skill", name="Public Skill", status="approved")
+    _entity(owner="analyst1", owner_name="analyst1", etype="skill", name="Kept Back", status="hidden")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+
+    pending = _row(text, "Review Me")
+    assert pending, "the caller's own pending skill must be in their Library"
+    assert 'data-sharing="In review"' in pending
+    assert 'data-visibility="private"' in pending  # the KEY is unchanged
+    assert "In review" in pending  # …and the badge says so too
+
+    approved = _row(text, "Public Skill")
+    assert approved
+    assert 'data-sharing="Everyone"' in approved
+    assert 'data-visibility="workspace"' in approved
+    assert 'data-sharing="Workspace"' not in approved
+
+    private = _row(text, "Kept Back")
+    assert private
+    assert 'data-sharing="Private"' in private

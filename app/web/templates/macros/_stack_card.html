@@ -1,3 +1,4 @@
+{% import "macros/_trustmark.html" as _sc_trust %}
 {# Shared stack card macro — visual parity with marketplace.html .mp-card.
 
    Vertical tile (mirrors mp-card pixel-for-pixel):
@@ -75,23 +76,50 @@
     <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
   {% endif %}
 
-  {# v56 derived badges (curated / new). Render top-left of the card
+  {# v113: the STORED trust claim, in icon form, beside the derived badges.
+     Organization or nothing — a data package has no reviewer to earn a Verified
+     from, and a shelf is mostly other people's unverified work, so marking
+     Community here would mark nearly every card and distinguish nothing (the
+     Library row is where per-item provenance is the point). Same macro and
+     sheet as the Library rows and the detail heroes, so the three cannot
+     disagree the way the derived `curated` badge did. #}
+  {#- Blue draws the trust claim as the amber `Curated` chip, which belongs IN the
+      badge row below rather than in a second absolutely-positioned box of its
+      own: both would sit at the same top/left, so an org-published package
+      created in the last 30 days printed `Curated` and `New` on top of each
+      other. One row, one stacking context. #}
+  {% set _blue_curated = (entry.publisher_kind == 'organization') and not is_paper() %}
+  {% if entry.publisher_kind == 'organization' and is_paper() %}
+  <div class="stack-card__trust" style="position:absolute; top:8px; right:8px; z-index:2;">
+    {{ _sc_trust.mark(_sc_trust.level_for(entry.publisher_kind, 'none', False), paper=True) }}
+  </div>
+  {% endif %}
+
+  {# v56 derived badges (`new` only since v113). Render top-left of the card
      when present; multiple stack horizontally. When a lifecycle status
      pill is also shown (poc / coming-soon / draft), it occupies the same
      top-left corner, so drop the badge row just below it to avoid the two
      overlapping. Class hooks ``data-badge="<name>"`` let the visual audit
      test pin them. #}
-  {% if entry.badges %}
+  {% if entry.badges or _blue_curated %}
   <div class="stack-card__badges" style="position:absolute; top:{{ '32px' if _status_meta else '8px' }}; left:8px;
        display:flex; gap:4px; z-index:2;">
+    {%- if _blue_curated %}
+    {#- Same geometry and colours the chip had before v113; only its SOURCE
+        changed, from live Admin-group membership to the stored publisher_kind. #}
+    <span class="stack-card__derived-badge stack-card__derived-badge--curated"
+          data-badge="curated"
+          style="display:inline-block; padding:2px 7px; border-radius:999px;
+                 font-size:9px; font-weight:700; text-transform:uppercase;
+                 letter-spacing:0.4px; background:#fef3c7; color:#92400e;">Curated</span>
+    {%- endif %}
     {% for b in entry.badges %}
     <span class="stack-card__derived-badge stack-card__derived-badge--{{ b }}"
           data-badge="{{ b }}"
           style="display:inline-block; padding:2px 7px; border-radius:999px;
                  font-size:9px; font-weight:700; text-transform:uppercase;
                  letter-spacing:0.4px;
-                 {% if b == 'curated' %}background:#fef3c7; color:#92400e;
-                 {% elif b == 'new' %}background:#dcfce7; color:#166534;
+                 {% if b == 'new' %}background:#dcfce7; color:#166534;
                  {% else %}background:#e5e7eb; color:#374151;{% endif %}">
       {{ b|capitalize }}
     </span>
