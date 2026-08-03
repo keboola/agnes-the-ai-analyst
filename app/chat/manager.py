@@ -1150,7 +1150,7 @@ class ChatManager:
             live.state = SessionState.ACTIVE  # let kill() handle teardown + partial-save
             await self.kill(live.chat_id, reason="pause_failed")
             return
-        self._install_runner(live, None)
+        await self._install_runner(live, None)
         self._repo.set_sandbox_paused_at(live.chat_id, datetime.now(timezone.utc))
 
     def _is_current_protocol(self, session: "ChatSession") -> bool:
@@ -1245,7 +1245,7 @@ class ChatManager:
                 self._repo.clear_sandbox_ref(live.chat_id)
                 await self._respawn_fresh(live)
                 return
-            self._install_runner(live, handle)
+            await self._install_runner(live, handle)
             live.state = SessionState.ACTIVE
             live.active_since = _t.monotonic()
             # AC-G-resume-fresh: rotate tickets on every resume — the paused
@@ -1404,7 +1404,7 @@ class ChatManager:
                 except Exception:
                     logger.warning("destroy fallback for orphaned respawn sandbox %s failed", new_handle.sandbox_id)
             return
-        self._install_runner(live, new_handle)
+        await self._install_runner(live, new_handle)
         live.state = SessionState.ACTIVE
         live.active_since = _t.monotonic()
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
@@ -2166,7 +2166,7 @@ class ChatManager:
             if session is None:
                 return
             new_handle = await self._spawn_runner(session, session_dir)
-            self._install_runner(live, new_handle)
+            await self._install_runner(live, new_handle)
             live.state = SessionState.ACTIVE
             # Refresh the persisted refs or a later pause/resume cycle would
             # try to reconnect the DEAD sandbox and lose the agent context.
@@ -2328,19 +2328,36 @@ class ChatManager:
             chat_id,
         )
 
-    @staticmethod
-    def _install_runner(live: "LiveSession", handle) -> None:
+    async def _install_runner(self, live: "LiveSession", handle) -> None:
         """Point the session at a new runner process (or at none).
 
-        Always clears ``pending_approvals``: a request_id belongs to the
+        Always retires ``pending_approvals``: a request_id belongs to the
         process that raised it, and a fresh gate drops unknown ids silently,
-        so a replayed card would render with buttons that do nothing until
-        it expires. Every handle swap goes through here — putting the clear
-        on the crash path alone is what left the resume-failure respawn
-        broken (review finding on #1145).
+        so a card that outlives its runner has buttons that do nothing. Every
+        handle swap goes through here — putting the clear on the crash path
+        alone is what left the resume-failure respawn broken (review finding
+        on #1145).
+
+        Retiring means BROADCASTING a resolution, not just forgetting: the
+        original request also sits in the durable ``chat-out`` replay stream,
+        so a client reconnecting with an old ``last_seq`` receives it again
+        no matter what this dict holds. Publishing the death lets every
+        consumer reconcile by request_id, instead of each replay path having
+        to learn to suppress it (review finding on #1145).
         """
         live.handle = handle
+        retired = list(live.pending_approvals)
         live.pending_approvals.clear()
+        for request_id in retired:
+            await self._broadcast(
+                live,
+                {
+                    "type": "approval_resolved",
+                    "request_id": request_id,
+                    "decision": "cancelled",
+                    "reason": "the sandbox restarted before this was answered",
+                },
+            )
 
     async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
         payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"
@@ -2771,7 +2788,7 @@ class ChatManager:
             except Exception:
                 logger.exception("_respawn_co_runner: kill old handle failed")
         new_handle = await self._spawn_runner(session, session_dir)
-        self._install_runner(live, new_handle)
+        await self._install_runner(live, new_handle)
         live.state = SessionState.ACTIVE
         # Same stale-ref hazard as the crash-respawn path: persist the new
         # sandbox identity for later pause/resume.

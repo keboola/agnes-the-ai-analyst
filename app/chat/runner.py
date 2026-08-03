@@ -802,6 +802,16 @@ async def _real_agent_loop(
             # hook out and treat it as non-blocking, running the tool while a
             # human is still being asked.
             #
+            # Two assumptions ride on that margin and cannot be checked from
+            # here (they live in the CLI, not the SDK): that the value is in
+            # SECONDS, and that the CLI treats a matcher timeout as
+            # non-blocking rather than as a deny. If the unit were smaller the
+            # margin collapses and the CLI times out first; if a timeout
+            # denies, the failure is safe (a refused command) rather than an
+            # unasked one. Both were consistent with an empirical ≥75s block
+            # during development. The test below pins the field's existence,
+            # which is what we can assert offline (review note on #1145).
+            #
             # So on an SDK without it we still REGISTER the hook, with the
             # gate disabled. A disabled gate denies instantly instead of
             # waiting, so there is nothing for a CLI-side timeout to cut
