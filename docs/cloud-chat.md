@@ -192,14 +192,30 @@ at the VM level**: `E2BProvider.spawn` passes
 outside `chat.egress_allow_out` is blocked by the platform, outside the
 sandbox's reach. The bundled PreToolUse hook in the workspace template
 (`.claude/hooks/pre_tool_use.py`) additionally refuses
-workspace-destructive bash and prompts for admin mutations, but it is
-defense-in-depth only — it is fail-open, inspects Bash alone, and is a
-workspace file the agent could rewrite. The VM-level deny-list survives
-its removal. (This supersedes the original Q4 decision, which shipped
-the allowlist in the hook alone.)
+workspace-destructive bash, and marks high-blast-radius commands as
+needing user confirmation (`ask`) — those now surface as a real
+approve/deny card in the chat rather than being silently executed. The
+hook is defense-in-depth only: it is fail-open, inspects Bash alone, and
+is a workspace file the agent could rewrite. The VM-level deny-list
+survives its removal. (This supersedes the original Q4 decision, which
+shipped the allowlist in the hook alone.)
 
 The full trust model, the controls behind it, and the known limitations
 are in [`../SECURITY.md`](../SECURITY.md).
+
+**Approval gate.** Under `permission_mode="bypassPermissions"` the CLI
+executes a file-hook `ask` verdict without prompting anyone, so `ask`
+rules used to be silently inert in cloud chat. The runner now re-runs
+the workspace hook from an SDK in-process PreToolUse hook
+(`ApprovalGate` in `app/chat/runner.py`): an `ask` verdict suspends the
+tool call, emits an `approval_request` frame (web chat renders an
+Allow once / Allow for session / Deny card; co-drive participants may
+answer too), and resolves to allow or deny from the user's
+`approval_decision`. No answer within `chat.approval_timeout_seconds`
+(default 300), a Stop, or a surface that cannot prompt (runner env
+`AGNES_APPROVALS=off`) all resolve to deny. Slack surfaces currently
+see the pause + timeout-deny only — interactive Slack approval buttons
+are a follow-up.
 
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.
@@ -238,6 +254,8 @@ trim local files.
 - **Bundled workspace ships no sub-agents.** `app/initial_workspace_default/.claude/agents/` is empty. Sub-agent dispatch (Task tool) requires the operator to install marketplace plugins that ship `agnes-*.md` agent definitions; without them the chat agent will answer directly without sub-agent delegation. The E2E test `tests/e2e/test_sub_agent_dispatch.py::F.9` auto-skips when no agents are present in the workspace.
 - **`ANTHROPIC_API_KEY` + `E2B_API_KEY` + `chat.e2b_template_id` are gate-checked at startup.** Any missing value refuses chat with a clear log line.
 - **Egress is enforced at the VM level**, not by the in-sandbox hook. `E2BProvider.spawn` passes `network={"allow_out": …, "deny_out": [ALL_TRAFFIC]}`, so everything outside `chat.egress_allow_out` (default: the Agnes host, loopback, `api.anthropic.com`, `api.github.com`) is blocked by the platform. The workspace `PreToolUse` hook is defense-in-depth only: it is fail-open, inspects Bash alone, and is a workspace file the agent could rewrite — the VM-level deny-list survives its removal. (This supersedes the original Q4 fail-open decision.)
+- **Approvals follow the session's ORIGIN surface, not where it is currently open.** `AGNES_APPROVALS` is fixed when the sandbox spawns, from `session.surface`. A chat started in Slack and later opened through the "Continue on web" deep link (`/chat?session=…`) therefore still refuses `ask`-flagged commands, even though the approve/deny card would render in that browser. Deliberate for now — making it dynamic means moving the "can anyone answer this?" decision from spawn-time env to request-time sink routing. Start the task in a web chat if it needs confirmable commands.
+- **The approval gate matches `Bash` tool calls only.** The bundled workspace hook returns `allow` for every non-Bash tool, so no policy is lost as shipped. An operator override that adds `ask` rules for `Write`/`Edit`/`WebFetch` would find them inert in cloud chat until the SDK hook matcher (`app/chat/runner.py`) is widened past `Bash` — a deliberate scope choice (gating every `Read`/`Write` through a per-call file-hook subprocess adds real latency).
 - **`audit_log.user_id` for chat rows holds the user email, not the user UUID.** Joining `audit_log` to `users` for chat events requires `audit_log.user_id = users.email` for `action LIKE 'chat.%'` and the usual `audit_log.user_id = users.id` for everything else. Documented in `app/chat/audit.py::write_audit`.
 - **`_real_agent_loop` enforces a turn-level wall-clock cap, not per-tool.** `claude-agent-sdk` 0.2.x doesn't expose per-tool dispatch hooks; the runner enforces `tool_calls_per_turn_budget` and a turn-level timeout instead of per-tool granularity. Revisit when the SDK ships per-tool hooks.
 - **E2B SDK 1.x uses the mutable `:latest` template tag.** Per Q2 a teammate rebuild propagates to every live deployment on its next spawn — test rebuilds on a dev Agnes first.
