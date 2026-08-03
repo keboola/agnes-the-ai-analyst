@@ -16,22 +16,24 @@ from __future__ import annotations
 
 import datetime as _dt
 from datetime import date, datetime
-from typing import Dict, List, Tuple
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-ItemKey = Tuple[str, str, str, str]  # (source, type, parent_plugin, name)
+ItemKey = tuple[str, str, str, str]  # (source, type, parent_plugin, name)
+
+# PG mirror of ``reports.SYNTHETIC_MODEL`` — keep the two literals in step.
+SYNTHETIC_MODEL = "<synthetic>"
 
 
-def _zero_fill_daily_series(rows) -> List[Dict]:
+def _zero_fill_daily_series(rows) -> list[dict]:
     """PG mirror of ``reports._zero_fill_daily_series`` — pure Python,
     dialect-independent.
     """
     by_day = {str(r[0]): int(r[1] or 0) for r in rows}
     # UTC, not date.today() — same axis-vs-fact-day invariant as the module
     # docstring's UTC day-bucketing rule.
-    today = _dt.datetime.now(_dt.timezone.utc).date()
+    today = _dt.datetime.now(_dt.UTC).date()
     series = []
     for offset in range(29, -1, -1):
         day_str = (today - _dt.timedelta(days=offset)).isoformat()
@@ -39,11 +41,11 @@ def _zero_fill_daily_series(rows) -> List[Dict]:
     return series
 
 
-def _assemble_inner_items_by_parent(win_rows, trend_rows) -> Dict[Tuple[str, str], Dict[str, object]]:
+def _assemble_inner_items_by_parent(win_rows, trend_rows) -> dict[tuple[str, str], dict[str, object]]:
     """PG mirror of ``reports._assemble_inner_items_by_parent`` — pure
     Python, dialect-independent.
     """
-    out: Dict[Tuple[str, str], Dict[str, object]] = {}
+    out: dict[tuple[str, str], dict[str, object]] = {}
     for name, item_type, inv, du in win_rows:
         out[(name, item_type)] = {
             "invocations_30d": int(inv or 0),
@@ -67,14 +69,14 @@ def _assemble_inner_items_by_parent(win_rows, trend_rows) -> Dict[Tuple[str, str
     return out
 
 
-def _assemble_invocation_stats(win_rows, trend_rows) -> Dict[str, dict]:
+def _assemble_invocation_stats(win_rows, trend_rows) -> dict[str, dict]:
     """PG mirror of ``reports._assemble_invocation_stats`` — pure Python,
     dialect-independent, kept identical so the two ``invocation_stats``
     implementations only differ in their SQL.
     """
     trend_by_name = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in trend_rows}
 
-    out: Dict[str, dict] = {}
+    out: dict[str, dict] = {}
     for period_label, name, inv, du in win_rows:
         stat = out.setdefault(
             name,
@@ -128,17 +130,24 @@ class ReportsPgRepository:
         return {"invocations": int(r[0] or 0), "active_users": int(r[1] or 0), "errors": int(r[2] or 0)}
 
     def session_count(self, start: datetime, end: datetime) -> int:
+        """Real user sessions started in the window.
+
+        `<synthetic>` rows are a processing artifact — zero tool calls, zero
+        active seconds, one user message — and are excluded: counting them
+        overstated the digest's session KPI by roughly a quarter.
+        """
         with self._engine.connect() as conn:
             r = conn.execute(
                 sa.text(
                     """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
-                       WHERE started_at >= :start AND started_at < :end"""
+                       WHERE started_at >= :start AND started_at < :end
+                         AND (primary_model IS NULL OR primary_model != :synthetic)"""
                 ),
-                {"start": start, "end": end},
+                {"start": start, "end": end, "synthetic": SYNTHETIC_MODEL},
             ).fetchone()
         return int(r[0] or 0)
 
-    def events_daily(self, start: datetime, end: datetime) -> Dict[date, dict]:
+    def events_daily(self, start: datetime, end: datetime) -> dict[date, dict]:
         # Bucket by the UTC calendar day. occurred_at is timestamptz; a plain
         # CAST(... AS DATE) would first shift to the session TimeZone, so a
         # non-UTC PG session would mis-bucket events near midnight UTC relative
@@ -161,7 +170,7 @@ class ReportsPgRepository:
             for r in rows
         }
 
-    def by_source(self, start: datetime, end: datetime) -> List[dict]:
+    def by_source(self, start: datetime, end: datetime) -> list[dict]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
@@ -185,7 +194,7 @@ class ReportsPgRepository:
         ]
 
     # ---- marketplace-item rollups ----------------------------------------
-    def items_window(self, start_day: date, end_day: date) -> Dict[ItemKey, dict]:
+    def items_window(self, start_day: date, end_day: date) -> dict[ItemKey, dict]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
@@ -206,7 +215,7 @@ class ReportsPgRepository:
             for r in rows
         }
 
-    def invocation_stats(self, source: str) -> Dict[str, dict]:
+    def invocation_stats(self, source: str) -> dict[str, dict]:
         """PG mirror of ``ReportsRepository.invocation_stats`` (#728) — same
         shape and threshold semantics. ``day`` is a plain ``Date`` column on
         both engines, but the window boundary must be the UTC "today":
@@ -251,7 +260,7 @@ class ReportsPgRepository:
 
         return _assemble_invocation_stats(win_rows, trend_rows)
 
-    def plugin_daily_series(self, source: str, plugin_name: str) -> List[Dict]:
+    def plugin_daily_series(self, source: str, plugin_name: str) -> list[dict]:
         """PG mirror of ``ReportsRepository.plugin_daily_series`` (#728) —
         same shape, PG-dialect day arithmetic. Row selection mirrors
         ``invocation_stats`` (curated → plugin rows; flea → standalone
@@ -281,7 +290,7 @@ class ReportsPgRepository:
         parent_plugin: str,
         name: str,
         item_type: str,
-    ) -> Dict[str, object]:
+    ) -> dict[str, object]:
         """PG mirror of ``ReportsRepository.inner_item_stats`` (#728) — same
         shape and threshold semantics, PG-dialect day arithmetic.
         """
@@ -352,7 +361,7 @@ class ReportsPgRepository:
         self,
         source: str,
         parent_plugin: str,
-    ) -> Dict[Tuple[str, str], Dict[str, object]]:
+    ) -> dict[tuple[str, str], dict[str, object]]:
         """PG mirror of ``ReportsRepository.inner_items_stats_by_parent``
         (#728) — same shape, PG-dialect day arithmetic.
         """
@@ -390,33 +399,103 @@ class ReportsPgRepository:
         return _assemble_inner_items_by_parent(win_rows, trend_rows)
 
     # ---- installs / adoption ---------------------------------------------
+    #
+    # PG mirror of ``reports.ReportsRepository``. `user_plugin_optouts` is the
+    # historically-named curated-subscription ledger: since v28 row presence
+    # means SUBSCRIBED and `opted_out_at` is effectively `subscribed_at`.
+    #
+    # A plugin flagged `marketplace_plugins.is_system` reaches a stack by
+    # platform action, so its rows are provisioning, not adoption. NOT EXISTS
+    # rather than a join so an install whose plugin row is missing entirely
+    # still counts as a real install instead of silently vanishing.
+    #
+    # Caveat: classification uses the plugin's CURRENT `is_system` flag, so it
+    # describes what a plugin is now, not what it was when the row was written.
+    # Clearing the flag (admin-disabling a plugin does this) or deleting the
+    # registry row moves historical rollout rows back into the opt-in figures.
+    # Fixing that properly needs provenance stamped on the subscription row at
+    # subscribe time — a migration, deliberately not taken here. Blast radius is
+    # limited: published reports are static HTML, so only a re-generated report
+    # for a past window can shift.
+    _NOT_SYSTEM = """
+        NOT EXISTS (
+            SELECT 1 FROM marketplace_plugins mp
+            WHERE mp.marketplace_id = o.marketplace_id
+              AND mp.name = o.plugin_name
+              AND mp.is_system = TRUE
+        )
+    """
+
     def install_counts(self, start: datetime, end: datetime) -> dict:
+        """Installs in the window.
+
+        - ``curated`` / ``flea``: opt-in installs, counted as (user x item) rows.
+        - ``system``: system-plugin subscriptions, kept visible but excluded from
+          the adoption figures above.
+        - ``distinct_installers``: PEOPLE who opted into at least one item — the
+          only one of these directly comparable to ``active_users``, which is
+          also a people count.
+        """
+        params = {"start": start, "end": end}
         with self._engine.connect() as conn:
             curated = conn.execute(
                 sa.text(
-                    "SELECT COUNT(*) FROM user_plugin_optouts WHERE opted_out_at >= :start AND opted_out_at < :end"
+                    f"""SELECT COUNT(*) FROM user_plugin_optouts o
+                        WHERE o.opted_out_at >= :start AND o.opted_out_at < :end
+                          AND {self._NOT_SYSTEM}"""
                 ),
-                {"start": start, "end": end},
+                params,
+            ).fetchone()[0]
+            system = conn.execute(
+                sa.text(
+                    f"""SELECT COUNT(*) FROM user_plugin_optouts o
+                        WHERE o.opted_out_at >= :start AND o.opted_out_at < :end
+                          AND NOT {self._NOT_SYSTEM}"""
+                ),
+                params,
             ).fetchone()[0]
             flea = conn.execute(
                 sa.text(
                     "SELECT COUNT(*) FROM user_store_installs WHERE installed_at >= :start AND installed_at < :end"
                 ),
-                {"start": start, "end": end},
+                params,
             ).fetchone()[0]
-        return {"curated": int(curated or 0), "flea": int(flea or 0)}
+            # UNION (not UNION ALL) dedupes a user who installed on both sides.
+            installers = conn.execute(
+                sa.text(
+                    f"""SELECT COUNT(*) FROM (
+                            SELECT o.user_id FROM user_plugin_optouts o
+                            WHERE o.opted_out_at >= :start AND o.opted_out_at < :end
+                              AND {self._NOT_SYSTEM}
+                            UNION
+                            SELECT user_id FROM user_store_installs
+                            WHERE installed_at >= :start AND installed_at < :end
+                        ) AS t"""
+                ),
+                params,
+            ).fetchone()[0]
+        return {
+            "curated": int(curated or 0),
+            "flea": int(flea or 0),
+            "system": int(system or 0),
+            "distinct_installers": int(installers or 0),
+        }
 
-    def installs_daily(self, start: datetime, end: datetime) -> Dict[date, int]:
-        out: Dict[date, int] = {}
+    def installs_daily(self, start: datetime, end: datetime) -> dict[date, int]:
+        """Per-UTC-day opt-in installs. Excludes system plugins so the trend
+        series and the headline KPI cannot disagree."""
+        out: dict[date, int] = {}
         # AT TIME ZONE 'UTC' so day buckets match this report's UTC day labels
         # regardless of the PG session TimeZone (see events_daily).
         stmts = (
-            "SELECT CAST((opted_out_at AT TIME ZONE 'UTC') AS DATE) AS d, COUNT(*) "
-            "FROM user_plugin_optouts "
-            "WHERE opted_out_at >= :start AND opted_out_at < :end GROUP BY d",
-            "SELECT CAST((installed_at AT TIME ZONE 'UTC') AS DATE) AS d, COUNT(*) "
-            "FROM user_store_installs "
-            "WHERE installed_at >= :start AND installed_at < :end GROUP BY d",
+            f"""SELECT CAST((o.opted_out_at AT TIME ZONE 'UTC') AS DATE) AS d, COUNT(*)
+                FROM user_plugin_optouts o
+                WHERE o.opted_out_at >= :start AND o.opted_out_at < :end
+                  AND {self._NOT_SYSTEM}
+                GROUP BY d""",
+            """SELECT CAST((installed_at AT TIME ZONE 'UTC') AS DATE) AS d, COUNT(*)
+               FROM user_store_installs
+               WHERE installed_at >= :start AND installed_at < :end GROUP BY d""",
         )
         with self._engine.connect() as conn:
             for sql in stmts:
@@ -424,20 +503,21 @@ class ReportsPgRepository:
                     out[r[0]] = out.get(r[0], 0) + int(r[1] or 0)
         return out
 
-    def installs_curated_detail(self, start: datetime, end: datetime, limit: int = 10) -> List[dict]:
+    def installs_curated_detail(self, start: datetime, end: datetime, limit: int = 10) -> list[dict]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    """SELECT marketplace_id, plugin_name, COUNT(*) AS n
-                       FROM user_plugin_optouts
-                       WHERE opted_out_at >= :start AND opted_out_at < :end
-                       GROUP BY marketplace_id, plugin_name ORDER BY n DESC LIMIT :lim"""
+                    f"""SELECT o.marketplace_id, o.plugin_name, COUNT(*) AS n
+                        FROM user_plugin_optouts o
+                        WHERE o.opted_out_at >= :start AND o.opted_out_at < :end
+                          AND {self._NOT_SYSTEM}
+                        GROUP BY o.marketplace_id, o.plugin_name ORDER BY n DESC LIMIT :lim"""
                 ),
                 {"start": start, "end": end, "lim": limit},
             ).fetchall()
         return [{"ref_id": f"{r[0]}/{r[1]}", "name": r[1], "installs": int(r[2] or 0)} for r in rows]
 
-    def installs_flea_detail(self, start: datetime, end: datetime, limit: int = 10) -> List[dict]:
+    def installs_flea_detail(self, start: datetime, end: datetime, limit: int = 10) -> list[dict]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(

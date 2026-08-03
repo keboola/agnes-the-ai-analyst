@@ -109,11 +109,18 @@ def marketplace_digest(
     c_sessions = rr.session_count(c_start_ts, c_end_ts)
     p_inst = rr.install_counts(p_start_ts, p_end_ts)
     c_inst = rr.install_counts(c_start_ts, c_end_ts)
+    # Opt-in installs only. System-plugin subscriptions are platform
+    # provisioning, not adoption — one system rollout otherwise reports more
+    # "new installs" than the platform had active users that day, which is what
+    # made this KPI row read as self-contradictory. Kept as `system_installs`.
     p_installs = p_inst["curated"] + p_inst["flea"]
     c_installs = c_inst["curated"] + c_inst["flea"]
     p_rate = round(p_ev["errors"] / p_ev["invocations"], 4) if p_ev["invocations"] else 0.0
     c_rate = round(c_ev["errors"] / c_ev["invocations"], 4) if c_ev["invocations"] else 0.0
 
+    # active_users counts PEOPLE with >=1 synced session event in the window;
+    # new_installs counts (user x item) ROWS. Different units — compare
+    # active_users against `distinct_installers`, not against `new_installs`.
     headline_kpis = {
         "active_users": _kpi(p_ev["active_users"], c_ev["active_users"]),
         "sessions":     _kpi(p_sessions, c_sessions),
@@ -121,6 +128,8 @@ def marketplace_digest(
         "errors":       _kpi(p_ev["errors"], c_ev["errors"]),
         "error_rate":   _kpi(p_rate, c_rate),
         "new_installs": _kpi(p_installs, c_installs),
+        "distinct_installers": _kpi(p_inst["distinct_installers"], c_inst["distinct_installers"]),
+        "system_installs": _kpi(p_inst["system"], c_inst["system"]),
     }
 
     # ---- trend_series (per-day, for sparklines / charts) ---------------------
@@ -221,6 +230,8 @@ def marketplace_digest(
         "curated": rr.installs_curated_detail(p_start_ts, p_end_ts, _TOP_N),
         "flea": rr.installs_flea_detail(p_start_ts, p_end_ts, _TOP_N),
         "total": p_installs,
+        "system_total": p_inst["system"],
+        "distinct_installers": p_inst["distinct_installers"],
     }
 
     # ---- registry-derived sections (zero-usage + health) ---------------------

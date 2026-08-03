@@ -12,7 +12,7 @@ rollup, and the install ledgers) with no single write method.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -22,7 +22,7 @@ PREV = ANCHOR - timedelta(days=1)
 
 
 def _ts(d: date, hour: int = 10, minute: int = 0) -> datetime:
-    return datetime(d.year, d.month, d.day, hour, minute, tzinfo=timezone.utc)
+    return datetime(d.year, d.month, d.day, hour, minute, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +42,7 @@ def _make_duckdb_repo(tmp_path):
 
 def _make_pg_repo(pg_engine, monkeypatch):
     from pathlib import Path
+
     from alembic import command
     from alembic.config import Config
 
@@ -52,7 +53,7 @@ def _make_pg_repo(pg_engine, monkeypatch):
     command.upgrade(cfg, "head")
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
-    import src.db_pg as db_pg
+    from src import db_pg
 
     db_pg.dispose()
     from src.repositories.reports_pg import ReportsPgRepository
@@ -167,8 +168,11 @@ def _seed(repo, backend):
         ],
     )
 
-    # usage_session_summary: 2 sessions on anchor, 1 on prev.
-    ss_cols = ["session_file", "session_id", "username", "started_at", "processor_version"]
+    # usage_session_summary: 2 real sessions on anchor, 1 on prev, plus one
+    # `<synthetic>` row on the anchor day. Synthetic rows carry no tool calls and
+    # no active time — they are a processing artifact, not usage, and must not
+    # reach the digest's session KPI.
+    ss_cols = ["session_file", "session_id", "username", "started_at", "processor_version", "primary_model"]
     _insert(
         repo,
         backend,
@@ -181,6 +185,7 @@ def _seed(repo, backend):
                 "username": "alice",
                 "started_at": _ts(ANCHOR),
                 "processor_version": 1,
+                "primary_model": "claude-opus-4-8",
             },
             {
                 "session_file": "s2.jsonl",
@@ -188,6 +193,7 @@ def _seed(repo, backend):
                 "username": "bob",
                 "started_at": _ts(ANCHOR),
                 "processor_version": 1,
+                "primary_model": None,
             },
             {
                 "session_file": "s3.jsonl",
@@ -195,6 +201,15 @@ def _seed(repo, backend):
                 "username": "alice",
                 "started_at": _ts(PREV),
                 "processor_version": 1,
+                "primary_model": "claude-opus-4-8",
+            },
+            {
+                "session_file": "s4.jsonl",
+                "session_id": "s4",
+                "username": "carol",
+                "started_at": _ts(ANCHOR, 11),
+                "processor_version": 1,
+                "primary_model": "<synthetic>",
             },
         ],
     )
@@ -230,7 +245,23 @@ def _seed(repo, backend):
         ],
     )
 
-    # installs (anchor day): 2 curated subscriptions + 1 flea install.
+    # The plugin registry the install ledger is judged against. `platform-core`
+    # is a system plugin: it lands in every stack by platform action, so its
+    # subscription rows are provisioning, not adoption.
+    _insert(
+        repo,
+        backend,
+        "marketplace_plugins",
+        ["marketplace_id", "name", "is_system"],
+        [
+            {"marketplace_id": "curated-product", "name": "product-analyzer", "is_system": False},
+            {"marketplace_id": "curated-product", "name": "platform-core", "is_system": True},
+        ],
+    )
+
+    # installs (anchor day): 2 curated subscriptions by 2 users + 1 flea install
+    # (by one of the same users), plus a 3-user system-plugin rollout that must
+    # not be counted as adoption.
     _insert(
         repo,
         backend,
@@ -248,6 +279,24 @@ def _seed(repo, backend):
                 "marketplace_id": "curated-product",
                 "plugin_name": "product-analyzer",
                 "opted_out_at": _ts(ANCHOR),
+            },
+            {
+                "user_id": "u1",
+                "marketplace_id": "curated-product",
+                "plugin_name": "platform-core",
+                "opted_out_at": _ts(ANCHOR, 11),
+            },
+            {
+                "user_id": "u3",
+                "marketplace_id": "curated-product",
+                "plugin_name": "platform-core",
+                "opted_out_at": _ts(ANCHOR, 11),
+            },
+            {
+                "user_id": "u4",
+                "marketplace_id": "curated-product",
+                "plugin_name": "platform-core",
+                "opted_out_at": _ts(ANCHOR, 11),
             },
         ],
     )
@@ -295,6 +344,8 @@ def test_event_window(reports_repo):
 
 def test_session_count(reports_repo):
     repo, _ = reports_repo
+    # s1 + s2 only. s4 is a `<synthetic>` row on the same day and is excluded;
+    # counting it overstates the digest's session KPI substantially.
     assert repo.session_count(_P_START, _P_END) == 2
 
 
@@ -327,11 +378,37 @@ def test_items_window(reports_repo):
 
 def test_install_counts(reports_repo):
     repo, _ = reports_repo
-    assert repo.install_counts(_P_START, _P_END) == {"curated": 2, "flea": 1}
+    # curated/flea count opt-in installs only; the 3-row `platform-core` rollout
+    # is reported separately as `system`. distinct_installers is the people-unit
+    # figure comparable to active_users: u1 (curated + flea) and u2, not the
+    # rollout-only u3/u4.
+    assert repo.install_counts(_P_START, _P_END) == {
+        "curated": 2,
+        "flea": 1,
+        "system": 3,
+        "distinct_installers": 2,
+    }
+
+
+def test_install_counts_excludes_system_plugins(reports_repo):
+    """A system plugin entering a stack is provisioning, not adoption.
+
+    Regression guard: a single system-plugin rollout produced more "new installs"
+    than the platform had active users that day, which is what made the digest's
+    KPI row self-contradictory.
+    """
+    repo, _ = reports_repo
+    counts = repo.install_counts(_P_START, _P_END)
+    assert counts["curated"] == 2, "system-plugin rows must not inflate curated installs"
+    assert counts["system"] == 3, "system rollouts stay visible, just not as adoption"
+    # Users who only ever received the system plugin are not installers.
+    assert counts["distinct_installers"] == 2
 
 
 def test_installs_daily_buckets_by_utc_day(reports_repo):
     repo, _ = reports_repo
+    # 2 curated + 1 flea; the 3 system rows on the same day are excluded so the
+    # trend series and the headline KPI agree.
     assert repo.installs_daily(_TREND_START, _P_END) == {ANCHOR: 3}
 
 
@@ -385,7 +462,7 @@ def _make_pg_pair(pg_engine, monkeypatch):
     command.upgrade(cfg, "head")
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
-    import src.db_pg as db_pg
+    from src import db_pg
 
     db_pg.dispose()
     engine = db_pg.get_engine()
@@ -418,7 +495,7 @@ def _seed_invocation_events(reports, usage, conn, backend):
     into a "recent" (today) and a "prior" (10 days ago) bucket so the
     window (30d/7d) AND the trend (recent-7-vs-prior-7) calculations both
     have real data to fold, then run the real producer."""
-    now = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    now = datetime.now(UTC).replace(hour=10, minute=0, second=0, microsecond=0)
     prior_day = now - timedelta(days=10)
 
     _insert_pair(
@@ -596,7 +673,7 @@ def test_plugin_daily_series_curated(invocation_stats_repo):
     # UTC, matching the seed clock in _seed_invocation_events and the UTC
     # day buckets of the rollup fact — date.today() breaks when the local
     # date differs from the UTC date.
-    utc_today = datetime.now(timezone.utc).date()
+    utc_today = datetime.now(UTC).date()
     today = utc_today.isoformat()
     prior_day = (utc_today - timedelta(days=10)).isoformat()
     assert by_day[today] == 5
@@ -668,7 +745,7 @@ def pg_reports_repo_skewed_tz(pg_engine, monkeypatch):
     repo, _ = _make_pg_repo(pg_engine, monkeypatch)
     # UTC hour >= 12 -> UTC+14 is already tomorrow; else UTC-12 is yesterday.
     # (POSIX Etc/GMT signs are inverted: Etc/GMT-14 == UTC+14.)
-    tz = "Etc/GMT-14" if datetime.now(timezone.utc).hour >= 12 else "Etc/GMT+12"
+    tz = "Etc/GMT-14" if datetime.now(UTC).hour >= 12 else "Etc/GMT+12"
 
     def _set_tz(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
@@ -694,13 +771,20 @@ def test_pg_trend_windows_are_utc_regardless_of_session_timezone(pg_reports_repo
     window (prior=0 < 3 -> trend None). Either direction breaks the
     assertion below, so a CURRENT_DATE revert cannot pass CI."""
     repo = pg_reports_repo_skewed_tz
-    utc_day = datetime.now(timezone.utc).date()
+    utc_day = datetime.now(UTC).date()
 
     # Sanity: the session clock really is on the other side of midnight.
     with repo._engine.connect() as c:
         assert c.execute(sa.text("SELECT CURRENT_DATE")).scalar_one() != utc_day
 
-    base = {"source": "curated", "type": "plugin", "parent_plugin": "", "name": "tzplug", "distinct_users": 1, "error_count": 0}
+    base = {
+        "source": "curated",
+        "type": "plugin",
+        "parent_plugin": "",
+        "name": "tzplug",
+        "distinct_users": 1,
+        "error_count": 0,
+    }
     _insert(
         repo,
         "pg",

@@ -94,6 +94,11 @@ def _seed(conn):
         "VALUES ('curated-product', 'disabled-skill', FALSE, TRUE)"
     )
 
+    conn.execute(                                  # system plugin → provisioning
+        "INSERT INTO marketplace_plugins (marketplace_id, name, is_system) "
+        "VALUES ('curated-product', 'platform-core', TRUE)"
+    )
+
     # --- installs (anchor day) ----------------------------------------------
     conn.execute(
         "INSERT INTO user_plugin_optouts (user_id, marketplace_id, plugin_name, opted_out_at) "
@@ -104,6 +109,12 @@ def _seed(conn):
     conn.execute(
         "INSERT INTO user_store_installs (user_id, entity_id, installed_at) "
         "VALUES ('u1', 'ent-1', ?)", [_ts(ANCHOR)])
+    # A system-plugin rollout to 3 users on the same day. This is what made the
+    # KPI row self-contradictory: it must not reach new_installs.
+    for uid in ("u1", "u3", "u4"):
+        conn.execute(
+            "INSERT INTO user_plugin_optouts (user_id, marketplace_id, plugin_name, opted_out_at) "
+            "VALUES (?, 'curated-product', 'platform-core', ?)", [uid, _ts(ANCHOR)])
 
 
 def _get(client, headers, period):
@@ -138,7 +149,17 @@ def test_daily_digest_shape_and_kpis(seeded_app, admin_user):
     assert k["invocations"] == {"value": 10, "prev": 5, "delta_pct": 100.0}
     assert k["errors"]["value"] == 1
     assert k["sessions"]["value"] == 2 and k["sessions"]["prev"] == 1
-    assert k["new_installs"]["value"] == 3  # 2 curated + 1 flea
+    assert k["new_installs"]["value"] == 3  # 2 curated + 1 flea; the 3-user
+    # system-plugin rollout on the same day is provisioning, not adoption, and
+    # is reported separately instead of inflating the headline figure.
+    assert k["system_installs"]["value"] == 3
+    # People-unit figure, the one comparable to active_users: u1 (curated+flea)
+    # and u2. u3/u4 only received the system plugin, so they are not installers.
+    assert k["distinct_installers"]["value"] == 2
+    assert data["installs"]["total"] == 3
+    assert data["installs"]["system_total"] == 3
+    # the per-plugin breakdown agrees with the headline — no system plugin in it
+    assert [i["name"] for i in data["installs"]["curated"]] == ["product-analyzer"]
 
 
 def test_daily_movers_failures_and_zero_usage(seeded_app, admin_user):
@@ -182,8 +203,9 @@ def test_daily_movers_failures_and_zero_usage(seeded_app, admin_user):
     assert health["curated-err"]["sync_status"] == "error"
     # built-in is never git-synced (null last_synced) but is healthy, not stale
     assert health["agnes-builtin"]["sync_status"] == "ok"
-    # product-analyzer + unused-skill + disabled-skill (count is the catalog size)
-    assert health["curated-product"]["plugin_count"] == 3
+    # product-analyzer + unused-skill + disabled-skill + platform-core
+    # (count is the catalog size)
+    assert health["curated-product"]["plugin_count"] == 4
 
 
 def test_weekly_digest_window(seeded_app, admin_user):
