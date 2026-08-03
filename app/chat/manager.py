@@ -1784,6 +1784,13 @@ class ChatManager:
             # ApprovalGate window for a pending approval_request (runner
             # denies the suspended tool call on expiry).
             "AGNES_APPROVAL_TIMEOUT_SECONDS": str(self._config.approval_timeout_seconds),
+            # Interactive approval cards render only on the web surface. On
+            # non-interactive surfaces (agent-API one-shot, Slack — no card
+            # yet) an `ask` verdict has nobody to answer it, so switch the
+            # gate off there: it denies immediately with an actionable
+            # message instead of freezing for the full approval timeout
+            # (review finding on #1145).
+            "AGNES_APPROVALS": "on" if session.surface == Surface.WEB.value else "off",
             # Opt-in: bootstrap the user's marketplace plugins into the sandbox
             # at spawn and load them via setting_sources. Off by default (adds
             # per-spawn latency; only useful once the marketplace ships real

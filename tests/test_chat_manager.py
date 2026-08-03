@@ -3538,3 +3538,39 @@ def test_approval_decision_hardens_invalid_to_deny(manager: ChatManager):
         assert b'"decision": "deny"' in written
 
     asyncio.run(_run())
+
+
+def test_spawn_env_approvals_gated_by_surface(manager: ChatManager, monkeypatch):
+    """Approvals are on for web (renders the card), off for non-interactive
+    surfaces (agent-API one-shot, Slack) so an ask denies immediately
+    instead of freezing for the full timeout (review finding on #1145)."""
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "jwt")
+    import app.chat.manager as manager_mod
+
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: _FakeTicketRepo())
+
+    captured = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return FakeHandle()
+
+    manager._provider.spawn = fake_spawn
+
+    async def _env_for(surface, **kw):
+        s = await manager.create_session(user_email="u@x", surface=surface, **kw)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, Path("/tmp"))
+        return captured["env"]
+
+    async def _run():
+        web = await _env_for(Surface.WEB)
+        assert web["AGNES_APPROVALS"] == "on"
+        api = await _env_for(Surface.API)
+        assert api["AGNES_APPROVALS"] == "off"
+        dm = await _env_for(
+            Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        assert dm["AGNES_APPROVALS"] == "off"
+
+    asyncio.run(_run())
