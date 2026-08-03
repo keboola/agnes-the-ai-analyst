@@ -168,3 +168,38 @@ def test_delete_post_with_matching_pair_reaches_handler(seeded_app):
     )
     assert r.status_code == 200
     assert "not found" in r.text
+
+
+def test_rejected_post_does_not_rotate_an_existing_token(seeded_app):
+    """A rejected submission must not re-issue the cookie the caller already has.
+
+    The cookie is SameSite=Strict, so a cross-site POST arrives without it.
+    Setting it unconditionally on the rejection path would let any site
+    rotate a signed-in admin's token and break the tabs they already have
+    open — a nuisance the CSRF check exists to prevent, not to create.
+    """
+    c = seeded_app["client"]
+    c.cookies.clear()
+    r = c.post(
+        "/admin/contribute-skill",
+        data={"skill_md": "# skill", "csrf_token": "wrong"},
+        cookies=_admin_cookies(seeded_app, web_csrf=_CSRF),
+    )
+    assert r.status_code == 400
+    assert "web_csrf" not in r.headers.get("set-cookie", ""), (
+        "a caller that already holds a token must keep it across a rejection"
+    )
+
+
+def test_rejected_post_without_a_cookie_still_issues_one(seeded_app):
+    """The re-rendered form needs a usable token, so a caller with no cookie
+    must still get one — that is the case the non-rotation guard allows."""
+    c = seeded_app["client"]
+    c.cookies.clear()
+    r = c.post(
+        "/admin/contribute-skill",
+        data={"skill_md": "# skill", "csrf_token": "wrong"},
+        cookies=_admin_cookies(seeded_app),
+    )
+    assert r.status_code == 400
+    assert "web_csrf" in r.headers.get("set-cookie", "")

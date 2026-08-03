@@ -2591,6 +2591,20 @@ def _set_web_csrf_cookie(response: Response, request: Request, token: str) -> No
     )
 
 
+def _refresh_web_csrf_cookie(response: Response, request: Request, token: str) -> None:
+    """Set the cookie only when the caller did not already have one.
+
+    Used on REJECTION paths. Because the cookie is ``SameSite=Strict`` a
+    cross-site POST arrives without it, so unconditionally setting it there
+    would let any site rotate a signed-in admin's token and break the tabs
+    they already have open — a nuisance the CSRF check itself is supposed to
+    prevent, not create (review finding on #1142).
+    """
+    if request.cookies.get(_WEB_CSRF_COOKIE):
+        return
+    _set_web_csrf_cookie(response, request, token)
+
+
 def _web_csrf_ok(request: Request, supplied: str) -> bool:
     """True when the supplied token matches the ``web_csrf`` cookie (F2).
 
@@ -3744,7 +3758,7 @@ def admin_contribute_skill_submit(
         ctx["error"] = "Security check failed (missing or stale form token) — reload the page and try again."
         ctx["skill_md"] = skill_md
         resp = templates.TemplateResponse(request, "contribute_skill.html", ctx, status_code=400)
-        _set_web_csrf_cookie(resp, request, issued_token)
+        _refresh_web_csrf_cookie(resp, request, issued_token)
         return resp
     try:
         result = contribute_skill(
@@ -3794,7 +3808,7 @@ def admin_contribute_skill_delete(
         ctx["csrf_token"] = issued_token
         ctx["error"] = "Security check failed (missing or stale form token) — reload the page and try again."
         resp = templates.TemplateResponse(request, "contribute_skill.html", ctx, status_code=400)
-        _set_web_csrf_cookie(resp, request, issued_token)
+        _refresh_web_csrf_cookie(resp, request, issued_token)
         return resp
 
     repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
