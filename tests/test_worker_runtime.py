@@ -476,11 +476,12 @@ def test_shutdown_drain_timeout_cancels_abandoned_heartbeat(worker_db, monkeypat
     captured: dict[str, object] = {}
     real_drain = runtime._drain_in_flight
 
-    async def _capturing_drain(in_flight, worker_id):
+    async def _capturing_drain(in_flight, worker_id, **kwargs):
         # Snapshot the in-flight entries (there's exactly one) before the
         # real drain runs, then let it do its normal timeout/cancel work.
+        # **kwargs passes through worker_loop's shared shutdown budget.
         captured["entries"] = dict(in_flight)
-        await real_drain(in_flight, worker_id)
+        await real_drain(in_flight, worker_id, **kwargs)
 
     monkeypatch.setattr(runtime, "_drain_in_flight", _capturing_drain)
 

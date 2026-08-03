@@ -524,15 +524,24 @@ async def _notify_in_flight_agent_response(job_id: str, status: str) -> None:
         )
 
 
-async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -> None:
+async def _drain_in_flight(
+    in_flight: dict[str, _InFlightJob], worker_id: str, *, budget_s: float | None = None
+) -> None:
     """Bounded shutdown drain: wait on every handler future handed off by
     ``_run_one`` (see module docstring) for up to
     ``AGNES_WORKER_DRAIN_TIMEOUT_S`` seconds, finalizing whichever finish
     in time and logging (without finalizing) whichever don't.
+
+    ``budget_s`` lets the caller pass what is LEFT of one shutdown-wide
+    budget rather than granting a fresh full one. worker_loop does that:
+    its straggler wait and this drain run back to back, so two independent
+    45s bounds would sum past the 60s stop_grace_period and get the
+    container SIGKILLed mid-drain — the outcome these bounds exist to avoid
+    (review finding on #1140).
     """
     if not in_flight:
         return
-    timeout = _drain_timeout_s()
+    timeout = _drain_timeout_s() if budget_s is None else max(budget_s, 0.0)
     logger.info(
         "worker %s: shutdown draining %d in-flight job(s) (timeout=%.0fs): %s",
         worker_id,
@@ -681,7 +690,13 @@ async def worker_loop(*, worker_id: str, poll_interval_s: float = 5.0) -> None:
         # arrive here with all tasks complete. It earns its keep only when
         # gather() failed fast because a child raised, leaving siblings live
         # (review findings on #1140).
-        finished, still_running = await asyncio.wait(tasks, timeout=_drain_timeout_s())
+        # ONE budget for the whole worker shutdown: the straggler wait below
+        # and the in-flight drain after it run back to back, so giving each
+        # its own full bound would stack past the container's grace period.
+        shutdown_deadline = time.monotonic() + _drain_timeout_s()
+        finished, still_running = await asyncio.wait(
+            tasks, timeout=max(shutdown_deadline - time.monotonic(), 0.0)
+        )
         for t in finished:
             # asyncio.wait, unlike gather(return_exceptions=True), does not
             # retrieve results — an unconsumed exception would be dropped
@@ -710,4 +725,4 @@ async def worker_loop(*, worker_id: str, poll_interval_s: float = 5.0) -> None:
         # into `in_flight` (see _run_one) instead of being abandoned —
         # drain it here, bounded, before this function returns and
         # app/main.py proceeds to close the DB singletons.
-        await _drain_in_flight(in_flight, worker_id)
+        await _drain_in_flight(in_flight, worker_id, budget_s=shutdown_deadline - time.monotonic())
