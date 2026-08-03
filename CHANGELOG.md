@@ -20,6 +20,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Streamable-MCP OAuth token revocation (RFC 7009) no longer rejects public PKCE clients: a client registered via RFC 7591 dynamic registration with `token_endpoint_auth_method: "none"` (what Claude Code, VS Code, and claude.ai register as) posting `token=…&client_id=…` to `/api/mcp/http/revoke` was answered 400 `client_secret: Field required` by the MCP SDK's request model (a required-but-nullable field — still broken upstream as of mcp 2.0.0), so issued tokens could not be invalidated and lived out their full TTL. The revocation route now validates the form with a truly-optional `client_secret`; confidential clients are unaffected (a stored secret is still enforced by client authentication, and a missing/wrong secret is rejected 401 with the token left intact). OAuth discovery documents additionally advertise `none` in `revocation_endpoint_auth_methods_supported`.
+
 ### Removed
 
 ### Internal
