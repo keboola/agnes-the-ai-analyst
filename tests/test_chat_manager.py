@@ -3350,9 +3350,7 @@ def test_shutdown_drains_inflight_turn_with_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         # Simulate a turn in progress.
         mgr._live[s.id].turn_in_flight = True
 
@@ -3383,9 +3381,7 @@ def test_shutdown_pause_path_suppresses_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = True
 
         await mgr.shutdown()
@@ -3412,9 +3408,7 @@ def test_shutdown_pause_failure_falls_back_to_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = True
 
         async def _boom(live):
@@ -3447,9 +3441,7 @@ def test_shutdown_no_notice_when_idle(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = False
 
         await mgr.shutdown()
@@ -3594,9 +3586,7 @@ def test_spawn_env_approvals_gated_by_surface(manager: ChatManager, monkeypatch)
         assert web["AGNES_APPROVALS"] == "on"
         api = await _env_for(Surface.API)
         assert api["AGNES_APPROVALS"] == "off"
-        dm = await _env_for(
-            Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
-        )
+        dm = await _env_for(Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None)
         assert dm["AGNES_APPROVALS"] == "off"
 
     asyncio.run(_run())
