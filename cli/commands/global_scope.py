@@ -14,6 +14,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -52,14 +53,24 @@ def _claude_cmd() -> Optional[list[str]]:
 
 
 def _agnes_binary() -> str:
-    return shutil.which("agnes") or sys.argv[0]
+    """Absolute path of the agnes launcher (spec §6.1 step 3)."""
+    found = shutil.which("agnes") or sys.argv[0]
+    return str(Path(found).resolve())
 
 
-def _mcp_entry_state() -> str:
-    """'ours' | 'foreign' | 'absent' — via `claude mcp get agnes`."""
+def _mcp_entry_info() -> tuple[str, Optional[str]]:
+    """(`'ours' | 'foreign' | 'absent'`, registered command path or None).
+
+    `claude mcp get agnes` prints "Command: <path>" and "Args: <args>".
+    Ours == the command's basename is the agnes launcher AND the args are
+    exactly the `mcp` subcommand. The output header always contains the
+    literal "agnes" (it is the lookup name), so matching on the whole
+    output would classify ANY same-named entry as ours — the basename
+    check is the actual discriminator (review finding on the first cut).
+    """
     base = _claude_cmd()
     if base is None:
-        return "absent"
+        return "absent", None
     result = subprocess.run(
         [*base, "mcp", "get", MCP_SERVER_NAME],
         capture_output=True,
@@ -69,11 +80,23 @@ def _mcp_entry_state() -> str:
         check=False,
     )
     if result.returncode != 0:
-        return "absent"
-    out = result.stdout or ""
-    # Ours == a stdio entry whose args end with the `mcp` subcommand of an
-    # agnes binary. `claude mcp get` prints "Command: <path>" and "Args: mcp".
-    return "ours" if ("agnes" in out and "Args: mcp" in out) else "foreign"
+        return "absent", None
+    command: Optional[str] = None
+    args: Optional[str] = None
+    for line in (result.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Command:"):
+            command = stripped[len("Command:") :].strip() or None
+        elif stripped.startswith("Args:"):
+            args = stripped[len("Args:") :].strip()
+    is_ours = (
+        command is not None and Path(command).name.lower() in ("agnes", "agnes.exe", "agnes.cmd") and args == "mcp"
+    )
+    return ("ours" if is_ours else "foreign"), command
+
+
+def _mcp_entry_state() -> str:
+    return _mcp_entry_info()[0]
 
 
 def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None:
@@ -84,7 +107,13 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
     performs no cwd writes (spec §7.1) and everything else targets the
     user's home-scope files only (spec §8).
     """
-    from cli.commands.refresh_marketplace import CLONE_DIR, refresh_marketplace, run_user_scope_reconcile
+
+    from cli.commands.refresh_marketplace import (
+        _EXIT_MARKETPLACE_DRIFT,
+        CLONE_DIR,
+        refresh_marketplace,
+        run_user_scope_reconcile,
+    )
 
     # 1 — marketplace clone + plugins (user scope; no cwd writes, spec §7.1)
     if not (CLONE_DIR / ".git").is_dir():
@@ -102,6 +131,20 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
                     "detail": f"bootstrap exit={getattr(exc, 'exit_code', 1)}",
                 }
             )
+    elif not load_config().get("workspace_root"):
+        # Pure-MCP persona (enable without any anchored workspace): the
+        # workspace marketplace step — the only place that fetches the
+        # clone — never runs for them, so stack changes would stay frozen
+        # at bootstrap. Do the cheap drift-check + refresh here.
+        try:
+            refresh_marketplace(check=True, bootstrap=False, target="user")
+        except typer.Exit as exc:
+            if int(getattr(exc, "exit_code", 0) or 0) == _EXIT_MARKETPLACE_DRIFT:
+                try:
+                    refresh_marketplace(check=False, bootstrap=False, target="user")
+                except typer.Exit:
+                    pass
+
     if not (CLONE_DIR / ".git").is_dir():
         report.append({"stage": "plugins", "status": "skipped", "detail": f"no marketplace clone at {CLONE_DIR}"})
     else:
@@ -121,8 +164,37 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
             report.append({"stage": "plugins", "status": "error", "detail": str(exc)})
 
     # 2 — MCP entry (via the claude CLI only — spec §6.4)
-    state = _mcp_entry_state()
-    if state == "ours":
+    state, registered_cmd = _mcp_entry_info()
+    if state == "ours" and registered_cmd and not Path(registered_cmd).exists():
+        # Launcher moved since enable (pipx→uv reinstall, new venv): the
+        # registered path is dead — re-register with the live binary
+        # (spec §7.2c "repair the binary path if the launcher moved").
+        base = _claude_cmd()
+        if base is None:
+            report.append({"stage": "mcp", "status": "error", "detail": "`claude` CLI not on PATH"})
+        else:
+            subprocess.run(
+                [*base, "mcp", "remove", MCP_SERVER_NAME, "-s", "user"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            result = subprocess.run(
+                [*base, "mcp", "add", "--scope", "user", MCP_SERVER_NAME, "--", _agnes_binary(), "mcp"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            report.append(
+                {
+                    "stage": "mcp",
+                    "status": "repaired" if result.returncode == 0 else "error",
+                    "detail": f"registered binary was missing ({registered_cmd}); re-added",
+                }
+            )
+    elif state == "ours":
         report.append({"stage": "mcp", "status": "ok", "detail": "user-scope stdio entry present"})
     elif state == "foreign" and not force:
         report.append(
@@ -232,8 +304,17 @@ def enable(
             err=True,
         )
 
+    import contextlib
+    import io
+
     report: list[dict] = []
-    run_convergence(want_hook=not no_hook, force=force, report=report)
+    # --json emits exactly ONE JSON object on stdout, but the bootstrap
+    # path inside run_convergence (git clone + first plugin installs)
+    # echoes progress unsuppressed — sink stdout under --json, mirroring
+    # `_step_global` (same bug class as the #1105 review incident).
+    sink = contextlib.redirect_stdout(io.StringIO()) if as_json else contextlib.nullcontext()
+    with sink:
+        run_convergence(want_hook=not no_hook, force=force, report=report)
     save_config({"global_scope": True, "global_hook": not no_hook})
     report.append({"stage": "flag", "status": "ok", "detail": "global_scope=true"})
     _print_report(
@@ -269,6 +350,8 @@ def disable(
             if result.returncode == 0:
                 removed.append(name)
         report.append({"stage": "plugins", "status": "removed", "detail": ", ".join(removed) or "none"})
+    elif installed is None:
+        report.append({"stage": "plugins", "status": "unknown", "detail": "`claude` CLI unavailable — nothing changed"})
     else:
         report.append({"stage": "plugins", "status": "ok", "detail": "no user-scope stack plugins installed"})
 
@@ -330,14 +413,21 @@ def status(
             }
         )
 
-    mcp_state = _mcp_entry_state()
-    artifacts.append(
-        {
-            "artifact": "mcp",
-            "state": {"ours": "ok", "foreign": "drifted", "absent": "missing"}[mcp_state],
-            "detail": f"`claude mcp get {MCP_SERVER_NAME}` -> {mcp_state}",
-        }
-    )
+    mcp_state, registered_cmd = _mcp_entry_info()
+    if mcp_state == "ours" and registered_cmd and not Path(registered_cmd).exists():
+        # Spec §6.3: "present + binary path exists" — a dead launcher path
+        # is drift, repaired by the next convergence run.
+        artifacts.append(
+            {"artifact": "mcp", "state": "drifted", "detail": f"registered binary missing: {registered_cmd}"}
+        )
+    else:
+        artifacts.append(
+            {
+                "artifact": "mcp",
+                "state": {"ours": "ok", "foreign": "drifted", "absent": "missing"}[mcp_state],
+                "detail": f"`claude mcp get {MCP_SERVER_NAME}` -> {mcp_state}",
+            }
+        )
     artifacts.append(
         {
             "artifact": "rails",
