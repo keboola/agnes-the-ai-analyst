@@ -82,6 +82,35 @@ def build_artefact_access_context(user_id: str) -> ArtefactAccessContext:
     )
 
 
+#: The user-facing sharing vocabulary, and the SINGLE SOURCE OF TRUTH for it.
+#: ``visibility_label`` travels onto every Library row from here, and both the
+#: table badge and the grid card print it verbatim — see ``SHARING_LABEL`` in
+#: ``library.html`` for the small client-side mirror (needed only to relabel a
+#: badge in place after the share dialog saves, without a reload).
+#:
+#: Every label answers ONE question — *who can see this* — so the set reads as a
+#: single axis rather than three unrelated words.
+#:
+#: "Everyone" rather than "Workspace" deliberately: ``workspace`` is the
+#: internal key, and the product calls that scope the *organization* everywhere
+#: it speaks to a user (the Library lede, the Organization trust marker, the
+#: skill builder). "Workspace" was the enum leaking into the UI, and it was the
+#: odd one out grammatically — "Private" and "Specific groups" answer *who*,
+#: while "Workspace" named a container.
+#:
+#: Whether the caller can CHANGE the state is deliberately NOT encoded in these
+#: words: that rides the control's form (a bordered chip with a chevron where
+#: the state is changeable, bare text where it is not). One question per
+#: channel — the previous design answered "can I change this?" by overwriting
+#: the *who* answer, which is how a workspace-published skill someone else owns
+#: came to read "Shared with you" on its card and "Workspace" on its own row.
+VISIBILITY_LABELS: dict[str, str] = {
+    "private": "Private",
+    "shared": "Specific groups",
+    "workspace": "Everyone",
+}
+
+
 def collection_visibility(ctx: ArtefactAccessContext, collection_id: str) -> Tuple[str, str]:
     """``(visibility_key, visibility_label)`` for one collection.
 
@@ -90,13 +119,17 @@ def collection_visibility(ctx: ArtefactAccessContext, collection_id: str) -> Tup
     ``Everyone`` group means "published workspace-wide"; any other grant
     means "shared" (with a specific group); no grant at all means "private".
     This is independent of ownership — a workspace-published collection you
-    don't own is still "Workspace", not "Shared".
+    don't own is still "Everyone", not "Specific groups".
+
+    Labels come from :data:`VISIBILITY_LABELS`; see it for the vocabulary.
     """
     if collection_id in ctx.workspace_ids:
-        return "workspace", "Workspace"
-    if collection_id in ctx.shared_ids:
-        return "shared", "Shared"
-    return "private", "Private"
+        key = "workspace"
+    elif collection_id in ctx.shared_ids:
+        key = "shared"
+    else:
+        key = "private"
+    return key, VISIBILITY_LABELS[key]
 
 
 def owner_label_for(ctx: ArtefactAccessContext, col: dict) -> str:

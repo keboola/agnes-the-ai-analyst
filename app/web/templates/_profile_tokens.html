@@ -1,172 +1,73 @@
+{% import "macros/_icon.html" as ico %}
 <style>
   /* ─────────────────────────────────────────────────────────────────────────
      _profile_tokens.html — "Personal Authentication Tokens" section on
      /me/profile. Ported from the standalone /tokens page (my_tokens.html).
-     No body > .container override — container width is set by profile.html.
+     The card frame + header anatomy come from profile.html's `.dsec` /
+     `.dsec-head` / `.dsec-body`; only the toolbar, list and modals below
+     are styled here.
      ───────────────────────────────────────────────────────────────────────── */
 
-  /* .tokens-section layout/width is owned by profile.html (.section-card). */
-
-  /* Offset the #tokens deep-link target below the sticky .app-header. */
-  #tokens { scroll-margin-top: calc(var(--app-header-height) + var(--space-4)); }
-
-  /* Section header row: title + New-token button side by side */
-  .tokens-section-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 16px;
-    flex-wrap: wrap;
-  }
-  .tokens-section-header h3 {
-    /* Override .section-card h3 uppercase caps for this section */
-    text-transform: none;
-    letter-spacing: normal;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-primary, #1A253C);
-    margin: 0;
-  }
-  .tokens-section-subtitle {
-    font-size: 12.5px;
-    color: var(--text-secondary, #6b7280);
-    margin: 2px 0 0;
-    line-height: 1.45;
-  }
+  /* The shared `.dsec-head` owns this row's layout, spacing and its phone
+     breakpoint (where the "+ New token" button drops below the title) — a
+     page-local `flex-wrap` here fought it at intermediate widths. Only the
+     no-collapse hook remains. */
   .tokens-section-title-block { min-width: 0; }
 
-  /* ── New-token action button ──────────────────────────────────────────── */
-  .hero-action-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    height: 34px;
-    padding: 0 14px;
-    border-radius: 8px;
-    background: var(--ds-primary);
-    color: #fff;
-    font-size: 13px;
-    font-weight: 600;
-    font-family: inherit;
-    border: none;
-    cursor: pointer;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.10);
-    transition: all 0.15s ease;
-    flex-shrink: 0;
-  }
-  .hero-action-btn:hover {
-    background: var(--ds-primary-dark);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px color-mix(in srgb, var(--ds-primary) 25%, transparent);
-  }
-  .hero-action-btn:focus-visible {
-    outline: 2px solid var(--ds-primary);
-    outline-offset: 3px;
-  }
-  .hero-action-btn svg { width: 14px; height: 14px; }
+  /* ── Toolbar ───────────────────────────────────────────────────────────────
+     The controls are the SHARED `.fbar` component (css/filter_toolbar.css) —
+     the same search box, segmented control, sort select and active-filter
+     chips that /library and /stack render. Three page-local vocabularies were
+     one too many: this section used to stack `STATUS` and `SORT BY` in
+     uppercase micro-caps over two rows of loose pills, with `Clear filters`
+     stranded on a third row — 3 rows of chrome above a list that is usually
+     0-3 rows long, in a chip style nothing else on the platform speaks.
 
-  /* ── Toolbar ───────────────────────────────────────────────────────────── */
-  .toolbar {
-    margin-bottom: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
+     What the swap buys beyond consistency:
+       - the status options carry COUNTS, so an empty filter is visible before
+         it is clicked (and a zero option is disabled rather than a dead end);
+       - sort is ONE select, so the direction is legible at rest — the old
+         chips hid it behind a click-to-toggle arrow that only appeared once
+         the key was already active;
+       - `Clear filters` moved into the chips row, next to the refinements it
+         clears, and only exists while there is something to clear;
+       - a name/prefix SEARCH, which the section never had — the way into a
+         list of any size, per the platform's command & search UX standard.
 
-  .chip-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px;
-  }
-  .chip-row .chip-group-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    color: var(--text-secondary, #6b7280);
-    margin-right: 4px;
-  }
-
-  .chip-group {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .chip-btn {
-    font-family: var(--font-primary, inherit);
-    font-size: 12px;
-    font-weight: 500;
-    height: 30px;
-    padding: 0 12px;
-    border-radius: 999px;
-    border: 1px solid var(--border, #e5e7eb);
-    background: var(--surface, #fff);
-    color: var(--text-secondary, #6b7280);
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    transition: all 0.12s ease;
-    line-height: 1;
-    white-space: nowrap;
-  }
-  .chip-btn:hover {
-    border-color: #cbd5e1;
-    color: var(--text-primary, #111827);
-  }
-  .chip-btn[aria-pressed="true"] {
-    background: color-mix(in srgb, var(--ds-primary) 10%, transparent);
-    border-color: var(--ds-primary);
-    color: var(--ds-primary);
-    font-weight: 600;
-  }
-  .chip-btn:focus-visible {
-    outline: 2px solid var(--ds-primary);
-    outline-offset: 2px;
-  }
-  .chip-btn .chip-dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .chip-btn[data-val="active"]   .chip-dot { background: #16a34a; }
-  .chip-btn[data-val="expiring"] .chip-dot { background: #ea580c; }
-  .chip-btn[data-val="expired"]  .chip-dot { background: #dc2626; }
-  .chip-btn[data-val="revoked"]  .chip-dot { background: #6b7280; }
-  .chip-btn .chip-arrow {
-    width: 10px; height: 10px;
-    opacity: 0;
-  }
-  .chip-btn[data-sort-dir="asc"]  .chip-arrow,
-  .chip-btn[data-sort-dir="desc"] .chip-arrow { opacity: 1; }
-  .chip-btn[data-sort-dir="asc"]  .chip-arrow { transform: rotate(180deg); }
-
-  .search-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-  }
-
-  .clear-link {
-    font-family: var(--font-primary, inherit);
-    background: none;
-    border: none;
-    padding: 8px 4px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary, #6b7280);
-    cursor: pointer;
-    text-decoration: none;
-    margin-left: auto;
-  }
-  .clear-link:hover { color: var(--ds-primary); text-decoration: underline; }
-  .clear-link:focus-visible {
-    outline: 2px solid var(--ds-primary);
-    outline-offset: 2px;
-    border-radius: 4px;
-  }
+     Only the hooks the shared sheet does not cover live here. */
+  .tokens-toolbar { margin-bottom: 4px; }
+  /* The shared `.fbar` is `nowrap`, sized for a FULL-WIDTH band (/library,
+     /stack) where search + controls fit one row. This section lives in the
+     ~700px left column of the profile grid, where a 5-way segmented control
+     plus a search box plus a sort select do not — unconstrained, the search
+     collapsed to its icon and the select ran past the card's edge.
+     So the bar is given an explicit two-row shape here, which is also the
+     better hierarchy: the two controls that act on the WHOLE list (search,
+     order) lead, and the status filter gets a full row where its five counts
+     stay legible. */
+  .tokens-toolbar .fbar { flex-wrap: wrap; row-gap: 10px; margin-bottom: 12px; }
+  .tokens-toolbar .fbar__search { max-width: none; }
+  .tokens-toolbar .fbar-seg { flex: 1 0 100%; }
+  /* Status dots keep the semantic colours the pills carried, as a leading
+     marker inside each segment — status is never colour-alone (the label and
+     the count carry it too). */
+  .tok-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .tok-dot--active   { background: var(--ds-accent-success-ink); }
+  .tok-dot--expiring { background: var(--ds-accent-warn-ink); }
+  .tok-dot--expired  { background: var(--ds-accent-danger-ink); }
+  .tok-dot--revoked  { background: var(--ds-text-muted); }
+  /* A status with no tokens is not worth a click; dim it and take it out of
+     the tab order rather than letting it lead to an empty list. */
+  .fbar-seg__btn:disabled { opacity: .45; cursor: default; }
+  .fbar-seg__btn:disabled:hover { color: var(--ds-text-secondary); }
+  /* The segmented control has to be able to shrink on a narrow column, and
+     scroll rather than wrap: a wrapped segment loses the shared track that
+     makes it read as one control. */
+  .tokens-toolbar .fbar-seg { overflow-x: auto; }
+  /* Segments share the row evenly so the control reads as one strip rather
+     than as five differently-sized buttons, and each stays a comfortable tap
+     target on a phone. */
+  .tokens-toolbar .fbar-seg__btn { flex: 1 1 auto; justify-content: center; }
 
   /* Hidden legacy select controls — kept for test backcompat */
   .sr-only {
@@ -193,7 +94,11 @@
     padding: 16px 20px;
     display: flex;
     align-items: center;
-    gap: 20px;
+    gap: 12px 20px;
+    /* Wraps rather than demanding its full width: this list now lives in a
+       grid column, and a card that could not give way pushed the column out of
+       its track and the page into a horizontal scroll. */
+    flex-wrap: wrap;
     transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
   }
   .token-card:hover {
@@ -266,7 +171,9 @@
   }
 
   .token-usage {
-    flex: 0 0 200px;
+    /* Shrinkable basis, not a fixed 200px: a fixed basis is min-content the
+       card cannot go below, which is what blew the grid column out. */
+    flex: 0 1 200px;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -630,22 +537,46 @@
   }
 </style>
 
-<div id="tokens" class="tokens-section section-card" data-is-admin="false" data-view="my">
+<details id="tokens" class="tokens-section dsec" data-is-admin="false" data-view="my">
   <!-- ═════════ SECTION HEADER ═════════ -->
-  <div class="tokens-section-header">
-    <div class="tokens-section-title-block">
-      <h3 id="pat-section-title">Personal Authentication Tokens</h3>
-      <p class="tokens-section-subtitle">Bearer tokens for the API + CLI (the <code>agnes</code> commands). NOT LLM tokens — create / revoke here; the LLM token counters live on /me/activity.</p>
+  <!-- Wears the page's `.dsec` / `.dsec-head` anatomy (badge · 15px
+       sentence-case title · 12.5px sub · action right · chevron) so this
+       section reads and collapses like its siblings — Groups, Effective
+       access, Notifications — rather than like the standalone /tokens page it
+       was ported from. The internals below (toolbar, list, modals) keep their
+       own styling. -->
+  <summary>
+    <div class="dsec-head tokens-section-header">
+      <span class="dsec-ico">{{ ico.icon('lock', 14) }}</span>
+      <div class="dsec-grow tokens-section-title-block">
+        <h3 id="pat-section-title">Personal Authentication Tokens</h3>
+        {# Kept to two lines at the column's measure: a third line pushes the
+           head's badge off the title line it belongs to. The "not LLM tokens"
+           disambiguation stays — it is the mistake this section invites. #}
+        <p class="dsec-sub tokens-section-subtitle">Bearer tokens for the API and CLI (the <code>agnes</code> commands) — not LLM tokens, whose counters live on <a href="/me/activity">Activity</a>.</p>
+      </div>
+      <!-- Inside a <summary>, so its click has to be stopped from reaching the
+           disclosure — otherwise opening the create dialog also collapses the
+           section under it. -->
+      <button type="button" class="cc-btn cc-btn--primary" id="new-token-btn"
+              aria-haspopup="dialog" aria-controls="create-modal"
+              onclick="event.stopPropagation()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+        New token
+      </button>
+      <!-- Filled by updateStatusCounts(). The section is collapsed by default,
+           so the count has to live in the head: "do I have any tokens, and is
+           one of them expiring?" is the question this card exists to answer,
+           and it must not require opening it. -->
+      <span class="dsec-sum" id="tok-head-sum"></span>
+      <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
     </div>
-    <button type="button" class="hero-action-btn" id="new-token-btn" aria-haspopup="dialog" aria-controls="create-modal">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <line x1="12" y1="5" x2="12" y2="19"></line>
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-      </svg>
-      New token
-    </button>
-  </div>
+  </summary>
 
+  <div class="dsec-body">
   <!-- ═════════ NEW-TOKEN REVEAL ═════════ -->
   <div class="reveal-banner" id="reveal-banner" role="region" aria-live="polite" aria-label="Newly created token">
     <h4>
@@ -669,17 +600,55 @@
   </div>
 
   <!-- ═════════ TOOLBAR ═════════ -->
-  <section class="toolbar" aria-label="Filter and sort tokens">
-    <div class="chip-row">
-      <span class="chip-group-label" id="status-group-label">Status</span>
-      <div class="chip-group" role="radiogroup" aria-labelledby="status-group-label" id="flt-status-group">
-        <button type="button" class="chip-btn" role="radio" data-val="all"      aria-pressed="true"  aria-checked="true">All</button>
-        <button type="button" class="chip-btn" role="radio" data-val="active"   aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Active</button>
-        <button type="button" class="chip-btn" role="radio" data-val="expiring" aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Expiring</button>
-        <button type="button" class="chip-btn" role="radio" data-val="expired"  aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Expired</button>
-        <button type="button" class="chip-btn" role="radio" data-val="revoked"  aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Revoked</button>
+  <!-- The shared `.fbar` filter toolbar (css/filter_toolbar.css), the same
+       component /library and /stack render: search · segmented status with
+       counts · sort select. Refinements then restate themselves as removable
+       `.fbar-chip`s, which is where `Clear filters` lives. -->
+  <section class="tokens-toolbar" aria-label="Filter and sort tokens">
+    <div class="fbar">
+      <div class="fbar__search" role="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+        <input type="search" id="tok-search" placeholder="Search tokens…" autocomplete="off" aria-label="Search tokens by name or prefix">
       </div>
-      <!-- Hidden legacy select — kept so test assertion id="flt-status" stays valid -->
+
+      <!-- Sort: key AND direction in one control, so the order is legible at
+           rest. The old chips revealed direction only after the key was
+           already active, behind a second click on the same target. -->
+      <div class="fbar-select">
+        <select id="tok-sort" aria-label="Sort tokens">
+          <option value="created_at:desc" selected>Newest first</option>
+          <option value="created_at:asc">Oldest first</option>
+          <option value="last_used_at:desc">Recently used</option>
+          <option value="last_used_at:asc">Least recently used</option>
+          <option value="expires_at:asc">Expiring soonest</option>
+          <option value="expires_at:desc">Expiring latest</option>
+        </select>
+      </div>
+
+      <!-- Status: ONE segmented control on its own row, not five loose pills.
+           Each segment carries its own count, so an empty status reads as
+           empty before it is clicked (and is disabled when it is). -->
+      <div class="fbar-seg" role="radiogroup" aria-label="Token status" id="flt-status-group">
+        <button type="button" class="fbar-seg__btn is-active" role="radio" data-val="all" aria-pressed="true" aria-checked="true">
+          All<span class="fbar-seg__n" data-status-n="all">0</span>
+        </button>
+        <button type="button" class="fbar-seg__btn" role="radio" data-val="active" aria-pressed="false" aria-checked="false">
+          <span class="tok-dot tok-dot--active" aria-hidden="true"></span>Active<span class="fbar-seg__n" data-status-n="active">0</span>
+        </button>
+        <button type="button" class="fbar-seg__btn" role="radio" data-val="expiring" aria-pressed="false" aria-checked="false">
+          <span class="tok-dot tok-dot--expiring" aria-hidden="true"></span>Expiring<span class="fbar-seg__n" data-status-n="expiring">0</span>
+        </button>
+        <button type="button" class="fbar-seg__btn" role="radio" data-val="expired" aria-pressed="false" aria-checked="false">
+          <span class="tok-dot tok-dot--expired" aria-hidden="true"></span>Expired<span class="fbar-seg__n" data-status-n="expired">0</span>
+        </button>
+        <button type="button" class="fbar-seg__btn" role="radio" data-val="revoked" aria-pressed="false" aria-checked="false">
+          <span class="tok-dot tok-dot--revoked" aria-hidden="true"></span>Revoked<span class="fbar-seg__n" data-status-n="revoked">0</span>
+        </button>
+      </div>
+
+      <!-- Hidden legacy controls — kept so the id contract the tests pin
+           (flt-status, flt-last-used, flt-user) stays valid, and so the
+           status filter is still settable programmatically. -->
       <select id="flt-status" class="sr-only" tabindex="-1" aria-hidden="true">
         <option value="all" selected>All</option>
         <option value="active">Active</option>
@@ -687,22 +656,6 @@
         <option value="expired">Expired</option>
         <option value="revoked">Revoked</option>
       </select>
-    </div>
-
-    <div class="chip-row">
-      <span class="chip-group-label" id="sort-group-label">Sort by</span>
-      <div class="chip-group" role="group" aria-labelledby="sort-group-label" id="sort-group">
-        <button type="button" class="chip-btn" data-sort-key="created_at"   data-sort-dir="desc" aria-pressed="true">
-          Created<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-        </button>
-        <button type="button" class="chip-btn" data-sort-key="last_used_at" aria-pressed="false">
-          Last used<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-        </button>
-        <button type="button" class="chip-btn" data-sort-key="expires_at"   aria-pressed="false">
-          Expires<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-        </button>
-      </div>
-      <!-- Hidden legacy select — kept so test assertion id="flt-last-used" stays valid -->
       <select id="flt-last-used" class="sr-only" tabindex="-1" aria-hidden="true">
         <option value="any" selected>Any time</option>
         <option value="never">Never used</option>
@@ -711,12 +664,24 @@
         <option value="gt30d">&gt; 30 days ago</option>
         <option value="gt90d">&gt; 90 days ago</option>
       </select>
-    </div>
-
-    <div class="search-row">
       <!-- Non-admin: no owner search, but keep legacy id hidden for JS / tests. -->
       <input id="flt-user" type="hidden" value="">
-      <button type="button" class="clear-link" id="clear-filters-toolbar">Clear filters</button>
+    </div>
+
+    <!-- Active refinements, and the only place `Clear filters` exists: it
+         appears with the first refinement and leaves with the last. -->
+    <div class="fbar-chips" id="tok-chips" hidden>
+      <span class="fbar-chip" id="tok-chip-status" hidden>
+        <span class="fbar-chip__label">Status</span>
+        <span class="fbar-chip__vals" id="tok-chip-status-val"></span>
+        <button type="button" class="fbar-chip__x" data-clear="status" aria-label="Clear the status filter">&times;</button>
+      </span>
+      <span class="fbar-chip" id="tok-chip-q" hidden>
+        <span class="fbar-chip__label">Search</span>
+        <span class="fbar-chip__vals" id="tok-chip-q-val"></span>
+        <button type="button" class="fbar-chip__x" data-clear="q" aria-label="Clear the search">&times;</button>
+      </span>
+      <button type="button" class="fbar-chips__clear" id="clear-filters-toolbar">Clear filters</button>
     </div>
   </section>
 
@@ -734,7 +699,8 @@
     <p class="empty-body">Adjust the filters or clear them to see everything.</p>
     <button type="button" class="empty-clear" id="clear-filters-btn">Clear filters</button>
   </div>
-</div>
+  </div>{# /.dsec-body #}
+</details>
 
 <!-- ═════════ REVOKE MODAL ═════════ -->
 <div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
@@ -946,14 +912,22 @@ function confirmTokenRevoke({ title, sub, meta, okLabel = "Revoke token" }) {
 
 // ── State ──────────────────────────────────────────────────────────────────
 let allTokens = [];
-let filters = { status: "all" };
+let filters = { status: "all", q: "" };
 let sort = { key: "created_at", dir: "desc" };
 
 function applyFilters(items) {
   const now = Date.now();
+  const q = (filters.q || "").trim().toLowerCase();
   return items.filter(t => {
     const s = computeStatus(t, now);
     if (filters.status !== "all" && s !== filters.status) return false;
+    // Name OR prefix: the prefix is what a log line or a CI secret shows, so
+    // it is the handle a caller actually has when hunting for "which token is
+    // this?".
+    if (q) {
+      const hay = `${t.name || ""} ${t.prefix || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 }
@@ -962,10 +936,21 @@ function sortItems(items) {
   const now = Date.now();
   const { key, dir } = sort;
   const mul = dir === "asc" ? 1 : -1;
+  // "Expiring soonest" must not lead with the tokens that never expire, and
+  // "Recently used" must not lead with the ones never used — an absent date is
+  // the FAR end of both axes, not the empty string that sorts first. Both
+  // never-cases are pinned to the bottom whichever direction is chosen, so the
+  // answer to "what needs attention?" is always at the top.
+  const ABSENT = "￿";
+  const val = (t) => {
+    if (key === "status") return computeStatus(t, now);
+    return t[key] || ABSENT;
+  };
   return [...items].sort((a, b) => {
-    let va, vb;
-    if (key === "status") { va = computeStatus(a, now); vb = computeStatus(b, now); }
-    else { va = a[key] || ""; vb = b[key] || ""; }
+    const va = val(a), vb = val(b);
+    if (va === ABSENT && vb === ABSENT) return 0;
+    if (va === ABSENT) return 1;
+    if (vb === ABSENT) return -1;
     if (va < vb) return -1 * mul;
     if (va > vb) return 1 * mul;
     return 0;
@@ -1054,6 +1039,11 @@ function renderList() {
   const empty = document.getElementById("tokens-empty");
   loading.style.display = "none";
 
+  // Toolbar state is derived from the same call that draws the list, so the
+  // counts, the chips and the rows can never disagree.
+  updateStatusCounts();
+  syncFilterChips();
+
   const filtered = sortItems(applyFilters(allTokens));
   list.innerHTML = "";
 
@@ -1104,11 +1094,17 @@ async function revokeToken({ id, name, prefix }) {
   await loadTokens();
 }
 
-// ── Filter chips (status) ──────────────────────────────────────────────────
+// ── Toolbar: status segments · search · sort · active-filter chips ─────────
+const STATUS_LABELS = {
+  all: "All", active: "Active", expiring: "Expiring",
+  expired: "Expired", revoked: "Revoked",
+};
+
 function setStatusFilter(val) {
   filters.status = val;
-  document.querySelectorAll("#flt-status-group .chip-btn").forEach(b => {
+  document.querySelectorAll("#flt-status-group .fbar-seg__btn").forEach(b => {
     const on = b.dataset.val === val;
+    b.classList.toggle("is-active", on);
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.setAttribute("aria-checked", on ? "true" : "false");
   });
@@ -1116,40 +1112,115 @@ function setStatusFilter(val) {
   if (sel) sel.value = val;
   renderList();
 }
-document.querySelectorAll("#flt-status-group .chip-btn").forEach(btn => {
+document.querySelectorAll("#flt-status-group .fbar-seg__btn").forEach(btn => {
   btn.addEventListener("click", () => setStatusFilter(btn.dataset.val));
 });
 document.getElementById("flt-status").addEventListener("change", e => setStatusFilter(e.target.value));
 
-// ── Sort chips ─────────────────────────────────────────────────────────────
-function setSort(key) {
-  if (sort.key === key) {
-    sort.dir = sort.dir === "asc" ? "desc" : "asc";
-  } else {
-    sort.key = key;
-    sort.dir = "desc";
+// Per-status counts on the segments. Counted over ALL tokens, not the filtered
+// view: a count that shrank as you filtered would answer a question nobody
+// asked, and "Expired 0" is exactly the fact worth knowing before clicking.
+function updateStatusCounts() {
+  const now = Date.now();
+  const n = { all: allTokens.length, active: 0, expiring: 0, expired: 0, revoked: 0 };
+  for (const t of allTokens) {
+    const s = computeStatus(t, now);
+    if (s in n) n[s] += 1;
   }
-  document.querySelectorAll("#sort-group .chip-btn").forEach(b => {
-    if (b.dataset.sortKey === sort.key) {
-      b.setAttribute("aria-pressed", "true");
-      b.setAttribute("data-sort-dir", sort.dir);
-    } else {
-      b.setAttribute("aria-pressed", "false");
-      b.removeAttribute("data-sort-dir");
-    }
+  document.querySelectorAll("#flt-status-group .fbar-seg__btn").forEach(b => {
+    const val = b.dataset.val;
+    const el = b.querySelector("[data-status-n]");
+    if (el) el.textContent = String(n[val] ?? 0);
+    // Never disable the segment the caller is standing on — that would strand
+    // them on an empty list with no way back to it.
+    b.disabled = val !== "all" && n[val] === 0 && filters.status !== val;
   });
+
+  // Section head summary. Leads with whatever needs attention — an expiring or
+  // expired token is the reason to open this section, so it is what the closed
+  // head says; otherwise it just states the count.
+  const head = document.getElementById("tok-head-sum");
+  if (head) {
+    if (n.all === 0) {
+      head.textContent = "No tokens";
+    } else if (n.expiring > 0) {
+      head.textContent = `${n.expiring} expiring`;
+    } else if (n.expired > 0) {
+      head.textContent = `${n.expired} expired`;
+    } else {
+      head.textContent = n.all === 1 ? "1 token" : `${n.all} tokens`;
+    }
+  }
+}
+
+// Search — debounced so a fast typist doesn't re-render per keystroke.
+const searchEl = document.getElementById("tok-search");
+if (searchEl) {
+  let t = null;
+  searchEl.addEventListener("input", () => {
+    clearTimeout(t);
+    t = setTimeout(() => { filters.q = searchEl.value; renderList(); }, 120);
+  });
+}
+
+// Sort — one select carrying `key:dir`.
+function setSort(key, dir) {
+  sort.key = key;
+  sort.dir = dir;
+  const sel = document.getElementById("tok-sort");
+  if (sel) sel.value = `${key}:${dir}`;
   renderList();
 }
-document.querySelectorAll("#sort-group .chip-btn").forEach(btn => {
-  btn.addEventListener("click", () => setSort(btn.dataset.sortKey));
+const sortEl = document.getElementById("tok-sort");
+if (sortEl) {
+  sortEl.addEventListener("change", () => {
+    const [key, dir] = sortEl.value.split(":");
+    setSort(key, dir || "desc");
+  });
+}
+
+// Active refinements, restated as removable chips. The row (and with it
+// `Clear filters`) exists only while something is refined.
+function syncFilterChips() {
+  const row = document.getElementById("tok-chips");
+  if (!row) return;
+  const statusOn = filters.status !== "all";
+  const qOn = Boolean((filters.q || "").trim());
+
+  const statusChip = document.getElementById("tok-chip-status");
+  if (statusChip) {
+    statusChip.hidden = !statusOn;
+    if (statusOn) {
+      document.getElementById("tok-chip-status-val").textContent =
+        STATUS_LABELS[filters.status] || filters.status;
+    }
+  }
+  const qChip = document.getElementById("tok-chip-q");
+  if (qChip) {
+    qChip.hidden = !qOn;
+    if (qOn) {
+      document.getElementById("tok-chip-q-val").textContent = `“${filters.q.trim()}”`;
+    }
+  }
+  row.hidden = !(statusOn || qOn);
+}
+
+document.querySelectorAll("#tok-chips [data-clear]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.clear === "status") { setStatusFilter("all"); return; }
+    filters.q = "";
+    if (searchEl) searchEl.value = "";
+    renderList();
+  });
 });
 
 function clearFilters() {
-  filters = { status: "all" };
-  setStatusFilter("all");
+  filters = { status: "all", q: "" };
+  if (searchEl) searchEl.value = "";
+  setSort("created_at", "desc");
   const lu = document.getElementById("flt-last-used");
   if (lu) lu.value = "any";
-  renderList();
+  setStatusFilter("all");
 }
 document.getElementById("clear-filters-btn").addEventListener("click", clearFilters);
 document.getElementById("clear-filters-toolbar").addEventListener("click", clearFilters);

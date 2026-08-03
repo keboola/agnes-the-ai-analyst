@@ -80,6 +80,16 @@
        inert with zero visual change. #}
     <link rel="stylesheet" href="{{ static_url('css/rail.css') }}">
     <link rel="stylesheet" href="{{ static_url('css/paper-skin.css') }}">
+    {# Shared resource-detail layout (the editorial header + two-column
+       shell every detail page renders through). Same inert-until-opted-in
+       contract as the two sheets above — every selector is scoped to
+       data-theme=paper — and it must load BEFORE head_extra, because each
+       detail page's own detail.styles() block is what it overrides. #}
+    <link rel="stylesheet" href="{{ static_url('css/detail-page.css') }}">
+    <!-- v113: one trust vocabulary (Organization / Verified / Community) for the
+         Library table + grid, catalog cards and every detail hero. Replaced four
+         separate spellings, two of which read from different data. -->
+    <link rel="stylesheet" href="{{ static_url('css/trustmark.css') }}">
     {# Coach-mark tour engine — inert until a .tour-overlay is injected.
        Loads after design-tokens.css so --ds-* tokens resolve in tour.css. #}
     <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
