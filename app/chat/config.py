@@ -42,6 +42,9 @@ class ChatConfig:
     max_session_tokens: int = 200_000
     rate_messages_per_hour: int = 100
     tool_calls_per_turn_budget: int = 50
+    # How long the runner's ApprovalGate waits for the user to answer an
+    # approval_request before denying the suspended tool call.
+    approval_timeout_seconds: int = 300
     marketplace_sha_debounce_seconds: int = 5 * 60
     # E2B template id (``agnes-chat`` for the default operator build per
     # Q2 — single mutable ``:latest`` tag). Required when
@@ -209,6 +212,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         max_session_tokens=int(raw.get("max_session_tokens", 200_000)),
         rate_messages_per_hour=int(raw.get("rate_messages_per_hour", 100)),
         tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
+        approval_timeout_seconds=int(raw.get("approval_timeout_seconds", 300)),
         marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
         e2b_template_id=raw.get("e2b_template_id") or None,
         egress_allow_out=list(raw.get("egress_allow_out") or []),

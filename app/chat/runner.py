@@ -1,9 +1,11 @@
 """In-subprocess entrypoint. Runs claude-agent-sdk inside the chat sandbox.
 
 Stdin: JSON lines, one per frame. Inbound types: user_msg, cancel,
+       approval_decision (resolves a pending ApprovalGate request),
        ticket_push (routed to the in-sandbox relay, never enqueued).
 Stdout: JSON lines. Outbound types: runner_ready, token, tool_call,
-        tool_result, assistant_message, error, done.
+        tool_result, assistant_message, error, done,
+        approval_request / approval_resolved (ApprovalGate round-trip).
 
 Env (set by ChatManager via the sandbox provider — under v1 the
 E2BProvider passes these through ``AsyncSandbox.create(envs=...)``):
@@ -85,6 +87,166 @@ _CONTEXT_RESTORE_PATH = "/tmp/agnes-context.md"
 def _emit(frame: dict) -> None:
     sys.stdout.write(json.dumps(frame) + "\n")
     sys.stdout.flush()
+
+
+# Strong references for fire-and-forget tasks. The event loop holds tasks
+# only weakly — an unreferenced create_task() can be garbage-collected while
+# still pending ("Task was destroyed but it is pending!"), which killed the
+# stdin reader mid-session once turns started suspending long enough for a
+# GC cycle (ApprovalGate): cancel/ticket_push frames then silently stopped
+# arriving. Canonical fix per asyncio docs: keep a reference, discard when
+# done.
+_background_tasks: set = set()
+
+
+def _spawn(coro) -> "asyncio.Task":
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+def _hook_output(decision: str, reason: str = "") -> dict:
+    """Build a PreToolUse hookSpecificOutput payload for the SDK."""
+    out: dict = {"hookEventName": "PreToolUse", "permissionDecision": decision}
+    if reason:
+        out["permissionDecisionReason"] = reason
+    return {"hookSpecificOutput": out}
+
+
+APPROVAL_DECISIONS = ("allow", "allow_session", "deny")
+
+
+class ApprovalGate:
+    """In-process PreToolUse gate that makes the workspace hook's ``ask``
+    verdicts real in cloud chat.
+
+    Policy stays in the workspace's file hook
+    (``.claude/hooks/pre_tool_use.py`` — operator-overridable): this gate
+    re-runs it per tool call and acts on the verdict. ``deny`` passes
+    through. ``ask`` becomes a genuine approval round-trip: emit an
+    ``approval_request`` frame, suspend the tool call on a future, and
+    resolve to allow/deny when the user's ``approval_decision`` frame
+    arrives on stdin (or the timeout / a cancel fires — both deny).
+
+    Why here and not in the CLI: under ``permission_mode=
+    "bypassPermissions"`` the CLI executes a file-hook ``ask`` without
+    prompting anyone (verified empirically — the bundled hook's ask rules
+    were silently inert in cloud chat). An SDK-level PreToolUse hook runs
+    in-process, so it CAN block the call while a human answers.
+
+    ``allow_session`` remembers the hook's reason string and auto-allows
+    subsequent asks with the same reason for this runner's lifetime.
+    """
+
+    def __init__(
+        self,
+        emit,
+        hook_path: "Path | str",
+        *,
+        enabled: bool = True,
+        timeout_seconds: float = 300.0,
+    ) -> None:
+        self._emit = emit
+        self._hook_path = Path(hook_path)
+        self._enabled = enabled
+        self.timeout_seconds = timeout_seconds
+        self._pending: "dict[str, asyncio.Future[str]]" = {}
+        self._session_approved: set[str] = set()
+        self._counter = 0
+
+    def run_file_hook(self, payload: dict) -> dict:
+        """Run the workspace PreToolUse hook; ``{}`` (no opinion) on any
+        failure — a missing/broken policy hook must not take chat down."""
+        if not self._hook_path.is_file():
+            return {}
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(self._hook_path)],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return json.loads(proc.stdout or "{}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"approval gate: file hook failed: {exc}", file=sys.stderr, flush=True)
+            return {}
+
+    def resolve(self, request_id: str, decision: str) -> bool:
+        """Deliver a user decision to a pending request. False if unknown
+        (stale decision after respawn/timeout — dropped silently)."""
+        fut = self._pending.pop(request_id, None)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(decision if decision in APPROVAL_DECISIONS else "deny")
+        return True
+
+    def cancel_all(self) -> None:
+        """Deny every pending request (user hit Stop / turn is over)."""
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_result("deny")
+        self._pending.clear()
+
+    async def check(self, input_data: dict, tool_use_id, context) -> dict:
+        """SDK PreToolUse callback body. Returns hookSpecificOutput."""
+        payload = {
+            "tool_name": input_data.get("tool_name"),
+            "tool_input": input_data.get("tool_input") or {},
+        }
+        verdict = await asyncio.to_thread(self.run_file_hook, payload)
+        decision = (verdict or {}).get("permissionDecision")
+        reason = (verdict or {}).get("permissionDecisionReason", "")
+        if decision == "deny":
+            return _hook_output("deny", reason or "Denied by workspace policy.")
+        if decision != "ask":
+            return {}
+        if reason and reason in self._session_approved:
+            return _hook_output("allow", "approved by user for this session")
+        if not self._enabled:
+            return _hook_output(
+                "deny",
+                (reason + " — " if reason else "") + "This surface cannot prompt for approval. Ask the user to "
+                "confirm in chat, or have them run the command themselves.",
+            )
+        self._counter += 1
+        request_id = f"appr-{os.getpid()}-{self._counter}"
+        command = str(payload["tool_input"].get("command", ""))
+        self._emit(
+            {
+                "type": "approval_request",
+                "request_id": request_id,
+                "tool": payload["tool_name"],
+                "command": command[:2000],
+                "reason": reason,
+                "timeout_seconds": int(self.timeout_seconds),
+            }
+        )
+        fut: "asyncio.Future[str]" = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = fut
+        try:
+            outcome = await asyncio.wait_for(fut, timeout=self.timeout_seconds)
+        except asyncio.TimeoutError:
+            self._pending.pop(request_id, None)
+            outcome = "timeout"
+        self._emit(
+            {
+                "type": "approval_resolved",
+                "request_id": request_id,
+                "decision": outcome,
+            }
+        )
+        if outcome in ("allow", "allow_session"):
+            if outcome == "allow_session" and reason:
+                self._session_approved.add(reason)
+            return _hook_output("allow", "approved by user")
+        if outcome == "timeout":
+            return _hook_output(
+                "deny",
+                f"Approval request timed out after {int(self.timeout_seconds)}s: {reason}",
+            )
+        return _hook_output("deny", f"The user denied this action: {reason}")
 
 
 def _stream_event_delta_text(event: dict) -> str:
@@ -333,7 +495,7 @@ async def _stdin_lines() -> "asyncio.Queue[dict]":
                 continue
             await _dispatch_frame(frame, queue)
 
-    asyncio.create_task(reader())
+    _spawn(reader())
     return queue
 
 
@@ -342,6 +504,7 @@ async def _fake_agent_loop(
     *,
     per_tool_seconds: float = 90.0,
     tool_calls_per_turn: int = 50,
+    gate: "ApprovalGate | None" = None,
 ) -> None:
     """Used by tests via AGNES_RUNNER_FAKE_AGENT=1. Echoes user_msg back.
 
@@ -351,13 +514,32 @@ async def _fake_agent_loop(
       synthetic ``tool_result: {timeout: true}``.
     - ``__many_tools__:N`` — fires N tool_call frames to exercise the
       per-turn tool-call budget gate.
+    - ``__approval__:<command>`` — runs the ApprovalGate against a
+      synthetic Bash call so tests exercise the real stdin round-trip
+      (approval_request out → approval_decision in) without the SDK.
     """
     while True:
         frame = await queue.get()
         if frame.get("type") == "_eof":
             return
+        if frame.get("type") == "approval_decision" and gate is not None:
+            gate.resolve(str(frame.get("request_id", "")), str(frame.get("decision", "")))
+            continue
         if frame.get("type") == "user_msg":
             text = frame.get("text", "")
+            if text.startswith("__approval__:") and gate is not None:
+                command = text.split(":", 1)[1]
+
+                async def _run_gate(cmd: str) -> None:
+                    out = await gate.check({"tool_name": "Bash", "tool_input": {"command": cmd}}, None, {})
+                    decision = (out.get("hookSpecificOutput") or {}).get("permissionDecision", "allow")
+                    _emit({"type": "assistant_message", "content": f"gate:{decision}"})
+                    _emit({"type": "done"})
+
+                # Concurrent task: the loop must keep reading stdin so the
+                # approval_decision frame can reach gate.resolve above.
+                _spawn(_run_gate(command))
+                continue
             if text == "__slow_tool__":
                 _emit({"type": "tool_call", "tool": "run_query", "args": {"sql": "..."}})
                 try:
@@ -424,6 +606,7 @@ async def _real_agent_loop(
     workdir: Path,
     *,
     tool_calls_per_turn: int = 50,
+    gate: "ApprovalGate | None" = None,
 ) -> None:
     """Real claude-agent-sdk-backed loop.
 
@@ -480,9 +663,11 @@ async def _real_agent_loop(
     # prompt), so the agent emits a tool_call and then hangs / hallucinates
     # success without ever executing it. The E2B microVM is the isolation
     # boundary here (ephemeral, per-session); egress control is the workspace
-    # PreToolUse hook's job and is documented as best-effort/fail-open. The
-    # SDK-native in-process gate (``can_use_tool``) needs streaming-input mode
-    # — a larger runner refactor tracked separately.
+    # PreToolUse hook's job and is documented as best-effort/fail-open.
+    # bypassPermissions swallows the file hook's ``ask`` verdicts (executes
+    # without prompting — verified empirically), so the ApprovalGate below
+    # re-enforces them via an SDK in-process PreToolUse hook that CAN block
+    # the call while the user answers an approval_request frame.
     # Load the workspace's filesystem config (user + project + local) — the
     # same scopes the local `claude` CLI loads by default. The SDK loads NONE
     # of them unless told to (its isolation default), which would make the
@@ -503,6 +688,30 @@ async def _real_agent_loop(
         setting_sources=["user", "project", "local"],
         mcp_servers=mcp_servers,
     )
+    # Approval gate (SDK in-process PreToolUse hook). HookMatcher is absent
+    # on older SDKs — degrade to today's behavior (no gate) rather than
+    # crash the runner in a stale sandbox template.
+    if gate is not None:
+        try:
+            from claude_agent_sdk import HookMatcher  # type: ignore[attr-defined]
+        except ImportError:
+            HookMatcher = None
+        if HookMatcher is not None:
+
+            async def _gate_hook(input_data, tool_use_id, context):
+                return await gate.check(input_data, tool_use_id, context)
+
+            options_kwargs["hooks"] = {
+                "PreToolUse": [
+                    HookMatcher(
+                        matcher="Bash",
+                        hooks=[_gate_hook],
+                        # margin over the gate's own await so the CLI-side
+                        # matcher timeout never fires first
+                        timeout=gate.timeout_seconds + 30,
+                    )
+                ]
+            }
     # Token-level streaming (include_partial_messages) when the installed SDK
     # supports it: the UI then renders text as the model produces it instead
     # of one token frame per completed content block (which for a long answer
@@ -576,7 +785,16 @@ async def _real_agent_loop(
             if t == "cancel":
                 # Between turns: nothing is running, but the interrupt may
                 # still race a just-finished turn — best-effort.
+                if gate is not None:
+                    gate.cancel_all()
                 await _interrupt(client)
+                continue
+
+            if t == "approval_decision":
+                # Stale (turn already over / runner respawned) — resolve()
+                # drops unknown ids silently.
+                if gate is not None:
+                    gate.resolve(str(frame.get("request_id", "")), str(frame.get("decision", "")))
                 continue
 
             if t != "user_msg":
@@ -602,9 +820,22 @@ async def _real_agent_loop(
                     mid = ft.result()
                     if mid.get("type") == "cancel":
                         # Interrupt the LIVE turn; receive_response() then
-                        # winds down and turn_task completes.
+                        # winds down and turn_task completes. Pending
+                        # approvals must resolve (deny) too — the SDK hook
+                        # awaiting them would otherwise pin the turn until
+                        # its timeout despite the interrupt.
+                        if gate is not None:
+                            gate.cancel_all()
                         interrupted_this_turn = True
                         await _interrupt(client)
+                    elif mid.get("type") == "approval_decision":
+                        # Mid-turn is the normal case: the tool call is
+                        # suspended inside the gate right now.
+                        if gate is not None:
+                            gate.resolve(
+                                str(mid.get("request_id", "")),
+                                str(mid.get("decision", "")),
+                            )
                     else:
                         # user_msg / _eof: keep for after the turn, in order.
                         pending_frames.append(mid)
@@ -921,11 +1152,18 @@ async def amain() -> None:
 
     per_tool = float(os.environ.get("AGNES_PER_TOOL_CALL_SECONDS", "90"))
     tool_calls_per_turn = int(os.environ.get("AGNES_TOOL_CALLS_PER_TURN", "50"))
+    gate = ApprovalGate(
+        _emit,
+        workdir / ".claude" / "hooks" / "pre_tool_use.py",
+        enabled=os.environ.get("AGNES_APPROVALS", "on").lower() not in ("off", "0", "false"),
+        timeout_seconds=float(os.environ.get("AGNES_APPROVAL_TIMEOUT_SECONDS", "300")),
+    )
     if fake_agent:
         await _fake_agent_loop(
             queue,
             per_tool_seconds=per_tool,
             tool_calls_per_turn=tool_calls_per_turn,
+            gate=gate,
         )
     else:
         try:
@@ -933,6 +1171,7 @@ async def amain() -> None:
                 queue,
                 workdir,
                 tool_calls_per_turn=tool_calls_per_turn,
+                gate=gate,
             )
         except Exception as exc:
             _emit({"type": "error", "kind": "runner_exception", "message": str(exc)})

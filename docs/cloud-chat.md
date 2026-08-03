@@ -192,14 +192,30 @@ at the VM level**: `E2BProvider.spawn` passes
 outside `chat.egress_allow_out` is blocked by the platform, outside the
 sandbox's reach. The bundled PreToolUse hook in the workspace template
 (`.claude/hooks/pre_tool_use.py`) additionally refuses
-workspace-destructive bash and prompts for admin mutations, but it is
-defense-in-depth only — it is fail-open, inspects Bash alone, and is a
-workspace file the agent could rewrite. The VM-level deny-list survives
-its removal. (This supersedes the original Q4 decision, which shipped
-the allowlist in the hook alone.)
+workspace-destructive bash, and marks high-blast-radius commands as
+needing user confirmation (`ask`) — those now surface as a real
+approve/deny card in the chat rather than being silently executed. The
+hook is defense-in-depth only: it is fail-open, inspects Bash alone, and
+is a workspace file the agent could rewrite. The VM-level deny-list
+survives its removal. (This supersedes the original Q4 decision, which
+shipped the allowlist in the hook alone.)
 
 The full trust model, the controls behind it, and the known limitations
 are in [`../SECURITY.md`](../SECURITY.md).
+
+**Approval gate.** Under `permission_mode="bypassPermissions"` the CLI
+executes a file-hook `ask` verdict without prompting anyone, so `ask`
+rules used to be silently inert in cloud chat. The runner now re-runs
+the workspace hook from an SDK in-process PreToolUse hook
+(`ApprovalGate` in `app/chat/runner.py`): an `ask` verdict suspends the
+tool call, emits an `approval_request` frame (web chat renders an
+Allow once / Allow for session / Deny card; co-drive participants may
+answer too), and resolves to allow or deny from the user's
+`approval_decision`. No answer within `chat.approval_timeout_seconds`
+(default 300), a Stop, or a surface that cannot prompt (runner env
+`AGNES_APPROVALS=off`) all resolve to deny. Slack surfaces currently
+see the pause + timeout-deny only — interactive Slack approval buttons
+are a follow-up.
 
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.

@@ -670,6 +670,12 @@ function handleFrame(frame) {
     case "session_renamed":
       applySessionRename(frame);
       break;
+    case "approval_request":
+      renderApprovalRequest(frame);
+      break;
+    case "approval_resolved":
+      resolveApprovalCard(frame);
+      break;
     case "cancelled":
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       $("cancel-btn").hidden = true;
@@ -1266,6 +1272,90 @@ function _summarizeArgs(args) {
     parts.push(`${k}=${text.length > 30 ? text.slice(0, 28) + "…" : text}`);
   }
   return parts.join(", ");
+}
+
+function renderApprovalRequest(frame) {
+  if (!frame.request_id) return;
+  // Replay dedup: a mid-turn reconnect re-delivers the request frame.
+  if (document.querySelector(`[data-approval-id="${CSS.escape(frame.request_id)}"]`)) return;
+  clearThinkingPlaceholder();
+  const wrap = document.createElement("section");
+  wrap.className = "cloud-chat-tool cloud-chat-approval is-running";
+  wrap.dataset.approvalId = frame.request_id;
+
+  const head = document.createElement("div");
+  head.className = "cloud-chat-tool-head";
+  const icon = document.createElement("span");
+  icon.className = "cloud-chat-tool-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "\u{1F6E1}️";
+  head.appendChild(icon);
+  const name = document.createElement("span");
+  name.className = "cloud-chat-tool-name";
+  name.textContent = "Approval required";
+  head.appendChild(name);
+  const summary = document.createElement("span");
+  summary.className = "cloud-chat-tool-summary";
+  summary.textContent = frame.reason || "";
+  head.appendChild(summary);
+  wrap.appendChild(head);
+
+  if (frame.command) {
+    const pre = document.createElement("pre");
+    pre.className = "cloud-chat-approval-cmd";
+    const code = document.createElement("code");
+    code.textContent = frame.command;
+    pre.appendChild(code);
+    wrap.appendChild(pre);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "cloud-chat-approval-actions";
+  const mkBtn = (label, decision, cls) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `cloud-chat-approval-btn ${cls}`;
+    b.textContent = label;
+    b.onclick = () => {
+      ws?.send(
+        JSON.stringify({ type: "approval_decision", request_id: frame.request_id, decision })
+      );
+      actions.querySelectorAll("button").forEach((x) => {
+        x.disabled = true;
+      });
+    };
+    return b;
+  };
+  actions.appendChild(mkBtn("Allow once", "allow", "is-allow"));
+  actions.appendChild(mkBtn("Allow for session", "allow_session", "is-allow"));
+  actions.appendChild(mkBtn("Deny", "deny", "is-deny"));
+  wrap.appendChild(actions);
+
+  $("chat-messages").appendChild(wrap);
+  maybeScrollToBottom();
+}
+
+function resolveApprovalCard(frame) {
+  const el = frame.request_id
+    ? document.querySelector(`[data-approval-id="${CSS.escape(frame.request_id)}"]`)
+    : null;
+  if (!el) return;
+  el.classList.remove("is-running");
+  const labels = {
+    allow: "Allowed once",
+    allow_session: "Allowed for session",
+    deny: "Denied",
+    timeout: "Timed out",
+  };
+  const allowed = frame.decision === "allow" || frame.decision === "allow_session";
+  const actions = el.querySelector(".cloud-chat-approval-actions");
+  if (actions) {
+    actions.textContent = "";
+    const badge = document.createElement("span");
+    badge.className = "cloud-chat-approval-outcome " + (allowed ? "is-allow" : "is-deny");
+    badge.textContent = labels[frame.decision] || frame.decision || "resolved";
+    actions.appendChild(badge);
+  }
 }
 
 function renderToolCallStart(frame) {
