@@ -396,6 +396,31 @@ def test_mirrored_constants_agree_across_backends():
     assert ReportsRepository._NOT_SYSTEM == ReportsPgRepository._NOT_SYSTEM
 
 
+def test_real_session_predicate_is_identical_everywhere():
+    """One rule for "is this a real session", spelled once.
+
+    The digest's session KPI and the adoption KPIs are rendered in the SAME
+    report, so if these drift the report shows two different numbers under two
+    tiles both labelled "Sessions" — the exact confusion this predicate removes.
+    Four hand-mirrored copies (2 repos x 2 backends) pinned equal here.
+    """
+    from src.repositories.reports import ReportsRepository
+    from src.repositories.reports_pg import ReportsPgRepository
+    from src.repositories.usage import UsageRepository
+    from src.repositories.usage_pg import UsagePgRepository
+
+    copies = {
+        "reports": ReportsRepository.REAL_SESSION_PREDICATE,
+        "reports_pg": ReportsPgRepository.REAL_SESSION_PREDICATE,
+        "usage": UsageRepository.REAL_SESSION_PREDICATE,
+        "usage_pg": UsagePgRepository.REAL_SESSION_PREDICATE,
+    }
+    assert len(set(copies.values())) == 1, f"predicate drifted: {copies}"
+    # and it really is the three-condition form, not a model-only filter
+    one = next(iter(copies.values()))
+    assert "primary_model" in one and "tool_calls" in one and "active_seconds" in one
+
+
 def test_events_daily_buckets_by_utc_day(reports_repo):
     repo, _ = reports_repo
     daily = repo.events_daily(_TREND_START, _P_END)

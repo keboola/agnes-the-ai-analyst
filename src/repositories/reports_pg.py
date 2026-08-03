@@ -115,6 +115,10 @@ class ReportsPgRepository:
         self._engine = engine
 
     # ---- usage_events / sessions windows ---------------------------------
+    REAL_SESSION_PREDICATE = """NOT (COALESCE(primary_model, '') = '<synthetic>'
+                                  AND COALESCE(tool_calls, 0) = 0
+                                  AND COALESCE(active_seconds, 0) = 0)"""
+
     def event_window(self, start: datetime, end: datetime) -> dict:
         with self._engine.connect() as conn:
             r = conn.execute(
@@ -146,13 +150,11 @@ class ReportsPgRepository:
         with self._engine.connect() as conn:
             r = conn.execute(
                 sa.text(
-                    """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
+                    f"""SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
                        WHERE started_at >= :start AND started_at < :end
-                         AND NOT (COALESCE(primary_model, '') = :synthetic
-                                  AND COALESCE(tool_calls, 0) = 0
-                                  AND COALESCE(active_seconds, 0) = 0)"""
+                         AND {self.REAL_SESSION_PREDICATE}"""
                 ),
-                {"start": start, "end": end, "synthetic": SYNTHETIC_MODEL},
+                {"start": start, "end": end},
             ).fetchone()
         return int(r[0] or 0)
 

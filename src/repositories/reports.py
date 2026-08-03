@@ -124,6 +124,10 @@ class ReportsRepository:
         self.conn = conn
 
     # ---- usage_events / sessions windows ---------------------------------
+    REAL_SESSION_PREDICATE = """NOT (COALESCE(primary_model, '') = '<synthetic>'
+                                  AND COALESCE(tool_calls, 0) = 0
+                                  AND COALESCE(active_seconds, 0) = 0)"""
+
     def event_window(self, start: datetime, end: datetime) -> dict:
         r = self.conn.execute(
             """SELECT COUNT(*),
@@ -151,12 +155,10 @@ class ReportsRepository:
         """
         return int(
             self.conn.execute(
-                """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
+                f"""SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
                WHERE started_at >= ? AND started_at < ?
-                 AND NOT (COALESCE(primary_model, '') = ?
-                          AND COALESCE(tool_calls, 0) = 0
-                          AND COALESCE(active_seconds, 0) = 0)""",
-                [start, end, SYNTHETIC_MODEL],
+                 AND {self.REAL_SESSION_PREDICATE}""",
+                [start, end],
             ).fetchone()[0]
             or 0
         )

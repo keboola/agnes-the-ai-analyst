@@ -889,6 +889,22 @@ class UsageRepository:
 
     _TOKEN_SUM = "input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens"
 
+    # A "real" session excludes the `<synthetic>` processing artifact: synthetic
+    # modal model AND no tool calls AND no active time. All three are required —
+    # `primary_model` is only the MOST FREQUENT model, so filtering on it alone
+    # drops genuine synthetic-dominated sessions that did real work.
+    #
+    # Adoption KPIs and the digest's session KPI must agree: the digest renders
+    # BOTH in one report, and an unexplained gap between two tiles both labelled
+    # "Sessions" is exactly the confusion this predicate exists to remove. The
+    # sessions BROWSER (`sessions_count` / `sessions_facets`) deliberately does
+    # NOT filter — you browse it to inspect artifacts, so they must stay visible.
+    #
+    # Mirrored in the sibling backend; the copies are pinned equal by a test.
+    REAL_SESSION_PREDICATE = """NOT (COALESCE(primary_model, '') = '<synthetic>'
+                                  AND COALESCE(tool_calls, 0) = 0
+                                  AND COALESCE(active_seconds, 0) = 0)"""
+
     def adoption_kpis(self, since: datetime) -> dict:
         s = self.conn.execute(
             f"""SELECT COALESCE(SUM(active_seconds), 0),
@@ -900,7 +916,9 @@ class UsageRepository:
                        COALESCE(SUM(tool_calls), 0),
                        COALESCE(SUM(tool_errors), 0),
                        COUNT(DISTINCT COALESCE(user_id, username))
-                  FROM usage_session_summary WHERE started_at >= ?""",
+                  FROM usage_session_summary
+                 WHERE started_at >= ?
+                   AND {self.REAL_SESSION_PREDICATE}""",
             [since],
         ).fetchone()
         dskills = self.conn.execute(
