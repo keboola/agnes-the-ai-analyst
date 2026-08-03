@@ -1101,6 +1101,37 @@ async def _start_relay() -> int:
     return port
 
 
+DEFAULT_HARNESS = "claude-code"
+
+
+def _harness_registry() -> dict:
+    """id → session-loop registry (the runner-side half of the
+    ``app/chat/harness.py`` seam — this file runs standalone in the
+    sandbox, so the registry lives here, not there)."""
+    return {"claude-code": _real_agent_loop}
+
+
+def _select_harness(requested: "str | None"):
+    """Resolve ``AGNES_HARNESS`` to a session loop.
+
+    Unknown ids degrade to the default with a stderr warning (an
+    *inherited* invalid choice must never hard-crash a version-skewed
+    sandbox); the server-side boot gate is where an *explicitly
+    configured* invalid id refuses (``app/main.py::_chat_harness_ok``).
+    """
+    registry = _harness_registry()
+    harness_id = requested or DEFAULT_HARNESS
+    loop_fn = registry.get(harness_id)
+    if loop_fn is None:
+        print(
+            f"unknown AGNES_HARNESS {harness_id!r}; falling back to {DEFAULT_HARNESS!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        loop_fn = registry[DEFAULT_HARNESS]
+    return loop_fn
+
+
 async def amain() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session-id", required=True)
@@ -1166,8 +1197,9 @@ async def amain() -> None:
             gate=gate,
         )
     else:
+        loop_fn = _select_harness(os.environ.get("AGNES_HARNESS"))
         try:
-            await _real_agent_loop(
+            await loop_fn(
                 queue,
                 workdir,
                 tool_calls_per_turn=tool_calls_per_turn,

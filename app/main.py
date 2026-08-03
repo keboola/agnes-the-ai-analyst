@@ -217,6 +217,29 @@ def _chat_e2b_template_id_ok(chat_config) -> bool:
     return False
 
 
+def _chat_harness_ok(chat_config) -> bool:
+    """Refuse an explicitly configured ``chat.harness`` outside the
+    ``APPROVED_HARNESSES`` allowlist (app/chat/harness.py seam).
+
+    Explicit-invalid refuses at boot; the runner separately degrades an
+    *inherited* unknown id to the default (version-skew tolerance).
+    """
+    if not chat_config.enabled:
+        return True
+    from app.chat.harness import APPROVED_HARNESSES
+
+    harness = getattr(chat_config, "harness", "claude-code")
+    if harness in APPROVED_HARNESSES:
+        return True
+    logging.getLogger("app.main").error(
+        "chat.harness=%r is not an approved harness (approved: %s); "
+        "refusing to spawn ChatManager. Fix chat.harness in instance.yaml.",
+        harness,
+        ", ".join(APPROVED_HARNESSES),
+    )
+    return False
+
+
 class _SelectiveGZipMiddleware:
     """GZipMiddleware wrapper that skips a set of path prefixes.
 
@@ -1327,6 +1350,9 @@ async def lifespan(app):
                 # Fatal already logged inside the helper.
                 app.state.chat_manager = None
             elif not _chat_e2b_template_id_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
+            elif not _chat_harness_ok(app.state.chat_config):
                 # Fatal already logged inside the helper.
                 app.state.chat_manager = None
             else:

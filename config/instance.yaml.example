@@ -676,6 +676,11 @@ chat:
   # waiting for the idle reaper. Cuts billable sandbox-minutes on
   # UI close.
   e2b_kill_on_ws_disconnect: true
+  # Agent harness driving the in-sandbox session. "claude-code" is the
+  # only approved engine today; the id exists as the extension seam
+  # (app/chat/harness.py) so an alternative can plug in behind the same
+  # frame protocol. Unknown values refuse chat at boot.
+  harness: "claude-code"
   concurrency_per_user: 3
   idle_ttl_seconds: 1800              # 30 min
   per_tool_call_seconds: 90
