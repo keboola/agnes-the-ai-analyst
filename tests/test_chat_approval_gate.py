@@ -477,3 +477,48 @@ def test_disabled_gate_is_still_registered_so_it_can_deny(tmp_path):
     hso = res.get("hookSpecificOutput", res)
     assert hso.get("permissionDecision") == "deny", res
     assert "SDK too old" in (hso.get("permissionDecisionReason") or ""), res
+
+
+def test_cancelled_approval_does_not_leak_into_pending(tmp_path):
+    """A cancelled wait must not pin awaiting_approval() to True forever.
+
+    The turn watchdog reads awaiting_approval() as "a human is deciding" and
+    skips the stuck-tool abort. A future left in _pending by a cancellation
+    (Stop, turn teardown) therefore disables the watchdog for the rest of
+    the session, and a genuinely stuck tool hangs it for good.
+    """
+    import asyncio
+    import contextlib
+
+    import app.chat.runner as runner
+
+    hook = tmp_path / "hook.py"
+    hook.write_text("import json\nprint(json.dumps({'permissionDecision': 'ask', 'permissionDecisionReason': 'r'}))\n")
+
+    gate = runner.ApprovalGate.__new__(runner.ApprovalGate)
+    gate._enabled = True
+    gate._disabled_reason = ""
+    gate._session_approved = set()
+    gate._pending = {}
+    gate._counter = 0
+    gate._hook_path = hook
+    gate.timeout_seconds = 30
+    gate._emit = lambda frame: None
+
+    async def drive():
+        task = asyncio.create_task(
+            gate.check({"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}}, None, None)
+        )
+        # let it register the pending future
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if gate._pending:
+                break
+        assert gate._pending, "the gate never registered a pending approval"
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert gate._pending == {}, "a cancelled approval leaked its future"
+        assert gate.awaiting_approval() is False
+
+    asyncio.run(drive())

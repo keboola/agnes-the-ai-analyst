@@ -541,6 +541,13 @@ async function loadAndRenderHistory(chatId) {
  */
 async function openSession(chatId, wsUrlOverride) {
   if (ws) { ws.close(); ws = null; }
+  // Unanswered cards belong to the conversation that raised them: this map
+  // is re-drawn after every transcript reload, so carrying it across a
+  // switch painted one conversation's card into another, where its buttons
+  // did nothing (review finding on #1145). The server replays the pending
+  // cards for whichever session we attach to, so dropping them here loses
+  // nothing.
+  pendingApprovalFrames.clear();
   currentChatId = chatId;
   markActiveSidebar(chatId);
   // Sidebar cache holds the title — look it up so the header reads

@@ -291,8 +291,15 @@ class ApprovalGate:
         try:
             outcome = await asyncio.wait_for(fut, timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
-            self._pending.pop(request_id, None)
             outcome = "timeout"
+        finally:
+            # Must be a finally, not just the timeout branch: cancellation
+            # (Stop, turn teardown) would otherwise leave the future in
+            # _pending forever, and awaiting_approval() would stay True — the
+            # turn watchdog treats that as "a human is deciding" and never
+            # fires again, so a genuinely stuck tool hangs the session for
+            # good (review finding on #1145).
+            self._pending.pop(request_id, None)
         self._emit(
             {
                 "type": "approval_resolved",
