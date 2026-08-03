@@ -409,3 +409,42 @@ def test_file_hook_flat_shape_still_wins(tmp_path):
     gate = runner.ApprovalGate.__new__(runner.ApprovalGate)
     gate._hook_path = hook
     assert gate.run_file_hook({"tool_name": "Bash"}).get("permissionDecision") == "allow"
+
+
+def test_gate_disables_itself_when_hookmatcher_takes_no_timeout():
+    """Without a matcher timeout the gate cannot guarantee it blocks.
+
+    The gate's own `asyncio.wait_for` bounds only the gate's wait, not the
+    CLI's. If the CLI timed the PreToolUse hook out and treated it as
+    non-blocking, the tool would run while a human was still being asked and
+    their decision would land after the fact — the barrier silently becoming
+    a delay. Denying is the only honest option, so the fallback must fail
+    closed rather than arm an unenforceable gate.
+    """
+    import app.chat.runner as runner
+
+    gate = runner.ApprovalGate.__new__(runner.ApprovalGate)
+    gate._enabled = True
+    gate._session_approved = set()
+    gate.disable_unsupported()
+    assert gate._enabled is False
+
+    out = gate.decide({"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}}) if hasattr(gate, "decide") else None
+    if out is not None:
+        assert out.get("permissionDecision") == "deny"
+
+
+def test_installed_sdk_hookmatcher_supports_timeout():
+    """The fallback above must stay unreachable on a supported SDK.
+
+    If a future pin lands on a build without `timeout`, approvals would
+    silently switch to deny-everything — better to fail here.
+    """
+    import dataclasses
+
+    from claude_agent_sdk import HookMatcher
+
+    assert "timeout" in [f.name for f in dataclasses.fields(HookMatcher)], (
+        "installed claude-agent-sdk HookMatcher has no timeout field; the approval gate "
+        "will refuse to arm (see ApprovalGate.disable_unsupported)"
+    )

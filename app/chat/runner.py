@@ -217,6 +217,15 @@ class ApprovalGate:
                 fut.set_result("deny")
         self._pending.clear()
 
+    def disable_unsupported(self) -> None:
+        """Turn the gate off because it cannot be armed safely.
+
+        Called when the installed SDK's HookMatcher takes no timeout: without
+        it the CLI could time the hook out and proceed while a human is still
+        being asked. Denying is the only honest option — see the call site.
+        """
+        self._enabled = False
+
     def awaiting_approval(self) -> bool:
         """True while at least one tool call is suspended waiting for a
         human decision. The turn watchdog consults this so it doesn't
@@ -759,15 +768,31 @@ async def _real_agent_loop(
             # for Write/Edit/WebFetch would need this widened to see them
             # (review note on #1145).
             # HookMatcher.timeout is newer than HookMatcher itself; on an SDK
-            # build that predates it, passing timeout= raises TypeError. Try
-            # with it (margin over the gate's own await so the CLI-side matcher
-            # timeout never fires first), fall back without — the gate's own
-            # asyncio.wait_for still bounds the wait (review finding on #1145).
+            # build that predates it, passing timeout= raises TypeError. The
+            # margin over the gate's own await is what stops the CLI-side
+            # matcher timeout from firing first.
+            #
+            # Without it we FAIL CLOSED rather than arm the gate anyway: the
+            # gate's own asyncio.wait_for bounds only the gate's wait, not the
+            # CLI's. If the CLI applied its own default hook timeout and then
+            # treated the timed-out PreToolUse hook as non-blocking, the tool
+            # would run while a human was still being asked, and their later
+            # decision would land after the fact — the barrier degrading into
+            # a delay, silently. An approval gate that cannot guarantee it
+            # blocks must not claim to (review finding on #1145).
             try:
                 _matcher = HookMatcher(matcher="Bash", hooks=[_gate_hook], timeout=gate.timeout_seconds + 30)
             except TypeError:
-                _matcher = HookMatcher(matcher="Bash", hooks=[_gate_hook])
-            options_kwargs["hooks"] = {"PreToolUse": [_matcher]}
+                gate.disable_unsupported()
+                print(
+                    "approval gate: installed claude-agent-sdk HookMatcher has no timeout= "
+                    "parameter; refusing to arm the gate (ask-flagged commands will be denied "
+                    "rather than run unconfirmed). Upgrade the SDK to restore approvals.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                options_kwargs["hooks"] = {"PreToolUse": [_matcher]}
     # Token-level streaming (include_partial_messages) when the installed SDK
     # supports it: the UI then renders text as the model produces it instead
     # of one token frame per completed content block (which for a long answer
