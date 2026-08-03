@@ -503,7 +503,8 @@ def test_cancelled_approval_does_not_leak_into_pending(tmp_path):
     gate._counter = 0
     gate._hook_path = hook
     gate.timeout_seconds = 30
-    gate._emit = lambda frame: None
+    emitted: list[dict] = []
+    gate._emit = emitted.append
 
     async def drive():
         task = asyncio.create_task(
@@ -520,6 +521,9 @@ def test_cancelled_approval_does_not_leak_into_pending(tmp_path):
             await task
         assert gate._pending == {}, "a cancelled approval leaked its future"
         assert gate.awaiting_approval() is False
+        # …and the card must be retired, or the manager keeps replaying it.
+        resolved = [f for f in emitted if f.get("type") == "approval_resolved"]
+        assert resolved and resolved[-1]["decision"] == "cancelled", emitted
 
     asyncio.run(drive())
 

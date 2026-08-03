@@ -299,6 +299,21 @@ class ApprovalGate:
             outcome = await asyncio.wait_for(fut, timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
             outcome = "timeout"
+        except asyncio.CancelledError:
+            # Announce the outcome before unwinding. The emission below is
+            # past this block, so a cancellation used to skip it — and the
+            # manager only retires a card when it sees approval_resolved, so
+            # the request stayed in pending_approvals and the card came back
+            # on every reconnect with buttons that did nothing (review
+            # finding on #1145).
+            self._emit(
+                {
+                    "type": "approval_resolved",
+                    "request_id": request_id,
+                    "decision": "cancelled",
+                }
+            )
+            raise
         finally:
             # Must be a finally, not just the timeout branch: cancellation
             # (Stop, turn teardown) would otherwise leave the future in
