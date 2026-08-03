@@ -245,6 +245,67 @@ def test_admin_users_page_renders_for_admin(app_client, fresh_db):
     assert "page-header--hero" in resp.text
 
 
+class TestAdminUsersGroupFilterDropdown:
+    """Custom design-system dropdown on /admin/users' "Filter by group"
+    select (#1055). `#group-filter` stays a real `<select>` in the DOM
+    (the existing `currentGroup` / `loadUsers()` JS wiring is untouched)
+    with a `ds.dropdown()` custom button+menu alongside it, options
+    mirroring the same server-rendered `groups` list. Visibility between
+    the two is a CSS theme decision (paper-skin.css), not a template one.
+    """
+
+    def test_native_select_still_renders_for_existing_js_wiring(self, app_client, fresh_db):
+        _, token = _seed_admin(fresh_db)
+        resp = app_client.get(
+            "/admin/users",
+            headers={"Accept": "text/html"},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        text = resp.text
+        assert '<select id="group-filter" class="group-filter ds-dropdown-native" aria-label="Filter by group">' in text
+        assert '<option value="">All groups</option>' in text
+
+    def test_custom_dropdown_mirrors_the_server_rendered_groups(self, app_client, fresh_db):
+        from src.db import get_system_db
+        from src.repositories.user_groups import UserGroupsRepository
+
+        conn = get_system_db()
+        gid = UserGroupsRepository(conn).create(name="Data Team")["id"]
+        conn.close()
+
+        _, token = _seed_admin(fresh_db)
+        resp = app_client.get(
+            "/admin/users",
+            headers={"Accept": "text/html"},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        text = resp.text
+        # Custom dropdown wrapper — accessible button+menu contract.
+        assert 'data-ds-dropdown-target="group-filter"' in text
+        assert 'id="group-filter-dd-btn"' in text
+        assert 'aria-haspopup="menu"' in text
+        assert 'aria-controls="group-filter-dd-menu"' in text
+        assert 'role="menu"' in text
+        assert 'role="menuitemradio"' in text
+        # The dynamic group shows up in BOTH the native select and the
+        # custom dropdown's menu, options in lockstep.
+        assert f'<option value="{gid}">Data Team</option>' in text
+        assert f'data-value="{gid}"' in text
+        assert ">Data Team<" in text
+
+    def test_dropdown_js_module_is_loaded(self, app_client, fresh_db):
+        _, token = _seed_admin(fresh_db)
+        resp = app_client.get(
+            "/admin/users",
+            headers={"Accept": "text/html"},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        assert "js/components/ds_dropdown.js" in resp.text
+
+
 def test_admin_users_page_denies_non_admin(app_client, fresh_db):
     import uuid
     from src.db import get_system_db

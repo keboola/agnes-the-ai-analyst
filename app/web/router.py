@@ -5421,7 +5421,14 @@ async def admin_users_page(
     # group-filter dropdown options. The table rows themselves are fetched
     # client-side from GET /api/users (recency window + search/group filter).
     ctx["total_users"] = users_repo().count_all()
-    ctx["groups"] = user_groups_repo().list_all()
+    groups = user_groups_repo().list_all()
+    ctx["groups"] = groups
+    # Pre-built option list for the ds.dropdown() visual replacement (#1055)
+    # of #group-filter — Jinja's expression grammar has no list-comprehension
+    # syntax, so the {id, name} → {value, label} mapping happens here.
+    ctx["group_filter_options"] = [{"value": "", "label": "All groups"}] + [
+        {"value": g["id"], "label": g["name"]} for g in groups
+    ]
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 

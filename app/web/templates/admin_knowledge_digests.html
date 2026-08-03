@@ -164,6 +164,13 @@
     <textarea id="kd-instructions" placeholder="What should this digest maintain and how?" autocomplete="off"></textarea>
 
     <label for="kd-sources">Source collections</label>
+    {# #1055: not converted to ds.dropdown() — this is a `multiple` select
+       (Cmd/Ctrl-click to pick several collections) whose options are also
+       fetched and rebuilt entirely by JS after load. ds.dropdown() is a
+       single-choice control (role="menuitemradio" — mutually exclusive
+       items, like a plain <select>), so it has no multi-select mode to
+       stand in for this control; converting it would need a new component
+       variant, out of scope here. #}
     <select id="kd-sources" multiple></select>
     <div class="help">Hold Cmd/Ctrl to select multiple. The digest regenerates when any selected collection's content changes.</div>
 
