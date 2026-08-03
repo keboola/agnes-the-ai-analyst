@@ -52,14 +52,140 @@ def test_library_has_no_agent_affordance(seeded_app):
     assert 'data-kind="agent"' not in r.text
 
 
-def test_library_has_semantic_layer_browse_link(seeded_app):
-    """Library header exposes a 'Browse metrics & glossary' link to
-    /catalog/semantics (#1108) — a read/scan door separate from the
-    create-oriented '+ Add' menu."""
+def _seed_definitions(metrics: int = 1, terms: int = 1) -> None:
+    """Put a metric and/or a glossary term into the semantic layer.
+
+    The Definitions footer only renders when at least one side is populated, so
+    a test that wants it has to say so — which is the point of the guard.
+    """
+    from src.repositories import glossary_repo, metric_repo
+
+    for i in range(metrics):
+        metric_repo().create(
+            id=f"finance/m{i}",
+            name=f"m{i}",
+            display_name=f"Metric {i}",
+            category="finance",
+            sql="SELECT 1",
+            description="A canonical definition.",
+        )
+    for i in range(terms):
+        glossary_repo().create(id=f"g{i}", term=f"Term {i}", definition="What it means here.")
+
+
+def test_library_shows_definitions_as_a_footer_not_a_row(seeded_app):
+    """The semantic layer closes the page; it is NOT part of the inventory.
+
+    It shipped briefly as a "Definitions" band holding two rows, and that was
+    wrong: metrics and glossary terms are the one thing here nobody owns,
+    shares, installs, drops or edits, so as rows they had to blank all four of
+    the table's columns at once (Owner / Sharing / Stack / Actions). Four
+    special-cased columns is the list saying the object is not one of its rows.
+    A data package looks similar but differs where it counts — access to it
+    varies per caller, which is what makes it "what I have"; everyone has the
+    whole glossary.
+    """
+    _seed_definitions(metrics=2, terms=3)
     c = seeded_app["client"]
     r = c.get("/library", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 200
-    assert 'href="/catalog/semantics"' in r.text
+    assert 'id="lib-defs"' in r.text
+    assert "2 metrics" in r.text
+    assert "3 glossary terms" in r.text
+    assert 'href="/catalog/semantics#metrics"' in r.text
+    assert 'href="/catalog/semantics#glossary"' in r.text
+    # Not inventory: no band, no row, no kind.
+    assert 'data-lib-sec="definitions"' not in r.text
+    assert 'data-kind="definitions"' not in r.text
+    # And not the retired header link either.
+    assert "lib-browse-semantics" not in r.text
+
+
+def test_library_definitions_footer_carries_its_contents_for_search(seeded_app):
+    """The footer is searchable BY TERM, not just by the word "definitions".
+
+    Someone types "MRR" or "active account" — the term they half-remember —
+    the list comes back empty, and the footer is the one thing on the page
+    that knows the word. Without the index it stays silent and the reader
+    concludes Agnes has never heard of it. This is also the only one-step term
+    lookup the rail chrome has, since it renders no global search box.
+    """
+    from src.repositories import glossary_repo, metric_repo
+
+    metric_repo().create(
+        id="finance/mrr",
+        name="mrr",
+        display_name="Monthly Recurring Revenue",
+        category="finance",
+        sql="SELECT 1",
+        description="Normalized monthly subscription revenue.",
+        synonyms=["ARR"],
+    )
+    glossary_repo().create(id="g_active", term="Active account", definition="At least one paid seat.")
+
+    c = seeded_app["client"]
+    r = c.get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    index = r.text.split('data-defs-search="', 1)[1].split('"', 1)[0]
+    # Reachable by display name, short name, synonym and glossary term.
+    assert "monthly" in index and "recurring" in index
+    assert "mrr" in index
+    assert "arr" in index
+    assert "active" in index
+    # Definition BODIES stay out — the index ships on every page load, and
+    # matching on prose would surface the block on incidental words.
+    assert "normalized" not in index
+    assert "paid" not in index
+
+
+def test_library_definitions_footer_counts_are_singular_for_one(seeded_app):
+    """ "1 metric", not "1 metrics" — the count is read as a sentence."""
+    _seed_definitions(metrics=1, terms=1)
+    c = seeded_app["client"]
+    r = c.get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "1 metric " in r.text or "1 metric&" in r.text or "1 metric<" in r.text
+    assert "1 metrics" not in r.text
+    assert "1 glossary terms" not in r.text
+
+
+def test_library_hides_definitions_footer_when_semantic_layer_is_empty(seeded_app):
+    """No metrics AND no glossary -> no footer.
+
+    A block advertising "0 metrics · 0 glossary terms" describes the instance's
+    setup, not its content, and reads as a broken feature rather than an
+    unconfigured one. One populated side is enough to render it.
+    """
+    c = seeded_app["client"]
+    r = c.get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert 'id="lib-defs"' not in r.text
+    assert "/catalog/semantics" not in r.text
+
+
+def test_library_shows_definitions_footer_when_only_one_side_is_populated(seeded_app):
+    """Metrics but no glossary still renders it — "0 glossary terms" is a true
+    and useful statement about a semantic layer that exists."""
+    _seed_definitions(metrics=1, terms=0)
+    c = seeded_app["client"]
+    r = c.get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert 'id="lib-defs"' in r.text
+    assert "0 glossary terms" in r.text
+
+
+def test_library_definitions_footer_is_labeled_in_plain_words(seeded_app):
+    """ "Definitions", never "Semantic layer" — that name belongs to
+    /admin/semantic-layer, where the reader operates the sync rather than
+    looking a term up. Scoped to the footer because an admin's nav dropdown
+    carries the admin link on every page, and that one is correct."""
+    _seed_definitions()
+    c = seeded_app["client"]
+    r = c.get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    block = r.text.split('id="lib-defs"', 1)[1].split("</aside>", 1)[0]
+    assert "Definitions" in block
+    assert "Semantic layer" not in block
 
 
 def test_library_detail_renders_for_admin(seeded_app):
@@ -207,9 +333,11 @@ def _row_for(body: str, title: str) -> str:
     return body[start : body.index("</tr>", start)]
 
 
-#: The locked-membership tooltip, verbatim. A test that paraphrases it would
-#: let the shipped copy drift from the spec, so the exact sentence is asserted.
+#: The locked-membership tooltips, verbatim. A test that paraphrases them would
+#: let the shipped copy drift from the spec, so the exact sentences are asserted.
+#: Both tiers are locked; only the wording differs.
 LOCKED_TOOLTIP = "Required by your admin and cannot be removed from your stack."
+GRANTED_TOOLTIP = "Granted to your group — only an admin can remove it from your Stack."
 
 
 def test_library_required_grant_is_locked_in_stack(seeded_app):
@@ -226,7 +354,7 @@ def test_library_required_grant_is_locked_in_stack(seeded_app):
     body = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     row = _row_for(body, "Mandated Package")
     assert "In Stack" in row
-    assert "lib-instack--required" in row  # locked → lock glyph + info tint
+    assert "lib-instack--locked" in row  # locked → lock glyph + info tint
     assert LOCKED_TOOLTIP in row
     # Not a button, and not addable — nothing to click either way.
     assert "data-remove-from-stack" not in row
@@ -240,7 +368,14 @@ def test_library_required_grant_is_locked_in_stack(seeded_app):
 def test_library_available_grant_reads_in_stack_and_offers_no_toggle(seeded_app):
     """An available grant is already in the stack by auto-membership, so the
     row reports that plainly — no "Add to Stack" for something already in it,
-    and no remove (the grant is an admin's to change)."""
+    and no remove (the grant is an admin's to change).
+
+    It is LOCKED too, for the same reason the required one is: the grant IS the
+    membership, so there is nothing on the row to drop. The lock is keyed on
+    droppability, NOT on the tier — keyed on the tier, this row wore the
+    success-tinted check that a *removable* pill shows at rest, and the only
+    way to find out it wasn't one was to hover it and watch nothing happen.
+    The tier lives in the tooltip and in the Optional/Required facet."""
     from src.db import get_system_db
 
     conn = get_system_db()
@@ -251,9 +386,13 @@ def test_library_available_grant_reads_in_stack_and_offers_no_toggle(seeded_app)
     row = _row_for(body, "Offered Package")
     assert "In Stack" in row
     assert "lib-instack--fixed" in row
-    assert "lib-instack--required" not in row  # not mandated — plain membership
+    assert "lib-instack--locked" in row  # not the removable pill's rest state
     assert "data-add-to-stack" not in row
     assert "data-remove-from-stack" not in row
+    # …and it says who CAN remove it, rather than only what it is.
+    assert GRANTED_TOOLTIP in row
+    # The tier is still distinguishable — just not by the affordance.
+    assert LOCKED_TOOLTIP not in row
 
 
 def test_library_lists_granted_curated_plugins(seeded_app):
@@ -314,7 +453,7 @@ def test_library_own_artefact_keeps_a_real_stack_toggle(seeded_app):
 
     row = _row_for(c.get("/library", headers=_auth(seeded_app["admin_token"])).text, "Toggleable Artefact")
     assert "data-add-to-stack" in row  # not yet added
-    assert "lib-instack--required" not in row
+    assert "lib-instack--locked" not in row
 
     r = c.post(f"/api/stack/artefacts/{col['id']}", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code in (200, 201), r.text
@@ -322,3 +461,4 @@ def test_library_own_artefact_keeps_a_real_stack_toggle(seeded_app):
     row = _row_for(c.get("/library", headers=_auth(seeded_app["admin_token"])).text, "Toggleable Artefact")
     assert "data-remove-from-stack" in row  # …and removable once added
     assert "lib-instack--fixed" not in row
+    assert "lib-instack--locked" not in row

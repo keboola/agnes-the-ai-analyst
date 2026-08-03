@@ -691,8 +691,13 @@
       display: flex; gap: var(--space-2); margin: 0 0 var(--space-4) 0;
       justify-content: flex-end;
     }
+    /* See the twin comment on the skill/agent page: the paper skin turns
+       this row into a named bordered bar; every other theme keeps the
+       bare right-aligned row, so the label stays hidden by default. */
+    .plugin-detail .owner-actions__label { display: none; }
   </style>
   <div class="owner-actions">
+    <span class="owner-actions__label">Manage</span>
     {# v37 edit feature: Edit lands a real page. Disabled while a
        prior version is under review (server-side 409 also enforces).
        edit_in_flight is set by the router whenever the latest

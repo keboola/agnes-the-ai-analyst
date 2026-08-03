@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 
 from src.db import get_system_db
 
@@ -22,11 +21,11 @@ def _auth(token):
 
 
 def _create_pkg(seeded_app, **fields) -> str:
-    body = {"name": "Sales", "slug": fields.pop("slug", f"s{uuid.uuid4().hex[:8]}"),
-            "description": "x"}
+    body = {"name": "Sales", "slug": fields.pop("slug", f"s{uuid.uuid4().hex[:8]}"), "description": "x"}
     body.update(fields)
     r = seeded_app["client"].post(
-        "/api/admin/data-packages", json=body,
+        "/api/admin/data-packages",
+        json=body,
         headers=_auth(seeded_app["admin_token"]),
     )
     assert r.status_code in (200, 201), r.text
@@ -154,9 +153,12 @@ class TestGetIncludesNewFields:
     def test_get_returns_all_new_fields(self, seeded_app):
         pid = _create_pkg(
             seeded_app,
-            owner_name="Jane", owner_team="Ops",
-            tags=["A", "B"], long_description="body",
-            when_to_use=["x"], when_not_to_use=["y"],
+            owner_name="Jane",
+            owner_team="Ops",
+            tags=["A", "B"],
+            long_description="body",
+            when_to_use=["x"],
+            when_not_to_use=["y"],
             example_questions=["q?"],
         )
         r = seeded_app["client"].get(
@@ -189,15 +191,23 @@ class TestGetIncludesNewFields:
 
 
 class TestBadgeDerivation:
-    def test_badge_curated_when_admin_created(self, seeded_app):
-        """Created_by points to an Admin-group member → badge=='curated'."""
+    def test_admin_created_stores_organization_and_derives_no_trust_badge(self, seeded_app):
+        """v113: the derived `curated` badge is gone; the claim is stored.
+
+        It was computed per render from "is `created_by` currently in the Admin
+        group" — a fact about the person, not the package, so an admin leaving
+        the group silently un-curated everything they had created. The admin
+        create endpoint is `require_admin`-gated, so the claim was true by
+        construction and is now written explicitly as `publisher_kind`.
+        """
         pid = _create_pkg(seeded_app)
         r = seeded_app["client"].get(
             f"/api/admin/data-packages/{pid}",
             headers=_auth(seeded_app["admin_token"]),
         )
         body = r.json()
-        assert "curated" in (body.get("badges") or [])
+        assert body.get("publisher_kind") == "organization"
+        assert "curated" not in (body.get("badges") or [])
 
     def test_badge_new_when_recently_created(self, seeded_app):
         """Any package created in the last 30 days → badge includes 'new'.
@@ -212,7 +222,11 @@ class TestBadgeDerivation:
 
     def test_badge_omits_new_after_threshold(self, seeded_app):
         """Backdate the created_at past the 30-day window → no 'new'.
-        'curated' still present because creator is admin."""
+
+        v113: `new` is the ONLY badge left — it is a genuine function of the
+        clock, which is the line between deriving and storing. The stored trust
+        claim rides `publisher_kind` and is unaffected by the backdate.
+        """
         from datetime import datetime, timedelta, timezone
 
         pid = _create_pkg(seeded_app)
@@ -226,6 +240,6 @@ class TestBadgeDerivation:
             f"/api/admin/data-packages/{pid}",
             headers=_auth(seeded_app["admin_token"]),
         )
-        badges = r.json().get("badges") or []
-        assert "new" not in badges
-        assert "curated" in badges
+        body = r.json()
+        assert "new" not in (body.get("badges") or [])
+        assert body.get("publisher_kind") == "organization"
