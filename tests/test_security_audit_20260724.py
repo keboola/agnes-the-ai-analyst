@@ -325,6 +325,8 @@ def test_f4_no_unsandboxed_prompt_render_sites():
         "app/api/prompts.py",
         "src/initial_workspace.py",
         "app/web/router.py",
+        "src/claude_md.py",
+        "app/api/claude_md.py",
     ]
     offenders = []
     for rel in prompt_render_modules:

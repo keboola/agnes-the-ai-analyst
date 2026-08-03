@@ -201,6 +201,7 @@ Key entry points:
 - [Deployment Guide](docs/DEPLOYMENT.md) — chooses between Terraform and Docker Compose; covers OSS self-host
 - [Configuration Reference](docs/CONFIGURATION.md) — `instance.yaml`, env vars, per-instance options
 - [Architecture](ARCHITECTURE.md) — orchestrator, extractors, DB layout
+- [Security](SECURITY.md) — threat model, trust boundaries, known limitations, operator responsibilities
 
 ## Contributing
 
@@ -209,7 +210,7 @@ Key entry points:
 3. Keep commits focused and messages concise.
 4. Open a pull request against `main` with a clear description of the change.
 
-For bugs and feature requests, open a GitHub issue.
+For bugs and feature requests, open a GitHub issue. For **security vulnerabilities**, do not open an issue — follow [SECURITY.md](SECURITY.md).
 
 ## License
 

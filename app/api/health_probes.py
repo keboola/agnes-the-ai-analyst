@@ -9,10 +9,14 @@ compatibility alias. Spec §3.7.
 """
 
 import asyncio
+import contextlib
 import logging
+import math
+import os
 import threading
+import time
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable, TypeVar
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -98,9 +102,154 @@ def _write_canary() -> bool:
         return False
 
 
+_T = TypeVar("_T")
+
+#: Total drain budget for the WHOLE shutdown, not per call.
+#:
+#: Deliberately much smaller than the worker runtime's
+#: ``AGNES_WORKER_DRAIN_TIMEOUT_S`` (45s): that one waits on arbitrary job
+#: handlers, this one waits on single jobs-table/canary statements. 10s
+#: already means something is badly wrong with the DB. Keeping it small is
+#: what makes the two independent budgets add up to less than the 60s
+#: stop_grace_period a container typically gets between SIGTERM and SIGKILL.
+_DEFAULT_DRAIN_TIMEOUT_S = 10.0
+
+#: Monotonic instant the shared shutdown budget expires at. Armed by
+#: :func:`begin_shutdown`, NOT by the first drain — see there.
+_drain_deadline: float | None = None
+
+
+def begin_shutdown() -> None:
+    """Start the shared drain budget. Called once from the lifespan's shutdown.
+
+    Arming this on the first drain instead would be wrong: the worker cancels
+    a job's heartbeat task on every completed job
+    (``app/worker/runtime.py``'s ``hb_task.cancel()``), which is a routine,
+    non-shutdown cancellation that can land mid-DB-call. That would start the
+    clock during normal operation and, one budget later, leave every real
+    shutdown drain with zero time — silently disabling the protection while
+    the process runs fine.
+
+    Re-arms unconditionally: each shutdown gets its own budget. Arming only
+    once would leave every application started after the first in the same
+    process (every ``TestClient`` in a test run, any process that restarts
+    the app) with a spent deadline and therefore no drain at all.
+    """
+    global _drain_deadline
+    _drain_deadline = time.monotonic() + _drain_timeout_s()
+
+
+def end_shutdown() -> None:
+    """Clear the budget once shutdown is over.
+
+    Without this a process that keeps running after an app shutdown (again:
+    a test run) would carry a spent deadline into normal operation, where a
+    routine mid-call cancellation would then get zero drain instead of the
+    full timeout.
+    """
+    global _drain_deadline
+    _drain_deadline = None
+
+
+def _drain_timeout_s() -> float:
+    raw = os.environ.get("AGNES_DRAIN_TIMEOUT_S")
+    if raw is None:
+        return _DEFAULT_DRAIN_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = None
+    # inf/nan parse fine but make the bound meaningless: inf restores the
+    # unbounded wait this exists to prevent, and nan poisons every
+    # comparison it feeds. Treat them as a misconfiguration, not a setting
+    # (review finding on #1140).
+    if value is None or not math.isfinite(value):
+        logger.warning("readiness: invalid AGNES_DRAIN_TIMEOUT_S=%r, using default", raw)
+        return _DEFAULT_DRAIN_TIMEOUT_S
+    return max(value, 0.0)
+
+
+def _drain_budget_s() -> float:
+    """Seconds this drain may wait.
+
+    During shutdown the budget is SHARED, not per call: the lifespan cancels
+    the checkpoint loop, then the canary loop, then the worker loop
+    *sequentially*, and the worker's ``_drain_in_flight`` waits on a
+    heartbeat task per in-flight entry. Per-call bounds would stack and blow
+    past the very stop_grace_period they exist to stay under, turning a
+    graceful drain into the SIGKILL it was added to prevent. So every drain
+    after :func:`begin_shutdown` draws from what remains of one budget.
+
+    Outside shutdown there is nothing to share with and no
+    ``close_system_db()`` waiting behind us — a routine heartbeat
+    cancellation is an isolated event — so such a drain gets the full
+    timeout and leaves the shutdown budget untouched.
+
+    Known trade-off: sharing is first-come, so a slow drain early in the
+    sequence (the CHECKPOINT is the one call here that can legitimately take
+    seconds) can leave the later ones with 0.0 and send them back to
+    abandoning their thread. Both alternatives are worse — per-call bounds
+    stack past ``stop_grace_period``, and a per-call sub-bound just moves
+    which call gets starved. Operators who see the timeout log during a
+    slow-DB shutdown should raise ``AGNES_DRAIN_TIMEOUT_S`` (staying under
+    the grace period their orchestrator gives the container).
+    """
+    if _drain_deadline is None:
+        return _drain_timeout_s()
+    return max(0.0, _drain_deadline - time.monotonic())
+
+
+async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    """Run ``fn`` in a worker thread; on cancellation, wait for an in-flight
+    call to finish before propagating.
+
+    ``asyncio.to_thread`` cancellation delivers ``CancelledError`` to the
+    awaiting coroutine immediately while the OS thread keeps running (see the
+    graceful-shutdown notes in ``app/worker/runtime.py``). For the background
+    loops using this helper, the awaiter's next step after cancellation is
+    ``app/main.py``'s lifespan closing the DuckDB singletons — returning with
+    a DB call still mid-flight lets ``close_system_db()`` race that call,
+    which can wedge DuckDB inside ``conn.execute`` and then deadlock
+    event-loop teardown on the default-executor join (observed as a 60s
+    pytest-timeout inside ``TestClient.__exit__``). Draining is cheap here:
+    these calls are single-row writes / CHECKPOINTs bounded by a normal
+    statement, not arbitrary user work (the worker runtime keeps its own
+    bounded-drain registry for that).
+
+    The drain is nonetheless **bounded**, by a budget shared across the whole
+    shutdown (``AGNES_DRAIN_TIMEOUT_S``, default
+    ``_DEFAULT_DRAIN_TIMEOUT_S`` — see :func:`_drain_budget_s`). "Single
+    statement" is an assumption, not a guarantee — lock contention or a
+    partitioned Postgres can hang one indefinitely, and an unbounded wait
+    would trade the abandoned-thread bug for a shutdown that never
+    completes. Once the budget is spent we log and abandon, i.e. fall back
+    to the pre-drain behavior rather than hanging.
+    """
+    future = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        # fn's own failure, if any, no longer matters once we're cancelled.
+        budget = _drain_budget_s()
+        with contextlib.suppress(Exception):
+            # shield again: wait_for cancels its argument on timeout, which
+            # would re-orphan the very thread we are draining.
+            await asyncio.wait_for(asyncio.shield(future), timeout=budget)
+        if not future.done():
+            logger.warning(
+                "readiness: drain budget exhausted (%.1fs of %.0fs%s) waiting for %s; "
+                "abandoning the thread",
+                budget,
+                _drain_timeout_s(),
+                ", shared across shutdown" if _drain_deadline is not None else "",
+                getattr(fn, "__name__", repr(fn)),
+            )
+        raise
+
+
 async def canary_loop(interval_s: float = 30.0) -> None:
     while True:
-        ok = await asyncio.to_thread(_write_canary)
+        ok = await to_thread_drain_on_cancel(_write_canary)
         readiness.record_canary(ok)
         await asyncio.sleep(interval_s)
 

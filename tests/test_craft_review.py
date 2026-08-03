@@ -51,6 +51,21 @@ def _patch_extractor(verdict=None, side_effect=None):
     return patcher
 
 
+class TestCraftReviewConstructorFailure:
+    def test_constructor_failure_degrades_to_no_findings(self):
+        """Extractor construction (which lazily imports the SDK) failing must
+        translate to CraftUnavailable like any other LLM failure — otherwise a
+        raw exception escapes craft_review()'s Never-raises contract."""
+        with patch(
+            "src.store_guardrails.craft_review.AnthropicExtractor",
+            side_effect=RuntimeError("client construction failed"),
+        ):
+            findings = craft_review(
+                _ENTITY, _SKILL_MD, _CANDIDATES, api_key="sk-test", model="claude-haiku-4-5-20251001"
+            )
+        assert findings == []
+
+
 class TestCraftReviewFindings:
     def test_verdict_maps_to_trigger_and_duplicate_findings(self):
         verdict = {
