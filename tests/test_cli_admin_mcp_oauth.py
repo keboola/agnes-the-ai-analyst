@@ -125,7 +125,11 @@ class TestOAuthClient:
             },
         )
 
-    def test_public_client_skips_secret(self):
+    def test_public_client_clears_any_secret_on_file(self):
+        """--public-client must send an explicit "" — the endpoint reads an
+        OMITTED client_secret as "keep whatever is stored", so omitting it
+        would leave an existing confidential secret in place and Agnes would
+        keep sending Basic auth (Devin Review on #1124)."""
         with (
             patch("cli.commands.admin_mcp.api_get", return_value=_sources_list_resp()),
             patch("cli.commands.admin_mcp.api_put", return_value=_resp(200, {"client_id": "pub-client"})) as mock_put,
@@ -149,7 +153,7 @@ class TestOAuthClient:
             )
         assert result.exit_code == 0, result.output
         _, kwargs = mock_put.call_args
-        assert "client_secret" not in kwargs["json"]
+        assert kwargs["json"]["client_secret"] == ""
 
     def test_ssrf_rejection_exits_nonzero(self):
         with (

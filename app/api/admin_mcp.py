@@ -860,7 +860,14 @@ async def register_oauth_client(
                 client=http_client,
             )
 
-            if existing:
+            # Only when the AS actually minted a DIFFERENT identity. RFC 7591
+            # does not require a fresh client_id per registration — an AS that
+            # dedupes on client_name/redirect_uris hands back the SAME one, and
+            # revoking it would delete the registration just re-issued, leaving
+            # the stored row pointing at nothing and every token call failing
+            # with invalid_client (Devin Review on #1124). Same guard the user-
+            # token purge below already carries.
+            if existing and existing["client_id"] != registered.client_id:
                 await best_effort_revoke_registration(
                     registration_endpoint=as_metadata.get("registration_endpoint"),
                     client_id=existing["client_id"],
