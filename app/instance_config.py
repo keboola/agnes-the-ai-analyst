@@ -266,8 +266,8 @@ FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
         name="library_show_unverified_trust",
         config_keys=("library", "show_unverified_trust"),
         env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-        default=False,
-        description="Show amber 'Community' trust chip for unverified Store items in the Library. Off by default — absence of a chip is the neutral default.",
+        default=True,
+        description="Show the 'Community' trust marker for unverified Store items in the Library. On by default — every row states its provenance (Organization / Verified / Community); set false to restore the older look where an unverified item is marked by the absence of a marker.",
     ),
 )
 
@@ -1193,17 +1193,24 @@ def get_guardrails_enabled() -> bool:
 def get_store_verification_enabled() -> bool:
     """Whether the org-verification axis is offered on this instance.
 
-    Reads ``store.verification_enabled``. **Defaults to False**, deliberately:
-    verification needs a human reviewer, and an instance without one must not
-    show the vocabulary at all. A "Request verification" button with no queue
-    behind it, or an "Unverified" chip on every card, is the same rotting
-    promise as a permanent "In review" badge — the failure mode this axis was
-    designed to avoid.
+    Reads ``store.verification_enabled``. **Defaults to True.**
 
-    Off does NOT mean untrusted: publisher attribution (the byline, and the
-    "Organization" label) carries accountability on its own and is always on.
+    It defaulted to False for exactly one reason: with no reviewer, nothing is
+    ever verified, so a negative marker prints on every card and says nothing —
+    the same rotting promise as a permanent "In review" badge. That reasoning
+    held while the Library marked only the *absence* of verification. It stops
+    holding now that the Library states all three levels positively
+    (Organization / Verified / Community, see ``library.show_unverified_trust``):
+    "Community" is a true statement about an item nobody has reviewed, on an
+    instance with a reviewer or without one, and leaving verification off would
+    strand every user-authored item at Community with no admin action able to
+    move it.
+
+    Set it to False on an instance that does not want the axis offered at all;
+    the verify endpoints then 400 and the author-facing "Request verification"
+    button disappears, as before.
     """
-    return bool(get_value("store", "verification_enabled", default=False))
+    return bool(get_value("store", "verification_enabled", default=True))
 
 
 def get_guardrails_llm_provider_ready() -> bool:

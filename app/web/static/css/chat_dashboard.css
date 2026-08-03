@@ -60,6 +60,35 @@ html[data-ui-layout="rail"] .rdb-context {
     text-decoration: underline;
 }
 
+/* ── Orientation line ("New here? See how Agnes works") ───────────────────
+   Shares the Stack line's column and muted register — the two are the same kind
+   of thing, a quiet aside under the composer — but with no icon, so it reads as
+   the second of two notes rather than a second labelled row. The link takes the
+   primary accent (the Stack line's links are assistant-coloured because they
+   point at what Agnes is *using*; this one points at product documentation). */
+
+html[data-ui-layout="rail"] .rdb-orient {
+    align-self: center;
+    width: var(--rdb-col-narrow, 60%);
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+    padding: 2px 2px 0;
+    font-size: 13px;
+    color: var(--ds-text-muted);
+    font-family: var(--ds-font);
+}
+
+.rdb-orient a {
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.rdb-orient a:hover {
+    text-decoration: underline;
+}
+
 /* ── Suggested next actions — a vertical list of guided-task items, one under
  *    each other. Each item is a horizontal row: icon · title + description ·
  *    "Start →". ──────────────────────────────────────────────────────────── */

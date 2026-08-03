@@ -269,14 +269,6 @@
   .sk-lint-clean { font-size: 12.5px; color: var(--ds-accent-success-ink); }
   .sk-lint-sub { font-size: 11.5px; color: var(--ds-text-muted); margin: 8px 0 0; }
 
-  /* Result / status line above the actions — takes its own flex row so a long
-     validation message wraps instead of running off the page. */
-  .sk-result { font-size: 13px; color: var(--ds-text-secondary); flex: 1 1 100%; min-width: 0; text-align: right; line-height: 1.45; overflow-wrap: anywhere; }
-  .sk-result:empty { display: none; }
-  .sk-result.err { color: var(--ds-accent-danger-ink); }
-  .sk-result.ok { color: var(--ds-accent-success-ink); font-weight: 600; }
-  .sk-result.checking { color: var(--ds-text-secondary); font-style: italic; }
-
   /* ── Review status banner (shown above the builder form after save) ── */
   .sk-review-banner { display: flex; align-items: flex-start; gap: 14px; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; font-size: 14px; line-height: 1.5; }
   .sk-review-banner.pending { background: var(--ds-accent-warn-bg); border: 1px solid var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink); }
@@ -294,6 +286,42 @@
   .sk-review-label.pending { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
   .sk-review-label.ok      { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
   .sk-review-label.err     { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+
+  /* ── Feedback: two channels, split by "must the author DO something?" ──
+     RECEIPTS — draft saved, file loaded, check finished, item created — are
+     transient outcomes. They go to the global toast (window.appToast), out of
+     the layout entirely, and time out on their own.
+
+     PROBLEMS — the server refused the save — are work. They stay on the page,
+     as this alert: a titled, dismissible list of specific defects, each naming
+     the field that owns it with a jump to get there. Every problem is ALSO
+     marked on its own field (.sk-fielderr), so the fix location is never a
+     reading-comprehension exercise.
+
+     This replaced a single `.sk-result` span that lived INSIDE the action row
+     with `flex: 1 1 100%`. Every message shared one channel, so a 300-character
+     multi-issue rejection rendered as right-aligned red prose that claimed its
+     own full-width row and shoved the Save button down the page as it appeared.
+     The alert sits BELOW the action row instead: the row it grows under never
+     moves, and the buttons stay where the author left the pointer. */
+  .sk-alert { display: flex; align-items: flex-start; gap: 12px; margin: 0 0 18px; padding: 13px 15px; border: 1px solid var(--ds-accent-danger-line); border-left-width: 3px; border-radius: 12px; background: var(--ds-accent-danger-bg); }
+  /* Tinted disc rather than a solid fill: the ink token flips with the theme
+     and the tint mixes into the CURRENT surface, so the glyph keeps its
+     contrast in light and dark alike. */
+  .sk-alert-ico { flex-shrink: 0; width: 19px; height: 19px; margin-top: 1px; border-radius: 50%; background: color-mix(in srgb, var(--ds-accent-danger-line) 24%, var(--ds-surface)); color: var(--ds-accent-danger-ink); font-size: 13px; font-weight: 700; line-height: 19px; text-align: center; }
+  .sk-alert-body { flex: 1; min-width: 0; }
+  .sk-alert-title { margin: 0; font-size: 13.5px; font-weight: 650; color: var(--ds-text-primary); }
+  .sk-alert-list { list-style: none; margin: 9px 0 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  .sk-alert-row { font-size: 12.5px; line-height: 1.5; color: var(--ds-text-secondary); overflow-wrap: anywhere; }
+  .sk-alert-field { font-weight: 650; color: var(--ds-text-primary); }
+  .sk-alert-jump { border: none; background: none; padding: 0; margin-left: 4px; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ds-primary); cursor: pointer; text-decoration: underline; white-space: nowrap; }
+  .sk-alert-x { flex-shrink: 0; border: none; background: none; padding: 2px 4px; margin: -2px -4px 0 0; font: inherit; font-size: 13px; line-height: 1; color: var(--ds-text-muted); cursor: pointer; border-radius: 6px; }
+  .sk-alert-x:hover { color: var(--ds-text-primary); }
+
+  /* The same problem, restated where it can be fixed. Hidden (not
+     zero-height) when clean, so nothing reserves space for a good day. */
+  .sk-fielderr { margin: 6px 0 0; font-size: 12px; font-weight: 550; line-height: 1.45; color: var(--ds-accent-danger-ink); }
+  .sk-field input.is-err, .sk-field textarea.is-err { border-color: var(--ds-accent-danger-line); }
 </style>
 {% endblock %}
 
@@ -447,6 +475,10 @@
   var inFlight = false;
   var reviewInProgress = false;  // true while a submit is in the review queue; blocks re-save
   var _reviewBannerHtml = null;  // saved banner HTML — re-inserted after every render()
+  /* Problems the author has to fix: [{field, text}] from the last refused
+     save. Not receipts — those are toasts (see the feedback note in the CSS). */
+  var problems = [];
+  var problemsLead = '';   // "Couldn’t save"; the count is derived, see alertsHtml
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -710,6 +742,7 @@
         : dropZoneHtml('Drop the plugin <strong>.zip</strong> here', '', '.zip · up to ' + fmtSize(MAX_BUNDLE_BYTES));
       return '<div class="sk-sec-body" id="sk-drop">' +
         attached + fileInputHtml('.zip,application/zip') +
+        fieldErrHtml('bundle') +
         '<div class="sk-note">The archive must contain <code>.claude-plugin/plugin.json</code>. ' +
         '<strong>Check bundle</strong> validates the layout and lists every command, hook and agent the server finds inside — run it before saving.</div>' +
       '</div>';
@@ -744,7 +777,9 @@
         'A YAML frontmatter block (<code>name</code>, <code>description</code>) is added for you if you don’t write one.</div>' +
         fileInputHtml(MD_ACCEPT);
     }
-    return '<div class="sk-sec-body" id="sk-drop">' + modeSwitchHtml() + panel + '</div>';
+    // The body's fault lands under whichever input is showing — in upload mode
+    // the fault is about the attached text, not about the missing textarea.
+    return '<div class="sk-sec-body" id="sk-drop">' + modeSwitchHtml() + panel + fieldErrHtml('body') + '</div>';
   }
 
   function previewHtml() {
@@ -760,7 +795,11 @@
       (c.source !== 'bundle' && draft.source_file
         ? '<div class="sk-pv-row"><span class="sk-pv-k">Source</span><span class="sk-pv-v">' + esc(draft.source_file.name) + '</span></div>'
         : '') +
-      '<div class="sk-pv-row"><span class="sk-pv-k">Visible to</span><span class="sk-pv-v" id="sk-pv-access">' + (draft.access === 'everyone' ? 'Everyone here' : 'Only you') + '</span></div>' +
+      // "Everyone" / "Private" — the same two words the Library will print on
+      // this entry once it is saved (app/services/artefact_access.py ::
+      // VISIBILITY_LABELS). The preview is a promise about how the item will read
+      // elsewhere, so it must not invent its own vocabulary for it.
+      '<div class="sk-pv-row"><span class="sk-pv-k">Visible to</span><span class="sk-pv-v" id="sk-pv-access">' + (draft.access === 'everyone' ? 'Everyone' : 'Private') + '</span></div>' +
       '<div class="sk-pv-row"><span class="sk-pv-k">Status</span><span class="sk-pv-v" id="sk-pv-status">' + (canPublish() ? 'Ready to save' : 'Draft') + '</span></div>';
 
     return '<div>' +
@@ -785,20 +824,23 @@
        agent   inline guardrail checks (manifest / content / security)
        plugin  the bundle's component rows from /entities/preview
      Whatever the type, a row is {sev, msg, doc?} so the markup never forks. */
-  function checkRows() {
-    if (!check) return null;
+  // `src` defaults to the stored result; passed explicitly when a fresh one has
+  // to be counted before it is committed to state.
+  function checkRows(src) {
+    var res = src || check;
+    if (!res) return null;
     var rows = [];
-    (check.lint && check.lint.findings || []).forEach(function (f) {
+    (res.lint && res.lint.findings || []).forEach(function (f) {
       rows.push({ sev: f.severity || 'note', msg: f.message || '', doc: f.doc });
     });
-    (check.components || []).forEach(function (comp) {
+    (res.components || []).forEach(function (comp) {
       var label = (comp.type || 'file') + (comp.name ? ' · ' + comp.name : '');
       rows.push({
         sev: comp.ok ? 'ok' : 'fail',
         msg: label + (comp.issues && comp.issues.length ? ' — ' + comp.issues.join('; ') : '')
       });
     });
-    var inline = check.inline || {};
+    var inline = res.inline || {};
     ['manifest', 'content', 'static_security', 'quality'].forEach(function (k) {
       var res = inline[k];
       if (!res || !res.issues || !res.issues.length) return;
@@ -855,7 +897,9 @@
           '<h2 id="sk-build-title">' + (esc(draft.name) || esc(c.newTitle)) + '</h2>' +
         '</div>' +
         '<div class="sk-build-actions">' +
-          '<span class="sk-result" id="sk-result"></span>' +
+          // No status line lives in this row. Receipts go to the toast and the
+          // save verdict goes to #sk-alerts below, so nothing here can grow and
+          // push the buttons off the line the author is aiming at.
           // Discard replaced the ✕ that used to sit on each row of the picker's
           // draft list; with the list gone this is the only way to throw work
           // away, so it has to exist somewhere.
@@ -865,6 +909,9 @@
           '<button type="button" class="cc-btn cc-btn--primary" id="sk-save" ' + (canPublish() && !reviewInProgress ? '' : 'disabled') + '>Save to Library</button>' +
         '</div>' +
       '</div>' +
+      // The save verdict, below the action row and above the form it is about.
+      // Empty on a good day; it never reserves space.
+      '<div id="sk-alerts">' + alertsHtml() + '</div>' +
       agentCalloutHtml() +
       '<div class="sk-bgrid">' +
         '<div id="sk-steps">' +
@@ -879,8 +926,10 @@
               '<label class="sk-field"><span>Name <em>— lowercase-hyphenated handle</em></span>' +
                 '<input type="text" data-sk-field="name" value="' + esc(draft.name) + '" placeholder="' + esc(c.namePlaceholder) + '" maxlength="64" autocomplete="off" spellcheck="false"></label>' +
               '<p class="sk-hint' + (ns.err ? ' err' : '') + '" id="sk-name-hint">' + esc(ns.msg) + '</p>' +
+              fieldErrHtml('name') +
               '<label class="sk-field"><span>' + esc(c.descLabel) + ' <em>' + esc(c.descNote) + '</em></span>' +
                 '<textarea rows="2" data-sk-field="description" placeholder="' + esc(c.descPlaceholder) + '">' + esc(draft.description) + '</textarea></label>' +
+              fieldErrHtml('description') +
               '<label class="sk-field"><span>Category</span>' +
                 '<select data-sk-field="category">' + catOptions() + '</select></label>' +
             '</div>' +
@@ -939,6 +988,10 @@
         view.appendChild(wrap);
       }
     }
+
+    // The per-field slots render empty; this is what fills (or clears) them,
+    // so a re-render never drops a live fault or keeps a dead one.
+    syncProblems();
   }
 
   /* Light-touch preview sync while typing (no re-render → keeps focus). */
@@ -949,7 +1002,7 @@
     if ((el = document.getElementById('sk-pv-desc'))) el.textContent = draft.description || c.descPreview;
     if ((el = document.getElementById('sk-pv-inv'))) el.textContent = draft.name || '—';
     if ((el = document.getElementById('sk-pv-stats'))) el.textContent = bodyStats();
-    if ((el = document.getElementById('sk-pv-access'))) el.textContent = draft.access === 'everyone' ? 'Everyone here' : 'Only you';
+    if ((el = document.getElementById('sk-pv-access'))) el.textContent = draft.access === 'everyone' ? 'Everyone' : 'Private';
     if ((el = document.getElementById('sk-pv-status'))) el.textContent = canPublish() ? 'Ready to save' : 'Draft';
     if ((el = document.getElementById('sk-build-title'))) el.textContent = draft.name || c.newTitle;
     if ((el = document.getElementById('sk-name-hint'))) { el.textContent = ns.msg; el.className = 'sk-hint' + (ns.err ? ' err' : ''); }
@@ -980,19 +1033,20 @@
     if (!draft.source_file) draft.source_file = null;
     bundle = null;   // a File can't be persisted — plugin drafts resume without one
     check = null;
+    problems = [];   // last type's verdict says nothing about this one
     typeOpen = false;
     reviewInProgress = false; _reviewBannerHtml = null;
-    // render() must run first — it replaces view.innerHTML and creates a fresh
-    // #sk-result node; setResult() written before render() would be wiped out.
+    // render() must run first — it replaces view.innerHTML, so anything written
+    // into the builder's own DOM before it (the #sk-alerts host) is wiped out.
     render();
     // Say what happened to the work, in priority order: a restored draft is
     // the most surprising state, then a parked one.
     if (incoming && cfg().source === 'bundle') {
-      setResult('Draft restored — re-attach the .zip to save it.');
+      toast('Draft restored — re-attach the .zip to save it.', 'info', 7000);
     } else if (incoming) {
-      setResult('Restored your saved ' + cfg().label.toLowerCase() + ' draft.');
+      toast('Restored your saved ' + cfg().label.toLowerCase() + ' draft.');
     } else if (previous) {
-      setResult('Your ' + previous.toLowerCase() + ' draft is saved — switch back any time.');
+      toast('Your ' + previous.toLowerCase() + ' draft is saved — switch back any time.');
     }
   }
 
@@ -1014,9 +1068,17 @@
     }
     return detail.code || detail.detail || ('HTTP ' + status);
   }
+  /* The flattened message is for a one-line receipt; the STRUCTURE is what the
+     problem list needs (per-issue field + code), so carry both. */
   function readJson(r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
-      if (!r.ok) throw new Error(errMessage(j && j.detail, r.status));
+      if (!r.ok) {
+        var detail = j && j.detail;
+        var e = new Error(errMessage(detail, r.status));
+        e.detail = detail;
+        e.status = r.status;
+        throw e;
+      }
       return j;
     });
   }
@@ -1054,9 +1116,215 @@
     return fd;
   }
 
-  function setResult(msg, cls) {
-    var el = document.getElementById('sk-result');
-    if (el) { el.textContent = msg; el.className = 'sk-result' + (cls ? ' ' + cls : ''); }
+  /* ── Channel 1: receipts ──
+     Every transient outcome goes through the app-wide toast, so none of them
+     occupies builder layout. `kind` is the DS toast vocabulary
+     (success/info/warning/error); an error here is always something that just
+     HAPPENED (a rejected file, an unreachable endpoint), never a field that
+     needs editing — that is channel 2 below. */
+  function toast(msg, kind, timeout) {
+    if (!window.appToast) return;   // app.js is base-loaded; stay silent if not
+    window.appToast({ kind: kind || 'info', msg: msg, timeout: timeout });
+  }
+
+  /* ── Channel 2: problems ──
+     A refused save is a list of specific defects, so it is presented as one:
+     grouped by the field that owns it, deduped, and restated on the field
+     itself. `field` is null for anything we cannot attribute. */
+  var PROBLEM_FIELDS = ['name', 'description', 'body', 'bundle'];
+  function fieldLabel(f) {
+    if (f === 'body') return cfg().source === 'bundle' ? 'Bundle' : cfg().bodyLabel;
+    if (f === 'bundle') return 'Bundle';
+    return f === 'name' ? 'Name' : 'Description';
+  }
+
+  /* Which builder field an inline-check issue belongs to. The checks run over a
+     BAKED plugin tree, so they speak in files (`SKILL.md`, `<submission>`) —
+     this is the one place that translates those back into the fields actually
+     on screen. */
+  function issueField(issue) {
+    var file = String(issue.file || '');
+    var code = String(issue.code || '');
+    if (code === 'body_too_short') return 'body';
+    if (cfg().source === 'bundle') return 'bundle';
+    // `<submission>` is the description this form posted; a component issue on
+    // the authored .md is its frontmatter `description:` — both are the one
+    // Description field here.
+    if (file === '<submission>' || /\.(md|markdown)$/i.test(file) || file.indexOf('.claude-plugin') === 0) return 'description';
+    return null;
+  }
+
+  /* Hints are written once and read on three surfaces (this builder, the ZIP
+     upload wizard, the CLI), so a hint aimed at the others can arrive carrying
+     instructions that are impossible here — the skill rejection literally ends
+     "Do not add a .claude-plugin/plugin.json to the ZIP" for someone typing
+     Markdown into a textarea. Keep the sentences that state the rule; drop the
+     ones that describe another surface. */
+  var OFF_SURFACE_RE = /\.claude-plugin|plugin\.json|--description flag|upload form|the ZIP|re-upload/i;
+  function trimHint(text) {
+    var whole = String(text == null ? '' : text).trim();
+    var sentences = whole.match(/[^.!?]+[.!?]*\s*/g) || [];
+    var kept = sentences.filter(function (s) { return !OFF_SURFACE_RE.test(s); });
+    // Never trim to nothing: a hint that is ENTIRELY about another surface is
+    // still the only thing the server said.
+    return kept.length ? kept.join('').trim() : whole;
+  }
+
+  /* The alert is an INDEX, the field is the DETAIL. Printing the same three
+     sentences in both — which is what the first cut did, and both are on screen
+     at once — makes the reader check whether they differ. So the alert row gets
+     the verdict (the first sentence: what is wrong, and the number to beat) and
+     the field keeps the whole hint (how to fix it, and why it matters). */
+  function headline(text) {
+    var m = /^[^.!?]+[.!?]/.exec(String(text == null ? '' : text).trim());
+    return m ? m[0].trim() : String(text == null ? '' : text).trim();
+  }
+
+  /* Which check phases can actually REFUSE a save. `quality` rides along in the
+     same payload but is advisory by contract (`status: 'warn'` is its ceiling —
+     see the rejection branch in app/api/store.py), so listing its warnings as
+     "things to fix" would invent blockers the server never had: the first cut
+     of this reported "description_too_short" a third time under a phase name.
+     Advisory findings belong to the Check panel, which is what it is for. */
+  var BLOCKING_PHASES = { manifest: 1, content: 1, static_security: 1 };
+
+  /* Flatten any error shape the store returns into [{field, text}].
+     `{code, checks:{<phase>:{issues:[…]}}}` is the structured guardrail
+     rejection; a plain string or a FastAPI validation list gets one
+     unattributed row. */
+  function problemsFrom(err) {
+    var detail = err && err.detail;
+    var out = [], seen = {};
+    /* `text` is the whole hint. A problem attributed to a field splits it:
+       headline in the alert, full text on the field. An unattributed one has
+       nowhere to put the detail, so it carries the lot in the alert. */
+    function push(field, text, key) {
+      if (!text) return;
+      var k = key || (field + '|' + text);
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push({ field: field, text: field ? headline(text) : text, detail: text });
+    }
+    if (detail && detail.checks) {
+      Object.keys(detail.checks).forEach(function (phase) {
+        if (!BLOCKING_PHASES[phase]) return;
+        var res = detail.checks[phase] || {};
+        if (res.status === 'pass') return;
+        // A security block reports `findings`, everything else `issues`; and an
+        // issue is sometimes a bare code string rather than an object.
+        var raw = (res.issues || []).concat(res.findings || []);
+        raw.forEach(function (i) {
+          if (typeof i === 'string') { push(null, i.replace(/_/g, ' '), phase + '|' + i); return; }
+          if (phase === 'static_security') {
+            // Never echo the matched line — that is the reviewer's view, not a
+            // field hint. Name the reason and the file it is in.
+            push(null, (i.reason || i.category || 'Security finding') + (i.file ? ' (' + i.file + (i.line ? ':' + i.line : '') + ')' : ''),
+                 phase + '|' + (i.category || '') + '|' + (i.file || '') + '|' + (i.line || ''));
+            return;
+          }
+          var field = issueField(i);
+          // Dedupe on field+code, not on text: the component-level and
+          // submission-level description checks evaluate the SAME string and
+          // both fire, which is why the old line said "too short" twice.
+          push(field, trimHint(i.hint || i.code || phase), field + '|' + (i.code || phase));
+        });
+      });
+    }
+    if (!out.length) push(null, (err && err.message) || 'Something went wrong.');
+    return out;
+  }
+
+  function setProblems(lead, list) {
+    problemsLead = lead;
+    problems = list || [];
+  }
+
+  function alertsHtml() {
+    if (!problems.length) return '';
+    // The count is DERIVED, never stored: rows retire as the author answers
+    // them, and a header still claiming "2 things to fix" over one row is the
+    // page arguing with itself.
+    var n = problems.length;
+    var title = problemsLead + ' — ' + (n === 1 ? 'one thing to fix' : n + ' things to fix');
+    return '<div class="sk-alert" id="sk-alert" role="alert" tabindex="-1">' +
+      '<span class="sk-alert-ico" aria-hidden="true">!</span>' +
+      '<div class="sk-alert-body">' +
+        '<p class="sk-alert-title">' + esc(title) + '</p>' +
+        '<ul class="sk-alert-list">' + problems.map(function (p) {
+          var label = p.field ? '<span class="sk-alert-field">' + esc(fieldLabel(p.field)) + '</span> — ' : '';
+          var jump = p.field ? '<button type="button" class="sk-alert-jump" data-sk-jump="' + p.field + '">Take me there</button>' : '';
+          return '<li class="sk-alert-row">' + label + esc(p.text) + jump + '</li>';
+        }).join('') + '</ul>' +
+      '</div>' +
+      '<button type="button" class="sk-alert-x" data-sk-dismiss aria-label="Dismiss">✕</button>' +
+    '</div>';
+  }
+
+  // Per-field restatement slot. Always present, hidden while clean.
+  function fieldErrHtml(f) {
+    return '<p class="sk-fielderr" data-sk-err="' + f + '" hidden></p>';
+  }
+
+  /* Push `problems` into the DOM without a full render, so it can also run
+     while the author is typing (see dropProblem). */
+  function syncProblems() {
+    var host = document.getElementById('sk-alerts');
+    if (host) host.innerHTML = alertsHtml();
+    PROBLEM_FIELDS.forEach(function (f) {
+      var msg = problems.filter(function (p) { return p.field === f; })
+                        .map(function (p) { return p.detail || p.text; }).join(' ');
+      var slot = document.querySelector('[data-sk-err="' + f + '"]');
+      if (slot) { slot.textContent = msg; slot.hidden = !msg; }
+      var ctl = document.querySelector('[data-sk-field="' + f + '"]');
+      if (ctl) {
+        ctl.classList.toggle('is-err', !!msg);
+        if (msg) ctl.setAttribute('aria-invalid', 'true'); else ctl.removeAttribute('aria-invalid');
+      }
+    });
+  }
+
+  /* Editing a field answers its problem, so the row leaves as the author works
+     rather than sitting there contradicting the screen. When the last one goes,
+     so does the alert. */
+  function dropProblem(field) {
+    if (!problems.length) return;
+    var before = problems.length;
+    problems = problems.filter(function (p) { return p.field !== field; });
+    if (problems.length !== before) syncProblems();
+  }
+  function clearProblems() {
+    if (!problems.length) return;
+    problems = [];
+    syncProblems();
+  }
+
+  /* "Take me there" — the alert names a field, this puts the caret in it. A
+     faulted body that is currently an ATTACHED file has no control to focus, so
+     the content section itself is the target. */
+  function jumpTo(field) {
+    var el = document.querySelector('[data-sk-field="' + field + '"]');
+    if (!el && (field === 'body' || field === 'bundle')) el = document.getElementById('sk-drop');
+    if (!el) el = document.querySelector('[data-sk-err="' + field + '"]');
+    if (!el) return;
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (el.focus) el.focus({ preventScroll: true });
+  }
+
+  /* Progress belongs ON the control that started the work — that is where the
+     author is looking, and it costs no layout. Returns the undo. */
+  function busy(id, label) {
+    var b = document.getElementById(id);
+    if (!b) return function () {};
+    var was = b.textContent, wasOff = b.disabled;
+    b.textContent = label;
+    b.disabled = true;
+    b.setAttribute('aria-busy', 'true');
+    return function () {
+      if (!b.isConnected) return;   // a re-render already replaced it
+      b.textContent = was;
+      b.disabled = wasOff;
+      b.removeAttribute('aria-busy');
+    };
   }
 
   /* Check — the type-adapted "try it before you ship it" step.
@@ -1065,7 +1333,8 @@
      advisory: a failure here never disables Save. */
   function doCheck() {
     if (inFlight || !canCheck()) return;
-    inFlight = true; setResult('Checking…');
+    inFlight = true;
+    var done = busy('sk-check', 'Checking…');
     var call = cfg().source === 'bundle'
       ? postForm('/api/store/entities/preview', bundleForm())
           .then(function (res) { return { components: (res && res.components) || [] }; })
@@ -1075,10 +1344,13 @@
     call
       .then(function (result) {
         check = result;
-        // render() recreates #sk-result empty, so the status line has
-        // to be written AFTER the re-render, never before it.
+        // A check that ran is a receipt; its FINDINGS are the Check panel's
+        // job, and the panel is on screen — so the toast counts them and
+        // points, it does not restate them.
+        var n = (checkRows(result) || []).filter(function (r) { return r.sev !== 'ok'; }).length;
         render();
-        setResult('Checked — save when ready.', 'ok');
+        toast(n ? 'Checked — ' + n + ' note' + (n === 1 ? '' : 's') + ' in the panel.' : 'Checked — no findings.',
+              n ? 'info' : 'success');
       })
       .catch(function (e) {
         // A bundle that fails validation is a real, actionable answer — show
@@ -1086,30 +1358,47 @@
         if (cfg().source === 'bundle') {
           check = { components: [{ type: 'bundle', file: '', ok: false, issues: [e.message] }] };
           render();
-          setResult('Bundle rejected — see the panel.', 'err');
+          toast('Bundle rejected — see the check panel.', 'error', 8000);
         } else {
-          setResult('Advisory check unavailable (' + e.message + ') — you can still save.');
+          toast('Advisory check unavailable (' + e.message + ') — you can still save.', 'warning', 8000);
         }
       })
-      .finally(function () { inFlight = false; });
+      .finally(function () { inFlight = false; done(); });
   }
 
   function doSave() {
     if (inFlight || !canPublish()) return;
     inFlight = true;
+    clearProblems();               // a new attempt supersedes the last verdict
+    var done = busy('sk-save', 'Saving…');
+    var name = (draft.name || '').trim();
     var access = draft.access === 'everyone' ? 'everyone' : 'private';
+
+    /* A refusal is a work list, not a sentence. Progress rides the button
+       (busy()) and receipts go to the toast, so there is no status line left to
+       write prose into — every error path lands here instead. */
+    function fail(e) {
+      setProblems('Couldn’t save', problemsFrom(e));
+      render();
+      // Move focus to the alert so a keyboard/screen-reader user lands on the
+      // verdict rather than hunting for what changed.
+      var el = document.getElementById('sk-alert');
+      if (el && el.focus) el.focus();
+      inFlight = false;
+      done();
+    }
 
     // Plugin bundles: POST the .zip directly and redirect to the Library.
     // Server-side async review handles content checking; no synchronous LLM
     // pre-check is needed for ZIP uploads.
     if (cfg().source === 'bundle') {
-      setResult('Saving…');
       postForm('/api/store/entities', bundleForm({ access: access }))
         .then(function (created) {
           discardDraft(type);
+          flashToast(created, access, name);
           window.location.href = '/library?new=' + encodeURIComponent(created.id);
         })
-        .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
+        .catch(fail);
       return;
     }
 
@@ -1139,7 +1428,10 @@
       function updateBanner(state) {
         // Re-query the live node: render() may have detached the original element.
         var node = document.getElementById('sk-review-banner-wrap') || banner;
-        var icon  = state.kind === 'ok' ? '✅' : state.kind === 'err' ? '❌' : '⏳';
+        // Monochrome marks, not pictographic emoji — the UI icon policy bans the
+        // latter (tests/test_no_ui_emoji.py) and ✓/✗ are the sanctioned pair.
+        // Pending leans on the animated .sk-review-pulse beside the title.
+        var icon  = state.kind === 'ok' ? '✓' : state.kind === 'err' ? '✗' : '⋯';
         var pulse = state.kind === 'pending' ? '<span class="sk-review-pulse"></span>' : '';
         var actionsHtml = '';
         if (state.kind === 'ok') {
@@ -1223,7 +1515,7 @@
           // Show a Library link so the user can track the outcome there.
           _reviewBannerHtml =
             '<div class="sk-review-banner pending">' +
-              '<div class="sk-review-banner-icon">⏳</div>' +
+              '<div class="sk-review-banner-icon">⋯</div>' +
               '<div class="sk-review-banner-body">' +
                 '<div class="sk-review-banner-title">Still under review.</div>' +
                 '<div class="sk-review-banner-hint">This is taking longer than usual. Track the outcome in the Library or contact your admin.</div>' +
@@ -1240,7 +1532,9 @@
     }
 
     function commitSave(verdictToken) {
-      setResult('Saving…');
+      // The button may still read "Reviewing with AI…" from the pre-check —
+      // relabel so the last thing it says is what is actually happening.
+      done(); done = busy('sk-save', 'Saving…');
       var body = markdownPayload({ access: access });
       if (verdictToken) { body.precheck_verdict_token = verdictToken; }
       postJson('/api/store/entities/from-markdown', body)
@@ -1248,7 +1542,7 @@
           showReviewPanel(created, access);
           inFlight = false;
         })
-        .catch(function (e) { setResult('Could not save: ' + e.message, 'err'); inFlight = false; });
+        .catch(fail);
     }
 
     if (!GUARDRAILS_LLM_READY || access !== 'everyone') {
@@ -1258,7 +1552,8 @@
     }
 
     // LLM gate is active: run the pre-check synchronously before committing.
-    setResult('Reviewing with AI… (this may take up to 30 seconds)', 'checking');
+    // Up to ~30s, so the wait is named on the control that started it.
+    done(); done = busy('sk-save', 'Reviewing with AI…');
     postJson('/api/store/entities/from-markdown', markdownPayload({ dry_run: true, include_llm: true }))
       .then(function (res) {
         if (!res.guardrails_active || res.llm_safe || res.llm_error) {
@@ -1266,33 +1561,58 @@
           // pass the verdict_token so the BG review skips the Anthropic call.
           commitSave(res.verdict_token || null);
         } else {
-          // Genuine rejection — extract findings from the verdict.
-          var msg = 'AI review did not pass.';
+          // Genuine rejection. One row per finding rather than one paragraph:
+          // the verdict is a work list like any other refusal, so it goes to
+          // the same alert. Unattributed — the reviewer judges the bundle, not
+          // a field, so there is nothing to jump to.
+          var rows = [];
           var verdict = res.llm_findings;
           if (verdict) {
             var findings = verdict.findings || [];
             var cqIssues = (verdict.content_quality && verdict.content_quality.issues) || [];
             if (Array.isArray(findings) && findings.length) {
-              msg = 'AI review failed: ' + findings.map(function (f) {
-                return [f.explanation, f.fix_hint].filter(Boolean).join(' — ');
-              }).join(' ');
+              rows = findings.map(function (f) {
+                return { field: null, text: [f.explanation, f.fix_hint].filter(Boolean).join(' — ') };
+              });
             } else if (Array.isArray(cqIssues) && cqIssues.length) {
-              msg = 'AI review failed: ' + cqIssues.map(function (i) {
-                return typeof i === 'string' ? i : (i.issue || i.hint || JSON.stringify(i));
-              }).join(' ');
+              rows = cqIssues.map(function (i) {
+                return { field: null, text: typeof i === 'string' ? i : (i.issue || i.hint || JSON.stringify(i)) };
+              });
             } else if (typeof verdict.summary === 'string') {
-              msg = 'AI review failed: ' + verdict.summary;
+              rows = [{ field: null, text: verdict.summary }];
             }
           }
-          setResult(msg, 'err');
+          rows = rows.filter(function (r) { return r.text; });
+          if (!rows.length) rows = [{ field: null, text: 'The automated reviewer did not pass this content.' }];
+          setProblems('AI review did not pass', rows);
+          render();
+          var alertEl = document.getElementById('sk-alert');
+          if (alertEl && alertEl.focus) alertEl.focus();
           inFlight = false;
+          done();
         }
       })
-      .catch(function (e) {
+      .catch(function () {
         // Pre-check network error — fall through to save so a transient
         // outage doesn't silently block publishing.
         commitSave(null);
       });
+  }
+
+  /* Receipt handed over a redirect (app.js drains agnes.flash.toast on the next
+     page): the author is TOLD the thing exists and which door it went through.
+     Only the bundle path needs it — the markdown path stays put and answers with
+     the review banner instead. */
+  function flashToast(created, access, name) {
+    try {
+      sessionStorage.setItem('agnes.flash.toast', JSON.stringify({
+        kind: 'success',
+        msg: access === 'everyone'
+          ? '“' + name + '” saved — publishing to everyone once the automated review passes.'
+          : '“' + name + '” saved to your Library.',
+        timeout: 7000
+      }));
+    } catch (_) { /* private mode — the ?new= flash on the Library still lands */ }
   }
 
   /* ── File intake — .md fills the body, .zip becomes the bundle ── */
@@ -1341,28 +1661,29 @@
   function takeFile(file) {
     if (!file || !draft) return;
     if (cfg().source === 'bundle') {
-      if (!/\.zip$/i.test(file.name)) { setResult('That is not a .zip archive.', 'err'); return; }
-      if (file.size > MAX_BUNDLE_BYTES) { setResult('That bundle is ' + fmtSize(file.size) + ' — the limit is ' + fmtSize(MAX_BUNDLE_BYTES) + '.', 'err'); return; }
+      if (!/\.zip$/i.test(file.name)) { toast('That is not a .zip archive.', 'error'); return; }
+      if (file.size > MAX_BUNDLE_BYTES) { toast('That bundle is ' + fmtSize(file.size) + ' — the limit is ' + fmtSize(MAX_BUNDLE_BYTES) + '.', 'error', 7000); return; }
       bundle = file;
       check = null;
+      dropProblem('bundle');
       if (!(draft.name || '').trim()) {
         var slug = slugFromFilename(file.name);
         if (slug) draft.name = slug;
       }
       persist();
       render();
-      setResult('Attached ' + file.name + ' — run Check bundle before saving.', 'ok');
+      toast('Attached ' + file.name + ' — run Check bundle before saving.', 'success', 6000);
       return;
     }
 
     // Read as text only what is plausibly text: a .png dropped here used to be
     // decoded into the textarea as mojibake.
     if (!MD_EXT_RE.test(file.name) && !/^text\//.test(file.type || '')) {
-      setResult('That is not a Markdown file — choose a .md, .markdown or .txt file.', 'err');
+      toast('That is not a Markdown file — choose a .md, .markdown or .txt file.', 'error', 7000);
       return;
     }
     if (file.size > MAX_MD_BYTES) {
-      setResult('That file is ' + fmtSize(file.size) + ' — the limit is ' + fmtSize(MAX_MD_BYTES) + '.', 'err');
+      toast('That file is ' + fmtSize(file.size) + ' — the limit is ' + fmtSize(MAX_MD_BYTES) + '.', 'error', 7000);
       return;
     }
     // Replacing written work is the only destructive thing this control does,
@@ -1384,30 +1705,38 @@
         if (slug) { draft.name = slug; filled.push('name'); }
       }
       check = null;
+      // The uploaded text answers whatever the body (and any field it filled)
+      // was faulted for.
+      problems = problems.filter(function (p) {
+        return p.field !== 'body' && filled.indexOf(p.field) === -1;
+      });
       persist();
       render();
       // Say what the upload did to the rest of the form — fields that fill
       // themselves while you are looking somewhere else read as a glitch.
-      setResult('Loaded ' + file.name +
-                (filled.length ? ' — filled in ' + listWords(filled) + ' from the file.' : '.'), 'ok');
+      toast('Loaded ' + file.name +
+            (filled.length ? ' — filled in ' + listWords(filled) + ' from the file.' : '.'), 'success', 6000);
     };
-    reader.onerror = function () { setResult('Could not read that file.', 'err'); };
+    reader.onerror = function () { toast('Could not read that file.', 'error'); };
     reader.readAsText(file);
   }
 
   /* ── Events — all delegated, since the page is re-rendered wholesale ── */
   document.addEventListener('click', function (e) {
     var t = e.target.closest('[data-sk-type],[data-sk-change],[data-sk-mode],[data-sk-browse],' +
-                             '[data-sk-removefile],#sk-check,#sk-save,#sk-draft,#sk-discard');
+                             '[data-sk-removefile],[data-sk-jump],[data-sk-dismiss],' +
+                             '#sk-check,#sk-save,#sk-draft,#sk-discard');
     if (!t) return;
     if (t.hasAttribute('data-sk-type')) { chooseType(t.getAttribute('data-sk-type')); }
     else if (t.hasAttribute('data-sk-change')) { typeOpen = true; render(); }
+    else if (t.hasAttribute('data-sk-dismiss')) { clearProblems(); }
+    else if (t.hasAttribute('data-sk-jump')) { jumpTo(t.getAttribute('data-sk-jump')); }
     else if (t.hasAttribute('data-sk-mode')) {
       // Switching input method never touches the body — that is what makes it
       // safe to try both, and what makes "Edit as text" a real way back out of
       // an upload rather than a restart.
       var m = t.getAttribute('data-sk-mode');
-      if (draft && bodyMode() !== m) { draft.source_mode = m; persist(); render(); setResult(''); }
+      if (draft && bodyMode() !== m) { draft.source_mode = m; persist(); render(); }
     }
     else if (t.hasAttribute('data-sk-browse')) {
       var input = document.getElementById('sk-file-input');
@@ -1422,19 +1751,19 @@
       check = null;
       persist();
       render();
-      setResult('Removed ' + (label || 'the file') + '.');
+      toast('Removed ' + (label || 'the file') + '.');
     }
     else if (t.id === 'sk-check') { doCheck(); }
     else if (t.id === 'sk-save') { doSave(); }
-    else if (t.id === 'sk-draft') { persist(); render(); setResult('Draft saved in this browser.', 'ok'); }
+    else if (t.id === 'sk-draft') { persist(); render(); toast('Draft saved in this browser.', 'success'); }
     else if (t.id === 'sk-discard') {
       // Destructive and unrecoverable — the draft exists nowhere but this
       // browser, so it gets a confirm rather than an undo we cannot offer.
       if (!window.confirm('Discard this ' + cfg().label.toLowerCase() + ' draft? It is only saved in this browser and cannot be recovered.')) return;
       discardDraft(type);
-      draft = makeDraft(); bundle = null; check = null;
+      draft = makeDraft(); bundle = null; check = null; problems = [];
       render();
-      setResult('Draft discarded.');
+      toast('Draft discarded.');
     }
   });
 
@@ -1463,6 +1792,7 @@
       // so is cheaper than letting the author assume it does.
       if (draft.source_file) draft.source_file.edited = true;
     }
+    dropProblem(f);   // the field is being answered — stop faulting it
     persist();
     syncPreview();
   });

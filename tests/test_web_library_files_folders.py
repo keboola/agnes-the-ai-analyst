@@ -111,7 +111,10 @@ def test_each_group_has_its_own_column_header_on_one_shared_grid(seeded_app):
     # would pin a second row above the group's own.
     assert text.count('<table class="data-table lib-table">') == len(groups)
     assert text.count("<thead>") == len(groups)
-    assert text.count('<col class="lib-col-type">') == len(groups)
+    assert text.count('<col class="lib-col-owner">') == len(groups)
+    # No Type column: the list is grouped by type into these very sections.
+    assert "lib-col-type" not in text
+    assert '<th scope="col">Type</th>' not in text
     # Every colgroup is the same, so the grids cannot drift apart.
     colgroups = re.findall(r"<colgroup>(.*?)</colgroup>", text, re.S)
     assert len(set(cg.split() and " ".join(cg.split()) for cg in colgroups)) == 1
@@ -375,10 +378,11 @@ def test_actions_hold_only_the_reserved_stack_slot(seeded_app):
     assert "lib-iconbtn" not in text
 
 
-def test_collection_rows_carry_no_type_badge(seeded_app):
-    """The folder icon, the row styling and the file count already say
-    "collection" — a Type chip repeating it is noise, so the cell is left empty.
-    A loose file keeps its real format badge."""
+def test_no_row_carries_a_type_badge(seeded_app):
+    """The Type column is gone — the list is grouped by type into the sections the
+    rows are drawn in, so a per-row chip restated the band above it. A file's
+    format, the one thing the chip said that the grouping does not, moved to the
+    name's second line (see the format tests below)."""
     import re
 
     tok = seeded_app["admin_token"]
@@ -389,9 +393,56 @@ def test_collection_rows_carry_no_type_badge(seeded_app):
     text = seeded_app["client"].get("/library", headers=_auth(tok)).text
     folder = re.search(r'<tr class="lib-row lib-row--folder".*?</tr>', text, re.S).group(0)
     file_row = re.search(r'<tr class="lib-row lib-row--file".*?</tr>', text, re.S).group(0)
-    assert "lib-typechip" not in folder
-    assert "Collection" not in folder
-    assert "lib-typechip" in file_row
+    assert "lib-typechip" not in text
+    # Four cells per row, not five — the chip's cell is gone, not just emptied.
+    assert len(re.findall(r"<td[ >]", folder)) == 4
+    assert len(re.findall(r"<td[ >]", file_row)) == 4
+    # The type's WORDS still ride the row, as an ATTRIBUTE and only that: the grid
+    # card names the kind on its metadata line and is projected from the row, so it
+    # needs them even though no cell renders them.
+    assert 'data-type-label="Collection"' in folder
+    assert ">Collection<" not in folder
+    assert 'data-type-label="Document"' in file_row
+    assert ">Document<" not in file_row
+
+
+def test_file_rows_show_their_format_where_the_description_was(seeded_app):
+    """A file's second line is its FORMAT ("MD", "PNG"), not the boilerplate
+    sentence every file shared. A collection keeps its file count there, and a
+    nested child file — which never had a description at all — gets a format line
+    too."""
+    import re
+
+    tok = seeded_app["admin_token"]
+    solo = _collection(seeded_app, "Format Solo", tok)
+    _upload(seeded_app, solo["id"], "notes.md", tok)
+    folder = _collection(seeded_app, "Format Folder", tok)
+    _upload(seeded_app, folder["id"], "one.png", tok, content=b"\x89PNG\r\n\x1a\n" + b"p" * 300, ctype="image/png")
+    _upload(seeded_app, folder["id"], "two.csv", tok, content=b"a,b\n1,2\n" + b"3,4\n" * 60, ctype="text/csv")
+
+    text = seeded_app["client"].get("/library", headers=_auth(tok)).text
+
+    def _desc(row: str) -> str:
+        m = re.search(r'<span class="lib-name-desc">(.*?)</span>', row, re.S)
+        return m.group(1).strip() if m else ""
+
+    loose = re.search(r'<tr class="lib-row lib-row--file"(?:(?!</tr>).)*?Format Solo.*?</tr>', text, re.S)
+    assert loose, "the single-file artefact must render as a loose file row"
+    assert _desc(loose.group(0)) == "MD"
+    # The retired boilerplate is gone from the row entirely.
+    assert "A private file — searchable by your agents." not in loose.group(0)
+
+    folder_row = re.search(r'<tr class="lib-row lib-row--folder"(?:(?!</tr>).)*?Format Folder.*?</tr>', text, re.S)
+    assert folder_row, "a 2-file artefact must render as a folder row"
+    assert _desc(folder_row.group(0)) == "2 files"
+
+    # Children: titled by filename, second line = their own format. No closing
+    # quote in the pattern — the last child carries `lib-row--lastchild` too.
+    kids = re.findall(r'<tr class="lib-row lib-row--file lib-row--child.*?</tr>', text, re.S)
+    kid_formats = {_desc(k) for k in kids}
+    assert {"PNG", "CSV"} <= kid_formats, kid_formats
+    # The format also rides the row, for the in-place file⇄collection transitions.
+    assert 'data-file-format="MD"' in loose.group(0)
 
 
 def test_sharing_badge_is_the_control_when_you_own_it(seeded_app):
@@ -441,37 +492,135 @@ def test_sharing_badge_is_read_only_when_shared_with_you(seeded_app):
     assert "lib-vis__caret" not in row
     # No share affordance at all on something you can't re-share.
     assert "data-share=" not in row
-    # Its own COLOUR, not just its own tooltip: the badge must not wear the
-    # primary tint the clickable sharing badges use (see --ds-readonly-* in
-    # design-tokens.css). Shape alone (a missing chevron) is too quiet a signal
-    # for "this one does nothing when you press it".
+    # Its own COLOUR, not just its own tooltip: it must not wear the primary tint,
+    # which now means exactly "you can change this". Shape alone (a missing
+    # chevron) is too quiet a signal for "this one does nothing when you press it".
+    # It needs no colour rule of its own — the base `.lib-vis` IS that grey.
     assert "lib-vis--readonly" in row
 
 
-def test_read_only_sharing_badge_has_its_own_colour_tokens():
-    """The read-only badge's hue is a token trio, defined for light AND dark, and
-    never an alias of --ds-primary — the tint that means "this is a control"."""
+def test_sharing_badge_colour_means_changeable_not_visibility():
+    """The chip's hue answers one question — "can I change this?" — and nothing
+    else. Blue only on the badge that opens the dialog that changes access; grey on
+    everything else, including the store-entity badge that opens a dialog which
+    merely explains the model. Keyed off editability, never off the visibility
+    VALUE: value and editability don't correlate (your own `Private` upload is
+    changeable, someone else's `Everyone` item is not), so colouring by value made
+    two rows with the same colour offer opposite affordances."""
     from pathlib import Path
 
-    tokens = Path("app/web/static/css/design-tokens.css").read_text(encoding="utf-8")
     library = Path("app/web/templates/library.html").read_text(encoding="utf-8")
 
-    for name in ("--ds-readonly-bg", "--ds-readonly-ink", "--ds-readonly-line"):
-        # Declared twice: the light default plus the dark-theme retint (the light
-        # violet pastel washes out on the dark surface family).
-        assert tokens.count(f"{name}:") >= 2, f"{name} is not defined for both light and dark"
-        assert f"{name}:   var(--ds-primary" not in tokens, f"{name} must not alias the action colour"
+    # Blue belongs to editability, and to nothing else.
+    assert ".lib-vis--editable { color: var(--ds-primary)" in library
+    for value in ("--shared", "--workspace", "--private"):
+        assert f".lib-vis{value} {{" not in library, f"the {value} VALUE must not carry a colour"
+    # …and `--fixed` takes it back for the interactive-but-unchangeable case. It
+    # must be declared AFTER --editable, which it accompanies, or it loses on equal
+    # specificity.
+    assert ".lib-vis--fixed {" in library
+    assert library.index(".lib-vis--editable {") < library.index(".lib-vis--fixed {")
+    # Grey is the neutral family, not the old violet read-only trio.
+    assert "--ds-readonly" not in library
+    fixed_rule = library.split(".lib-vis--fixed {", 1)[1].split("}", 1)[0]
+    assert "--ds-text-muted" in fixed_rule and "--ds-primary" not in fixed_rule
 
-    assert ".lib-vis--readonly" in library
-    # Declared after the primary-tinted rule, or it would lose on equal specificity.
-    assert library.index(".lib-vis--shared") < library.index(".lib-vis--readonly {")
+    fbar = Path("app/web/static/css/filter_toolbar.css").read_text(encoding="utf-8")
+    assert "--ds-readonly" not in fbar
+    fixed_card = fbar.split(".fbar-card__access--fixed {", 1)[1].split("}", 1)[0]
+    assert "--ds-primary" not in fixed_card
+
+
+def test_card_sharing_control_states_changeability_by_box_not_hue():
+    """On the grid CARD the same distinction is carried by FORM, not by ink.
+
+    The card cannot use the table's hue rule: `.fbar-card:hover` already turns the
+    title primary and `:focus-within` draws a primary ring, so primary-at-rest on
+    the sharing control competed with the card's own ambient hover — and beside a
+    filled, semibold `Add to stack` pill, blue 400-weight text with no container
+    read as coloured metadata rather than as a control.
+
+    So the contract here is: `--editable` gets a BORDERED BOX at rest (never a
+    fill — that would double the footer's blue against the primary action), the
+    blue arrives on hover as a background CHANGE (a different channel from the
+    card's elevation hover), and `--fixed` stays bare text so box-vs-no-box is what
+    separates "you can change this" from "you cannot"."""
+    from pathlib import Path
+
+    fbar = Path("app/web/static/css/filter_toolbar.css").read_text(encoding="utf-8")
+    editable = fbar.split(".fbar-card__access--editable {", 1)[1].split("}", 1)[0]
+
+    # A box at rest — and NOT the primary fill/ink the old version leaned on.
+    assert "border-color: var(--ds-border)" in editable
+    assert "border-radius" in editable
+    assert "--ds-primary" not in editable, "the card chip must not be primary at rest"
+    # Target size: 26px matches .lib-stackpill and clears WCAG 2.2 SC 2.5.8, which
+    # the previous 20px control failed (the adjacent 26px pill denies it the
+    # spacing exemption).
+    assert "min-height: 26px" in editable
+
+    # Hover is a FILL, not a hue nudge: #0284c7 -> #0369a1 on 12px text was the
+    # entire previous response, and it fired while the whole card was lifting.
+    hover = fbar.split("button.fbar-card__access--editable:hover,", 1)[1].split("}", 1)[0]
+    assert "background: var(--ds-primary-light)" in hover
+    assert "color: var(--ds-primary)" in hover
+
+    # Bare text where nothing can change — no box, so the distinction survives a
+    # 40-card scan without relying on colour.
+    fixed_card = fbar.split(".fbar-card__access--fixed {", 1)[1].split("}", 1)[0]
+    assert "border-color" not in fixed_card and "min-height: 26px" not in fixed_card
+
+    # The chevron the card used to drop: present in the table badge, and now
+    # emitted for the card's editable control too (a second, non-colour cue —
+    # WCAG 1.4.1).
+    library = Path("app/web/templates/library.html").read_text(encoding="utf-8")
+    card_fn = library.split("access.className = 'fbar-card__access'", 1)[1]
+    assert "VIS_CARET_SVG" in card_fn.split("foot.appendChild(access)", 1)[0]
+
+
+def test_sharing_vocabulary_has_one_source():
+    """One set of words for who-can-see-this, owned by the server.
+
+    The card used to keep its own map ("Only you" / "Specific groups" /
+    "Everyone") against the table's ("Private" / "Shared" / "Workspace"), so most
+    rows called their own state something different depending on the view — and
+    because that map only knew the three scope keys, a skill pending review
+    (correctly "In review" on its row) printed "Only you" on its card, which was
+    not a wording difference but a false statement.
+
+    The card now prints `data-sharing` — whatever the server rendered — so review
+    states arrive without being enumerated client-side and the views cannot drift.
+    """
+    from pathlib import Path
+
+    from app.services.artefact_access import VISIBILITY_LABELS
+
+    assert VISIBILITY_LABELS == {
+        "private": "Private",
+        "shared": "Specific groups",
+        # "Everyone", never "Workspace": `workspace` is the internal key, and the
+        # product calls that scope the organization everywhere it addresses a user.
+        "workspace": "Everyone",
+    }
+
+    library = Path("app/web/templates/library.html").read_text(encoding="utf-8")
+    # The competing card-side maps are gone for good.
+    assert "ACCESS_LABEL" not in library
+    assert "ACCESS_TITLE" not in library
+    # The card reads the server's word off the row…
+    assert "row.dataset.sharing" in library
+    # …and a saved share change refreshes that attribute, or the card (and the
+    # Sharing column's sort, which reads the same attribute) would go stale.
+    upd = library.split("function updateRowVisibility(", 1)[1].split("\n  }", 1)[0]
+    assert "row.dataset.sharing = label" in upd
 
 
 def test_details_column_is_retired_and_a_collection_shows_its_contents(seeded_app):
     """The Details column is gone. A COLLECTION now says what's inside it where a
     description would go ("2 files") — more useful than boilerplate prose, and the
-    only place the count still shows in the table. A file keeps its description;
-    both carry the meta text on the row for the grid cards to render."""
+    only place the count still shows in the table. A file says its FORMAT there
+    (the boilerplate sentence it used to print is gone with the Type column); both
+    carry the meta text on the row for the grid cards to render."""
     import re
 
     tok = seeded_app["admin_token"]
@@ -482,17 +631,21 @@ def test_details_column_is_retired_and_a_collection_shows_its_contents(seeded_ap
     text = seeded_app["client"].get("/library", headers=_auth(tok)).text
     assert "<th>Details</th>" not in text
     assert "lib-col-details" not in text
-    # Five columns: Name · Type · Owner · Sharing · Actions — in each group's own
-    # header (they are identical; check the first).
+    # Four columns: Name · Owner · Sharing · Actions — in each group's own header
+    # (they are identical; check the first). Type went the way of Details.
     head = re.search(r"<thead>.*?</thead>", text, re.S).group(0)
     # `<th[ >]` so the count doesn't also match the enclosing <thead>.
-    assert len(re.findall(r"<th[ >]", head)) == 5
+    assert len(re.findall(r"<th[ >]", head)) == 4
 
     folder = re.search(r'<tr class="lib-row lib-row--folder".*?</tr>', text, re.S).group(0)
     assert re.search(r'lib-name-desc">\s*2 files\s*<', folder), "collection does not show its contents"
     assert 'data-meta="2 files"' in folder
     loose = re.search(r'<tr class="lib-row lib-row--file".*?</tr>', text, re.S).group(0)
-    assert "searchable by your agents" in loose  # a file keeps its description
+    assert re.search(r'lib-name-desc">\s*MD\s*<', loose)  # a file shows its format
+    # …not the boilerplate it replaced. Scoped to the rendered line: the sentence
+    # legitimately survives (lowercased) in `data-search`, so searching the words
+    # of a file's description still finds it.
+    assert not re.search(r'lib-name-desc">[^<]*searchable by your agents', loose)
     assert 'data-meta="d.md' in loose  # …and its meta rides the row
 
 
@@ -786,3 +939,156 @@ def test_move_requires_access_to_the_target(seeded_app):
     )
     assert r.status_code == 404
     assert r.json()["detail"] == "target_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Drop one file on another: propose a new collection
+# ---------------------------------------------------------------------------
+
+
+def test_loose_file_is_a_pair_target_and_names_the_gesture(seeded_app):
+    """Dropping a file on a COLLECTION moves it in; dropping it on another FILE
+    proposes a collection made of the two. Two gestures over the same drag, so
+    each target has to say which one it is — a different hook and a different
+    label, never the ring alone."""
+    import re
+
+    tok = seeded_app["admin_token"]
+    solo = _collection(seeded_app, "Pairable One", tok)
+    _upload(seeded_app, solo["id"], "one.md", tok)
+    _folder(seeded_app, "Absorbing Folder", tok)
+
+    text = seeded_app["client"].get("/library", headers=_auth(tok)).text
+    loose = re.search(r'<tr class="lib-row lib-row--file".*?</tr>', text, re.S).group(0)
+    assert 'data-pair-target="1"' in loose
+    assert "New collection" in loose
+    # …and it is NOT a move target: a file cannot absorb a file.
+    assert "data-drop-target" not in loose
+
+    folder = re.search(r'<tr class="lib-row lib-row--folder".*?</tr>', text, re.S).group(0)
+    assert 'data-drop-target="1"' in folder
+    assert "Drop here" in folder
+    assert "data-pair-target" not in folder
+
+
+def test_a_file_inside_a_collection_is_not_a_pair_target(seeded_app):
+    """A child already lives in a collection, so the gesture that would put a
+    file beside it is the move its FOLDER row already offers."""
+    import re
+
+    tok = seeded_app["admin_token"]
+    _folder(seeded_app, "Children Folder", tok)
+
+    text = seeded_app["client"].get("/library", headers=_auth(tok)).text
+    for child in re.findall(r"<tr[^>]*lib-row--child.*?</tr>", text, re.S):
+        assert "data-pair-target" not in child
+
+
+def test_a_file_shared_with_you_is_not_a_pair_target(seeded_app):
+    """Pairing MOVES both files, which consumes the single-file collection each
+    one sits in. Doing that to a file someone shared with you would delete their
+    collection out from under them, so their row offers no pair."""
+    import re
+
+    from app.resource_types import ResourceType
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    admin, analyst = seeded_app["admin_token"], seeded_app["analyst_token"]
+    theirs = _collection(seeded_app, "Their Loose File", admin)
+    _upload(seeded_app, theirs["id"], "theirs.md", admin)
+
+    conn = get_system_db()
+    groups = UserGroupsRepository(conn)
+    grp = groups.get_by_name("pair-share-grp") or groups.create(name="pair-share-grp", description="t", created_by="t")
+    UserGroupMembersRepository(conn).add_member("analyst1", grp["id"], source="admin", added_by="t")
+    ResourceGrantsRepository(conn).create(
+        group_id=grp["id"],
+        resource_type=ResourceType.COLLECTION.value,
+        resource_id=theirs["id"],
+        assigned_by="admin",
+    )
+
+    text = seeded_app["client"].get("/library", headers=_auth(analyst)).text
+    row = re.search(r'<tr[^>]*data-item-id="' + theirs["id"] + r'".*?</tr>', text, re.S).group(0)
+    assert 'data-ownership="shared_with_me"' in row
+    assert "data-pair-target" not in row
+    # It can still be moved into a collection of the analyst's own — that is the
+    # existing gesture and this changes nothing about it.
+    assert 'draggable="true"' in row
+
+
+def test_the_page_carries_the_new_collection_dialog(seeded_app):
+    """The drop opens a proposal rather than committing: creating the collection
+    moves both files out of where they are now, which is more than a drag should
+    do on its own. The same dialog is the keyboard route, from the drag grip's
+    menu — so it lists its files rather than naming two in a sentence."""
+    tok = seeded_app["admin_token"]
+    solo = _collection(seeded_app, "Dialog File", tok)
+    _upload(seeded_app, solo["id"], "d.md", tok)
+
+    text = seeded_app["client"].get("/library", headers=_auth(tok)).text
+    assert 'id="pairModal"' in text
+    assert 'id="pairFiles"' in text
+    assert ">Create collection<" in text
+    assert "New collection…" in text  # the grip menu's item
+    # It says what will happen to the files it is about to move.
+    assert "nothing is copied and nothing is deleted" in text
+
+
+def test_grid_cards_mirror_the_pair_hooks_and_name_files_off_the_row(seeded_app):
+    """Grid cards are projected from the rows by `buildCard`, so anything the
+    gesture reads has to travel with them — and anything it reads that ONLY a row
+    carries has to be resolved through the row, or the gesture works in the table
+    and fails silently one view switch later.
+
+    Both halves are asserted here because both were real: the pair hook has to be
+    mirrored onto the card, and ownership + filename have to be read back off the
+    row (a card has no `data-filename`, so naming a file off the card gave the
+    dialog one filename and one display title)."""
+    tok = seeded_app["admin_token"]
+    solo = _collection(seeded_app, "Grid Pair File", tok)
+    _upload(seeded_app, solo["id"], "grid.md", tok)
+
+    text = seeded_app["client"].get("/library", headers=_auth(tok)).text
+    # The card projection carries the hook and the hint.
+    assert "if (row.dataset.pairTarget) card.dataset.pairTarget = '1';" in text
+    assert "'New collection'" in text
+    # …and the per-item facts are resolved through the row, in both views.
+    assert "function rowForFile(" in text
+    assert "dragOwned = isOwnedByCaller(rowForFile(dragFileId) || src);" in text
+    assert "pairLabelOf(rowForFile(targetFileId) || target)" in text
+
+
+def test_pairing_two_loose_files_leaves_one_collection_and_no_husks(seeded_app):
+    """The server contract behind the gesture: create, then one move per file.
+    There is no pairing endpoint and none is needed — `move` already tidies away
+    each single-file collection it empties, which is exactly what has to happen
+    to the two files' current homes."""
+    tok = seeded_app["admin_token"]
+    a = _collection(seeded_app, "Pair Left", tok)
+    _upload(seeded_app, a["id"], "left.md", tok)
+    b = _collection(seeded_app, "Pair Right", tok)
+    _upload(seeded_app, b["id"], "right.md", tok)
+    fa = _files(seeded_app, a["id"], tok)[0]["file_id"]
+    fb = _files(seeded_app, b["id"], tok)[0]["file_id"]
+
+    c = seeded_app["client"]
+    new = _collection(seeded_app, "Paired Up", tok)
+    for src, fid in ((a["id"], fa), (b["id"], fb)):
+        r = c.post(
+            f"/api/collections/{src}/files/{fid}/move",
+            json={"target_collection_id": new["id"]},
+            headers=_auth(tok),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["source_emptied"] is True
+
+    assert len(_files(seeded_app, new["id"], tok)) == 2
+    text = c.get("/library", headers=_auth(tok)).text
+    assert "Paired Up" in text
+    # Both husks are gone — the two files are now children of the new collection.
+    assert "Pair Left" not in text
+    assert "Pair Right" not in text

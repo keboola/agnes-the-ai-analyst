@@ -2,7 +2,7 @@
  *
  * The palette lives in design-tokens.css (`:root[data-theme="paper"]`);
  * this sheet carries the parts of the issue-#896 prototype look that
- * are NOT expressible as color tokens: pill CTAs, hover-lift cards,
+ * are NOT expressible as color tokens: button shape, hover-lift cards,
  * badge-pill tags, tight negative tracking on headlines, calm inputs.
  *
  * Every rule is scoped to `[data-theme="paper"]`, so the sheet is
@@ -10,9 +10,13 @@
  * nothing unless the instance opts into the paper theme.
  *
  * Vocabulary rules (mirrors the prototype's own comments):
- *   - `.btn-primary`/`.btn-secondary` are the ONE prominent pill CTA
- *     per context; dense per-row actions keep the tight 8px radius.
- *   - Inputs/selects are NEVER pill-shaped.
+ *   - `.btn-primary`/`.btn-secondary` are the ONE prominent CTA per
+ *     context, on `--ds-radius-btn`; dense per-row actions keep the
+ *     tight 8px radius.
+ *   - Nothing labelled is pill-shaped — not buttons, not inputs.
+ *     Fully-round is the badge/tag/counter language. The one carve-out
+ *     is the pair of connect-banner CTAs (`.cbn-cta`, `.klb-cta`),
+ *     marketing surfaces that stay round under every theme.
  *   - Category tags use the `--ds-kind-*` sticker palette, never the
  *     brand primary, so categories can't be mistaken for actions.
  */
@@ -38,9 +42,15 @@
     letter-spacing: -0.15px;
 }
 
-/* ── Buttons — pill CTAs, quiet secondaries ───────────────────── */
+/* ── Buttons — one radius, quiet secondaries ──────────────────────
+   `--ds-radius-btn`, not the pill: buttons live next to inputs and
+   toolbar controls (`.fbar__search input`, `.fbar-filter__btn`,
+   `.cc-btn`), which are never pill-shaped, and a fully-round CTA in
+   that row read as a different component from the identical CTA on a
+   detail header. Fully-round stays the BADGE language (tags, status
+   chips, counters, circular icon-only buttons). */
 [data-theme="paper"] .btn {
-    border-radius: var(--ds-radius-pill);
+    border-radius: var(--ds-radius-btn);
     font-weight: 500;
 }
 
@@ -198,6 +208,12 @@
     --ds-brand-accent: #a7f3d0;
 }
 
+/* …and they keep their SHAPE too. Both banner CTAs are authored fully-round
+   (style-custom.css) — the marketing idiom these two connect surfaces are
+   built on — and paper no longer squares them down to `--ds-radius-btn`. The
+   pill is what marks them as the product-model banner rather than another
+   labelled page button, so it stays under every theme. */
+
 /* ── Hero — the light paper hero card ──────────────────────────────
    The canonical `.page-header--hero` assumes a dark gradient and
    hardcodes white ink (style-custom.css). Paper flips the hero to a
@@ -352,4 +368,70 @@
 /* ── Toasts — dark pill, bottom-center (prototype confirmation) ─ */
 [data-theme="paper"] .toast {
     border-radius: var(--ds-radius-pill);
+}
+
+/* ── Detail pages ─────────────────────────────────────────────────────
+   The shared entity-detail scaffold (macros/_detail.html) is skinned in
+   its OWN sheet — static/css/detail-page.css — not here: the redesign
+   replaced the scaffold's per-kind gradient slab with an editorial
+   header plus a two-column shell, which is a page layout rather than a
+   component re-tint, and it is long enough to earn a file.
+
+   An interim version of that work lived in this block and dressed the
+   showcase hero in paper's near-black `--ds-hero-*` slab. That kept the
+   kind hues from clashing but kept the SLAB, i.e. ~260px of header
+   before the first line of content and a frosted panel nested inside a
+   coloured box. The editorial header supersedes it whole, so the rules
+   are gone rather than layered under new ones.
+
+   What remains here is the one piece that is a component and not part of
+   the detail layout: the owner/admin action strip, which the marketplace
+   pages render between the header and the first section. */
+
+/* ── Owner/admin action bar ───────────────────────────────────────────
+   `.owner-actions` was a bare right-aligned flex row: three unparented
+   pills, two of them destructive and as loud as Edit. It becomes a named
+   strip — and a hairline-topped one rather than a bordered card, so it
+   reads as the foot of the header instead of a fourth box on a page whose
+   sections no longer have boxes at all. The destructive pair is demoted to
+   quiet controls that only commit to danger on hover: the colour arrives
+   with the intent, not with the page. */
+html[data-theme="paper"] .owner-actions {
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 14px 0 0;
+    margin-bottom: 32px;
+    background: none;
+    border: 0;
+    border-top: 1px solid var(--ds-border-light);
+    border-radius: 0;
+}
+
+html[data-theme="paper"] .owner-actions__label {
+    display: block;
+    margin-right: auto;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .owner-actions .btn-danger {
+    background: transparent;
+    border-color: var(--ds-border);
+    color: var(--ds-accent-danger-ink);
+}
+
+html[data-theme="paper"] .owner-actions .btn-danger:hover:not([disabled]) {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+
+html[data-theme="paper"] .owner-actions .btn-danger[disabled] {
+    background: transparent;
+    border-color: var(--ds-border-light);
+    color: var(--ds-text-muted);
 }

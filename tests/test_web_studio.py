@@ -1,5 +1,7 @@
 """Route tests for the generic authoring-agent studio pages."""
 
+from pathlib import Path
+
 import pytest
 
 DOMAINS = ["data-package", "mcp", "marketplace", "corporate-memory"]
@@ -263,6 +265,74 @@ def test_builder_separates_shareable_agents_from_personal_ones(seeded_app):
     assert "personal agents" in body
     # It must not claim the author's own authority travels with the resource.
     assert "Nothing you write here inherits your access." in body
+
+
+def test_builder_splits_receipts_from_problems(seeded_app):
+    """Feedback rides TWO channels, chosen by "must the author act on it?".
+
+    Everything shared one `.sk-result` span before this, and that span lived
+    inside the action row with `flex: 1 1 100%` — so a multi-issue rejection
+    (~300 characters, because the same "description too short" fired at both
+    component and submission level and carried ZIP-upload advice a Markdown
+    author cannot act on) claimed its own full-width row and pushed Save down
+    the page as it appeared."""
+    body = seeded_app["client"].get("/skills", headers=_auth(seeded_app["analyst_token"])).text
+
+    # The status line that shared one channel and moved the buttons is gone.
+    assert 'id="sk-result"' not in body
+    assert "sk-result { font-size" not in body
+    assert "function setResult(" not in body
+
+    # Receipts → the app-wide toast, out of the layout entirely.
+    assert "window.appToast" in body
+    assert "Draft saved in this browser." in body
+    # …including the one the builder never gave: it used to navigate away and
+    # let the Library imply the save worked.
+    assert "agnes.flash.toast" in body
+    assert "saved to your Library." in body
+    assert "once the automated review passes" in body  # published ≠ private
+
+    # Problems → on the page, attributed, dismissible, jumpable.
+    assert 'id="sk-alerts"' in body
+    assert 'role="alert"' in body
+    assert "data-sk-jump=" in body and ">Take me there<" in body
+    assert "data-sk-dismiss" in body
+    assert "data-sk-err=" in body  # the same fault restated on its own field
+    assert "function issueField(" in body  # baked-tree file path → on-screen field
+
+    # Alert = index (headline), field = detail (whole hint). Not both, twice.
+    assert "function headline(" in body
+    # Advisory phases must not be dressed up as blockers, and hints written for
+    # the ZIP path must not survive onto a write-here surface.
+    assert "var BLOCKING_PHASES = { manifest: 1, content: 1, static_security: 1 };" in body
+    assert "function trimHint(" in body
+    assert "quality" not in body.split("BLOCKING_PHASES = {")[1].split("}")[0]
+
+    # Progress rides the control that started the work, not a status line.
+    assert "busy('sk-save', 'Saving…')" in body
+    assert "busy('sk-check', 'Checking…')" in body
+
+
+def test_global_toast_is_announced_and_dismissable(seeded_app):
+    """The shared toast primitive (window.appToast) is the builder's receipt
+    channel, so it has to be one: announced to a screen reader, dismissable by
+    keyboard, capped, and tolerant of the bare-string call shape eight existing
+    call sites already use (which rendered an EMPTY toast before this)."""
+    app_js = (Path("app/web/static/app.js")).read_text(encoding="utf-8")
+
+    assert 'c.setAttribute("aria-live", "polite")' in app_js
+    assert 'c.setAttribute("role", "status")' in app_js
+    assert 'if (typeof opts === "string") opts = { msg: opts };' in app_js
+    assert "TOAST_MAX" in app_js  # a repeated action can't paper over the page
+    assert 'close.className = "toast-x"' in app_js
+    assert 'close.setAttribute("aria-label", "Dismiss")' in app_js
+    # Hovering is how a long receipt gets read — it must not expire mid-sentence.
+    assert 'el.addEventListener("mouseenter"' in app_js
+
+    css = (Path("app/web/static/style-custom.css")).read_text(encoding="utf-8")
+    assert ".toast-x {" in css
+    assert ".toast-msg {" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css.split(".toast-container {")[1]
 
 
 def test_skills_page_arms_new_skill_spotlight(seeded_app):

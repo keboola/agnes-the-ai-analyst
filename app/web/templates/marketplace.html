@@ -153,7 +153,11 @@
     <span class="mp-facet-label">Verification</span>
     <button class="pill is-active" data-verification="">Any</button>
     <button class="pill" data-verification="verified">Verified</button>
-    <button class="pill" data-verification="unverified">Not verified</button>
+    {# v113: "Community", not "Not verified" — the trust axis states all three
+       levels positively everywhere else (Organization / Verified / Community),
+       and a filter option is the one place the negative wording survived. The
+       `unverified` VALUE is the stored query key and stays as-is. #}
+    <button class="pill" data-verification="unverified">Community</button>
   </div>
   {% endif %}
 

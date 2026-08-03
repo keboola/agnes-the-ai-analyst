@@ -6,10 +6,16 @@
    before collections became folders in the Library.
 
    Rendered on the shared entity-detail scaffold (macros/_detail.html) like
-   every other detail page — data package, plugin, table, collection: compact
-   hero + section cards, no bespoke header. It presents the file and nothing
-   more: no in-page ask/search box, and no upload drop-zone (uploading targets
-   a COLLECTION, so that affordance lives on the collection page only).
+   every other detail page — data package, plugin, table, collection: one
+   editorial header + a two-column shell, no bespoke chrome. It presents the
+   file and nothing more: no in-page ask/search box, and no upload drop-zone
+   (uploading targets a COLLECTION, so that affordance lives on the collection
+   page only).
+
+   Resource type `file`, which is what gives it the amber accent — distinct
+   from the coral of the collection holding it, so a file and its folder are
+   never the same colour in the same list. (On themes without the redesign
+   `--ds-kind-file` aliases the collection colour, i.e. no change.)
 
    Sharing here is the FILE's own (resource type `corpus_file`), independent of
    the folder's — that's what makes "share an individual file within a
@@ -19,7 +25,7 @@
 {% block body_attrs %}class="detail-page"{% endblock %}
 
 {% block head_extra %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 {{ detail.styles() }}
 <link rel="stylesheet" href="{{ static_url('css/file_preview.css') }}">
 <script src="{{ static_url('js/file_preview.js') }}" defer></script>
@@ -35,40 +41,100 @@
     border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent);
   }
   .lfd-vis svg { width: 12px; height: 12px; }
-
-  .lfd-status--indexed { color: var(--ds-accent-success-ink); font-weight: 600; }
-  .lfd-status--pending { color: var(--ds-text-secondary); }
-  .lfd-status--rejected { color: var(--ds-warn-ink); font-weight: 600; }
-
-  .lfd-note { margin: 12px 0 0; font-size: 13px; line-height: 1.6; color: var(--ds-text-secondary); }
-  .lfd-note a { color: var(--kind); }
+  {# Indexing state is a `detail.status(…)` pill in the rail now, and the
+     prose in the main column says the same thing in a sentence — so the
+     three one-off ink classes this page used to colour it with are gone. #}
 </style>
 {% endblock %}
 
 {% block content %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 
 {% set _collection_name = collection.name or collection.slug %}
 {% set _type = (file.file_type or '')|upper %}
 {% set _status = file.processing_status or 'pending' %}
 {% set _status_kind = 'indexed' if _status == 'indexed' else ('rejected' if _status in ('rejected', 'needs_review') else 'pending') %}
+{# One sentence per indexing state, and one status tone, defined together so
+   the rail chip and the prose can never disagree about the same file. #}
+{% set _status_tone = {'indexed': 'ok', 'rejected': 'danger', 'pending': ''}[_status_kind] %}
+{% set _status_label = 'Indexed' if _status == 'indexed' else ('Rejected' if _status == 'rejected' else ('Needs review' if _status == 'needs_review' else _status|capitalize)) %}
+
+{# One definition of the visibility chip — the editorial layout shows it in the
+   rail's Sharing block, the legacy layout in its Sharing card, and the two must
+   not be able to describe the same file differently. #}
+{% macro lfd_visibility_chip() %}
+<span class="lfd-vis lfd-vis--{{ file_visibility }}" id="lfd-vis-chip">
+  {% if file_visibility == 'private' %}
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.9"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.9"/></svg>Private
+  {% elif file_visibility == 'workspace' %}
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Workspace
+  {% else %}
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Shared
+  {% endif %}
+</span>
+{% endmacro %}
 
 {% set _meta = [{'icon': 'file', 'text': (_type or 'File') ~ (' · ' ~ file_size_display if file_size_display else '')}] %}
 {% if file.created_at %}{% set _ = _meta.append({'icon': 'clock', 'text': 'Added ' ~ file.created_at.isoformat()[:10]}) %}{% endif %}
 
+{# Secondary actions leave the header for the overflow menu, so Preview is
+   the only prominent control on the page. #}
+{% set _menu_items = [{'label': 'Open collection', 'href': '/library/' ~ collection.slug, 'icon': 'file'}] %}
+{% if can_share %}
+  {% set _ = _menu_items.append({'label': 'Share this file', 'icon': 'share',
+                                 'href': '/library?share=' ~ file.id ~ '&type=corpus_file'}) %}
+{% endif %}
+{% set _menu %}{{ detail.menu(_menu_items) }}{% endset %}
+
 {% call detail.hero(
-     kind='library', glyph='doc', name=file.filename, compact=True,
+     kind='file', glyph='doc', name=file.filename, compact=True,
+     type_label='File', menu=_menu|trim,
      description='One file in the ' ~ _collection_name ~ ' collection, with its own sharing.',
      meta=_meta, back_href='/library/' ~ collection.slug, back_label=_collection_name) %}
   {# Preview is the primary action: the first thing you want from a file's page
      is to see the file. It opens the same modal a row click opens on the
      collection page (file_preview.js), so the file looks the same either way. #}
   {{ ds.button('Preview', variant='primary', id='lfd-preview-btn') }}
-  {% if can_share %}
+  {% if can_share and not detail.redesign %}
     {{ ds.button('Share this file', variant='secondary', href='/library?share=' ~ file.id ~ '&type=corpus_file') }}
   {% endif %}
   {{ detail.ask_agnes('Tell me what is in ' ~ file.filename ~ ' from the ' ~ _collection_name ~ ' collection.') }}
 {% endcall %}
+
+{{ detail.cols_open() }}
+
+{# The facts about this file move to the rail under the editorial layout —
+   a definition list is a lookup, not the page's content — and the main
+   column carries the two things worth a sentence instead. The legacy path
+   keeps the Details + Sharing cards exactly as it rendered them. #}
+{% if detail.redesign %}
+
+{{ detail.section_open('How sharing works here', icon='key') }}
+  <p class="detail-prose">
+    This file has its own sharing, separate from
+    <a href="/library/{{ collection.slug }}">{{ _collection_name }}</a>.
+    Sharing the collection shares everything in it; sharing this file shares only
+    this file. Move it between collections by dragging it in the Library.
+  </p>
+{{ detail.section_close() }}
+
+{{ detail.section_open('Indexing', icon='search') }}
+  <p class="detail-prose">
+    {% if _status == 'indexed' %}
+      This file is indexed — your agents can search it and answer from its contents.
+    {% elif _status == 'rejected' %}
+      This file was rejected during processing, so it is not searchable. Re-ingest it
+      from the collection page once the cause is fixed.
+    {% elif _status == 'needs_review' %}
+      This file needs review before it is searchable. An admin can re-ingest it from
+      the collection page.
+    {% else %}
+      This file is still being processed. It becomes searchable once indexing finishes.
+    {% endif %}
+  </p>
+{{ detail.section_close() }}
+
+{% else %}
 
 {{ detail.section_open('Details', icon='info') }}
   <div class="detail-rows">
@@ -86,7 +152,7 @@
     </div>
     <div class="detail-row">
       <span class="detail-row__key">Indexing</span>
-      <span class="detail-row__val lfd-status--{{ _status_kind }}">
+      <span class="detail-row__val">
         {% if _status == 'indexed' %}Indexed — your agents can search it
         {% elif _status == 'rejected' %}Rejected
         {% elif _status == 'needs_review' %}Needs review
@@ -103,22 +169,54 @@
 {{ detail.section_close() }}
 
 {{ detail.section_open('Sharing', icon='key') }}
-  <span class="lfd-vis lfd-vis--{{ file_visibility }}" id="lfd-vis-chip">
-    {% if file_visibility == 'private' %}
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.9"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.9"/></svg>Private
-    {% elif file_visibility == 'workspace' %}
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Workspace
-    {% else %}
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Shared
-    {% endif %}
-  </span>
-  <p class="lfd-note">
+  {{ lfd_visibility_chip() }}
+  <p class="detail-side__note">
     This file has its own sharing, separate from
     <a href="/library/{{ collection.slug }}">{{ _collection_name }}</a>.
     Sharing the collection shares everything in it; sharing this file shares only
     this file. Move it between collections by dragging it in the Library.
   </p>
 {{ detail.section_close() }}
+
+{% endif %}
+
+{{ detail.aside_open() }}
+{# The rail's content is redesign-only: on the legacy path there is no
+   rail, and appending these as extra sections would change a page default
+   instances are entitled to see unchanged. #}
+{% if detail.redesign %}
+
+{{ detail.side_open('File information', icon='info') }}
+  {{ detail.side_rows([
+       {'key': 'Collection', 'html': True,
+        'val': '<a href="/library/' ~ collection.slug ~ '">' ~ _collection_name ~ '</a>'},
+       {'key': 'Format', 'val': _type or 'Unknown'},
+       {'key': 'Size', 'val': file_size_display},
+       {'key': 'Indexing', 'html': True, 'val': detail.status(_status_label, _status_tone)|trim},
+       {'key': 'Added', 'html': True,
+        'val': ('<time datetime="' ~ file.created_at.isoformat() ~ '">' ~ file.created_at.isoformat()[:10] ~ '</time>') if file.created_at else ''},
+     ]) }}
+{{ detail.side_close() }}
+
+{{ detail.side_open('Sharing', icon='share') }}
+  {{ lfd_visibility_chip() }}
+  {% if can_share %}
+  <div class="detail-side__actions detail-side__actions--spaced">
+    {{ ds.button('Share this file', variant='secondary', size='sm',
+                 href='/library?share=' ~ file.id ~ '&type=corpus_file') }}
+  </div>
+  {% endif %}
+{{ detail.side_close() }}
+
+{{ detail.side_open('In this collection', icon='layers') }}
+  {{ detail.related([
+       {'name': _collection_name, 'href': '/library/' ~ collection.slug,
+        'kind': 'library', 'kind_label': 'Collection'},
+     ]) }}
+{{ detail.side_close() }}
+
+{% endif %}
+{{ detail.cols_close() }}
 
 </div>
 

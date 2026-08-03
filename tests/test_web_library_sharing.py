@@ -576,10 +576,15 @@ def test_library_title_carries_no_setup_caveat(seeded_app):
 
 
 def test_data_apps_note_is_an_info_banner_below_the_list(seeded_app):
-    """The Data apps caveat is an INFO BANNER under the inventory — not a `.pnote`
-    in the page head (which would open the page on the one kind you cannot have),
-    and no longer a band inside `.lib-list` (which dressed a roadmap note in the
-    chrome of the inventory, so it read as a sixth openable section)."""
+    """The Data apps caveat is an INFO BANNER in the page's head-notes stack — not
+    a `.pnote` (which would open the page on the one kind you cannot have), and
+    not a band inside `.lib-list` (which dressed a roadmap note in the chrome of
+    the inventory, so it read as a sixth openable section).
+
+    It moved from below the inventory into `.lib-headnotes` so the head closes on
+    ONE block of asides rather than stranding a note at the foot of a long list.
+    What still matters, and is what this asserts, is that it is outside the
+    list's frame and carries none of the group machinery."""
     _create_collection(seeded_app, "Soon Banner Anchor", seeded_app["admin_token"])
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
     assert 'class="lib-soon__badge">Coming soon<' in text
@@ -590,16 +595,17 @@ def test_data_apps_note_is_an_info_banner_below_the_list(seeded_app):
     assert "This is still in the works" in text
     assert "link an existing one" in text
     assert "Nothing to do yet." in text
-    # Below the list, OUTSIDE its frame: `#lib-noresults` is the first thing after
-    # the list's closing tag, so landing after it is what puts the banner outside.
+    # In the head-notes stack, OUTSIDE the list's frame: after the lede, before
+    # the list opens, so it cannot be read as one of the list's own sections.
+    assert 'class="lib-headnotes"' in text
     assert (
         text.index('class="lede"')
+        < text.index('class="lib-headnotes"')
+        < text.index('class="lib-soon"')
         < text.index('class="lib-list"')
-        # every group section opens before it (the class attribute, so the page's
+        # every group section opens after it (the class attribute, so the page's
         # own `.lib-group` CSS and JS further down don't count)
         < text.rindex('class="fbar-group lib-group')
-        < text.index('id="lib-noresults"')
-        < text.index('class="lib-soon"')
     )
     # One banner, not one per page state: the stocked and empty branches share it.
     assert text.count('class="lib-soon"') == 1
