@@ -199,6 +199,7 @@ def test_drain_budget_is_shared_across_the_whole_shutdown(monkeypatch):
     monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "10")
 
     async def drive() -> None:
+        health_probes.begin_shutdown()
         first = health_probes._drain_budget_s()
         assert first == pytest.approx(10.0, abs=0.5)
         await asyncio.sleep(0.3)
@@ -211,5 +212,48 @@ def test_drain_budget_is_shared_across_the_whole_shutdown(monkeypatch):
 
 def test_drain_budget_floors_at_zero_once_spent(monkeypatch):
     monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "0")
+    health_probes.begin_shutdown()
     assert health_probes._drain_budget_s() == 0.0
     assert health_probes._drain_budget_s() == 0.0
+
+
+def test_routine_cancellation_does_not_arm_the_shutdown_budget(monkeypatch):
+    """A non-shutdown drain must not start the shared clock.
+
+    The worker cancels a job's heartbeat task on every completed job — a
+    routine, non-shutdown cancellation that can land mid-DB-call. If that
+    armed the process-global deadline, one budget later every real shutdown
+    drain would get zero time and the protection would be silently gone
+    while the process ran fine.
+    """
+    monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "10")
+    assert health_probes._drain_deadline is None
+
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    def slow_write() -> bool:
+        write_started.set()
+        release_write.wait(timeout=10)
+        return True
+
+    async def drive() -> None:
+        task = asyncio.create_task(health_probes.to_thread_drain_on_cancel(slow_write))
+        assert await asyncio.to_thread(write_started.wait, 5), "write never started"
+        task.cancel()
+        release_write.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(drive())
+    assert health_probes._drain_deadline is None, "a routine cancellation must not arm the shutdown budget"
+    assert health_probes._drain_budget_s() == pytest.approx(10.0, abs=0.5), "full timeout outside shutdown"
+
+
+def test_begin_shutdown_arms_the_budget_and_is_idempotent(monkeypatch):
+    monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "10")
+    health_probes.begin_shutdown()
+    first = health_probes._drain_deadline
+    assert first is not None
+    health_probes.begin_shutdown()
+    assert health_probes._drain_deadline == first, "a second call must not extend a running budget"

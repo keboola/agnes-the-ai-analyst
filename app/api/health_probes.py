@@ -103,13 +103,37 @@ def _write_canary() -> bool:
 
 _T = TypeVar("_T")
 
-#: Total drain budget for the WHOLE shutdown, not per call. Comfortably under
-#: the 60s stop_grace_period a container typically gets between SIGTERM and
-#: SIGKILL.
-_DEFAULT_DRAIN_TIMEOUT_S = 45.0
+#: Total drain budget for the WHOLE shutdown, not per call.
+#:
+#: Deliberately much smaller than the worker runtime's
+#: ``AGNES_WORKER_DRAIN_TIMEOUT_S`` (45s): that one waits on arbitrary job
+#: handlers, this one waits on single jobs-table/canary statements. 10s
+#: already means something is badly wrong with the DB. Keeping it small is
+#: what makes the two independent budgets add up to less than the 60s
+#: stop_grace_period a container typically gets between SIGTERM and SIGKILL.
+_DEFAULT_DRAIN_TIMEOUT_S = 10.0
 
-#: Monotonic instant the shared budget expires at, set by the first drain.
+#: Monotonic instant the shared shutdown budget expires at. Armed by
+#: :func:`begin_shutdown`, NOT by the first drain — see there.
 _drain_deadline: float | None = None
+
+
+def begin_shutdown() -> None:
+    """Start the shared drain budget. Called once from the lifespan's shutdown.
+
+    Arming this on the first drain instead would be wrong: the worker cancels
+    a job's heartbeat task on every completed job
+    (``app/worker/runtime.py``'s ``hb_task.cancel()``), which is a routine,
+    non-shutdown cancellation that can land mid-DB-call. That would start the
+    clock during normal operation and, one budget later, leave every real
+    shutdown drain with zero time — silently disabling the protection while
+    the process runs fine.
+
+    Idempotent: a second call does not extend an already-running budget.
+    """
+    global _drain_deadline
+    if _drain_deadline is None:
+        _drain_deadline = time.monotonic() + _drain_timeout_s()
 
 
 def _drain_timeout_s() -> float:
@@ -124,29 +148,24 @@ def _drain_timeout_s() -> float:
 
 
 def _drain_budget_s() -> float:
-    """Seconds left in the SHARED shutdown drain budget.
+    """Seconds this drain may wait.
 
-    The budget must be shared, not per call: ``app/main.py``'s lifespan
-    cancels the checkpoint loop, then the canary loop, then the worker loop
-    *sequentially*, and the worker's own ``_drain_in_flight`` waits on a
-    heartbeat task per in-flight entry. A per-call bound would let those
-    stack — 45s each, several times over — and blow past the very
-    stop_grace_period the bound exists to stay under, turning a graceful
-    drain into the SIGKILL it was added to prevent.
+    During shutdown the budget is SHARED, not per call: the lifespan cancels
+    the checkpoint loop, then the canary loop, then the worker loop
+    *sequentially*, and the worker's ``_drain_in_flight`` waits on a
+    heartbeat task per in-flight entry. Per-call bounds would stack and blow
+    past the very stop_grace_period they exist to stay under, turning a
+    graceful drain into the SIGKILL it was added to prevent. So every drain
+    after :func:`begin_shutdown` draws from what remains of one budget.
 
-    The first drain starts the clock; every later one gets what remains, so
-    the whole shutdown costs at most one budget. Cancellation of these loops
-    only happens at shutdown, so the deadline is never reset — a process that
-    somehow survives its own shutdown would simply stop draining, which is
-    the pre-drain behavior.
-
-    Called only from the event loop, so the read-then-set needs no lock.
+    Outside shutdown there is nothing to share with and no
+    ``close_system_db()`` waiting behind us — a routine heartbeat
+    cancellation is an isolated event — so such a drain gets the full
+    timeout and leaves the shutdown budget untouched.
     """
-    global _drain_deadline
-    now = time.monotonic()
     if _drain_deadline is None:
-        _drain_deadline = now + _drain_timeout_s()
-    return max(0.0, _drain_deadline - now)
+        return _drain_timeout_s()
+    return max(0.0, _drain_deadline - time.monotonic())
 
 
 async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
@@ -187,10 +206,11 @@ async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any, **kwar
             await asyncio.wait_for(asyncio.shield(future), timeout=budget)
         if not future.done():
             logger.warning(
-                "readiness: shared shutdown drain budget exhausted (%.1fs left of %.0fs) "
-                "waiting for %s; abandoning the thread",
+                "readiness: drain budget exhausted (%.1fs of %.0fs%s) waiting for %s; "
+                "abandoning the thread",
                 budget,
                 _drain_timeout_s(),
+                ", shared across shutdown" if _drain_deadline is not None else "",
                 getattr(fn, "__name__", repr(fn)),
             )
         raise
