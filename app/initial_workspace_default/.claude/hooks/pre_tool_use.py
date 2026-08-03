@@ -328,23 +328,34 @@ def _normalized(seg: str) -> str:
     return " ".join(toks) if toks else seg
 
 
-def _unwrap(toks: list[str]) -> list[str]:
-    """Strip leading wrapper commands / their flags, values, positionals / VAR=val.
+def _strip_prefix(toks: list[str], *, env_is_wrapper: bool) -> list[str]:
+    """Strip leading wrappers / their flags, values and positionals / VAR=val.
 
-    The returned head is basenamed, so `/bin/rm` is judged as `rm`.
+    ONE implementation, two callers. `_is_env_dump` used to keep its own copy
+    of this walk and the two drifted: it never skipped `VAR=val`, so
+    `FOO=1 printenv` read as a harmless command while plain `printenv` was
+    refused (review finding on #1141).
+
+    ``env_is_wrapper`` is the only real difference: `_unwrap` treats `env` as
+    a wrapper to strip, while the dump check treats it as the command it is
+    looking for.
+
+    A wrapper's own positional (`chroot NEWROOT`, `flock FILE`, `taskset
+    MASK`) is consumed AFTER its flags, not only when it sits immediately
+    after the wrapper name — otherwise `taskset -c 0 rm -rf x` mistook the
+    mask for the command and scanned nothing.
     """
     i = 0
     current: str | None = None
+    positionals_left = 0
     while i < len(toks):
         t = _basename(toks[i])
-        if t in _WRAPPERS:
+        if t in _WRAPPERS and not (t == "env" and not env_is_wrapper):
             current = t
+            positionals_left = _WRAPPER_POSITIONALS.get(t, 0)
             i += 1
             if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", toks[i]):
                 i += 1
-            for _ in range(_WRAPPER_POSITIONALS.get(t, 0)):
-                if i < len(toks) and not toks[i].startswith("-"):
-                    i += 1
             continue
         if "=" in toks[i] and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", toks[i]):
             i += 1
@@ -355,9 +366,21 @@ def _unwrap(toks: list[str]) -> list[str]:
             if "=" not in flag and flag in _WRAPPER_VALUE_FLAGS.get(current or "", set()) and i < len(toks):
                 i += 1
             continue
+        if positionals_left:
+            positionals_left -= 1
+            i += 1
+            continue
         break
     rest = toks[i:]
     return [_basename(rest[0])] + rest[1:] if rest else rest
+
+
+def _unwrap(toks: list[str]) -> list[str]:
+    """Strip leading wrapper commands so `sudo rm -rf` matches `rm -rf`.
+
+    The returned head is basenamed, so `/bin/rm` is judged as `rm`.
+    """
+    return _strip_prefix(toks, env_is_wrapper=True)
 
 
 def _is_env_dump(seg: str) -> bool:
@@ -371,28 +394,7 @@ def _is_env_dump(seg: str) -> bool:
     ``_unwrap`` where it is a wrapper — so this can't be defeated by the
     same wrapper-stripping that made the old raw-string check miss
     ``sudo env`` (security review on #1141)."""
-    toks = _tokens(seg)
-    i = 0
-    current: str | None = None
-    while i < len(toks):
-        t = _basename(toks[i])
-        if t in _WRAPPERS and t != "env":
-            current = t
-            i += 1
-            if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", toks[i]):
-                i += 1
-            for _ in range(_WRAPPER_POSITIONALS.get(t, 0)):
-                if i < len(toks) and not toks[i].startswith("-"):
-                    i += 1
-            continue
-        if toks[i].startswith("-"):
-            flag = toks[i]
-            i += 1
-            if "=" not in flag and flag in _WRAPPER_VALUE_FLAGS.get(current or "", set()) and i < len(toks):
-                i += 1
-            continue
-        break
-    rest = toks[i:]
+    rest = _strip_prefix(_tokens(seg), env_is_wrapper=False)
     if not rest:
         return False
     head = _basename(rest[0])
