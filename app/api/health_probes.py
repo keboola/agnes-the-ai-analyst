@@ -129,11 +129,25 @@ def begin_shutdown() -> None:
     shutdown drain with zero time — silently disabling the protection while
     the process runs fine.
 
-    Idempotent: a second call does not extend an already-running budget.
+    Re-arms unconditionally: each shutdown gets its own budget. Arming only
+    once would leave every application started after the first in the same
+    process (every ``TestClient`` in a test run, any process that restarts
+    the app) with a spent deadline and therefore no drain at all.
     """
     global _drain_deadline
-    if _drain_deadline is None:
-        _drain_deadline = time.monotonic() + _drain_timeout_s()
+    _drain_deadline = time.monotonic() + _drain_timeout_s()
+
+
+def end_shutdown() -> None:
+    """Clear the budget once shutdown is over.
+
+    Without this a process that keeps running after an app shutdown (again:
+    a test run) would carry a spent deadline into normal operation, where a
+    routine mid-call cancellation would then get zero drain instead of the
+    full timeout.
+    """
+    global _drain_deadline
+    _drain_deadline = None
 
 
 def _drain_timeout_s() -> float:

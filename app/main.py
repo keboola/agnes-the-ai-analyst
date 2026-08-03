@@ -1615,6 +1615,14 @@ async def lifespan(app):
     except Exception:
         logger.exception("close_ducklake_sessions failed during shutdown (non-fatal)")
 
+    # The DBs are closed; nothing is left to drain. Clearing the budget keeps
+    # a spent deadline from leaking into a next app in this same process
+    # (every TestClient in a test run), where it would leave a routine
+    # mid-call cancellation with no drain at all.
+    from app.api.health_probes import end_shutdown
+
+    end_shutdown()
+
 
 def _is_truthy_env(name: str) -> bool:
     return os.environ.get(name, "").lower() in ("1", "true", "yes")

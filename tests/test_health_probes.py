@@ -250,10 +250,23 @@ def test_routine_cancellation_does_not_arm_the_shutdown_budget(monkeypatch):
     assert health_probes._drain_budget_s() == pytest.approx(10.0, abs=0.5), "full timeout outside shutdown"
 
 
-def test_begin_shutdown_arms_the_budget_and_is_idempotent(monkeypatch):
+def test_each_shutdown_gets_its_own_budget(monkeypatch):
+    """Arming only once would starve every app after the first in a process.
+
+    A test run starts and stops the app many times; if the deadline were
+    armed once and never re-armed, the second shutdown onward would get zero
+    drain and the original hang would come straight back.
+    """
     monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "10")
     health_probes.begin_shutdown()
     first = health_probes._drain_deadline
     assert first is not None
+
+    health_probes.end_shutdown()
+    assert health_probes._drain_deadline is None, "budget must not leak into normal operation"
+    assert health_probes._drain_budget_s() == pytest.approx(10.0, abs=0.5)
+
     health_probes.begin_shutdown()
-    assert health_probes._drain_deadline == first, "a second call must not extend a running budget"
+    assert health_probes._drain_deadline is not None
+    assert health_probes._drain_deadline >= first, "a later shutdown gets a fresh budget"
+    assert health_probes._drain_budget_s() == pytest.approx(10.0, abs=0.5)
