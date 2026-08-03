@@ -2272,11 +2272,25 @@ class ChatManager:
         except Exception:
             owner = None
         if owner is not None and owner != routing.this_gateway_id():
-            await inbound.publish_control(
-                chat_id,
-                "approval",
-                extra={"request_id": request_id, "decision": decision, "sender": sender_email or ""},
-            )
+            try:
+                await inbound.publish_control(
+                    chat_id,
+                    "approval",
+                    extra={"request_id": request_id, "decision": decision, "sender": sender_email or ""},
+                )
+            except inbound.InboundPublishFailed:
+                # Same posture as the cross-gateway kill path below: a
+                # coordination hiccup must not escape into the caller's
+                # WebSocket reader loop and drop their chat. The decision is
+                # lost, but the runner's ApprovalGate has its own timeout
+                # and resolves to deny, so the turn still finishes
+                # (review finding on #1145).
+                logger.warning(
+                    "cross-gateway approval decision for %s could not be published (owner %s); "
+                    "the pending request will fall through to the gate's own timeout",
+                    chat_id,
+                    owner,
+                )
             return
         logger.info(
             "approval decision for %s dropped — no live runner and no other gateway owns it",

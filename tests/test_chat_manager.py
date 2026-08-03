@@ -3525,6 +3525,32 @@ def test_approval_decision_forwarded_to_remote_owner(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_approval_decision_publish_failure_does_not_escape(manager: ChatManager):
+    """A coordination hiccup must not drop the user's chat connection.
+
+    `deliver_approval_decision` runs on the WebSocket reader path, so an
+    escaping `InboundPublishFailed` would disconnect the window instead of
+    losing just the answer. The gate's own timeout still resolves the
+    pending request, so the turn finishes either way. Mirrors the
+    cross-gateway kill path, which already swallows this.
+    """
+    import app.chat.inbound as inbound
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value="other-gateway"),
+            patch("app.chat.routing.this_gateway_id", return_value="this-gateway"),
+            patch(
+                "app.chat.inbound.publish_control",
+                new=AsyncMock(side_effect=inbound.InboundPublishFailed("coordination down")),
+            ),
+        ):
+            # must not raise
+            await manager.deliver_approval_decision("chat_remote", "appr-9", "allow", sender_email="u@x")
+
+    asyncio.run(_run())
+
+
 def test_approval_decision_hardens_invalid_to_deny(manager: ChatManager):
     async def _run():
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
