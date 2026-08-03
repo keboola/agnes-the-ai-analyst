@@ -834,3 +834,67 @@ def test_manual_client_repointing_endpoints_drops_user_tokens(seeded_app):
     )
     assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is False
     assert mcp_oauth_flows_repo().consume("repoint-ep-nonce") is None
+
+
+def test_padded_auth_method_does_not_disconnect_everyone(seeded_app):
+    """A pasted `"oauth "` used to pass both validators (they strip), persist
+    WITH the space, and then read as not-oauth by the flip check — purging
+    every user's tokens and the client registration as if the admin had
+    turned OAuth off, after which the source could not be re-registered.
+    Normalizing at the API boundary is what stops it (invariant sweep
+    on #1124)."""
+    from src.repositories import mcp_source_oauth_clients_repo, mcp_sources_repo, mcp_user_oauth_tokens_repo
+
+    sid = _seed_oauth_source(source_id="src_oauth_padded")
+    mcp_source_oauth_clients_repo().upsert(
+        sid,
+        issuer="https://as.example.com",
+        client_id="cid",
+        client_secret=None,
+        registration_access_token=None,
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+        scopes=None,
+    )
+    mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "tok", refresh_token=None, expires_at=None, scopes=None)
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"auth_method": "oauth "},
+    )
+    assert r.status_code == 200, r.text
+    # Stored canonically, so every downstream `.lower()` reader agrees.
+    assert mcp_sources_repo().get(sid)["auth_method"] == "oauth"
+    # And nothing was treated as a flip away from oauth.
+    assert mcp_user_oauth_tokens_repo().has(sid, "admin1") is True
+    assert mcp_source_oauth_clients_repo().get(sid) is not None
+
+
+def test_url_repoint_also_drops_non_oauth_credentials(seeded_app):
+    """A `bearer` source's per-user token and a shared source's vault secret
+    are forwarded as `Authorization` by the same seam that reads the freshly
+    written url — so repointing sends them to a host that never issued them.
+    The purge covers every credential kind, not just OAuth (invariant sweep
+    on #1124)."""
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    sid = "src_bearer_repoint"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="bearer_repoint",
+        transport="http",
+        url="https://h1.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    per_user_secrets_repo().upsert(sid, "admin1", "tok-for-h1")
+    assert per_user_secrets_repo().has(sid, "admin1") is True
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"url": "https://h2.example/mcp"},
+    )
+    assert r.status_code == 200, r.text
+    assert per_user_secrets_repo().has(sid, "admin1") is False

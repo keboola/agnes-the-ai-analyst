@@ -108,6 +108,27 @@ def _validate_scope(v: Optional[str]) -> str:
     return v
 
 
+def _validate_auth_method(v: Optional[str]) -> Optional[str]:
+    """Normalize ``auth_method`` at the API boundary, like ``transport`` and
+    ``scope`` already are.
+
+    Without this the column stored whatever the admin typed, and only SOME
+    readers normalized: a pasted ``"oauth "`` passed the coupling validator
+    and the repository guard (both strip), was persisted with the space, and
+    then read as NOT-oauth by ``update_mcp_source``'s flip check — which
+    purged every user's tokens and the client registration as if the admin
+    had deliberately turned OAuth off. ``_require_oauth_source`` then refused
+    to re-register the source, so a trailing space silently disconnected
+    everyone and bricked the source (invariant sweep on #1124).
+
+    Normalizing here means the column can only ever hold the canonical form,
+    which keeps every downstream ``.lower()`` honest.
+    """
+    if v is None:
+        return None
+    return v.strip().lower() or None
+
+
 def _validate_oauth_scope_coupling(auth_method: Optional[str], transport: Optional[str], scope: Optional[str]) -> None:
     """``auth_method='oauth'`` is only valid with a network transport AND
     ``scope='per_user'`` (2026-07-30 outbound MCP OAuth spec §1) — the same
@@ -143,6 +164,11 @@ class CreateMCPSourceRequest(BaseModel):
     @classmethod
     def _check_scope(cls, v: Optional[str]) -> Optional[str]:
         return _validate_scope(v) if v is not None else None
+
+    @field_validator("auth_method")
+    @classmethod
+    def _check_auth_method(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_auth_method(v)
 
     @model_validator(mode="after")
     def _check_oauth_scope_coupling(self) -> "CreateMCPSourceRequest":
@@ -181,6 +207,11 @@ class UpdateMCPSourceRequest(BaseModel):
     @classmethod
     def _check_scope(cls, v: Optional[str]) -> Optional[str]:
         return _validate_scope(v) if v is not None else None
+
+    @field_validator("auth_method")
+    @classmethod
+    def _check_auth_method(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_auth_method(v)
 
 
 class MaterializeRequest(BaseModel):
@@ -467,7 +498,7 @@ def _probe_caller_user_id(src: Dict[str, Any], user: dict) -> Optional[str]:
     it; otherwise the probe stays caller-less exactly like every other
     per_user source with no stored credential.
     """
-    if (src.get("scope") or "shared") != "per_user":
+    if (src.get("scope") or "shared").strip().lower() != "per_user":
         return None
     try:
         if per_user_secrets_repo().get(src["id"], user["id"]):
@@ -632,16 +663,24 @@ async def update_mcp_source(
         raise HTTPException(status_code=400, detail=str(exc))
     except duckdb.ConstraintException:
         raise HTTPException(status_code=409, detail="name_exists")
-    was_oauth = (existing.get("auth_method") or "").lower() == "oauth"
-    still_oauth = (merged.get("auth_method") or "").lower() == "oauth"
-    # Repointing `url` at a different upstream is the more dangerous of the
-    # two: the stored tokens were minted by the OLD resource's authorization
-    # server, and forwarding them as `Authorization: Bearer` to a new host
-    # would hand that host another server's credentials (Devin Review on
-    # #1124). Any change counts — a path-only edit can still be a different
-    # protected resource, and the registration is discovered from this URL.
-    repointed = was_oauth and still_oauth and (existing.get("url") or "") != (merged.get("url") or "")
-    if (was_oauth and not still_oauth) or repointed:
+    was_oauth = (existing.get("auth_method") or "").strip().lower() == "oauth"
+    still_oauth = (merged.get("auth_method") or "").strip().lower() == "oauth"
+    # Repointing `url` sends every stored credential for this source to a
+    # host that did not issue it. That is true of ALL credential kinds, not
+    # just OAuth: a `bearer` source's per-user token and a `shared` source's
+    # vault secret are forwarded as `Authorization` headers by the same seam,
+    # which reads the freshly-written url. Any change counts — a path-only
+    # edit can still be a different protected resource (Devin Review on #1124
+    # for the OAuth half; invariant sweep for the rest).
+    url_repointed = (existing.get("url") or "") != (merged.get("url") or "")
+    if url_repointed:
+        # Per-user secrets go through the factory — a raw repo would write to
+        # the always-DuckDB connection and orphan rows on a PG instance.
+        shared_secrets_repo().delete(source_id)
+        pu_secrets = per_user_secrets_repo()
+        for uid in pu_secrets.list_for_source(source_id):
+            pu_secrets.delete(source_id, uid)
+    if (was_oauth and not still_oauth) or (was_oauth and still_oauth and url_repointed):
         # Flipping away from oauth strands the OAuth trio — the client
         # registration, every user's tokens, and in-flight flows are useless
         # under any other auth_method and must not linger as orphaned
