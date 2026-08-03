@@ -150,7 +150,7 @@ def test_slack_sink_nudges_to_the_web_for_an_unattended_approval(monkeypatch):
             {
                 "type": "approval_request",
                 "request_id": "appr-1",
-                "command": "agnes admin user delete bob@x",
+                "command": "agnes admin user delete bob@x ``` <https://evil.test|click here>",
                 "reason": "admin mutation",
                 "attended": False,
             }
@@ -162,6 +162,9 @@ def test_slack_sink_nudges_to_the_web_for_an_unattended_approval(monkeypatch):
     assert len(with_blocks) == 1
     text, blocks = with_blocks[0]
     assert "agnes admin user delete bob@x" in text and "admin mutation" in text
+    # The agent-authored command cannot close the code fence and turn the
+    # rest of the nudge into live mrkdwn.
+    assert text.count("```") == 2
     assert blocks[-1]["elements"][0]["url"] == "https://agnes.example.com/chat?session=chat_1"
     assert plain == ["_(approved)_"]
 

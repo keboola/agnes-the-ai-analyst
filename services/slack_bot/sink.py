@@ -143,8 +143,12 @@ class SlackSinkBridge:
         if command:
             # Fenced, and bounded well under Slack's per-block text cap —
             # the runner already truncates to 2000 chars, still far more
-            # than belongs in a thread reply.
-            lines.append(f"```{command[:400]}```")
+            # than belongs in a thread reply. Backticks are stripped first:
+            # the command is agent-authored text, and one containing ``` would
+            # otherwise close the fence and render the rest as live mrkdwn
+            # (a crafted command could forge link text in the nudge the user
+            # is about to act on).
+            lines.append("```{}```".format(command[:400].replace("`", "'")))
         if reason:
             lines.append(reason)
         lines.append("Open the chat on the web to allow or deny it; it expires on its own if nobody answers.")
