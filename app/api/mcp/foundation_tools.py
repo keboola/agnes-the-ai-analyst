@@ -589,13 +589,13 @@ def register_foundation_tools(
 
     @tool()
     async def store_status(entity_id: str) -> dict:
-        """Check the review-pipeline status of a flea-market entity you own.
+        """Check the review-pipeline status of a flea-market entity you own (owner or admin only).
 
         After ``store upload`` the guardrail review runs asynchronously; the
         entity stays hidden until it passes. This returns the latest submission's
         status (``pending_llm`` / ``approved`` / ``blocked_llm`` /
-        ``review_error`` / ``overridden``) plus an actionable hint. Owner or
-        admin only. Mirrors ``agnes store status <id>``.
+        ``review_error`` / ``overridden``) plus an actionable hint. Mirrors
+        ``agnes store status <id>``.
 
         Args:
             entity_id: The store entity id (from the upload response).
