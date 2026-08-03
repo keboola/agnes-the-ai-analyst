@@ -149,6 +149,74 @@ def test_connect_times_out_and_exits_nonzero(monkeypatch):
     assert raised
 
 
+def test_connect_fails_fast_when_baseline_read_is_rejected(monkeypatch, capsys):
+    """404 unknown source / 403 not granted / 401 expired login on the
+    pre-browser baseline read are permanent — fail before opening a browser
+    to a flow that can never succeed (Devin Review on #1130)."""
+    opened = []
+    monkeypatch.setattr(mcpcmd.webbrowser, "open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(mcpcmd, "get_server_url", lambda: "https://agnes.example.com")
+    monkeypatch.setattr(mcpcmd.time, "sleep", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcpcmd, "api_get", lambda path: _Resp(404, {"detail": "mcp_source_not_found"}))
+
+    try:
+        mcpcmd.mcp_connect(source_id="nope", no_browser=False, timeout=10)
+        raised = False
+    except typer.Exit as exc:
+        raised = True
+        assert exc.exit_code == 1
+    assert raised
+    assert opened == []  # never reached the browser step
+    assert "mcp_source_not_found" in capsys.readouterr().err
+
+
+def test_connect_aborts_when_baseline_read_errors(monkeypatch):
+    """A failed baseline read must not fall through to change detection —
+    baseline=None vs an already-connected source would read as 'changed'
+    and fake instant success (Devin Review on #1130)."""
+    monkeypatch.setattr(mcpcmd.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr(mcpcmd, "get_server_url", lambda: "https://agnes.example.com")
+    monkeypatch.setattr(mcpcmd.time, "sleep", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcpcmd, "api_get", lambda path: _Resp(503, {"detail": "upstream restarting"}))
+
+    try:
+        mcpcmd.mcp_connect(source_id="src1", no_browser=True, timeout=10)
+        raised = False
+    except typer.Exit:
+        raised = True
+    assert raised
+
+
+def test_connect_poll_treats_permission_loss_as_terminal(monkeypatch, capsys):
+    """401/403/404 mid-poll (grant revoked, source deleted, login expired)
+    must surface the server detail immediately, not spin until --timeout
+    (Devin Review on #1130)."""
+    calls = {"n": 0}
+
+    def _fake_api_get(path):
+        calls["n"] += 1
+        if calls["n"] == 1:  # baseline: fine, not yet connected
+            return _Resp(200, {"has_secret": False})
+        return _Resp(403, {"detail": "not_granted"})
+
+    monkeypatch.setattr(mcpcmd.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr(mcpcmd, "get_server_url", lambda: "https://agnes.example.com")
+    monkeypatch.setattr(mcpcmd.time, "sleep", lambda *_a, **_kw: None)
+    monkeypatch.setattr(mcpcmd, "api_get", _fake_api_get)
+
+    try:
+        mcpcmd.mcp_connect(source_id="src1", no_browser=False, timeout=10)
+        raised = False
+    except typer.Exit as exc:
+        raised = True
+        assert exc.exit_code == 1
+    assert raised
+    assert calls["n"] == 2  # exactly one poll — no spinning to the deadline
+    err = capsys.readouterr().err
+    assert "not_granted" in err
+    assert "Timed out" not in err
+
+
 # ---------------------------------------------------------------------------
 # agnes mcp disconnect
 # ---------------------------------------------------------------------------
