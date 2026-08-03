@@ -355,7 +355,10 @@ def test_callback_surfaces_as_error_param(seeded_app):
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert "connect_error=user" in r.headers["location"] or "declined" in r.headers["location"]
+    # The redirect carries a fixed CODE from CONNECT_ERROR_MESSAGES — the
+    # AS's own error/error_description text must never ride along.
+    assert "connect_error=as_denied" in r.headers["location"]
+    assert "declined" not in r.headers["location"]
 
 
 def test_callback_rejects_tampered_state(seeded_app):
@@ -464,12 +467,12 @@ def test_callback_token_exchange_failure_redirects_with_error(seeded_app, monkey
     assert r.status_code == 303
     location = r.headers["location"]
     assert "connect_error" in location
-    # The redirect carries a FIXED message only — the exception text can
+    # The redirect carries a FIXED code only — the exception text can
     # embed the AS's raw error body (externally controlled), which must
     # never be replayed into a user-facing query string (RBAC review, PR 2).
     assert "invalid_grant" not in location
     assert "code+already+used" not in location and "code%20already%20used" not in location
-    assert "try+again+or+contact+your+admin" in location or "try%20again%20or%20contact%20your%20admin" in location
+    assert "connect_error=token_exchange_failed" in location
 
 
 def test_callback_deny_principal_for_restricted_token(seeded_app):
@@ -604,7 +607,7 @@ def test_callback_error_param_is_never_echoed(seeded_app):
     assert r.status_code == 303
     location = r.headers["location"]
     assert "EVIL" not in location and "evil.example" not in location
-    assert "declined" in location
+    assert "connect_error=as_denied" in location
 
     r2 = seeded_app["client"].get(
         "/api/mcp/oauth-client/callback",

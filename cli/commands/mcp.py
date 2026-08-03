@@ -196,12 +196,18 @@ def mcp_connect(
     # already has a credential, and "has_secret is true" would declare
     # success instantly without the user finishing the new authorization —
     # wait for the connection to CHANGE instead (Devin Review on #1130).
+    # A failed baseline read must not fall through to the change-detection
+    # comparison (None vs anything reads as "changed" = false success), so
+    # anything but a clean 200 aborts before the browser opens: 401/403/404
+    # are permanent (expired login / not granted / unknown source) and a
+    # transient 5xx just means "re-run in a moment".
     baseline = None
     baseline_resp = api_get(f"/api/mcp/sources/{source_id}/my-secret")
-    if baseline_resp.status_code == 200:
-        body = baseline_resp.json() or {}
-        if body.get("has_secret"):
-            baseline = body.get("updated_at") or "connected"
+    if baseline_resp.status_code != 200:
+        _fail(baseline_resp)
+    body = baseline_resp.json() or {}
+    if body.get("has_secret"):
+        baseline = body.get("updated_at") or "connected"
 
     url = f"{get_server_url().rstrip('/')}/api/mcp/sources/{source_id}/oauth/authorize"
     opened = False if no_browser else webbrowser.open(url)
@@ -213,6 +219,11 @@ def mcp_connect(
     deadline = time.monotonic() + timeout
     while True:
         resp = api_get(f"/api/mcp/sources/{source_id}/my-secret")
+        if resp.status_code in (401, 403, 404):
+            # Permanent: expired CLI token / grant revoked / source deleted
+            # mid-flow. Waiting out the timeout would only mislead (Devin
+            # Review on #1130) — surface the server's detail and stop.
+            _fail(resp)
         if resp.status_code == 200:
             body = resp.json() or {}
             current = (body.get("updated_at") or "connected") if body.get("has_secret") else None
