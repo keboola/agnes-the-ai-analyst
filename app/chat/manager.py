@@ -233,6 +233,14 @@ class LiveSession:
     # late-seated sinks and persisted as an interrupted message on forced
     # death. Cleared when the turn's assistant_message lands.
     turn_buffer: list[dict] = field(default_factory=list)
+    #: Approval cards raised but not yet answered, keyed by request_id.
+    #: Deliberately NOT in turn_buffer: that is a per-turn replay buffer
+    #: with a seq watermark, and a pending approval outlives its turn
+    #: (the tool stays suspended until a human answers or the gate times
+    #: out). Holding it there pinned the watermark to an old moment and
+    #: made a reconnect skip everything said since (review on #1145).
+    #: Cleared on respawn: the request_id belongs to the dead runner.
+    pending_approvals: dict = field(default_factory=dict)
     turn_in_flight: bool = False
     # Linger task: fires _linger_then_pause after the last sink detaches.
     linger_task: Optional[asyncio.Task] = None
@@ -874,6 +882,11 @@ class ChatManager:
         the full mechanism. Either way this method only ever calls
         ``send_json``/relies on duck typing, so it's unaffected either
         way."""
+        # Unanswered approval cards replay alongside the turn buffer: they
+        # are separate state precisely because they outlive the turn, so
+        # they must be re-sent explicitly rather than ridden along.
+        for frame in list(live.pending_approvals.values()):
+            await ws.send_json(frame)
         for frame in list(live.turn_buffer):
             await ws.send_json(frame)
         if is_primary:
@@ -1630,6 +1643,10 @@ class ChatManager:
         # Snapshot first to avoid racing the pump task.
         for frame in list(live.turn_buffer):
             await sink.send_json(frame)
+        # …and any approval card still waiting for an answer (separate
+        # state: it outlives the turn it was raised in).
+        for frame in list(live.pending_approvals.values()):
+            await sink.send_json(frame)
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
         # Sent directly to this one sink (not _broadcast), so it needs its
         # own stamp (wave-2F task 2). The history-replay frames above are
@@ -1953,8 +1970,14 @@ class ChatManager:
             # frames ride too so a refresh mid-approval re-renders the pending
             # card (request + any resolution, reconciled client-side by
             # request_id).
-            if ftype in ("token", "tool_call", "tool_result", "approval_request", "approval_resolved"):
+            if ftype in ("token", "tool_call", "tool_result"):
                 live.turn_buffer.append(frame)
+            elif ftype == "approval_request":
+                rid = frame.get("request_id")
+                if rid:
+                    live.pending_approvals[rid] = frame
+            elif ftype == "approval_resolved":
+                live.pending_approvals.pop(frame.get("request_id"), None)
             if ftype == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
@@ -1968,7 +1991,7 @@ class ChatManager:
                 # Feed the turn's token delta into the shared daily-spend
                 # counters _daily_token_totals checks in send_user_message.
                 self._record_daily_tokens(live.user_email, frame.get("tokens_in"), frame.get("tokens_out"))
-                self._clear_turn_buffer_keeping_pending_approvals(live)
+                live.turn_buffer.clear()
                 live.turn_in_flight = False
                 # Auto-title: the first assistant_message in a session
                 # is the trigger to ask Haiku for a short title. We
@@ -2128,6 +2151,10 @@ class ChatManager:
                 return
             # Crash path
             live.crash_count += 1
+            # The dead runner owned these request_ids; a fresh one drops
+            # unknown ids silently, so a replayed card would render with
+            # buttons that do nothing until it times out (review on #1145).
+            live.pending_approvals.clear()
             await self._broadcast(
                 live,
                 {
@@ -2235,7 +2262,7 @@ class ChatManager:
         async with live._stdin_lock:
             live.handle.stdin.write(payload.encode("utf-8"))
             await live.handle.stdin.drain()
-        self._clear_turn_buffer_keeping_pending_approvals(live)
+        live.turn_buffer.clear()
         live.turn_in_flight = True
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
@@ -2304,30 +2331,6 @@ class ChatManager:
             "approval decision for %s dropped — no live runner and no other gateway owns it",
             chat_id,
         )
-
-    @staticmethod
-    def _clear_turn_buffer_keeping_pending_approvals(live: "LiveSession") -> None:
-        """Clear the replay buffer but keep approval cards nobody answered yet.
-
-        A pending ``approval_request`` outlives the turn boundary it was
-        raised in: the tool call is suspended until a human answers or the
-        gate times out. Clearing it wholesale meant that typing anything
-        while a card was up, then refreshing, re-drew the conversation
-        without the card — leaving the blocked command no way out but the
-        timeout denial (review finding on #1145).
-        """
-        resolved = {
-            f.get("request_id")
-            for f in live.turn_buffer
-            if f.get("type") == "approval_resolved" and f.get("request_id")
-        }
-        pending = [
-            f
-            for f in live.turn_buffer
-            if f.get("type") == "approval_request" and f.get("request_id") not in resolved
-        ]
-        live.turn_buffer.clear()
-        live.turn_buffer.extend(pending)
 
     async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
         payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"

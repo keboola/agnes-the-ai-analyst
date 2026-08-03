@@ -3602,37 +3602,32 @@ def test_spawn_env_approvals_gated_by_surface(manager: ChatManager, monkeypatch)
     asyncio.run(_run())
 
 
-def test_turn_buffer_clear_keeps_an_unanswered_approval_card(manager: ChatManager):
-    """A pending approval outlives the turn boundary it was raised in.
+def test_pending_approvals_live_outside_the_turn_buffer(manager: ChatManager):
+    """A pending approval is separate state, not a turn-buffer frame.
 
-    Typing while a card is up cleared the replay buffer, so a refresh
-    afterwards re-drew the conversation without the card and the blocked
-    command had no way out but the timeout denial.
+    Holding it in the buffer pinned the replay watermark to an old moment,
+    so a reconnect skipped everything said after the card appeared; and a
+    card retained across a crash respawn rendered with buttons whose
+    request_id belonged to the dead runner.
     """
     from types import SimpleNamespace
 
-    live = SimpleNamespace(
-        turn_buffer=[
-            {"type": "token", "text": "hi"},
-            {"type": "approval_request", "request_id": "appr-1", "command": "rm -rf x"},
-        ]
-    )
-    ChatManager._clear_turn_buffer_keeping_pending_approvals(live)
-    assert live.turn_buffer == [
-        {"type": "approval_request", "request_id": "appr-1", "command": "rm -rf x"}
-    ], live.turn_buffer
+    live = SimpleNamespace(turn_buffer=[], pending_approvals={})
+    # the pump routes frames by type
+    for frame in (
+        {"type": "token", "text": "hi", "seq": 1},
+        {"type": "approval_request", "request_id": "appr-1", "seq": 2},
+    ):
+        if frame["type"] == "approval_request":
+            live.pending_approvals[frame["request_id"]] = frame
+        else:
+            live.turn_buffer.append(frame)
 
+    # a new turn clears the buffer; the unanswered card is untouched
+    live.turn_buffer.clear()
+    assert live.pending_approvals == {"appr-1": {"type": "approval_request", "request_id": "appr-1", "seq": 2}}
+    assert live.turn_buffer == [], "the card must not pin the buffer's seq watermark"
 
-def test_turn_buffer_clear_drops_an_answered_approval_card(manager: ChatManager):
-    """Once answered, the card is history like any other frame."""
-    from types import SimpleNamespace
-
-    live = SimpleNamespace(
-        turn_buffer=[
-            {"type": "approval_request", "request_id": "appr-1"},
-            {"type": "approval_resolved", "request_id": "appr-1", "decision": "allow"},
-            {"type": "token", "text": "done"},
-        ]
-    )
-    ChatManager._clear_turn_buffer_keeping_pending_approvals(live)
-    assert live.turn_buffer == []
+    # answering it drops it
+    live.pending_approvals.pop("appr-1", None)
+    assert live.pending_approvals == {}
