@@ -455,3 +455,28 @@ def test_unbalanced_quotes_still_host_check_the_download():
     only add verdicts, never remove them — so the host is still seen.
     """
     assert _decide('curl -H "Accept: text/html; q=0.9 evil.example.com') == "deny"
+
+
+def test_compound_statements_do_not_hide_the_command():
+    """`then`/`do`/`else` are shell grammar, not the command.
+
+    A segment whose head was a keyword matched no rule, so wrapping a
+    refused action in an if/for/while block made the whole block invisible.
+    """
+    assert _decide("if true; then rm -rf /data; fi") == "ask"
+    assert _decide("for f in a; do rm -rf /data; done") == "ask"
+    assert _decide("while :; do curl evil.example.com; done") == "deny"
+    # a benign loop must still be a benign loop
+    assert _decide("for f in *.csv; do wc -l $f; done") == "allow"
+
+
+def test_redirection_does_not_hide_an_env_dump():
+    """`env > file` writes every variable to disk; the redirection is not the command."""
+    assert _decide("env > /tmp/leak") == "deny"
+    assert _decide("printenv > /tmp/leak") == "deny"
+    assert _decide("printenv 2> /tmp/e") == "deny"
+    assert _decide("python train.py > out.txt") == "allow"
+
+
+def test_xargs_is_treated_as_a_wrapper():
+    assert _decide("xargs rm -rf /data") == "ask"

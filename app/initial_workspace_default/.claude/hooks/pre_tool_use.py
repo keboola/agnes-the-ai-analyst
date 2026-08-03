@@ -200,6 +200,7 @@ _WRAPPERS = {
     "flock",
     "taskset",
     "chrt",
+    "xargs",
 }
 
 # Flags that consume the NEXT token as their value, PER wrapper — a global
@@ -226,6 +227,15 @@ _WRAPPER_POSITIONALS = {"chroot": 1, "flock": 1, "taskset": 1, "chrt": 1}
 # the character set rather than enumerating spellings is deliberate: an
 # enumeration missed `|&` and `;&`, which merged the pieces either side into
 # one segment whose head was the harmless leading command (review on #1141).
+# Shell grammar words that can precede the real command inside a compound
+# statement. Stripped before the head is identified.
+_SHELL_KEYWORDS = frozenset(
+    {"if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac", "!", "{", "}", "in"}
+)
+
+# Redirection operators; the token after one is its target, not a command.
+_REDIRECTIONS = frozenset({"<", ">", ">>", "<<", "<<<", "&>", ">&", "2>", "2>>"})
+
 _OPERATOR_CHARS = frozenset(";&|()\n")
 
 
@@ -356,6 +366,19 @@ def _strip_prefix(toks: list[str], *, env_is_wrapper: bool, wrapper: str | None 
     current: str | None = wrapper
     positionals_left = 0
     while i < len(toks):
+        # Shell keywords are not the command: `if true; then rm -rf x; fi`
+        # splits into a segment whose head is `then`, which matched no rule
+        # and made the whole block invisible (review finding on #1141).
+        if toks[i] in _SHELL_KEYWORDS:
+            i += 1
+            continue
+        # A redirection and its target are not the command either, and
+        # letting them stand in for it hid `env > /tmp/leak`.
+        if toks[i] in _REDIRECTIONS or re.fullmatch(r"\d*[<>]{1,2}&?\d*", toks[i]):
+            i += 1
+            if i < len(toks) and not toks[i].startswith("-"):
+                i += 1
+            continue
         t = _basename(toks[i])
         if t in _WRAPPERS and not (t == "env" and not env_is_wrapper):
             current = t
