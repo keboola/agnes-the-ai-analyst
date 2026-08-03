@@ -183,6 +183,21 @@ deprecated — use `on_detach: kill` instead.
 Operators monitor sandbox cost in the E2B dashboard — Agnes does not yet
 surface per-session cost in its admin UI.
 
+## Agent harness
+
+The engine driving the in-sandbox session is selected through the
+`AgentHarness` seam (`app/chat/harness.py` — the same pattern as the
+`SandboxProvider` protocol): `chat.harness` in `instance.yaml`, validated
+against `APPROVED_HARNESSES` at boot (unknown explicit values refuse
+chat), passed to the runner as `AGNES_HARNESS`, and resolved there
+against the runner's own id→loop registry (an *inherited* unknown id —
+version-skewed sandbox — degrades to the default with a stderr warning
+instead of crashing). `claude-code` (the claude-agent-sdk CLI) is the
+only production harness; the platform deliberately leans on its
+ecosystem — skills, marketplace re-serving, hooks — so a second adapter
+is a when-needed decision, not a roadmap item. The seam exists so that
+decision doesn't require an architecture change.
+
 ## Security model
 
 Single-tenant: all users in one Agnes instance trust each other. The

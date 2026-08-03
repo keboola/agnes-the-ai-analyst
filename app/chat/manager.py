@@ -1791,6 +1791,9 @@ class ChatManager:
             # message instead of freezing for the full approval timeout
             # (review finding on #1145).
             "AGNES_APPROVALS": "on" if session.surface == Surface.WEB.value else "off",
+            # Which agent engine drives the session (app/chat/harness.py
+            # seam; boot-validated against APPROVED_HARNESSES).
+            "AGNES_HARNESS": getattr(self._config, "harness", "claude-code"),
             # Opt-in: bootstrap the user's marketplace plugins into the sandbox
             # at spawn and load them via setting_sources. Off by default (adds
             # per-spawn latency; only useful once the marketplace ships real
