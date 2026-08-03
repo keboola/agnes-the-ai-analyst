@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_trustmark.html" as _item_trust %}
 {% block title %}{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block body_attrs %}class="detail-page"{% endblock %}
 
@@ -686,8 +687,13 @@
       display: flex; gap: var(--space-2); margin: 0 0 var(--space-4) 0;
       justify-content: flex-end;
     }
+    /* Names the strip under the paper skin, which turns this row into a
+       bordered bar (paper-skin.css). Hidden by default so the topnav/blue
+       chrome keeps rendering the bare right-aligned row it always has. */
+    .item-detail .owner-actions__label { display: none; }
   </style>
   <div class="owner-actions">
+    <span class="owner-actions__label">Manage</span>
     {% if edit_in_flight %}
       {{ ds.button('Edit (review in flight)', variant='secondary', size='sm',
                    href='#', disabled=True,
@@ -757,34 +763,26 @@
       flex: 1 1 100%; color: var(--ds-text-secondary); font-size: 12.5px;
     }
     .item-detail .trust-strip__actions { margin-left: auto; display: flex; gap: var(--space-2); }
-    /* Local chips — this page does not load catalog_card.css, so .cc-trust
-       would render unstyled here. Same palette, same "at most one chip, never a
-       negative label" rule. */
-    .item-detail .trust-chip {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 2px 9px; border-radius: var(--ds-radius-pill);
-      border: 1px solid transparent; font-size: 11px; font-weight: 700;
-    }
-    .item-detail .trust-chip--org {
-      background: var(--ds-surface); border-color: var(--ds-border);
-      color: var(--ds-text-secondary);
-    }
-    .item-detail .trust-chip--verified {
-      background: var(--ds-accent-success-bg);
-      border-color: var(--ds-accent-success-line);
-      color: var(--ds-accent-success-ink);
-    }
+    /* The page-local `.trust-chip` pair is gone (v113). It existed because this
+       page does not load catalog_card.css, so `.cc-trust` would have rendered
+       unstyled — which is the same reason the claim ended up spelled four
+       different ways across the product. `.ds-trust` now ships from
+       css/trustmark.css via the base template, so every surface gets it. */
   </style>
   <div class="trust-strip" id="trust-strip">
     <span class="trust-strip__label">Publisher</span>
     <span class="trust-strip__value">
       {% if entity.publisher_kind == 'organization' %}Your organization{% else %}{{ entity_owner_label or entity.owner_username }}{% endif %}
     </span>
-    {% if entity.publisher_kind == 'organization' %}
-      <span class="trust-chip trust-chip--org">Organization</span>
-    {% elif entity.verification_state == 'verified' %}
-      <span class="trust-chip trust-chip--verified">Verified</span>
-    {% endif %}
+    {# One shared marker, labelled form — the same glyph, colour and sentence the
+       Library row for this very entity renders, off the same two stored fields.
+       Community is now included: this page previously showed only the two
+       positive claims, so the row and its own detail page disagreed about the
+       third. Gated on the same instance flag as everywhere else. #}
+    {{ _item_trust.mark(
+         _item_trust.level_for(entity.publisher_kind, entity.verification_state,
+                               library_show_unverified_trust),
+         own=is_owner, form='label') }}
 
     {% if entity.publisher_kind != 'organization' and store_verification_enabled %}
       {# Workflow states are shown to the author and to admins only — other

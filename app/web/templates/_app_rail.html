@@ -38,6 +38,11 @@
 {% macro _admin_hit(path, prefixes) %}{% for p in prefixes %}{% if path.startswith(p) %}1{% endif %}{% endfor %}{% endmacro %}
 {% if session.user %}
 <nav class="rail" aria-label="Primary">
+    {# Brand row — the wordmark alone. "How {brand} works" was briefly an icon
+       here and it was wrong: the lockup is an identity element, not a control
+       surface, and a help glyph welded to the wordmark reads as an annotation on
+       the product name. It lives in the account menu now, grouped with "Start
+       over onboarding" — see the note there. #}
     <a class="rail-logo" href="{{ home_route or '/dashboard' }}" aria-label="Home">
         {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}
         {{ agnes_orb.orb(css_class='rail-orb', size=30) }}
@@ -285,22 +290,9 @@
     </details>
     {% endif %}
 
-    {# "How {brand} works" — the single orientation destination
-       (/how-it-works): what this is, what it knows for you, where you can use
-       it, how to connect each surface, where your data goes. Consolidates
-       /home's product story with what used to be the standalone AI Connector
-       page, so there is one place to send someone who asks "what is this?".
-
-       Directly above the onboarding card because the two are siblings —
-       read vs. do — and OUTSIDE its `can_chat` gate: a caller with no chat
-       grant needs the orientation more than anyone. It replaces the "Learn
-       how it works" item that sat in the account menu, which is the shelf for
-       things about *you* (Profile, My activity, Logout), not for the product
-       explainer. #}
-    <a class="rail-i {% if _path == '/how-it-works' %}on{% endif %}" href="/how-it-works">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 16.8v-3.6a2.7 2.7 0 1 0-2.7-2.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="8.3" r=".2" fill="currentColor"/></svg>
-        <span class="rail-i-label">How {{ instance_brand_short }} works</span>
-    </a>
+    {# "How {brand} works" is no longer a row here — it is a `.rail-meta` row in
+       the foot, below the rule that marks off the account zone. See the note on
+       it there for why it is not a `.rail-i` destination. #}
 
     {% if can_chat %}
     {# Onboarding card — the last thing in the bottom zone, under Admin and
@@ -360,10 +352,12 @@
     </div>{# /.rail-collapsible #}
 
     {# The foot is the profile row alone — onboarding is a card at the end of
-       the bottom zone (see .rail-getstarted). It stays outside
-       .rail-collapsible so the profile is reachable in the ≤1024px bar even
+       the bottom zone (see .rail-getstarted), and "How {brand} works" is an item
+       in the account menu below. It stays outside .rail-collapsible so the
+       profile (and everything in its menu) is reachable in the ≤1024px bar even
        with the nav collapsed. #}
     <div class="rail-foot">
+
         {# User row + pop-up menu — same ids/classes as the header's user
            menu so app.js wiring (trigger toggle, theme radio group)
            works unchanged; only the container styling differs. #}
@@ -388,34 +382,61 @@
                     <div class="app-user-menu-role">Admin</div>
                     {% endif %}
                 </div>
+                {# ── About you ── #}
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
-                {# "Learn how it works" is no longer here — it is a rail row of
-                   its own ("How {brand} works", above the onboarding card).
-                   This menu is for things about *you*; a product explainer
-                   buried between Profile and Logout was the wrong shelf, and
-                   the page it pointed at (/home) was a CLI install wizard
-                   rather than an explanation. #}
-                {# "Start over onboarding" — the way back to the checklist once
-                   the onboarding card has retired itself (it hides at 5/5, so
-                   the checklist's own "Start over" button goes with it). Kept in
-                   the profile menu: it is "help me get my bearings again", and
-                   the profile row is the one thing pinned to the rail at every
-                   state.
+                <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
+
+                {# ── Get your bearings ──────────────────────────────────────
+                   Two items, one job, hence their own group behind a separator.
+
+                   "How {brand} works" (/how-it-works): what this is, what it
+                   knows for you, where you can use it, how to connect each
+                   surface, where your data goes. It went round the rail three
+                   times first — a `.rail-i` destination (read as a fourth
+                   Library/Agents/Admin, for a page you open once or twice), a
+                   quieter `.rail-meta` row in the foot (still a row, and orphaned
+                   between the onboarding card and the account), and a `?` icon
+                   beside the wordmark (the lockup is identity, not a control
+                   surface — a help glyph there annotates the product name).
+
+                   The menu is the right shelf after all, and the precedent was
+                   already sitting in it: "Start over onboarding" is an
+                   orientation action too, not a fact about the caller. Grouping
+                   them says so. This also costs the column no height, never
+                   retires the way the onboarding card does at 5/5, and — being
+                   in the foot, outside `.rail-collapsible` — survives the
+                   ≤1024px bar with the nav closed.
+
+                   Its old objection (a product explainer buried in the account
+                   menu is undiscoverable) is answered elsewhere now: the chat
+                   dashboard's empty state carries a labelled "New here? See how
+                   {brand} works" line under the composer (chat.html), which is
+                   the prominent first-run path. This entry is the find-it-again
+                   one. NOT `can_chat`-gated, unlike its neighbour: a caller with
+                   no chat grant needs the orientation more than anyone.
+
+                   "Start over onboarding" — the way back to the checklist once
+                   the onboarding card has retired itself (it hides at 5/5, so the
+                   checklist's own "Start over" button goes with it).
 
                    Rail-only on purpose — the topnav chrome keeps the journey
                    card inline in the chat sidebar, where its own "Start over"
                    button is still on screen when complete. Chat-gated to match
-                   the row and the popover it re-arms.
+                   the card and the popover it re-arms.
 
                    The click handler is wired by chat_onboarding.js (it owns the
                    journey state and the optimistic re-render); with the module
                    absent this is inert rather than broken, hence a <button> with
                    no href to follow. #}
+                <div class="app-user-menu-sep" role="separator"></div>
+                <a class="app-user-menu-item {% if _path == '/how-it-works' %}is-active{% endif %}"
+                   role="menuitem" href="/how-it-works">How {{ instance_brand_short }} works</a>
                 {% if can_chat %}
                 <button type="button" class="app-user-menu-item app-user-menu-btn"
                         role="menuitem" id="rail-restart-onboarding">Start over onboarding</button>
                 {% endif %}
-                <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
+
+                <div class="app-user-menu-sep" role="separator"></div>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
                 <div class="app-user-menu-sep" role="separator"></div>
                 <div class="app-theme-toggle" id="themeToggle" role="radiogroup" aria-label="Theme">

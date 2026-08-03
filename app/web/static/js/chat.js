@@ -1514,9 +1514,25 @@ function renderToolCallStart(frame) {
   icon.textContent = "⏳";
   head.appendChild(icon);
 
-  const name = document.createElement("span");
-  name.className = "cloud-chat-tool-name";
-  name.textContent = frame.tool || "tool";
+  // A semantic-layer lookup is the one tool call that is PROVENANCE rather
+  // than plumbing: it says the answer you are reading was built on the
+  // organization's agreed vocabulary, not on whatever the model assumed
+  // "revenue" means. Rendered as a plain-language link to the definition
+  // instead of a raw tool id, so the reader can check the wording without
+  // leaving the conversation to go hunting for it.
+  const definition = _definitionLookupLabel(frame.tool);
+  let name;
+  if (definition) {
+    name = document.createElement("a");
+    name.href = definition.href;
+    name.className = "cloud-chat-tool-name cloud-chat-tool-name--definition";
+    name.textContent = definition.text;
+    name.title = "Open your organization's definitions";
+  } else {
+    name = document.createElement("span");
+    name.className = "cloud-chat-tool-name";
+    name.textContent = frame.tool || "tool";
+  }
   head.appendChild(name);
 
   const summary = document.createElement("span");
@@ -1811,6 +1827,24 @@ const _PREVIEW_TOOL_NAMES = new Set([
  *  match on the bare name after the last `__` — a plain Set.has() on the prefixed
  *  name never hits, which would leave the suppressed "running…" tool block
  *  spinning forever (its result is routed to the preview pane, not renderToolCallEnd). */
+// Tool calls that mean "the agent consulted the organization's governed
+// vocabulary", mapped to what a reader should see instead of the tool id.
+//
+// Only `glossary_search` qualifies today, and deliberately so: it is the one
+// call whose mere occurrence proves a definition was read. `knowledge_search`
+// can also return metric and glossary hits, but it searches tables, documents
+// and memory in the same breath — whether any definition came back is a
+// property of its RESULT, not its invocation, so labelling the call would
+// claim provenance that may not exist. Citing the specific definition an
+// answer used (rather than noting that one was consulted) is issue #1134.
+const _DEFINITION_LOOKUP_TOOLS = {
+  glossary_search: { text: "Checked your organization's glossary", href: "/catalog/semantics#glossary" },
+};
+
+function _definitionLookupLabel(toolName) {
+  return _DEFINITION_LOOKUP_TOOLS[_bareToolName(toolName)] || null;
+}
+
 function _bareToolName(toolName) {
   if (!toolName) return "";
   return toolName.includes("__") ? toolName.slice(toolName.lastIndexOf("__") + 2) : toolName;

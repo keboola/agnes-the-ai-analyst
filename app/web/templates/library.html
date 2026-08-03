@@ -1,6 +1,19 @@
 {% extends "base_index.html" %}
 {% from "macros/_connect_banner.html" import connect_banner %}
 {% from "macros/_catalog_card.html" import kind_glyph %}
+{% import "macros/_icon.html" as _lib_ico %}
+{% import "macros/_trustmark.html" as _trust %}
+{# One sentence per trust marker, defined once each: the table row and the grid
+   card must not be able to explain the same glyph differently, and each is both
+   the hover `title` and the accessible name.
+
+   The community marker has two readings for one meaning ("nobody has verified
+   this"), because the authorship half of the sentence flips with who is looking:
+   on your own upload "shared by other users" is false. #}
+{% set _lib_community_tip = 'Community item — shared by other users and not verified by your organization.' %}
+{% set _lib_community_own_tip = 'Community item — yours, and not verified by your organization.' %}
+{% set _lib_verified_tip = 'Verified by your organization.' %}
+{% set _lib_org_tip = 'Published by your organization.' %}
 {# One group header for the whole group — the shared `.fbar-grouptoggle` button
    My Stack's Required / Added-by-you bands use (see .fbar-group in
    filter_toolbar.css), hosted here by a sticky `.fbar-groupband` block. It heads
@@ -21,18 +34,19 @@
 </button>
 {% endmacro %}
 {# ── Data apps — the kind that does not exist yet ──────────────────────────────
-   An INFO BANNER, below the inventory. It used to wear the band chrome of the
-   list itself, sitting inside the frame as the list's last band — which made a
-   roadmap note look like a sixth kind you could open: same fill, same metrics,
-   same glyph column as the five real bands above it, so the only thing saying
-   "there is nothing here" was a badge. A reader scanning bands read it as a
-   section whose rows had failed to load.
+   An INFO BANNER in the page head, under the connect banner. It used to wear the
+   band chrome of the list itself, sitting inside the frame as the list's last
+   band — which made a roadmap note look like a sixth kind you could open: same
+   fill, same metrics, same glyph column as the five real bands above it, so the
+   only thing saying "there is nothing here" was a badge. A reader scanning bands
+   read it as a section whose rows had failed to load.
 
-   So it leaves the list and states its own genre instead: the info vocabulary
-   (`--ds-info-*`, the same tint `.callout-hint` uses), which says "read this,
-   nothing to do" in one glance and cannot be mistaken for inventory. It stays
-   BELOW the list rather than moving to the head — the head must not open on the
-   one kind the reader cannot have, and the connect banner already closes it.
+   So it states its own genre instead: the info vocabulary (`--ds-info-*`, the
+   same tint `.callout-hint` uses), which says "read this, nothing to do" in one
+   glance and cannot be mistaken for inventory. That genre is what lets it sit in
+   the head rather than after the inventory — it closes the block of page-level
+   notes under the header, where the caveats about the page as a whole belong,
+   and it cannot be read as the head opening on a kind you cannot have.
 
    Rendered ONCE for both states of the page (a stocked Library and an empty
    one), and unconditionally, independent of `data_apps.enabled` — it is a note
@@ -51,16 +65,57 @@
   </span>
 </div>
 {% endmacro %}
+{# ── The Library's content is still being filled ───────────────────────────────
+   The same banner component, in its WARN variant. Two notes of the same shape
+   under the header, distinguished by vocabulary alone, so a reader takes both in
+   at one glance and still reads them as different kinds of statement:
+
+     info (blue) — Data apps: a SCHEDULE. Nothing is wrong, nothing to act on.
+     warn (amber) — this one: a CAVEAT ABOUT WHAT IS ON SCREEN. The inventory
+       below is incomplete, so what the reader is about to trust may be missing
+       pieces. That is the one thing on this page worth an amber signal.
+
+   It sits ABOVE the Data apps note: it qualifies the list the reader came for,
+   while the Data apps note is about a kind that is not in the list at all. #}
+{% macro library_prep_warning() %}
+<div class="lib-soon lib-soon--warn" role="note" aria-label="Library content is still being prepared">
+  <span class="lib-soon__icon">{{ _lib_ico.icon('warning', 19) }}</span>
+  <span class="lib-soon__body">
+    <span class="lib-soon__title">Library content is still being prepared</span>
+    <span class="lib-soon__text">Some items and information may be incomplete or change while we finish loading them.</span>
+  </span>
+</div>
+{% endmacro %}
 {% macro library_row(c, child=False, last_child=False) %}
             {# `draggable` is a FILE affordance: a file moves into a collection,
                collections never nest. Computed once so the leading slot and the
                row attribute can't disagree. #}
             {% set _draggable = (c.share_type and c.file_kind and not c.is_folder) %}
+            {# A TOP-LEVEL loose file is also a *pair* target: dropping another
+               file on it offers to create a collection from the two, which is
+               the only way to make a collection out of things already in the
+               Library (the upload flow makes one out of what you upload).
+
+               Gated on ownership: creating the collection MOVES both files into
+               it, which consumes their current single-file collections. Doing
+               that to a file someone shared with you would delete their
+               collection out from under them.
+
+               Never a child: a child already lives in a collection, and the
+               move that would put a file beside it is the one its FOLDER row
+               already offers. #}
+            {% set _pair_target = (_draggable and not child and c.ownership in ('mine', 'shared_by_me')) %}
             <tr class="lib-row{% if c.is_folder %} lib-row--folder{% else %} lib-row--file{% endif %}{% if child %} lib-row--child{% if last_child %} lib-row--lastchild{% endif %}{% endif %}"
                 data-href="{{ c.href }}"
                 data-ownership="{{ c.ownership }}"
                 data-kind="{{ c.kind }}"
                 data-type="{{ c.type_key }}"
+                {# The type's WORDS, on the row. The table has no Type column any
+                   more, but the grid card still names the kind on its metadata
+                   line, and a card is projected from its row — so the label has to
+                   travel here rather than being read back out of a cell that no
+                   longer exists. #}
+                data-type-label="{{ c.type_label }}"
                 data-origin="{{ c.origin }}"
                 data-requirement="{{ c.requirement }}"
                 data-stack="{{ c.stack_state }}"
@@ -73,6 +128,13 @@
                 {% if c.slug %}data-slug="{{ c.slug }}"{% endif %}
                 {% if c.is_folder %}data-files="{{ c.file_count }}"{% endif %}
                 {% if c.file_name %}data-filename="{{ c.file_name }}"{% endif %}
+                {# The file's FORMAT, for the client-side re-presentations that
+                   cross the file⇄collection boundary in place: they have to write
+                   the same second line the server would have rendered, and reading
+                   it back off the rendered line would make the markup its own
+                   source of truth. Absent when there is no readable extension —
+                   which is also the signal to fall back to the description. #}
+                {% if c.file_format %}data-file-format="{{ c.file_format }}"{% endif %}
                 {# The Details column is retired, so the meta text ("4 files",
                    "report.pdf · 2.1 MB") rides the row: the grid cards show it and
                    an in-place move updates it. #}
@@ -88,6 +150,7 @@
                 data-sharing="{{ c.visibility_label }}"
                 data-search="{{ c.search }}"
                 {% if c.is_folder %}data-folder="1" data-drop-target="1"{% endif %}
+                {% if _pair_target %}data-pair-target="1"{% endif %}
                 {% if child %}data-parent-id="{{ c.parent_id }}" hidden{% endif %}
                 {% if c.file_id %}data-file-id="{{ c.file_id }}"{% endif %}
                 {% if c.share_type %}draggable="{{ 'true' if _draggable else 'false' }}"{% endif %}>
@@ -123,42 +186,127 @@
                   <a class="lib-name{% if child %} lib-name--child{% endif %}" href="{{ c.href }}" draggable="false">
                     <span class="cc-icon lib-icon{% if c.is_folder %} lib-icon--folder{% endif %}">{{ kind_glyph(c.glyph) }}</span>
                     <span class="lib-name-text">
-                      <span class="lib-name-title">{{ c.title }}</span>
-                      {# A collection's second line is its CONTENTS ("4 files") —
-                         more useful than boilerplate prose, and the only place the
-                         count still appears now that Details is gone. #}
-                      <span class="lib-name-desc">{{ c.meta_text if c.is_folder else c.description }}</span>
+                      {# Title line = the name plus, when it applies, the community
+                         indicator. A row wrapper rather than putting the glyph
+                         inside `.lib-name-title`, so the title keeps its own
+                         single-line ellipsis and the glyph is never what gets
+                         truncated. #}
+                      <span class="lib-name-titlerow">
+                        <span class="lib-name-title">{{ c.title }}</span>
+                        {# TRUST MARKER — every trust claim now lives HERE, on the
+                           item's name, because each one is a statement about the
+                           ITEM; in the Owner column they read as statements about
+                           the person. Icon only: each cost a chip's worth of a
+                           fixed column to say in a word what a glyph plus a
+                           tooltip says, and at the name a word would compete with
+                           the name. Never the only signal — the `title` /
+                           `aria-label` carry the full sentence, so nothing here is
+                           colour- or shape-only.
+
+                           Mutually exclusive, and all THREE trust levels now mark
+                           the name — every row carries exactly one, so provenance
+                           is a column you can scan rather than something you infer
+                           from an absence:
+
+                             ORGANIZATION — your organization published this. The
+                               strongest claim, so it outranks the other two (and
+                               router.py pins `verification_state='none'` on these
+                               rows, so a verified+org row cannot exist).
+                             VERIFIED — a user wrote it, your organization checked
+                               it.
+                             COMMUNITY — a user wrote it, nobody has checked it.
+
+                           The ORGANIZATION marker restates what the Owner cell says
+                           in words ("Your organization"), and that repetition is
+                           accepted deliberately: the alternative is the reader
+                           having to notice that ONE of the three levels expresses
+                           itself in a different column from the other two, and a
+                           trust axis with a hole in it is harder to read than one
+                           that repeats itself. If the duplication ever needs
+                           settling, move the claim (name-line icon only, Owner cell
+                           names the actual uploader) rather than dropping the
+                           marker again.
+
+                           `show_unverified_trust` still gates the COMMUNITY marker
+                           only — it now defaults ON, so the gate is an escape hatch
+                           for an instance that wants the older silent-default look,
+                           not the default itself. Verified and Organization are
+                           ungated. #}
+                        {# `data-tip`, not `title`: these carry the whole meaning of
+                           the marker, and the native tooltip's OS-controlled show
+                           delay (600ms+) is far too slow for the one affordance that
+                           explains a glyph nobody can read on sight. They ride the
+                           shared fast tooltip (`.ds-tip`), which is
+                           also what keeps the bubble out of the clipping ancestors —
+                           a card is `overflow: hidden`, so a CSS `::after` would be
+                           cut off at the card edge. `data-tip-instant` opts them out
+                           of the shared 120ms anti-flicker delay: a 14px glyph is
+                           too small to sweep across by accident, so the delay buys
+                           nothing here and costs the immediacy that was asked for.
+                           `aria-label` stays as the accessible name — the visual
+                           bubble is not what a screen reader reads. #}
+                        {#- One call, one vocabulary. Precedence + the two
+                           community sentences live in the macro so the table,
+                           the grid card, the catalog cards and every detail
+                           hero cannot drift from one another. -#}
+                        {#- `trust_level` is set ONLY on store-entity rows (router
+                            sets it from publisher_kind/verification_state), so
+                            gating the community branch on it is what keeps a
+                            plain file or collection — which has no trust axis at
+                            all — from picking up a Community marker it cannot
+                            mean. A missing level yields '' and renders nothing. -#}
+                        {{ _trust.mark(
+                             _trust.level_for('organization' if c.trust_level == 'org' else 'user',
+                                              'verified' if c.verified else 'none',
+                                              show_unverified_trust and c.trust_level == 'unverified'),
+                             own=(c.owner_key == 'me')) }}
+                      </span>
+                      {# Second line, by what the row actually is:
+                           a COLLECTION → its CONTENTS ("4 files"), more useful
+                             than boilerplate prose and the only place the count
+                             still appears now that Details is gone;
+                           a FILE → its FORMAT ("PNG"), which is where the retired
+                             Type column's information went. Every file's
+                             description was the same sentence ("A private file —
+                             searchable by your agents."), so the line was spending
+                             itself on something no two rows differed on;
+                           anything else (a skill, a plugin, a memory domain) →
+                             its description, which for those kinds is real prose
+                             the author wrote.
+                         `file_format` is "" for a file with no readable extension,
+                         which falls through to the description rather than leaving
+                         the line blank. #}
+                      <span class="lib-name-desc">{% if c.is_folder %}{{ c.meta_text }}{% elif c.file_format %}{{ c.file_format }}{% else %}{{ c.description }}{% endif %}</span>
                     </span>
                   </a>
                   {% if c.is_folder %}
                   {# Only rendered on the row under the pointer (CSS), so the
                      target is named, not just outlined. #}
                   <span class="lib-drop-hint">Drop here</span>
+                  {% elif _pair_target %}
+                  {# Same slot, different promise: a folder ABSORBS the file, a
+                     file PAIRS with it into something new. The two must never
+                     read as the same gesture, so the label says which. #}
+                  <span class="lib-drop-hint lib-drop-hint--new">New collection</span>
                   {% endif %}
                 </div>
               </td>
-              {# A collection needs no Type badge: the folder icon, the row's
-                 styling and the file count in Details already say what it is, and
-                 a "Collection" chip only repeated it. The cell stays (the column
-                 grid is shared) — it's just empty. #}
-              <td>{% if not c.is_folder %}<span class="lib-typechip">{{ c.type_label }}</span>{% endif %}</td>
-              <td>
-                <span class="lib-owner"><span class="lib-owner-name">{{ c.owner_label }}</span>
-                  {# v104 trust chip — three levels, one of which is opt-in:
-                     org (gray) and verified (green) always render when present;
-                     unverified (amber) renders only when show_unverified_trust
-                     is enabled (library.show_unverified_trust in instance.yaml,
-                     or AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST env var). Absence of
-                     a chip remains the neutral default for unverified items. #}
-                  {% if c.publisher_kind == 'organization' %}
-                    <span class="lib-trust lib-trust--org">Organization</span>
-                  {% elif c.verified %}
-                    <span class="lib-trust lib-trust--verified" title="Verified by your organization">Verified</span>
-                  {% elif c.trust_level == 'unverified' and show_unverified_trust %}
-                    <span class="lib-trust lib-trust--unverified" title="Community-contributed, not yet verified by your organization">Community</span>
-                  {% endif %}
-                </span>
-              </td>
+              {# No Type cell. The column is gone: this list is GROUPED by type
+                 into the sections it is drawn in, so a per-row chip restated the
+                 band the row already sits under, and for a collection it had
+                 nothing to say at all (the folder glyph, the row styling and the
+                 file count say "collection") — it rendered as a permanently empty
+                 cell holding 128px of a fixed grid. Where it did carry something
+                 a reader could not get elsewhere — a FILE's format — that fact
+                 moved onto the name's second line. The freed width goes to Name,
+                 the only column that ever wants more. #}
+              {# OWNER — a name, and nothing else. All three v104 trust chips have
+                 left this cell: `Verified` and the opt-in `Community` became icon
+                 markers on the item's NAME (a trust claim is about the item, not
+                 about the person), and `Organization` is simply gone — this cell
+                 already reads "Your organization" for an organization-published
+                 row, so the chip repeated it. #}
+              <td><span class="lib-owner-name">{{ c.owner_label }}</span></td>
               {# Sharing is the control, not just a read-out: on something the
                  caller owns the badge IS the button that opens the sharing
                  dialog (chevron + hover state say so). On something shared WITH
@@ -193,8 +341,31 @@
                 {% else %}
                 {# Skills: an approved store entity is already readable by everyone
                    here, so the badge explains that model instead of offering a
-                   group grant nothing would read. #}
-                <button type="button" class="lib-vis lib-vis--{{ c.visibility }} lib-vis--editable"
+                   group grant nothing would read. `--fixed` alongside `--editable`
+                   is the point: it opens a dialog (so it keeps the chevron, the
+                   pointer and the button metrics) but that dialog changes nothing,
+                   so it must not wear the blue that now means "changeable".
+
+                   TODO — make this badge a real control for a PRIVATE store entity
+                   ("share my private skill"). Today an owner has no path from the
+                   Library (or anywhere else) to take their own skill/plugin from
+                   Private to Everyone: `access=private|everyone` is accept-only at
+                   CREATE (`POST /api/store/entities` and the `from-markdown`
+                   sibling) — `PUT /api/store/entities/{id}` edits name, description,
+                   category, title, tagline, bundle and photo, but not access. So the
+                   missing piece is an access-change endpoint, not a control here;
+                   this branch is only where the control would land once one exists.
+
+                   The design question that endpoint has to answer: private→everyone
+                   makes the bundle readable by every authenticated user, so it must
+                   re-enter the guardrail/LLM review pipeline exactly as a fresh
+                   `access=everyone` upload does (and land on `pending`, not
+                   `approved`) rather than flipping `visibility_status` directly.
+                   everyone→private is the cheap direction. Owner-or-admin gated,
+                   DuckDB + Postgres repo siblings in the same change, and REST × CLI
+                   × MCP coverage per the command-UX playbook — which is why this is
+                   a follow-up and not a line in this diff. #}
+                <button type="button" class="lib-vis lib-vis--{{ c.visibility }} lib-vis--editable lib-vis--fixed"
                         data-vis-chip="{{ c.id }}" data-share-info="{{ c.id }}"
                         data-tip="{{ c.visibility_label }} — how sharing works for {{ c.title }}"
                         aria-label="Sharing: {{ c.visibility_label }}. How sharing works for {{ c.title }}">
@@ -234,13 +405,38 @@
                     {% else %}
                     {# In the Stack and not removable. Every such row says the
                        same thing about membership — "In Stack", because it is
-                       — and a LOCK marks the ones the caller cannot drop (an
-                       admin `required` grant). The tier is an attribute of the
-                       membership, not a separate state. #}
-                    {% set _req = c.stack_locked %}
-                    <span class="lib-stackpill lib-instack lib-instack--fixed {% if _req %}lib-instack--required{% endif %}" data-stack-badge="{{ c.id }}" title="{{ c.stack_title }}">
+                       — and a LOCK marks the ones the caller cannot drop,
+                       which is every group grant of either tier (the grant IS
+                       the membership; only an admin can revoke it). Without the
+                       lock those rows wore the success-tinted check that a
+                       REMOVABLE pill shows at rest, so the two were
+                       indistinguishable until you hovered one. The tier is an
+                       attribute of the membership, not a separate state — it
+                       lives in the tooltip and the Optional/Required facet. #}
+                    {% set _locked = c.stack_locked %}
+                    {# `data-tip`, not `title`, for the SAME reason the trust
+                       markers use it (see the note up in the Name cell): this
+                       pill's whole job on hover is to explain a state nobody
+                       can act on, and the native tooltip's OS show delay
+                       (600ms+) means the explanation arrives long after the
+                       pointer has moved on. The page's fast tooltip shows in
+                       120ms and, being fixed-position on <body>, isn't clipped
+                       by the table's overflow ancestors either.
+
+                       It keeps the shared 120ms anti-flicker delay rather than
+                       `data-tip-instant`: this pill fills a 142px slot in a
+                       column of them, so a pointer travelling down the table
+                       sweeps several, and at 0ms each one would blink. The
+                       two BUTTON states next door stay on `title` on purpose —
+                       their hover already swaps the label to say what a click
+                       does, and a bubble arriving over that swap is noise, not
+                       help. #}
+                    <span class="lib-stackpill lib-instack lib-instack--fixed {% if _locked %}lib-instack--locked{% endif %}"
+                          data-stack-badge="{{ c.id }}" role="img"
+                          data-tip="{{ c.stack_title }}"
+                          aria-label="{{ c.stack_pill or 'In Stack' }}. {{ c.stack_title }}">
                       <span class="lib-stackpill__rest">
-                        {% if _req %}
+                        {% if _locked %}
                         {# A lock, not a checkmark: the checkmark says "done, and
                            you did it"; this state is neither. #}
                         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 11V8a6 6 0 1 1 12 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" stroke-width="2"/></svg>
@@ -284,7 +480,7 @@
    here. Scope is grant-aware — items you own plus anything shared into a group
    you belong to — sliced by the toolbar's ownership segments.
 
-   Every row carries its real visibility (Private / Shared / Workspace) and a
+   Every row carries its real visibility (Private / Specific groups / Everyone) and a
    Share action that PUTs to /api/sharing/{resource_type}/{resource_id}. Skills
    are the honest exception: an approved store entity is already readable by
    every authenticated user, so a skill row REPORTS that state instead of
@@ -312,10 +508,12 @@
      of their own under the title. */
   .lib-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px 20px; flex-wrap: wrap; margin: 8px 0 0; }
   .lib-head__titles { flex: 1 1 320px; min-width: 0; }
-  /* #1108 — browse door to /catalog/semantics, below the +Add button. */
+  /* Column kept for the search box + "+ Add". It used to carry a second row —
+     a "Metrics & glossary →" link to the definitions browser (#1108) — which is
+     retired: the semantic layer is a BAND of the list now (the Definitions
+     section), so it has a count, a facet and the page's own search, none of
+     which a header link beside the inventory could ever have. */
   .lib-actions-col { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
-  .lib-browse-semantics { color: var(--ds-text-secondary); text-decoration: none; font-size: 13px; white-space: nowrap; }
-  .lib-browse-semantics:hover { color: var(--ds-primary); }
   /* Page-level notes close the head: this banner, then the two `.pnote`
      caveats. The gap BELOW comes from padding, not margin — the first notice
      has no top margin of its own, and margin here would collapse-adjoin it.
@@ -720,20 +918,37 @@
   /* Folded: header only — no gap held open for cards that aren't rendered. */
   .lib-group.is-collapsed:has(> .fbar-grid:not([hidden])) > .lib-band { margin-bottom: 0; }
   .lib-group:has(> .fbar-grid:not([hidden])) + .lib-group { margin-top: 22px; }
-  /* Name takes whatever is left — it carries the title AND the description, so
-     it earns the slack the metadata columns don't need. Each fixed column is
-     sized for the LONGEST value it actually renders ("Data package" for Type,
-     "Shared with you" for Sharing), so the common case reads in full and only
-     genuinely long content ellipsises. */
-  .lib-col-type    { width: 128px; }
+  /* Name takes whatever is left — it carries the title AND its second line, so
+     it earns the slack the metadata columns don't need, including the 128px the
+     retired Type column used to hold. Each fixed column is sized for the LONGEST
+     value it actually renders ("Shared with you" for Sharing), so the common case
+     reads in full and only genuinely long content ellipsises. */
   .lib-col-owner   { width: 152px; }
   /* Sharing carries the widest badge plus its chevron. */
   .lib-col-sharing { width: 176px; }
-  /* = stack slot (142) + cell padding (2×14). Sharing is no longer in here. */
+  /* ≈ stack slot (142) + the primitive's cell padding (2×16). Sharing is no
+     longer in here. */
   .lib-col-actions { width: 170px; }
-  /* Tighter than the shared primitive's 12/16: seven columns of chips and pills
-     read better dense, and the row keeps a comfortable 44px+ hit area. */
-  .lib-table th, .lib-table td { padding: 9px 14px; vertical-align: middle; }
+  /* ── Every cell centres on the row ──
+     A Library row is TWO lines in its Name cell (title + format/count/description)
+     and one line in each of the others, so top-aligned cells left the owner, the
+     sharing badge and the Stack button hanging ~10px above the middle of the row
+     they belong to, each lining up with the title and none with the row. Centred,
+     the row reads as one horizontal band — which is also what makes the hover wash
+     legible as a single object.
+
+     `tbody td` / `thead th`, not the bare `.lib-table td` this used to be: the
+     shared primitive sets `vertical-align: top` through
+     `:is(.data-table, …) tbody td`, which at (0,1,2) outranks a (0,1,1) page rule
+     — so the old declaration never applied to a single body cell. Matching its
+     specificity and landing later in the cascade (this block loads from
+     `head_extra`, after style-custom.css) is what makes the intent bind.
+
+     The padding that shared this dead rule is gone rather than fixed: the
+     primitive's 8/16 is what every row has actually been rendering, so "correcting"
+     it to the 9/14 the comment claimed would re-space the whole table as a side
+     effect of an alignment fix. */
+  .lib-table thead th, .lib-table tbody td { vertical-align: middle; }
 
   /* ── Sortable column header ──
      A real <button> inside the <th>, so the order is reachable by keyboard and
@@ -787,38 +1002,67 @@
   .lib-name { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; flex: 1 1 auto; min-width: 0; }
   .lib-name .cc-icon { flex-shrink: 0; }
   .lib-name-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  /* Title line: the name, then any indicator that qualifies the ITEM. The name is
+     the only thing here allowed to shrink — the glyph is `flex: none`, so a long
+     title ellipsizes and the marker stays legible instead of being cut in half. */
+  .lib-name-titlerow { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .lib-name-title { font-weight: 600; color: var(--ds-text-primary); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lib-row:hover .lib-name-title { color: var(--ds-primary); }
+  /* Trust markers are shared now: `.ds-trust` in css/trustmark.css, emitted by
+     macros/_trustmark.html. They moved out of this page when the catalog cards
+     and the detail heroes had to make the same three claims — four private
+     spellings was how they came to disagree. */
   /* One truncation rule for everything that can overrun its fixed column: a
      single line, ellipsis, no wrap. (The old line-clamp + `max-width: 42ch`
      truncated the description at a DIFFERENT width from the column, so two rows
      side by side cut off at different places.) */
   .lib-name-desc { font-size: 12.5px; color: var(--ds-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lib-cell-muted { color: var(--ds-text-secondary); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .lib-typechip { display: inline-flex; align-items: center; max-width: 100%; height: 22px; padding: 0 9px; font-size: 11.5px; font-weight: 600; color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* Wrap so the trust chip drops below the name when both don't fit the fixed
-     column, rather than squeezing a short owner name to an ellipsis. */
-  .lib-owner { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 8px; min-width: 0; }
-  .lib-owner-name { font-size: 13px; color: var(--ds-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* Trust chip beside the owner. Quiet by design — the Library's primary
-     affordances are Sharing and Stack; provenance is context, not an action. */
-  .lib-trust { flex-shrink: 0; padding: 1px 7px; border-radius: var(--ds-radius-pill); border: 1px solid transparent; font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
-  .lib-trust--org { background: var(--ds-surface-sunken); border-color: var(--ds-border); color: var(--ds-text-secondary); }
-  .lib-trust--verified { background: var(--ds-accent-success-bg); border-color: var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
-  .lib-trust--unverified { background: var(--ds-accent-warn-bg); border-color: var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink); }
+  /* Owner — one name on one line. The flex wrapper and its wrap rule are gone
+     with the trust chips that needed somewhere to drop to: there is nothing left
+     in this cell to wrap. */
+  .lib-owner-name { display: block; font-size: 13px; color: var(--ds-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-  /* Visibility chip — Private (quiet) · Shared / Workspace (primary tint).
-     Never colour-only: each state carries its own word. */
+  /* ── Visibility chip: colour answers ONE question ──
+     "Can I change this?" — blue if yes, grey if no. Nothing else.
+
+     It used to answer a different question, the VALUE ("Private" grey, "Everyone"
+     blue), with a third hue for read-only laid over the top. That made the colour
+     actively misleading, because value and editability don't correlate: a grey
+     `Private` badge on your own upload is one click from changing, while a
+     coloured `Everyone` badge on someone else's item cannot be changed at all.
+     Two rows could wear the same colour and offer opposite affordances.
+
+     The VALUE is still fully stated, just not in the hue — every chip carries its
+     own word (Private / Specific groups / Everyone / Shared with you / In review)
+     and its own glyph (a padlock when private, the share node otherwise), so this
+     is not colour-only in either direction, and nothing is lost by the recolour.
+
+     Base = the neutral, so anything that does not claim editability is grey by
+     default rather than by an override.
+
+     Note the hue is load-bearing HERE and not on the grid card, which states the
+     same distinction by BOX (outlined chip vs bare text) — see
+     `.fbar-card__access` in filter_toolbar.css. The difference is context, not
+     disagreement: this badge owns a column with whitespace around it, so a tint
+     reads as one item's state; the card's shares a 40px bar with a primary-tinted
+     action, where a second tint just doubles the blue. Both views carry the same
+     anatomy — bordered box, glyph, word, chevron — and the same words. */
   .lib-vis { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 22px; padding: 0 9px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; border-radius: var(--ds-radius-pill); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--ds-border); background: var(--ds-surface-dim); color: var(--ds-text-muted); }
-  .lib-vis--shared, .lib-vis--workspace { color: var(--ds-primary); background: var(--ds-primary-light); border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent); }
-  /* "Shared with you" — the one Sharing state that is NOT a control: the
-     caller can't re-share what isn't theirs, so only the owner can change
-     access. It carries its own hue rather than the primary tint the editable
-     badges wear, because primary is the page's "this does something" colour and
-     this badge does nothing on click. Declared AFTER the --shared/--workspace
-     rule so it wins on the same specificity (the row still carries its real
-     visibility class, which the icon and the filters read). */
-  .lib-vis--readonly { color: var(--ds-readonly-ink); background: var(--ds-readonly-bg); border-color: color-mix(in srgb, var(--ds-readonly-line) 40%, transparent); }
+  /* CHANGEABLE — the badge is the control that opens the sharing dialog. Primary
+     is the page's "this does something" colour, and here it does. */
+  .lib-vis--editable { color: var(--ds-primary); background: var(--ds-primary-light); border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent); }
+  /* NOT changeable, but still opens something: a store entity's access follows
+     from its review state, so its badge EXPLAINS the model rather than offering a
+     grant nothing would read. It keeps the chevron and the pointer (it does open a
+     dialog) and gives up the blue (that dialog changes nothing). Declared after
+     `--editable`, which it accompanies for the interactive metrics, so it wins on
+     equal specificity. */
+  .lib-vis--fixed { color: var(--ds-text-muted); background: var(--ds-surface-dim); border-color: var(--ds-border); }
+  /* "Shared with you" — the one Sharing state that is not a control at all. It
+     needs no colour rule: the base IS the grey that now means "you cannot change
+     this", so read-only and explains-only match, as they should. The class stays
+     as the behavioural hook (cursor, tooltip) and as what the tests assert on. */
   .lib-vis svg { width: 11px; height: 11px; flex-shrink: 0; }
   /* On something the caller owns the badge IS the sharing control: a chevron and
      a hover state say it can be edited, and it opens the same dialog the Actions
@@ -835,24 +1079,11 @@
   .lib-vis--editable:hover .lib-vis__caret { opacity: 1; }
   .lib-vis--editable:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
 
-  /* Fast tooltip for the Sharing badges' `[data-tip]`. The native `title`
-     tooltip it replaces has an OS-controlled show delay (600ms+) that reads
-     as sluggish for a badge people hover just to understand its state; this
-     shows almost immediately instead. Positioned in fixed coordinates by JS
-     rather than a CSS ::after, because a ::after would be clipped by the
-     table's overflow ancestors (`.lib-table td` is `overflow: hidden`, and
-     `.lib-tablewrap` is `overflow-x: auto`, which computes `overflow-y: auto`
-     too — see the note above `.lib-tablewrap`). */
-  .lib-tip {
-    position: fixed; z-index: 500; max-width: 240px;
-    padding: 6px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4;
-    font-weight: 500; letter-spacing: normal; text-transform: none;
-    background: var(--ds-text-primary); color: var(--ds-text-inverse);
-    box-shadow: var(--ds-shadow-md); pointer-events: none;
-    opacity: 0; transform: translateY(2px);
-    transition: opacity .08s ease, transform .08s ease;
-  }
-  .lib-tip.is-visible { opacity: 1; transform: translateY(0); }
+  /* The fast `[data-tip]` tooltip is shared now: `.ds-tip` in components.css,
+     driven by js/components/tooltip.js. It moved out of this page because the
+     trust markers needed the same no-delay behaviour on the catalog and detail
+     pages, and the bubble must stay a fixed-position child of <body> to escape
+     this table's overflow ancestors. */
 
   /* ── Actions: one reserved slot ──
      The slot is rendered on EVERY row, empty or not, at a fixed width, so the
@@ -871,10 +1102,18 @@
   /* ── Stack: one action, one status, one size ──
      `.lib-stackpill` is the shared box (identical height, padding, border and
      font), so the in-place swap can't move the row. The two states then read
-     differently ON PURPOSE: "Add to Stack" is a bordered, primary-tinted
-     BUTTON that lights up on hover; "In Stack" is a borderless success-tinted
-     STATUS with a check and a default cursor — nothing to press. */
-  .lib-stackpill { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 26px; padding: 0 10px; font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; border: 1px solid transparent; border-radius: var(--ds-radius-pill); }
+     differently ON PURPOSE — by TINT, not by outline: "Add to Stack" is a
+     primary-tinted BUTTON that deepens on hover; "In Stack" is a success-tinted
+     STATUS with a check and a default cursor — nothing to press. Neither wears
+     a border: a row of outlined controls down the actions column drew a second
+     grid inside the table, competing with the row rules for structure, and
+     "one of these is boxed and the other isn't" is not the difference worth
+     seeing. The tint carries the whole distinction. */
+  /* `--ds-radius-btn`, the one radius every labelled button in the product
+     wears — the row control and the page's "+ Add" are both buttons, so they
+     are both the same shape. Fully-round is the badge language, and a pill
+     here made a clickable control look like the status chip beside it. */
+  .lib-stackpill { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 26px; padding: 0 10px; font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; border: 1px solid transparent; border-radius: var(--ds-radius-btn); }
   .lib-stackpill svg { width: 12px; height: 12px; flex: none; }
   /* Every pill fills the slot, so NOTHING about the geometry changes across the
      three states (Add to Stack / In Stack / Remove from Stack) — only colour,
@@ -887,20 +1126,35 @@
   .lib-stackpill__alt { display: none; }
   .lib-stackpill[disabled] { opacity: .55; cursor: progress; }
 
-  /* Add to Stack — the default ACTION for anything not in the Stack. */
-  .lib-addstack { color: var(--ds-primary); background: var(--ds-surface); border-color: color-mix(in srgb, var(--ds-primary) 40%, transparent); cursor: pointer; }
-  .lib-addstack:hover { background: var(--ds-primary-light); border-color: var(--ds-primary); }
+  /* Add to Stack — the default ACTION for anything not in the Stack. Borderless
+     on a primary tint, exactly as In Stack is borderless on a success tint. */
+  .lib-addstack { color: var(--ds-primary); background: var(--ds-primary-light); cursor: pointer; }
+  .lib-addstack:hover { background: color-mix(in srgb, var(--ds-primary) 20%, var(--ds-surface)); }
   .lib-addstack:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
 
   /* In Stack — a STATUS at rest: success tint, a check, no border. */
   .lib-instack { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); }
   /* A granted or installed item has no membership of its own to drop, so its
-     status is exactly that — not a button, not hoverable. */
-  .lib-instack--fixed { cursor: default; }
-  /* Required — INFO, not success. The success tint reads as "you did this and
-     it worked"; a required grant is neither the caller's doing nor theirs to
-     undo, so it gets the informational tint and a lock instead. */
-  .lib-instack--required { color: var(--ds-accent-info-ink); background: var(--ds-accent-info-bg); }
+     status is exactly that — not a button. `help` rather than `default`: it
+     carries a `data-tip` explaining who CAN change it, and the cursor is what
+     says a hover is worth it (same contract as the read-only Sharing badge). */
+  .lib-instack--fixed { cursor: help; }
+  /* Locked — the SAME grey the Sharing column's read-only badge wears, because
+     it says the same thing: "you cannot change this." One "unchangeable" colour
+     per row beats two, and the informational blue this used to wear read as a
+     state of its own — a second tint competing with the primary and success
+     pills for meaning, on the one pill that has no meaning to offer beyond
+     "not yours to touch". The lock glyph still separates it from the success
+     check of a REMOVABLE pill, and the tier still lives in the tooltip and the
+     Optional/Required facet.
+
+     It takes the reference chip's border along with its fill — the one place
+     the column's borderless rule bends, and not decoration: the row's own
+     hover background IS `--ds-surface-dim` (see `.data-table tr.lib-row:hover`),
+     so a borderless chip on that fill dissolves into the row at exactly the
+     moment someone is pointing at it. `.lib-vis` survives its hover for the
+     same reason. */
+  .lib-instack--locked { color: var(--ds-text-muted); background: var(--ds-surface-dim); border-color: var(--ds-border); }
   /* …and where the membership IS the caller's, the same box turns into the
      remove action on hover or keyboard focus. Subtly destructive: danger ink on
      its own soft tint, never a filled red button, so it reads as "this undoes
@@ -909,7 +1163,6 @@
   button.lib-instack:hover, button.lib-instack:focus-visible {
     color: var(--ds-accent-danger-ink);
     background: var(--ds-accent-danger-bg);
-    border-color: color-mix(in srgb, var(--ds-accent-danger-ink) 25%, transparent);
   }
   button.lib-instack:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
   button.lib-instack:hover .lib-stackpill__rest,
@@ -921,26 +1174,94 @@
   .lib-empty h3 { margin: 0 0 6px; color: var(--ds-text-primary); font-size: 15px; }
   .lib-empty .cc-btn { margin-top: 12px; }
 
-  /* ── "Coming soon" info banner ──
-     Data apps are a kind the Library will hold and does not hold yet. Two
-     earlier homes were wrong for different reasons: a `.pnote` panel in the page
-     head put the one kind you CANNOT have above the five you do, and a band
-     inside the list dressed a roadmap note in the chrome of the inventory —
-     right down to the glyph column — so it read as a sixth openable section.
+  /* ── Definitions footer ────────────────────────────────────────────────
+     An adjacent destination under the inventory, not a band of it. Styled
+     unlike anything in the list on purpose: no card fill, no border box, just
+     a hairline above it and a roomy row — a place the page ENDS on rather
+     than a thing that could be mistaken for another kind you own. (It also
+     avoids the `.lib-soon` notice vocabulary, which says "read this, nothing
+     to do"; this block is somewhere to GO.) */
+  .lib-defs {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin: 28px 0 8px;
+    padding: 20px 4px 4px;
+    border-top: 1px solid var(--ds-border);
+  }
+  .lib-defs__icon {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    color: var(--ds-kind-data);
+    background: var(--ds-kind-data-soft);
+  }
+  .lib-defs__icon svg { width: 19px; height: 19px; }
+  .lib-defs__body { flex: 1 1 auto; min-width: 0; }
+  .lib-defs__title {
+    margin: 0 0 3px;
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--ds-text-primary);
+  }
+  .lib-defs__text {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+    max-width: 62ch;
+  }
+  /* Shown only when the page's search box matches a term inside. This is what
+     keeps the block reachable BY CONTENT and not just by scrolling to it. */
+  .lib-defs__hit {
+    margin: 8px 0 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ds-primary);
+  }
+  .lib-defs__links {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-end;
+  }
+  .lib-defs__link {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ds-primary);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .lib-defs__link:hover { text-decoration: underline; }
+  @media (max-width: 640px) {
+    .lib-defs { flex-wrap: wrap; }
+    .lib-defs__links { width: 100%; flex-direction: row; gap: 16px; align-items: flex-start; }
+  }
 
-     It is now a banner UNDER the list, wearing the info vocabulary the design
-     system already uses for "read this, nothing to do" (`--ds-info-*`, as
-     `.callout-hint`): tinted fill, a 3px leading rule that no band or card on
-     this page has, and its own rounded box outside the frame. A reader can tell
-     it apart from a section before reading a word of it, which is the whole job.
+  /* ── Page-level note banners ──
+     One component for both notes under the header: the whole-Library "still
+     being prepared" caveat (warn) and the Data apps "Coming soon" note (info).
+     Earlier homes for these were wrong for different reasons: `.pnote` panels
+     that read as two unrelated slabs, and — for Data apps — a band inside the
+     list, which dressed a roadmap note in the chrome of the inventory, right
+     down to the glyph column, so it read as a sixth openable section.
 
-     The rule is what makes it read as an aside rather than as one more surface —
-     the tint alone, at this width, is just another block. Info blue, not amber:
-     "not built yet" is a schedule, not a warning — nothing here is wrong and
-     there is nothing to act on. */
+     Both now wear the status vocabulary the design system uses for asides (as
+     `.callout-hint` does): tinted fill, a 3px leading rule that no band or card
+     on this page has, and its own rounded box outside the frame. A reader can
+     tell one apart from a section before reading a word of it, which is the
+     whole job. The rule is what makes it read as an aside rather than as one
+     more surface — the tint alone, at this width, is just another block.
+
+     The base is INFO blue, the Data apps case: "not built yet" is a schedule,
+     not a warning — nothing is wrong and there is nothing to act on. */
   .lib-soon {
     display: flex; align-items: flex-start; gap: 11px;
-    margin-top: 20px; padding: 13px 16px;
+    padding: 13px 16px;
     background: var(--ds-info-bg);
     border: 1px solid color-mix(in srgb, var(--ds-info-line) 35%, transparent);
     border-left: 3px solid var(--ds-info-line);
@@ -954,6 +1275,29 @@
      the badge takes the same family at a stronger tint. */
   .lib-soon__badge { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ds-info-ink); background: color-mix(in srgb, var(--ds-info-line) 20%, transparent); border-radius: var(--ds-radius-pill); padding: 2px 8px; }
   .lib-soon__text { display: block; margin-top: 3px; font-size: 12.5px; line-height: 1.55; color: color-mix(in srgb, var(--ds-info-ink) 85%, transparent); max-width: 78ch; }
+
+  /* WARN variant — same box, amber vocabulary, for the caveat about the
+     inventory itself. The leading rule and the glyph take `--ds-warn-ink` rather
+     than `--ds-warn-line`: the line token is a pale hairline amber in the light
+     themes (near-invisible as a 3px rule on the warn fill), while the ink reads
+     at every theme. The 1px surround keeps the softer line token, as the info
+     case does with its own. */
+  .lib-soon--warn {
+    background: var(--ds-warn-bg);
+    border-color: color-mix(in srgb, var(--ds-warn-ink) 25%, transparent);
+    border-left-color: var(--ds-warn-ink);
+  }
+  .lib-soon--warn .lib-soon__icon { color: var(--ds-warn-ink); }
+  .lib-soon--warn .lib-soon__title { color: var(--ds-warn-ink); }
+  .lib-soon--warn .lib-soon__badge { color: var(--ds-warn-ink); background: color-mix(in srgb, var(--ds-warn-ink) 16%, transparent); }
+  .lib-soon--warn .lib-soon__text { color: color-mix(in srgb, var(--ds-warn-ink) 85%, transparent); }
+
+  /* The notes as a group, closing the page head. All the vertical spacing lives
+     here: `.lib-connect--head` spends its padding on the gap above, this gap
+     spaces the notes from each other, and the shell's `.idx-head > :last-child`
+     rule flushes the group against the content band. The banners carry no margin
+     of their own, so nothing here has to be undone. */
+  .lib-headnotes { display: flex; flex-direction: column; gap: 10px; }
 
   /* ── Modals (upload + share) ── */
   .lib-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
@@ -988,6 +1332,17 @@
   .lib-share-note { font-size: 12.5px; line-height: 1.5; color: var(--ds-text-secondary); background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: 9px; padding: 10px 12px; margin: 0 0 14px; }
   .lib-share-loading { font-size: 13px; color: var(--ds-text-muted); padding: 8px 0 14px; }
 
+  /* New-collection dialog — the file checklist. Same row idiom as the group
+     checklist above (`.lib-grp`), because it is the same act: ticking which of
+     a listed set this applies to. A fieldset rather than a bare div, so the
+     checkboxes are announced under one name; the legend is styled to match a
+     `.lib-field` label so the dialog reads as two fields, not a field and a
+     form control from somewhere else. */
+  .lib-pair-set { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+  .lib-pair-set > legend { padding: 0; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--ds-text-primary); }
+  .lib-pair-list { display: flex; flex-direction: column; gap: 2px; max-height: 34vh; overflow-y: auto; }
+  .lib-pair-note { color: var(--ds-warn-ink); }
+
   /* ── Rows open on click ──
      The whole row is the target (no per-row "Open" button); the name anchor is
      kept for the keyboard, middle-click and "copy link" paths. Interactive
@@ -998,7 +1353,11 @@
      keyboard-selected, then drag (further down). The shared primitive hovers the
      TR, but the folder tint below paints on the TD and would cover it, so every
      state here is a TD rule for the same reason. */
-  .data-table tr.lib-row:hover > td { background-color: color-mix(in srgb, var(--ds-text-primary) 4%, transparent); }
+  /* Hover = the rail's own hover grey (`--rail-hover-bg` resolves to this same
+     token), not a wash mixed from the ink. A row in this list and a destination
+     in the sidebar are the same gesture — "the thing I am pointing at" — so they
+     should not answer it in two different greys. */
+  .data-table tr.lib-row:hover > td { background-color: var(--ds-surface-dim); }
   /* Selected = the row the keyboard is on (its name link has focus). Same
      treatment as hover plus an accent rail, so tabbing through the table is as
      legible as pointing at it. */
@@ -1102,6 +1461,48 @@
   .lib-drop-hint { display: none; position: absolute; right: 0; top: 50%; transform: translateY(-50%); padding: 3px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; color: var(--ds-text-inverse); background: var(--ds-primary); border-radius: var(--ds-radius-pill); }
   body.lib-dragging .lib-row--folder.is-drop-hover .lib-drop-hint { display: block; }
 
+  /* ── Pairing two files into a new collection ──
+     Deliberately NOT the folder treatment above. A collection row is ringed the
+     moment a drag starts, because every one of them is a place the file could
+     go and the reader has to see the set. Ringing every FILE as well would light
+     the whole table up and cost collections the distinction that ring buys them
+     — and every file is a pair candidate, so the resting state would carry no
+     information anyway. So a pair target announces itself only under the
+     pointer, and says what it will do rather than where the file will land.
+
+     What distinguishes the two hovers is the HINT, not the ring: a row ring is
+     an inset box-shadow (see above) and cannot be dashed, and a dashed outline
+     per cell would read as one box per column. So the ring is the same shape a
+     folder's is, and the pill inside it changes — outlined on the surface, not
+     filled primary, because it names a collection that does not exist yet
+     rather than a destination that is already there. The grid card, a normal
+     box, can carry the dashed outline as well (further down). */
+  body.lib-dragging .data-table tr[data-pair-target].is-drop-hover {
+    --lib-drop-line: var(--ds-primary);
+    --lib-drop-w: 2px;
+  }
+  body.lib-dragging .data-table tr[data-pair-target].is-drop-hover > td {
+    background-color: var(--ds-primary-light);
+    box-shadow: inset 0 var(--lib-drop-w) 0 var(--lib-drop-line),
+                inset 0 calc(-1 * var(--lib-drop-w)) 0 var(--lib-drop-line);
+  }
+  body.lib-dragging .data-table tr[data-pair-target].is-drop-hover > td:first-child {
+    box-shadow: inset 0 var(--lib-drop-w) 0 var(--lib-drop-line),
+                inset 0 calc(-1 * var(--lib-drop-w)) 0 var(--lib-drop-line),
+                inset var(--lib-drop-w) 0 0 var(--lib-drop-line);
+  }
+  body.lib-dragging .data-table tr[data-pair-target].is-drop-hover > td:last-child {
+    box-shadow: inset 0 var(--lib-drop-w) 0 var(--lib-drop-line),
+                inset 0 calc(-1 * var(--lib-drop-w)) 0 var(--lib-drop-line),
+                inset calc(-1 * var(--lib-drop-w)) 0 0 var(--lib-drop-line);
+  }
+  .lib-drop-hint--new {
+    color: var(--ds-primary);
+    background: var(--ds-surface);
+    box-shadow: inset 0 0 0 1px var(--ds-primary);
+  }
+  body.lib-dragging [data-pair-target].is-drop-hover .lib-drop-hint--new { display: block; }
+
   /* ── "Move into a collection" menu ──
      The keyboard (and touch) route to the same move drag-and-drop performs. Built
      from the collection rows already in the DOM, so it needs no fetch. */
@@ -1113,6 +1514,10 @@
   .lib-movemenu__item svg { width: 16px; height: 16px; flex: none; color: var(--ds-kind-library); }
   .lib-movemenu__item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lib-movemenu__empty { padding: 8px 10px; font-size: 13px; color: var(--ds-text-secondary); }
+  /* "New collection…" — the one item that isn't a destination. Ruled off from
+     the list of places above it, and only ruled off when it follows one. */
+  .lib-movemenu__item--new:not(:nth-child(2)) { margin-top: 5px; padding-top: 11px; border-top: 1px solid var(--ds-border); border-radius: 0 0 8px 8px; }
+  .lib-movemenu__item--new svg { color: var(--ds-primary); }
 
   /* ── Grid cards: two variants ──
      An individual ITEM is a plain white card whose only accent is its icon tile.
@@ -1177,23 +1582,22 @@
      Add to stack, or In stack — which turns destructive on hover/focus to offer
      the removal. The label swap and the danger palette are the shared
      .lib-stackpill rules, so table and card can't drift; only the box changes
-     here, and it keeps the pill's own 26px metrics rather than stretching into
-     the full-width action bar this footer replaced. */
+     here, and it keeps the control's own 26px metrics rather than stretching
+     into the full-width action bar this footer replaced. Shape and fill are
+     the table's — `--ds-radius-btn`, borderless on the tint — for the same
+     reason: it is the same control, one view apart. */
   .fbar-card__foot .lib-stackpill {
     flex: none; height: 26px; padding: 0 10px;
-    border-radius: var(--ds-radius-pill);
     font-size: 12px; font-weight: 600;
   }
-  .fbar-card__foot .lib-addstack { color: var(--ds-primary); background: var(--ds-surface); border-color: color-mix(in srgb, var(--ds-primary) 40%, transparent); }
-  .fbar-card__foot .lib-addstack:hover { background: var(--ds-primary-light); border-color: var(--ds-primary); }
   .fbar-card__foot .lib-instack { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
   .fbar-card__foot .lib-stackpill svg { width: 12px; height: 12px; }
   .fbar-card__foot .lib-stackpill:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
   /* A membership the caller cannot act on. Same 26px box as the pill beside it
      so the right slot is one size in every state, but a STATUS: no border, no
-     pointer, and — for an admin `required` grant — the informational tint and
-     the same lock the table row shows, with a tooltip saying why it can't be
-     dropped. Success green would claim the caller did this and can undo it. */
+     pointer, and — for a locked group grant — the same lock the table row
+     shows, with a tooltip saying why it can't be dropped. Success green would
+     claim the caller did this and can undo it. */
   .fbar-card__status {
     flex: none; display: inline-flex; align-items: center; gap: 5px;
     box-sizing: border-box; height: 26px; max-width: 60%; padding: 0 10px;
@@ -1203,7 +1607,12 @@
   }
   .fbar-card__status span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .fbar-card__status svg { width: 12px; height: 12px; flex: none; }
-  .fbar-card__status--locked { color: var(--ds-accent-info-ink); background: var(--ds-accent-info-bg); cursor: help; }
+  /* Locked carries no tint of its own: the base grey above is already the
+     "you cannot change this" colour the table's locked pill and the read-only
+     Sharing badge now share, so the class is left as the cursor + glyph hook.
+     (No border needed here — a card footer has no hover fill to dissolve
+     into, unlike a table row.) */
+  .fbar-card__status--locked { cursor: help; }
   .fbar-card__status--in { color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); }
 
   /* Grid drag and drop — the same two states as the table: every collection card
@@ -1231,6 +1640,15 @@
      the card's reserved blocks. */
   .lib-card .lib-drop-hint { position: absolute; top: 15px; right: 11px; }
   body.lib-dragging .lib-card--folder.is-drop-hover .lib-drop-hint { display: block; }
+  /* A pair target under the pointer. Dashed where a folder card's hover outline
+     is solid — the card is a real box, so here the "not a thing yet" reading the
+     table can only carry in its hint shows in the outline too. No resting state,
+     for the same reason as the table. */
+  body.lib-dragging .lib-card--file.is-drop-hover {
+    outline: 2px dashed var(--ds-primary);
+    outline-offset: -2px;
+    border-color: var(--ds-primary);
+  }
   /* The hint overlays the tail of the description; `visibility` (not `display`)
      clears the text under it without moving anything. */
   body.lib-dragging .lib-row--folder.is-drop-hover .lib-name-desc { visibility: hidden; }
@@ -1245,6 +1663,11 @@
   .data-table tr.lib-row--new > td { background-color: var(--ds-primary-light); transition: background-color 1.2s ease; }
   .data-table tr.lib-row--new > td:first-child { box-shadow: inset 3px 0 0 var(--ds-primary); }
   @media (prefers-reduced-motion: reduce) { .data-table tr.lib-row--new > td { transition: none; } }
+  /* Same arrival, in the other view. The card carries its own surface, so the
+     tint goes on the box rather than on cells, and the left rule the row uses
+     becomes a ring — a card has no first cell to draw one on. */
+  .lib-card--new { background-color: var(--ds-primary-light); box-shadow: 0 0 0 2px var(--ds-primary); transition: background-color 1.2s ease, box-shadow 1.2s ease; }
+  @media (prefers-reduced-motion: reduce) { .lib-card--new { transition: none; } }
 
   /* ── Narrow screens: horizontal scroll wins over sticky ──
      Below the table's own min-width the columns cannot fit, so the wrapper
@@ -1332,7 +1755,6 @@
       </div>
     </div>
   </div>
-  <a class="lib-browse-semantics" href="/catalog/semantics">Metrics &amp; glossary →</a>
   </div>
 </div>
 
@@ -1344,12 +1766,15 @@
        copy='Connect your AI tools to give them access to the same knowledge.') }}
 </div>
 
-{# The head used to close on two stacked `.pnote` caveats. Both are gone from
-   here, each to the place its subject lives: the whole-Library "still being
-   prepared" note is now the status pill ON the title (always visible, one line,
-   detail on demand), and the Data apps note is a "Coming soon" info banner under
-   the inventory. The head is back to title + lede + controls + the connect
-   banner. #}
+{# The page-level notes, in one stack directly under the connect banner: what to
+   distrust about the list below (warn), then what the list does not hold yet
+   (info). Both wear the same banner component, so the head closes on one block
+   of asides rather than on two unrelated-looking panels; the vocabulary is what
+   separates a caveat from a schedule. #}
+<div class="lib-headnotes">
+  {{ library_prep_warning() }}
+  {{ data_apps_soon() }}
+</div>
 {% endblock %}
 
 {% block page_surface %}
@@ -1574,14 +1999,16 @@
     <div class="lib-tablewrap">
       <table class="data-table lib-table">
         {# The SAME colgroup in every group — that plus `table-layout: fixed` is
-           what keeps the groups reading as one list: Type, Owner, Sharing and
-           Actions land at the same x everywhere, a group's column header rides
-           exactly the grid of its own rows, and a nested file row rides exactly
-           the grid of the folder above it. Everything that can overrun its
-           column truncates (see the -muted / -title / -desc rules). #}
+           what keeps the groups reading as one list: Owner, Sharing and Actions
+           land at the same x everywhere, a group's column header rides exactly
+           the grid of its own rows, and a nested file row rides exactly the grid
+           of the folder above it. Name is the one column with no width of its
+           own, so it absorbs whatever the fixed three leave — including the
+           128px the retired Type column used to hold. Everything that can
+           overrun its column truncates (see the -muted / -title / -desc
+           rules). #}
         <colgroup>
           <col>
-          <col class="lib-col-type">
           <col class="lib-col-owner">
           <col class="lib-col-sharing">
           <col class="lib-col-actions">
@@ -1591,13 +2018,14 @@
            this", and it names the thing being ordered instead of restating it
            in a dropdown. Name, Owner and Sharing are sortable; each opens A–Z
            and flips on a second click, and each sorts on the SAME text the cell
-           shows (Sharing on its label — "Private", "Workspace", "Shared with
+           shows (Sharing on its label — "Private", "Everyone", "Shared with
            you" — not on the internal key, so the resulting order is the one the
            column is read in).
 
-           Type is not sortable: the list is already GROUPED by type into these
-           very sections, so ordering by it inside one of them is a no-op.
-           Actions is not data.
+           Every column here except Actions (which is not data) sorts — the
+           unsortable Type column that used to sit between Name and Owner is
+           gone, for the same reason it could not sort: the list is already
+           GROUPED by type into these very sections.
 
            The header stays a header — same muted uppercase as the columns that
            don't sort. A chevron is the entire difference, shown on the active
@@ -1614,7 +2042,6 @@
                 Name <span class="lib-sort__dir" aria-hidden="true"></span>
               </button>
             </th>
-            <th scope="col">Type</th>
             <th scope="col" aria-sort="none">
               <button type="button" class="lib-sort" data-sort-key="owner" data-sort-first="asc" data-sort-label="owner">
                 Owner <span class="lib-sort__dir" aria-hidden="true"></span>
@@ -1658,10 +2085,51 @@
     <button type="button" class="cc-btn cc-btn--primary" data-new-upload>Upload a file</button>
   </div>
   {% endif %}
-  {# Below whatever the page showed — the inventory, or the empty state. One call
-     for both, since the banner is no longer part of the list and so no longer
-     has to be placed differently depending on whether there is a list. #}
-  {{ data_apps_soon() }}
+
+  {# ── Definitions — an adjacent destination, NOT a row ──────────────────
+     The organization's agreed vocabulary closes the page rather than joining
+     the inventory above it. It is the one thing here nobody owns, shares,
+     installs, drops or edits, so as a table row it had to blank all four
+     columns at once (Owner / Sharing / Stack / Actions) — which is the list
+     telling you the object is not one of its rows. Below the list, outside
+     the frame, it can just say what it is and how big it is.
+
+     It renders in BOTH page states — a stocked library and an empty one — and
+     independently of any filter, because it is not part of what the filters
+     filter. `data-defs-search` is read by the block's own script below: the
+     page's search box narrows the list, and when a query matches a metric or
+     term the footer says so, which is the only one-step term lookup the rail
+     chrome has (it renders no global search box, by design).
+
+     Absent entirely when the instance has no semantic layer configured — a
+     block advertising "0 metrics · 0 terms" describes the setup, not the
+     content. #}
+  {% if definitions_footer %}
+  {% set _dm = definitions_footer.metric_count %}
+  {% set _dg = definitions_footer.glossary_count %}
+  <aside class="lib-defs" id="lib-defs" data-defs-search="{{ definitions_footer.search }}">
+    <span class="lib-defs__icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M12 6.5S10 4.8 6.5 4.8c-1 0-1.8.1-2.5.3v13c.7-.2 1.5-.3 2.5-.3C10 17.8 12 19.5 12 19.5s2-1.7 5.5-1.7c1 0 1.8.1 2.5.3v-13c-.7-.2-1.5-.3-2.5-.3C14 5.1 12 6.5 12 6.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 6.5v13" stroke="currentColor" stroke-width="1.6"/></svg>
+    </span>
+    <div class="lib-defs__body">
+      <p class="lib-defs__title">Definitions</p>
+      <p class="lib-defs__text">
+        The words and numbers your organization has agreed on — what counts as revenue,
+        what an active account is. Maintained by your admin; your agent answers with them.
+      </p>
+      {# Hidden until the search box matches one of the terms inside. #}
+      <p class="lib-defs__hit" id="lib-defs-hit" hidden></p>
+    </div>
+    <div class="lib-defs__links">
+      <a class="lib-defs__link" href="/catalog/semantics#metrics">{{ _dm }} metric{{ '' if _dm == 1 else 's' }} &rarr;</a>
+      <a class="lib-defs__link" href="/catalog/semantics#glossary">{{ _dg }} glossary term{{ '' if _dg == 1 else 's' }} &rarr;</a>
+    </div>
+  </aside>
+  {% endif %}
+  {# The Data apps note used to close this section. It now rides the page head
+     with the other page-level notes (see `page_head`) — one place for the
+     asides, and one rendering for both states of the page (a stocked Library
+     and an empty one) instead of a placement that depends on the list. #}
 </section>
 
 {# ── Upload modal — creates a private collection owned by the caller, then
@@ -1688,6 +2156,43 @@
       <div class="lib-modal-foot">
         <button type="button" class="cc-btn" data-close-upload>Cancel</button>
         <button type="submit" class="cc-btn cc-btn--primary" id="uploadSubmit">Upload</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ── New-collection modal — the PROPOSAL half of dropping one file onto
+     another. The gesture cannot commit on its own: creating the collection
+     moves both files out of the single-file collections they are in now (which
+     are then tidied away), and that is not what a drag reads as promising.
+
+     Also the keyboard route. The drop is pointer-only, so the drag grip's menu
+     opens this same dialog with the grabbed file fixed and the others offered
+     as a checklist — which is why the participants are a LIST here rather than
+     two names in a sentence. It doubles as the way to pair three files at once
+     without dropping them one at a time. ── #}
+<div class="lib-modal" id="pairModal" hidden>
+  <div class="lib-modal-backdrop" data-close-pair></div>
+  <div class="lib-modal-card" role="dialog" aria-modal="true" aria-labelledby="pairModalTitle">
+    <div class="lib-modal-head">
+      <h2 id="pairModalTitle">New collection</h2>
+      <button type="button" class="lib-modal-x" data-close-pair aria-label="Close">&times;</button>
+    </div>
+    <form id="pairForm">
+      <label class="lib-field">
+        <span>Name</span>
+        <input type="text" id="pairName" autocomplete="off" required>
+      </label>
+      <fieldset class="lib-pair-set">
+        <legend>Files</legend>
+        <div class="lib-pair-list" id="pairFiles"></div>
+      </fieldset>
+      <p class="lib-modal-hint">These files move into the new collection — nothing is copied and nothing is deleted. Each one leaves the single-file collection it lives in now.</p>
+      <p class="lib-modal-hint lib-pair-note" id="pairShareNote" hidden>One of these is shared. The new collection starts private, so anyone it is shared with now loses access until you share it again.</p>
+      <div class="lib-modal-err" id="pairErr" hidden></div>
+      <div class="lib-modal-foot">
+        <button type="button" class="cc-btn" data-close-pair>Cancel</button>
+        <button type="submit" class="cc-btn cc-btn--primary" id="pairSubmit">Create collection</button>
       </div>
     </form>
   </div>
@@ -1933,7 +2438,21 @@
   // up here because the row/card click handler is wired before the drag code.
   let justDragged = false;
 
-  const VIS_LABEL = { private: 'Private', shared: 'Shared', workspace: 'Workspace' };
+  // The sharing vocabulary, mirroring `VISIBILITY_LABELS` in
+  // app/services/artefact_access.py — which OWNS it. This copy exists for one
+  // job only: relabelling a badge in place after the share dialog saves, with no
+  // reload to fetch the server's word. Everywhere else (including the grid card)
+  // reads the server-rendered label off `data-sharing`, so states this map has
+  // never heard of — "In review", "Archived", "Shared with you" — render
+  // correctly without being enumerated here. Keep the three words in step with
+  // the Python map; there is no third copy.
+  const SHARING_LABEL = { private: 'Private', shared: 'Specific groups', workspace: 'Everyone' };
+  //: The unabbreviated reading, for the tooltip on a badge the caller can change.
+  const SHARING_TITLE = {
+    private: 'Only you can see this',
+    shared: 'Shared with specific groups',
+    workspace: 'Everyone in the organization can see this',
+  };
   const LOCK_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.9"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.9"/></svg>';
   const SHARE_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>';
   // Mirrors the `_chevron` block in library_row() — the "this badge is editable"
@@ -1951,28 +2470,24 @@
   //      │ description           │  two lines, always reserved
   //      │ Type · details · added│  one line
   //      │ # tag  tag  +N         │  one line, COLLAPSED when there are no tags
-  //      ├ foot ─────────────────┤  (lock) Only you    [+ Add to stack]
+  //      ├ foot ─────────────────┤  [(lock) Private ⌄]  [+ Add to stack]
   //      └───────────────────────┘
   //
   //    The card carries the same `data-*` hooks as its row, so drag-and-drop and
   //    the delegated click handlers serve both views through one code path.
 
-  //: Access state, phrased as WHO can reach the item rather than as a status
-  //: word. The table keeps its own compact badge vocabulary — this is the card's.
-  //: Short by design: these now share the footer with the stack control, so a
-  //: phrase like "Everyone in the org" would crowd it out at the grid's narrowest
-  //: column. The full phrasing survives in each state's `title`.
-  const ACCESS_LABEL = {
-    private: 'Only you',
-    shared: 'Specific groups',
-    workspace: 'Everyone',
-  };
-  //: …and the unabbreviated reading, for the tooltip.
-  const ACCESS_TITLE = {
-    private: 'Only you can see this',
-    shared: 'Shared with specific groups',
-    workspace: 'Everyone in the organization can see this',
-  };
+  //: The card used to keep its OWN access vocabulary here ("Only you" /
+  //: "Specific groups" / "Everyone") against the table's ("Private" / "Shared" /
+  //: "Workspace"), so 26 of 42 rows called their own state something different
+  //: depending on which view you were looking at. Worse, the map only knew the
+  //: three scope keys, so a skill `pending` review — whose row correctly reads
+  //: "In review" — flattened to `visibility='private'` and printed "Only you" on
+  //: its card: not a wording difference but a false statement about the item.
+  //:
+  //: Both maps are gone. The label now comes off `data-sharing`, which carries
+  //: whatever word the SERVER rendered for the row (see `VISIBILITY_LABELS` in
+  //: app/services/artefact_access.py), so the two views cannot disagree and the
+  //: review states appear without anyone enumerating them client-side.
   const LOCK_ICON_SVG =
     '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
     '<rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.9"/>' +
@@ -2011,7 +2526,6 @@
     const iconEl = row.querySelector('.cc-icon');
     const titleEl = row.querySelector('.lib-name-title');
     const descEl = row.querySelector('.lib-name-desc');
-    const typeEl = row.querySelector('.lib-typechip');
     const visEl = row.querySelector('.lib-vis');
     const stackEl = row.querySelector('.lib-slot--stack > *');
     const isFolder = row.classList.contains('lib-row--folder');
@@ -2027,7 +2541,11 @@
     card.dataset.href = href;
     if (row.dataset.fileId) card.dataset.fileId = row.dataset.fileId;
     if (row.dataset.parentId) card.dataset.parentId = row.dataset.parentId;
+    card.dataset.ownership = row.dataset.ownership || '';
     if (isFolder) { card.dataset.folder = '1'; card.dataset.dropTarget = '1'; }
+    // A loose file is a target too — for the OTHER gesture: dropping a file on
+    // it proposes a collection made of the two (see `_pair_target`).
+    if (row.dataset.pairTarget) card.dataset.pairTarget = '1';
     if (row.getAttribute('draggable') === 'true') card.setAttribute('draggable', 'true');
 
     // ── Head. An item wears the accent as a soft icon TILE; a collection wears
@@ -2044,6 +2562,18 @@
     titleLink.textContent = titleEl ? titleEl.textContent.trim() : '';
     title.appendChild(titleLink);
     head.appendChild(title);
+    // The trust marker rides the NAME, so it has to follow the name into the card
+    // — cloned from the row (the table stays the single source of truth, as with
+    // the icon and the grip) rather than re-derived from a data attribute, which is
+    // how the two views could come to disagree about the same item. One selector
+    // covers both markers, so a new one is picked up here for free.
+    // Appended AFTER the <h3>, not inside it: the card title is a line-clamped
+    // `-webkit-box` (filter_toolbar.css), and a non-text child inside that box
+    // takes a line of its own instead of trailing the last word. As the head's
+    // next flex item it trails the title, and the grip's `margin-left: auto`
+    // still pushes the grip to the far edge.
+    const trustEl = row.querySelector('.ds-trust');
+    if (trustEl) head.appendChild(trustEl.cloneNode(true));
     // The same grip the table row carries: the keyboard/touch route to the move
     // that dragging performs with a pointer.
     const grip = row.querySelector('[data-move-file]');
@@ -2060,25 +2590,32 @@
 
     // ── Description. The element is always present (CSS reserves two lines), so
     //    an item without one doesn't pull its footer up past its neighbours'.
-    //    A COLLECTION row shows its file count on that line (the table has no
-    //    Details column any more), but the card's metadata line already carries
-    //    the count — so here a collection falls back to its OWN description
-    //    rather than printing the same "3 files" twice.
+    //    An ARTEFACT reads its own description off the row rather than off the
+    //    row's second line, because that line is not a description for either
+    //    shape of artefact: a collection prints its file count there and a file
+    //    prints its format, and the card's metadata line already carries both.
+    //    So an artefact with no description of its own gets a blank line here
+    //    (as a collection always has) instead of the boilerplate sentence every
+    //    file used to repeat. Every other kind's second line IS its description.
     const desc = document.createElement('p');
     desc.className = 'fbar-card__desc';
-    desc.textContent = isFolder
+    const isArtefact = isFolder || !!row.dataset.fileId;
+    desc.textContent = isArtefact
       ? (row.dataset.desc || '')
       : (descEl ? descEl.textContent.trim() : '');
     body.appendChild(desc);
 
-    // ── Metadata: type, the row's meta text, and when it was added.
+    // ── Metadata: type, the row's meta text, and when it was added. The type
+    //    comes off `data-type-label` — the table's Type column is gone, so there
+    //    is no cell left to read the words out of, but a card has no column
+    //    headers and so still has to name the kind somewhere.
     const details = row.dataset.meta || '';
     const added = row.dataset.added && window.AgnesTime
       ? window.AgnesTime.formatRelative(row.dataset.added) : '';
     const meta = document.createElement('p');
     meta.className = 'fbar-card__meta';
     meta.textContent = [
-      typeEl ? typeEl.textContent.trim() : (isFolder ? 'Collection' : ''),
+      row.dataset.typeLabel || (isFolder ? 'Collection' : ''),
       details,
       added || '',
     ].filter(Boolean).join(' · ');
@@ -2120,39 +2657,87 @@
     const foot = document.createElement('div');
     foot.className = 'fbar-card__foot';
 
-    // ── Sharing. Unboxed — an icon and the plain words, not another pill
-    //    competing with the tag chips above or with the stack control opposite
-    //    it. It opens the SAME sharing dialog the table badge does where the
-    //    caller owns the item, and explains itself where only the owner can
-    //    change access.
+    // ── Sharing. A CHIP where the caller can change the state — bordered, with
+    //    a chevron, exactly like the table badge — and bare text where they
+    //    cannot. That box is the whole affordance, and it is deliberately the
+    //    ONLY thing that distinguishes the two:
+    //
+    //    The previous version carried "you can change this" in the INK, primary
+    //    blue at rest with no box and no chevron. It could not work here, because
+    //    blue is already this card's ambient hover colour — `.fbar-card:hover`
+    //    turns the title primary and `:focus-within` draws a primary ring — so
+    //    the one cue meant to say "control" was the same cue the card spends on
+    //    "pointer is here". Next to a filled, semibold `Add to stack` pill it read
+    //    as coloured metadata, and its hover (primary → primary-dark on 12px
+    //    regular text, nothing else — one step of the same hue) was quieter than
+    //    the card-level hover it had to stand out from. Hence: form states
+    //    changeability at rest, and the hover fill
+    //    below is a different CHANNEL from the card's own elevation hover, so the
+    //    two can't be confused for each other.
+    //
+    //    OUTLINED, not filled like the table's badge: in the table that chip owns
+    //    a column and a tint reads as one item's state, but here it shares a 40px
+    //    bar with the primary action. Two primary-light fills 10px apart is the
+    //    wall of blue this is fixing. So the footer runs three levels, legible in
+    //    one glance: filled = the action, outlined = a state you can change, bare
+    //    text = a state you cannot.
     const editable = !!(visEl && visEl.hasAttribute('data-share'));
     const explains = !!(visEl && visEl.hasAttribute('data-share-info'));
     const visibility = row.dataset.visibility || 'private';
-    const sharedWithMe = row.dataset.ownership === 'shared_with_me';
     const access = document.createElement(editable || explains ? 'button' : 'span');
-    access.className = 'fbar-card__access' + (editable || explains ? '' : ' fbar-card__access--fixed');
+    access.className = 'fbar-card__access'
+      + (editable ? ' fbar-card__access--editable' : ' fbar-card__access--fixed');
     if (access.tagName === 'BUTTON') access.type = 'button';
-    const label = sharedWithMe ? 'Shared with you' : (ACCESS_LABEL[visibility] || 'Only you');
-    // The footer label is abbreviated to share its line with the stack control;
-    // the tooltip carries the unabbreviated reading so nothing is lost.
-    const longLabel = sharedWithMe
-      ? 'Shared with you'
-      : (ACCESS_TITLE[visibility] || ACCESS_LABEL[visibility] || 'Only you');
+    // The SERVER's word for this row, verbatim — the table badge prints the same
+    // string, so the two views cannot drift, and the states no client map knows
+    // about ("In review", "Archived", "Shared with you") come through intact.
+    // `SHARING_LABEL` is only the fallback for a row rendered before the
+    // attribute existed.
+    const label = row.dataset.sharing || SHARING_LABEL[visibility] || 'Private';
+    // Note there is no "can the caller change this?" branch on the LABEL. It used
+    // to overwrite the word with "Shared with you" for anything read-only, which
+    // answered a question the label isn't asked ("who can see this?") and cost
+    // real information: a workspace-published skill someone else owns became
+    // "Shared with you" — true but understating a thing the whole organization can
+    // read — and the caller's own pending skill lost "In review" entirely. Where
+    // "Shared with you" IS the most specific true statement, the server already
+    // says so (grant-derived rows never resolve a scope; see the hardcoded label
+    // in router.py's grant branch), so it arrives through `data-sharing` anyway.
     access.insertAdjacentHTML('beforeend', visibility === 'private' ? LOCK_ICON_SVG : PEOPLE_ICON_SVG);
     const labelEl = document.createElement('span');
     labelEl.textContent = label;
     access.appendChild(labelEl);
     if (editable) {
-      const t = longLabel + ' — change who can see ' + (row.dataset.title || 'this item');
+      // The chevron the table badge has always had, and the card silently
+      // dropped — the shape cue that says "this opens something", and the second
+      // non-colour signal that keeps the control off colour-alone (WCAG 1.4.1).
+      // Same shared constant as the table (one caret, one path) with the card's
+      // own class added, so the component sheet styles it without
+      // filter_toolbar.css having to reach for a library-specific class name.
+      access.insertAdjacentHTML('beforeend', VIS_CARET_SVG);
+      const caretEl = access.querySelector('.lib-vis__caret');
+      if (caretEl) caretEl.classList.add('fbar-card__access-caret');
+      const t = (SHARING_TITLE[visibility] || label)
+        + ' — change who can see ' + (row.dataset.title || 'this item');
       access.title = t;
       access.setAttribute('aria-label', 'Sharing: ' + t);
       access.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); openShare(row); });
     } else if (explains) {
-      access.title = longLabel + ' — how sharing works for ' + (row.dataset.title || 'this item');
+      access.title = label + ' — how sharing works for ' + (row.dataset.title || 'this item');
       access.setAttribute('aria-label', access.title);
       access.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); explainSkillSharing(row); });
     } else {
-      access.title = 'Shared with you — only the owner can change who can see this';
+      // Bare text carries no visible "you can't change this" for a sighted reader
+      // beyond the absence of the box, so the sentence lives in the tooltip.
+      //
+      // Deliberately NO `aria-label` here: this branch renders a plain <span>, and
+      // an aria-label on a role-less element is both unreliably announced and, when
+      // it is, a REPLACEMENT for the visible text. Nothing is lost by leaving it
+      // off — the reason a sighted reader needs telling is that they can see a word
+      // and can't tell whether it is pressable, and a screen-reader user never has
+      // that ambiguity: there is no control in the accessibility tree to promise an
+      // action in the first place. The absence IS the message.
+      access.title = label + ' — only the owner can change who can see this';
     }
     foot.appendChild(access);
 
@@ -2173,31 +2758,45 @@
     } else {
       // Nothing the caller can add or remove. Both views must agree, so the grid
       // mirrors the row's own pill: the same "In stack" wording, and for a
-      // LOCKED membership (an admin `required` grant) the same lock glyph and a
-      // tooltip saying it cannot be removed — otherwise a required item would
-      // explain itself in the table and go quiet one view switch later.
+      // LOCKED membership (any group grant — only an admin can revoke it) the
+      // same lock glyph and a tooltip saying who can remove it — otherwise a
+      // locked item would explain itself in the table and go quiet one view
+      // switch later.
       const status = document.createElement('span');
       status.className = 'fbar-card__status';
+      // `data-tip`, matching the row's own pill: the card is a projection of
+      // that row, so the explanation must arrive as fast in either view. The
+      // sentence comes off the row's `data-tip` (a native `title` fallback
+      // stays for safety, in case some future builder emits one).
+      // The label is spoken as well as shown: `role="img"` makes the aria-label
+      // the whole accessible name, and the tooltip sentence alone ("only an
+      // admin can remove it") never says the item IS in the stack.
+      const tip = (label, sentence) => {
+        status.dataset.tip = sentence;
+        status.setAttribute('role', 'img');
+        status.setAttribute('aria-label', label + '. ' + sentence);
+      };
       if (stackEl) {
-        const locked = stackEl.classList.contains('lib-instack--required');
+        const locked = stackEl.classList.contains('lib-instack--locked');
         status.classList.add(locked ? 'fbar-card__status--locked' : 'fbar-card__status--in');
-        status.title = stackEl.title || (locked
-          ? 'Required by an admin — in your stack and cannot be removed'
-          : 'In your stack');
+        tip('In stack', stackEl.dataset.tip || stackEl.title || (locked
+          ? 'In your stack — only an admin can remove it'
+          : 'In your stack'));
         status.innerHTML = (locked ? LOCK_SVG : CARD_CHECK_SVG) + '<span>In stack</span>';
       } else {
-        status.title = 'This item cannot be added to your stack';
+        tip('Not addable', 'This item cannot be added to your stack');
         status.innerHTML = '<span>Not addable</span>';
       }
       foot.appendChild(status);
     }
     card.appendChild(foot);
 
-    // Folder cards name themselves as a target while a file is in flight.
-    if (isFolder) {
+    // Cards name what a drop on them would do, exactly as the rows do: a folder
+    // takes the file in, a file pairs with it into something new.
+    if (isFolder || card.dataset.pairTarget) {
       const hint = document.createElement('span');
-      hint.className = 'lib-drop-hint';
-      hint.textContent = 'Drop here';
+      hint.className = 'lib-drop-hint' + (isFolder ? '' : ' lib-drop-hint--new');
+      hint.textContent = isFolder ? 'Drop here' : 'New collection';
       card.appendChild(hint);
     }
     return card;
@@ -2255,8 +2854,41 @@
         buttons: '.fbar-view__btn', tableWrap: '.lib-tablewrap',
         grid: '.fbar-grid', storageKey: 'lib-view', card: buildCard,
       },
-      onApply: () => { syncChildren(); markGroupEnd(); refreshStackCount(); },
+      onApply: () => { syncChildren(); markGroupEnd(); refreshStackCount(); syncDefinitionsHit(); },
     });
+  }
+
+  // ── "That word is a definition" ───────────────────────────────────────
+  //    The Definitions footer is NOT a row, so the filter engine neither hides
+  //    nor reveals it — it is always there. What it does do is answer the
+  //    search: someone types `MRR` or `active account` looking for a thing
+  //    they half-remember, the list comes back empty, and the block at the
+  //    bottom is the one place that knows the word. Without this, the reader
+  //    concludes Agnes has never heard of it.
+  //
+  //    Matched against the block's `data-defs-search` — metric names, display
+  //    names, synonyms and glossary terms, lowercased, names only. Substring
+  //    on a word boundary so "arr" matches the ARR metric but not "narrow".
+  const defsEl = document.getElementById('lib-defs');
+  const defsHit = document.getElementById('lib-defs-hit');
+  function syncDefinitionsHit() {
+    if (!defsEl || !defsHit) return;
+    const input = document.getElementById('lib-search');
+    const q = (input && input.value || '').trim().toLowerCase();
+    const index = defsEl.dataset.defsSearch || '';
+    // Two chars is the shortest useful term and stops every keystroke of a
+    // long query flashing the hint on its way past a one-letter prefix.
+    const match = q.length >= 2 && index.split(' ').some(w => w.startsWith(q));
+    if (match) {
+      // textContent, not innerHTML — `q` is whatever the reader typed.
+      // No directional wording ("see below", "on the right"): the links sit
+      // beside this line on a wide screen and under it on a narrow one, so
+      // any direction would be wrong in one of the two layouts.
+      defsHit.textContent = '“' + q + '” is one of your organization’s definitions.';
+      defsHit.hidden = false;
+    } else {
+      defsHit.hidden = true;
+    }
   }
 
   // ── Where the collections stop and the loose files start ──
@@ -2380,6 +3012,41 @@
     }
   }
 
+  // ── "In my stack" deep link: /library?stack=in_stack arrives with the
+  //    toolbar's "In stack only" toggle already pressed. The chat empty state's
+  //    Stack status line ("Agnes is using N knowledge sources and M
+  //    capabilities from your Stack") lands here — /stack is no longer a rail
+  //    destination (#1088) and this list already spans every kind it rendered.
+  //
+  //    Flipped by CLICKING the toolbar's own control rather than by poking at
+  //    the engine's state: the click path already drives aria-pressed, the item
+  //    count, the section tallies and the no-results view, so the deep link and
+  //    a human press cannot drift apart. The control is absent exactly when the
+  //    filter would change nothing (`library_stack_toggle`: everything — or
+  //    nothing — is in the Stack), and then there is nothing to press.
+  //
+  //    The bands are folded by default, so also open the ones now showing the
+  //    Stack and only the Stack — arriving on a screen of closed bands answers
+  //    "what is Agnes using?" with a shrug. The test is the rows rather than
+  //    the press, so the everything-is-in-the-Stack case (no control, list
+  //    already the answer) opens too, while nothing-in-the-Stack opens nothing
+  //    rather than unfolding items the Stack doesn't contain. Not persisted,
+  //    same as ?section= above: a hand-off for this arrival, not a preference
+  //    the caller set.
+  const STACK_ONLY = {{ (library_stack_only or False) | tojson }};
+  if (STACK_ONLY) {
+    const stackBtn = document.getElementById('lib-stack-toggle');
+    if (stackBtn && stackBtn.getAttribute('aria-pressed') !== 'true') stackBtn.click();
+    document.querySelectorAll('[data-lib-sec]').forEach(sec => {
+      const key = sec.dataset.libSec;
+      if (!key || sec.hidden) return;
+      const shown = Array.from(
+        sec.querySelectorAll('tr[data-item-id]:not([data-parent-id])')).filter(r => !r.hidden);
+      if (shown.length && shown.every(r => r.dataset.stack === 'in_stack')) collapsed[key] = false;
+    });
+    applyCollapsed();
+  }
+
   // ── "Save to Library" hand-off: the builders redirect to /library?new=<id>,
   //    so reveal that row (expanding its section) and flash it once. ──
   const NEW_ID = {{ (library_new_id or '') | tojson }};
@@ -2400,7 +3067,18 @@
         // flash we just armed would play on an invisible row. (Deferred:
         // setFolderOpen's state lives further down this IIFE.)
         if (row.dataset.parentId) setFolderOpen(row.dataset.parentId, true);
-        row.scrollIntoView({ block: 'center', behavior: 'auto' });
+        // In GRID view the row is in a hidden table and scrolling to it lands
+        // nowhere, so the arrival goes unannounced in exactly the view a
+        // collection is most often created from (pairing two file cards). The
+        // card is a projection of this row, built by the time this runs, so
+        // flash and scroll THAT instead.
+        const card = document.querySelector(
+          '.fbar-grid:not([hidden]) .lib-card[data-item-id="' + NEW_ID.replace(/"/g, '') + '"]');
+        if (card) {
+          card.classList.add('lib-card--new');
+          setTimeout(() => card.classList.remove('lib-card--new'), 6000);
+        }
+        (card || row).scrollIntoView({ block: 'center', behavior: 'auto' });
       });
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', reveal, { once: true });
@@ -2442,8 +3120,12 @@
   // A child file shows its folder's membership as a plain status: Stack
   // membership is per collection, so there is nothing on the file to remove.
   function fixedInStackHtml(id) {
+    // `data-tip` + role/aria, exactly as library_row() renders this pill — a
+    // status has nothing but its tooltip to offer on hover, so it must not be
+    // the one that waits for the OS delay.
     return '<span class="lib-stackpill lib-instack lib-instack--fixed" data-stack-badge="' + id + '" ' +
-      'title="Its collection is in your Stack">' +
+      'role="img" data-tip="Its collection is in your Stack" ' +
+      'aria-label="In Stack. Its collection is in your Stack">' +
       '<span class="lib-stackpill__rest">' + STACK_CHECK_SVG + 'In Stack</span></span>';
   }
   function addToStackHtml(id, title, endpoint) {
@@ -2596,6 +3278,7 @@
   //    POST /api/collections/{src}/files/{fid}/move.
   let dragFileId = null;
   let dragSourceId = null;
+  let dragOwned = false;    // gates the pairing gesture — see dropTargetFor
 
   // During a drag, `ev.target` can be a TEXT NODE (Firefox), which has no
   // .closest — one uncaught TypeError there kills the whole drop path, which is
@@ -2606,13 +3289,25 @@
     return t.nodeType === 1 ? t : (t.parentElement || null);
   }
 
+  // The table row for a file id, in either view: the grid's cards are projected
+  // from these rows, so a fact that has to be true of an item — rather than of
+  // the box currently drawing it — is read here.
+  function rowForFile(fileId) {
+    if (!fileId) return null;
+    return document.querySelector('[data-lib-sec] tr[data-file-id="' + fileId + '"]');
+  }
+  function isOwnedByCaller(el) {
+    const own = el && el.dataset ? el.dataset.ownership : '';
+    return own === 'mine' || own === 'shared_by_me';
+  }
+
   function endDrag() {
     justDragged = true;
     setTimeout(() => { justDragged = false; }, 0);   // clears after this event loop turn
     document.querySelectorAll('.is-dragging').forEach(r => r.classList.remove('is-dragging'));
     document.querySelectorAll('.is-drop-hover').forEach(r => r.classList.remove('is-drop-hover'));
     document.body.classList.remove('lib-dragging');
-    dragFileId = null; dragSourceId = null;
+    dragFileId = null; dragSourceId = null; dragOwned = false;
   }
 
   document.addEventListener('dragstart', ev => {
@@ -2629,6 +3324,13 @@
     // A child's source is its folder; a loose file's source is its own corpus
     // (a single-file artefact IS its collection).
     dragSourceId = src.dataset.parentId || src.dataset.itemId;
+    // A file the caller owns can be paired; one merely shared with them can only
+    // be moved. Resolved through the ROW, in both views — the table is what the
+    // grid is projected from, so it is the one place this can't be missing. Read
+    // off the dragged element instead and the grid inherits a silent failure
+    // mode the table cannot have: a card built without the attribute drags fine
+    // and simply refuses to pair, with nothing on screen to say why.
+    dragOwned = isOwnedByCaller(rowForFile(dragFileId) || src);
     src.classList.add('is-dragging');
     document.body.classList.add('lib-dragging');
     try {
@@ -2639,13 +3341,22 @@
   });
   document.addEventListener('dragend', endDrag);
 
+  // Two gestures share one drop path, distinguished by WHAT is under the pointer:
+  //   a collection  → move the file into it;
+  //   another file  → propose a new collection made of the two.
+  // Both resolve through .closest, so the cell, the name link and the action
+  // buttons all answer with the same host.
   function dropTargetFor(ev) {
     const el = elementOf(ev);
-    const row = el && el.closest('[data-drop-target]');
+    const row = el && el.closest('[data-drop-target], [data-pair-target]');
     if (!row || !dragFileId) return null;
     // Never "move" a file into the folder it already lives in, and never onto
     // its own row.
     if (row.dataset.itemId === dragSourceId) return null;
+    // Pairing MOVES both files, which consumes the collection each one currently
+    // sits in — so the file being dragged has to be the caller's too, not just
+    // the one it is dropped on (which the server-side gate already checked).
+    if (!row.hasAttribute('data-drop-target') && !dragOwned) return null;
     return row;
   }
   function hover(row) {
@@ -2666,7 +3377,7 @@
   });
   document.addEventListener('dragleave', ev => {
     const el = elementOf(ev);
-    const row = el && el.closest('[data-drop-target]');
+    const row = el && el.closest('[data-drop-target], [data-pair-target]');
     if (!row) return;
     // dragleave fires on every element boundary INSIDE the row (cell → link →
     // icon …). Clearing on each one made the highlight strobe and drop on the
@@ -2685,10 +3396,199 @@
     // that never landed.
     const targetId = target.dataset.itemId;
     const targetTitle = target.dataset.title || 'the collection';
+    const isFolderTarget = target.hasAttribute('data-drop-target');
+    const targetFileId = target.dataset.fileId || '';
     const fileId = dragFileId;
     const sourceId = dragSourceId;
+    const draggedRow = rowForFile(fileId);
     endDrag();
-    await moveFileIntoCollection(fileId, sourceId, targetId, targetTitle);
+    if (isFolderTarget) {
+      await moveFileIntoCollection(fileId, sourceId, targetId, targetTitle);
+      return;
+    }
+    // Dropped on another FILE: nothing happens yet. The gesture opens a proposal
+    // — this creates a collection and moves both files out of the ones they are
+    // in now, which is more than a drag should commit to on its own.
+    //
+    // Both participants are named through their ROWS, never through what was
+    // dropped on: only a row carries `data-filename`, so reading the label off a
+    // grid CARD falls through to its display title and the dialog lists one file
+    // by its filename and the other by its artefact name — in grid view only.
+    openPairModal([
+      { fileId: targetFileId, sourceId: targetId, label: pairLabelOf(rowForFile(targetFileId) || target) },
+      { fileId: fileId, sourceId: sourceId, label: pairLabelOf(draggedRow) },
+    ]);
+  });
+
+  // ── Pairing files into a NEW collection ─────────────────────────────────
+  //    Two files dropped together (or picked in the grip menu) become
+  //    POST /api/collections followed by one move per file. There is no
+  //    single endpoint for this and none is needed: `move` already tidies away
+  //    each single-file collection it empties, which is exactly what has to
+  //    happen to the files' current homes.
+  //
+  //    Unlike a move, this does NOT reconcile the table in place. A move
+  //    re-homes a row that already exists; this mints an entity with its own
+  //    URL, sharing state, stack membership and timestamp — rebuilding all of
+  //    that client-side would be re-implementing `library_row()` in JavaScript,
+  //    and the first field that drifted would be a row that lies. So it takes
+  //    the hand-off the builders already use: /library?new=<id> re-renders the
+  //    list server-side and reveals + flashes the new collection.
+  function pairLabelOf(row) {
+    if (!row) return 'Untitled file';
+    return row.dataset.filename || row.dataset.title || 'Untitled file';
+  }
+
+  // Every top-level loose file the caller could pair, read straight off the
+  // rows — the same set the drop targets are, so the pointer route and the
+  // keyboard route can never offer different candidates. Rows the toolbar has
+  // filtered out are not among them: they are not on screen to be dropped on,
+  // and listing them here would offer the caller a file their own search says
+  // they are not looking at.
+  function pairCandidates() {
+    return Array.from(document.querySelectorAll('[data-lib-sec] tr[data-pair-target]'))
+      .filter(r => !r.hidden)
+      .map(r => ({
+        fileId: r.dataset.fileId || '',
+        sourceId: r.dataset.itemId || '',
+        label: pairLabelOf(r),
+        shared: (r.dataset.visibility || 'private') !== 'private',
+      }))
+      .filter(x => x.fileId && x.sourceId);
+  }
+
+  // "report.pdf" -> "report". The collection is named for what is in it, not
+  // for a file format it no longer has just one of.
+  function pairBaseName(label) {
+    return (label || '').replace(/\.[^.]+$/, '') || label || 'Collection';
+  }
+
+  const pairModal = document.getElementById('pairModal');
+  const pairForm = document.getElementById('pairForm');
+  const pairNameEl = document.getElementById('pairName');
+  const pairFilesEl = document.getElementById('pairFiles');
+  const pairShareNote = document.getElementById('pairShareNote');
+  const pairErr = document.getElementById('pairErr');
+  const pairSubmit = document.getElementById('pairSubmit');
+
+  function closePair() { if (pairModal) pairModal.hidden = true; }
+  function pairShowErr(msg) { pairErr.textContent = msg; pairErr.hidden = false; }
+  function pairChecked() {
+    return Array.from(pairFilesEl.querySelectorAll('input[type=checkbox]:checked'));
+  }
+
+  // A collection of one file is presented AS that file (the 1-file boundary), so
+  // creating one from a single tick would look like nothing happened. Two is the
+  // floor, and the button says so by being unavailable until it is met.
+  function pairSyncState() {
+    const picked = pairChecked();
+    pairSubmit.disabled = picked.length < 2;
+    pairShareNote.hidden = !picked.some(cb => cb.dataset.shared === '1');
+  }
+
+  // `seed` = the files the gesture already chose, listed first and ticked. The
+  // first of them also names the collection. Everything else the caller could
+  // add is listed under them, unticked.
+  function openPairModal(seed) {
+    if (!pairModal) return;
+    const pairSeed = (seed || []).filter(s => s && s.fileId && s.sourceId);
+    if (pairSeed.length < 1) return;
+    const seeded = {};
+    pairSeed.forEach(s => { seeded[s.fileId] = true; });
+    const candidates = pairCandidates();
+    const rest = candidates.filter(c => !seeded[c.fileId]);
+    const shared = {};
+    candidates.forEach(c => { shared[c.fileId] = c.shared; });
+
+    // Every entry stays toggleable, the seeded ones included: the set is what
+    // gets created, and a tick the caller cannot take back would make them
+    // cancel and start the gesture again to drop one file out of it.
+    pairFilesEl.innerHTML = '';
+    pairSeed.concat(rest).forEach((item, i) => {
+      const row = document.createElement('label');
+      row.className = 'lib-grp';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = item.fileId;
+      cb.dataset.sourceId = item.sourceId;
+      cb.dataset.label = item.label;
+      cb.dataset.shared = shared[item.fileId] ? '1' : '0';
+      cb.checked = i < pairSeed.length;
+      row.appendChild(cb);
+      const name = document.createElement('span');
+      name.textContent = item.label;
+      row.appendChild(name);
+      pairFilesEl.appendChild(row);
+    });
+
+    // Named for what the caller dropped it on, in the upload dialog's idiom.
+    const names = pairSeed.map(s => pairBaseName(s.label));
+    pairNameEl.value = names.length > 1
+      ? names[0] + ' + ' + (names.length - 1) + ' more'
+      : names[0] || 'New collection';
+    pairErr.hidden = true;
+    pairSubmit.textContent = 'Create collection';
+    pairSyncState();
+    pairModal.hidden = false;
+    setTimeout(() => { pairNameEl.focus(); pairNameEl.select(); }, 30);
+  }
+
+  if (pairFilesEl) pairFilesEl.addEventListener('change', pairSyncState);
+  document.querySelectorAll('[data-close-pair]').forEach(b => b.addEventListener('click', closePair));
+
+  if (pairForm) pairForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const picked = pairChecked().map(cb => ({
+      fileId: cb.value, sourceId: cb.dataset.sourceId, label: cb.dataset.label,
+    }));
+    const name = (pairNameEl.value || '').trim();
+    if (!name) { pairShowErr('Give the collection a name.'); return; }
+    if (picked.length < 2) { pairShowErr('Pick at least two files.'); return; }
+    pairSubmit.disabled = true;
+    pairSubmit.textContent = 'Creating…';
+    pairErr.hidden = true;
+
+    let created = null;
+    let movedAny = false;
+    try {
+      const cResp = await fetch('/api/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ name }),
+      });
+      if (cResp.status === 409) throw new Error('you already have a collection with that name — try another');
+      if (!cResp.ok) throw new Error('create failed (' + cResp.status + ')');
+      created = await cResp.json();
+      // Sequential, not parallel: each move may soft-delete the collection it
+      // empties, and firing them together makes the order of those deletions
+      // (and of any failure) unpredictable.
+      for (const f of picked) {
+        const mResp = await fetch('/api/collections/' + encodeURIComponent(f.sourceId) +
+                                  '/files/' + encodeURIComponent(f.fileId) + '/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ target_collection_id: created.id }),
+        });
+        if (!mResp.ok) throw new Error('could not add ' + f.label + ' (' + mResp.status + ')');
+        movedAny = true;
+      }
+      window.location.href = '/library?new=' + encodeURIComponent(created.id);
+    } catch (err) {
+      const msg = (err && err.message) ? err.message : String(err);
+      if (movedAny) {
+        // Part of it landed. The list on screen is now a lie about where those
+        // files are, and the collection exists holding some of them — so go get
+        // the truth rather than leaving the caller to guess which half worked.
+        console.error('library: pair create partially applied', err);
+        window.location.href = '/library?new=' + encodeURIComponent(created.id);
+        return;
+      }
+      pairSubmit.textContent = 'Create collection';
+      pairSyncState();   // …not a bare enable: the tick count still governs it
+      pairShowErr('Could not create the collection: ' + msg);
+    }
   });
 
   // ── The move itself ─────────────────────────────────────────────────────
@@ -2731,6 +3631,12 @@
     moved.classList.add('lib-row--child');
     moved.classList.remove('lib-row--folder', 'is-open');
     moved.dataset.parentId = targetId;
+    // It is inside a collection now, so it is no longer something to pair with:
+    // the move that would put a file beside it is the one its new folder row
+    // offers. (Mirrors `_pair_target`'s `not child`.)
+    moved.removeAttribute('data-pair-target');
+    const movedHint = moved.querySelector('.lib-drop-hint');
+    if (movedHint) movedHint.remove();
     // A child is identified by its FILE id (a loose file's row id was its own
     // collection id, and that collection is gone once the move consumes it).
     moved.dataset.itemId = fileId;
@@ -2744,8 +3650,19 @@
     const filename = moved.dataset.filename || '';
     const titleEl = moved.querySelector('.lib-name-title');
     if (titleEl && filename) { titleEl.textContent = filename; moved.dataset.name = filename.toLowerCase(); }
+    // A child carries no description, but it is still a file, so its second line
+    // is its FORMAT — the same line a server-rendered child row shows.
     const descEl = moved.querySelector('.lib-name-desc');
-    if (descEl) descEl.textContent = '';           // children carry no description
+    if (descEl) descEl.textContent = moved.dataset.fileFormat || '';
+    // A LOOSE file's meta is "filename · size"; a child's is the size alone,
+    // because the filename is the child's title. Left unchanged, the name is
+    // stated twice the moment anything reads this row back — visible as soon as
+    // the move empties a collection down to one file, since the demotion below
+    // re-prefixes the filename onto whatever it finds here.
+    if (filename) {
+      moved.dataset.meta = (moved.dataset.meta || '').split(' · ')
+        .filter(part => part && part !== filename).join(' · ');
+    }
     // Stack membership is per collection, so the file inherits the target's.
     moved.dataset.stack = target.dataset.stack || '';
     const slot = moved.querySelector('.lib-slot--stack');
@@ -2812,20 +3729,38 @@
     // The container glyph gives way to the single-document one.
     const icon = folderRow.querySelector('.lib-icon');
     if (icon) { icon.classList.remove('lib-icon--folder'); icon.innerHTML = DOC_GLYPH_SVG; }
-    // The Type badge now describes the FILE (a collection shows none), and the
-    // second line stops being a file count: a loose file shows its description,
-    // which is the collection's own if it has one and the file default otherwise
-    // (exactly the fallback `_catalog_card_upload` would have applied).
-    const kidType = kid.querySelector('.lib-typechip');
-    const typeCell = folderRow.querySelector('td:nth-child(2)');
-    if (typeCell) typeCell.innerHTML = kidType ? kidType.outerHTML : '';
+    // The type LABEL now describes the FILE rather than the collection — the
+    // table has no Type column to repaint, but the grid card still names the kind
+    // off this attribute, so it has to change with the row's identity.
+    folderRow.dataset.typeLabel = kid.dataset.typeLabel || '';
     folderRow.dataset.meta = [folderRow.dataset.filename, kid.dataset.meta || '']
       .filter(Boolean).join(' · ');
+    // The second line stops being a file count and becomes what a FILE prints
+    // there — the same precedence the server applies: its format, else the
+    // collection's own description, else the file default that
+    // `_catalog_card_upload` would have supplied.
+    const kidFormat = kid.dataset.fileFormat || '';
+    if (kidFormat) folderRow.dataset.fileFormat = kidFormat;
+    else delete folderRow.dataset.fileFormat;
     const desc = folderRow.querySelector('.lib-name-desc');
-    if (desc) desc.textContent = folderRow.dataset.desc || 'A private file — searchable by your agents.';
-    // A collection's "Drop here" label goes with its drop-target status.
+    if (desc) {
+      desc.textContent = kidFormat || folderRow.dataset.desc
+        || 'A private file — searchable by your agents.';
+    }
+    // A collection's "Drop here" label goes with its drop-target status — and
+    // what stands here now is a loose file, which is a target for the OTHER
+    // gesture, so the same slot re-arms with the other promise. Ownership is
+    // unchanged by a move (the row is still whosever it was), so the same test
+    // `_pair_target` applies decides it here.
     const hint = folderRow.querySelector('.lib-drop-hint');
-    if (hint) hint.remove();
+    if (isOwnedByCaller(folderRow)) {
+      folderRow.dataset.pairTarget = '1';
+      const cell = folderRow.querySelector('.lib-namecell');
+      const label = hint || (cell ? cell.appendChild(document.createElement('span')) : null);
+      if (label) { label.className = 'lib-drop-hint lib-drop-hint--new'; label.textContent = 'New collection'; }
+    } else if (hint) {
+      hint.remove();
+    }
     kid.remove();                  // absorbed into the row above it
     openFolders.delete(id);
   }
@@ -2913,7 +3848,13 @@
     const targets = Array.from(
       document.querySelectorAll('[data-lib-sec] tr.lib-row--folder[data-item-id]'))
       .filter(r => r.dataset.itemId !== sourceId);
-    if (!targets.length) {
+    // The keyboard route to pairing. Offered whenever there is another loose
+    // file to pair WITH — otherwise the dialog it opens could not be satisfied,
+    // since a collection needs two files to be one.
+    const ownRow = rowForFile(fileId);
+    const pairable = pairCandidates().filter(c => c.fileId !== fileId);
+    const canPair = !!(ownRow && ownRow.hasAttribute('data-pair-target') && pairable.length);
+    if (!targets.length && !canPair) {
       const empty = document.createElement('p');
       empty.className = 'lib-movemenu__empty';
       empty.textContent = 'No other collection to move this into yet.';
@@ -2937,6 +3878,26 @@
       moveMenu.appendChild(item);
     });
 
+    // Last, and separated: the other items move the file somewhere that already
+    // exists; this one makes the somewhere.
+    if (canPair) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'lib-movemenu__item lib-movemenu__item--new';
+      item.setAttribute('role', 'menuitem');
+      item.innerHTML = PLUS_MENU_SVG;
+      const name = document.createElement('span');
+      name.textContent = 'New collection…';
+      item.appendChild(name);
+      item.addEventListener('click', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMoveMenu(false);
+        openPairModal([{ fileId: fileId, sourceId: sourceId, label: pairLabelOf(ownRow) }]);
+      });
+      moveMenu.appendChild(item);
+    }
+
     // Position under the trigger, clamped into the viewport.
     const r = trigger.getBoundingClientRect();
     moveMenu.hidden = false;
@@ -2948,6 +3909,11 @@
     const first = moveMenu.querySelector('.lib-movemenu__item');
     if (first) first.focus();
   }
+
+  const PLUS_MENU_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+    '<path d="M4 7.5A1.5 1.5 0 0 1 5.5 6h3.2a1.5 1.5 0 0 1 1.06.44L11 7.5h7.5A1.5 1.5 0 0 1 20 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z" ' +
+    'stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>' +
+    '<path d="M12 11v5M9.5 13.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 
   const FOLDER_MENU_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
     '<path d="M4 7.5A1.5 1.5 0 0 1 5.5 6h3.2a1.5 1.5 0 0 1 1.06.44L11 7.5h7.5A1.5 1.5 0 0 1 20 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z" ' +
@@ -3060,14 +4026,24 @@
   // Reflect a saved visibility back onto the row's chip (both views read it).
   function updateRowVisibility(row, visibility) {
     row.dataset.visibility = visibility;
+    const label = SHARING_LABEL[visibility] || 'Private';
+    // `data-sharing` is the row's LABEL, and it has two readers: the Sharing
+    // column's sort comparator and (now) the grid card, which prints it verbatim.
+    // Both were left stale by this function — so before this line, saving a share
+    // change re-labelled the table badge while the card kept the old word and the
+    // column went on sorting by it.
+    row.dataset.sharing = label;
     const chip = row.querySelector('.lib-vis');
     if (chip) {
-      const label = VIS_LABEL[visibility] || 'Private';
       // Keep the badge's EDITABLE nature (and its chevron): it is the sharing
       // control on a row the caller owns, and rebuilding it as a plain read-out
-      // would silently disable the control the user just used.
+      // would silently disable the control the user just used. `--fixed` is
+      // carried over for the same reason in reverse — dropping it would repaint an
+      // explains-only badge in the blue that promises the state can be changed.
       const editable = chip.classList.contains('lib-vis--editable');
-      chip.className = 'lib-vis lib-vis--' + visibility + (editable ? ' lib-vis--editable' : '');
+      const fixed = chip.classList.contains('lib-vis--fixed');
+      chip.className = 'lib-vis lib-vis--' + visibility
+        + (editable ? ' lib-vis--editable' : '') + (fixed ? ' lib-vis--fixed' : '');
       chip.innerHTML = (visibility === 'private' ? LOCK_SVG : SHARE_SVG) + ' ' + label +
         (editable ? VIS_CARET_SVG : '');
       if (editable) {
@@ -3298,6 +4274,7 @@
     if (e.key !== 'Escape') return;
     if (newMenu && !newMenu.hidden) openNewMenu(false);
     if (uploadModal && !uploadModal.hidden) closeUpload();
+    if (pairModal && !pairModal.hidden) closePair();
     if (shareModal && !shareModal.hidden) closeShare();
     if (draftDelModal && !draftDelModal.hidden) closeDraftDelete();
   });
@@ -3345,67 +4322,9 @@
     }
   });
 
-  // ── Fast tooltip for [data-tip] (Sharing badges) ──
-  // Replaces the native `title` tooltip, whose OS-controlled show delay
-  // reads as sluggish here. Fixed-position + appended to <body> so it isn't
-  // clipped by the table's overflow ancestors (see the `.lib-tip` CSS note).
-  const libTip = document.createElement('div');
-  libTip.className = 'lib-tip';
-  libTip.setAttribute('role', 'tooltip');
-  document.body.appendChild(libTip);
-  let libTipTimer = null;
-  let libTipTarget = null;
-
-  function positionLibTip(target) {
-    const r = target.getBoundingClientRect();
-    const tipRect = libTip.getBoundingClientRect();
-    let left = r.left + r.width / 2 - tipRect.width / 2;
-    left = Math.max(6, Math.min(left, window.innerWidth - tipRect.width - 6));
-    let top = r.top - tipRect.height - 8;
-    if (top < 4) top = r.bottom + 8;
-    libTip.style.left = left + 'px';
-    libTip.style.top = top + 'px';
-  }
-
-  function showLibTip(target) {
-    const text = target.getAttribute('data-tip');
-    if (!text) return;
-    libTip.textContent = text;
-    libTipTarget = target;
-    positionLibTip(target);
-    requestAnimationFrame(() => { if (libTipTarget === target) libTip.classList.add('is-visible'); });
-  }
-
-  function hideLibTip() {
-    clearTimeout(libTipTimer);
-    libTipTimer = null;
-    libTipTarget = null;
-    libTip.classList.remove('is-visible');
-  }
-
-  document.addEventListener('mouseover', ev => {
-    const target = ev.target.closest('[data-tip]');
-    if (!target || target === libTipTarget) return;
-    clearTimeout(libTipTimer);
-    libTipTimer = setTimeout(() => showLibTip(target), 120);
-  });
-  document.addEventListener('mouseout', ev => {
-    const target = ev.target.closest('[data-tip]');
-    if (!target || (ev.relatedTarget && target.contains(ev.relatedTarget))) return;
-    hideLibTip();
-  });
-  document.addEventListener('focusin', ev => {
-    const target = ev.target.closest('[data-tip]');
-    if (!target) return;
-    clearTimeout(libTipTimer);
-    libTipTimer = setTimeout(() => showLibTip(target), 120);
-  });
-  document.addEventListener('focusout', ev => {
-    if (ev.target.closest('[data-tip]')) hideLibTip();
-  });
-  document.addEventListener('click', hideLibTip);
-  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') hideLibTip(); });
-  window.addEventListener('scroll', hideLibTip, true);
+  // The fast [data-tip] tooltip now lives in js/components/tooltip.js, loaded
+  // by the base template: the trust markers carry the same behaviour onto the
+  // catalog + detail pages, and two copies would drift on delay or geometry.
 })();
 </script>
 {% endblock %}

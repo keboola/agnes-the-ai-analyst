@@ -1,11 +1,14 @@
 {% extends "base_ds.html" %}
 
-{% block title %}{{ collection.name }} — {{ 'Artefacts' if (ui_layout | default('topnav')) == 'rail' else 'Library' }} — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
+{# One noun in both chromes: the former /artefacts surface WAS renamed to
+   Library and took over the route (see the back-link comment below), so the
+   rail branch here was left naming a surface that no longer exists. #}
+{% block title %}{{ collection.name }} — Library — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
 
 {% block body_attrs %}class="detail-page"{% endblock %}
 
 {% block head_extra %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 {{ detail.styles() }}
 <link rel="stylesheet" href="{{ static_url('css/file_preview.css') }}">
 <script src="{{ static_url('js/file_preview.js') }}" defer></script>
@@ -52,12 +55,14 @@
   .file:nth-child(4){animation-delay:.11s}.file:nth-child(5){animation-delay:.14s}.file:nth-child(n+6){animation-delay:.17s}
   @keyframes file-rise { from { opacity:0; transform: translateY(6px);} to {opacity:1; transform:none;} }
   @media (prefers-reduced-motion: reduce){ .file{animation:none;opacity:1;} }
-  .files__empty { color: var(--ds-text-secondary); font-size: 0.9rem; padding: var(--space-3) 0; }
+  {# The "no files yet" line is the shared `detail.empty(…)` component now —
+     one empty state for every resource type — so this page's own rule for it
+     is gone. #}
 </style>
 {% endblock %}
 
 {% block content %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 
 {% set _rail = (ui_layout | default('topnav')) == 'rail' %}
 {# Both layouts now return to /library: the former /artefacts surface WAS
@@ -80,19 +85,29 @@
    is honored rather than overwritten by the filename. #}
 {% set _title = collection.name or (_f0.filename if _single else '') %}
 {% set _hero_glyph = 'doc' if _single else 'library' %}
+{# The resource type follows the same count rule as the noun and the glyph: a
+   one-file artefact IS a file (amber), two-or-more is a collection (coral).
+   Three signals, one source of truth. #}
+{% set _kind = 'file' if _single else 'library' %}
 {% if _single %}
   {% set _meta = [{'icon': 'file', 'text': _f0.filename ~ ' · ' ~ ((_f0.size_bytes or 0)|humanbytes(1))}] %}
 {% else %}
   {% set _meta = [{'icon': 'file', 'text': (_n|string) ~ ' file' ~ ('s' if _n != 1 else '')}] %}
 {% endif %}
 {% set _desc = collection.description or ('One file in your library — add more to build a collection.' if _single else 'The files in this collection, indexed so your agents can search them.') %}
+{# How many of the files are searchable — the one number that says whether
+   this collection is actually usable yet. #}
+{% set _indexed = (files or []) | selectattr('processing_status', 'equalto', 'indexed') | list | length %}
 
 {% call detail.hero(
-     kind='library', glyph=_hero_glyph, name=_title,
+     kind=_kind, glyph=_hero_glyph, name=_title,
+     type_label=_noun|capitalize,
      description=_desc, compact=True,
      meta=_meta, back_href=_back, back_label=_back_label) %}
   {{ detail.ask_agnes('Search the ' ~ _title ~ ' ' ~ _noun ~ ' and answer from its files.') }}
 {% endcall %}
+
+{{ detail.cols_open() }}
 
 {# No in-page ask/search box: a detail page presents its entity (like the data
    package / plugin / table pages), and asking happens in chat via the hero's
@@ -113,7 +128,7 @@
 
 {{ detail.section_open('Files', icon='file') }}
   {% if not files %}
-    <p class="files__empty">No files yet — drop some above.</p>
+    {{ detail.empty('No files yet — drop some above.', icon='file') }}
   {% else %}
   <div class="files">
     {% for f in files %}
@@ -166,6 +181,41 @@
   </div>
   {% endif %}
 {{ detail.section_close() }}
+
+{{ detail.aside_open() }}
+{# The rail's content is redesign-only: on the legacy path there is no
+   rail, and appending these as extra sections would change a page default
+   instances are entitled to see unchanged. #}
+{% if detail.redesign %}
+
+{# No "Type" row — the header badge already says Collection / File. #}
+{% set _rows = [{'key': 'Files', 'val': (_n|string) if _n else 'None yet'}] %}
+{% if _n %}
+  {# "Searchable" is the number that decides whether this collection is usable
+     yet — green only when every file made it through indexing. #}
+  {% set _ = _rows.append({'key': 'Searchable', 'html': True,
+                           'val': detail.status(_indexed|string ~ ' of ' ~ _n,
+                                                'ok' if _indexed == _n else 'warn')|trim}) %}
+{% endif %}
+{{ detail.side_open((_noun|capitalize) ~ ' information', icon='info') }}
+  {{ detail.side_rows(_rows) }}
+{{ detail.side_close() }}
+
+{% if collection.description %}
+{{ detail.side_open('About', icon='book') }}
+  <div class="detail-prose">{{ collection.description }}</div>
+{{ detail.side_close() }}
+{% endif %}
+
+{{ detail.side_open('How this is used', icon='spark') }}
+  <p class="detail-prose">
+    Every indexed file here is searchable by your agents. Ask Agnes a question and
+    it answers from this {{ _noun }}; sharing the {{ _noun }} shares everything in it.
+  </p>
+{{ detail.side_close() }}
+
+{% endif %}
+{{ detail.cols_close() }}
 
 </div>
 

@@ -6,6 +6,12 @@
          the user circle renders identically across /admin/users, /admin/adoption,
          etc. See app/web/static/js/identity.js. -->
     <script src="{{ static_url('js/identity.js') }}" defer></script>
+    <!-- Fast `[data-tip]` tooltip (v113). Shared because the trust markers are
+         icon-only, so the tooltip IS their label, and the native `title` delay
+         (600ms+, OS-controlled) is far too slow for that. Delegated on document,
+         so cloned markup (the Library's grid cards are built from its table rows)
+         needs no re-wiring. Styling: `.ds-tip` in components.css. -->
+    <script src="{{ static_url('js/components/tooltip.js') }}" defer></script>
     <!-- window.confirmModal / alertModal / promptModal — design-system
          replacements for native confirm()/alert()/prompt() (#497 §1).
          Defined here alongside the other end-of-<body> app globals (e.g.

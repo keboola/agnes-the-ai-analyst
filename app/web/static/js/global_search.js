@@ -52,6 +52,28 @@
         return "";
     }
 
+    /* Second line, for the two DEFINITION types only.
+
+       Looking a term up is a complete job in itself — "what do we mean by
+       active account?" — and it was the one job this panel could finish on the
+       spot but didn't: it showed the word you had just typed, as a link to a
+       page you then had to scan for it. The API has carried the answer the
+       whole time (`definition` on a glossary hit, `description` on a metric),
+       so rendering it here ends the lookup in the dropdown and leaves the
+       navigation for people who want the surrounding page.
+
+       Deliberately not extended to the other three types. A table, a knowledge
+       item and a document are things you go TO; a snippet under them would be a
+       preview of a destination, which is a different (and much longer) piece of
+       text. Definitions are short by construction — the server already caps a
+       glossary definition at 280 chars — so this line stays one line. */
+    function definitionFor(hit) {
+        var text = "";
+        if (hit.type === "glossary") text = hit.definition || "";
+        else if (hit.type === "metric") text = hit.description || "";
+        return text.replace(/\s+/g, " ").trim();
+    }
+
     function setExpanded(open) {
         input.setAttribute("aria-expanded", open ? "true" : "false");
     }
@@ -95,15 +117,33 @@
                 row.setAttribute("role", "option");
                 row.href = hrefFor(hit);
 
+                /* Title (+ definition) stack on the left, badge pinned right.
+                   The wrapper is what lets a hit be two lines tall without the
+                   badge dropping under the title — the row stays one flex line
+                   of two children whether or not the second line is there. */
+                var mainEl = document.createElement("div");
+                mainEl.className = "app-header-search-result-main";
+
                 var titleEl = document.createElement("span");
                 titleEl.className = "app-header-search-result-title";
                 titleEl.textContent = titleFor(hit);
+                mainEl.appendChild(titleEl);
+
+                var definition = definitionFor(hit);
+                if (definition) {
+                    var defEl = document.createElement("span");
+                    defEl.className = "app-header-search-result-def";
+                    /* textContent, like every other API-derived string here —
+                       a definition is admin/sync-authored text, not markup. */
+                    defEl.textContent = definition;
+                    mainEl.appendChild(defEl);
+                }
 
                 var badgeEl = document.createElement("span");
                 badgeEl.className = "app-header-search-result-badge";
                 badgeEl.textContent = TYPE_LABELS[hit.type] || hit.type;
 
-                row.appendChild(titleEl);
+                row.appendChild(mainEl);
                 row.appendChild(badgeEl);
                 panel.appendChild(row);
             });

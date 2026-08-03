@@ -5,7 +5,7 @@
 {% block body_attrs %}class="detail-page"{% endblock %}
 
 {% block head_extra %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 {{ detail.styles() }}
 <style>
   /* ── Memory items (page-local) ─────────────────────────────── */
@@ -62,7 +62,7 @@
 {% endblock %}
 
 {% block content %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 
 {# Back goes where the visitor CAME from: the Library links in with
    ?source=library, so returning to the memory listing there would strand them
@@ -74,14 +74,28 @@
 {% set _meta = [{'icon': 'brain', 'text': (items|length|string) ~ ' item' ~ ('s' if items|length != 1 else '')}] %}
 {% if required_count %}{% set _ = _meta.append({'icon': 'check', 'text': (required_count|string) ~ ' required'}) %}{% endif %}
 
+{% set _menu %}
+{% if detail.redesign and effective_requirement != 'required' and in_stack %}
+{{ detail.menu([{'label': 'Remove local copy', 'icon': 'trash', 'danger': True,
+                 'attrs': 'id="dom-remove-btn"'}]) }}
+{% endif %}
+{% endset %}
+
 {% call detail.hero(
      kind='memory', name=domain.name, color=domain.color, icon=domain.icon,
+     type_label='Memory', menu=_menu|trim,
      description=domain.description, meta=_meta,
      back_href=_back, back_label=_back_label) %}
   {# Auto-membership: this domain is already in the caller's stack (any
      grant, required or available); the toggle only controls the local-
-     download state — see catalog_package_detail.html for the same note. #}
-  {% if effective_requirement == 'required' %}
+     download state — see catalog_package_detail.html for the same note, and
+     for why the editorial header carries only the Download action while the
+     other two states live in the rail and the overflow menu. #}
+  {% if detail.redesign %}
+    {% if not in_stack %}
+      {{ ds.button('Download locally', variant='primary', type='button', id='dom-add-btn') }}
+    {% endif %}
+  {% elif effective_requirement == 'required' %}
     <button class="btn btn-required" disabled>Always downloaded (required)</button>
   {% elif in_stack %}
     {{ ds.button('Remove local copy', variant='danger', type='button', id='dom-remove-btn') }}
@@ -90,6 +104,8 @@
   {% endif %}
   {{ detail.ask_agnes('Tell me what you know about ' ~ domain.name ~ ' from our corporate memory.') }}
 {% endcall %}
+
+{{ detail.cols_open() }}
 
 {{ detail.section_open('Items in this domain', icon='brain') }}
 {% if items %}
@@ -158,12 +174,51 @@
   {% endfor %}
 </div>
 {% else %}
-<div style="padding: 20px 0; text-align: center; color: var(--ds-text-secondary);">
-  <strong>No items in this domain yet.</strong><br>
-  Items show up here once an admin adds them to this domain.
-</div>
+{{ detail.empty('No items in this domain yet. Items show up here once an admin adds them to this domain.', icon='brain') }}
 {% endif %}
 {{ detail.section_close() }}
+
+{{ detail.aside_open() }}
+{# The rail's content is redesign-only: on the legacy path there is no
+   rail, and appending these as extra sections would change a page default
+   instances are entitled to see unchanged. #}
+{% if detail.redesign %}
+
+{{ detail.side_open('Domain information', icon='info') }}
+  {# No "Type" row — the header badge already says Memory. #}
+  {% set _rows = [{'key': 'Items', 'val': (items|length|string) if items else 'None yet'}] %}
+  {% if required_count %}
+    {% set _ = _rows.append({'key': 'Required', 'html': True,
+                             'val': detail.status(required_count|string, 'warn')|trim}) %}
+  {% endif %}
+  {{ detail.side_rows(_rows) }}
+{{ detail.side_close() }}
+
+{{ detail.side_open('Availability', icon='stack') }}
+  {% if effective_requirement == 'required' %}
+    {{ detail.status('Always downloaded', 'ok') }}
+    <p class="detail-side__note">
+      Your organization requires this domain, so it always travels with your workspace.
+    </p>
+  {% elif in_stack %}
+    {{ detail.status('Downloaded locally', 'ok') }}
+  {% else %}
+    {{ detail.status('Not downloaded') }}
+    <p class="detail-side__note">
+      You have access to this domain. Download it to keep a local copy.
+    </p>
+  {% endif %}
+{{ detail.side_close() }}
+
+{{ detail.side_open('How voting works', icon='check') }}
+  <p class="detail-prose">
+    Upvote items that hold up and downvote ones that have gone stale. The counts
+    feed the admin review queue and the order items appear in for everyone.
+  </p>
+{{ detail.side_close() }}
+
+{% endif %}
+{{ detail.cols_close() }}
 
 </div>
 
