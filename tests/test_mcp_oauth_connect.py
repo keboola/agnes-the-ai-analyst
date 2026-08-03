@@ -174,43 +174,50 @@ def test_authorize_requires_auth(seeded_app):
     assert r.headers["location"].startswith("/login")
 
 
-def test_authorize_404_for_unknown_source(seeded_app):
+def test_authorize_redirects_friendly_for_unknown_source(seeded_app):
+    """authorize is a browser navigation — every human-reachable failure
+    lands back on /me/connections with a fixed banner code, never a raw
+    JSON error page (Devin Review on #1130)."""
     r = seeded_app["client"].get(
         "/api/mcp/sources/does-not-exist/oauth/authorize",
         headers=_analyst_hdr(seeded_app),
         follow_redirects=False,
     )
-    assert r.status_code == 404
+    assert r.status_code == 303
+    assert "/me/connections?connect_error=source_missing" in r.headers["location"]
 
 
-def test_authorize_400_for_non_oauth_source(seeded_app):
+def test_authorize_redirects_friendly_for_non_oauth_source(seeded_app):
     source_id = _seed_non_oauth_source()
     r = seeded_app["client"].get(
         f"/api/mcp/sources/{source_id}/oauth/authorize",
         headers=_analyst_hdr(seeded_app),
         follow_redirects=False,
     )
-    assert r.status_code == 400
+    assert r.status_code == 303
+    assert "connect_error=source_not_oauth" in r.headers["location"]
 
 
-def test_authorize_403_without_grant(seeded_app):
+def test_authorize_redirects_friendly_without_grant(seeded_app):
     source_id = _seed_oauth_source(source_id="src_oauth_nogrant", grant_to="nobody")
     r = seeded_app["client"].get(
         f"/api/mcp/sources/{source_id}/oauth/authorize",
         headers=_analyst_hdr(seeded_app),
         follow_redirects=False,
     )
-    assert r.status_code == 403
+    assert r.status_code == 303
+    assert "connect_error=not_granted" in r.headers["location"]
 
 
-def test_authorize_409_without_registered_client(seeded_app):
+def test_authorize_redirects_friendly_without_registered_client(seeded_app):
     source_id = _seed_oauth_source(source_id="src_oauth_noclient", register_client=False)
     r = seeded_app["client"].get(
         f"/api/mcp/sources/{source_id}/oauth/authorize",
         headers=_analyst_hdr(seeded_app),
         follow_redirects=False,
     )
-    assert r.status_code == 409
+    assert r.status_code == 303
+    assert "connect_error=client_registration_missing" in r.headers["location"]
 
 
 def test_authorize_redirects_with_pkce_and_state(seeded_app):
@@ -254,8 +261,8 @@ def test_authorize_rate_limited(seeded_app):
     last = None
     for _ in range(10):
         last = client.get(f"/api/mcp/sources/{source_id}/oauth/authorize", headers=hdr, follow_redirects=False)
-    assert last.status_code == 429
-    assert "Retry-After" in last.headers
+    assert last.status_code == 303
+    assert "connect_error=rate_limited" in last.headers["location"]
 
 
 # ---------------------------------------------------------------------------
