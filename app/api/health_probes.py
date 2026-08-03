@@ -102,7 +102,7 @@ def _write_canary() -> bool:
 _T = TypeVar("_T")
 
 
-async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any) -> _T:
+async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
     """Run ``fn`` in a worker thread; on cancellation, wait for an in-flight
     call to finish before propagating.
 
@@ -119,7 +119,7 @@ async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any) -> _T:
     statement, not arbitrary user work (the worker runtime keeps its own
     bounded-drain registry for that).
     """
-    future = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    future = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
     try:
         return await asyncio.shield(future)
     except asyncio.CancelledError:
