@@ -729,17 +729,16 @@ async def _real_agent_loop(
             # docs/cloud-chat.md: an operator override that adds `ask` rules
             # for Write/Edit/WebFetch would need this widened to see them
             # (review note on #1145).
-            options_kwargs["hooks"] = {
-                "PreToolUse": [
-                    HookMatcher(
-                        matcher="Bash",
-                        hooks=[_gate_hook],
-                        # margin over the gate's own await so the CLI-side
-                        # matcher timeout never fires first
-                        timeout=gate.timeout_seconds + 30,
-                    )
-                ]
-            }
+            # HookMatcher.timeout is newer than HookMatcher itself; on an SDK
+            # build that predates it, passing timeout= raises TypeError. Try
+            # with it (margin over the gate's own await so the CLI-side matcher
+            # timeout never fires first), fall back without — the gate's own
+            # asyncio.wait_for still bounds the wait (review finding on #1145).
+            try:
+                _matcher = HookMatcher(matcher="Bash", hooks=[_gate_hook], timeout=gate.timeout_seconds + 30)
+            except TypeError:
+                _matcher = HookMatcher(matcher="Bash", hooks=[_gate_hook])
+            options_kwargs["hooks"] = {"PreToolUse": [_matcher]}
     # Token-level streaming (include_partial_messages) when the installed SDK
     # supports it: the UI then renders text as the model produces it instead
     # of one token frame per completed content block (which for a long answer
