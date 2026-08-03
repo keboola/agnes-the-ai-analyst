@@ -88,6 +88,10 @@ const REPLAYABLE_FRAME_TYPES = new Set(["approval_request", "approval_resolved"]
 // wipes #chat-messages, which could otherwise erase a card that had just
 // been replayed onto the socket (review finding on #1145).
 const pendingApprovalFrames = new Map();
+// Ids the user has already answered. A replayed request must not resurrect
+// one: the durable replay stream re-sends the original request frame, and
+// after a transcript wipe there is no DOM card left to dedup against.
+const answeredApprovalIds = new Set();
 
 // §5.3 Co-presence: the current user's email for per-message sender attribution.
 // Sourced from <body data-user-email="..."> set by the server-rendered template.
@@ -548,6 +552,7 @@ async function openSession(chatId, wsUrlOverride) {
   // cards for whichever session we attach to, so dropping them here loses
   // nothing.
   pendingApprovalFrames.clear();
+  answeredApprovalIds.clear();
   currentChatId = chatId;
   markActiveSidebar(chatId);
   // Sidebar cache holds the title — look it up so the header reads
@@ -1309,9 +1314,13 @@ function _summarizeArgs(args) {
 
 function renderApprovalRequest(frame) {
   if (!frame.request_id) return;
-  pendingApprovalFrames.set(frame.request_id, frame);
+  // Answered stays answered — check BEFORE arming the pending map, or a
+  // replayed request re-arms a card the user already dealt with and it
+  // comes back looking like it still needs a decision.
+  if (answeredApprovalIds.has(frame.request_id)) return;
   // Replay dedup: a mid-turn reconnect re-delivers the request frame.
   if (document.querySelector(`[data-approval-id="${CSS.escape(frame.request_id)}"]`)) return;
+  pendingApprovalFrames.set(frame.request_id, frame);
   clearThinkingPlaceholder();
   const wrap = document.createElement("section");
   wrap.className = "cloud-chat-tool cloud-chat-approval is-running";
@@ -1379,7 +1388,10 @@ function renderApprovalRequest(frame) {
 }
 
 function resolveApprovalCard(frame) {
-  if (frame.request_id) pendingApprovalFrames.delete(frame.request_id);
+  if (frame.request_id) {
+    pendingApprovalFrames.delete(frame.request_id);
+    answeredApprovalIds.add(frame.request_id);
+  }
   const el = frame.request_id
     ? document.querySelector(`[data-approval-id="${CSS.escape(frame.request_id)}"]`)
     : null;
