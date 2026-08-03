@@ -21,6 +21,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+- Chat sandbox PreToolUse hook enforces org floor command rules: outright deny for `mkfs` and fork bombs, explicit user confirmation for recursive force delete (`rm -rf`), `git push --force`, destructive SQL (`DROP`/`TRUNCATE`), and piping a download into a shell. Commands are now scanned per shell segment (`;`, `&&`, `||`, `&`, newlines, with `sudo`-style wrappers stripped), so chained commands can no longer slip past the workspace-delete, enumeration, and egress checks.
 
 ## [0.77.32] - 2026-07-30
 
