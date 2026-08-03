@@ -766,12 +766,27 @@
       </div>
       <div class="modal-form-field">
         <label for="create-ttl">Expires in</label>
-        <select id="create-ttl" name="expires_in_days">
+        {# The real <select> stays the control the JS above reads (ttlIn) —
+           untouched. The custom dropdown alongside it is a visual
+           replacement only: which one is visible is a theme decision
+           (paper-skin.css), not a template one. See _components.html's
+           `dropdown` macro. #}
+        <select id="create-ttl" name="expires_in_days" class="ds-dropdown-native">
           <option value="30">30 days</option>
           <option value="90" selected>90 days</option>
           <option value="365">1 year</option>
           <option value="">Never</option>
         </select>
+        {{ ds.dropdown(
+          id='create-ttl-dd', target='create-ttl',
+          aria_label='Expires in', selected='90',
+          options=[
+            {'value': '30', 'label': '30 days'},
+            {'value': '90', 'label': '90 days'},
+            {'value': '365', 'label': '1 year'},
+            {'value': '', 'label': 'Never'},
+          ],
+        ) }}
       </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-secondary" data-close-modal="create-modal">Cancel</button>
