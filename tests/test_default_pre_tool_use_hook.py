@@ -102,5 +102,33 @@ def test_hook_command_paths_exist_in_bundled_workspace():
     ]
     assert any("pre_tool_use.py" in c for c in commands)
     for command in commands:
-        resolved = Path(command.replace("$CLAUDE_PROJECT_DIR", str(workspace_root)))
-        assert resolved.exists(), f"hook command does not exist in the template: {command}"
+        # Commands are shell strings: the script is invoked through an
+        # explicit interpreter, so pull the script path out of the string.
+        script = next(
+            tok.strip('"').replace("$CLAUDE_PROJECT_DIR", str(workspace_root))
+            for tok in command.split()
+            if ".py" in tok
+        )
+        assert Path(script).exists(), f"hook command does not exist in the template: {command}"
+
+
+def test_hook_is_invoked_through_an_explicit_interpreter():
+    """The hook must not depend on its executable bit.
+
+    `initialize_default_workspace` copies with `shutil.copy2` (mode kept),
+    but the Initial-Workspace-Template zip path writes entries with
+    `open(target, "wb")` and drops the mode — so a workspace provisioned
+    that way would fail the hook with permission denied instead of guarding
+    Bash. Invoking via `python3` removes the dependency entirely.
+    """
+    data = json.loads(SETTINGS.read_text(encoding="utf-8"))
+    commands = [
+        h["command"]
+        for entry in data["hooks"]["PreToolUse"]
+        for h in entry.get("hooks", [])
+        if isinstance(h, dict) and h.get("command")
+    ]
+    hook_cmds = [c for c in commands if "pre_tool_use.py" in c]
+    assert hook_cmds, "no PreToolUse hook command registered"
+    for c in hook_cmds:
+        assert c.split()[0] == "python3", f"hook must run through an explicit interpreter: {c}"
