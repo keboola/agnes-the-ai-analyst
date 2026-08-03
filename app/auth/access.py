@@ -170,37 +170,41 @@ def _note_god_mode_hit(
     resource_id: str,
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> None:
-    key = f"{user_id}|{resource_type}|{resource_id}"
-    now = time.time()
-    last = _god_mode_logged.get(key)
-    if last is not None and (now - last) < _GOD_MODE_LOG_COOLDOWN_SECONDS:
-        return
-    if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
-        cutoff = now - _GOD_MODE_LOG_COOLDOWN_SECONDS
-        for k in [k for k, t in _god_mode_logged.items() if t < cutoff]:
-            _god_mode_logged.pop(k, None)
-        if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
-            # pathological churn: reset rather than grow without bound
-            _god_mode_logged.clear()
-    _god_mode_logged[key] = now
+    # The ENTIRE body is guarded: observability must never break
+    # authorization. This runs on FastAPI's thread pool (require_* deps are
+    # plain ``def``), so the lock-free dedup cache can race — e.g. the
+    # eviction sweep iterating while another thread inserts raises
+    # RuntimeError — and any such failure must degrade to a lost log line,
+    # never to an exception out of ``can_access``.
     try:
+        key = f"{user_id}|{resource_type}|{resource_id}"
+        now = time.time()
+        last = _god_mode_logged.get(key)
+        if last is not None and (now - last) < _GOD_MODE_LOG_COOLDOWN_SECONDS:
+            return
+        if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
+            cutoff = now - _GOD_MODE_LOG_COOLDOWN_SECONDS
+            for k in [k for k, t in list(_god_mode_logged.items()) if t < cutoff]:
+                _god_mode_logged.pop(k, None)
+            if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
+                # pathological churn: reset rather than grow without bound
+                _god_mode_logged.clear()
+        _god_mode_logged[key] = now
         explicit = resource_id in _allowed_ids_for_user(user_id, resource_type, conn=conn)
+        if not explicit:
+            logger.info(
+                "god_mode_bypass: admin %s accessed %s:%s with no explicit group grant",
+                user_id,
+                resource_type,
+                resource_id,
+            )
     except Exception:
-        # Observability must never break authorization — swallow and move on.
         logger.warning(
-            "god_mode_bypass: grant lookup failed for %s %s:%s",
+            "god_mode_bypass: observability failed for %s %s:%s",
             user_id,
             resource_type,
             resource_id,
             exc_info=True,
-        )
-        return
-    if not explicit:
-        logger.info(
-            "god_mode_bypass: admin %s accessed %s:%s with no explicit group grant",
-            user_id,
-            resource_type,
-            resource_id,
         )
 
 
