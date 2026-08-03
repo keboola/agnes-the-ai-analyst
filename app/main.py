@@ -1736,7 +1736,15 @@ def create_app() -> FastAPI:
             set_paused_for_request,
         )
 
-        token = set_paused_for_request(resolve_from_cookie(request.cookies.get(ELEVATION_COOKIE)))
+        token = set_paused_for_request(
+            resolve_from_cookie(
+                request.cookies.get(ELEVATION_COOKIE),
+                # Bearer callers (CLI/PAT/service tokens) have no cookie jar
+                # to re-elevate with — the instance-wide default must not
+                # apply to them (an explicit paused cookie still would).
+                bearer_auth=request.headers.get("authorization", "").lower().startswith("bearer "),
+            )
+        )
         try:
             return await call_next(request)
         finally:

@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
@@ -68,19 +68,26 @@ class ElevationRequest(BaseModel):
 async def post_elevation(
     body: ElevationRequest,
     response: Response,
+    request: Request,
     user: dict = Depends(get_current_user),
 ):
     """Pause or resume the calling admin's own god-mode for this browser.
 
     Browser-session-scoped by design (a cookie the elevation middleware
-    reads), so it deliberately has no CLI/MCP sibling. Gated on RAW Admin
-    membership — NOT ``require_admin`` — because a paused admin must be
-    able to re-elevate (require_admin would 403 them into a locked-out
-    loop). The cookie only ever reduces privilege; see
-    ``app/auth/elevation.py``.
+    reads; the CLI has no cookie jar), so it deliberately has no CLI/MCP
+    sibling. Gated on RAW Admin membership — NOT ``require_admin`` —
+    because a paused admin must be able to re-elevate (require_admin
+    would 403 them into a locked-out loop). The cookie only ever reduces
+    privilege; see ``app/auth/elevation.py``.
+
+    CSRF posture: rides the platform-wide SameSite=Lax + JSON-body
+    protection (a cross-site form POST can neither carry the Lax cookie
+    nor produce a JSON body). No double-submit token, consistent with the
+    rest of ``/api/me`` and the documented platform CSRF posture.
     """
     from app.auth.access import is_user_admin
     from app.auth.elevation import ELEVATED, ELEVATION_COOKIE, PAUSED
+    from app.auth.public_url import cookie_secure
 
     if not isinstance(user, dict) or not is_user_admin(user["id"]):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
@@ -91,6 +98,7 @@ async def post_elevation(
         value,
         max_age=30 * 24 * 3600,
         httponly=True,
+        secure=cookie_secure(request),
         samesite="lax",
         path="/",
     )
