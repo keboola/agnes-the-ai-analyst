@@ -61,8 +61,13 @@ not a containment boundary — a paused admin can re-elevate at will.
 
 The instance default is `access.admin_default_elevation: "elevated"`
 (historical behavior); set `"paused"` for consent-first deployments.
-Non-request contexts (scheduler, CLI, background jobs) always run
-elevated so system automation is unaffected. Each god-mode grant of a
+The default applies to **browser sessions only**: Bearer-authenticated
+requests (CLI, PATs, service tokens) carrying no elevation cookie always
+run elevated — automation has no cookie jar to re-elevate with, so a
+paused default must not 403 every `agnes admin …` call (an explicit
+`paused` cookie is still honored even alongside a Bearer header).
+Non-HTTP contexts (scheduler internals, background jobs) likewise run
+elevated via the contextvar default. Each god-mode grant of a
 resource the admin holds no explicit grant for emits a deduplicated
 `god_mode_bypass` log line — the observability data for deciding where
 explicit grants should replace god-mode reliance.

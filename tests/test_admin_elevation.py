@@ -85,6 +85,31 @@ def test_resolve_from_cookie_precedence(monkeypatch):
     monkeypatch.setattr(elevation, "default_elevation", lambda: elevation.PAUSED)
     assert elevation.resolve_from_cookie(None) is True
     assert elevation.resolve_from_cookie("elevated") is False  # explicit cookie wins
+    # Bearer callers (CLI/PAT) are exempt from the instance default —
+    # they have no cookie jar to re-elevate with...
+    assert elevation.resolve_from_cookie(None, bearer_auth=True) is False
+    assert elevation.resolve_from_cookie("junk", bearer_auth=True) is False
+    # ...but an explicit paused cookie still reduces, Bearer or not
+    assert elevation.resolve_from_cookie("paused", bearer_auth=True) is True
+
+
+def test_default_elevation_reads_real_config(monkeypatch):
+    """Regression for the #1146 review finding: default_elevation must walk
+    the real nested config (get_value takes one positional per level +
+    default= keyword) — a dotted-string key silently never matched and the
+    knob was dead code. Drives the REAL get_value, only the config load is
+    stubbed."""
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "load_instance_config", lambda: {"access": {"admin_default_elevation": "paused"}})
+    assert elevation.default_elevation() == elevation.PAUSED
+    monkeypatch.setattr(ic, "load_instance_config", lambda: {"access": {"admin_default_elevation": "elevated"}})
+    assert elevation.default_elevation() == elevation.ELEVATED
+    # absent / unknown values fall back to elevated
+    monkeypatch.setattr(ic, "load_instance_config", lambda: {})
+    assert elevation.default_elevation() == elevation.ELEVATED
+    monkeypatch.setattr(ic, "load_instance_config", lambda: {"access": {"admin_default_elevation": "wat"}})
+    assert elevation.default_elevation() == elevation.ELEVATED
 
 
 # ---------------------------------------------------------------------------
@@ -134,18 +159,40 @@ def test_toggle_endpoint_refuses_non_admin(seeded_app):
     assert r.status_code == 403
 
 
-def test_instance_default_paused_flips_admin_default(seeded_app, monkeypatch):
+def test_instance_default_paused_is_browser_only(seeded_app, monkeypatch):
+    """default=paused gates cookie-session browsers, never Bearer callers.
+
+    Bearer-authenticated automation (CLI, PATs, service tokens) has no
+    cookie jar to re-elevate with — a paused instance default must not
+    403 every `agnes admin …` call (#1146 review finding)."""
     c = seeded_app["client"]
     admin = seeded_app["admin_token"]
     monkeypatch.setattr(elevation, "default_elevation", lambda: elevation.PAUSED)
 
+    # Bearer caller (CLI-shaped): exempt from the instance default
     r = c.get("/api/admin/groups", headers=_auth(admin))
-    assert r.status_code == 403
+    assert r.status_code == 200
 
-    # explicit elevated cookie wins over the paused default
-    c.cookies.set(elevation.ELEVATION_COOKIE, elevation.ELEVATED)
+    # ...but an explicit paused cookie still reduces even with Bearer auth
+    c.cookies.set(elevation.ELEVATION_COOKIE, elevation.PAUSED)
     try:
         r = c.get("/api/admin/groups", headers=_auth(admin))
+        assert r.status_code == 403
+    finally:
+        c.cookies.delete(elevation.ELEVATION_COOKIE)
+
+    # Browser-shaped caller (session cookie, no Authorization header):
+    # the paused default applies...
+    c.cookies.set("access_token", admin)
+    try:
+        r = c.get("/api/admin/groups")
+        assert r.status_code == 403
+        assert r.json()["detail"] == "admin_elevation_paused"
+
+        # ...and an explicit elevated cookie wins over it
+        c.cookies.set(elevation.ELEVATION_COOKIE, elevation.ELEVATED)
+        r = c.get("/api/admin/groups")
         assert r.status_code == 200
     finally:
         c.cookies.delete(elevation.ELEVATION_COOKIE)
+        c.cookies.delete("access_token")
