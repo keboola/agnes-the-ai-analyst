@@ -58,12 +58,28 @@
             <div id="step-2" style="display: none;">
                 <form id="source-form" onsubmit="return configureSource(event)">
                     <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Data Source</label>
-                    <select id="data-source" onchange="toggleSourceFields()"
+                    {# The real <select> stays the control `toggleSourceFields()` /
+                       `configureSource()` read (untouched — the paired dropdown
+                       dispatches a real `change` event so the inline `onchange`
+                       handler keeps firing). The custom dropdown alongside it is a
+                       visual replacement only: which one is visible is a theme
+                       decision (paper-skin.css), not a template one. See
+                       _components.html's `dropdown` macro. #}
+                    <select id="data-source" onchange="toggleSourceFields()" class="ds-dropdown-native"
                         style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
                         <option value="keboola">Keboola</option>
                         <option value="bigquery">BigQuery</option>
                         <option value="local">Local / CSV</option>
                     </select>
+                    {{ ds.dropdown(
+                        id='data-source-dd', target='data-source',
+                        aria_label='Data Source', selected='keboola',
+                        options=[
+                          {'value': 'keboola', 'label': 'Keboola'},
+                          {'value': 'bigquery', 'label': 'BigQuery'},
+                          {'value': 'local', 'label': 'Local / CSV'},
+                        ],
+                    ) }}
 
                     <div id="keboola-fields">
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Keboola URL</label>
@@ -282,4 +298,8 @@ async function triggerSync() {
 const savedToken = sessionStorage.getItem('setup_token');
 if (savedToken) token = savedToken;
 </script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 {% endblock %}
