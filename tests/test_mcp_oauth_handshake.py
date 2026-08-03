@@ -729,6 +729,35 @@ def test_public_client_revokes_access_token(seeded_app):
         assert r.status_code == 401, f"revoked token must not authenticate: {r.status_code}"
 
 
+def test_public_client_revocation_accepts_empty_client_secret(seeded_app):
+    """Some clients post ``client_secret=`` (empty) rather than omitting it.
+
+    The lenient model fixes the *absent* key; this pins the empty-string
+    case, which the SDK's ``ClientAuthenticator`` handles by forcing
+    ``request_client_secret = None`` for ``token_endpoint_auth_method="none"``
+    and only comparing when the stored client actually has a secret — a
+    public client has none, so the empty value never reaches a comparison.
+    Pinned because "" vs absent is a real client-behavior difference and the
+    existing token-flow test already posts it against /token.
+    """
+    import asyncio
+
+    from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+
+    admin_token = seeded_app["admin_token"]
+    with seeded_app["client"] as client:
+        reg = _register_client(client, auth_method="none")
+        tok = _authorize_and_mint(client, admin_token, reg)
+        access_token = tok["access_token"]
+
+        r = client.post(
+            f"{MCP_MOUNT}/revoke",
+            data={"token": access_token, "client_id": reg["client_id"], "client_secret": ""},
+        )
+        assert r.status_code == 200, f"empty client_secret must not 401 a public client: {r.status_code} {r.text}"
+        assert asyncio.run(AgnesMCPOAuthProvider().load_access_token(access_token)) is None
+
+
 def test_public_client_revokes_refresh_token(seeded_app):
     """RFC 7009 with token_type_hint=refresh_token: the grant can no longer be
     renewed after revocation."""
