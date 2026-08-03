@@ -242,6 +242,18 @@ class GapReplayGate:
     passthrough correctly — after, not during or before, the flush).
     """
 
+    #: This sink can answer an ``approval_request``. It wraps the chat
+    #: WebSocket, which is the one transport that both renders the
+    #: approve/deny card (``app/web/static/js/chat.js``) and carries the
+    #: user's ``approval_decision`` back (``ws_stream``/``ws_join`` in
+    #: ``app/api/chat.py``). Every other sink — Slack bridges, the
+    #: agent-API ``HeadlessSink``/``StreamingSink`` — is push-only for
+    #: approvals and leaves this at the ``False`` default, so
+    #: ``ChatManager`` resolves a request that only they can see rather
+    #: than letting it hang. Opt-in on purpose: a new sink is assumed
+    #: unable to approve until it demonstrably implements both halves.
+    supports_approvals = True
+
     def __init__(self, real_sink) -> None:
         self._real = real_sink
         self._buffering = True
