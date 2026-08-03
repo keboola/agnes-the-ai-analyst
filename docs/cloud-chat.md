@@ -186,14 +186,20 @@ surface per-session cost in its admin UI.
 ## Security model
 
 Single-tenant: all users in one Agnes instance trust each other. The
-E2B microVM bounds FS / process / kernel isolation. The bundled
-PreToolUse hook in the workspace template
-(`.claude/hooks/pre_tool_use.py`) refuses workspace-destructive bash,
-prompts for admin mutations, and enforces the egress allowlist. **Per
-Q4 the egress allowlist exists only in the hook** — there is no
-firewall layer baked into the E2B template, so a prompt injection that
-rewrites the hook can reach arbitrary external hosts. The template's
-README documents this trade-off and how to flip it.
+E2B microVM bounds FS / process / kernel isolation. **Egress is enforced
+at the VM level**: `E2BProvider.spawn` passes
+`network={"allow_out": …, "deny_out": [ALL_TRAFFIC]}`, so anything
+outside `chat.egress_allow_out` is blocked by the platform, outside the
+sandbox's reach. The bundled PreToolUse hook in the workspace template
+(`.claude/hooks/pre_tool_use.py`) additionally refuses
+workspace-destructive bash and prompts for admin mutations, but it is
+defense-in-depth only — it is fail-open, inspects Bash alone, and is a
+workspace file the agent could rewrite. The VM-level deny-list survives
+its removal. (This supersedes the original Q4 decision, which shipped
+the allowlist in the hook alone.)
+
+The full trust model, the controls behind it, and the known limitations
+are in [`../SECURITY.md`](../SECURITY.md).
 
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.
@@ -231,7 +237,7 @@ trim local files.
 - Single uvicorn worker only (see § Host requirements).
 - **Bundled workspace ships no sub-agents.** `app/initial_workspace_default/.claude/agents/` is empty. Sub-agent dispatch (Task tool) requires the operator to install marketplace plugins that ship `agnes-*.md` agent definitions; without them the chat agent will answer directly without sub-agent delegation. The E2E test `tests/e2e/test_sub_agent_dispatch.py::F.9` auto-skips when no agents are present in the workspace.
 - **`ANTHROPIC_API_KEY` + `E2B_API_KEY` + `chat.e2b_template_id` are gate-checked at startup.** Any missing value refuses chat with a clear log line.
-- **Egress is fail-open at the network layer** (Q4 owner decision). The PreToolUse hook is the only barrier between the agent and `evil.example.com`. A prompt injection that rewrites the hook bypasses it. Defense-in-depth (re-introducing E2B firewall rules) is a follow-up.
+- **Egress is enforced at the VM level**, not by the in-sandbox hook. `E2BProvider.spawn` passes `network={"allow_out": …, "deny_out": [ALL_TRAFFIC]}`, so everything outside `chat.egress_allow_out` (default: the Agnes host, loopback, `api.anthropic.com`, `api.github.com`) is blocked by the platform. The workspace `PreToolUse` hook is defense-in-depth only: it is fail-open, inspects Bash alone, and is a workspace file the agent could rewrite — the VM-level deny-list survives its removal. (This supersedes the original Q4 fail-open decision.)
 - **`audit_log.user_id` for chat rows holds the user email, not the user UUID.** Joining `audit_log` to `users` for chat events requires `audit_log.user_id = users.email` for `action LIKE 'chat.%'` and the usual `audit_log.user_id = users.id` for everything else. Documented in `app/chat/audit.py::write_audit`.
 - **`_real_agent_loop` enforces a turn-level wall-clock cap, not per-tool.** `claude-agent-sdk` 0.2.x doesn't expose per-tool dispatch hooks; the runner enforces `tool_calls_per_turn_budget` and a turn-level timeout instead of per-tool granularity. Revisit when the SDK ships per-tool hooks.
 - **E2B SDK 1.x uses the mutable `:latest` template tag.** Per Q2 a teammate rebuild propagates to every live deployment on its next spawn — test rebuilds on a dev Agnes first.
