@@ -259,7 +259,10 @@ def _has_unquoted_heredoc(line: str) -> bool:
     reading it as a heredoc marker made every later line of the command go
     unscanned (review finding on #1141).
     """
-    line = re.sub(r"\$\(\(.*?\)\)", " ", line)
+    # Both forms: `$((...))` expansion and the bare `((...))` command. Only
+    # blanking the first left `((1<<N))` opening a phantom heredoc that
+    # swallowed every later line (review finding on #1141).
+    line = re.sub(r"\$?\(\(.*?\)\)", " ", line)
     in_single = in_double = False
     i = 0
     while i < len(line):
@@ -419,6 +422,20 @@ def _strip_prefix(toks: list[str], *, env_is_wrapper: bool, wrapper: str | None 
         # splits into a segment whose head is `then`, which matched no rule
         # and made the whole block invisible (review finding on #1141).
         if toks[i] in _SHELL_KEYWORDS:
+            # `case SUBJECT in PATTERN) cmd` — the subject and the pattern are
+            # data, but they are ordinary words, so skipping only the keywords
+            # left the pattern as the head and the real command unscanned
+            # (review finding on #1141).
+            if toks[i] == "case":
+                i += 1
+                if i < len(toks) and toks[i] not in _SHELL_KEYWORDS:
+                    i += 1  # the subject
+                continue
+            if toks[i] == "in":
+                i += 1
+                if i < len(toks) and toks[i] not in _SHELL_KEYWORDS:
+                    i += 1  # the pattern
+                continue
             i += 1
             continue
         # A redirection and its target are not the command either, and
