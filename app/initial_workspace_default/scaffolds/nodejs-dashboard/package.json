@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": "^18.0.0 || ^20.0.0 || >=22.0.0"
+  },
   "description": "Agnes hosted-data-app scaffold: React + Vite + Tailwind SPA served by an Express backend that reads data through the Agnes REST API.",
   "scripts": {
     "dev": "vite",
