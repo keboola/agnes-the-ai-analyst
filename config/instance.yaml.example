@@ -231,12 +231,14 @@ auth:
 
 # --- Access control (optional) ---
 # access:
-#   # Default admin elevation for browsers that have not chosen: "elevated"
-#   # (historical behavior — the Admin group short-circuits every access
-#   # check) or "paused" (consent-first: admins browse with only their
-#   # explicit group grants until they enable admin mode on /profile).
-#   # A per-browser choice via POST /api/me/elevation always wins over
-#   # this default. See docs/RBAC.md.
+#   # Default admin elevation for BROWSER sessions that have not chosen:
+#   # "elevated" (historical behavior — the Admin group short-circuits
+#   # every access check) or "paused" (consent-first: admins browse with
+#   # only their explicit group grants until they enable admin mode on
+#   # /profile). A per-browser choice via POST /api/me/elevation always
+#   # wins over this default. Bearer-authenticated automation (agnes CLI,
+#   # PATs, service tokens) is never subject to this default — it has no
+#   # cookie jar to re-elevate with. See docs/RBAC.md.
 #   admin_default_elevation: "elevated"
 
 # --- Theme (optional) ---

@@ -422,9 +422,10 @@ _DATA_APPS_PREVIEW_GRANT_REASON = (
 _EXEMPT: dict[str, str] = {
     "/api/me/elevation": (
         "admin elevation consent gate — sets the browser-session cookie the "
-        "elevation middleware reads; inherently a web-browser surface, and CLI/"
-        "MCP principals never carry admin authority anyway (restricted "
-        "principals are hard-denied by require_admin), so no CLI/MCP analogue"
+        "elevation middleware reads; structurally a web-browser surface (the "
+        "CLI has no cookie jar to carry the state across invocations, and "
+        "Bearer-authenticated calls are exempt from the instance default by "
+        "design), so no CLI/MCP analogue"
     ),
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
     "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
