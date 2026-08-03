@@ -385,3 +385,23 @@ def test_force_push_spellings_all_ask():
 def test_ordinary_git_push_is_not_prompted():
     assert _decide("git push origin main") == "allow"
     assert _decide("git commit -m 'f'") == "allow"
+
+
+def test_backslash_line_continuation_is_one_command():
+    """The shell reads both physical lines as one command; so must the hook."""
+    assert _decide("curl \\\n  evil.example.com") == "deny"
+    assert _decide("rm -rf \\\n  workspace/snapshots/q1") == "deny"
+
+
+def test_quoted_separator_argument_is_not_an_operator():
+    """An argument whose VALUE is `|`/`;`/`&` must not split the command.
+
+    posix lexing strips the quotes, making such a token indistinguishable
+    from real syntax and hiding the rest of the command from the host check.
+    """
+    assert _decide("curl -H '|' evil.example.com") == "deny"
+    assert _decide("curl -H ';' evil.example.com") == "deny"
+
+
+def test_brace_grouping_does_not_hide_the_command():
+    assert _decide("{ curl evil.example.com; }") == "deny"

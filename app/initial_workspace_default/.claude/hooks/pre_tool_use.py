@@ -253,14 +253,23 @@ def _split_segments(cmd: str) -> list[str]:
     all would be the one genuinely unsafe option.
     """
     segments: list[str] = []
-    # Newlines first: shlex treats them as ordinary whitespace, so they would
-    # never produce a boundary and every line after the first would be read
-    # as arguments of the first command.
-    for line in cmd.split("\n"):
+    # A trailing backslash continues the line: the shell reads both physical
+    # lines as ONE command, so joining them first keeps a deletion or
+    # download written across two lines recognizable (review on #1141).
+    joined = re.sub(r"\\\n", " ", cmd)
+    # Newlines then split: shlex treats them as ordinary whitespace, so they
+    # would never produce a boundary and every line after the first would be
+    # read as arguments of the first command.
+    for line in joined.split("\n"):
         if not line.strip():
             continue
         try:
-            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            # posix=False keeps quotes ON the tokens, which is what makes an
+            # operator distinguishable from an argument whose VALUE is an
+            # operator character: `curl -H '|' host` must not split. The
+            # per-segment token checks re-parse with posix shlex, so quoting
+            # is still resolved where it matters.
+            lex = shlex.shlex(line, posix=False, punctuation_chars=True)
             lex.whitespace_split = True
             # `#` is NOT a comment introducer for our purposes: shlex would
             # drop the rest of the line, and a stray hash in an argument
@@ -275,12 +284,16 @@ def _split_segments(cmd: str) -> list[str]:
         for tok in tokens:
             if _is_operator(tok):
                 if current:
-                    segments.append(shlex.join(current))
+                    segments.append(" ".join(current))
                     current = []
                 continue
-            current.append(tok)
+            # brace/subshell grouping is punctuation around the real command,
+            # not the command itself
+            stripped = tok.strip("{}")
+            if stripped:
+                current.append(stripped)
         if current:
-            segments.append(shlex.join(current))
+            segments.append(" ".join(current))
     return segments
 
 
@@ -477,7 +490,11 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
     # bash concatenates adjacent quoted strings: `psql -c "DR""OP TABLE x"`
     # executes a DROP whose literal substring never appears in the raw text.
     # Raw is kept too — normalizing collapses the `|` these patterns need.
-    haystacks = (cmd, " ".join(_normalized(seg) for seg in _split_segments(cmd)))
+    # Normalize the WHOLE command, not the rejoined segments: segment tokens
+    # are lexed non-posix (quotes retained, so a quoted separator is not
+    # mistaken for syntax), and joining them with spaces would destroy the
+    # very adjacency concatenation these regexes need to see.
+    haystacks = (cmd, _normalized(cmd))
     if any(_FORK_BOMB_RE.search(h) for h in haystacks):
         verdicts.append(("deny", "Refusing a fork bomb."))
     if any(_DESTRUCTIVE_SQL_RE.search(h) for h in haystacks):
