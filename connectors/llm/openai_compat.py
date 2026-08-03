@@ -8,10 +8,10 @@ import json
 import logging
 import re
 import time
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-import openai
 
 from .exceptions import (
     LLMAuthError,
@@ -23,6 +23,21 @@ from .exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str) -> Any:
+    # The openai SDK import pulls its full type tree (hundreds of modules,
+    # seconds of cold-import wall time), and this module is reachable from
+    # the app.main import path via connectors.llm.factory — so the SDK is
+    # imported inside the methods that talk to the API, not at module
+    # import. This hook keeps `connectors.llm.openai_compat.openai`
+    # resolvable for mock.patch targets.
+    if name == "openai":
+        import openai
+
+        return openai
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -107,6 +122,9 @@ class OpenAICompatExtractor:
             verify_ssl: Whether to verify SSL certificates. Set to False for
                 corporate proxies with self-signed certificates.
         """
+
+        import openai  # deferred — see module __getattr__
+
         # Custom httpx client for SSL control (corporate proxies often use self-signed certs)
         http_client = httpx.Client(verify=verify_ssl)
         self._client = openai.OpenAI(
@@ -291,6 +309,8 @@ class OpenAICompatExtractor:
                 },
             ]
             kwargs["messages"] = messages
+
+        import openai  # deferred — see module __getattr__
 
         from src.observability import trace_generation
 

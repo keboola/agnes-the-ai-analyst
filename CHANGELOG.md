@@ -20,6 +20,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- Deferred the `anthropic`/`openai` SDK imports in `connectors/llm` to first API use; a module-level `__getattr__` keeps `<provider>.anthropic`/`<provider>.openai` resolvable for existing mock-patch targets. The two SDK type trees (hundreds of modules, 15–94 s wall on a cold filesystem cache) rode along with every `import app.main` via the store-guardrails chain and intermittently pushed `tests/test_api_design_rules.py` past its 60 s pytest-timeout; `import src.store_guardrails.runner` now pulls zero SDK modules (~10 s → ~0.07 s warm).
+
 ### Security
 
 ## [0.77.32] - 2026-07-30
