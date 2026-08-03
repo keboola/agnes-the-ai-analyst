@@ -20,6 +20,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+### Security
+
+## [0.77.34] - 2026-08-03
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
 - Vault repositories now share one decrypt path: `SharedSecretsRepository`,
   `PerUserSecretsRepository`, and `ConnectionSecretsRepository` (DuckDB and
   Postgres alike) fold their inline `InvalidToken`-swallow blocks onto the
