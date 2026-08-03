@@ -1190,6 +1190,7 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 ### `/api/me` — Current user self-service
 
 - /api/me/effective-access
+- /api/me/elevation
 - /api/me/home-stats
 - /api/me/onboarded
 - /api/me/stats/queries

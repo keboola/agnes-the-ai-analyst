@@ -242,6 +242,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+- Admin god-mode observability: when the Admin short-circuit in `can_access` grants a resource the admin holds no explicit group grant for, a deduplicated `god_mode_bypass` log line records who reached what. Observability only — access decisions are unchanged; the data shows which surfaces actually rely on god-mode before any future narrowing.
+- Admin elevation consent gate: admins can pause their own god-mode per browser (`POST /api/me/elevation`, toggle on `/profile`) — while paused, access checks fall through to explicit group grants and admin endpoints refuse with `admin_elevation_paused`. Default unchanged (`access.admin_default_elevation: "elevated"`); set `"paused"` for consent-first instances. Pause/resume actions are audited.
 
 ## [0.77.32] - 2026-07-30
 
