@@ -207,7 +207,11 @@ _WRAPPERS = {
 # table gets this wrong, e.g. `-n` is a value flag for `nice` but a boolean
 # for `sudo`, so `sudo -n rm -rf x` would swallow the `rm`.
 _WRAPPER_VALUE_FLAGS = {
-    "sudo": {"-u", "-g", "-C", "-h", "-p", "-r", "-t", "-T", "--user", "--group", "--prompt"},
+    # NOTE no "-h": modern sudo reads a bare -h as --help, and the valued
+    # form is --host=. Modelling it as value-taking made `sudo -h rm -rf x`
+    # swallow the wrapped command — this table must err toward over-asking
+    # (review finding on #1141).
+    "sudo": {"-u", "-g", "-C", "-p", "-r", "-t", "-T", "--user", "--group", "--prompt", "--host"},
     "doas": {"-u", "-C"},
     "nice": {"-n", "--adjustment"},
     "ionice": {"-c", "-n", "-p", "--class", "--classdata", "--pid"},
@@ -249,7 +253,13 @@ def _is_operator(tok: str) -> bool:
 
 
 def _has_unquoted_heredoc(line: str) -> bool:
-    """True when `<<` appears outside quotes, i.e. really opens a heredoc."""
+    """True when `<<` appears outside quotes, i.e. really opens a heredoc.
+
+    Arithmetic spans are blanked first: `$((1<<N))` is a left shift, and
+    reading it as a heredoc marker made every later line of the command go
+    unscanned (review finding on #1141).
+    """
+    line = re.sub(r"\$\(\(.*?\)\)", " ", line)
     in_single = in_double = False
     i = 0
     while i < len(line):

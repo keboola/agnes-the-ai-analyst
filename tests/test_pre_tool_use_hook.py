@@ -528,3 +528,19 @@ def test_quoted_heredoc_marker_is_not_a_heredoc():
     multi-line command.
     """
     assert _decide("echo 'a << b'\nrm -rf /data") == "ask"
+
+
+def test_sudo_dash_h_does_not_swallow_the_wrapped_command():
+    """Modern sudo reads a bare -h as --help; the valued form is --host=.
+
+    Modelling it as value-taking consumed the wrapped command as the option
+    value — the one entry in that table that erred toward under-blocking.
+    """
+    assert _decide("sudo -h rm -rf /data") == "ask"
+    assert _decide("sudo --host=h rm -rf /data") == "ask"
+    assert _decide("sudo -u root rm -rf /data") == "ask"
+
+
+def test_arithmetic_shift_is_not_a_heredoc():
+    """`$((1<<N))` is a left shift; reading it as a marker skipped the rest."""
+    assert _decide("echo $((1<<3))\nrm -rf /data") == "ask"
