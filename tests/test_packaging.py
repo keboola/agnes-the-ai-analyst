@@ -1,10 +1,11 @@
 """Packaging regression tests — guard against silent prod-vs-dev dep drift.
 
-`anthropic` and `openai` are imported by `connectors/llm/anthropic_provider.py`
-and `connectors/llm/openai_compat.py`. Those modules run in production from
-`services/corporate_memory` and `services/verification_detector`. If they
-slip back into `[project.optional-dependencies].dev` the Dockerfile (which
-only installs core deps) will boot-loop on `ModuleNotFoundError`. See #176.
+`anthropic` and `openai` are imported (lazily, at first API use) by
+`connectors/llm/anthropic_provider.py` and `connectors/llm/openai_compat.py`.
+Those modules run in production from `services/corporate_memory` and
+`services/verification_detector`. If the SDKs slip back into
+`[project.optional-dependencies].dev` the Dockerfile (which only installs
+core deps) hits `ModuleNotFoundError` at the first LLM call. See #176.
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ def test_anthropic_is_a_core_dependency():
     """anthropic must live in [project].dependencies, not [dev].
 
     Production code (connectors/llm/anthropic_provider.py) imports the SDK
-    unconditionally. Demoting it to dev resurrects the #176 boot loop.
+    at first API use. Demoting it to dev resurrects the #176 failure as a
+    ModuleNotFoundError on the first LLM call.
     """
     cfg = _read_pyproject()
     core = cfg["project"]["dependencies"]
@@ -67,12 +69,17 @@ def test_llm_provider_modules_import_cleanly():
     """
     # Just importing here proves the deps resolve in the active env. The
     # pyproject.toml assertions above keep the contract going forward.
+    # The provider modules defer their SDK imports to first API use, so
+    # importing them alone no longer exercises the SDKs — import the SDKs
+    # explicitly to keep that guarantee.
     import importlib
 
     for mod in (
         "connectors.llm.anthropic_provider",
         "connectors.llm.openai_compat",
         "connectors.llm.factory",
+        "anthropic",
+        "openai",
     ):
         importlib.import_module(mod)
 

@@ -69,8 +69,12 @@ def review_bundle(
         description=description,
     )
 
-    extractor = AnthropicExtractor(api_key=api_key, model=model)
     try:
+        # Constructed inside the error boundary: the SDK import is deferred
+        # to first use, so client construction is a failure point too — an
+        # escaped exception here would bubble through BackgroundTasks and
+        # pin the submission at pending_llm.
+        extractor = AnthropicExtractor(api_key=api_key, model=model)
         # Pass SYSTEM_PROMPT via the SDK's separate ``system=`` parameter
         # so a crafted README inside the uploaded bundle cannot override
         # the reviewer rules. The user-content payload wraps the bundle
@@ -89,7 +93,10 @@ def review_bundle(
         # type without having to grep logs.
         logger.warning(
             "LLM guardrail review failed for %s/%s@%s: %s",
-            type_, name, version, type(e).__name__,
+            type_,
+            name,
+            version,
+            type(e).__name__,
         )
         return {
             "risk_level": None,
@@ -109,7 +116,9 @@ def review_bundle(
         # admin queue surfaces a real review_error with a retry button.
         logger.exception(
             "LLM guardrail review unexpected error for %s/%s@%s",
-            type_, name, version,
+            type_,
+            name,
+            version,
         )
         return {
             "risk_level": None,
@@ -177,12 +186,14 @@ def _normalize_content_quality(value: Any) -> Dict[str, Any]:
         for item in issues_raw:
             if not isinstance(item, dict):
                 continue
-            issues.append({
-                "file": str(item.get("file") or ""),
-                "field": str(item.get("field") or "frontmatter.description"),
-                "issue": str(item.get("issue") or ""),
-                "hint": str(item.get("hint") or ""),
-            })
+            issues.append(
+                {
+                    "file": str(item.get("file") or ""),
+                    "field": str(item.get("field") or "frontmatter.description"),
+                    "issue": str(item.get("issue") or ""),
+                    "hint": str(item.get("hint") or ""),
+                }
+            )
     # If verdict claims fail but no issues were enumerated, downgrade to
     # pass — we'd otherwise block a submission with no rendered reason.
     if verdict == "fail" and not issues:
