@@ -420,12 +420,22 @@
     <p class="sub">Select artefacts the default agent should be able to access.</p>
     <div class="stk-af-toolbar">
       <input type="search" id="stk-af-search" placeholder="Search artefacts…" autocomplete="off" aria-label="Search artefacts">
-      <select id="stk-af-visibility" aria-label="Filter by visibility">
+      <select id="stk-af-visibility" aria-label="Filter by visibility" class="ds-dropdown-native">
         <option value="">All visibility</option>
         <option value="private">Private</option>
         <option value="shared">Shared</option>
         <option value="workspace">Workspace</option>
       </select>
+      {{ ds.dropdown(
+        id='stk-af-visibility-dd', target='stk-af-visibility',
+        aria_label='Filter by visibility', selected='',
+        options=[
+          {'value': '', 'label': 'All visibility'},
+          {'value': 'private', 'label': 'Private'},
+          {'value': 'shared', 'label': 'Shared'},
+          {'value': 'workspace', 'label': 'Workspace'},
+        ],
+      ) }}
     </div>
     <div class="stk-af-list" id="stk-af-list" role="listbox" aria-multiselectable="true" aria-label="Artefacts"></div>
     <div class="stk-af-empty" id="stk-af-empty" hidden></div>
@@ -1103,11 +1113,30 @@
     }
   }
 
+  // ds.dropdown() (#1055) only mirrors a *user pick* onto its paired
+  // <select> (ds_dropdown.js sets .value + dispatches change) — it never
+  // reads the <select> back. afOpenPicker resets stk-af-visibility.value
+  // directly on every open, so re-sync the dropdown's own label +
+  // aria-checked state here too, or the two controls would disagree under
+  // the paper theme.
+  function _syncVisibilityDropdown() {
+    const menu = document.getElementById('stk-af-visibility-dd-menu');
+    if (!afVisibility || !menu) return;
+    const btnLabel = document.querySelector('#stk-af-visibility-dd-btn .ds-dropdown-btn-label');
+    menu.querySelectorAll('[role="menuitemradio"]').forEach((item) => {
+      const match = item.getAttribute('data-value') === afVisibility.value;
+      item.classList.toggle('is-selected', match);
+      item.setAttribute('aria-checked', match ? 'true' : 'false');
+      if (match && btnLabel) btnLabel.textContent = item.textContent.trim();
+    });
+  }
+
   async function afOpenPicker(trigger) {
     afTrigger = trigger || document.activeElement;
     afSelected = new Set();
     afSearch.value = '';
     afVisibility.value = '';
+    _syncVisibilityDropdown();
     afUpdateSelCount();
     afList.innerHTML = '';
     afEmpty.hidden = true;
