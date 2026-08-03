@@ -117,19 +117,36 @@ def test_lookup_failure_is_retried_not_cached_as_logged(system_conn, caplog, mon
 
 def test_grant_lookup_memoized_per_user_type(system_conn, monkeypatch):
     """N distinct resource_ids in a burst pay ONE grant query, not N
-    (review finding on #1143 — no per-item DB round trip)."""
+    (review finding on #1143 — no per-item DB round trip). Memoization is
+    the production (conn=None) path only."""
     calls = {"n": 0}
-    real = access._allowed_ids_for_user
 
     def _counting(user_id, resource_type, conn=None):
         calls["n"] += 1
-        return real(user_id, resource_type, conn=conn)
+        return frozenset()
 
     monkeypatch.setattr(access, "_allowed_ids_for_user", _counting)
+    now = 1000.0
     for i in range(10):
-        assert access.can_access("admin1", "table", f"keboola.t{i}", conn=system_conn)
-    # 10 distinct ids, same (user, type) within the TTL → one underlying query
+        access._god_mode_allowed_ids("admin1", "table", now + i * 0.1, conn=None)
+    # 10 lookups within the TTL, same (user, type) → one underlying query
     assert calls["n"] == 1
+
+
+def test_grant_lookup_not_memoized_with_explicit_conn(system_conn, monkeypatch):
+    """An explicit conn skips the cache — its key can't capture which
+    backend/handle produced the set, so a stale cross-conn memo is avoided
+    (review finding on #1143)."""
+    calls = {"n": 0}
+
+    def _counting(user_id, resource_type, conn=None):
+        calls["n"] += 1
+        return frozenset()
+
+    monkeypatch.setattr(access, "_allowed_ids_for_user", _counting)
+    for i in range(3):
+        access._god_mode_allowed_ids("admin1", "table", 1000.0, conn=system_conn)
+    assert calls["n"] == 3
 
 
 def test_cache_failure_does_not_break_authorization(system_conn, monkeypatch):
