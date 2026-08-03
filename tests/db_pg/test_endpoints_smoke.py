@@ -249,6 +249,7 @@ class TestMeSmoke:
         "GET /api/me/home-stats",
         "GET /api/me/effective-access",
         "POST /api/me/onboarded",
+        "POST /api/me/elevation",
     }
 
     def test_me_home_stats(self, seeded_app_both):
@@ -263,6 +264,24 @@ class TestMeSmoke:
     def test_me_onboarded(self, seeded_app_both):
         r = seeded_app_both["client"].post("/api/me/onboarded", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 204)
+
+    def test_me_elevation_toggle(self, seeded_app_both):
+        c = seeded_app_both["client"]
+        r = c.post(
+            "/api/me/elevation",
+            json={"paused": True},
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        assert r.json()["paused"] is True
+        # resume so later smoke classes see god-mode admin behavior
+        r = c.post(
+            "/api/me/elevation",
+            json={"paused": False},
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        c.cookies.delete("agnes_elevation")
 
 
 # ---------------------------------------------------------------------------
