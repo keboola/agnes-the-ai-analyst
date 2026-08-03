@@ -157,11 +157,42 @@ def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None
 # observability — never changes the decision — but it is the data that shows
 # which surfaces actually rely on god-mode before any future narrowing.
 # Best-effort in-process dedup (same pattern as ``_google_resync_last``); a
-# benign race at worst duplicates a line. The grant lookup runs at most once
-# per (user, resource) per cooldown window, so the auth hot path stays cheap.
+# benign race at worst duplicates a line.
+#
+# NOTE on ``resource_type == 'table'``: "explicit grant" here means a direct
+# ``resource_grants`` row, but analyst table visibility actually flows through
+# data packages / the stack (``src/rbac.py``), which this check does not
+# consult. So an admin who would ALSO reach a table via a granted package is
+# still counted as a god-mode hit — table bypass counts are an UPPER BOUND
+# (over-counts reliance, the safe direction for "which surfaces need god-mode"
+# data). (review note on #1143.)
 _god_mode_logged: dict[str, float] = {}
 _GOD_MODE_LOG_COOLDOWN_SECONDS = 900
 _GOD_MODE_CACHE_MAX = 4096
+
+# Short-TTL memoization of the per-(user, resource_type) grant set, so a
+# list-style endpoint that checks N distinct resource_ids in a tight loop
+# pays ONE grant query, not N — the observability lookup must not add a
+# per-item DB round trip to the auth hot path (review finding on #1143).
+_god_mode_grants: "dict[str, tuple[float, frozenset[str]]]" = {}
+_GOD_MODE_GRANTS_TTL_SECONDS = 5.0
+
+
+def _god_mode_allowed_ids(
+    user_id: str,
+    resource_type: str,
+    now: float,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> frozenset:
+    key = f"{user_id}|{resource_type}"
+    cached = _god_mode_grants.get(key)
+    if cached is not None and (now - cached[0]) < _GOD_MODE_GRANTS_TTL_SECONDS:
+        return cached[1]
+    ids = _allowed_ids_for_user(user_id, resource_type, conn=conn)
+    if len(_god_mode_grants) >= _GOD_MODE_CACHE_MAX:
+        _god_mode_grants.clear()
+    _god_mode_grants[key] = (now, ids)
+    return ids
 
 
 def _note_god_mode_hit(
@@ -182,6 +213,11 @@ def _note_god_mode_hit(
         last = _god_mode_logged.get(key)
         if last is not None and (now - last) < _GOD_MODE_LOG_COOLDOWN_SECONDS:
             return
+        # Do the grant lookup BEFORE marking the key as seen — if it raises
+        # (transient DB blip), the key stays unrecorded so the NEXT request
+        # retries instead of the cooldown swallowing this audit line for the
+        # whole window (review finding on #1143).
+        explicit = resource_id in _god_mode_allowed_ids(user_id, resource_type, now, conn=conn)
         if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
             cutoff = now - _GOD_MODE_LOG_COOLDOWN_SECONDS
             for k in [k for k, t in list(_god_mode_logged.items()) if t < cutoff]:
@@ -190,7 +226,6 @@ def _note_god_mode_hit(
                 # pathological churn: reset rather than grow without bound
                 _god_mode_logged.clear()
         _god_mode_logged[key] = now
-        explicit = resource_id in _allowed_ids_for_user(user_id, resource_type, conn=conn)
         if not explicit:
             logger.info(
                 "god_mode_bypass: admin %s accessed %s:%s with no explicit group grant",
