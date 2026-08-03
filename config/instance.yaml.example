@@ -229,6 +229,16 @@ auth:
 #   # AGNES_SSRF_ALLOWED_HOSTS.
 #   ssrf_allowed_hosts: []
 
+# --- Access control (optional) ---
+# access:
+#   # Default admin elevation for browsers that have not chosen: "elevated"
+#   # (historical behavior — the Admin group short-circuits every access
+#   # check) or "paused" (consent-first: admins browse with only their
+#   # explicit group grants until they enable admin mode on /profile).
+#   # A per-browser choice via POST /api/me/elevation always wins over
+#   # this default. See docs/RBAC.md.
+#   admin_default_elevation: "elevated"
+
 # --- Theme (optional) ---
 # Customize colors, fonts, and shape to match your brand.
 # All values are optional - defaults provide a clean blue theme.

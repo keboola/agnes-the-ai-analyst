@@ -420,6 +420,12 @@ _DATA_APPS_PREVIEW_GRANT_REASON = (
     "preview-grant mints the in-chat iframe cookie for the web chat surface; chat-only, no CLI/MCP analogue (spec §7)"
 )
 _EXEMPT: dict[str, str] = {
+    "/api/me/elevation": (
+        "admin elevation consent gate — sets the browser-session cookie the "
+        "elevation middleware reads; inherently a web-browser surface, and CLI/"
+        "MCP principals never carry admin authority anyway (restricted "
+        "principals are hard-denied by require_admin), so no CLI/MCP analogue"
+    ),
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
     "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
     "/api/v1/agents/{agent_id}/tokens": _AGENT_TOKENS_REASON,
