@@ -167,7 +167,57 @@ _FORCE_PUSH_FLAGS = {"-f", "--force", "--force-with-lease"}
 # leading VAR=val assignments after env are skipped too. Anything fancier
 # (nested `sh -c`, eval, command substitution) is out of scope for this
 # hook — network-layer controls remain the enforcement backstop.
-_WRAPPERS = {"sudo", "nohup", "command", "exec", "time", "nice", "env", "timeout", "stdbuf"}
+#
+# This is an allowlist, so it is inherently incomplete: a privilege/exec
+# wrapper that is not listed hides the command behind it from every token
+# check. Keep it broad, and prefer adding a name here over discovering the
+# gap later.
+# Only wrappers with the simple `WRAPPER [flags] [positionals] CMD ARGS...`
+# shape belong here. `su`/`runuser`/`sh -c` take a shell STRING, not a
+# command vector, and re-parsing that is out of scope for this hook (same
+# bucket as eval / command substitution) — network-layer controls remain the
+# enforcement backstop.
+#
+# This is an allowlist, so it is inherently incomplete: an unlisted
+# privilege/exec wrapper hides the command behind it from every token check.
+# Prefer adding a name here over discovering the gap later.
+_WRAPPERS = {
+    "sudo",
+    "doas",
+    "nohup",
+    "command",
+    "exec",
+    "time",
+    "nice",
+    "ionice",
+    "env",
+    "timeout",
+    "stdbuf",
+    "setsid",
+    "chroot",
+    "flock",
+    "taskset",
+    "chrt",
+}
+
+# Flags that consume the NEXT token as their value, PER wrapper — a global
+# table gets this wrong, e.g. `-n` is a value flag for `nice` but a boolean
+# for `sudo`, so `sudo -n rm -rf x` would swallow the `rm`.
+_WRAPPER_VALUE_FLAGS = {
+    "sudo": {"-u", "-g", "-C", "-h", "-p", "-r", "-t", "-T", "--user", "--group", "--prompt"},
+    "doas": {"-u", "-C"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "--class", "--classdata", "--pid"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "flock": {"-w", "-E", "--wait", "--conflict-exit-code"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "env": {"-u", "-C", "-S", "--unset", "--chdir"},
+    "chroot": {"--userspec", "--groups"},
+}
+
+# Wrappers taking a positional argument of their own before the command:
+# `chroot NEWROOT cmd`, `flock FILE cmd`, `taskset MASK cmd`, `chrt PRIO cmd`.
+_WRAPPER_POSITIONALS = {"chroot": 1, "flock": 1, "taskset": 1, "chrt": 1}
 
 
 def _split_segments(cmd: str) -> list[str]:
@@ -192,28 +242,60 @@ def _tokens(seg: str) -> list[str]:
         return seg.split()
 
 
+def _basename(tok: str) -> str:
+    """`/bin/rm` -> `rm`.
+
+    Every token check compares the head against a bare command name, so
+    without this an absolute or relative path invokes the same binary while
+    matching nothing and falling through to a silent allow — the opposite of
+    this module's over-ask invariant (review finding on #1141).
+    """
+    return tok.rsplit("/", 1)[-1] if "/" in tok else tok
+
+
+def _normalized(seg: str) -> str:
+    """Segment text with shell quoting resolved, for the whole-segment regexes.
+
+    The token checks go through `shlex.split`, which resolves bash's
+    adjacent-string concatenation (`"DR""OP TABLE x"` -> `DROP TABLE x`) and
+    backslash escapes. The regex rules used to run on the raw text and so
+    missed exactly those forms while the shell still executed the dangerous
+    command (review finding on #1141).
+    """
+    toks = _tokens(seg)
+    return " ".join(toks) if toks else seg
+
+
 def _unwrap(toks: list[str]) -> list[str]:
-    """Strip leading wrapper commands / their immediate args / VAR=val."""
+    """Strip leading wrapper commands / their flags, values, positionals / VAR=val.
+
+    The returned head is basenamed, so `/bin/rm` is judged as `rm`.
+    """
     i = 0
+    current: str | None = None
     while i < len(toks):
-        t = toks[i]
+        t = _basename(toks[i])
         if t in _WRAPPERS:
+            current = t
             i += 1
             if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+[smhd]?", toks[i]):
                 i += 1
+            for _ in range(_WRAPPER_POSITIONALS.get(t, 0)):
+                if i < len(toks) and not toks[i].startswith("-"):
+                    i += 1
             continue
-        if "=" in t and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t):
+        if "=" in toks[i] and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", toks[i]):
             i += 1
             continue
-        if t.startswith("-"):
-            # wrapper flags (nice -n 10, stdbuf -oL, sudo -u): skip the flag;
-            # a following bare number is its value
+        if toks[i].startswith("-"):
+            flag = toks[i]
             i += 1
-            if i < len(toks) and re.fullmatch(r"\d+|\w+", toks[i]) and toks[i - 1] in ("-n", "-u"):
+            if "=" not in flag and flag in _WRAPPER_VALUE_FLAGS.get(current or "", set()) and i < len(toks):
                 i += 1
             continue
         break
-    return toks[i:]
+    rest = toks[i:]
+    return [_basename(rest[0])] + rest[1:] if rest else rest
 
 
 def _is_env_dump(seg: str) -> bool:
@@ -230,20 +312,23 @@ def _is_env_dump(seg: str) -> bool:
     toks = _tokens(seg)
     i = 0
     while i < len(toks):
-        t = toks[i]
+        t = _basename(toks[i])
         if t in _WRAPPERS and t != "env":
             i += 1
             if t == "timeout" and i < len(toks) and re.fullmatch(r"\d+[smhd]?", toks[i]):
                 i += 1
+            for _ in range(_WRAPPER_POSITIONALS.get(t, 0)):
+                if i < len(toks) and not toks[i].startswith("-"):
+                    i += 1
             continue
-        if t.startswith("-"):
+        if toks[i].startswith("-"):
             i += 1
             continue
         break
     rest = toks[i:]
     if not rest:
         return False
-    head = rest[0]
+    head = _basename(rest[0])
     if head == "printenv":
         return True  # printenv [VAR] still leaks env values
     if head == "env":
@@ -293,16 +378,22 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
     # Whole-command checks first: these patterns span segment separators
     # (`:|:&` contains `&`, pipe-to-shell contains `|`) or live inside
     # quoted SQL strings, so segment-splitting would hide them.
-    if _FORK_BOMB_RE.search(cmd):
+    #
+    # Each runs over the raw text AND over the quote-normalized text, because
+    # bash concatenates adjacent quoted strings: `psql -c "DR""OP TABLE x"`
+    # executes a DROP whose literal substring never appears in the raw text.
+    # Raw is kept too — normalizing collapses the `|` these patterns need.
+    haystacks = (cmd, " ".join(_normalized(seg) for seg in _split_segments(cmd)))
+    if any(_FORK_BOMB_RE.search(h) for h in haystacks):
         verdicts.append(("deny", "Refusing a fork bomb."))
-    if _DESTRUCTIVE_SQL_RE.search(cmd):
+    if any(_DESTRUCTIVE_SQL_RE.search(h) for h in haystacks):
         verdicts.append(
             (
                 "ask",
                 "Destructive SQL (DROP/TRUNCATE) — confirm with the user before running.",
             )
         )
-    if _PIPE_TO_SHELL_RE.search(cmd):
+    if any(_PIPE_TO_SHELL_RE.search(h) for h in (cmd, _normalized(cmd))):
         verdicts.append(
             (
                 "ask",
