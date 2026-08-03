@@ -17,6 +17,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
+- MCP: new `tool_docs(tool_name)` tool on both MCP surfaces (HTTP foundation + CLI stdio) returning a tool's full reference documentation on demand.
+
+### Changed
+
+- MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
+- MCP: `query` and `describe` (plus CLI `query_local`) refuse responses whose serialized size exceeds `AGNES_MCP_MAX_OUTPUT_CHARS` (default 100 000; `0` disables) with actionable narrowing guidance, instead of returning megabyte payloads into the model's context. Row-level `limit`/`truncated` semantics are unchanged.
 
 ### Fixed
 - Chat runner: fixed a latent task-GC bug — the stdin reader task was created without a strong reference, so a garbage-collection cycle during a long-running turn could silently kill inbound frame routing (Stop/cancel and credential `ticket_push` frames stopped arriving).
