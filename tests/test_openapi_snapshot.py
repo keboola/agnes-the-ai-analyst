@@ -124,12 +124,37 @@ def _summarize_drift(current: dict, snapshot: dict, limit: int = 15) -> str:
     return "\n".join(lines)
 
 
+def _configured_plugin_routers() -> list:
+    """Deployment-configured plugin admin routers, if any.
+
+    ``create_app`` mounts routers named by ``plugins.admin_routers`` in
+    ``config/instance.yaml`` (app/main.py). That hook is the only input to the
+    schema which is not code-determined: every other ``include_router`` call is
+    unconditional, and the MCP/Starlette mounts are not part of the schema. The
+    repo ships no ``config/instance.yaml`` (gitignored, only ``.example``), so
+    CI always evaluates this to an empty list.
+    """
+    from app.instance_config import get_value
+
+    return get_value("plugins", "admin_routers", default=[]) or []
+
+
 def test_snapshot_is_fresh(current_schema):
     """The committed snapshot must match the app's actual schema.
 
     Guards the whole document, not just the path map, so structural drift
     (a route gaining a request body, a response schema changing) is caught too.
     """
+    configured = _configured_plugin_routers()
+    if configured:
+        pytest.skip(
+            "this checkout's config/instance.yaml declares plugins.admin_routers "
+            f"({configured}), which mount deployment-specific paths the committed "
+            "snapshot cannot contain — comparing would fail on configuration alone, "
+            "and regenerating here would commit those paths. CI ships no "
+            "instance.yaml, so the gate still runs there."
+        )
+
     assert SNAPSHOT_PATH.exists(), f"No OpenAPI snapshot found. {_REGENERATE_HINT}"
 
     snapshot = _normalized(json.loads(SNAPSHOT_PATH.read_text()))
