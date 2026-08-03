@@ -103,6 +103,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import math
 import os
 import socket
 import time
@@ -144,10 +145,17 @@ def _drain_timeout_s() -> float:
     if raw is None:
         return _DEFAULT_DRAIN_TIMEOUT_S
     try:
-        return max(float(raw), 0.0)
+        value = float(raw)
     except ValueError:
+        value = None
+    # inf/nan parse fine but make the bound meaningless: inf restores the
+    # unbounded wait this exists to prevent, and nan poisons every
+    # comparison it feeds. Treat them as a misconfiguration, not a setting
+    # (review finding on #1140).
+    if value is None or not math.isfinite(value):
         logger.warning("worker: invalid AGNES_WORKER_DRAIN_TIMEOUT_S=%r, using default", raw)
         return _DEFAULT_DRAIN_TIMEOUT_S
+    return max(value, 0.0)
 
 
 def _jobs_repo():

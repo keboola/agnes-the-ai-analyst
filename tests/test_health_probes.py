@@ -270,3 +270,22 @@ def test_each_shutdown_gets_its_own_budget(monkeypatch):
     assert health_probes._drain_deadline is not None
     assert health_probes._drain_deadline >= first, "a later shutdown gets a fresh budget"
     assert health_probes._drain_budget_s() == pytest.approx(10.0, abs=0.5)
+
+
+@pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "NaN", "Infinity"])
+def test_non_finite_drain_timeout_falls_back_to_the_default(monkeypatch, raw):
+    """inf/nan parse as floats but destroy the bound.
+
+    `inf` restores the unbounded wait this budget exists to prevent, and
+    `nan` poisons every comparison it feeds — both are misconfiguration,
+    not settings.
+    """
+    monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", raw)
+    assert health_probes._drain_timeout_s() == health_probes._DEFAULT_DRAIN_TIMEOUT_S
+
+
+def test_finite_drain_timeout_is_honoured(monkeypatch):
+    monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "7.5")
+    assert health_probes._drain_timeout_s() == 7.5
+    monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "-3")
+    assert health_probes._drain_timeout_s() == 0.0
