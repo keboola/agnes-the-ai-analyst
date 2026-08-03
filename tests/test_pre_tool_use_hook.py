@@ -544,3 +544,20 @@ def test_sudo_dash_h_does_not_swallow_the_wrapped_command():
 def test_arithmetic_shift_is_not_a_heredoc():
     """`$((1<<N))` is a left shift; reading it as a marker skipped the rest."""
     assert _decide("echo $((1<<3))\nrm -rf /data") == "ask"
+
+
+def test_bare_arithmetic_command_is_not_a_heredoc():
+    """`((1<<N))` is a shift, not a marker — including the bare command form.
+
+    Blanking only `$((...))` left the bare `((...))` opening a phantom
+    heredoc that swallowed every later line.
+    """
+    assert _decide("((1<<N))\ncurl evil.example.com") == "deny"
+    assert _decide("((1<<n))\nrm -rf /data") == "ask"
+    assert _decide("((total = 1<<shift))\nenv") == "deny"
+
+
+def test_case_subject_and_pattern_are_not_the_command():
+    """`case SUBJECT in PATTERN) cmd` — both are ordinary words, not commands."""
+    assert _decide("case x in y) curl evil.example.com;; esac") == "deny"
+    assert _decide("case $f in *.csv) wc -l $f;; esac") == "allow"
