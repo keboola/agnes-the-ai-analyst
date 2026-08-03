@@ -20,6 +20,13 @@ Useful reports include the affected version or commit, the deployment shape
 (Docker Compose, role-split, which optional features are enabled), and enough
 detail to reproduce. We aim to acknowledge within a few business days.
 
+## Supported versions
+
+Agnes is pre-1.0 and released continuously. Security fixes land on `main` and
+ship in the next release (the `:stable` image tag and the corresponding
+`v0.X.Y` tag); older releases do not receive backports. Self-hosted operators
+should track `:stable`.
+
 ## Scope
 
 **In scope:** anything in this repository — the FastAPI application, the CLI,
