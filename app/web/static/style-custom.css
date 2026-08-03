@@ -4121,10 +4121,30 @@ a.app-header-logo:focus-visible {
     background: var(--ds-border-light);
     outline: none;
 }
+/* Left column of a hit: the title, plus a definition line on the two types
+   that have one (metric, glossary — see definitionFor() in global_search.js).
+   `min-width: 0` is what lets both lines ellipsis inside a flex row. */
+.app-header-search-result-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
 .app-header-search-result-title {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+/* The definition itself — the answer to a lookup, so it is present but clearly
+   subordinate to the term it defines. One line: it is a reminder of the
+   meaning, not the full entry (that is what the row still links to). */
+.app-header-search-result-def {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--ds-text-secondary);
 }
 .app-header-search-result-badge {
     flex: none;
@@ -5468,18 +5488,44 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
 
 .toast {
     pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
     min-width: 240px;
-    max-width: 360px;
+    max-width: 380px;
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-elevated);
     font-size: var(--text-sm);
+    line-height: 1.45;
     color: var(--text-primary);
     cursor: pointer;
     animation: toast-in 200ms ease;
 }
+
+/* A receipt can be a sentence ("Loaded SKILL.md — filled in name and
+   description"), so it wraps rather than clipping. */
+.toast-msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* Dismiss. Low-contrast until hovered — present, never louder than the
+   message it sits beside. */
+.toast-x {
+    flex-shrink: 0;
+    border: none;
+    background: none;
+    padding: 0;
+    margin: 1px 0 0;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+}
+.toast-x:hover { color: var(--text-primary); }
+.toast-x:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
 .toast.is-success { border-left: 3px solid var(--success); }
 .toast.is-warning { border-left: 3px solid var(--warning); }
@@ -5489,6 +5535,10 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
 @keyframes toast-in {
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .toast { animation: none; }
 }
 
 /* =====================================================

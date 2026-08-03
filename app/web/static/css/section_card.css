@@ -1,0 +1,159 @@
+/* ── Collapsible section card (`.dsec`) ─────────────────────────────────────
+   The shared "one facet of this page, in a card, with a head that summarises
+   it" component. Shape is a 1:1 port of the builder's `.sk-sec` / `.ag-sec`
+   (skills.html, agents.html): --ds-surface panel, hairline border, 14px
+   radius, a 26px round badge, a 15px sentence-case title with a 12.5px sub,
+   a right-aligned summary, and a hairline-separated body.
+
+   Two differences from the builder, both deliberate:
+
+   1. The badge is an ICON, not a step number. The builder numbers its
+      sections because they are an ordered flow to work through; a section
+      here is an independent facet of one subject, and numbering it would
+      promise a sequence that does not exist.
+
+   2. Collapsing is `<details>`/`<summary>`, not a JS class toggle. That makes
+      it keyboard- and screen-reader-correct for free, and it means the one
+      section that HAS to be a `<details>` (a long diagnostics dump, closed by
+      default) is the same component as every other — the builder ends up with
+      two anatomies for want of this.
+
+   Markup contract:
+
+       <details class="dsec" open aria-label="…">
+         <summary>
+           <div class="dsec-head">
+             <span class="dsec-ico">{{ ico.icon('users', 14) }}</span>
+             <div class="dsec-grow">
+               <h3>Groups</h3>
+               <div class="dsec-sub">One line on what this section is.</div>
+             </div>
+             <span class="dsec-sum">4 groups</span>
+             <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+           </div>
+         </summary>
+         <div class="dsec-body">…</div>
+       </details>
+
+   The head's `dsec-sum` is not decoration: a collapsed section still has to
+   answer its own question, so the count / state lives in the head rather than
+   only in the body it hides.
+
+   An interactive control inside the `<summary>` (an action button in the head)
+   must stop its own click from reaching the disclosure — otherwise using it
+   also collapses the section underneath it. See the "+ New token" button in
+   `_profile_tokens.html`.
+
+   Used by: /me/profile (profile.html + _profile_tokens.html), /me/activity
+   (me_activity.html). Colours are --ds-* only, so it rides every theme.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.dsec {
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: 14px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.dsec:last-child { margin-bottom: 0; }
+
+/* The disclosure triangle is replaced by `.dsec-chev` on the right, so the
+   head's own left edge stays aligned with the body's. `::marker` and the
+   WebKit pseudo both need clearing. */
+.dsec > summary { list-style: none; cursor: pointer; }
+.dsec > summary::-webkit-details-marker { display: none; }
+.dsec > summary::marker { content: ""; }
+.dsec > summary:hover { background: var(--ds-surface-dim); }
+.dsec > summary:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: -2px;
+}
+
+.dsec-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+}
+.dsec-ico {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ds-surface-sunken);
+  border: 1px solid var(--ds-border);
+  color: var(--ds-text-secondary);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.dsec-ico svg { width: 14px; height: 14px; display: block; }
+.dsec-head h3 { font-size: 15px; margin: 0; }
+.dsec-sub {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--ds-text-secondary);
+  line-height: 1.45;
+}
+.dsec-sub a { color: var(--ds-primary); }
+.dsec-sub code {
+  background: var(--ds-surface-sunken);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.dsec-grow { flex: 1; min-width: 0; }
+.dsec-sum {
+  font-size: 12.5px;
+  color: var(--ds-text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.dsec-body {
+  padding: 4px 18px 18px;
+  border-top: 1px solid var(--ds-border);
+}
+
+/* On a phone the head becomes two rows rather than squeezing: the title block
+   keeps row one beside the badge (with the chevron pinned to its end), and
+   everything that only annotates it — the summary, and any action button a
+   caller put in the head — drops to row two. Without this a head carrying a
+   real action ("+ New token") wrapped its title onto three lines and its sub
+   onto ten, in a ~180px gutter beside the button. */
+@media (max-width: 560px) {
+  .dsec-head { flex-wrap: wrap; row-gap: 12px; }
+  .dsec-grow { flex: 1 1 60%; }
+  .dsec-chev { order: 2; }
+  .dsec-sum { order: 3; }
+  .dsec-head > :not(.dsec-ico):not(.dsec-grow):not(.dsec-chev):not(.dsec-sum) {
+    order: 4;
+  }
+}
+
+/* Chevron down when closed, up when open — the state is carried by SHAPE, so
+   it survives greyscale and colour-blindness (WCAG 1.4.1). */
+.dsec-chev {
+  color: var(--ds-text-muted);
+  transition: transform var(--ds-motion-fast) var(--ds-ease-standard);
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+.dsec-chev svg { width: 16px; height: 16px; display: block; }
+.dsec[open] > summary .dsec-chev { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) {
+  .dsec-chev { transition: none; }
+}
+
+/* In-body empty state — the "nothing here, and here's why" block. A lead line
+   plus one sentence; never a bare "No data". */
+.dsec-empty {
+  padding: 16px 2px;
+  font-size: 13px;
+  color: var(--ds-text-muted);
+}
+.dsec-empty strong {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  margin-bottom: 3px;
+}

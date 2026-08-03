@@ -62,10 +62,33 @@ to `[data-theme="paper"]`; the rail chrome CSS is
      the user's message bubble) and legacy assistant callouts not yet
      migrated to `--ds-kai`. Never reused for structural UI.
    - Status: `--ds-accent-{info,warn,success,danger}-{bg,ink,line}`.
-5. **Shape contrast is meaningful.** Pill radius
-   (`--ds-radius-pill`) is reserved for the one prominent CTA per
-   context and for badge/category tags; dense per-row actions keep
-   tight ~8px corners; inputs/selects are NEVER pill-shaped.
+5. **Shape contrast is meaningful.** Every labelled button — primary,
+   secondary, ghost, toolbar CTA, detail-header CTA — wears
+   `--ds-radius-btn` (9px), the same radius as the toolbar controls and
+   inputs it stands beside. Pill radius (`--ds-radius-pill`) is the
+   BADGE language: category tags, status chips, counters, avatars, dots,
+   and circular icon-only buttons. Never on a labelled button, never on
+   an input. Dense per-row actions keep tight ~8px corners. One carve-out:
+   the two connect-banner CTAs (`.cbn-cta`, `.klb-cta`) are fully round
+   under every theme — the pill is what marks the product-model banner as
+   marketing surface rather than page chrome. Don't extend it further.
+
+   **Corollary — "you can change this" is a FORM signal, not a hue.** Where a
+   control and a read-out sit in the same strip, the container separates them:
+   *filled* = the action, *outlined* = a state you can change, *bare text* = a
+   state you cannot. Add a chevron to anything that opens a dialog or menu, so
+   the cue survives colour-blindness and greyscale (WCAG 1.4.1), and give it a
+   ≥24px box (WCAG 2.2 SC 2.5.8) — an adjacent control of similar size denies it
+   the spacing exemption. Do NOT reach for `--ds-primary` at rest to mean
+   "interactive" on a surface that already spends primary on hover/focus: on a
+   card whose `:hover` warms the title and whose `:focus-within` draws a primary
+   ring, primary ink reads as "the pointer is here", not as "this is a control",
+   and the local hover then has to out-shout the ambient one. Answer hover with a
+   *background* change instead — a different channel from a card's elevation
+   hover, so the two can't be confused. Worked example: `.fbar-card__access` in
+   `filter_toolbar.css` (grid card) beside `.lib-vis` in `library.html` (table
+   badge) — same anatomy and same words, tinted in the table where the chip owns
+   a column, outlined on the card where it shares a bar with the primary action.
 6. **Heroes:** content pages use the canonical `.page-header--hero` /
    `.stack-hero` (light card under paper, dark gradient elsewhere).
    The `--ds-hero-*` family stays DARK under paper (the one "night"
