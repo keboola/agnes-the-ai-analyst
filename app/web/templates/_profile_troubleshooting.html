@@ -111,7 +111,8 @@
 
   {% if config.DEBUG_AUTH_ENABLED %}
   <div style="margin-top:14px;">
-    <button id="troubleshoot-refetch-btn" class="btn btn-primary btn-sm" type="button">
+    <button id="troubleshoot-refetch-btn" class="btn btn-primary btn-sm" type="button"
+      data-csrf="{{ csrf_token }}">
       Refetch from Google (dry-run)
     </button>
     <span id="troubleshoot-refetch-status" style="margin-left:10px; font-size:12px; color:#6b7280;"></span>
@@ -149,6 +150,7 @@
     try {
       const r = await fetch("/me/profile/refetch-groups", {
         method: "POST", credentials: "include",
+        headers: { "X-CSRF-Token": btn.dataset.csrf || "" },
       });
       if (!r.ok) {
         status.textContent = "Failed: HTTP " + r.status;

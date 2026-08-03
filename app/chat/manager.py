@@ -233,6 +233,14 @@ class LiveSession:
     # late-seated sinks and persisted as an interrupted message on forced
     # death. Cleared when the turn's assistant_message lands.
     turn_buffer: list[dict] = field(default_factory=list)
+    #: Approval cards raised but not yet answered, keyed by request_id.
+    #: Deliberately NOT in turn_buffer: that is a per-turn replay buffer
+    #: with a seq watermark, and a pending approval outlives its turn
+    #: (the tool stays suspended until a human answers or the gate times
+    #: out). Holding it there pinned the watermark to an old moment and
+    #: made a reconnect skip everything said since (review on #1145).
+    #: Cleared on respawn: the request_id belongs to the dead runner.
+    pending_approvals: dict = field(default_factory=dict)
     turn_in_flight: bool = False
     # Linger task: fires _linger_then_pause after the last sink detaches.
     linger_task: Optional[asyncio.Task] = None
@@ -874,6 +882,11 @@ class ChatManager:
         the full mechanism. Either way this method only ever calls
         ``send_json``/relies on duck typing, so it's unaffected either
         way."""
+        # Unanswered approval cards replay alongside the turn buffer: they
+        # are separate state precisely because they outlive the turn, so
+        # they must be re-sent explicitly rather than ridden along.
+        for frame in list(live.pending_approvals.values()):
+            await ws.send_json(frame)
         for frame in list(live.turn_buffer):
             await ws.send_json(frame)
         if is_primary:
@@ -1079,10 +1092,18 @@ class ChatManager:
         # without this guard the loop would spin forever and the entry
         # in `_live` would leak (the reaper skips DEAD sessions).
         # Devin Review BUG_0001 follow-up from #605.
+        # Backs off: an ordinary turn clears in milliseconds, but a turn
+        # suspended on a pending approval holds `turn_in_flight` for the whole
+        # approval timeout (default 300s) — 6000 wakeups at the old flat 20 Hz
+        # for a session nobody is watching (review finding on #1145). Whether
+        # such a turn should keep the sandbox warm at all is the separate
+        # question of making approvals follow the attached client.
+        delay = 0.05
         while live.turn_in_flight:
             if live.state != SessionState.ACTIVE:
                 return
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 1.0)
         # Tier 1 grace window (docs/brainstorms/2026-07-23-chat-e2b-architecture-
         # comparison.md §5): keeps the sandbox warm for idle_grace_seconds after
         # the last sink detaches so a within-window follow-up (a new attach()
@@ -1129,7 +1150,7 @@ class ChatManager:
             live.state = SessionState.ACTIVE  # let kill() handle teardown + partial-save
             await self.kill(live.chat_id, reason="pause_failed")
             return
-        live.handle = None
+        await self._install_runner(live, None)
         self._repo.set_sandbox_paused_at(live.chat_id, datetime.now(timezone.utc))
 
     def _is_current_protocol(self, session: "ChatSession") -> bool:
@@ -1224,7 +1245,7 @@ class ChatManager:
                 self._repo.clear_sandbox_ref(live.chat_id)
                 await self._respawn_fresh(live)
                 return
-            live.handle = handle
+            await self._install_runner(live, handle)
             live.state = SessionState.ACTIVE
             live.active_since = _t.monotonic()
             # AC-G-resume-fresh: rotate tickets on every resume — the paused
@@ -1383,7 +1404,7 @@ class ChatManager:
                 except Exception:
                     logger.warning("destroy fallback for orphaned respawn sandbox %s failed", new_handle.sandbox_id)
             return
-        live.handle = new_handle
+        await self._install_runner(live, new_handle)
         live.state = SessionState.ACTIVE
         live.active_since = _t.monotonic()
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
@@ -1622,6 +1643,10 @@ class ChatManager:
         # Snapshot first to avoid racing the pump task.
         for frame in list(live.turn_buffer):
             await sink.send_json(frame)
+        # …and any approval card still waiting for an answer (separate
+        # state: it outlives the turn it was raised in).
+        for frame in list(live.pending_approvals.values()):
+            await sink.send_json(frame)
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
         # Sent directly to this one sink (not _broadcast), so it needs its
         # own stamp (wave-2F task 2). The history-replay frames above are
@@ -1781,6 +1806,16 @@ class ChatManager:
             "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
             "AGNES_PER_TOOL_CALL_SECONDS": str(self._config.per_tool_call_seconds),
             "AGNES_TOOL_CALLS_PER_TURN": str(self._config.tool_calls_per_turn_budget),
+            # ApprovalGate window for a pending approval_request (runner
+            # denies the suspended tool call on expiry).
+            "AGNES_APPROVAL_TIMEOUT_SECONDS": str(self._config.approval_timeout_seconds),
+            # Interactive approval cards render only on the web surface. On
+            # non-interactive surfaces (agent-API one-shot, Slack — no card
+            # yet) an `ask` verdict has nobody to answer it, so switch the
+            # gate off there: it denies immediately with an actionable
+            # message instead of freezing for the full approval timeout
+            # (review finding on #1145).
+            "AGNES_APPROVALS": "on" if session.surface == Surface.WEB.value else "off",
             # Opt-in: bootstrap the user's marketplace plugins into the sandbox
             # at spawn and load them via setting_sources. Off by default (adds
             # per-spawn latency; only useful once the marketplace ships real
@@ -1931,9 +1966,18 @@ class ChatManager:
             # Accumulate in-flight turn frames for mid-turn replay and partial
             # save. tool_result MUST ride along: a reconnect mid-turn replays
             # this buffer, and tool_calls replayed without their results left
-            # every tool block stuck on "running…" after a refresh.
+            # every tool block stuck on "running…" after a refresh. Approval
+            # frames ride too so a refresh mid-approval re-renders the pending
+            # card (request + any resolution, reconciled client-side by
+            # request_id).
             if ftype in ("token", "tool_call", "tool_result"):
                 live.turn_buffer.append(frame)
+            elif ftype == "approval_request":
+                rid = frame.get("request_id")
+                if rid:
+                    live.pending_approvals[rid] = frame
+            elif ftype == "approval_resolved":
+                live.pending_approvals.pop(frame.get("request_id"), None)
             if ftype == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
@@ -2122,7 +2166,7 @@ class ChatManager:
             if session is None:
                 return
             new_handle = await self._spawn_runner(session, session_dir)
-            live.handle = new_handle
+            await self._install_runner(live, new_handle)
             live.state = SessionState.ACTIVE
             # Refresh the persisted refs or a later pause/resume cycle would
             # try to reconnect the DEAD sandbox and lose the agent context.
@@ -2218,6 +2262,123 @@ class ChatManager:
         live.turn_in_flight = True
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
+
+    async def deliver_approval_decision(
+        self,
+        chat_id: str,
+        request_id: str,
+        decision: str,
+        *,
+        sender_email: Optional[str] = None,
+    ) -> None:
+        """Route a user's approval decision to ``chat_id``'s runner.
+
+        Owner path: one ``approval_decision`` stdin frame (no turn-state
+        bookkeeping — the turn is already in flight, suspended inside the
+        runner's ApprovalGate). Non-owner path: ride the inbound control
+        stream (``command="approval"``) so the owning gateway's consumer
+        delivers it — same mechanism as remote kill/cancel. Unknown or
+        invalid decisions harden to "deny". Audited either way.
+        """
+        if decision not in ("allow", "allow_session", "deny"):
+            decision = "deny"
+        write_audit(
+            user_email=sender_email or "",
+            action="chat.approval_decision",
+            details={"session_id": chat_id, "request_id": request_id, "decision": decision},
+        )
+        live = self._live.get(chat_id)
+        if live is not None and live.handle is not None:
+            await self._deliver_local_approval(live, request_id, decision)
+            return
+        # No local runner. Forward over the inbound control stream ONLY if
+        # another gateway positively owns the session (mirror the kill/cancel
+        # + send_user_message owner check). Otherwise the session is dead or
+        # finished and its pending approval died with it — drop with a log
+        # rather than writing a junk queue entry that, if coordination is
+        # down, would raise out and knock the caller's WS offline (review
+        # finding on #1145).
+        try:
+            owner = await asyncio.to_thread(routing.owner_of, chat_id)
+        except Exception:
+            owner = None
+        if owner is not None and owner != routing.this_gateway_id():
+            try:
+                await inbound.publish_control(
+                    chat_id,
+                    "approval",
+                    extra={"request_id": request_id, "decision": decision, "sender": sender_email or ""},
+                )
+            except inbound.InboundPublishFailed:
+                # Same posture as the cross-gateway kill path below: a
+                # coordination hiccup must not escape into the caller's
+                # WebSocket reader loop and drop their chat. The decision is
+                # lost, but the runner's ApprovalGate has its own timeout
+                # and resolves to deny, so the turn still finishes
+                # (review finding on #1145).
+                logger.warning(
+                    "cross-gateway approval decision for %s could not be published (owner %s); "
+                    "the pending request will fall through to the gate's own timeout",
+                    chat_id,
+                    owner,
+                )
+            return
+        logger.info(
+            "approval decision for %s dropped — no live runner and no other gateway owns it",
+            chat_id,
+        )
+
+    async def _install_runner(self, live: "LiveSession", handle) -> None:
+        """Point the session at a new runner process (or at none).
+
+        Always retires ``pending_approvals``: a request_id belongs to the
+        process that raised it, and a fresh gate drops unknown ids silently,
+        so a card that outlives its runner has buttons that do nothing. Every
+        handle swap goes through here — putting the clear on the crash path
+        alone is what left the resume-failure respawn broken (review finding
+        on #1145).
+
+        Retiring means BROADCASTING a resolution, not just forgetting: the
+        original request also sits in the durable ``chat-out`` replay stream,
+        so a client reconnecting with an old ``last_seq`` receives it again
+        no matter what this dict holds. Publishing the death lets every
+        consumer reconcile by request_id, instead of each replay path having
+        to learn to suppress it (review finding on #1145).
+        """
+        live.handle = handle
+        retired = list(live.pending_approvals)
+        live.pending_approvals.clear()
+        for request_id in retired:
+            await self._broadcast(
+                live,
+                {
+                    "type": "approval_resolved",
+                    "request_id": request_id,
+                    "decision": "cancelled",
+                    "reason": "the sandbox restarted before this was answered",
+                },
+            )
+
+    async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
+        payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"
+        try:
+            async with live._stdin_lock:
+                live.handle.stdin.write(payload.encode("utf-8"))
+                await live.handle.stdin.drain()
+        except Exception:
+            # Same posture as the cross-gateway forward: this runs on the
+            # WebSocket reader path, so a sandbox that died or was paused
+            # between rendering the card and the click must cost the answer,
+            # not the user's chat window. The gate's own timeout resolves the
+            # pending request either way (review finding on #1145).
+            logger.warning(
+                "approval decision for %s could not be written to the sandbox; "
+                "the pending request will fall through to the gate's own timeout",
+                live.chat_id,
+                exc_info=True,
+            )
+            return
+        live.last_activity = datetime.now(timezone.utc)
 
     def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
         """Make sure ``live`` has a ``SlackSinkBridge`` for the Slack
@@ -2377,6 +2538,23 @@ class ChatManager:
                                 await self.cancel(chat_id)
                             except Exception:
                                 logger.exception("inbound consumer: remote cancel failed for %s", chat_id)
+                        elif command == "approval":
+                            # Approval decision forwarded from a non-owning
+                            # gateway. Deliver straight to the local runner's
+                            # stdin; if the session died meanwhile the pending
+                            # request died with it — drop with a log, never
+                            # re-publish (that would loop).
+                            if live.handle is not None:
+                                try:
+                                    await self._deliver_local_approval(
+                                        live,
+                                        str(entry.get("request_id", "")),
+                                        str(entry.get("decision", "deny")),
+                                    )
+                                except Exception:
+                                    logger.exception("inbound consumer: approval delivery failed for %s", chat_id)
+                            else:
+                                logger.info("inbound consumer: dropping approval for %s (no live runner)", chat_id)
                         else:
                             logger.warning(
                                 "inbound consumer: unknown control command %r for %s (seq %s) — skipped",
@@ -2610,7 +2788,7 @@ class ChatManager:
             except Exception:
                 logger.exception("_respawn_co_runner: kill old handle failed")
         new_handle = await self._spawn_runner(session, session_dir)
-        live.handle = new_handle
+        await self._install_runner(live, new_handle)
         live.state = SessionState.ACTIVE
         # Same stale-ref hazard as the crash-respawn path: persist the new
         # sandbox identity for later pause/resume.

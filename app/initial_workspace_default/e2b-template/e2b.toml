@@ -7,9 +7,11 @@
 # of the template propagate to every Agnes deployment on its next sandbox
 # spawn. Docs warn operators to test rebuilds on a dev Agnes first.
 #
-# No `allowed_hosts` / firewall block here — per Q4 the egress allowlist
-# lives only in the PreToolUse hook in the workspace template, not at the
-# E2B network layer. See ../Dockerfile for the tradeoff rationale.
+# No `allowed_hosts` / firewall block here because egress is set per sandbox
+# at spawn, not baked into the template: `E2BProvider.spawn` passes
+# `network={"allow_out": chat.egress_allow_out, "deny_out": [ALL_TRAFFIC]}`,
+# so the allowlist is operator-configurable without a template rebuild.
+# See ../Dockerfile. (Supersedes the original Q4 hook-only decision.)
 
 template_name = "agnes-chat"
 dockerfile = "Dockerfile"

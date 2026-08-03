@@ -7,7 +7,7 @@ See tests/test_chat_subprocess_provider.py for precedent.
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import duckdb
 import pytest
@@ -3464,3 +3464,170 @@ def test_shutdown_no_notice_when_idle(tmp_path):
             pass
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Approval-decision routing (review follow-ups on #1145)
+# ---------------------------------------------------------------------------
+
+
+def test_approval_decision_local_delivery(manager: ChatManager):
+    """With a live local runner, the decision is written to its stdin — no
+    cross-gateway publish."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        handle = FakeHandle()
+        live = MagicMock()
+        live.handle = handle
+        live._stdin_lock = asyncio.Lock()
+        manager._live[s.id] = live
+        with patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub:
+            await manager.deliver_approval_decision(s.id, "appr-1", "allow", sender_email="u@x")
+        pub.assert_not_called()
+        written = b"".join(handle._stdin_buf)
+        assert b"approval_decision" in written
+        assert b"appr-1" in written
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_dropped_when_no_runner_and_no_owner(manager: ChatManager):
+    """No local runner AND no other gateway owns it → drop, never publish a
+    junk control entry (which could disconnect the caller if coordination is
+    down). Mirrors the kill/cancel owner check (review finding on #1145)."""
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value=None),
+            patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub,
+        ):
+            await manager.deliver_approval_decision("chat_dead", "appr-2", "deny", sender_email="u@x")
+        pub.assert_not_called()
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_forwarded_to_remote_owner(manager: ChatManager):
+    """No local runner but another gateway owns it → forward over the inbound
+    control stream (command='approval')."""
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value="other-gateway"),
+            patch("app.chat.routing.this_gateway_id", return_value="this-gateway"),
+            patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub,
+        ):
+            await manager.deliver_approval_decision("chat_remote", "appr-3", "allow", sender_email="u@x")
+        pub.assert_awaited_once()
+        assert pub.await_args.args[1] == "approval"
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_publish_failure_does_not_escape(manager: ChatManager):
+    """A coordination hiccup must not drop the user's chat connection.
+
+    `deliver_approval_decision` runs on the WebSocket reader path, so an
+    escaping `InboundPublishFailed` would disconnect the window instead of
+    losing just the answer. The gate's own timeout still resolves the
+    pending request, so the turn finishes either way. Mirrors the
+    cross-gateway kill path, which already swallows this.
+    """
+    import app.chat.inbound as inbound
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value="other-gateway"),
+            patch("app.chat.routing.this_gateway_id", return_value="this-gateway"),
+            patch(
+                "app.chat.inbound.publish_control",
+                new=AsyncMock(side_effect=inbound.InboundPublishFailed("coordination down")),
+            ),
+        ):
+            # must not raise
+            await manager.deliver_approval_decision("chat_remote", "appr-9", "allow", sender_email="u@x")
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_hardens_invalid_to_deny(manager: ChatManager):
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        handle = FakeHandle()
+        live = MagicMock()
+        live.handle = handle
+        live._stdin_lock = asyncio.Lock()
+        manager._live[s.id] = live
+        await manager.deliver_approval_decision(s.id, "appr-4", "bogus", sender_email="u@x")
+        written = b"".join(handle._stdin_buf)
+        assert b'"decision": "deny"' in written
+
+    asyncio.run(_run())
+
+
+def test_spawn_env_approvals_gated_by_surface(manager: ChatManager, monkeypatch):
+    """Approvals are on for web (renders the card), off for non-interactive
+    surfaces (agent-API one-shot, Slack) so an ask denies immediately
+    instead of freezing for the full timeout (review finding on #1145)."""
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "jwt")
+    import app.chat.manager as manager_mod
+
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: _FakeTicketRepo())
+
+    captured = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return FakeHandle()
+
+    manager._provider.spawn = fake_spawn
+
+    async def _env_for(surface, **kw):
+        s = await manager.create_session(user_email="u@x", surface=surface, **kw)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, Path("/tmp"))
+        return captured["env"]
+
+    async def _run():
+        web = await _env_for(Surface.WEB)
+        assert web["AGNES_APPROVALS"] == "on"
+        api = await _env_for(Surface.API)
+        assert api["AGNES_APPROVALS"] == "off"
+        dm = await _env_for(
+            Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        assert dm["AGNES_APPROVALS"] == "off"
+
+    asyncio.run(_run())
+
+
+def test_pending_approvals_live_outside_the_turn_buffer(manager: ChatManager):
+    """A pending approval is separate state, not a turn-buffer frame.
+
+    Holding it in the buffer pinned the replay watermark to an old moment,
+    so a reconnect skipped everything said after the card appeared; and a
+    card retained across a crash respawn rendered with buttons whose
+    request_id belonged to the dead runner.
+    """
+    from types import SimpleNamespace
+
+    live = SimpleNamespace(turn_buffer=[], pending_approvals={})
+    # the pump routes frames by type
+    for frame in (
+        {"type": "token", "text": "hi", "seq": 1},
+        {"type": "approval_request", "request_id": "appr-1", "seq": 2},
+    ):
+        if frame["type"] == "approval_request":
+            live.pending_approvals[frame["request_id"]] = frame
+        else:
+            live.turn_buffer.append(frame)
+
+    # a new turn clears the buffer; the unanswered card is untouched
+    live.turn_buffer.clear()
+    assert live.pending_approvals == {"appr-1": {"type": "approval_request", "request_id": "appr-1", "seq": 2}}
+    assert live.turn_buffer == [], "the card must not pin the buffer's seq watermark"
+
+    # answering it drops it
+    live.pending_approvals.pop("appr-1", None)
+    assert live.pending_approvals == {}

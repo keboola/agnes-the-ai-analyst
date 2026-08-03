@@ -1629,3 +1629,67 @@ body.chat-page-body main { margin: 0; padding: 0; }
   background: var(--ds-surface);
   border: 1px solid var(--ds-border);
 }
+
+/* --- Approval gate card (approval_request / approval_resolved frames) --- */
+.cloud-chat-approval {
+  border-color: var(--ds-accent-warn-line);
+  background: var(--ds-accent-warn-bg);
+}
+
+.cloud-chat-approval-cmd {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--ds-code-bg);
+  color: var(--ds-code-ink);
+  overflow-x: auto;
+}
+
+.cloud-chat-approval-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  align-items: center;
+}
+
+.cloud-chat-approval-btn {
+  padding: 4px var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  cursor: pointer;
+  font: inherit;
+}
+
+.cloud-chat-approval-btn.is-allow {
+  border-color: var(--ds-accent-success-line);
+  color: var(--ds-accent-success-ink);
+}
+
+.cloud-chat-approval-btn.is-deny {
+  border-color: var(--ds-accent-danger-line);
+  color: var(--ds-accent-danger-ink);
+}
+
+.cloud-chat-approval-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cloud-chat-approval-outcome {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 0.85em;
+}
+
+.cloud-chat-approval-outcome.is-allow {
+  background: var(--ds-accent-success-bg);
+  color: var(--ds-accent-success-ink);
+  border: 1px solid var(--ds-accent-success-line);
+}
+
+.cloud-chat-approval-outcome.is-deny {
+  background: var(--ds-accent-danger-bg);
+  color: var(--ds-accent-danger-ink);
+  border: 1px solid var(--ds-accent-danger-line);
+}

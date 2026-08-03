@@ -32,9 +32,7 @@ def _make_user_and_session(conn, email: str = "u@example.com"):
     from app.auth.jwt import create_access_token
 
     uid = str(uuid.uuid4())
-    UserRepository(conn).create(
-        id=uid, email=email, name=email.split("@")[0]
-    )
+    UserRepository(conn).create(id=uid, email=email, name=email.split("@")[0])
     token = create_access_token(user_id=uid, email=email)
     return uid, token
 
@@ -42,7 +40,21 @@ def _make_user_and_session(conn, email: str = "u@example.com"):
 def _client():
     from fastapi.testclient import TestClient
     from app.main import app
+
     return TestClient(app)
+
+
+# The endpoint requires the F2 double-submit pair: X-CSRF-Token header equal
+# to the ``web_csrf`` cookie (normally issued by GET /me/profile). Stateless,
+# so tests can supply any matching pair directly.
+_CSRF = "test-csrf-token-0123456789abcdef"
+
+
+def _csrf_cookies(sess: str) -> dict[str, str]:
+    return {"access_token": sess, "web_csrf": _CSRF}
+
+
+_CSRF_HEADERS = {"X-CSRF-Token": _CSRF}
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +66,7 @@ class TestRefetchDryRun:
     def test_404_when_flag_off(self, fresh_db, monkeypatch):
         monkeypatch.delenv("AGNES_DEBUG_AUTH", raising=False)
         from src.db import get_system_db, close_system_db
+
         conn = get_system_db()
         try:
             _, sess = _make_user_and_session(conn)
@@ -62,7 +75,11 @@ class TestRefetchDryRun:
             close_system_db()
 
         c = _client()
-        resp = c.post("/me/profile/refetch-groups", cookies={"access_token": sess})
+        resp = c.post(
+            "/me/profile/refetch-groups",
+            cookies=_csrf_cookies(sess),
+            headers=_CSRF_HEADERS,
+        )
         assert resp.status_code == 404
 
     def test_returns_diff_shape_and_does_not_write(self, fresh_db, monkeypatch):
@@ -76,27 +93,38 @@ class TestRefetchDryRun:
         )
 
         from src.db import get_system_db, close_system_db
+
         conn = get_system_db()
         try:
             uid, sess = _make_user_and_session(conn, email="m@example.com")
             before_rows = conn.execute(
-                "SELECT user_id, group_id, source FROM user_group_members "
-                "WHERE user_id = ?", [uid],
+                "SELECT user_id, group_id, source FROM user_group_members WHERE user_id = ?",
+                [uid],
             ).fetchall()
         finally:
             conn.close()
             close_system_db()
 
         c = _client()
-        resp = c.post("/me/profile/refetch-groups", cookies={"access_token": sess})
+        resp = c.post(
+            "/me/profile/refetch-groups",
+            cookies=_csrf_cookies(sess),
+            headers=_CSRF_HEADERS,
+        )
         assert resp.status_code == 200, resp.text
         data = resp.json()
 
         # Documented shape — keys present, types right.
         for key in (
-            "soft_failed", "prefix", "fetched", "fetched_relevant",
-            "current_names", "current_external_ids",
-            "would_add", "would_remove", "applied",
+            "soft_failed",
+            "prefix",
+            "fetched",
+            "fetched_relevant",
+            "current_names",
+            "current_external_ids",
+            "would_add",
+            "would_remove",
+            "applied",
         ):
             assert key in data, f"missing key {key!r}"
         assert data["applied"] is False
@@ -108,17 +136,15 @@ class TestRefetchDryRun:
         conn = get_system_db()
         try:
             after_rows = conn.execute(
-                "SELECT user_id, group_id, source FROM user_group_members "
-                "WHERE user_id = ?", [uid],
+                "SELECT user_id, group_id, source FROM user_group_members WHERE user_id = ?",
+                [uid],
             ).fetchall()
         finally:
             conn.close()
             close_system_db()
         assert before_rows == after_rows
 
-    def test_soft_fail_marker_when_mock_unset_and_real_path_unconfigured(
-        self, fresh_db, monkeypatch
-    ):
+    def test_soft_fail_marker_when_mock_unset_and_real_path_unconfigured(self, fresh_db, monkeypatch):
         """Without the mock env and without GOOGLE_ADMIN_SDK_SUBJECT, the
         real path returns soft-fail; the endpoint reports it as such."""
         monkeypatch.setenv("AGNES_DEBUG_AUTH", "true")
@@ -126,6 +152,7 @@ class TestRefetchDryRun:
         monkeypatch.delenv("GOOGLE_ADMIN_SDK_SUBJECT", raising=False)
 
         from src.db import get_system_db, close_system_db
+
         conn = get_system_db()
         try:
             _, sess = _make_user_and_session(conn, email="sf@example.com")
@@ -134,7 +161,11 @@ class TestRefetchDryRun:
             close_system_db()
 
         c = _client()
-        resp = c.post("/me/profile/refetch-groups", cookies={"access_token": sess})
+        resp = c.post(
+            "/me/profile/refetch-groups",
+            cookies=_csrf_cookies(sess),
+            headers=_CSRF_HEADERS,
+        )
         assert resp.status_code == 200, resp.text
         data = resp.json()
         # On the keyless-DWD branch, fetch_user_groups returns [] on missing
@@ -148,3 +179,36 @@ class TestRefetchDryRun:
             # happened by virtue of applied=False + DB snapshot below.
             assert data["fetched"] == []
         assert data["applied"] is False
+
+    def test_403_without_csrf_token(self, fresh_db, monkeypatch):
+        """F2: a POST riding only the SameSite session cookie (no matching
+        X-CSRF-Token header) must be rejected before doing any work."""
+        monkeypatch.setenv("AGNES_DEBUG_AUTH", "true")
+
+        from src.db import close_system_db, get_system_db
+
+        conn = get_system_db()
+        try:
+            _, sess = _make_user_and_session(conn, email="csrf@example.com")
+        finally:
+            conn.close()
+            close_system_db()
+
+        c = _client()
+        # No header at all.
+        resp = c.post("/me/profile/refetch-groups", cookies=_csrf_cookies(sess))
+        assert resp.status_code == 403
+        # Header present but not matching the cookie.
+        resp = c.post(
+            "/me/profile/refetch-groups",
+            cookies=_csrf_cookies(sess),
+            headers={"X-CSRF-Token": "some-other-value"},
+        )
+        assert resp.status_code == 403
+        # No web_csrf cookie at all.
+        resp = c.post(
+            "/me/profile/refetch-groups",
+            cookies={"access_token": sess},
+            headers=_CSRF_HEADERS,
+        )
+        assert resp.status_code == 403

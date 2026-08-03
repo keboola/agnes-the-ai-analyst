@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Depends, Form, Request, HTTPException
+from fastapi import APIRouter, Depends, Form, Request, HTTPException, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
@@ -2565,6 +2565,62 @@ async def setup_page(
     return templates.TemplateResponse(request, "install.html", ctx)
 
 
+_WEB_CSRF_COOKIE = "web_csrf"
+
+
+def _get_or_mint_web_csrf(request: Request) -> str:
+    """Double-submit CSRF token for state-changing web form POSTs (F2).
+
+    Reuses the caller's existing ``web_csrf`` cookie value when present so
+    several open tabs keep working; otherwise mints a fresh random token. The
+    issuing page must set the cookie via :func:`_set_web_csrf_cookie` on the
+    same response that embeds the token in the form / page JS.
+    """
+    return request.cookies.get(_WEB_CSRF_COOKIE) or secrets.token_urlsafe(32)
+
+
+def _set_web_csrf_cookie(response: Response, request: Request, token: str) -> None:
+    """Set the ``web_csrf`` double-submit cookie (HttpOnly, SameSite=Strict)."""
+    response.set_cookie(
+        _WEB_CSRF_COOKIE,
+        token,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/",
+    )
+
+
+def _refresh_web_csrf_cookie(response: Response, request: Request, token: str) -> None:
+    """Set the cookie only when the caller did not already have one.
+
+    Used on REJECTION paths. Because the cookie is ``SameSite=Strict`` a
+    cross-site POST arrives without it, so unconditionally setting it there
+    would let any site rotate a signed-in admin's token and break the tabs
+    they already have open — a nuisance the CSRF check itself is supposed to
+    prevent, not create (review finding on #1142).
+    """
+    if request.cookies.get(_WEB_CSRF_COOKIE):
+        return
+    _set_web_csrf_cookie(response, request, token)
+
+
+def _web_csrf_ok(request: Request, supplied: str) -> bool:
+    """True when the supplied token matches the ``web_csrf`` cookie (F2).
+
+    A cross-site attacker cannot read the cookie, so cannot forge a matching
+    hidden form field / ``X-CSRF-Token`` header; ``compare_digest`` keeps the
+    comparison timing-safe. Compared as UTF-8 bytes: the str overload raises
+    TypeError on non-ASCII input, and both values are caller-controlled.
+    """
+    cookie_token = request.cookies.get(_WEB_CSRF_COOKIE, "")
+    return (
+        bool(supplied)
+        and bool(cookie_token)
+        and secrets.compare_digest(supplied.encode("utf-8"), cookie_token.encode("utf-8"))
+    )
+
+
 _SLACK_BIND_CSRF_COOKIE = "slack_bind_csrf"
 
 
@@ -2639,7 +2695,14 @@ async def slack_bind_confirm(
         return RedirectResponse(url="/login", status_code=302)
 
     cookie_token = request.cookies.get(_SLACK_BIND_CSRF_COOKIE, "")
-    if not code or not csrf_token or not cookie_token or not secrets.compare_digest(csrf_token, cookie_token):
+    if (
+        not code
+        or not csrf_token
+        or not cookie_token
+        # UTF-8 bytes: the str overload of compare_digest raises TypeError on
+        # non-ASCII input, and the form field is caller-controlled.
+        or not secrets.compare_digest(csrf_token.encode("utf-8"), cookie_token.encode("utf-8"))
+    ):
         ctx = _build_context(request, user=user, conn=conn, bind_status="csrf")
         resp = templates.TemplateResponse(request, "slack_bind.html", ctx, status_code=400)
         resp.delete_cookie(_SLACK_BIND_CSRF_COOKIE, path="/slack/bind")
@@ -3660,7 +3723,11 @@ async def admin_contribute_skill_page(
 
     ctx = _build_context(request, user=user)
     ctx["groups"] = user_groups_repo().list_all()
-    return templates.TemplateResponse(request, "contribute_skill.html", ctx)
+    csrf_token = _get_or_mint_web_csrf(request)
+    ctx["csrf_token"] = csrf_token
+    response = templates.TemplateResponse(request, "contribute_skill.html", ctx)
+    _set_web_csrf_cookie(response, request, csrf_token)
+    return response
 
 
 @router.post("/admin/contribute-skill", response_class=HTMLResponse)
@@ -3669,6 +3736,7 @@ def admin_contribute_skill_submit(
     user: dict = Depends(require_admin),
     skill_md: str = Form(...),
     grant_group: str = Form("Admin"),
+    csrf_token: str = Form(""),
 ):
     """Publish the pasted SKILL.md, then re-render the page with a deep link
     to the new plugin (the "open it in Agnes" advert loop).
@@ -3684,6 +3752,14 @@ def admin_contribute_skill_submit(
 
     ctx = _build_context(request, user=user)
     ctx["groups"] = user_groups_repo().list_all()
+    issued_token = _get_or_mint_web_csrf(request)
+    ctx["csrf_token"] = issued_token
+    if not _web_csrf_ok(request, csrf_token):
+        ctx["error"] = "Security check failed (missing or stale form token) — reload the page and try again."
+        ctx["skill_md"] = skill_md
+        resp = templates.TemplateResponse(request, "contribute_skill.html", ctx, status_code=400)
+        _refresh_web_csrf_cookie(resp, request, issued_token)
+        return resp
     try:
         result = contribute_skill(
             skill_md,
@@ -3709,6 +3785,7 @@ def admin_contribute_skill_delete(
     name: str,
     request: Request,
     user: dict = Depends(require_admin),
+    csrf_token: str = Form(""),
 ):
     """Delete a contributed skill plugin and redirect back to the list page."""
     import json as _json
@@ -3722,6 +3799,18 @@ def admin_contribute_skill_delete(
     from src.repositories import resource_grants_repo
     from src.skill_contribution import CONTRIBUTED_MARKETPLACE_SLUG
 
+    if not _web_csrf_ok(request, csrf_token):
+        from src.repositories import user_groups_repo
+
+        ctx = _build_context(request, user=user)
+        ctx["groups"] = user_groups_repo().list_all()
+        issued_token = _get_or_mint_web_csrf(request)
+        ctx["csrf_token"] = issued_token
+        ctx["error"] = "Security check failed (missing or stale form token) — reload the page and try again."
+        resp = templates.TemplateResponse(request, "contribute_skill.html", ctx, status_code=400)
+        _refresh_web_csrf_cookie(resp, request, issued_token)
+        return resp
+
     repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
     plugins_dir = repo_root / "plugins"
     plugin_dir = (plugins_dir / name).resolve()
@@ -3730,6 +3819,7 @@ def admin_contribute_skill_delete(
 
         ctx = _build_context(request, user=user)
         ctx["groups"] = user_groups_repo().list_all()
+        ctx["csrf_token"] = _get_or_mint_web_csrf(request)
         ctx["error"] = "Invalid plugin name."
         return templates.TemplateResponse(request, "contribute_skill.html", ctx)
 
@@ -3739,6 +3829,7 @@ def admin_contribute_skill_delete(
 
             ctx = _build_context(request, user=user)
             ctx["groups"] = user_groups_repo().list_all()
+            ctx["csrf_token"] = _get_or_mint_web_csrf(request)
             ctx["error"] = f"Plugin '{name}' not found."
             return templates.TemplateResponse(request, "contribute_skill.html", ctx)
         shutil.rmtree(plugin_dir)
@@ -4199,6 +4290,9 @@ async def profile_page(
     _SENSITIVE_USER_COLUMNS = ("password_hash", "setup_token", "reset_token")
     user_record_safe = {k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS}
     raw_token = _read_session_token(request)
+    # Double-submit CSRF token for the refetch-groups POST below (F2); the
+    # troubleshooting partial sends it back as the X-CSRF-Token header.
+    csrf_token = _get_or_mint_web_csrf(request)
 
     ctx = _build_context(
         request,
@@ -4212,12 +4306,16 @@ async def profile_page(
         # Display-only — keep original case (no .lower()), unlike the
         # refetch-groups handler below which lowercases for set comparison.
         google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
+        csrf_token=csrf_token,
     )
-    return templates.TemplateResponse(request, "profile.html", ctx)
+    response = templates.TemplateResponse(request, "profile.html", ctx)
+    _set_web_csrf_cookie(response, request, csrf_token)
+    return response
 
 
 @router.post("/me/profile/refetch-groups", name="me_profile_refetch_groups")
 async def me_profile_refetch_groups(
+    request: Request,
     _: None = Depends(require_debug_auth_enabled),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -4225,7 +4323,13 @@ async def me_profile_refetch_groups(
     """Re-issue ``fetch_user_groups`` for the current user and return a
     dry-run diff against the cached ``user_group_members`` snapshot,
     writing nothing. Gated behind AGNES_DEBUG_AUTH — a dry-run admin
-    debug action, not user-facing content."""
+    debug action, not user-facing content.
+
+    Requires the ``X-CSRF-Token`` header to match the ``web_csrf`` cookie
+    issued by the profile page (F2 double-submit; the cookie fallback in the
+    auth layer means even JSON POSTs are not automatically CSRF-exempt)."""
+    if not _web_csrf_ok(request, request.headers.get("x-csrf-token", "")):
+        raise HTTPException(status_code=403, detail="csrf_check_failed")
     from app.auth.group_sync import fetch_user_groups
 
     fetched = fetch_user_groups(user["email"])
