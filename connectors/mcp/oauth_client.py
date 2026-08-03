@@ -68,6 +68,15 @@ class OAuthTokenError(Exception):
     response cannot be parsed into a usable token set."""
 
 
+class OAuthTransportError(OAuthTokenError):
+    """The token endpoint could not be reached at all (DNS/TCP/TLS/timeout).
+
+    Subclass of :class:`OAuthTokenError` so existing catch-alls keep
+    working, but distinguishable where the user-facing message matters —
+    "could not reach the authorization server" is actionable in a way
+    "token exchange failed" is not (Devin Review on #1130)."""
+
+
 # ---------------------------------------------------------------------------
 # HTTP client
 # ---------------------------------------------------------------------------
@@ -621,7 +630,7 @@ async def exchange_code_for_token(
             **_client_auth_kwargs(client_id, client_secret),
         )
     except httpx.HTTPError as exc:
-        raise OAuthTokenError(f"token exchange failed: {exc_summary(exc)}") from exc
+        raise OAuthTransportError(f"token exchange failed: {exc_summary(exc)}") from exc
     if resp.status_code != 200:
         await _raise_as_error(resp, action="token exchange")
     try:
@@ -659,7 +668,7 @@ async def refresh_access_token(
             **_client_auth_kwargs(client_id, client_secret),
         )
     except httpx.HTTPError as exc:
-        raise OAuthTokenError(f"token refresh failed: {exc_summary(exc)}") from exc
+        raise OAuthTransportError(f"token refresh failed: {exc_summary(exc)}") from exc
     if resp.status_code != 200:
         await _raise_as_error(resp, action="token refresh")
     try:
