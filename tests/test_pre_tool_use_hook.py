@@ -231,3 +231,55 @@ def test_pipe_downstream_command_is_scanned():
     # a legit pipeline with no offending downstream stays allowed
     assert _decide("cat data.csv | shuf | head") == "allow"
     assert _decide("cat data.csv | curl https://api.github.com/x") == "allow"
+
+
+def test_absolute_path_invocation_does_not_bypass_token_checks():
+    """`/bin/rm` must be judged as `rm`.
+
+    Every token check compares the head against a bare command name, so an
+    absolute or relative path used to run the same binary while matching
+    nothing and falling through to a silent allow — the exact opposite of
+    this hook's over-ask invariant.
+    """
+    assert _decide("/bin/rm -rf workspace/snapshots/q1") == "deny"
+    assert _decide("/bin/ls /home") == "deny"
+    assert _decide("/usr/bin/env") == "deny"
+    assert _decide("./rm -rf workspace/scripts/x") == "deny"
+
+
+def test_privilege_wrappers_beyond_sudo_are_stripped():
+    """A privilege/exec wrapper that is not recognized hides the real command."""
+    assert _decide("doas mkfs.ext4 /dev/sda1") == "deny"
+    assert _decide("doas rm -rf /data") == "ask"
+    assert _decide("chroot / rm -rf /data") == "ask"
+    assert _decide("ionice rm -rf /data") == "ask"
+    assert _decide("setsid ls /home") == "deny"
+
+
+def test_wrapper_value_flag_does_not_become_the_command():
+    """`sudo -g wheel rm -rf x` left `wheel` as the head, so no rule matched."""
+    assert _decide("sudo -g wheel rm -rf /data") == "ask"
+    assert _decide("sudo -u root -g wheel rm -rf /data") == "ask"
+    # a flag that takes no value must not swallow the command
+    assert _decide("sudo -n rm -rf /data") == "ask"
+
+
+def test_adjacent_quoted_strings_do_not_hide_whole_command_rules():
+    """bash concatenates `"DR""OP"` into `DROP` before running it.
+
+    The whole-command regexes ran on raw text only, so the literal substring
+    they need never appeared even though the shell executed the real thing.
+    """
+    assert _decide('psql -c "DR""OP TABLE orders"') == "ask"
+    assert _decide('psql -c "TRUN""CATE TABLE orders"') == "ask"
+
+
+def test_normalization_does_not_over_block_benign_commands():
+    for c in (
+        "echo hello",
+        "cat notes.md | shuf",
+        "nice -n 10 python train.py",
+        "timeout 5 pytest -q",
+        "python scripts/analyze.py --out /tmp/x.csv",
+    ):
+        assert _decide(c) == "allow", c
