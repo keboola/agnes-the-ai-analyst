@@ -143,6 +143,10 @@ def test_daily_digest_shape_and_kpis(seeded_app, admin_user):
     assert data["meta"]["report_type"] == "daily"
     assert data["meta"]["period_start"] == ANCHOR.isoformat()
     assert len(data["trend_series"]) == 14
+    # the series must carry the same exclusion as the headline, or the chart
+    # and the KPI can disagree. 2 curated + 1 flea, not the 3 system rows.
+    anchor_day = next(d for d in data["trend_series"] if d["day"] == ANCHOR.isoformat())
+    assert anchor_day["installs"] == 3
 
     k = data["headline_kpis"]
     assert k["active_users"] == {"value": 3, "prev": 2, "delta_pct": 50.0}
@@ -169,6 +173,10 @@ def test_daily_movers_failures_and_zero_usage(seeded_app, admin_user):
     conn.close()
 
     data = _get(seeded_app["client"], admin_user, "daily").json()
+
+    # a system plugin is provisioning, not content that failed to land, so it
+    # must not surface in zero_usage either
+    assert "platform-core" not in [z["name"] for z in data["zero_usage"]]
 
     # top_items ranked, product-analyzer leads with 8 invocations
     assert data["top_items"][0]["name"] == "product-analyzer"

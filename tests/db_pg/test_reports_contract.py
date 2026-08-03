@@ -172,7 +172,8 @@ def _seed(repo, backend):
     # `<synthetic>` row on the anchor day. Synthetic rows carry no tool calls and
     # no active time — they are a processing artifact, not usage, and must not
     # reach the digest's session KPI.
-    ss_cols = ["session_file", "session_id", "username", "started_at", "processor_version", "primary_model"]
+    ss_cols = ["session_file", "session_id", "username", "started_at", "processor_version",
+               "primary_model", "tool_calls", "active_seconds"]
     _insert(
         repo,
         backend,
@@ -182,6 +183,8 @@ def _seed(repo, backend):
             {
                 "session_file": "s1.jsonl",
                 "session_id": "s1",
+                "tool_calls": 4,
+                "active_seconds": 120,
                 "username": "alice",
                 "started_at": _ts(ANCHOR),
                 "processor_version": 1,
@@ -190,6 +193,8 @@ def _seed(repo, backend):
             {
                 "session_file": "s2.jsonl",
                 "session_id": "s2",
+                "tool_calls": 2,
+                "active_seconds": 60,
                 "username": "bob",
                 "started_at": _ts(ANCHOR),
                 "processor_version": 1,
@@ -198,6 +203,8 @@ def _seed(repo, backend):
             {
                 "session_file": "s3.jsonl",
                 "session_id": "s3",
+                "tool_calls": 1,
+                "active_seconds": 30,
                 "username": "alice",
                 "started_at": _ts(PREV),
                 "processor_version": 1,
@@ -208,6 +215,21 @@ def _seed(repo, backend):
                 "session_id": "s4",
                 "username": "carol",
                 "started_at": _ts(ANCHOR, 11),
+                "processor_version": 1,
+                "primary_model": "<synthetic>",
+                "tool_calls": 0,
+                "active_seconds": 0,
+            },
+            # Synthetic-DOMINATED but real: `primary_model` is only the MODAL
+            # model, so a genuine session can carry it while doing real work.
+            # Filtering on the model alone silently dropped this one.
+            {
+                "session_file": "s5.jsonl",
+                "session_id": "s5",
+                "tool_calls": 7,
+                "active_seconds": 240,
+                "username": "dave",
+                "started_at": _ts(ANCHOR, 12),
                 "processor_version": 1,
                 "primary_model": "<synthetic>",
             },
@@ -344,9 +366,34 @@ def test_event_window(reports_repo):
 
 def test_session_count(reports_repo):
     repo, _ = reports_repo
-    # s1 + s2 only. s4 is a `<synthetic>` row on the same day and is excluded;
-    # counting it overstates the digest's session KPI substantially.
-    assert repo.session_count(_P_START, _P_END) == 2
+    # s1 + s2 + s5. s4 is the `<synthetic>` artifact (no tool calls, no active
+    # time) and is excluded; counting it overstated the KPI substantially.
+    assert repo.session_count(_P_START, _P_END) == 3
+
+
+def test_session_count_keeps_synthetic_dominated_real_sessions(reports_repo):
+    """`primary_model` is the MODAL model, not a session type.
+
+    s5 carries `primary_model='<synthetic>'` with 7 tool calls and 240s active —
+    a real session that a model-only filter would silently drop. Only the
+    genuine artifact (s4: synthetic AND no tool calls AND no active time) goes.
+    """
+    repo, _ = reports_repo
+    assert repo.session_count(_P_START, _P_END) == 3
+
+
+def test_mirrored_constants_agree_across_backends():
+    """The two repos hand-duplicate `SYNTHETIC_MODEL` and `_NOT_SYSTEM`.
+
+    That is the repo's convention, but nothing enforced that the copies stay in
+    step — a one-sided edit would silently diverge the two backends.
+    """
+    from src.repositories.reports import SYNTHETIC_MODEL, ReportsRepository
+    from src.repositories.reports_pg import SYNTHETIC_MODEL as PG_SYNTHETIC_MODEL
+    from src.repositories.reports_pg import ReportsPgRepository
+
+    assert SYNTHETIC_MODEL == PG_SYNTHETIC_MODEL
+    assert ReportsRepository._NOT_SYSTEM == ReportsPgRepository._NOT_SYSTEM
 
 
 def test_events_daily_buckets_by_utc_day(reports_repo):

@@ -138,15 +138,24 @@ class ReportsRepository:
     def session_count(self, start: datetime, end: datetime) -> int:
         """Real user sessions started in the window.
 
-        `<synthetic>` rows are a processing artifact — zero tool calls, zero
-        active seconds, one user message — and are excluded: counting them
-        overstated the digest's session KPI by roughly a quarter.
+        Excludes the `<synthetic>` processing artifact: a row whose modal model
+        is `<synthetic>` AND which recorded no tool calls and no active time.
+        Counting those overstated the digest's session KPI substantially.
+
+        All three conditions are required. `primary_model` is only the MOST
+        FREQUENT model of the session (see the session processor), so filtering
+        on it alone would drop a genuine session that happened to be
+        synthetic-dominated but did real work. COALESCE keeps a NULL-model row
+        countable — `NULL = <synthetic>` is NULL, and `NOT (NULL AND ...)` would
+        silently discard it.
         """
         return int(
             self.conn.execute(
                 """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
                WHERE started_at >= ? AND started_at < ?
-                 AND (primary_model IS NULL OR primary_model != ?)""",
+                 AND NOT (COALESCE(primary_model, '') = ?
+                          AND COALESCE(tool_calls, 0) = 0
+                          AND COALESCE(active_seconds, 0) = 0)""",
                 [start, end, SYNTHETIC_MODEL],
             ).fetchone()[0]
             or 0
@@ -448,8 +457,11 @@ class ReportsRepository:
         - ``system``: system-plugin subscriptions, kept visible but excluded from
           the adoption figures above.
         - ``distinct_installers``: PEOPLE who opted into at least one item — the
-          only one of these directly comparable to ``active_users``, which is
-          also a people count.
+          only one of these in the same UNIT as ``active_users``. Same unit is
+          not the same cohort: that figure counts distinct
+          ``usage_events.username``, this one distinct ledger ``user_id``, and a
+          person can install without being active in the window. Comparable in
+          magnitude, not a ratio.
         """
         curated = int(
             self.conn.execute(

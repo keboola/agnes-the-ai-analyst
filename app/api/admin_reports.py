@@ -119,8 +119,11 @@ def marketplace_digest(
     c_rate = round(c_ev["errors"] / c_ev["invocations"], 4) if c_ev["invocations"] else 0.0
 
     # active_users counts PEOPLE with >=1 synced session event in the window;
-    # new_installs counts (user x item) ROWS. Different units — compare
+    # new_installs counts (user x item) ROWS. Different units — read
     # active_users against `distinct_installers`, not against `new_installs`.
+    # Same UNIT, but not the same cohort: active_users comes from
+    # usage_events.username, installers from the ledgers' user_id, and someone
+    # can install without being active in the window. Do not derive a rate.
     headline_kpis = {
         "active_users": _kpi(p_ev["active_users"], c_ev["active_users"]),
         "sessions":     _kpi(p_sessions, c_sessions),
