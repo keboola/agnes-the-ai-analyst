@@ -184,6 +184,14 @@ def _god_mode_allowed_ids(
     now: float,
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> frozenset:
+    # Only memoize the production path (conn is None → global repo factory,
+    # one stable backend per process). When an explicit conn is passed (test
+    # isolation, or a caller pinning a specific handle) the cache key can't
+    # capture which backend/handle produced the set, so a memo could return a
+    # result resolved against a different connection within the TTL — skip the
+    # cache entirely and read fresh (review finding on #1143).
+    if conn is not None:
+        return _allowed_ids_for_user(user_id, resource_type, conn=conn)
     key = f"{user_id}|{resource_type}"
     cached = _god_mode_grants.get(key)
     if cached is not None and (now - cached[0]) < _GOD_MODE_GRANTS_TTL_SECONDS:
