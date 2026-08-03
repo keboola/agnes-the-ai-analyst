@@ -1353,8 +1353,10 @@ Two orthogonal axes on a store entity, both separate from `visibility_status`:
 | `POST /api/store/entities/{id}/verification/request` | owner | Asks the org to review. `409 not_discoverable` while nobody else can see the item. |
 
 Both verification endpoints return `404 verification_disabled` unless
-`store.verification_enabled` is true (**default false**) — an instance with no
-reviewer must not offer the vocabulary at all.
+`store.verification_enabled` is true (**default true**). Set it to `false` on an
+instance that does not want the axis offered at all; note that with it off no
+user-authored item can ever leave the Community trust level, since there is no
+admin action to verify one.
 
 `publisher_kind` is **stored**, never derived from the owner's Admin-group
 membership: group membership is mutable and re-synced from the identity

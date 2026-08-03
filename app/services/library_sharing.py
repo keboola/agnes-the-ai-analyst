@@ -27,6 +27,25 @@ authenticated user once approved, so a ``resource_grants`` row on one would be
 dead mechanics — nothing reads it. The Library reflects a skill's real store
 visibility instead.
 
+That exclusion is settled for *grant* sharing, but it is NOT the whole story, and
+the difference is a real gap rather than a decision:
+
+  TODO — an owner cannot change their own store entity's ACCESS at all. A skill or
+  plugin kept Private has no path to Everyone from any surface: ``access`` is
+  accept-only at create (``POST /api/store/entities`` and its ``from-markdown``
+  sibling), and ``PUT /api/store/entities/{id}`` carries no ``access`` field. So
+  "share my private skill" is missing an endpoint, not a grant type — do not
+  "fix" it by adding ``skill`` to ``_OWNER_RESOLVERS`` here, which would write
+  exactly the dead row this module's exclusion exists to prevent.
+
+  The endpoint owes: private→everyone re-entering the guardrail/LLM review
+  pipeline as a fresh ``access=everyone`` upload does (landing on ``pending``,
+  never flipping ``visibility_status`` straight to ``approved``);
+  everyone→private as the cheap direction; owner-or-admin gating; DuckDB +
+  Postgres repo siblings in one change; REST × CLI × MCP coverage. The Library's
+  explains-only sharing badge (``library.html``, the ``{% else %}`` branch of the
+  Sharing cell) is where the control lands once it exists.
+
 ``agent`` IS shareable here even though agents are not listed in the Library
 (they live on ``/agents``): the grants are real because ``GET /api/agents``
 honours them, so a shared agent shows up in the grantee's own agent list. The

@@ -647,6 +647,25 @@ class TestRailChatHistory:
         assert "(done / total) * 100" in body
         assert 'classList.toggle("is-complete"' in body
 
+    def test_new_token_button_cancels_the_summary_toggle(self, web_client, admin_cookie):
+        """`+ New token` lives inside a <summary>, so it must cancel the disclosure.
+
+        stopPropagation() alone is NOT enough and was the original bug: it keeps
+        the click off ancestor listeners, but a <details> toggle is the summary's
+        default ACTIVATION BEHAVIOUR, which only preventDefault() cancels. With
+        just the former, minting a token also collapsed the section it was
+        launched from.
+        """
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert resp.status_code == 200
+        marker = 'id="new-token-btn"'
+        assert marker in resp.text
+        handler = resp.text[resp.text.index(marker) - 400 : resp.text.index(marker) + 400]
+        assert "preventDefault()" in handler, (
+            "New token must cancel the <summary> default action, not only bubbling"
+        )
+        assert "stopPropagation()" in handler
+
     def test_profile_menu_can_restart_onboarding(self, web_client, admin_cookie, monkeypatch):
         """The way back once the Finish setup row has retired itself at 5/5: the
         row's own "Start over" goes with it, so the profile menu — the one thing
@@ -1102,11 +1121,25 @@ class TestRailDashboard:
             'id="rdb-actions-list"',  # suggested-actions list
             "css/chat_dashboard.css",  # dashboard styles
             'id="chat-input"',  # the REAL composer serves the dashboard
-            'href="/catalog/semantics"',  # semantic-layer browse link (#1108)
         ):
             assert anchor in text, f"rail chat dashboard is missing {anchor}"
         # The retired three-panel layout is gone (one actions list instead).
-        for retired in ('id="rdb-continue-list"', 'id="rdb-tasks"', "Recent updates"):
+        # `rdb-semantic-links` joins it: the dashboard carried a "Browse metrics
+        # & glossary" button (#1108) directly above the composer, and this is
+        # the moment of INTENT — the reader came here to ask something. A
+        # control whose only function is to navigate away from the composer,
+        # offered before they have an answer to check, is a detour.
+        #
+        # Asserted on the BUTTON'S wrapper class, not on the bare
+        # `/catalog/semantics` URL: the rail chrome now carries a Definitions
+        # nav row, so that URL is legitimately present on every rail page
+        # including this one. What must not come back is the in-page button.
+        for retired in (
+            'id="rdb-continue-list"',
+            'id="rdb-tasks"',
+            "Recent updates",
+            "rdb-semantic-links",
+        ):
             assert retired not in text, f"retired dashboard panel leaked back: {retired}"
         # The banner's old two-button CTA row is retired: "Connect your tools"
         # moved into the tools card (klb-card-cta), "Learn how it works" into
@@ -1404,13 +1437,29 @@ class TestPaperThemeAssets:
             html = open(base).read()
             assert "css/rail.css" in html, f"{base} must load rail.css"
             assert "css/paper-skin.css" in html, f"{base} must load paper-skin.css"
+            assert "css/detail-page.css" in html, f"{base} must load detail-page.css"
+
+    def test_detail_page_sheet_loads_before_head_extra(self):
+        """The detail pages emit `detail.styles()` from `head_extra`, so the
+        shared sheet must be linked ABOVE that block — otherwise every rule
+        it overrides would lose the cascade to a per-page <style>."""
+        for base in ("app/web/templates/base_ds.html", "app/web/templates/base.html"):
+            html = open(base).read()
+            assert html.index("css/detail-page.css") < html.index("{% block head_extra %}"), (
+                f"{base} must link detail-page.css before the head_extra block"
+            )
 
     @staticmethod
     def _selectors(path: str) -> list[str]:
         """Rule selectors from a flat CSS sheet — comments stripped,
         at-rules (@media/@supports wrappers) skipped; rules nested in
-        at-rule bodies still surface as ordinary selectors."""
+        at-rule bodies still surface as ordinary selectors.
+
+        `@keyframes` bodies are dropped whole: their `from` / `to` / `50%`
+        stops are parsed as selectors by the scan below, and a keyframe stop
+        can no more carry a theme scope than it can carry a class."""
         css = re.sub(r"/\*.*?\*/", "", open(path).read(), flags=re.DOTALL)
+        css = re.sub(r"@(?:-\w+-)?keyframes\s+[\w-]+\s*\{(?:[^{}]|\{[^{}]*\})*\}", "", css)
         raw = re.findall(r"(?:^|[{}])\s*([^{}]+?)\s*\{", css)
         return [s.strip() for s in raw if s.strip() and not s.strip().startswith("@")]
 
@@ -1423,3 +1472,192 @@ class TestPaperThemeAssets:
     def test_paper_skin_rules_are_scoped_to_theme(self):
         for sel in self._selectors("app/web/static/css/paper-skin.css"):
             assert '[data-theme="paper"]' in sel, f"paper-skin.css selector not scoped to paper theme: {sel!r}"
+
+    def test_detail_page_rules_are_scoped_to_theme(self):
+        """The shared resource-detail layout is opt-in like every other
+        redesign sheet: default blue/topnav instances load it inert."""
+        for sel in self._selectors("app/web/static/css/detail-page.css"):
+            assert '[data-theme="paper"]' in sel, f"detail-page.css selector not scoped to paper theme: {sel!r}"
+
+    def test_trustmark_css_rules_are_scoped_to_theme(self):
+        """The trust markers are opt-in like every other redesign sheet.
+
+        This started life as its mirror image — a test asserting the sheet was
+        deliberately GLOBAL, on the reading that the markers were a documented
+        default-look change. That was wrong: the CHANGELOG documents the two
+        FLAGS defaulting on (markers appearing where a flag had hidden them),
+        not the theme scoping, which was never a decision. A default blue
+        instance must render its own spelling — `.cc-trust` on catalog cards,
+        the amber `Curated` badge on package cards and detail heroes, nothing on
+        Library rows — so `.ds-trust` has to stay inert there.
+
+        Markup gating is the other half and cannot be seen from here: `mark()`
+        in macros/_trustmark.html takes `paper=False`, so an ungated callsite
+        emits nothing rather than an unstyled marker.
+        """
+        for sel in self._selectors("app/web/static/css/trustmark.css"):
+            assert '[data-theme="paper"]' in sel, (
+                f"trustmark.css selector not scoped to paper theme: {sel!r}"
+            )
+
+    def test_keyframe_stops_are_not_mistaken_for_selectors(self):
+        """Guard on the guard: without the @keyframes strip, a stop like
+        `from {` parses as an unscoped selector, which would fail the scoping
+        test above for a reason that has nothing to do with scoping."""
+        selectors = self._selectors("app/web/static/css/detail-page.css")
+        assert selectors, "selector scan returned nothing — the regex broke"
+        assert "from" not in selectors and "to" not in selectors
+
+
+class TestSharedDetailLayout:
+    """One editorial layout for every resource type, opt-in.
+
+    Under the redesign a detail page is: a header on the page ground (no
+    gradient slab, no nested frosted panel), a resource-type badge beside
+    the title, and a two-column shell with a sticky right rail. Default
+    instances must still get the legacy gradient hero + stacked cards, which
+    is the half of this that is a regression guard rather than a feature."""
+
+    @staticmethod
+    def _package(slug: str = "detail-layout-pkg") -> str:
+        from src.repositories import data_packages_repo
+
+        return data_packages_repo().create(
+            name="Detail Layout Package",
+            slug=slug,
+            description="A package used to assert the shared detail layout.",
+            icon=None,
+            color=None,
+            created_by="admin1",
+        )
+
+    def test_redesign_renders_the_two_column_shell_and_type_badge(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        self._package("paper-detail-pkg")
+        text = web_client.get("/catalog/p/paper-detail-pkg", cookies=admin_cookie).text
+        assert "detail-cols" in text, "the editorial layout must open the two-column shell"
+        assert "detail-main" in text
+        assert "detail-aside" in text, "the sticky right rail must render"
+        # The resource-type badge names the type in words, next to the title.
+        assert 'class="detail-type"' in text
+        assert ">Data package<" in text
+        # The rail answers "is this on my laptop?".
+        assert "Availability" in text
+        assert 'class="detail-side__rows"' in text
+
+    def test_default_instance_renders_no_ds_trust_marker(self, web_client, admin_cookie, monkeypatch):
+        """A default instance shows its OWN trust spelling, never `.ds-trust`.
+
+        This assertion belongs next to the one below and its absence is exactly
+        how the leak shipped: that test pins the absence of `detail-cols`,
+        `detail-aside` and `detail-type`, so the trust pill sailed through the
+        one test written to protect the default hero.
+        """
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        for path in ("/library", "/catalog"):
+            resp = web_client.get(path, cookies=admin_cookie)
+            assert resp.status_code == 200, path
+            # Match the EMITTED markup, not the string: the page's own CSS
+            # comments legitimately name the class while explaining where the
+            # markers went.
+            assert 'class="ds-trust' not in resp.text, (
+                f"{path} leaked the paper-only trust marker into the default theme"
+            )
+
+    def test_default_instance_gets_neither_shell_nor_badge(self, web_client, admin_cookie, monkeypatch):
+        """The whole layout is gated: a default instance renders the page it
+        rendered before, with the sections stacked in the main flow."""
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        self._package("blue-detail-pkg")
+        text = web_client.get("/catalog/p/blue-detail-pkg", cookies=admin_cookie).text
+        assert "detail-cols" not in text, "the two-column shell must not reach default instances"
+        assert "detail-aside" not in text
+        assert 'class="detail-type"' not in text
+        # Match on MARKUP, not the class name: `detail.styles()` emits the
+        # baseline CSS for the shared components on every theme, so the name
+        # itself is in the page whether or not anything renders with it.
+        assert 'class="detail-side__rows"' not in text, "rail content must not append itself as extra sections"
+        # …and it still renders the legacy hero the scaffold has always drawn.
+        assert "detail-hero" in text
+        assert "detail-hero__deco" in text
+
+    def test_overflow_menu_holds_the_secondary_action(self, web_client, admin_cookie, monkeypatch):
+        """One prominent action per header; the admin errand moves into the
+        overflow menu (a <details>, so it needs no JavaScript to open)."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        self._package("menu-detail-pkg")
+        text = web_client.get("/catalog/p/menu-detail-pkg", cookies=admin_cookie).text
+        assert '<details class="detail-menu">' in text
+        assert 'class="detail-menu__item' in text
+        assert "Edit package metadata" in text
+        # The header's icon-button spelling of the same action is gone, so the
+        # action is not offered twice.
+        assert 'class="detail-edit-icon"' not in text
+
+
+class TestResourceColourTokens:
+    """One semantic accent per resource type, consumed product-wide through
+    the `--ds-kind-*` aliases rather than by any page directly."""
+
+    RESOURCES = ("data", "skill", "plugin", "file", "collection", "agent", "memory", "recipe")
+
+    @staticmethod
+    def _tokens_css() -> str:
+        return open("app/web/static/css/design-tokens.css").read()
+
+    def test_every_resource_has_the_full_three_role_set(self):
+        css = self._tokens_css()
+        for resource in self.RESOURCES:
+            for role in ("ink", "soft", "line"):
+                token = f"--ds-resource-{resource}-{role}:"
+                assert token in css, f"resource colour system is missing {token}"
+
+    def test_dark_theme_flips_both_halves_of_every_pair(self):
+        """A resource tint is a near-white fill in light mode. Under dark it
+        has to be re-derived, or the accent ink lands on a light fill while
+        the page around it went dark."""
+        css = self._tokens_css()
+        # More than one dark block exists (the brand-variant one included), so
+        # scan them all rather than assuming which of them declares these.
+        joined = "\n".join(
+            m.group(1) for m in re.finditer(r':root\[data-theme="dark"\][^{]*\{(.*?)\n\}', css, re.DOTALL)
+        )
+        assert joined, "no dark theme block found"
+        for resource in self.RESOURCES:
+            assert f"--ds-resource-{resource}-ink:" in joined, f"{resource} ink not re-derived under dark"
+            assert f"--ds-resource-{resource}-soft:" in joined, f"{resource} tint not re-derived under dark"
+
+    def test_paper_routes_kind_aliases_onto_the_resource_family(self):
+        """The remap is the whole distribution mechanism: every existing
+        consumer reads `--ds-kind-*`, so pointing those at `--ds-resource-*`
+        under paper is what carries the palette to the Library table, the
+        cards, the detail pages, search results and the Stack at once."""
+        css = self._tokens_css()
+        block = re.search(r':root\[data-theme="paper"\]\s*\{(.*?)\n\}', css, re.DOTALL)
+        assert block, "paper block missing"
+        body = block.group(1)
+        for kind, resource in (
+            ("data", "data"),
+            ("skill", "skill"),
+            ("plugin", "plugin"),
+            ("file", "file"),
+            ("library", "collection"),  # `library` is the scaffold's name for a collection
+            ("agent", "agent"),
+            ("memory", "memory"),
+            ("recipe", "recipe"),
+        ):
+            assert f"--ds-kind-{kind}: var(--ds-resource-{resource}-ink);" in body, (
+                f"paper must alias --ds-kind-{kind} onto the {resource} resource colour"
+            )
+
+    def test_default_theme_keeps_its_original_kind_hues(self):
+        """The palette is opt-in. A default (blue) instance must still resolve
+        the pre-redesign hues, so the remap may only live in the paper block."""
+        css = self._tokens_css()
+        # The unscoped `:root` is split across several append-only blocks.
+        globals_ = "\n".join(m.group(1) for m in re.finditer(r"^:root\s*\{(.*?)\n\}", css, re.DOTALL | re.MULTILINE))
+        assert "--ds-kind-data: #185a57;" in globals_, "default data hue changed"
+        assert "--ds-kind-plugin: #391c57;" in globals_, "default plugin hue changed"
+        assert "--ds-kind-library: #0a5aa8;" in globals_, "default collection hue changed"
+        assert "--ds-kind-skill: #0e7c57;" in globals_, "default skill hue changed"
+        assert "--ds-kind-memory: #523410;" in globals_, "default memory hue changed"

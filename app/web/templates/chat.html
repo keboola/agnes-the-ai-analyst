@@ -196,14 +196,16 @@
          Agnes anything" heading directly above the composer. #}
       <div class="klb-hub-label klb-hub-label--lead">{{ knowledge_hub_label(show_title=False) }}</div>
       <h2 class="rdb-ask-heading">Ask {{ instance_brand_short or 'Agnes' }} anything</h2>
-      {# Semantic layer entry (#1108) — the only in-page path to
-         /catalog/semantics in the rail chrome (no rail nav item by design,
-         see _app_rail.html). Browse the metrics + glossary list. #}
-      <p class="rdb-semantic-links">
-        <a class="btn btn-secondary btn-sm" href="/catalog/semantics">
-          {{ ico.icon('rows', 16) }} Browse metrics &amp; glossary
-        </a>
-      </p>
+      {# A "Browse metrics & glossary" button used to sit here (#1108), the only
+         in-page path to /catalog/semantics in the rail chrome. Retired: this is
+         the moment of INTENT — the reader came to ask something and the
+         composer is directly below — so a control whose whole function is to
+         navigate away from the composer was a detour offered before anyone had
+         a question to check. Reference material belongs at the moment of doubt,
+         which is inside an answer, not in front of an empty one.
+         The semantic layer is reached from the Library's Definitions band and
+         from search (both of which can say how many definitions there are);
+         citing it inside the answer that used it is issue #1134. #}
     </aside>
     {% else %}
     <aside id="chat-capabilities" class="cloud-chat-capabilities">
@@ -507,14 +509,44 @@
       <p class="rdb-context">
         {% if knowledge_source_count or capability_count %}
         <svg class="rdb-context-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        {# Both counts link to the LIBRARY with its "In stack only" filter
+           already applied (`/library?stack=in_stack`), not to /stack: My Stack
+           is not a rail destination any more (#1088), so pointing at it landed
+           the caller on a surface with no nav entry and no active state. The
+           Library renders every kind that page did — data packages and memory
+           domains come from the SAME StackResolver.browse() read — and its
+           toggle narrows that list to exactly what this line is counting. #}
         <span>
           Agnes is using
-          <a href="/stack">{{ knowledge_source_count }} knowledge source{{ '' if knowledge_source_count == 1 else 's' }}</a>
+          <a href="/library?stack=in_stack">{{ knowledge_source_count }} knowledge source{{ '' if knowledge_source_count == 1 else 's' }}</a>
           and
-          <a href="/stack">{{ capability_count }} capabilit{{ 'y' if capability_count == 1 else 'ies' }}</a>
+          <a href="/library?stack=in_stack">{{ capability_count }} capabilit{{ 'y' if capability_count == 1 else 'ies' }}</a>
           from your Stack
         </span>
         {% endif %}
+      </p>
+
+      {# Orientation line — the prominent first-run path to /how-it-works, which
+         the rail carries only as a quiet `.rail-meta` row in its foot
+         (_app_rail.html). Someone who has just arrived needs the explainer far
+         more than a returning user does, and this is where their eyes already
+         are; the rail row is for finding it again later.
+
+         Below the composer, not above it: directly over the input is the moment
+         of INTENT, and a control whose only function is to navigate away was
+         retired from there once already (the "Browse metrics & glossary" button,
+         #1108). Not in the hero either — its green "Connect your tools" CTA is
+         the one action up there, and the second outline CTA that used to sit
+         beside it was retired as competition (guarded in
+         tests/test_ui_layout_theme.py).
+
+         "New here?" does the self-selecting, so a returning reader skips the
+         line at a glance instead of re-reading an offer they have taken. Inside
+         #chat-empty-extras, so it disappears with the rest of the dashboard the
+         moment a conversation starts. #}
+      <p class="rdb-orient">
+        New here?
+        <a href="/how-it-works">See how {{ instance_brand_short or 'Agnes' }} works</a>
       </p>
 
       <div class="rdb">
@@ -532,7 +564,7 @@
             <p class="rdb-actions-empty-title">No suggested actions yet</p>
             <p class="rdb-panel-note">
               Ask Agnes anything above, or add more relevant sources and
-              capabilities to <a href="/stack">your Stack</a>.
+              capabilities to <a href="/library?stack=in_stack">your Stack</a>.
             </p>
           </div>
         </section>

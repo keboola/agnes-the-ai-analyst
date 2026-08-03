@@ -549,8 +549,9 @@ body.chat-page-body main { margin: 0; padding: 0; }
 
 /* ---------- Code-block copy + syntax highlighting ----------
    highlight.js drops `.hljs` on each <code> and a per-language
-   token-colour family. Its stylesheet is loaded by chat.html so we
-   only need to layout the per-block copy button here.
+   token-colour family. Its stylesheet is loaded by chat.html, but it
+   ships GitHub's LIGHT theme, so its token colours are remapped onto
+   the --ds-code-* palette further down — see the token block below.
 
    .code-block-wrap is added by chat.js to every <pre> that owns a
    highlighted <code>; the relative positioning anchors the copy
@@ -575,7 +576,87 @@ body.chat-page-body main { margin: 0; padding: 0; }
   background: transparent;
   padding: 0;
   color: inherit;
+  /* style-custom.css paints a light 1px --border box on every bare
+     `code`; inside the dark block that reads as a stray inset frame
+     around the snippet. The block itself owns the chrome. */
+  border: none;
+  border-radius: 0;
 }
+
+/* Syntax tokens. The vendored highlight.min.css is GitHub Light —
+   #032f62 strings and #005cc5 numbers on our near-black --ds-code-bg
+   land at ~1.2:1 and ~1.7:1, i.e. invisible. Each family below is
+   remapped onto the --ds-code-* palette (all ≥5.5:1 in both themes).
+   `.code-block-wrap` only ever exists on the chat page (chat.js stamps
+   it), and each selector carries a class + two type selectors, so these
+   win over hljs's single-class rules regardless of sheet order. */
+pre.code-block-wrap code .hljs-doctag,
+pre.code-block-wrap code .hljs-keyword,
+pre.code-block-wrap code .hljs-meta .hljs-keyword,
+pre.code-block-wrap code .hljs-template-tag,
+pre.code-block-wrap code .hljs-template-variable,
+pre.code-block-wrap code .hljs-type,
+pre.code-block-wrap code .hljs-variable.language_ {
+  color: var(--ds-code-keyword);
+}
+pre.code-block-wrap code .hljs-title,
+pre.code-block-wrap code .hljs-title.class_,
+pre.code-block-wrap code .hljs-title.class_.inherited__,
+pre.code-block-wrap code .hljs-title.function_ {
+  color: var(--ds-code-title);
+}
+pre.code-block-wrap code .hljs-attr,
+pre.code-block-wrap code .hljs-attribute,
+pre.code-block-wrap code .hljs-literal,
+pre.code-block-wrap code .hljs-meta,
+pre.code-block-wrap code .hljs-number,
+pre.code-block-wrap code .hljs-operator,
+pre.code-block-wrap code .hljs-selector-attr,
+pre.code-block-wrap code .hljs-selector-class,
+pre.code-block-wrap code .hljs-selector-id,
+pre.code-block-wrap code .hljs-variable,
+pre.code-block-wrap code .hljs-section {
+  color: var(--ds-code-literal);
+}
+pre.code-block-wrap code .hljs-meta .hljs-string,
+pre.code-block-wrap code .hljs-regexp,
+pre.code-block-wrap code .hljs-string {
+  color: var(--ds-code-string);
+}
+pre.code-block-wrap code .hljs-built_in,
+pre.code-block-wrap code .hljs-symbol {
+  color: var(--ds-code-builtin);
+}
+pre.code-block-wrap code .hljs-code,
+pre.code-block-wrap code .hljs-comment,
+pre.code-block-wrap code .hljs-formula {
+  color: var(--ds-code-comment);
+}
+pre.code-block-wrap code .hljs-name,
+pre.code-block-wrap code .hljs-quote,
+pre.code-block-wrap code .hljs-selector-pseudo,
+pre.code-block-wrap code .hljs-selector-tag {
+  color: var(--ds-code-tag);
+}
+pre.code-block-wrap code .hljs-bullet {
+  color: var(--ds-code-bullet);
+}
+/* subst / emphasis / strong carry the block ink — hljs hardcodes
+   #24292e (near-black) for all three. */
+pre.code-block-wrap code .hljs-subst,
+pre.code-block-wrap code .hljs-emphasis,
+pre.code-block-wrap code .hljs-strong {
+  color: var(--ds-code-ink);
+}
+pre.code-block-wrap code .hljs-addition {
+  color: var(--ds-code-addition-ink);
+  background-color: var(--ds-code-addition-bg);
+}
+pre.code-block-wrap code .hljs-deletion {
+  color: var(--ds-code-deletion-ink);
+  background-color: var(--ds-code-deletion-bg);
+}
+
 .code-block-copy {
   position: absolute;
   top: 6px;
@@ -864,6 +945,19 @@ body.chat-page-body main { margin: 0; padding: 0; }
   font-family: var(--font-mono, ui-monospace, monospace);
   font-weight: var(--font-medium);
   color: var(--ds-text-primary);
+}
+/* A definition lookup is the one tool call a reader should be invited to
+   FOLLOW — it is provenance for the answer, not plumbing behind it. So it
+   drops the monospace tool-id treatment (it is a sentence, not an identifier)
+   and reads as the link it is. */
+.cloud-chat-tool-name--definition {
+  font-family: inherit;
+  color: var(--ds-primary);
+  text-decoration: none;
+}
+.cloud-chat-tool-name--definition:hover,
+.cloud-chat-tool-name--definition:focus-visible {
+  text-decoration: underline;
 }
 .cloud-chat-tool-summary {
   flex: 1 1 auto;
@@ -1733,6 +1827,15 @@ html[data-ui-layout="rail"] .cloud-chat-composer {
 html[data-ui-layout="rail"] .cloud-chat-composer .cloud-chat-input {
   flex: 1 1 auto;
   min-width: 0;
+  /* Exact box fit so the placeholder/first line sits on the pill's optical
+     centre: 20px line + 2×10px padding == the 40px min-height. The base
+     rule's 1.4 ratio (19.6px) left 2.4px of slack inside the 40px box, and
+     a textarea drops all of it BELOW the line box — so with rows="1" the
+     text rendered 1.2px high while the flex-centred "+" and send buttons
+     were exact. Integer values keep it subpixel-free, and autosize still
+     steps cleanly (scrollHeight = 40 / 60 / 80…). */
+  line-height: 20px;
+  padding: 10px var(--space-1);
 }
 html[data-ui-layout="rail"] .cloud-chat-composer:focus-within {
   border-color: var(--ds-assistant);
