@@ -2596,10 +2596,15 @@ def _web_csrf_ok(request: Request, supplied: str) -> bool:
 
     A cross-site attacker cannot read the cookie, so cannot forge a matching
     hidden form field / ``X-CSRF-Token`` header; ``compare_digest`` keeps the
-    comparison timing-safe.
+    comparison timing-safe. Compared as UTF-8 bytes: the str overload raises
+    TypeError on non-ASCII input, and both values are caller-controlled.
     """
     cookie_token = request.cookies.get(_WEB_CSRF_COOKIE, "")
-    return bool(supplied) and bool(cookie_token) and secrets.compare_digest(supplied, cookie_token)
+    return (
+        bool(supplied)
+        and bool(cookie_token)
+        and secrets.compare_digest(supplied.encode("utf-8"), cookie_token.encode("utf-8"))
+    )
 
 
 _SLACK_BIND_CSRF_COOKIE = "slack_bind_csrf"
@@ -2676,7 +2681,14 @@ async def slack_bind_confirm(
         return RedirectResponse(url="/login", status_code=302)
 
     cookie_token = request.cookies.get(_SLACK_BIND_CSRF_COOKIE, "")
-    if not code or not csrf_token or not cookie_token or not secrets.compare_digest(csrf_token, cookie_token):
+    if (
+        not code
+        or not csrf_token
+        or not cookie_token
+        # UTF-8 bytes: the str overload of compare_digest raises TypeError on
+        # non-ASCII input, and the form field is caller-controlled.
+        or not secrets.compare_digest(csrf_token.encode("utf-8"), cookie_token.encode("utf-8"))
+    ):
         ctx = _build_context(request, user=user, conn=conn, bind_status="csrf")
         resp = templates.TemplateResponse(request, "slack_bind.html", ctx, status_code=400)
         resp.delete_cookie(_SLACK_BIND_CSRF_COOKIE, path="/slack/bind")

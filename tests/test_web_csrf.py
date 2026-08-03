@@ -123,6 +123,40 @@ def test_delete_post_without_token_is_rejected(seeded_app):
     assert "Security check failed" in r.text
 
 
+def test_non_ascii_form_token_is_rejected_cleanly(seeded_app, monkeypatch):
+    """``secrets.compare_digest`` raises TypeError on non-ASCII *str* input, so
+    the check must compare UTF-8 bytes — a crafted token must yield the normal
+    400 rejection, not an unhandled 500."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "src.skill_contribution.contribute_skill",
+        lambda *a, **k: calls.append(1),
+    )
+    c = seeded_app["client"]
+    r = c.post(
+        "/admin/contribute-skill",
+        data={"skill_md": "# skill", "csrf_token": "é-not-ascii"},
+        cookies=_admin_cookies(seeded_app, web_csrf=_CSRF),
+    )
+    assert r.status_code == 400
+    assert not calls
+
+
+def test_slack_bind_non_ascii_token_is_rejected_cleanly(seeded_app):
+    """The Slack-bind double-submit check has the same shape; a non-ASCII
+    token must hit the 400 csrf branch, not a TypeError → 500."""
+    c = seeded_app["client"]
+    r = c.post(
+        "/slack/bind",
+        data={"code": "ABC123", "csrf_token": "é-not-ascii"},
+        cookies={
+            "access_token": seeded_app["admin_token"],
+            "slack_bind_csrf": "some-cookie-token",
+        },
+    )
+    assert r.status_code == 400
+
+
 def test_delete_post_with_matching_pair_reaches_handler(seeded_app):
     """With a valid pair the request passes the CSRF gate and the handler's
     own not-found branch answers (proves the gate, no fixture plugin needed)."""

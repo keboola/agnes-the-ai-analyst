@@ -25,6 +25,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+- `SECURITY.md` gains a **Supported versions** section: Agnes is pre-1.0 and released continuously, security fixes ship in the next release (`:stable` plus the matching `v0.X.Y` tag) and older releases get no backports, so self-hosted operators should track `:stable`.
+- The remaining state-changing HTML form POSTs — `/admin/contribute-skill`, its per-plugin delete action, and `/me/profile/refetch-groups` — now require a double-submit CSRF token (a `web_csrf` cookie matching a hidden form field, or the `X-CSRF-Token` header for the profile page's JS call) instead of relying on `SameSite=Lax` alone, matching the protection the Slack-bind pair already had. The hosting pages issue the token; a rejected POST returns 400 (forms) or 403 (JSON) without performing the action. Token comparison is UTF-8-bytes-based (including the pre-existing Slack-bind check): the str overload of `compare_digest` raises on non-ASCII input, so a crafted token previously produced a 500 instead of a clean rejection.
+- The workspace-prompt (CLAUDE.md) renderer and the admin save-validation/preview endpoints now render admin-authored template content through the shared sandboxed Jinja2 environment (`make_prompt_env`) instead of a bare `jinja2.Environment`, closing an SSTI defense-in-depth gap; the guard test that scans prompt-render modules for bare environments now covers both modules.
+- The bundled analyst-workspace `settings.json` registers its Bash `PreToolUse` guard hook in the nested `hooks: [{type, command}]` shape Claude Code actually loads — the previous flat shape silently registered nothing, so the sandbox guard script never ran. A new test pins the registration shape and the hook path.
+- nodejs-dashboard data-app scaffold: `vite` bumped `^5.3.3` → `^6.4.3` (clears three upstream dependency advisories: `server.fs.deny` bypass, optimized-deps `.map` path traversal, and launch-editor NTLMv2 hash disclosure) and `@vitejs/plugin-react` `^4.3.1` → `^4.7.0` to match.
 - Admin god-mode observability: when the Admin short-circuit in `can_access` grants a resource the admin holds no explicit group grant for, a deduplicated `god_mode_bypass` log line records who reached what. Observability only — access decisions are unchanged; the data shows which surfaces actually rely on god-mode before any future narrowing.
 
 ## [0.77.33] - 2026-08-03
@@ -45,11 +50,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-- Added `SECURITY.md`: vulnerabilities are reported through GitHub private vulnerability reporting, not public issues.
-- The remaining state-changing HTML form POSTs — `/admin/contribute-skill`, its per-plugin delete action, and `/me/profile/refetch-groups` — now require a double-submit CSRF token (a `web_csrf` cookie matching a hidden form field, or the `X-CSRF-Token` header for the profile page's JS call) instead of relying on `SameSite=Lax` alone, matching the protection the Slack-bind pair already had. The hosting pages issue the token; a rejected POST returns 400 (forms) or 403 (JSON) without performing the action.
-- The workspace-prompt (CLAUDE.md) renderer and the admin save-validation/preview endpoints now render admin-authored template content through the shared sandboxed Jinja2 environment (`make_prompt_env`) instead of a bare `jinja2.Environment`, closing an SSTI defense-in-depth gap; the guard test that scans prompt-render modules for bare environments now covers both modules.
-- The bundled analyst-workspace `settings.json` registers its Bash `PreToolUse` guard hook in the nested `hooks: [{type, command}]` shape Claude Code actually loads — the previous flat shape silently registered nothing, so the sandbox guard script never ran. A new test pins the registration shape and the hook path.
-- nodejs-dashboard data-app scaffold: `vite` bumped `^5.3.3` → `^6.4.3` (clears three upstream dependency advisories: `server.fs.deny` bypass, optimized-deps `.map` path traversal, and launch-editor NTLMv2 hash disclosure) and `@vitejs/plugin-react` `^4.3.1` → `^4.7.0` to match.
 
 ## [0.77.32] - 2026-07-30
 
