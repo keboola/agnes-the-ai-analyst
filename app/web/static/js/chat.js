@@ -1317,7 +1317,16 @@ function renderApprovalRequest(frame) {
     b.className = `cloud-chat-approval-btn ${cls}`;
     b.textContent = label;
     b.onclick = () => {
-      ws?.send(
+      // Only disable the buttons once the decision is actually on the wire.
+      // If the socket is down/reconnecting, ws?.send() would silently no-op
+      // while the buttons still greyed out — the card would freeze with
+      // nothing sent, and the pending approval would sit until it times out.
+      // Keep them clickable and tell the user to retry (review finding #1145).
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setStatus("Not connected — reconnecting. Try the approval again in a moment.", "warn");
+        return;
+      }
+      ws.send(
         JSON.stringify({ type: "approval_decision", request_id: frame.request_id, decision })
       );
       actions.querySelectorAll("button").forEach((x) => {
