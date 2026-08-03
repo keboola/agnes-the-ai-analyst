@@ -33,7 +33,14 @@ GLOBAL_UPDATE_HOOK_CMD = 'bash -c "( nohup agnes update --quiet </dev/null >/dev
 
 
 def user_claude_md_path() -> Path:
-    return Path.home() / ".claude" / "CLAUDE.md"
+    """The user-level CLAUDE.md Claude Code actually reads.
+
+    Derived from the same root as :func:`user_settings_path` so a
+    ``CLAUDE_CONFIG_DIR`` relocation moves the rails block along with the
+    settings/hook writes — otherwise the block would land in a file Claude
+    Code never loads for that user.
+    """
+    return user_settings_path().parent / "CLAUDE.md"
 
 
 def _split_on_block(text: str) -> tuple[str, str, str] | None:
@@ -119,7 +126,13 @@ def remove_rails_block(claude_md: Path) -> str:
     if parts is None:
         return "absent"
     before, _inside, after = parts
-    merged = before.rstrip("\n") + ("\n" if before.strip() else "") + after.lstrip("\n")
+    # Precisely invert `upsert_rails_block`: the splice appended exactly one
+    # "\n" after END (and never touched `before`), so dropping the block plus
+    # that single newline restores the pre-enable content byte-for-byte for
+    # every file that ended with a newline (spec §10 "byte-identical outside
+    # markers"). A file that lacked an EOF newline before enable keeps the
+    # one separator newline enable added — accepted cosmetic residue.
+    merged = before + (after[1:] if after.startswith("\n") else after)
     if not merged.strip():
         claude_md.unlink()
     else:
