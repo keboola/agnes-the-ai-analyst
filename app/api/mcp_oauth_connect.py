@@ -68,7 +68,37 @@ router = APIRouter(prefix="/api/mcp", tags=["mcp-oauth-connect"])
 #: 302 target is worth throttling anyway.
 _AUTHORIZE_RATE_LIMIT_PM = 6
 
-_CONNECT_ERROR_MAX_LEN = 200
+#: Fixed error-code → user-facing message map for the /me/connections banner.
+#: The callback redirect carries ONLY a code from this dict; the web page maps
+#: it back to the fixed message and renders :data:`CONNECT_ERROR_FALLBACK` for
+#: anything else, so no free text — ours or a crafted link's — ever reaches the
+#: Agnes-branded banner (Devin Review on #1130).
+CONNECT_ERROR_MESSAGES: Dict[str, str] = {
+    "as_denied": "you declined the authorization request",
+    "as_rejected": "the authorization server rejected the request",
+    "as_unauthorized_client": "this client is not authorized at the authorization server",
+    "as_invalid_scope": "the authorization server rejected the requested scope",
+    "as_server_error": "the authorization server reported an internal error",
+    "as_unavailable": "the authorization server is temporarily unavailable — try again",
+    "as_error": "the authorization server returned an error — try again",
+    "missing_code_or_state": "the authorization server's redirect was incomplete — try again",
+    "state_invalid": "the connect request is invalid or expired — try again",
+    "flow_used_or_expired": "the connect request was already used or expired — try again",
+    "session_mismatch": "the connect request does not match your session — try again",
+    "source_missing": "the source no longer exists",
+    "source_not_oauth": "the source is no longer configured for OAuth connect",
+    "not_granted": "you no longer have access to this source",
+    "client_registration_missing": "the OAuth client registration is missing — contact your admin",
+    "public_url_unset": "the server's public URL is not configured — contact your admin",
+    "token_exchange_failed": "token exchange with the authorization server failed — try again or contact your admin",
+    "as_unreachable": "could not reach the authorization server — try again or contact your admin",
+    "as_address_rejected": "the authorization server's address was rejected — contact your admin",
+    "vault_key_not_configured": "the server's vault key is not configured — contact your admin",
+}
+
+#: Rendered for any ``?connect_error=`` value not in the map — including
+#: hand-crafted links.
+CONNECT_ERROR_FALLBACK = "the connection attempt failed — try again or contact your admin"
 
 
 def _audit(actor_id: str, action: str, resource: str, params: Optional[Dict[str, Any]] = None) -> None:
@@ -88,12 +118,14 @@ def _get_source_or_404(source_id: str) -> Dict[str, Any]:
     return src
 
 
-def _err_redirect(message: str) -> RedirectResponse:
-    """Land the browser back on /me/connections with a short, redacted
-    error — never a raw 500/400 page, and never token/code material in the
-    query string (spec §3/§6)."""
-    safe = (message or "connect failed")[:_CONNECT_ERROR_MAX_LEN]
-    return RedirectResponse(url=f"/me/connections?connect_error={quote(safe)}", status_code=303)
+def _err_redirect(code: str) -> RedirectResponse:
+    """Land the browser back on /me/connections with a short error CODE from
+    :data:`CONNECT_ERROR_MESSAGES` — never free text (the page maps the code
+    to a fixed message), never a raw 500/400 page, and never token/code
+    material in the query string (spec §3/§6)."""
+    if code not in CONNECT_ERROR_MESSAGES:
+        code = "connect_failed"  # renders CONNECT_ERROR_FALLBACK on the page
+    return RedirectResponse(url=f"/me/connections?connect_error={quote(code)}", status_code=303)
 
 
 @router.get("/sources/{source_id}/oauth/authorize")
@@ -221,31 +253,32 @@ async def oauth_connect_callback(
         # NEVER echo error/error_description — the callback URL is openable
         # by anyone (crafted link), so its params are attacker-controllable
         # text that must not render as an Agnes banner (Devin Review on
-        # #1130). Map known RFC 6749 codes to fixed messages instead.
-        _KNOWN = {
-            "access_denied": "you declined the authorization request",
-            "invalid_request": "the authorization server rejected the request",
-            "unauthorized_client": "this client is not authorized at the authorization server",
-            "unsupported_response_type": "the authorization server rejected the request",
-            "invalid_scope": "the authorization server rejected the requested scope",
-            "server_error": "the authorization server reported an internal error",
-            "temporarily_unavailable": "the authorization server is temporarily unavailable — try again",
+        # #1130). Map known RFC 6749 codes to our fixed banner codes instead.
+        _AS_CODES = {
+            "access_denied": "as_denied",
+            "invalid_request": "as_rejected",
+            "unauthorized_client": "as_unauthorized_client",
+            "unsupported_response_type": "as_rejected",
+            "invalid_scope": "as_invalid_scope",
+            "server_error": "as_server_error",
+            "temporarily_unavailable": "as_unavailable",
         }
         logger.warning("mcp oauth callback error param: %s", (error or "")[:100])
-        return _err_redirect(_KNOWN.get(error, "the authorization server returned an error — try again"))
+        return _err_redirect(_AS_CODES.get(error, "as_error"))
     if not code or not state:
-        return _err_redirect("missing code or state")
+        return _err_redirect("missing_code_or_state")
 
     try:
         state_data = verify_connect_state(state)
     except ConnectStateInvalid as exc:
-        return _err_redirect(f"invalid or expired connect request: {exc}")
+        logger.info("mcp oauth callback state invalid: %s", exc)
+        return _err_redirect("state_invalid")
 
     # Single-use: a second callback for the same nonce (replay, or a user
     # who double-clicks "authorize") gets None and a generic error.
     flow = mcp_oauth_flows_repo().consume(state_data["nonce"])
     if flow is None:
-        return _err_redirect("connect request already used or expired")
+        return _err_redirect("flow_used_or_expired")
 
     # Login-CSRF + mix-up guard: the signed state, the DB-backed flow row,
     # and the CURRENT session must all agree on who/what this flow is for.
@@ -255,33 +288,36 @@ async def oauth_connect_callback(
             state_data.get("source_id"),
             flow.get("source_id"),
         )
-        return _err_redirect("connect request does not match your session")
+        return _err_redirect("session_mismatch")
 
     source_id = state_data["source_id"]
     src = mcp_sources_repo().get(source_id)
     if src is None:
-        return _err_redirect("source no longer exists")
+        return _err_redirect("source_missing")
     try:
         _require_oauth_source(src)
+    except HTTPException:
+        return _err_redirect("source_not_oauth")
+    try:
         # Re-check the grant: it may have been revoked while the user was
         # away at the AS (spec §3).
         _require_source_grant(source_id, user)
-    except HTTPException as exc:
-        return _err_redirect(str(exc.detail))
+    except HTTPException:
+        return _err_redirect("not_granted")
 
     client_row = mcp_source_oauth_clients_repo().get(source_id)
     if client_row is None:
-        return _err_redirect("oauth client registration is missing")
+        return _err_redirect("client_registration_missing")
 
     from app.api.admin_mcp import _oauth_redirect_uri
 
     try:
         redirect_uri = _oauth_redirect_uri()
-    except HTTPException as exc:
+    except HTTPException:
         # public_url unset raises HTTPException(409) — on the browser-facing
         # callback EVERY failure mode must land back on /me/connections, not
         # a raw error page (Devin Review on #1130).
-        return _err_redirect(str(exc.detail))
+        return _err_redirect("public_url_unset")
 
     try:
         async with build_oauth_http_client() as http_client:
@@ -301,16 +337,16 @@ async def oauth_connect_callback(
         # externally controlled content that must not be replayed into a
         # user-facing query string (RBAC review on PR 2).
         logger.warning("mcp oauth token exchange failed for source=%s: %s", source_id, _exc_summary(exc))
-        return _err_redirect("token exchange with the authorization server failed — try again or contact your admin")
+        return _err_redirect("token_exchange_failed")
     except httpx.HTTPError as exc:
         logger.warning("mcp oauth token exchange transport error for source=%s: %s", source_id, _exc_summary(exc))
-        return _err_redirect("could not reach the authorization server — try again or contact your admin")
+        return _err_redirect("as_unreachable")
     except SSRFRejected as exc:
         # The token endpoint resolved to a blocked address (DNS changed since
         # registration, or a misconfigured manual entry) — still a friendly
         # landing, not a raw 500 (Devin Review on #1130).
         logger.warning("mcp oauth token exchange SSRF-rejected for source=%s: %s", source_id, _exc_summary(exc))
-        return _err_redirect("the authorization server's address was rejected — contact your admin")
+        return _err_redirect("as_address_rejected")
 
     expires_at = None
     if token_set.expires_in:
@@ -325,7 +361,7 @@ async def oauth_connect_callback(
             scopes=token_set.scopes,
         )
     except VaultKeyNotConfiguredError:
-        return _err_redirect("vault_key_not_configured: contact your admin")
+        return _err_redirect("vault_key_not_configured")
 
     _audit(user["id"], "mcp_oauth.connect", f"mcp_source:{source_id}")
     return RedirectResponse(url=f"/me/connections?connected={quote(source_id)}", status_code=303)
