@@ -250,8 +250,11 @@ class ApprovalGate:
         if not self._enabled:
             return _hook_output(
                 "deny",
-                (reason + " — " if reason else "") + "This surface cannot prompt for approval. Ask the user to "
-                "confirm in chat, or have them run the command themselves.",
+                (reason + " — " if reason else "")
+                + "Approval cards render only in web chat, and this session was not started there "
+                "(opening it on the web via a deep link does not change that — the setting is fixed "
+                "when the session starts). Ask the user to confirm and run the command themselves, "
+                "or to start the task in a web chat.",
             )
         self._counter += 1
         request_id = f"appr-{os.getpid()}-{self._counter}"
