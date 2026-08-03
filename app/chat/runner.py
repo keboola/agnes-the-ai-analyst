@@ -759,22 +759,24 @@ async def _real_agent_loop(
     # __dataclass_fields__ probe used for include_partial_messages below
     # (review finding on #1145).
     _hooks_supported = "hooks" in getattr(ClaudeAgentOptions, "__dataclass_fields__", {})
-    if gate is not None and not _hooks_supported:
-        gate.disable_unsupported(
-            "the installed claude-agent-sdk ClaudeAgentOptions has no `hooks` field, so the "
-            "PreToolUse gate cannot be registered"
-        )
-    if gate is not None and _hooks_supported:
+    if gate is not None:
         try:
             from claude_agent_sdk import HookMatcher  # type: ignore[attr-defined]
         except ImportError:
             HookMatcher = None
-        if HookMatcher is None:
+
+        if not _hooks_supported or HookMatcher is None:
+            # Nothing can be registered, so nothing can deny either — be
+            # honest about that rather than calling it fail-closed. The
+            # sandbox template's SDK is outside the wheel's pin (the E2B
+            # :latest tag is mutable), so log loudly enough for an operator
+            # to notice that ask-flagged commands are running unasked.
             gate.disable_unsupported(
-                "the installed claude-agent-sdk provides no HookMatcher, so the PreToolUse gate "
-                "cannot be registered"
+                "the installed claude-agent-sdk cannot register a PreToolUse hook "
+                f"({'ClaudeAgentOptions has no `hooks` field' if not _hooks_supported else 'no HookMatcher'}); "
+                "APPROVALS ARE NOT ENFORCED in this session — upgrade the sandbox template's SDK"
             )
-        if HookMatcher is not None:
+        else:
 
             async def _gate_hook(input_data, tool_use_id, context):
                 return await gate.check(input_data, tool_use_id, context)
@@ -786,29 +788,30 @@ async def _real_agent_loop(
             # docs/cloud-chat.md: an operator override that adds `ask` rules
             # for Write/Edit/WebFetch would need this widened to see them
             # (review note on #1145).
-            # HookMatcher.timeout is newer than HookMatcher itself; on an SDK
-            # build that predates it, passing timeout= raises TypeError. The
-            # margin over the gate's own await is what stops the CLI-side
-            # matcher timeout from firing first.
             #
-            # Without it we FAIL CLOSED rather than arm the gate anyway: the
-            # gate's own asyncio.wait_for bounds only the gate's wait, not the
-            # CLI's. If the CLI applied its own default hook timeout and then
-            # treated the timed-out PreToolUse hook as non-blocking, the tool
-            # would run while a human was still being asked, and their later
-            # decision would land after the fact — the barrier degrading into
-            # a delay, silently. An approval gate that cannot guarantee it
-            # blocks must not claim to (review finding on #1145).
+            # HookMatcher.timeout is newer than HookMatcher itself. The margin
+            # over the gate's own await is what stops the CLI-side matcher
+            # timeout from firing first; without it the CLI could time the
+            # hook out and treat it as non-blocking, running the tool while a
+            # human is still being asked.
+            #
+            # So on an SDK without it we still REGISTER the hook, with the
+            # gate disabled. A disabled gate denies instantly instead of
+            # waiting, so there is nothing for a CLI-side timeout to cut
+            # short — whereas skipping registration would leave nothing to
+            # deny at all, and ask-flagged commands would run unasked: the
+            # exact behavior this change exists to remove (review finding
+            # on #1145).
             try:
                 _matcher = HookMatcher(matcher="Bash", hooks=[_gate_hook], timeout=gate.timeout_seconds + 30)
             except TypeError:
                 gate.disable_unsupported(
                     "the installed claude-agent-sdk HookMatcher takes no `timeout`, so the gate "
-                    "cannot guarantee the CLI blocks while a human is asked; upgrade the SDK to "
-                    "restore approvals"
+                    "cannot block safely; ask-flagged commands are DENIED instead of confirmed — "
+                    "upgrade the SDK to restore approvals"
                 )
-            else:
-                options_kwargs["hooks"] = {"PreToolUse": [_matcher]}
+                _matcher = HookMatcher(matcher="Bash", hooks=[_gate_hook])
+            options_kwargs["hooks"] = {"PreToolUse": [_matcher]}
     # Token-level streaming (include_partial_messages) when the installed SDK
     # supports it: the UI then renders text as the model produces it instead
     # of one token frame per completed content block (which for a long answer

@@ -9,6 +9,7 @@ fake-agent runner subprocess (``__approval__:`` trigger).
 import asyncio
 import json
 import os
+import pathlib
 import sys
 
 import pytest
@@ -448,3 +449,31 @@ def test_installed_sdk_hookmatcher_supports_timeout():
         "installed claude-agent-sdk HookMatcher has no timeout field; the approval gate "
         "will refuse to arm (see ApprovalGate.disable_unsupported)"
     )
+
+
+def test_disabled_gate_is_still_registered_so_it_can_deny(tmp_path):
+    """A disabled gate must still be wired into the SDK, or it denies nothing.
+
+    Setting `_enabled = False` only produces a deny if the hook is actually
+    called. Skipping registration on an SDK whose HookMatcher takes no
+    timeout left nothing to deny — ask-flagged commands ran unasked, the
+    exact behavior this feature removes. A disabled gate answers instantly,
+    so there is no wait for a CLI-side hook timeout to cut short.
+    """
+    import app.chat.runner as runner
+
+    import asyncio
+
+    hook = tmp_path / "hook.py"
+    hook.write_text("import json\nprint(json.dumps({'permissionDecision': 'ask', 'permissionDecisionReason': 'risky'}))\n")
+
+    gate = runner.ApprovalGate.__new__(runner.ApprovalGate)
+    gate._enabled = False
+    gate._disabled_reason = "SDK too old"
+    gate._session_approved = set()
+    gate._hook_path = hook
+
+    res = asyncio.run(gate.check({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}, None, None))
+    hso = res.get("hookSpecificOutput", res)
+    assert hso.get("permissionDecision") == "deny", res
+    assert "SDK too old" in (hso.get("permissionDecisionReason") or ""), res
