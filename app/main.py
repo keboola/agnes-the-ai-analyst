@@ -540,18 +540,23 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     2 days on prod) and a non-graceful exit puts days of user/PAT/grant
     writes at the mercy of a cross-version WAL replay. CHECKPOINT runs in
     a worker thread — it can block while DuckDB flushes a large WAL.
+    Threaded calls go through ``to_thread_drain_on_cancel`` so shutdown
+    cancellation waits for an in-flight CHECKPOINT/read instead of letting
+    the lifespan's ``close_system_db()`` race it (see that helper's
+    docstring in ``app/api/health_probes.py``).
     """
+    from app.api.health_probes import to_thread_drain_on_cancel
     from app.secrets import reapply_all_overlay_tokens_from_vault
     from src.db import checkpoint_operational_db, checkpoint_system_db
 
     while True:
         await asyncio.sleep(interval_s)
         try:
-            await asyncio.to_thread(checkpoint_system_db)
+            await to_thread_drain_on_cancel(checkpoint_system_db)
             # operational.duckdb is a second long-lived singleton with the same
             # unbounded-WAL exposure; both accessors no-op when their singleton
             # isn't open, so this is cheap on every backend.
-            await asyncio.to_thread(checkpoint_operational_db)
+            await to_thread_drain_on_cancel(checkpoint_operational_db)
         except Exception:
             # checkpoint_*_db already swallow DB errors; this guards the loop
             # itself (e.g. to_thread failure) so it never dies.
@@ -564,7 +569,7 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
             # app.secrets.persist_overlay_token's FLUSHALL note. Cheap:
             # no-ops instantly when the vault isn't configured, otherwise one
             # small indexed table scan plus a handful of decrypts.
-            await asyncio.to_thread(reapply_all_overlay_tokens_from_vault)
+            await to_thread_drain_on_cancel(reapply_all_overlay_tokens_from_vault)
         except Exception:
             logger.exception("vault overlay periodic re-read failed; loop continues")
 

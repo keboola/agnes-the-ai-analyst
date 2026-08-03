@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Graceful-shutdown race that could hang the process (and tests, as a 60s pytest-timeout inside `TestClient.__exit__`): cancelling the readiness write-canary — and the periodic state-DB CHECKPOINT tick — abandoned an in-flight worker-thread DB call (`asyncio.to_thread` cancellation semantics), letting the lifespan close the DuckDB singletons while the write was still executing; DuckDB could then wedge inside `conn.execute` and event-loop teardown deadlocked joining the executor thread (also visible as `close_system_db: CHECKPOINT failed: there are other write transactions active`). Both loops now drain the in-flight call on cancellation (`to_thread_drain_on_cancel` in `app/api/health_probes.py`) before shutdown proceeds to close the DB.
 
 ### Removed
 
