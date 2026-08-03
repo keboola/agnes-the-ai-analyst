@@ -24,7 +24,7 @@ from typing import Any, Callable
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from src.mcp_tooling import progressive_tool
+from src.mcp_tooling import ensure_output_size, progressive_tool
 
 
 def _split_marketplace_id(item_id: str) -> tuple[str, str, str]:
@@ -401,7 +401,11 @@ def register_foundation_tools(
                 timeout=30,
             )
             rm.raise_for_status()
-        return {"schema": rs.json(), "sample": rm.json()}
+        return ensure_output_size(
+            {"schema": rs.json(), "sample": rm.json()},
+            "describe",
+            hint="lower `rows` or select specific columns with the query tool",
+        )
 
     @tool()
     async def query(sql: str, limit: int = 1000) -> dict:
@@ -425,7 +429,7 @@ def register_foundation_tools(
                 timeout=60,
             )
             r.raise_for_status()
-            return r.json()
+            return ensure_output_size(r.json(), "query")
 
     @tool()
     async def skills() -> dict:

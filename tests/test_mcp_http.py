@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.mcp_tooling import MCPOutputTooLarge
+
 
 # ── helpers ─────────────────────────────────────────────────────────────────────
 
@@ -809,3 +811,47 @@ class TestWireDescriptions:
         t = mod.mcp._tool_manager.get_tool("query")
         assert "tool_docs('query')" in t.description
         assert "Args:" not in t.description  # detail moved off the wire
+
+
+# ── output-size guard ───────────────────────────────────────────────────────────
+
+
+class TestOutputGuard:
+    def _query(self, mod, resp_data):
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            MC.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=_mock_resp(resp_data)
+            )
+            return _run(mod.query("SELECT x FROM t"))
+
+    def test_query_over_cap_raises_with_guidance(self, monkeypatch):
+        mod = _import_mod()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "1000")
+        big = {"columns": ["x"], "rows": [["y" * 5000]], "truncated": False}
+        with pytest.raises(MCPOutputTooLarge, match="output cap"):
+            self._query(mod, big)
+
+    def test_query_under_cap_passes(self, monkeypatch):
+        mod = _import_mod()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "1000")
+        small = {"columns": ["x"], "rows": [[1]], "truncated": False}
+        assert self._query(mod, small) == small
+
+    def test_env_zero_disables_guard(self, monkeypatch):
+        mod = _import_mod()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "0")
+        big = {"columns": ["x"], "rows": [["y" * 500_000]], "truncated": False}
+        assert self._query(mod, big) == big
+
+    def test_describe_over_cap_mentions_rows_hint(self, monkeypatch):
+        mod = _import_mod()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "500")
+        wide = {"columns": [{"name": "x", "type": "VARCHAR", "blob": "z" * 5000}]}
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            MC.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=_mock_resp(wide)
+            )
+            with pytest.raises(MCPOutputTooLarge, match="rows"):
+                _run(mod.describe("t1"))
