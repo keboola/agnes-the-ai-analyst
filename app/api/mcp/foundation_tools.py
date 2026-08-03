@@ -24,6 +24,8 @@ from typing import Any, Callable
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from src.mcp_tooling import progressive_tool
+
 
 def _split_marketplace_id(item_id: str) -> tuple[str, str, str]:
     """Split a marketplace item id into ``(source, part1, part2)``.
@@ -74,6 +76,10 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "admin_store_lint_audit",
     "admin_store_lint_dismiss",
     "documentation_api",
+    # On-demand full tool docs — wire descriptions carry only the first
+    # docstring paragraph; this returns the rest. MCP-surface-only (meta-tool
+    # over the MCP tool registry itself; no REST/CLI analogue applies).
+    "tool_docs",
     "list_contributed_skills",
     "contribute_skill",
     "delete_contributed_skill",
@@ -164,6 +170,11 @@ DATA_APP_TOOL_NAMES: tuple[str, ...] = (
 )
 
 
+# Full docstrings by tool name — the wire description carries only the first
+# paragraph; the rest is served on demand by the `tool_docs` tool.
+TOOL_DOCS: dict[str, str] = {}
+
+
 def register_foundation_tools(
     mcp: FastMCP,
     *,
@@ -179,8 +190,9 @@ def register_foundation_tools(
             request context (PAT context var for SSE, OAuth access token for
             the streamable transport).
     """
+    tool = progressive_tool(mcp, TOOL_DOCS)
 
-    @mcp.tool()
+    @tool()
     async def server_info() -> dict:
         """Return Agnes server health and your account email.
 
@@ -202,7 +214,7 @@ def register_foundation_tools(
                 pass
         return result
 
-    @mcp.tool()
+    @tool()
     async def catalog() -> dict:
         """List all tables available to you (RBAC-filtered).
 
@@ -220,7 +232,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def collections_list() -> dict:
         """List the file Collections you can access (RBAC-filtered).
 
@@ -234,7 +246,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def collection_get(collection_id: str) -> dict:
         """Show one Collection's detail plus its files and per-file status.
 
@@ -250,7 +262,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
         """Hybrid search across your accessible file Collections (RBAC-filtered).
 
@@ -278,7 +290,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def knowledge_search(query: str, k: int = 10) -> dict:
         """One query across documents, the knowledge base, and the data catalog.
 
@@ -305,7 +317,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def glossary_search(query: str, k: int = 10) -> dict:
         """Search Keboola-imported business-term definitions (glossary).
 
@@ -328,7 +340,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def collections_reingest(collection_id: str, file_id: str) -> dict:
         """Re-run ingestion for one file in a Collection (requires access to the collection).
 
@@ -350,7 +362,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def schema(table_id: str) -> dict:
         """Show column names, types, and SQL dialect hints for a table.
 
@@ -365,7 +377,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def describe(table_id: str, rows: int = 5) -> dict:
         """Show schema plus sample rows for a table.
 
@@ -391,7 +403,7 @@ def register_foundation_tools(
             rm.raise_for_status()
         return {"schema": rs.json(), "sample": rm.json()}
 
-    @mcp.tool()
+    @tool()
     async def query(sql: str, limit: int = 1000) -> dict:
         """Execute a SQL query against Agnes data.
 
@@ -415,7 +427,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def skills() -> dict:
         """List all skills from marketplace plugins you are authorised to access.
 
@@ -440,7 +452,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def chat_skills() -> dict:
         """List skills + slash commands invokable in your web chat sandbox.
 
@@ -464,7 +476,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def stack_browse(resource_type: str) -> dict:
         """List resources you could add to your stack (RBAC-granted candidates).
 
@@ -490,7 +502,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def stack_subscribe(resource_type: str, resource_id: str) -> dict:
         """Subscribe to an available data package or memory domain.
 
@@ -522,7 +534,7 @@ def register_foundation_tools(
             body["next_step"] = "Run `agnes pull` to download the new tables."
         return body
 
-    @mcp.tool()
+    @tool()
     async def stack_unsubscribe(resource_type: str, resource_id: str) -> dict:
         """Unsubscribe from a data package or memory domain in your stack.
 
@@ -545,7 +557,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"unsubscribed": True}
 
-    @mcp.tool()
+    @tool()
     async def store_rate(entity_id: str, vote: int) -> dict:
         """Rate a store / marketplace entity thumbs up/down (#398).
 
@@ -571,7 +583,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def store_status(entity_id: str) -> dict:
         """Check the review-pipeline status of a flea-market entity you own.
 
@@ -597,7 +609,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def store_publish_markdown(
         name: str,
         skill_md: str,
@@ -640,7 +652,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def marketplace_search(
         query: str = "",
         type: str = "",
@@ -687,7 +699,7 @@ def register_foundation_tools(
                 items.extend(r.json().get("items", []))
         return {"items": items, "total": len(items)}
 
-    @mcp.tool()
+    @tool()
     async def marketplace_detail(item_id: str) -> dict:
         """Show full details for one marketplace item (curated or flea).
 
@@ -713,7 +725,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def marketplace_add(item_id: str) -> dict:
         """Add a marketplace item (plugin, skill, or agent) to the caller's stack.
 
@@ -744,7 +756,7 @@ def register_foundation_tools(
             "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to activate it.",
         }
 
-    @mcp.tool()
+    @tool()
     async def marketplace_remove(item_id: str) -> dict:
         """Remove a marketplace item from the caller's stack.
 
@@ -769,7 +781,7 @@ def register_foundation_tools(
             "next_step": "Run /update-agnes-plugins in Claude Code (or `agnes update`) to apply it.",
         }
 
-    @mcp.tool()
+    @tool()
     async def store_update(
         entity_id: str,
         description: str = "",
@@ -815,7 +827,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def store_delete(entity_id: str) -> dict:
         """Delete an owned Flea Market entity (owner or admin).
 
@@ -837,7 +849,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"deleted": True, "entity_id": entity_id}
 
-    @mcp.tool()
+    @tool()
     async def admin_store_lint_findings(include_dismissed: bool = False) -> dict:
         """List advisory skill-lint findings across the store (admin only).
 
@@ -860,7 +872,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_store_lint_audit(force: bool = False) -> dict:
         """Run a full skill-lint audit over published skills now (admin only).
 
@@ -884,7 +896,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_store_lint_dismiss(entity_id: str, rule_id: str) -> dict:
         """Dismiss one advisory finding until the entity's content changes (admin only).
 
@@ -908,7 +920,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def documentation_api() -> str:
         """Return the curated Agnes REST API reference as Markdown.
 
@@ -925,7 +937,7 @@ def register_foundation_tools(
         except OSError:
             return "# API reference unavailable\n\nThe source markdown file is missing from this deployment."
 
-    @mcp.tool()
+    @tool()
     async def list_contributed_skills() -> dict:
         """List all plugins in the Agnes Contributed marketplace (admin only).
 
@@ -944,7 +956,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def contribute_skill(skill_md: str, grant_group: str = "Admin") -> dict:
         """Publish a SKILL.md into the Agnes Contributed marketplace (admin only).
 
@@ -962,7 +974,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def delete_contributed_skill(name: str) -> dict:
         """Remove a contributed skill by plugin name (admin only).
 
@@ -978,7 +990,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"deleted": name, "status": r.status_code}
 
-    @mcp.tool()
+    @tool()
     async def admin_config_surface() -> dict:
         """Return the complete per-instance configuration surface (admin only).
 
@@ -1003,7 +1015,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_source_connections_list(source_type: str = "") -> dict:
         """List named source connections (multi-project Keboola support).
 
@@ -1026,7 +1038,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"connections": r.json()}
 
-    @mcp.tool()
+    @tool()
     async def admin_knowledge_digests_list() -> dict:
         """List all maintained digests (admin only).
 
@@ -1053,7 +1065,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_knowledge_digest_get(digest_id: str) -> dict:
         """Show one maintained digest's full detail (admin only).
 
@@ -1077,7 +1089,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_knowledge_digest_create(
         slug: str,
         title: str,
@@ -1121,7 +1133,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_knowledge_digest_update(
         digest_id: str,
         title: str | None = None,
@@ -1163,7 +1175,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_knowledge_digest_delete(digest_id: str) -> dict:
         """Delete a maintained digest (admin only).
 
@@ -1187,7 +1199,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"deleted": digest_id}
 
-    @mcp.tool()
+    @tool()
     async def my_secret_test(source_id: str) -> dict:
         """Verify your own stored credential for a per_user MCP source.
 
@@ -1223,7 +1235,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_jobs_list(status: str = "", kind: str = "", limit: int = 50) -> dict:
         """List jobs on the wave-2B durable job queue (admin only).
 
@@ -1256,7 +1268,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_job_get(job_id: str) -> dict:
         """Show one job's full detail, incl. payload and error (admin only).
 
@@ -1272,7 +1284,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_job_enqueue(kind: str, payload: dict | None = None, idempotency_key: str = "") -> dict:
         """Enqueue a job on the wave-2B worker runtime (admin only).
 
@@ -1301,7 +1313,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def admin_analytics_migrate(to: str) -> dict:
         """Migrate the analytics query surface between backends (admin only).
 
@@ -1337,7 +1349,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def agent_list() -> dict:
         """List your own agent profiles.
 
@@ -1364,7 +1376,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def agent_ask(slug: str, prompt: str, timeout_s: int = 120) -> dict:
         """One-shot synchronous request/response over one of your agents.
 
@@ -1399,7 +1411,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def agent_usage(slug: str, period: str = "") -> dict:
         """Show one of your agents' monthly token usage against its budget.
 
@@ -1430,7 +1442,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def data_apps_list(kind: str = "") -> dict:
         """List data apps you can see (RBAC-filtered).
 
@@ -1454,7 +1466,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def data_app_get(slug: str) -> dict:
         """Show one hosted data app's detail.
 
@@ -1471,7 +1483,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
         """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
@@ -1508,7 +1520,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def data_app_create_draft(slug: str, branch: str = "init") -> dict:
         """Create a draft of a prod data app on an iteration branch — app owner or Admin only.
 
@@ -1536,7 +1548,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
         """Tear down a draft of a prod data app — app owner or Admin only.
 
@@ -1563,7 +1575,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"status": "deleted"}
 
-    @mcp.tool()
+    @tool()
     async def data_app_git_credential(slug: str) -> dict:
         """Mint a fresh git push credential for a data app — app owner or Admin only.
 
@@ -1584,7 +1596,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def data_app_logs(slug: str, tail: int = 200) -> dict:
         """Show the last N lines of runner logs for a hosted data app — app owner or Admin only.
 
@@ -1605,7 +1617,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @mcp.tool()
+    @tool()
     async def data_app_set_description(slug: str, description: str) -> dict:
         """Set the admin description override on a managed (linked) data app.
 
@@ -1645,7 +1657,7 @@ def register_foundation_tools(
         except Exception:
             return False
 
-    @mcp.tool()
+    @tool()
     async def agnes_data_app_preview(slug: str, url: str = "") -> dict:
         """Open or refresh the in-chat split-pane preview of a hosted data app.
 
@@ -1695,7 +1707,7 @@ def register_foundation_tools(
         # itself via a same-origin re-fetch of the grant endpoint.
         return {"render": "data_app_preview", "slug": slug, "url": url}
 
-    @mcp.tool()
+    @tool()
     async def agnes_data_app_refresh(slug: str) -> dict:
         """Force-reload the in-chat preview pane for a hosted data app.
 
@@ -1711,7 +1723,7 @@ def register_foundation_tools(
         """
         return {"render": "data_app_preview_refresh", "slug": slug}
 
-    @mcp.tool()
+    @tool()
     async def agnes_data_app_close(slug: str) -> dict:
         """Tear down the in-chat preview pane for a hosted data app.
 
@@ -1728,7 +1740,7 @@ def register_foundation_tools(
         """
         return {"render": "data_app_preview_close", "slug": slug}
 
-    @mcp.tool()
+    @tool()
     async def agnes_data_app_credentials(slug: str) -> dict:
         """Show the shareable URL for a hosted data app — the TERMINAL
         render of a reply (spec §7): never follow this tool's result with
@@ -1760,5 +1772,14 @@ def register_foundation_tools(
             "url": detail.get("url"),
             "password": None,
         }
+
+    @tool()
+    async def tool_docs(tool_name: str) -> dict:
+        """Return the full reference documentation (docstring) for one registered MCP tool — arguments, return shape, and usage tips beyond the short description shown in the tool list."""
+        doc = TOOL_DOCS.get(tool_name)
+        if doc is None:
+            known = ", ".join(sorted(TOOL_DOCS))
+            raise ValueError(f"Unknown tool {tool_name!r}. Valid tool names: {known}")
+        return {"tool": tool_name, "docs": doc}
 
     return list(FOUNDATION_TOOL_NAMES)
