@@ -244,24 +244,35 @@ def _split_segments(cmd: str) -> list[str]:
     quotes) — an over-eager split can only over-ask, and refusing to scan at
     all would be the one genuinely unsafe option.
     """
-    try:
-        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        tokens = list(lex)
-    except ValueError:
-        return [p.strip() for p in re.split(r"[;&|\n]", cmd) if p.strip()]
-
     segments: list[str] = []
-    current: list[str] = []
-    for tok in tokens:
-        if tok in _SHELL_OPERATORS:
-            if current:
-                segments.append(shlex.join(current))
-                current = []
+    # Newlines first: shlex treats them as ordinary whitespace, so they would
+    # never produce a boundary and every line after the first would be read
+    # as arguments of the first command.
+    for line in cmd.split("\n"):
+        if not line.strip():
             continue
-        current.append(tok)
-    if current:
-        segments.append(shlex.join(current))
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            # `#` is NOT a comment introducer for our purposes: shlex would
+            # drop the rest of the line, and a stray hash in an argument
+            # would carry whatever follows it past every check.
+            lex.commenters = ""
+            tokens = list(lex)
+        except ValueError:
+            segments.extend(p.strip() for p in re.split(r"[;&|]", line) if p.strip())
+            continue
+
+        current: list[str] = []
+        for tok in tokens:
+            if tok in _SHELL_OPERATORS:
+                if current:
+                    segments.append(shlex.join(current))
+                    current = []
+                continue
+            current.append(tok)
+        if current:
+            segments.append(shlex.join(current))
     return segments
 
 
@@ -367,8 +378,15 @@ def _is_env_dump(seg: str) -> bool:
     if head == "printenv":
         return True  # printenv [VAR] still leaks env values
     if head == "env":
-        # a trailing non-flag token (VAR=val or a command) → not a pure dump
-        return not [t for t in rest[1:] if not t.startswith("-")]
+        # `env FOO=bar cmd` merely runs cmd (scanned on its own). But the
+        # trailing token can itself be a dump — `env printenv`, `env env` —
+        # so step over assignments and re-check the head rather than bailing
+        # on the mere presence of a trailing word (security review on #1141).
+        trailing = [t for t in rest[1:] if not t.startswith("-")]
+        trailing = [t for t in trailing if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t)]
+        if not trailing:
+            return True
+        return _basename(trailing[0]) in ("env", "printenv")
     return False
 
 
