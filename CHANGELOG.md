@@ -24,6 +24,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.77.33] - 2026-08-03
+
+### Added
+
+### Changed
+
+### Fixed
+
+- A failure constructing the LLM client (e.g. the now lazily-imported SDK missing from the environment) is handled like any other LLM failure instead of escaping the error boundary at each of its three call sites: the store-guardrails security review records `status='review_error'` (with the admin retry path) rather than pinning the submission at `pending_llm`, the skill-lint craft review degrades per its documented `CraftUnavailable` contract, and the admin telemetry-ask endpoint returns its documented `502 LLM call failed` instead of an unhandled 500.
+
+### Removed
+
+### Internal
+
+- Deferred the `anthropic`/`openai` SDK imports in `connectors/llm` to first API use; a module-level `__getattr__` keeps `<provider>.anthropic`/`<provider>.openai` resolvable for existing mock-patch targets. The two SDK type trees (hundreds of modules, 15–94 s wall on a cold filesystem cache) rode along with every `import app.main` via the store-guardrails chain and intermittently pushed `tests/test_api_design_rules.py` past its 60 s pytest-timeout; `import src.store_guardrails.runner` now pulls zero SDK modules (~10 s → ~0.07 s warm).
+
+### Security
+
 ## [0.77.32] - 2026-07-30
 
 ### Added
