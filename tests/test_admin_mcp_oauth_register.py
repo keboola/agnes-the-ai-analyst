@@ -730,3 +730,55 @@ def test_reregister_returning_the_same_client_id_does_not_revoke_it(seeded_app, 
         == 200
     )
     assert [c[1] for c in revokes3] == ["cid-stable"]
+
+
+def test_manual_client_refuses_to_silently_demote_an_undecryptable_secret(seeded_app, monkeypatch):
+    """After a vault-key rotation the stored secret is unreadable but still
+    THERE. Carrying the decrypted None forward would write NULL and quietly
+    convert a confidential registration into a public PKCE-only one. The save
+    is refused instead, and `has_client_secret` keeps telling the truth
+    (Devin Review on #1124)."""
+    from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+    sid = _seed_oauth_source(source_id="src_oauth_undecryptable")
+    body = {
+        "client_id": "cid-conf",
+        "client_secret": "s3cr3t",
+        "authorization_endpoint": "https://as.example.com/authorize",
+        "token_endpoint": "https://as.example.com/token",
+    }
+    assert (
+        seeded_app["client"]
+        .put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json=body)
+        .status_code
+        == 200
+    )
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    _reset_ephemeral_key_for_tests()
+
+    # A plain re-save with no secret must NOT wipe the column.
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}/oauth/client",
+        headers=_hdr(seeded_app),
+        json={**{k: v for k, v in body.items() if k != "client_secret"}, "scopes": "read"},
+    )
+    assert r.status_code == 409, r.text
+    assert "client_secret_undecryptable" in r.text
+
+    # The API still reports a secret is on file — it is unreadable, not gone.
+    got = seeded_app["client"].get(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app))
+    if got.status_code == 200:
+        assert got.json().get("has_client_secret") is True
+
+    # An explicit clear is still allowed — that is a deliberate decision.
+    assert (
+        seeded_app["client"]
+        .put(
+            f"/api/admin/mcp-sources/{sid}/oauth/client",
+            headers=_hdr(seeded_app),
+            json={**body, "client_secret": ""},
+        )
+        .status_code
+        == 200
+    )

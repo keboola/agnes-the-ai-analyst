@@ -294,7 +294,11 @@ def _serialize_oauth_client(row: Dict[str, Any]) -> Dict[str, Any]:
         "source_id": row.get("source_id"),
         "issuer": row.get("issuer"),
         "client_id": row.get("client_id"),
-        "has_client_secret": bool(row.get("client_secret")),
+        # Ciphertext presence, not decryptability: after a vault-key rotation
+        # the secret is unreadable but still THERE, and reporting False would
+        # tell an admin the registration is a public client when it is not
+        # (Devin Review on #1124).
+        "has_client_secret": bool(row.get("client_secret_present", row.get("client_secret"))),
         "authorization_endpoint": row.get("authorization_endpoint"),
         "token_endpoint": row.get("token_endpoint"),
         "scopes": row.get("scopes"),
@@ -990,6 +994,21 @@ async def set_oauth_client_config(
     client_secret = payload.client_secret
     if client_secret is None and same_client:
         client_secret = existing.get("client_secret")
+        if client_secret is None and existing.get("client_secret_present"):
+            # The column holds ciphertext we can no longer open (vault key
+            # rotated). Carrying the decrypted None forward would write NULL
+            # and silently demote a confidential registration to a public
+            # PKCE-only one — _client_auth_kwargs would stop sending Basic
+            # auth. Refusing is the honest move: the admin either re-enters
+            # the secret or clears it deliberately (Devin Review on #1124).
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "client_secret_undecryptable: a client secret is stored for this source but "
+                    "cannot be decrypted with the current vault key. Re-send it explicitly to "
+                    'replace it, or send "" to clear it and convert this to a public client.'
+                ),
+            )
     try:
         clients_repo.upsert(
             source_id,
