@@ -1473,7 +1473,7 @@
        Jinja condition: the view is a client-side, persisted choice, so the
        server can't know which one to render. #}
     <div class="fbar-select" id="lib-sortwrap" hidden>
-      <select id="lib-sort" aria-label="Sort library">
+      <select id="lib-sort" aria-label="Sort library" class="ds-dropdown-native">
         <option value="added_desc">Recently added</option>
         <option value="added_asc">Oldest first</option>
         <option value="name_asc">Name A–Z</option>
@@ -1483,6 +1483,25 @@
         <option value="sharing_asc">Sharing A–Z</option>
         <option value="sharing_desc">Sharing Z–A</option>
       </select>
+      {# Custom dropdown replacement (#1055) — same-container sibling of the
+         real select so the wrap's own `hidden` (grid-view-only) still governs
+         both, and paper-skin.css's `.fbar-select > .ds-dropdown` chevron-hiding
+         rule (a direct-child selector) applies. See _components.html's
+         `dropdown` macro / stack_unified.html's stk-sort for the pattern. #}
+      {{ ds.dropdown(
+        id='lib-sort-dd', target='lib-sort',
+        aria_label='Sort library', selected='added_desc',
+        options=[
+          {'value': 'added_desc', 'label': 'Recently added'},
+          {'value': 'added_asc', 'label': 'Oldest first'},
+          {'value': 'name_asc', 'label': 'Name A–Z'},
+          {'value': 'name_desc', 'label': 'Name Z–A'},
+          {'value': 'owner_asc', 'label': 'Owner A–Z'},
+          {'value': 'owner_desc', 'label': 'Owner Z–A'},
+          {'value': 'sharing_asc', 'label': 'Sharing A–Z'},
+          {'value': 'sharing_desc', 'label': 'Sharing Z–A'},
+        ],
+      ) }}
     </div>
 
     {# Table ⇄ grid toggle. Default is table; the choice persists in
@@ -1736,6 +1755,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script src="{{ static_url('js/filter_toolbar.js') }}"></script>
 <script>
 (function () {
