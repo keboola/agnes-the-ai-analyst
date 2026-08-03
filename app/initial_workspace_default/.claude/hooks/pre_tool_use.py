@@ -236,7 +236,12 @@ _SHELL_KEYWORDS = frozenset(
 # Redirection operators; the token after one is its target, not a command.
 _REDIRECTIONS = frozenset({"<", ">", ">>", "<<", "<<<", "&>", ">&", "2>", "2>>"})
 
-_OPERATOR_CHARS = frozenset(";&|()\n")
+# NOTE parentheses are deliberately NOT here. They group; they do not
+# separate commands the way `;`/`&`/`|` do, and treating them as separators
+# tore `rm -rf $(cat list)` into pieces whose head was no longer the command
+# (review finding on #1141). Grouping punctuation is stripped off tokens in
+# _split_segments instead.
+_OPERATOR_CHARS = frozenset(";&|\n")
 
 
 def _is_operator(tok: str) -> bool:
@@ -270,7 +275,18 @@ def _split_segments(cmd: str) -> list[str]:
     # Newlines then split: shlex treats them as ordinary whitespace, so they
     # would never produce a boundary and every line after the first would be
     # read as arguments of the first command.
+    heredoc_marker: str | None = None
     for line in joined.split("\n"):
+        # A heredoc body is DATA the command writes, not commands to run.
+        # Scanning it as commands refused ordinary file writes because of
+        # what the text said (review finding on #1141).
+        if heredoc_marker is not None:
+            if line.strip() == heredoc_marker:
+                heredoc_marker = None
+            continue
+        m = re.search(r"<<-?\s*([\"\']?)([A-Za-z_][A-Za-z0-9_]*)\1", line)
+        if m and "<<<" not in line:
+            heredoc_marker = m.group(2)
         if not line.strip():
             continue
         try:
@@ -306,7 +322,7 @@ def _split_segments(cmd: str) -> list[str]:
                 continue
             # brace/subshell grouping is punctuation around the real command,
             # not the command itself
-            stripped = tok.strip("{}")
+            stripped = tok.strip("{}()")
             if stripped:
                 current.append(stripped)
         if current:

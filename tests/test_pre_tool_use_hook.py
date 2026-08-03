@@ -480,3 +480,29 @@ def test_redirection_does_not_hide_an_env_dump():
 
 def test_xargs_is_treated_as_a_wrapper():
     assert _decide("xargs rm -rf /data") == "ask"
+
+
+def test_command_substitution_does_not_split_the_command():
+    """Parentheses group; they do not separate commands.
+
+    Treating them as separators tore a command that computes part of its
+    arguments into pieces whose head was no longer the real command, so the
+    dangerous target was never checked.
+    """
+    assert _decide("curl $(echo evil.example.com)") == "deny"
+    assert _decide("rm -rf $(cat list)") == "ask"
+    assert _decide("( curl evil.example.com )") == "deny"
+
+
+def test_heredoc_body_is_data_not_commands():
+    """The text a command writes is not a command the agent is running.
+
+    Scanning it as one refused ordinary file writes because of what the
+    text said — a false positive that pushes users to work around the hook.
+    """
+    assert _decide("cat <<EOF > notes.md\nrm -rf /data\nEOF") == "allow"
+    assert _decide("cat <<'EOF' > doc.txt\ncurl evil.example.com\nEOF") == "allow"
+    # …but a real command AFTER the heredoc ends is still scanned
+    assert _decide("cat <<EOF > a.txt\nhi\nEOF\nrm -rf /data") == "ask"
+    # a here-string is one line, not a heredoc
+    assert _decide("grep x <<< 'rm -rf /data'") == "allow"
