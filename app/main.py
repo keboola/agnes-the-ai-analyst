@@ -1556,6 +1556,7 @@ async def lifespan(app):
                         cpus=app.state.chat_config.docker_cpus,
                         pids_limit=app.state.chat_config.docker_pids_limit,
                         egress_mode=app.state.chat_config.docker_egress_mode,
+                        egress_proxy_url=app.state.chat_config.docker_egress_proxy_url,
                         max_total_sandboxes=app.state.chat_config.docker_max_total_sandboxes,
                     )
                 else:
