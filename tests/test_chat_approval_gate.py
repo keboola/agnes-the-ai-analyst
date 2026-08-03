@@ -10,6 +10,8 @@ import asyncio
 import json
 import os
 import sys
+
+import pytest
 from pathlib import Path
 
 from app.chat.runner import ApprovalGate
@@ -318,3 +320,60 @@ def test_runner_subprocess_roundtrip(tmp_path):
         assert rc == 0
 
     asyncio.run(_run())
+
+
+def test_cancelled_anext_closes_a_plain_async_generator():
+    """Why the turn loop keeps a shielded in-flight ``__anext__``.
+
+    ``asyncio.wait_for`` cancels its argument on timeout, and a cancellation
+    delivered while an async generator is suspended at an ``await`` closes
+    it — the next ``__anext__`` then raises ``StopAsyncIteration``. The turn
+    loop would read that as "stream finished" and end silently, which is
+    exactly the path an approval longer than one poll slice takes. This
+    pins the language behavior the shield exists for, so the mitigation is
+    not quietly removed later.
+    """
+    import asyncio
+
+    async def gen():
+        yield "a"
+        await asyncio.sleep(5)
+        yield "b"
+
+    async def drive():
+        it = gen().__aiter__()
+        assert await asyncio.wait_for(it.__anext__(), timeout=1) == "a"
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(it.__anext__(), timeout=0.05)
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(it.__anext__(), timeout=1)
+
+    asyncio.run(drive())
+
+
+def test_shielded_pending_anext_survives_repeated_timeouts():
+    """The pattern the turn loop uses: the generator stays alive across polls."""
+    import asyncio
+
+    async def gen():
+        yield "a"
+        await asyncio.sleep(0.4)
+        yield "b"
+
+    async def drive():
+        it = gen().__aiter__()
+        pending = None
+        got = []
+        for _ in range(40):
+            if pending is None:
+                pending = asyncio.ensure_future(it.__anext__())
+            try:
+                got.append(await asyncio.wait_for(asyncio.shield(pending), timeout=0.05))
+                pending = None
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                continue
+        assert got == ["a", "b"], got
+
+    asyncio.run(drive())
