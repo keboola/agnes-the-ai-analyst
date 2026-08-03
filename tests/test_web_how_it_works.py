@@ -386,11 +386,9 @@ def test_setup_pre_resolves_the_choices_it_can(page):
 # ── Rail nav placement ───────────────────────────────────────────────
 
 
-def test_rail_carries_the_orientation_row(seeded_app, monkeypatch):
-    """The rail chrome gets a nav row of its own, brand-templated.
-
-    Placed directly above the onboarding card (read vs. do) and OUTSIDE its
-    `can_chat` gate — a caller with no chat grant needs the orientation more
+def test_rail_carries_the_orientation_entry(seeded_app, monkeypatch):
+    """The rail chrome links to the page with brand-templated wording, OUTSIDE
+    the `can_chat` gate — a caller with no chat grant needs the orientation more
     than anyone, not less.
 
     Asserted against the rail's own markup, not just the href: the topnav
@@ -401,11 +399,78 @@ def test_rail_carries_the_orientation_row(seeded_app, monkeypatch):
     body = seeded_app["client"].get("/how-it-works", headers=_auth(seeded_app["analyst_token"])).text
     rail = body.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
 
-    # The row itself, with the rail-specific brand-templated wording.
     assert 'href="/how-it-works"' in rail
-    assert "How Agnes works" in rail
-    # …and it is no longer duplicated in the account menu below it.
+    assert ">How Agnes works</a>" in rail
+    # The stale wording from when this pointed at /home must not come back.
     assert "Learn how it works" not in rail
+
+
+def test_rail_orientation_entry_takes_no_row_and_is_not_on_the_brand(seeded_app, monkeypatch):
+    """It is an account-menu item, NOT a nav row and NOT an icon on the wordmark.
+
+    Three placements were tried and rejected, and each retirement is guarded here
+    so it cannot quietly return:
+      * `.rail-i` — a full destination row (34px ladder, 18px icon, accent tint)
+        for a page you open once or twice, reading as a fourth
+        Library/Agents/Admin;
+      * `.rail-meta` — a quieter row in the foot; still a row, and orphaned
+        between the onboarding card and the account;
+      * `.rail-help` — a `?` beside the wordmark; the lockup is an identity
+        element, not a control surface.
+
+    The menu is the right shelf because the precedent was already in it: "Start
+    over onboarding" is an orientation action too, not a fact about the caller.
+    The two are grouped behind their own separator.
+    """
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    body = seeded_app["client"].get("/how-it-works", headers=_auth(seeded_app["analyst_token"])).text
+    rail = body.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
+
+    # None of the three retired treatments.
+    assert "rail-meta" not in rail
+    assert "rail-help" not in rail
+    assert "rail-head" not in rail
+
+    pos = rail.find('href="/how-it-works"')
+    assert pos > -1
+    tag = rail[rail.rfind("<a", 0, pos) : pos]
+    assert "app-user-menu-item" in tag
+    assert "rail-i" not in tag
+
+    # Inside the account menu panel, which lives in the foot — outside
+    # `.rail-collapsible`, so it survives the ≤1024px bar with the nav closed.
+    assert -1 < rail.find('id="userMenuPanel"') < pos
+    assert rail.find('id="rail-collapsible"') < rail.find('class="rail-foot"') < pos
+
+
+def test_rail_orientation_entry_is_grouped_with_restart_onboarding(seeded_app, monkeypatch):
+    """The two bearings items form their own group: personal items first
+    (Profile, My activity), separator, then How Agnes works + Start over
+    onboarding, separator, then Logout.
+
+    Uses the admin fixture because "Start over onboarding" is `can_chat`-gated
+    while the orientation link deliberately is not.
+    """
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    body = seeded_app["client"].get("/how-it-works", headers=_auth(seeded_app["admin_token"])).text
+    rail = body.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
+    panel = rail[rail.index('id="userMenuPanel"') :]
+
+    profile = panel.index('href="/me/profile"')
+    activity = panel.index('href="/me/activity"')
+    hiw = panel.index('href="/how-it-works"')
+    logout = panel.index("Logout")
+
+    # Personal pair, then the bearings pair, then Logout last.
+    assert profile < activity < hiw < logout
+    # A separator opens the bearings group — i.e. one falls between the personal
+    # items and the orientation link.
+    assert activity < panel.index("app-user-menu-sep") < hiw
+
+
+# The chat dashboard's own first-run orientation line ("New here? See how Agnes
+# works") is guarded in tests/test_web_chat_empty_state.py, which has the rail +
+# chat-backend + chat-grant fixture that rendering /chat needs.
 
 
 def test_page_uses_brand_short_not_a_hardcoded_name(page):

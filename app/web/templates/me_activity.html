@@ -1,35 +1,58 @@
-{% extends "base_ds.html" %}
+{% extends "base_index.html" %}
+{% import "macros/_icon.html" as ico %}
+{# Activity — the caller's own sessions, token usage, data access and syncs.
+
+   Shares /me/profile's chrome, because it is the same subject seen from the
+   other side: the `base_index.html` shell (one unbroken --ds-surface, no
+   floating hero over a grey canvas), an identity-led head band, the tab strip
+   as the head's last row, and the SHARED `.dsec` section card
+   (css/section_card.css) around every block of content. Before this the page
+   floated the blue gradient hero and set its sub-headings as inline-styled
+   uppercase micro-caps — the two habits the issue-896 redesign retired
+   everywhere else. (Written without a leading hash: the design-system contract
+   guard reads a 3-digit issue reference as a raw hex literal.)
+
+   Reachable by any signed-in user (the route gates on `get_current_user`
+   only), so it is not admin chrome — /admin/activity is the separate audit
+   log. #}
 
 {% block title %}My activity — {{ instance_brand }}{% endblock %}
 
-{% block layout %}
-    {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-    <div class="flash-messages">
-        {% for category, message in messages %}
-        <div class="flash flash-{{ category }}">{{ message }}</div>
-        {% endfor %}
-    </div>
-    {% endif %}
-    {% endwith %}
-    <main class="main">{{ self.content() }}</main>
-{% endblock %}
-
-{% block content %}
-{# Design-system component macros — the 3 paginator buttons render via
-   `ds.button`. Tab strip below already uses canonical `.tab-strip__item`. #}
+{% block head_extra %}
+{# Same two shared sheets /me/profile loads: the `.dsec` section card and the
+   `.cc-btn` control. #}
+<link rel="stylesheet" href="{{ static_url('css/section_card.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
 <style>
-/* Page-specific styles only. Tables use the canonical .data-table, stat
-   tiles use .stat-card, paginate buttons use .btn — all from
-   style-custom.css (design-system pass, v0.54.10). What remains here is
-   genuinely page-specific: panel show/hide, the token chart, the sessions
-   help text, pipeline badges, and the download link. */
-.activity-page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 64px; }
+/* Page-specific styles only. Cards are the shared `.dsec`, tables the
+   canonical `.data-table`, tiles `.stat-card`, paginators `.btn`. What remains
+   here is genuinely page-specific: the head band, panel show/hide, the token
+   chart, pipeline badges, and the download link. */
+
+/* ── Head band — the same anatomy as /me/profile's ── */
+.act-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 2px 0 0; }
+.act-kicker { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ds-agnes); }
+.act-head h1 { font-size: 24px; margin: 2px 0 0; }
+.act-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 6px 0 0; max-width: 64ch; }
+.act-head-acts { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-top: 4px; }
+/* The tab strip is the head band's last row, so the shell flushes it against
+   the content band below. It carries a top margin instead of the component's
+   default bottom one. */
+.act-head-tabs { margin: 22px 0 0; }
+.act-head-tabs .tab-strip { margin-bottom: 0; }
+
+/* A wide table has to scroll inside its own card, never widen the page. */
+.act-tablewrap { overflow-x: auto; }
+/* The legend that explains the pipeline column's vocabulary. Sits above the
+   table it annotates, inside the card, as a note rather than as body copy. */
+.act-note { font-size: 12.5px; line-height: 1.55; color: var(--ds-text-secondary); background: var(--ds-surface-sunken); border: 1px solid var(--ds-border); border-radius: 9px; padding: 10px 13px; margin: 14px 0 14px; }
+.act-note code { background: var(--ds-surface); padding: 1px 5px; border-radius: 4px; }
+.act-note strong { color: var(--ds-text-primary); font-weight: 650; }
 
 .stats-panel { display: none; }
 .stats-panel.is-active { display: block; }
-.stats-loading { color: var(--ds-text-muted); font-style: italic; padding: 24px 0; }
-.stats-error { color: var(--ds-accent-danger-ink); padding: 24px 0; }
+.stats-loading { color: var(--ds-text-muted); font-style: italic; padding: 16px 0 4px; }
+.stats-error { color: var(--ds-accent-danger-ink); padding: 16px 0 4px; }
 .stats-empty { color: var(--ds-text-muted); padding: 24px 0; }
 
 /* Canonical .data-table is left-aligned; numeric columns opt into
@@ -45,18 +68,12 @@
 }
 @media (max-width: 720px) { .stats-overview { grid-template-columns: repeat(2, 1fr); } }
 
-.tok-chart { width: 100%; height: 160px; margin: 8px 0 16px; }
+/* Capped: the viewBox is stretched (`preserveAspectRatio="none"`), so at the
+   full 1400px band a 30-bar daily chart renders as a hero graphic rather than
+   as the small-multiple trend it is. */
+.tok-chart { display: block; width: 100%; max-width: 760px; height: 150px; margin: 14px 0 4px; }
 .tok-chart rect { fill: var(--ds-primary); opacity: 0.85; }
 .tok-chart .axis text { font-size: 10px; fill: var(--ds-text-muted); }
-
-.sess-help {
-    color: var(--ds-text-muted); font-size: 13px;
-    margin-bottom: 16px; line-height: 1.55;
-}
-.sess-help code {
-    background: var(--ds-surface-dim); padding: 1px 6px;
-    border-radius: 4px; font-size: 12px;
-}
 
 .badge {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -79,127 +96,243 @@
     color: var(--ds-primary);
 }
 </style>
+{% endblock %}
 
+{% block page_head %}
+<div class="act-head">
+  <div>
+    <div class="act-kicker">Your account</div>
+    <h1>Activity</h1>
+    <p class="lede">Your Claude Code sessions, what they spent in tokens, the data they read, and when your workspace last synced.</p>
+  </div>
+  <div class="act-head-acts">
+    <a class="cc-btn" href="/me/profile">Profile</a>
+  </div>
+</div>
+
+{# The tab strip closes the head band; the shell's `.idx-head > :last-child`
+   rule flushes it against the content band, so the tabs sit directly on the
+   surface they switch. #}
+<div class="act-head-tabs">
+  <nav class="tab-strip" role="tablist" aria-label="Activity sections">
+      <button type="button" role="tab" class="tab-strip__item is-active"
+              data-tab="sessions" aria-selected="true">Sessions</button>
+      <button type="button" role="tab" class="tab-strip__item"
+              data-tab="tokens" aria-selected="false">Token usage</button>
+      <button type="button" role="tab" class="tab-strip__item"
+              data-tab="queries" aria-selected="false">Data access</button>
+      <button type="button" role="tab" class="tab-strip__item"
+              data-tab="sync" aria-selected="false">Sync activity</button>
+  </nav>
+</div>
+{% endblock %}
+
+{% block page_surface %}
+{# `.activity-page` is the JS root (`document.querySelector('.activity-page')`)
+   — keep the class even though the shell now owns the width and padding. #}
 <div class="activity-page">
-    {% set page_hero_eyebrow = "Profile" %}
-    {% set page_hero_title = "My activity" %}
-    {# Block-capture so the literal <strong> stays HTML while {{ user.email }}
-       is still autoescaped. `~`-concatenating a Markup operand (user.email | e)
-       made Jinja2's markup_join escape the literal tags too. #}
-    {% set page_hero_subtitle %}Sessions, token usage, data access, and sync activity for <strong>{{ user.email }}</strong>.{% endset %}
-    {% include "_page_hero.html" %}
-
-    <nav class="tab-strip" role="tablist" aria-label="Activity sections">
-        <button type="button" role="tab" class="tab-strip__item is-active"
-                data-tab="sessions" aria-selected="true">Sessions</button>
-        <button type="button" role="tab" class="tab-strip__item"
-                data-tab="tokens" aria-selected="false">Token usage</button>
-        <button type="button" role="tab" class="tab-strip__item"
-                data-tab="queries" aria-selected="false">Data access</button>
-        <button type="button" role="tab" class="tab-strip__item"
-                data-tab="sync" aria-selected="false">Sync activity</button>
-    </nav>
-
     <section class="stats-panel is-active" id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions">
-        <p class="sess-help">
-            Sessions from your Claude Code workspace. <strong>Items extracted = 0</strong>
-            means the verification detector ran successfully but the LLM didn't find
-            anything worth tracking — that's expected for sessions that are mostly tool
-            calls or coding without confident factual claims.
-            <em>Pending</em> means the file is on disk but the scheduler hasn't processed
-            it yet (next tick: every 15 min by default).
-        </p>
-        <div class="stats-loading" data-state="loading">Loading sessions…</div>
-        <div data-state="ready" hidden>
-            <table class="data-table">
-                <thead><tr>
-                    <th>Started</th><th>Model</th>
-                    <th class="num">Prompts</th><th class="num">Tools</th>
-                    <th class="num">Tokens</th>
-                    <th>Pipeline</th><th class="num">Items</th>
-                    <th></th>
-                </tr></thead>
-                <tbody data-rows></tbody>
-            </table>
-            <div class="stats-paginate">
-                {{ ds.button('‹ Prev', variant='secondary', size='sm',
-                             type='button', attrs='data-action="prev"') }}
-                {{ ds.button('Next ›', variant='secondary', size='sm',
-                             type='button', attrs='data-action="next"') }}
+        <details class="dsec" open aria-label="Claude Code sessions">
+            <summary>
+                <div class="dsec-head">
+                    <span class="dsec-ico">{{ ico.icon('rows', 14) }}</span>
+                    <div class="dsec-grow">
+                        <h3>Sessions</h3>
+                        <div class="dsec-sub">Every session from your Claude Code workspace, newest first.</div>
+                    </div>
+                    <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+                </div>
+            </summary>
+            <div class="dsec-body">
+                {# The legend for the Pipeline / Items columns. It was body copy
+                   at the top of the page, where it read as the page's
+                   introduction rather than as the key to two of its columns. #}
+                <p class="act-note">
+                    <strong>Items extracted = 0</strong> means the verification detector ran
+                    successfully but the LLM didn't find anything worth tracking — expected for
+                    sessions that are mostly tool calls or coding without confident factual
+                    claims. <strong>Pending</strong> means the file is on disk but the scheduler
+                    hasn't processed it yet (next tick: every 15 min by default).
+                </p>
+                <div class="stats-loading" data-state="loading">Loading sessions…</div>
+                <div data-state="ready" hidden>
+                    <div class="act-tablewrap">
+                        <table class="data-table">
+                            <thead><tr>
+                                <th>Started</th><th>Model</th>
+                                <th class="num">Prompts</th><th class="num">Tools</th>
+                                <th class="num">Tokens</th>
+                                <th>Pipeline</th><th class="num">Items</th>
+                                <th></th>
+                            </tr></thead>
+                            <tbody data-rows></tbody>
+                        </table>
+                    </div>
+                    <div class="stats-paginate">
+                        {{ ds.button('‹ Prev', variant='secondary', size='sm',
+                                     type='button', attrs='data-action="prev"') }}
+                        {{ ds.button('Next ›', variant='secondary', size='sm',
+                                     type='button', attrs='data-action="next"') }}
+                    </div>
+                </div>
             </div>
-        </div>
+        </details>
     </section>
 
     <section class="stats-panel" id="panel-tokens" role="tabpanel" aria-labelledby="tab-tokens">
         <div class="stats-loading" data-state="loading">Loading token usage…</div>
         <div data-state="ready" hidden>
-            <div class="stats-overview">
-                <div class="stat-card"><div class="stat-card__label">Input</div><div class="stat-card__value" data-tok-total="input">—</div></div>
-                <div class="stat-card"><div class="stat-card__label">Output</div><div class="stat-card__value" data-tok-total="output">—</div></div>
-                <div class="stat-card"><div class="stat-card__label">Cache read</div><div class="stat-card__value" data-tok-total="cache_read">—</div></div>
-                <div class="stat-card"><div class="stat-card__label">Cache creation</div><div class="stat-card__value" data-tok-total="cache_creation">—</div></div>
-            </div>
-            <svg class="tok-chart" data-tok-chart viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
+            {# Three cards where there used to be one panel with two
+               inline-styled uppercase <h3>s: the totals + trend, the per-model
+               split, and the heaviest sessions are three different questions.
 
-            <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ds-text-muted);">By model</h3>
-            <table class="data-table">
-                <thead><tr>
-                    <th>Model</th><th class="num">Sessions</th>
-                    <th class="num">Input</th><th class="num">Output</th>
-                    <th class="num">Cache R/W</th><th class="num">Total</th>
-                </tr></thead>
-                <tbody data-tok-model></tbody>
-            </table>
+               The first stays OPEN and the two breakdowns are collapsed. On
+               this page a tab click is already the disclosure, so a tab whose
+               only card is closed answers the click with nothing — but where a
+               tab holds several cards, the headline one leads and the detail
+               waits to be asked for. #}
+            <details class="dsec" open aria-label="Token usage over the last 30 days">
+                <summary>
+                    <div class="dsec-head">
+                        <span class="dsec-ico">{{ ico.icon('data', 14) }}</span>
+                        <div class="dsec-grow">
+                            <h3>Last 30 days</h3>
+                            <div class="dsec-sub">Tokens your sessions spent, and the daily shape of it.</div>
+                        </div>
+                        <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+                    </div>
+                </summary>
+                <div class="dsec-body">
+                    <div class="stats-overview">
+                        <div class="stat-card"><div class="stat-card__label">Input</div><div class="stat-card__value" data-tok-total="input">—</div></div>
+                        <div class="stat-card"><div class="stat-card__label">Output</div><div class="stat-card__value" data-tok-total="output">—</div></div>
+                        <div class="stat-card"><div class="stat-card__label">Cache read</div><div class="stat-card__value" data-tok-total="cache_read">—</div></div>
+                        <div class="stat-card"><div class="stat-card__label">Cache creation</div><div class="stat-card__value" data-tok-total="cache_creation">—</div></div>
+                    </div>
+                    <svg class="tok-chart" data-tok-chart viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
+                </div>
+            </details>
 
-            <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ds-text-muted);">Top sessions</h3>
-            <table class="data-table">
-                <thead><tr>
-                    <th>Started</th><th>Model</th>
-                    <th class="num">Input</th><th class="num">Output</th>
-                    <th class="num">Cache</th><th class="num">Total</th>
-                </tr></thead>
-                <tbody data-tok-top></tbody>
-            </table>
+            <details class="dsec" aria-label="Token usage by model">
+                <summary>
+                    <div class="dsec-head">
+                        <span class="dsec-ico">{{ ico.icon('sparkle', 14) }}</span>
+                        <div class="dsec-grow">
+                            <h3>By model</h3>
+                            <div class="dsec-sub">Which models did the work, and what each cost in tokens.</div>
+                        </div>
+                        <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+                    </div>
+                </summary>
+                <div class="dsec-body">
+                    <div class="act-tablewrap">
+                        <table class="data-table">
+                            <thead><tr>
+                                <th>Model</th><th class="num">Sessions</th>
+                                <th class="num">Input</th><th class="num">Output</th>
+                                <th class="num">Cache R/W</th><th class="num">Total</th>
+                            </tr></thead>
+                            <tbody data-tok-model></tbody>
+                        </table>
+                    </div>
+                </div>
+            </details>
+
+            <details class="dsec" aria-label="Heaviest sessions by token usage">
+                <summary>
+                    <div class="dsec-head">
+                        <span class="dsec-ico">{{ ico.icon('chat', 14) }}</span>
+                        <div class="dsec-grow">
+                            <h3>Top sessions</h3>
+                            <div class="dsec-sub">The individual sessions that spent the most.</div>
+                        </div>
+                        <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+                    </div>
+                </summary>
+                <div class="dsec-body">
+                    <div class="act-tablewrap">
+                        <table class="data-table">
+                            <thead><tr>
+                                <th>Started</th><th>Model</th>
+                                <th class="num">Input</th><th class="num">Output</th>
+                                <th class="num">Cache</th><th class="num">Total</th>
+                            </tr></thead>
+                            <tbody data-tok-top></tbody>
+                        </table>
+                    </div>
+                </div>
+            </details>
         </div>
     </section>
 
     <section class="stats-panel" id="panel-queries" role="tabpanel" aria-labelledby="tab-queries">
-        <div class="stats-loading" data-state="loading">Loading queries…</div>
-        <div data-state="ready" hidden>
-            <table class="data-table">
-                <thead><tr>
-                    <th>When</th><th>Action</th><th>Resource</th>
-                    <th>Result</th><th class="num">Duration (ms)</th>
-                </tr></thead>
-                <tbody data-rows></tbody>
-            </table>
-            <div class="stats-paginate">
-                {{ ds.button('Older ›', variant='secondary', size='sm',
-                             type='button', attrs='data-action="next"') }}
+        <details class="dsec" open aria-label="Data access">
+            <summary>
+                <div class="dsec-head">
+                    <span class="dsec-ico">{{ ico.icon('database', 14) }}</span>
+                    <div class="dsec-grow">
+                        <h3>Data access</h3>
+                        <div class="dsec-sub">Every query and catalog read logged against your account.</div>
+                    </div>
+                    <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+                </div>
+            </summary>
+            <div class="dsec-body">
+                <div class="stats-loading" data-state="loading">Loading queries…</div>
+                <div data-state="ready" hidden>
+                    <div class="act-tablewrap">
+                        <table class="data-table">
+                            <thead><tr>
+                                <th>When</th><th>Action</th><th>Resource</th>
+                                <th>Result</th><th class="num">Duration (ms)</th>
+                            </tr></thead>
+                            <tbody data-rows></tbody>
+                        </table>
+                    </div>
+                    <div class="stats-paginate">
+                        {{ ds.button('Older ›', variant='secondary', size='sm',
+                                     type='button', attrs='data-action="next"') }}
+                    </div>
+                </div>
             </div>
-        </div>
+        </details>
     </section>
 
     <section class="stats-panel" id="panel-sync" role="tabpanel" aria-labelledby="tab-sync">
-        <div class="stats-loading" data-state="loading">Loading sync activity…</div>
-        <div data-state="ready" hidden>
-            <div class="stats-overview" style="grid-template-columns: 1fr;">
-                <div class="stat-card">
-                    <div class="stat-card__label">Your last <code>agnes pull</code></div>
-                    <div class="stat-card__value" data-sync-last-pull>—</div>
+        <details class="dsec" open aria-label="Sync activity">
+            <summary>
+                <div class="dsec-head">
+                    <span class="dsec-ico">{{ ico.icon('refresh', 14) }}</span>
+                    <div class="dsec-grow">
+                        <h3>Sync activity</h3>
+                        <div class="dsec-sub">When your workspace last pulled parquets, and every sync since.</div>
+                    </div>
+                    {# The headline answer lives in the head, so it survives the
+                       section being collapsed. #}
+                    <span class="dsec-sum">Last pull <span data-sync-last-pull>—</span></span>
+                    <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+                </div>
+            </summary>
+            <div class="dsec-body">
+                <div class="stats-loading" data-state="loading">Loading sync activity…</div>
+                <div data-state="ready" hidden>
+                    <div class="act-tablewrap">
+                        <table class="data-table">
+                            <thead><tr>
+                                <th>When</th><th>Action</th><th>Source</th>
+                                <th>Result</th>
+                            </tr></thead>
+                            <tbody data-rows></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
-            <table class="data-table">
-                <thead><tr>
-                    <th>When</th><th>Action</th><th>Source</th>
-                    <th>Result</th>
-                </tr></thead>
-                <tbody data-rows></tbody>
-            </table>
-        </div>
+        </details>
     </section>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
 (function () {
     const root = document.querySelector('.activity-page');
