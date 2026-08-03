@@ -248,6 +248,25 @@ def _is_operator(tok: str) -> bool:
     return bool(tok) and all(c in _OPERATOR_CHARS for c in tok)
 
 
+def _has_unquoted_heredoc(line: str) -> bool:
+    """True when `<<` appears outside quotes, i.e. really opens a heredoc."""
+    in_single = in_double = False
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\" and not in_single:
+            i += 2
+            continue
+        if c == "'" and not in_double:
+            in_single = not in_single
+        elif c == '"' and not in_single:
+            in_double = not in_double
+        elif c == "<" and not in_single and not in_double and line[i : i + 2] == "<<":
+            return line[i : i + 3] != "<<<"
+        i += 1
+    return False
+
+
 def _split_segments(cmd: str) -> list[str]:
     """Split a command line into independently-scanned shell segments.
 
@@ -284,8 +303,12 @@ def _split_segments(cmd: str) -> list[str]:
             if line.strip() == heredoc_marker:
                 heredoc_marker = None
             continue
-        m = re.search(r"<<-?\s*([\"\']?)([A-Za-z_][A-Za-z0-9_]*)\1", line)
-        if m and "<<<" not in line:
+        # Only an UNQUOTED << opens a heredoc. Searching the raw line let a
+        # quoted one (echo 'a << b') swallow every later line of a
+        # multi-line command (review finding on #1141).
+        probe = line if _has_unquoted_heredoc(line) else ""
+        m = re.search(r"<<-?\s*([\"\']?)([A-Za-z_][A-Za-z0-9_]*)\1", probe)
+        if m and "<<<" not in probe:
             heredoc_marker = m.group(2)
         if not line.strip():
             continue
@@ -390,9 +413,24 @@ def _strip_prefix(toks: list[str], *, env_is_wrapper: bool, wrapper: str | None 
             continue
         # A redirection and its target are not the command either, and
         # letting them stand in for it hid `env > /tmp/leak`.
-        if toks[i] in _REDIRECTIONS or re.fullmatch(r"\d*[<>]{1,2}&?\d*", toks[i]):
+        # Redirections arrive either bare (`>` `file`) or glued to their
+        # target (`2>/dev/null`). Matching only the bare form let the glued
+        # one stand in for the command (review finding on #1141).
+        # A bare file-descriptor number is part of the redirection that
+        # follows it: the segment lexer splits `2>/dev/null` into `2`, `>`,
+        # `/dev/null`, and the lone `2` was becoming the head.
+        if (
+            re.fullmatch(r"\d+", toks[i])
+            and i + 1 < len(toks)
+            and re.match(r"^&?[<>]{1,3}", toks[i + 1])
+        ):
             i += 1
-            if i < len(toks) and not toks[i].startswith("-"):
+            continue
+        m_redir = re.match(r"^\d*(?:&?[<>]{1,3})(.*)$", toks[i])
+        if toks[i] in _REDIRECTIONS or m_redir:
+            glued_target = bool(m_redir and m_redir.group(1))
+            i += 1
+            if not glued_target and i < len(toks) and not toks[i].startswith("-"):
                 i += 1
             continue
         t = _basename(toks[i])
