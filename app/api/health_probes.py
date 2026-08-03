@@ -9,10 +9,11 @@ compatibility alias. Spec §3.7.
 """
 
 import asyncio
+import contextlib
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable, TypeVar
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -98,9 +99,39 @@ def _write_canary() -> bool:
         return False
 
 
+_T = TypeVar("_T")
+
+
+async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any) -> _T:
+    """Run ``fn`` in a worker thread; on cancellation, wait for an in-flight
+    call to finish before propagating.
+
+    ``asyncio.to_thread`` cancellation delivers ``CancelledError`` to the
+    awaiting coroutine immediately while the OS thread keeps running (see the
+    graceful-shutdown notes in ``app/worker/runtime.py``). For the background
+    loops using this helper, the awaiter's next step after cancellation is
+    ``app/main.py``'s lifespan closing the DuckDB singletons — returning with
+    a DB call still mid-flight lets ``close_system_db()`` race that call,
+    which can wedge DuckDB inside ``conn.execute`` and then deadlock
+    event-loop teardown on the default-executor join (observed as a 60s
+    pytest-timeout inside ``TestClient.__exit__``). Draining is cheap here:
+    these calls are single-row writes / CHECKPOINTs bounded by a normal
+    statement, not arbitrary user work (the worker runtime keeps its own
+    bounded-drain registry for that).
+    """
+    future = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        # fn's own failure, if any, no longer matters once we're cancelled.
+        with contextlib.suppress(Exception):
+            await future
+        raise
+
+
 async def canary_loop(interval_s: float = 30.0) -> None:
     while True:
-        ok = await asyncio.to_thread(_write_canary)
+        ok = await to_thread_drain_on_cancel(_write_canary)
         readiness.record_canary(ok)
         await asyncio.sleep(interval_s)
 
