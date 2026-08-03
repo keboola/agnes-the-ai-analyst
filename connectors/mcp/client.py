@@ -339,7 +339,14 @@ async def _refresh_oauth_token_with_lease(
 
     lease_name = f"mcp_oauth_refresh:{source_id}:{user_id}"
     try:
-        acquired = coordination().lease_acquire(lease_name, holder_id, ttl_s=_oauth_refresh_lease_ttl_s())
+        # A real coordination backend (redis) makes this a network round-trip,
+        # and this runs on the request event loop — inline, a slow or wedged
+        # backend stalls every other request the process is serving. Off-loaded
+        # exactly as app/chat/manager.py does for the same call (invariant
+        # sweep on #1124).
+        acquired = await asyncio.to_thread(
+            coordination().lease_acquire, lease_name, holder_id, ttl_s=_oauth_refresh_lease_ttl_s()
+        )
     except CoordinationUnavailable:
         # Fail OPEN: a down coordination backend must not wedge every MCP
         # call on an oauth source — proceed unserialized (the in-process
@@ -443,7 +450,7 @@ async def _refresh_oauth_token_with_lease(
         return token_set.access_token
     finally:
         try:
-            coordination().lease_release(lease_name, holder_id)
+            await asyncio.to_thread(coordination().lease_release, lease_name, holder_id)
         except CoordinationUnavailable:
             pass
 
