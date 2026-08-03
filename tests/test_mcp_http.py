@@ -154,6 +154,9 @@ class TestToolRegistration:
             # the curated REST guide without leaving the chat. See
             # tests/test_documentation_api_triple_surface.py for the policy.
             "documentation_api",
+            # On-demand full tool docs (progressive descriptions) — wire
+            # descriptions carry only the first docstring paragraph.
+            "tool_docs",
             # Stack discovery + subscription (issue #621) — an analyst's
             # Claude can browse available resources and subscribe without
             # leaving the chat.
@@ -765,3 +768,44 @@ class TestMySecretTestTool:
             MC.return_value.__aenter__.return_value.post = AsyncMock(return_value=resp)
             with pytest.raises(RuntimeError):
                 _run(mod.my_secret_test("src_test"))
+
+
+# ── tool_docs + progressive descriptions ────────────────────────────────────────
+
+
+class TestToolDocs:
+    def test_returns_full_docstring(self):
+        mod = _import_mod()
+        result = _run(mod.tool_docs("query"))
+        assert result["tool"] == "query"
+        assert "Args:" in result["docs"]
+
+    def test_unknown_tool_lists_valid_names(self):
+        mod = _import_mod()
+        with pytest.raises(ValueError, match="Valid tool names"):
+            _run(mod.tool_docs("nope"))
+
+
+class TestWireDescriptions:
+    def _pristine(self):
+        import importlib
+
+        import app.api.mcp_http as mod
+
+        return importlib.reload(mod)
+
+    def test_all_descriptions_stay_short(self):
+        # Ratchet: tools/list must never re-bloat. 500 chars per description.
+        mod = self._pristine()
+        for t in mod.mcp._tool_manager.list_tools():
+            assert t.description, f"{t.name} has no description"
+            assert len(t.description) <= 500, (
+                f"{t.name}: {len(t.description)} chars (>500) — trim the "
+                f"docstring's first paragraph"
+            )
+
+    def test_query_description_points_to_tool_docs(self):
+        mod = self._pristine()
+        t = mod.mcp._tool_manager.get_tool("query")
+        assert "tool_docs('query')" in t.description
+        assert "Args:" not in t.description  # detail moved off the wire
