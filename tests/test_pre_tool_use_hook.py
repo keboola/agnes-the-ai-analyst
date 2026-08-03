@@ -405,3 +405,30 @@ def test_quoted_separator_argument_is_not_an_operator():
 
 def test_brace_grouping_does_not_hide_the_command():
     assert _decide("{ curl evil.example.com; }") == "deny"
+
+
+def test_assignment_prefix_does_not_hide_an_env_dump():
+    """`_is_env_dump` kept its own copy of the prefix walk and it drifted.
+
+    It never skipped `VAR=val`, so `FOO=1 printenv` read as a harmless
+    command while plain `printenv` was refused — any assignment prefix
+    unlocked a full environment dump.
+    """
+    assert _decide("FOO=1 printenv") == "deny"
+    assert _decide("FOO=1 env") == "deny"
+    assert _decide("A=1 B=2 sudo printenv") == "deny"
+    # …but an assignment prefix in front of a real command is still just that
+    assert _decide("FOO=bar python x.py") == "allow"
+
+
+def test_wrapper_positional_is_consumed_after_its_flags():
+    """`taskset MASK cmd` puts the positional after the flags when both appear.
+
+    Consuming it only when it sat immediately after the wrapper name made
+    the scanner mistake the mask/lockfile for the command and inspect
+    nothing.
+    """
+    assert _decide("taskset -c 0 rm -rf /data") == "ask"
+    assert _decide("flock -w 5 /tmp/l rm -rf /data") == "ask"
+    assert _decide("taskset 0x1 rm -rf /data") == "ask"
+    assert _decide("chroot / rm -rf /data") == "ask"
