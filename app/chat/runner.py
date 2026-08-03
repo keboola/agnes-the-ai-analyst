@@ -116,6 +116,15 @@ def _hook_output(decision: str, reason: str = "") -> dict:
 
 APPROVAL_DECISIONS = ("allow", "allow_session", "deny")
 
+#: Manager-originated resolution for a request nobody can answer: the
+#: session has no approval-capable client attached and can never gain one
+#: (the agent-API one-shot path). Never sent by a user —
+#: ``ChatManager.deliver_approval_decision`` hardens anything outside
+#: APPROVAL_DECISIONS to "deny", so it cannot be forged over a WebSocket.
+#: Denies like a timeout but carries an actionable message instead of
+#: "the user denied this action".
+UNATTENDED = "unattended"
+
 #: Total budget for winding the stream down after the idle watchdog
 #: interrupts a wedged turn. Bounds how long the user waits before their
 #: next message is served.
@@ -144,6 +153,14 @@ class ApprovalGate:
     later asks for that identical command for this runner's lifetime (not
     the hook's reason string, which is shared across a whole command
     family and would over-approve).
+
+    The gate is armed on EVERY surface. Whether anyone can actually answer
+    a given request is not knowable here — it depends on which sinks are
+    attached to the session at the moment the request lands — so that call
+    belongs to the manager, which answers an unanswerable request with the
+    :data:`UNATTENDED` decision (see ``ChatManager._resolve_if_unattended``).
+    ``enabled=False`` (runner env ``AGNES_APPROVALS=off``) remains an
+    operator kill-switch that skips the round-trip entirely.
     """
 
     def __init__(
@@ -208,7 +225,7 @@ class ApprovalGate:
         fut = self._pending.pop(request_id, None)
         if fut is None or fut.done():
             return False
-        fut.set_result(decision if decision in APPROVAL_DECISIONS else "deny")
+        fut.set_result(decision if decision in APPROVAL_DECISIONS + (UNATTENDED,) else "deny")
         return True
 
     def cancel_all(self) -> None:
@@ -267,12 +284,13 @@ class ApprovalGate:
                 (reason + " — " if reason else "")
                 + (
                     getattr(self, "_disabled_reason", "")
-                    or "Approval cards render only in web chat, and this session was not started "
-                    "there (opening it on the web via a deep link does not change that — the "
-                    "setting is fixed when the session starts)."
+                    # No longer reachable via the surface: the gate is armed
+                    # everywhere and "nobody can answer this" is decided per
+                    # request by the manager. What remains is the operator
+                    # kill-switch.
+                    or "approvals are switched off for this deployment (AGNES_APPROVALS=off)."
                 )
-                + " Ask the user to confirm and run the command themselves, or to start the task "
-                "in a web chat.",
+                + " Ask the user to confirm and run the command themselves.",
             )
         self._counter += 1
         request_id = f"appr-{os.getpid()}-{self._counter}"
@@ -308,6 +326,15 @@ class ApprovalGate:
             return _hook_output(
                 "deny",
                 f"Approval request timed out after {int(self.timeout_seconds)}s: {reason}",
+            )
+        if outcome == UNATTENDED:
+            return _hook_output(
+                "deny",
+                (reason + " — " if reason else "")
+                + "This action needs a human to approve it, and this session has no interactive "
+                "client that could be shown an approve/deny card (it runs through the agent API). "
+                "Ask the caller to run the command themselves, or to start the task in a chat "
+                "session they can answer from.",
             )
         return _hook_output("deny", f"The user denied this action: {reason}")
 
@@ -771,8 +798,7 @@ async def _real_agent_loop(
             HookMatcher = None
         if HookMatcher is None:
             gate.disable_unsupported(
-                "the installed claude-agent-sdk provides no HookMatcher, so the PreToolUse gate "
-                "cannot be registered"
+                "the installed claude-agent-sdk provides no HookMatcher, so the PreToolUse gate cannot be registered"
             )
         if HookMatcher is not None:
 
