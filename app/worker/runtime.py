@@ -673,12 +673,35 @@ async def worker_loop(*, worker_id: str, poll_interval_s: float = 5.0) -> None:
         # forever, the very symptom this change removes. The drains inside
         # those tasks are themselves bounded by the shared DB-drain budget,
         # so this only has to outlast that — the worker's own (larger) drain
-        # knob does. Past it we log and let shutdown proceed (review finding
-        # on #1140).
-        _, still_running = await asyncio.wait(tasks, timeout=_drain_timeout_s())
+        # knob does. Past it we log and let shutdown proceed.
+        #
+        # NOTE this whole block is inert on the ordinary cancellation path:
+        # cancelling the awaiter of a gather() cancels each child but does not
+        # resolve the gather future until every child is actually done, so we
+        # arrive here with all tasks complete. It earns its keep only when
+        # gather() failed fast because a child raised, leaving siblings live
+        # (review findings on #1140).
+        finished, still_running = await asyncio.wait(tasks, timeout=_drain_timeout_s())
+        for t in finished:
+            # asyncio.wait, unlike gather(return_exceptions=True), does not
+            # retrieve results — an unconsumed exception would be dropped
+            # here and only resurface as "Task exception was never retrieved"
+            # at GC, losing a real shutdown-path failure.
+            if t.cancelled():
+                continue
+            exc = t.exception()
+            if exc is not None:
+                logger.warning(
+                    "worker %s: lane task %s failed during shutdown: %s",
+                    worker_id,
+                    t.get_name(),
+                    type(exc).__name__,
+                    exc_info=exc,
+                )
         for t in still_running:
             logger.warning(
-                "worker %s: lane task %s did not stop within the shutdown budget; abandoning it",
+                "worker %s: lane task %s did not stop within the shutdown budget; abandoning it "
+                "(it may still touch the DB after this returns)",
                 worker_id,
                 t.get_name(),
             )
