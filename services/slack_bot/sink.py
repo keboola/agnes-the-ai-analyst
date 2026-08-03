@@ -8,9 +8,10 @@ is no WebSocket — we want assistant_message frames forwarded to
 `SlackSinkBridge` is a duck-typed "WebSocket" that satisfies the manager's
 contract (`.send_json`, `.receive_json`, `.close`) but routes frames to
 `send_thread_reply`. Token / tool_call / housekeeping frames are dropped
-(too chatty for Slack); only assistant_message, error, and cancelled
-become visible chat posts.
+(too chatty for Slack); only assistant_message, error, cancelled, and the
+approval round-trip become visible chat posts.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,7 +39,13 @@ class SlackSinkBridge:
     `chat.postMessage` in the originating thread. Discards token / ready /
     runner_ready / tool_call / tool_result frames (too chatty for Slack);
     `error` and `cancelled` post visible thread messages so the user knows
-    something happened.
+    something happened, and `approval_request` posts the Continue-on-web
+    nudge for a tool call waiting on a human (Slack renders no approve/deny
+    card of its own — the decision comes back over the web WebSocket).
+
+    Note the absence of ``supports_approvals``: this bridge is push-only
+    for approvals, so ``ChatManager`` never counts it as a client that can
+    answer one.
     """
 
     def __init__(
@@ -61,6 +68,10 @@ class SlackSinkBridge:
         # stripped on cancelled / error / done (turn end).
         self._stop_msg_ts: str | None = None
         self._stop_msg_text: str = ""
+        # request_ids this bridge posted an approval nudge for, so the
+        # matching approval_resolved closes the loop (and an approval
+        # answered on the web without a nudge stays silent here).
+        self._pending_approvals: set[str] = set()
 
     def _turn_blocks(self, content: str) -> list[dict]:
         """Reply section + Stop + Continue-on-web (if web_base) + New-session.
@@ -85,7 +96,10 @@ class SlackSinkBridge:
             # the plain path (back-compat for callers that don't wire buttons).
             if self._chat_id and self._stop_msg_ts is None:
                 ts = await post_thread_reply_with_blocks(
-                    self._channel, self._thread_ts, content, self._turn_blocks(content),
+                    self._channel,
+                    self._thread_ts,
+                    content,
+                    self._turn_blocks(content),
                 )
                 self._stop_msg_ts = ts
                 self._stop_msg_text = content
@@ -102,9 +116,67 @@ class SlackSinkBridge:
         elif t == "cancelled":
             await send_thread_reply(self._channel, self._thread_ts, "_(stopped)_")
             await self._strip_stop_button()
+        elif t == "approval_request":
+            await self._post_approval_request(data)
+        elif t == "approval_resolved":
+            await self._post_approval_resolved(data)
         elif t == "done":
             await self._strip_stop_button()
         # ready, runner_ready, token, tool_call, tool_result: silently ignored
+
+    async def _post_approval_request(self, data: dict) -> None:
+        """Tell the thread a tool call is waiting on a human, with the
+        Continue-on-web button to go answer it.
+
+        Slack has no approve/deny card of its own, so without this the turn
+        would just stall silently until the gate times out. The manager
+        stamps ``attended`` (see ``ChatManager._pump_subprocess_to_ws``):
+        when a web client is already showing the card, stay quiet rather
+        than nagging a user who is looking at the buttons.
+        """
+        if data.get("attended"):
+            return
+        self._pending_approvals.add(str(data.get("request_id", "")))
+        command = str(data.get("command", "")).strip()
+        reason = str(data.get("reason", "")).strip()
+        lines = [":lock: *This command needs your approval*"]
+        if command:
+            # Fenced, and bounded well under Slack's per-block text cap —
+            # the runner already truncates to 2000 chars, still far more
+            # than belongs in a thread reply.
+            lines.append(f"```{command[:400]}```")
+        if reason:
+            lines.append(reason)
+        lines.append("Open the chat on the web to allow or deny it; it expires on its own if nobody answers.")
+        text = "\n".join(lines)
+        link = continue_on_web_block(web_base=self._web_base, chat_id=self._chat_id)
+        if link is None:
+            await send_thread_reply(self._channel, self._thread_ts, text)
+        else:
+            await post_thread_reply_with_blocks(
+                self._channel,
+                self._thread_ts,
+                text,
+                [{"type": "section", "text": {"type": "mrkdwn", "text": text}}, link],
+            )
+
+    async def _post_approval_resolved(self, data: dict) -> None:
+        """Close the loop on a request this bridge announced. Silent for
+        requests it never posted about (answered on the web while a client
+        was attached), so the thread gains nothing it did not ask for."""
+        request_id = str(data.get("request_id", ""))
+        if request_id not in self._pending_approvals:
+            return
+        self._pending_approvals.discard(request_id)
+        decision = str(data.get("decision", ""))
+        text = {
+            "allow": "_(approved)_",
+            "allow_session": "_(approved for this session)_",
+            "deny": "_(denied)_",
+            "timeout": "_(approval expired — the command was not run)_",
+            "unattended": "_(nobody could approve it — the command was not run)_",
+        }.get(decision, "_(approval closed)_")
+        await send_thread_reply(self._channel, self._thread_ts, text)
 
     async def _strip_stop_button(self) -> None:
         """Edit the turn's button-bearing post to remove the Stop button.
