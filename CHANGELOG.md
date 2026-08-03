@@ -30,7 +30,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- A failure constructing the LLM client (e.g. the now lazily-imported SDK missing from the environment) is handled like any other LLM failure instead of escaping the guardrails error boundary: the store-guardrails security review records `status='review_error'` (with the admin retry path) rather than pinning the submission at `pending_llm`, and the skill-lint craft review degrades per its documented `CraftUnavailable` contract.
+- A failure constructing the LLM client (e.g. the now lazily-imported SDK missing from the environment) is handled like any other LLM failure instead of escaping the error boundary at each of its three call sites: the store-guardrails security review records `status='review_error'` (with the admin retry path) rather than pinning the submission at `pending_llm`, the skill-lint craft review degrades per its documented `CraftUnavailable` contract, and the admin telemetry-ask endpoint returns its documented `502 LLM call failed` instead of an unhandled 500.
 
 ### Removed
 
