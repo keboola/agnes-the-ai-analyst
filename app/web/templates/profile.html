@@ -81,6 +81,41 @@
     </div>
   {% endcall %}
 
+  {% if is_admin %}
+  {% call ds.panel(title='Admin mode', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Admin mode"') %}
+    {% if elevation_paused %}
+      <p>Admin elevation is <strong>paused</strong> for this browser — you see
+      the app with exactly your explicit group grants, and admin pages refuse
+      until you re-enable it.</p>
+      <button type="button" class="ds-btn" id="elevation-toggle" data-paused="false">
+        Re-enable admin mode
+      </button>
+    {% else %}
+      <p>Admin elevation is <strong>active</strong>: every access check
+      short-circuits to allow. Pause it to browse with only your explicit
+      grants (a consent gate against accidental god-mode use — you can
+      re-enable it here at any time).</p>
+      <button type="button" class="ds-btn" id="elevation-toggle" data-paused="true">
+        Pause admin mode for this browser
+      </button>
+    {% endif %}
+    <script>
+      document.getElementById("elevation-toggle").addEventListener("click", async (ev) => {
+        const paused = ev.currentTarget.dataset.paused === "true";
+        ev.currentTarget.disabled = true;
+        await fetch("/api/me/elevation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paused }),
+        });
+        location.reload();
+      });
+    </script>
+  {% endcall %}
+  {% endif %}
+
   {% include "_profile_tokens.html" %}
 
   {# `<details>` can't go through `ds.panel` (the macro doesn't render
