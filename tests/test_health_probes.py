@@ -1,3 +1,7 @@
+import asyncio
+import contextlib
+import threading
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -54,3 +58,74 @@ def test_extra_check_gates_readyz():
         from app.api import health_probes
 
         health_probes._extra_checks.pop("t_extra", None)
+
+
+# ---------------------------------------------------------------------------
+# canary_loop cancellation drain
+# ---------------------------------------------------------------------------
+
+
+def test_cancelled_canary_waits_for_inflight_write(monkeypatch):
+    """Cancelling canary_loop must drain an in-flight _write_canary thread.
+
+    app/main.py's lifespan runs ``_canary_task.cancel(); await _canary_task``
+    and then immediately closes the DuckDB singletons. ``asyncio.to_thread``
+    cancellation abandons the running OS thread, so returning while the write
+    is still executing lets ``close_system_db()`` race the write — DuckDB
+    wedges and event-loop teardown joins the executor thread forever
+    (observed as a 60s pytest-timeout inside ``TestClient.__exit__``).
+    """
+    from app.api import health_probes
+
+    write_started = threading.Event()
+    release_write = threading.Event()
+    write_finished = threading.Event()
+
+    def slow_write() -> bool:
+        write_started.set()
+        release_write.wait(timeout=10)
+        write_finished.set()
+        return True
+
+    monkeypatch.setattr(health_probes, "_write_canary", slow_write)
+
+    async def drive() -> None:
+        task = asyncio.create_task(health_probes.canary_loop())
+        assert await asyncio.to_thread(write_started.wait, 5), "canary write never started"
+        task.cancel()
+        asyncio.get_running_loop().call_later(0.2, release_write.set)
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        finished_before_return = write_finished.is_set()
+        release_write.set()  # never leave the thread blocked, whatever the outcome
+        assert finished_before_return, (
+            "cancelled canary_loop returned while its write thread was still running "
+            "(lifespan would proceed to close the DB under the in-flight write)"
+        )
+
+    asyncio.run(drive())
+
+
+def test_cancelled_canary_exits_promptly_while_idle(monkeypatch):
+    """Cancellation during the interval sleep must exit immediately — the
+    drain only engages when a write is actually in flight."""
+    from app.api import health_probes
+
+    wrote = threading.Event()
+
+    def quick_write() -> bool:
+        wrote.set()
+        return True
+
+    monkeypatch.setattr(health_probes, "_write_canary", quick_write)
+
+    async def drive() -> None:
+        task = asyncio.create_task(health_probes.canary_loop(interval_s=60.0))
+        assert await asyncio.to_thread(wrote.wait, 5), "canary write never ran"
+        await asyncio.sleep(0.05)  # let the loop re-enter the interval sleep
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert task.done()
+
+    asyncio.run(drive())
