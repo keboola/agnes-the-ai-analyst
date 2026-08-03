@@ -129,3 +129,44 @@ def test_cancelled_canary_exits_promptly_while_idle(monkeypatch):
         assert task.done()
 
     asyncio.run(drive())
+
+
+def test_cancelled_canary_drain_is_bounded(monkeypatch):
+    """A write that never returns must not hang shutdown forever.
+
+    The drain trades the abandoned-thread bug for a bounded wait, not for an
+    unbounded one: "single statement" is an assumption, and lock contention
+    or a partitioned Postgres can violate it. Past AGNES_DRAIN_TIMEOUT_S we
+    log and abandon — i.e. fall back to the pre-drain behavior.
+    """
+    from app.api import health_probes
+
+    monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "0.2")
+
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    def wedged_write() -> bool:
+        write_started.set()
+        release_write.wait(timeout=30)
+        return True
+
+    monkeypatch.setattr(health_probes, "_write_canary", wedged_write)
+
+    async def drive() -> None:
+        task = asyncio.create_task(health_probes.canary_loop())
+        assert await asyncio.to_thread(write_started.wait, 5), "canary write never started"
+        task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.ensure_future(_await_cancelled(task))),
+                timeout=10,
+            )
+        finally:
+            release_write.set()  # never leave the thread blocked
+
+    async def _await_cancelled(task) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(drive())

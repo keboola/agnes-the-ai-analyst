@@ -11,6 +11,7 @@ compatibility alias. Spec §3.7.
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from typing import Any, Callable, TypeVar
@@ -101,6 +102,22 @@ def _write_canary() -> bool:
 
 _T = TypeVar("_T")
 
+#: Bound on the shutdown drain below. Same default and rationale as the
+#: worker runtime's ``_DEFAULT_DRAIN_TIMEOUT_S`` — comfortably under the 60s
+#: stop_grace_period a container typically gets between SIGTERM and SIGKILL.
+_DEFAULT_DRAIN_TIMEOUT_S = 45.0
+
+
+def _drain_timeout_s() -> float:
+    raw = os.environ.get("AGNES_DRAIN_TIMEOUT_S")
+    if raw is None:
+        return _DEFAULT_DRAIN_TIMEOUT_S
+    try:
+        return max(float(raw), 0.0)
+    except ValueError:
+        logger.warning("readiness: invalid AGNES_DRAIN_TIMEOUT_S=%r, using default", raw)
+        return _DEFAULT_DRAIN_TIMEOUT_S
+
 
 async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
     """Run ``fn`` in a worker thread; on cancellation, wait for an in-flight
@@ -118,14 +135,31 @@ async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any, **kwar
     these calls are single-row writes / CHECKPOINTs bounded by a normal
     statement, not arbitrary user work (the worker runtime keeps its own
     bounded-drain registry for that).
+
+    The drain is nonetheless **bounded** by ``AGNES_DRAIN_TIMEOUT_S``
+    (default ``_DEFAULT_DRAIN_TIMEOUT_S``), mirroring the worker runtime's
+    ``_drain_in_flight``. "Single statement" is an assumption, not a
+    guarantee — lock contention or a partitioned Postgres can hang one
+    indefinitely, and an unbounded wait would trade the abandoned-thread bug
+    for a shutdown that never completes. On timeout we log and abandon,
+    i.e. fall back to the pre-drain behavior rather than hanging.
     """
     future = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
     try:
         return await asyncio.shield(future)
     except asyncio.CancelledError:
         # fn's own failure, if any, no longer matters once we're cancelled.
+        timeout = _drain_timeout_s()
         with contextlib.suppress(Exception):
-            await future
+            # shield again: wait_for cancels its argument on timeout, which
+            # would re-orphan the very thread we are draining.
+            await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+        if not future.done():
+            logger.warning(
+                "readiness: shutdown drain timed out after %.0fs waiting for %s; abandoning the thread",
+                timeout,
+                getattr(fn, "__name__", repr(fn)),
+            )
         raise
 
 
