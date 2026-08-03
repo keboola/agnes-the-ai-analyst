@@ -56,6 +56,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Deferred the `anthropic`/`openai` SDK imports in `connectors/llm` to first API use; a module-level `__getattr__` keeps `<provider>.anthropic`/`<provider>.openai` resolvable for existing mock-patch targets. The two SDK type trees (hundreds of modules, 15–94 s wall on a cold filesystem cache) rode along with every `import app.main` via the store-guardrails chain and intermittently pushed `tests/test_api_design_rules.py` past its 60 s pytest-timeout; `import src.store_guardrails.runner` now pulls zero SDK modules (~10 s → ~0.07 s warm).
 
 ### Security
+- Chat sandbox PreToolUse hook enforces org floor command rules: outright deny for `mkfs` and fork bombs, explicit user confirmation for recursive force delete (`rm -rf`), `git push --force`, destructive SQL (`DROP`/`TRUNCATE`), and piping a download into a shell. Commands are now scanned per shell segment (`;`, `&&`, `||`, `&`, newlines, with `sudo`-style wrappers stripped), so chained commands can no longer slip past the workspace-delete, enumeration, and egress checks.
 
 
 ## [0.77.32] - 2026-07-30
