@@ -49,6 +49,16 @@
        topnav/blue instances. Mirrors base_ds.html. #}
     <link rel="stylesheet" href="{{ static_url('css/rail.css') }}">
     <link rel="stylesheet" href="{{ static_url('css/paper-skin.css') }}">
+    {# Shared resource-detail layout — same attribute-scoped contract.
+       Loaded here too because catalog_package_detail.html and the other
+       catalog detail pages still extend this base. Must stay ABOVE
+       head_extra: the detail pages' own detail.styles() block is what it
+       overrides. Mirrors base_ds.html. #}
+    <link rel="stylesheet" href="{{ static_url('css/detail-page.css') }}">
+    <!-- v113: one trust vocabulary (Organization / Verified / Community) for the
+         Library table + grid, catalog cards and every detail hero. Replaced four
+         separate spellings, two of which read from different data. -->
+    <link rel="stylesheet" href="{{ static_url('css/trustmark.css') }}">
     {# app.js loaded by _app_header.html itself so pages that include
        the header directly without extending base.html (e.g. admin_tables)
        still get the nav-dropdown wiring. #}

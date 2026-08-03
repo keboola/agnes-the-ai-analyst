@@ -163,3 +163,39 @@
     font-family: var(--ds-font-mono);
     font-size: 12.5px;
 }
+
+/* ── Fast tooltip for `[data-tip]` ──────────────────────────────────────────
+   Shared (v113). Replaces the native `title` tooltip, whose show delay is
+   OS-controlled at 600ms+ — far too slow for an affordance that is the ONLY
+   explanation of an icon-only marker.
+
+   Fixed-position and appended to <body> by js/components/tooltip.js rather than
+   drawn as a CSS ::after, because a ::after is clipped by the ancestors these
+   markers actually live in: `.lib-table td` is `overflow: hidden`, `.lib-tablewrap`
+   is `overflow-x: auto` (which computes `overflow-y: auto` too), and a grid
+   `.fbar-card` is `overflow: hidden` — so a bubble on a card would be sliced off
+   at the card edge.
+
+   Lived in library.html as `.lib-tip` until the trust markers had to carry the
+   same behaviour onto the catalog + detail pages; one implementation now, since
+   two would eventually disagree about the delay or the geometry. */
+.ds-tip {
+    position: fixed;
+    z-index: 500;
+    max-width: 260px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    font-weight: 500;
+    letter-spacing: normal;
+    text-transform: none;
+    background: var(--ds-text-primary);
+    color: var(--ds-text-inverse);
+    box-shadow: var(--ds-shadow-md);
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(2px);
+    transition: opacity .08s ease, transform .08s ease;
+}
+.ds-tip.is-visible { opacity: 1; transform: translateY(0); }

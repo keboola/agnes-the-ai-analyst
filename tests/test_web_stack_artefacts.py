@@ -172,7 +172,19 @@ class TestMyStackArtefactsTab:
 
         text = c.get("/stack", headers=_auth(seeded_app["analyst_token"])).text
         assert "Company Handbook" in text
-        assert "Workspace" in text
+        # "Everyone", not "Workspace": one sharing vocabulary across every surface
+        # (app/services/artefact_access.py :: VISIBILITY_LABELS) — this Source cell
+        # and the Library's Sharing badge state the same fact about the same item,
+        # so they must not spell it differently.
+        #
+        # Asserted on the cell rather than as a bare substring: "Workspace" appears
+        # in the admin nav ("Initial Workspace") on every page, so a page-wide
+        # absence check would be testing the nav, not this column.
+        assert '<td class="stk-cell-muted">Everyone</td>' in text
+        assert '<td class="stk-cell-muted">Workspace</td>' not in text
+        # The row's search haystack carries the label too, so filtering the Stack by
+        # the word a reader can see still finds the row.
+        assert "company handbook collection everyone" in text
 
     def test_shared_with_me_shows_owner_name(self, seeded_app, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")

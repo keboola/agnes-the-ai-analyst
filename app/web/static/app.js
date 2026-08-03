@@ -132,26 +132,65 @@
 
     // Toast helper — paired with .toast / .toast-container CSS in style-custom.css.
     // Usage: window.appToast({kind: "success", msg: "Saved", timeout: 4000})
+    //        window.appToast("Saved")   // shorthand: message only, kind=info
+    //
+    // The toast is the channel for RECEIPTS — "saved", "removed", "loaded" —
+    // outcomes the reader acknowledges and moves on from. Anything the reader
+    // has to act on (a validation failure naming a field) belongs on the page,
+    // next to the thing that has to change, not in a strip that times out.
+    var TOAST_MAX = 4;   // a repeated action must not paper over the page
     function ensureToastContainer() {
         var c = document.getElementById("appToastContainer");
         if (c) return c;
         c = document.createElement("div");
         c.id = "appToastContainer";
         c.className = "toast-container";
+        // Announced, or a screen-reader user gets no receipt at all.
+        c.setAttribute("role", "status");
+        c.setAttribute("aria-live", "polite");
         document.body.appendChild(c);
         return c;
     }
     function appToast(opts) {
+        // Eight existing call sites pass a bare string (`appToast("Dismissed.")`),
+        // which read `opts.msg` as undefined and showed an EMPTY toast. Accept
+        // both shapes rather than chase the callers.
+        if (typeof opts === "string") opts = { msg: opts };
         opts = opts || {};
         var kind = opts.kind || "info";
         var msg = String(opts.msg || "");
         var timeout = opts.timeout == null ? 4000 : opts.timeout;
+
         var el = document.createElement("div");
         el.className = "toast is-" + kind;
-        el.textContent = msg;
-        el.addEventListener("click", function () { el.remove(); });
-        ensureToastContainer().appendChild(el);
-        if (timeout > 0) setTimeout(function () { el.remove(); }, timeout);
+        var text = document.createElement("span");
+        text.className = "toast-msg";
+        text.textContent = msg;
+        el.appendChild(text);
+        // A real dismiss control: click-anywhere stays, but an affordance that
+        // only exists as `cursor: pointer` is invisible to anyone not already
+        // hovering it — and unreachable by keyboard.
+        var close = document.createElement("button");
+        close.type = "button";
+        close.className = "toast-x";
+        close.setAttribute("aria-label", "Dismiss");
+        close.textContent = "✕";
+        el.appendChild(close);
+
+        var timer = null;
+        function dismiss() { if (timer) clearTimeout(timer); el.remove(); }
+        function arm() { if (timeout > 0) timer = setTimeout(dismiss, timeout); }
+        close.addEventListener("click", function (e) { e.stopPropagation(); dismiss(); });
+        el.addEventListener("click", dismiss);
+        // Hovering is how someone reads a long receipt — don't yank it away
+        // mid-sentence.
+        el.addEventListener("mouseenter", function () { if (timer) { clearTimeout(timer); timer = null; } });
+        el.addEventListener("mouseleave", arm);
+
+        var host = ensureToastContainer();
+        host.appendChild(el);
+        while (host.children.length > TOAST_MAX) host.removeChild(host.firstChild);
+        arm();
         return el;
     }
 

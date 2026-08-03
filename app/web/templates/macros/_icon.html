@@ -36,6 +36,17 @@
 {%- elif name == 'shield-check' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M12 3 5 6v5c0 4.4 3 7.6 7 9 4-1.4 7-4.6 7-9V6z"/><path d="m9 12 2 2 4-4"/></svg>
 {%- elif name == 'sparkle' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M12 3.5 13.9 9 19.5 12 13.9 15 12 20.5 10.1 15 4.5 12 10.1 9z"/></svg>
 {%- elif name == 'user' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg>
+{#- Two figures, for "other people" as opposed to `user`'s single one — the
+    community/shared-by-others sense, not an account. -#}
+{%- elif name == 'users' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20.2a6.6 6.6 0 0 1 12.4 0"/><path d="M16.2 4.9a3.4 3.4 0 0 1 0 6.5"/><path d="M17.6 14.3a5.4 5.4 0 0 1 3.6 4.6"/></svg>
+{#- An institution rather than a person or a crowd — the "published by the
+    organization itself" sense that sits above both `user` and `users`. Kept
+    deliberately plain (one block, one annex, a ground line) so it still reads
+    at the 14px the Library's trust markers use, and held to TWO window strokes
+    rather than three: at that size a third row puts them ~2px apart, which
+    smears into a grey block on a non-retina display instead of reading as
+    windows. -#}
+{%- elif name == 'building' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="M3 21h18"/><path d="M6 21V4.5h9V21"/><path d="M15 10.5h4V21"/><path d="M9.5 9h2M9.5 15h2"/></svg>
 {%- elif name == 'chevron' -%}<svg class="ui-ico {{ cls }}" {{ a|safe }}><path d="m6 9 6 6 6-6"/></svg>
 {%- endif -%}
 {% endmacro %}

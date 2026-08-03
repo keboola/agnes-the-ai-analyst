@@ -5,7 +5,7 @@
 {% block body_attrs %}class="detail-page"{% endblock %}
 
 {% block head_extra %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 {{ detail.styles() }}
 <style>
   .rcp-sql {
@@ -37,7 +37,7 @@
 
 {% block content %}
 {% import "_components.html" as ds %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 
 {% set _meta = [] %}
 {% if related_tables %}{% set _ = _meta.append({'icon': 'table', 'text': (related_tables|length|string) ~ ' table' ~ ('s' if related_tables|length != 1 else '')}) %}{% endif %}
@@ -46,10 +46,13 @@
 
 {% call detail.hero(
      kind='recipe', name=recipe.title, color=recipe.color,
+     type_label='Recipe',
      description=recipe.description, meta=_meta,
      back_href=_back.href, back_label=_back.label) %}
   {{ detail.ask_agnes('Walk me through the ' ~ recipe.title ~ ' recipe and adapt it to my data.') }}
 {% endcall %}
+
+{{ detail.cols_open() }}
 
 {# Query template — copyable; meant to be adapted, not run as-is. #}
 {{ detail.section_open('Query template', icon='code') }}
@@ -71,6 +74,10 @@
   {% endif %}
 {{ detail.section_close() }}
 
+{# Under the editorial layout the tables this recipe touches are related
+   resources, so they move to the rail with every other detail page's
+   cross-links. The legacy path keeps the in-flow chip row it has today. #}
+{% if not detail.redesign %}
 {{ detail.section_open('Touches tables', icon='table') }}
   {% if related_tables %}
   <div class="rcp-related-tables">
@@ -82,6 +89,41 @@
   <p class="rcp-empty">No related tables linked.</p>
   {% endif %}
 {{ detail.section_close() }}
+{% endif %}
+
+{{ detail.aside_open() }}
+{# Redesign-only — see THE GATING RULE in macros/_detail.html. #}
+{% if detail.redesign %}
+
+{{ detail.side_open('Recipe information', icon='info') }}
+  {{ detail.side_rows([
+       {'key': 'Tables', 'val': (related_tables|length|string) if related_tables else 'None linked'},
+       {'key': 'SQL template', 'val': 'Authored' if recipe.sql_template else 'Not yet authored'},
+     ]) }}
+{{ detail.side_close() }}
+
+{{ detail.side_open('Touches tables', icon='table') }}
+  {% if related_tables %}
+    {% set _tables = [] %}
+    {% for t in related_tables %}
+      {% set _ = _tables.append({'name': t.name, 'href': '/catalog/t/' ~ t.id,
+                                 'kind': 'data', 'glyph': 'table', 'kind_label': 'Table'}) %}
+    {% endfor %}
+    {{ detail.related(_tables) }}
+  {% else %}
+    {{ detail.empty('No related tables linked.', icon='table') }}
+  {% endif %}
+{{ detail.side_close() }}
+
+{{ detail.side_open('How to use it', icon='spark') }}
+  <p class="detail-prose">
+    A recipe is a starting point, not a query to run as-is. Copy the SQL, point it
+    at your own tables, and ask Agnes to adapt it.
+  </p>
+{{ detail.side_close() }}
+
+{% endif %}
+{{ detail.cols_close() }}
 
 </div>
 {% endblock %}

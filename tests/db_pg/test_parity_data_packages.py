@@ -11,12 +11,15 @@ then exercises the HTTP endpoint via ``seeded_app_both`` — once on DuckDB,
 once on real Postgres.
 
 The list/get/create handlers fetch the package row through the factory, so
-they are expected to pass on both backends. The ``badges`` projection
-(``_badges_for`` in app/api/data_packages.py) is the interesting case: it
-reads ``user_group_members``/``user_groups``/``users`` off the raw DuckDB
-``conn`` (Depends(_get_db)) to decide the "curated" badge. On Postgres that
-raw conn is stale/empty, so the badge silently disappears for a package whose
-creator IS an admin — a backend-split divergence.
+they are expected to pass on both backends.
+
+The interesting case USED to be the ``badges`` projection: ``_badges_for``
+derived a "curated" badge by reading ``user_group_members`` / ``user_groups`` /
+``users``, and an earlier version read them off the raw DuckDB ``conn``
+(Depends(_get_db)) — stale/empty on Postgres, so the badge silently disappeared
+for a package whose creator IS an admin. v113 removed the derivation entirely in
+favour of the stored ``publisher_kind`` column, so the discriminator below now
+proves that column survives the round trip through each backend's repo instead.
 """
 from __future__ import annotations
 
@@ -35,6 +38,9 @@ def _seed_pkg(slug="parity-probe", name="Parity Probe", created_by="admin1", **k
         icon=kw.get("icon"),
         color=kw.get("color"),
         created_by=created_by,
+        # v113: forwarded explicitly. `**kw` was collected but never passed on,
+        # so a test asking for a publisher_kind silently got the default.
+        publisher_kind=kw.get("publisher_kind", "user"),
     )
 
 
@@ -98,27 +104,45 @@ def test_create_then_get_roundtrips(seeded_app_both):
 
 
 # ---------------------------------------------------------------------------
-# DISCRIMINATOR — the "curated" badge is derived from user_group_members read
-# off the raw DuckDB conn. admin1 is an Admin-group member (seeded by the
-# fixture), and the package's created_by is admin1's email, so the badge MUST
-# appear on both backends. If it's missing on PG, the badge lookup is reading
-# stale/empty DuckDB instead of the active backend.
+# DISCRIMINATOR — v113. This used to prove the DERIVED `curated` badge resolved
+# Admin membership through the repository factory rather than a raw DuckDB conn
+# (on PG the hand-written JOIN came back empty and the badge silently vanished).
+# The derivation is gone: the claim is now the STORED publisher_kind, so what
+# needs proving is that the column round-trips through the API on BOTH backends
+# — a PG repo that dropped the column from its INSERT or its projection would
+# reintroduce the same class of silent disagreement.
 # ---------------------------------------------------------------------------
 
-def test_curated_badge_present_for_admin_authored_package(seeded_app_both):
-    # created_by must match what the badge query joins on: u.email OR u.id.
-    # The fixture seeds admin1 with email admin@test.com in the Admin group.
+
+def test_publisher_kind_surfaces_through_the_api_on_both_backends(seeded_app_both):
     pkg_id = _seed_pkg(
-        slug="curated-probe", name="Curated Probe", created_by="admin@test.com"
+        slug="curated-probe",
+        name="Curated Probe",
+        created_by="admin@test.com",
+        publisher_kind="organization",
     )
     r = seeded_app_both["client"].get(
         f"/api/admin/data-packages/{pkg_id}", headers=_auth(seeded_app_both)
     )
     assert r.status_code == 200, r.text
-    badges = r.json().get("badges")
-    assert badges is not None, f"[{seeded_app_both['backend']}] no badges field: {r.json()}"
-    assert "curated" in badges, (
-        f"[{seeded_app_both['backend']}] 'curated' badge missing for an "
-        f"admin-authored package — badge derivation reads user_group_members "
-        f"off a raw DuckDB conn instead of the factory. badges={badges}"
+    body = r.json()
+    assert body.get("publisher_kind") == "organization", (
+        f"[{seeded_app_both['backend']}] publisher_kind did not round-trip — the "
+        f"backend's repo is dropping it from its INSERT or its projection. "
+        f"got={body.get('publisher_kind')!r}"
     )
+    # The derived badge must be gone on both engines, not just on DuckDB.
+    assert "curated" not in (body.get("badges") or []), (
+        f"[{seeded_app_both['backend']}] the derived 'curated' badge is back"
+    )
+
+
+def test_new_badge_still_derived_on_both_backends(seeded_app_both):
+    """`new` is a function of the clock, so it stays derived — the v113 change
+    removed one badge, not the mechanism."""
+    pkg_id = _seed_pkg(slug="new-probe", name="New Probe", created_by="admin@test.com")
+    r = seeded_app_both["client"].get(
+        f"/api/admin/data-packages/{pkg_id}", headers=_auth(seeded_app_both)
+    )
+    assert r.status_code == 200, r.text
+    assert "new" in (r.json().get("badges") or []), f"[{seeded_app_both['backend']}] lost the 'new' badge"

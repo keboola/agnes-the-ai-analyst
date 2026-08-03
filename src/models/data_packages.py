@@ -2,12 +2,13 @@
 data_packages, data_package_tables.
 
 Mirrors src/db.py:526-583 (v49 + v50 cover_image_url + v51 status/category
-+ v54 deleted_at + v56 extended content). DuckDB stores ``tags``,
++ v54 deleted_at + v56 extended content + v113 publisher_kind). DuckDB stores ``tags``,
 ``when_to_use``, ``when_not_to_use``, ``example_questions`` as VARCHAR
 JSON-encoded strings; on the PG side they are first-class ``JSONB``
 columns (same pattern as ``knowledge_items.tags`` etc.). Repository code
 on the DuckDB side lives in ``src/repositories/data_packages.py``.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -39,15 +40,17 @@ class DataPackage(Base):
     # v50: admin-uploaded cover image (served from /uploads/covers/<sha>.<ext>).
     cover_image_url: Mapped[str | None] = mapped_column(String, nullable=True)
     # v51: lifecycle + classification surface for /catalog cards.
-    status: Mapped[str] = mapped_column(
-        String, server_default=text("'prod'"), nullable=False
-    )
+    status: Mapped[str] = mapped_column(String, server_default=text("'prod'"), nullable=False)
     category: Mapped[str | None] = mapped_column(String, nullable=True)
     # v54: soft-delete column. DELETE handlers set this; list/get filter
     # ``deleted_at IS NULL``.
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # v113: publisher_kind ('user' | 'organization') — the same stored trust
+    # axis ``store_entities`` carries, replacing the badge that was derived
+    # from the creator's current Admin-group membership. Nullable with a
+    # server default, mirroring the DuckDB DDL (``VARCHAR DEFAULT 'user'``,
+    # no NOT NULL) and Alembic ``0060_pkg_publisher_v113``.
+    publisher_kind: Mapped[str | None] = mapped_column(String, server_default=text("'user'"), nullable=True)
     # v56: extended content for the /catalog/p/<slug> detail-page rewrite.
     # JSON list columns are JSONB on PG (VARCHAR on DuckDB).
     owner_name: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -81,6 +84,7 @@ class DataPackageTable(Base):
     keep the ``data_packages`` FK with ``ON DELETE CASCADE`` so a
     soft-delete-bypassing hard DELETE doesn't leave orphan junctions.
     """
+
     __tablename__ = "data_package_tables"
 
     package_id: Mapped[str] = mapped_column(
@@ -109,6 +113,7 @@ class DataPackageTool(Base):
     Mirrors ``data_package_tables`` for MCP tools: a package can surface
     both its analytical tables and the MCP tools that fit its workflow.
     """
+
     __tablename__ = "data_package_tools"
 
     package_id: Mapped[str] = mapped_column(

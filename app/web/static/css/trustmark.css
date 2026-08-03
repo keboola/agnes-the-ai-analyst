@@ -1,0 +1,134 @@
+/* ── Trust markers — ONE vocabulary for "who stands behind this" ────────────
+   v113. Before this file the same three claims were spelled four different
+   ways, and two of them were computed from different data:
+
+     .lib-trustmark      (library.html, inline)  3 icons   — stored fields
+     .item-detail .trust-chip (inline)           2 words   — stored fields
+     .cc-trust           (catalog_card.css)      2 icons   — stored fields
+     .detail-badge--curated (_detail.html)       1 word    — DERIVED from the
+                                                 creator's CURRENT Admin
+                                                 group membership
+
+   All four now render from here, off one stored `publisher_kind` /
+   `verification_state` pair, so a package and a skill make the same claim the
+   same way and no surface can drift from another.
+
+   THE LADDER, and why each looks the way it does:
+
+     ORGANIZATION — your organization published it. The strongest claim, but
+       GRANTED by who published rather than earned by review, so it takes
+       neutral ink, one step more present than community.
+     VERIFIED — a user wrote it, your organization checked it. The one EARNED
+       claim, and the only place colour is spent, which is what lets a verified
+       row be picked out of a scan.
+     COMMUNITY — a user wrote it, nobody has checked it. Deliberately quietest:
+       it marks provenance, not a problem. (An earlier version wore amber; amber
+       beside a name reads as a warning about the row.)
+
+   Mutually exclusive — an element carries exactly one.
+
+   TWO FORMS, one source of truth:
+
+     icon  (default) — a 14px glyph, for a table cell or a card head where a
+       word would compete with the name for a fixed column's width.
+     label (--label) — glyph + word, for a detail-page hero, which has room and
+       where the claim should be readable without hovering. The pill's fill and
+       border are mixed from `currentColor`, so all three levels are one rule
+       and adding a fourth level needs no new tint. */
+
+/* A TILE, not a bare glyph. Three reasons, in order of weight:
+
+     1. Affordance. A bare 14px glyph with `cursor: help` is a 14px target that
+        reads as decoration; a container says "discrete object, and it does
+        something" — which matters when the tooltip IS the label.
+     2. It was the odd one out. The same row carries a Sharing chip WITH a
+        background, so one row had two state indicators in two visual languages.
+     3. Contrast. A collection row has an accent-tinted resting state and an
+        accent hover ramp; a bare muted glyph loses itself against them.
+
+   Rounded-SQUARE at 6px, deliberately not the pill: fully-round is the badge
+   language the Sharing chip owns, and a second pill on the same row meaning
+   something else recreates exactly that ambiguity. 6px also matches the row's
+   existing kind-icon tile, so this is a smaller sibling of a form already here
+   rather than a new one.
+
+   20px total for a 13px glyph. Every pixel here is taken from the title, which
+   ellipsizes beside it (`flex: none`), so the padding is as thin as it can be
+   and still read as a container. */
+html[data-theme="paper"] .ds-trust {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  cursor: help;                 /* the page convention for a title-only affordance */
+  vertical-align: middle;
+  /* Mixed from currentColor, so one declaration tints all three levels and the
+     fill can never disagree with the glyph in front of it. */
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  transition: background-color .12s ease, color .12s ease;
+}
+html[data-theme="paper"] .ds-trust svg { width: 13px; height: 13px; display: block; }
+
+/* ── The three levels ──
+   Hue carries the ladder; FILL STRENGTH carries frequency. Community is the
+   majority state on any real instance — nearly every user-authored row — so
+   filling it as strongly as the others would spend the most visual weight on
+   the least information, which is the "Unverified on every card" failure this
+   axis was designed to avoid, re-entering through styling instead of logic.
+   Verified is the rare, EARNED claim people actually scan for, so it gets the
+   strongest fill and a hairline to sit it forward. */
+html[data-theme="paper"] .ds-trust--community {
+  color: var(--ds-text-muted);
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+html[data-theme="paper"] .ds-trust--org {
+  color: var(--ds-text-secondary);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+html[data-theme="paper"] .ds-trust--verified {
+  color: var(--ds-accent-success-ink);
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 20%, transparent);
+}
+
+/* Each darkens with its row/card so none looks inert while the name lights up.
+   Scoped to the hosts that have a hover state; a hero marker does not move. */
+html[data-theme="paper"] .lib-row:hover .ds-trust--community,
+html[data-theme="paper"] .fbar-card:hover .ds-trust--community { color: var(--ds-text-secondary); }
+html[data-theme="paper"] .lib-row:hover .ds-trust--org,
+html[data-theme="paper"] .fbar-card:hover .ds-trust--org { color: var(--ds-text-primary); }
+
+/* ── Label form: glyph + word, for detail heroes ──
+   Sized off the badge vocabulary it sits beside (the resource-type badge), so a
+   hero reads as one row of chips rather than a chip plus something else. */
+html[data-theme="paper"] .ds-trust--label {
+  width: auto;
+  height: auto;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  border-radius: var(--ds-radius-pill);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  /* Mixed from currentColor: one rule tints all three levels, and the fill can
+     never disagree with the glyph it sits behind. */
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  /* The icon tile's verified ring would double up with this real border. The
+     hero form does not need the extra emphasis anyway: it already carries the
+     word, which is the strongest signal available. */
+  box-shadow: none;
+}
+html[data-theme="paper"] .ds-trust--label svg { width: 13px; height: 13px; }
+/* The word is the accessible name's visible twin; the glyph stays decorative. */
+html[data-theme="paper"] .ds-trust__word { line-height: 1; }
+
+/* A labelled marker is a statement, not a control — hovering it should not
+   suggest otherwise, but the tooltip still adds the full sentence. */
+html[data-theme="paper"] .ds-trust--label { cursor: help; }

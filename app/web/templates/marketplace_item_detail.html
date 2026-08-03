@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_trustmark.html" as _item_trust %}
 {% block title %}{{ (entity.title if entity else None) or inner_name or item_name or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block body_attrs %}class="detail-page"{% endblock %}
 
@@ -686,8 +687,13 @@
       display: flex; gap: var(--space-2); margin: 0 0 var(--space-4) 0;
       justify-content: flex-end;
     }
+    /* Names the strip under the paper skin, which turns this row into a
+       bordered bar (paper-skin.css). Hidden by default so the topnav/blue
+       chrome keeps rendering the bare right-aligned row it always has. */
+    .item-detail .owner-actions__label { display: none; }
   </style>
   <div class="owner-actions">
+    <span class="owner-actions__label">Manage</span>
     {% if edit_in_flight %}
       {{ ds.button('Edit (review in flight)', variant='secondary', size='sm',
                    href='#', disabled=True,
@@ -757,9 +763,12 @@
       flex: 1 1 100%; color: var(--ds-text-secondary); font-size: 12.5px;
     }
     .item-detail .trust-strip__actions { margin-left: auto; display: flex; gap: var(--space-2); }
-    /* Local chips — this page does not load catalog_card.css, so .cc-trust
-       would render unstyled here. Same palette, same "at most one chip, never a
-       negative label" rule. */
+    /* `.ds-trust` (css/trustmark.css, via the base) is the v113 vocabulary and
+       is scoped to the paper theme. This page-local `.trust-chip` pair therefore
+       STAYS, as the default blue/topnav spelling — the page does not load
+       catalog_card.css, so `.cc-trust` would render unstyled here. Both branches
+       read the same stored publisher_kind / verification_state; only the drawing
+       differs, and the default look is untouched. */
     .item-detail .trust-chip {
       display: inline-flex; align-items: center; gap: 4px;
       padding: 2px 9px; border-radius: var(--ds-radius-pill);
@@ -780,11 +789,26 @@
     <span class="trust-strip__value">
       {% if entity.publisher_kind == 'organization' %}Your organization{% else %}{{ entity_owner_label or entity.owner_username }}{% endif %}
     </span>
-    {% if entity.publisher_kind == 'organization' %}
+    {# One shared marker, labelled form — the same glyph, colour and sentence the
+       Library row for this very entity renders, off the same two stored fields.
+       Community is now included: this page previously showed only the two
+       positive claims, so the row and its own detail page disagreed about the
+       third. Gated on the same instance flag as everywhere else. #}
+    {%- if is_paper() %}
+    {{ _item_trust.mark(
+         _item_trust.level_for(entity.publisher_kind, entity.verification_state,
+                               library_show_unverified_trust|default(true)),
+         own=is_owner, form='label', paper=True) }}
+    {%- else %}
+    {#- Default blue keeps the two positive chips this page already showed. It
+        renders no Community marker, which is the pre-v113 behaviour: the third
+        level is a paper-theme addition, so a default instance is unchanged. #}
+    {%- if entity.publisher_kind == 'organization' %}
       <span class="trust-chip trust-chip--org">Organization</span>
-    {% elif entity.verification_state == 'verified' %}
+    {%- elif entity.verification_state == 'verified' %}
       <span class="trust-chip trust-chip--verified">Verified</span>
-    {% endif %}
+    {%- endif %}
+    {%- endif %}
 
     {% if entity.publisher_kind != 'organization' and store_verification_enabled %}
       {# Workflow states are shown to the author and to admins only — other
