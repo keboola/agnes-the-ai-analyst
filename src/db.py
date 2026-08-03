@@ -51,8 +51,9 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # Merge of main's ladder (→108: data_apps linked columns) with the
 # paper-theme branch's schema additions restacked on top: 109
 # file_corpora.origin, 110 store_entities trust columns, 111 agents builder
-# superset columns, 112 chat_sessions.pinned_at.
-SCHEMA_VERSION = 112
+# superset columns, 112 chat_sessions.pinned_at, 113
+# user_journey_state.news_seen_version.
+SCHEMA_VERSION = 113
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1651,6 +1652,10 @@ CREATE TABLE IF NOT EXISTS user_journey_state (
     use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
     onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
     successful_answers  INTEGER NOT NULL DEFAULT 0,
+    -- v113: last news_template.version the user has seen — the rail's
+    -- "What's new" unread dot lights up when the latest published version
+    -- exceeds this.
+    news_seen_version   INTEGER NOT NULL DEFAULT 0,
     updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 
@@ -6868,6 +6873,27 @@ def _v111_to_v112(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 112")
 
 
+def _v112_to_v113(conn: duckdb.DuckDBPyConnection) -> None:
+    """v112→v113: add ``user_journey_state.news_seen_version``.
+
+    Per-user "last news_template.version seen" marker backing the rail's
+    "What's new" unread dot (#1053). Existing rows default to 0, which is
+    always <= any real published version, so every pre-v113 user sees an
+    unread dot until they open ``/news`` once.
+
+    Idempotent ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a
+    no-op on fresh installs where ``_SYSTEM_SCHEMA`` already declares the
+    column. DuckDB rejects a ``NOT NULL`` constraint on ``ADD COLUMN``
+    ("Adding columns with constraints not yet supported"), so this omits it —
+    the ``DEFAULT 0`` still backfills every existing row, which is all that
+    matters for the repository's ``NOT NULL``-shaped read/write contract.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'user_journey_state'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE user_journey_state ADD COLUMN IF NOT EXISTS news_seen_version INTEGER DEFAULT 0")
+    conn.execute("UPDATE schema_version SET version = 113")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v104 column DDL on its own, with no version stamp.
 
@@ -7721,6 +7747,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v111→v112: chat_sessions.pinned_at (pinned conversations). No-op
             # on fresh installs — _SYSTEM_SCHEMA already declares the column.
             _v111_to_v112(conn)
+            # v112→v113: user_journey_state.news_seen_version (rail "What's
+            # new" unread marker). No-op on fresh installs — _SYSTEM_SCHEMA
+            # already declares the column.
+            _v112_to_v113(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7998,6 +8028,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v110_to_v111(conn)
             if current < 112:
                 _v111_to_v112(conn)
+            if current < 113:
+                _v112_to_v113(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

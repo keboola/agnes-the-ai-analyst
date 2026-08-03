@@ -984,3 +984,45 @@ def test_v99_db_migrates_to_v100_adds_sync_state_parts(tmp_path):
     row = conn.execute("SELECT rows, parts FROM sync_state WHERE table_id = 'keep'").fetchone()
     assert row == (7, None)  # data preserved, parts NULL on the legacy row
     conn.close()
+
+
+def test_v113_user_journey_news_seen_version_column(tmp_path):
+    """v113 (#1053): a fresh install carries
+    ``user_journey_state.news_seen_version`` — the rail's "What's new"
+    unread marker — and the migration step is idempotent."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('user_journey_state')").fetchall()}
+    assert "news_seen_version" in cols
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    from src.db import _v112_to_v113
+
+    _v112_to_v113(conn)  # idempotent
+    conn.close()
+
+
+def test_v112_db_upgrades_to_v113(tmp_path):
+    """A v112 DB (pre-``news_seen_version``) climbs to v113 via the
+    upgrade-block dispatch, keeping existing rows intact with
+    ``news_seen_version`` backfilled to 0 (no FK dependents on
+    ``user_journey_state``, so this simulates a genuinely column-free
+    table by dropping it)."""
+    db_path = tmp_path / "v112.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("ALTER TABLE user_journey_state DROP COLUMN news_seen_version")
+    conn.execute("UPDATE schema_version SET version = 112")
+    conn.execute("INSERT INTO user_journey_state (user_id, onboarded) VALUES ('keep', TRUE)")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('user_journey_state')").fetchall()}
+    assert "news_seen_version" in cols
+    row = conn.execute("SELECT news_seen_version FROM user_journey_state WHERE user_id = 'keep'").fetchone()
+    assert row == (0,)
+    conn.close()

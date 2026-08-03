@@ -67,6 +67,7 @@ from src.repositories import (
     usage_repo,
     user_group_members_repo,
     user_groups_repo,
+    user_journey_repo,
     user_stack_subscriptions_repo,
     user_store_installs_repo,
     users_repo,
@@ -587,6 +588,31 @@ def _compute_can_chat(request: Request, user: Optional[dict]) -> bool:
     return False
 
 
+def _compute_has_unread_news(user: Optional[dict], can_chat: bool) -> bool:
+    """Rail "What's new" unread dot, shared by every page-context builder.
+
+    Lit when the latest published ``news_template`` version is newer than
+    the caller's ``news_seen_version`` (``user_journey_state``). Gated on
+    `can_chat`: the mark-seen write rides the chat-gated
+    ``PUT /api/chat/journey`` endpoint (news.html's page-load call mirrors
+    chat_onboarding.js's `patchJourney`), so a caller who cannot write there
+    could never clear the dot — showing it anyway would be a permanent,
+    unactionable nag. Computed on EVERY page for the same reason `can_chat`
+    is: `_build_context` and `_chrome_ctx` must both set it, or the dot
+    flickers out on whichever builder's pages skip it.
+    """
+    if not user or not can_chat:
+        return False
+    try:
+        news = news_template_repo().get_current_published()
+        if not news:
+            return False
+        seen = user_journey_repo().get(user["id"])["news_seen_version"]
+        return bool(news["version"] > seen)
+    except Exception:
+        return False
+
+
 def _config_proxy() -> type:
     """Template-facing ``config`` object, shared by every page-context builder.
 
@@ -774,6 +800,8 @@ def _build_context(
     # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
     # the nav to signed-in users. The hard gate lives on the routes.
     ctx["can_studio"] = get_studio_enabled()
+    # Rail "What's new" unread dot — see _compute_has_unread_news.
+    ctx["has_unread_news"] = _compute_has_unread_news(user, ctx["can_chat"])
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -3932,6 +3960,7 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
     regressed on exactly this: no top menu, no styling). Mirrors the canonical
     context the home/setup routes build.
     """
+    _can_chat = _compute_can_chat(request, user)
     return {
         "request": request,
         "user": _flex(user) if user else _FlexDict(),
@@ -3960,7 +3989,11 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         # Same visibility rule as _build_context — the shared header hides
         # the Chat nav link when this key is missing/False, so skipping it
         # here made the link vanish on every _chrome_ctx page (/admin/studio*).
-        "can_chat": _compute_can_chat(request, user),
+        "can_chat": _can_chat,
+        # Rail "What's new" unread dot — see _compute_has_unread_news. Same
+        # reasoning as can_chat above: must be set here too, or the dot
+        # vanishes on every _chrome_ctx page.
+        "has_unread_news": _compute_has_unread_news(user, _can_chat),
     }
 
 

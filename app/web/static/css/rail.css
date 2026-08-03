@@ -279,6 +279,23 @@ html[data-ui-layout="rail"] .rail-i-label {
     white-space: nowrap;
 }
 
+/* Unread dot on the "What's new" row (has_unread_news). Trails the label —
+   which already grows to fill the row (see .rail-i-label above), so the dot
+   hugs the right edge with no positioning rules of its own.
+
+   `--ds-accent-info-ink`, NOT `--rail-active-bg` / `--ds-primary`: the accent
+   is reserved for "you are here" (see the COLOUR RULE at the top of this
+   file), and this dot means "unread", a different meaning entirely — using
+   the same tint would read as this row being active. Blue matches the
+   onboarding card below, the file's other established non-wayfinding accent. */
+html[data-ui-layout="rail"] .rail-news-dot {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: var(--ds-radius-pill, 999px);
+    background: var(--ds-accent-info-ink);
+}
+
 /* ── New chat ──────────────────────────────────────────────────────────
    NO rules of its own. It is an ordinary `.rail-i` row — the block above styles
    it exactly like Library / Agents / Admin — and it highlights only via `.on`.

@@ -275,6 +275,7 @@ class JourneyUpdateBody(BaseModel):
     use_anywhere: Optional[bool] = None
     onboarded: Optional[bool] = None
     successful_answers: Optional[int] = None
+    news_seen_version: Optional[int] = None
 
 
 @router.get("/journey")

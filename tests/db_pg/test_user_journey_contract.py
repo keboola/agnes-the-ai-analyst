@@ -67,7 +67,21 @@ def test_get_defaults_for_unknown_user(repo):
         "use_anywhere": False,
         "onboarded": False,
         "successful_answers": 0,
+        "news_seen_version": 0,
     }
+
+
+def test_update_news_seen_version(repo):
+    result = repo.update("user_a", news_seen_version=3)
+    assert result["news_seen_version"] == 3
+    assert result["onboarded"] is False
+
+    fetched = repo.get("user_a")
+    assert fetched["news_seen_version"] == 3
+
+    # A later partial update preserves it.
+    result2 = repo.update("user_a", onboarded=True)
+    assert result2["news_seen_version"] == 3
 
 
 def test_update_partial_upsert(repo):
@@ -99,7 +113,7 @@ def test_update_does_not_bleed_across_users(repo):
 
 
 def test_reset(repo):
-    repo.update("user_a", onboarded=True, successful_answers=5)
+    repo.update("user_a", onboarded=True, successful_answers=5, news_seen_version=2)
     repo.reset("user_a")
     assert repo.get("user_a") == {
         "first_asked": False,
@@ -109,6 +123,7 @@ def test_reset(repo):
         "use_anywhere": False,
         "onboarded": False,
         "successful_answers": 0,
+        "news_seen_version": 0,
     }
 
 

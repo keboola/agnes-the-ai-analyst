@@ -1,9 +1,10 @@
-"""SQLAlchemy model for ``user_journey_state`` (v92).
+"""SQLAlchemy model for ``user_journey_state`` (v92, +news_seen_version v113).
 
 Per-user onboarding "journey" progress — the backend foundation for
 chat-driven onboarding. Mirrors the DuckDB DDL in ``src/db.py``
 (``_v91_to_v92`` / ``_SYSTEM_SCHEMA``) and the Alembic migration
-``migrations/versions/0039_user_journey_state_v92.py``.
+``migrations/versions/0039_user_journey_state_v92.py`` (+
+``_v112_to_v113`` / ``migrations/versions/0060_news_seen_version_v113.py``).
 """
 
 from __future__ import annotations
@@ -27,4 +28,5 @@ class UserJourneyState(Base):
     use_anywhere: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     onboarded: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     successful_answers: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    news_seen_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default="now()")

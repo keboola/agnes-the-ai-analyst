@@ -302,6 +302,24 @@
         <span class="rail-i-label">How {{ instance_brand_short }} works</span>
     </a>
 
+    {# "What's new" (/news) — admin-authored release notes, the in-app
+       alternative to reading CHANGELOG.md. A sibling of "How {brand} works"
+       (orientation, read-only) rather than of Library/Agents (things you go
+       DO), so it sits right beside it and — same reasoning — OUTSIDE the
+       `can_chat` gate: the page itself has nothing to do with chat access.
+
+       The unread dot is narrower than the row: `has_unread_news` is only
+       ever True when `can_chat` too (see `_compute_has_unread_news` in
+       router.py), because clearing it writes through the chat-gated
+       `PUT /api/chat/journey` (news.html's page-load call). A caller
+       without a chat grant still reaches /news from this row — they just
+       never see a dot they'd have no way to clear. #}
+    <a class="rail-i {% if _path == '/news' %}on{% endif %}" href="/news">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <span class="rail-i-label">What's new</span>
+        {% if has_unread_news %}<span class="rail-news-dot" aria-hidden="true"></span>{% endif %}
+    </a>
+
     {% if can_chat %}
     {# Onboarding card — the last thing in the bottom zone, under Admin and
        directly above the profile. It replaces the "Finish setup · N/5" text
