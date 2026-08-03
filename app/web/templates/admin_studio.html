@@ -3,6 +3,7 @@
 {% block title %}{{ domain.title }} — Agnes Studio{% endblock %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   .st-wrap { max-width: 1080px; margin: 0 auto; }
 
@@ -142,7 +143,18 @@
           {% if f.type == "textarea" %}
           <textarea id="studio-f-{{ f.key }}" rows="3" placeholder="{{ f.placeholder }}"></textarea>
           {% elif f.type == "select" %}
-          <select id="studio-f-{{ f.key }}">{% for opt in f.options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}</select>
+          {# Real <select> stays the control studio.js's collectPayload() reads
+             at submit time — untouched. The custom dropdown alongside it is a
+             visual replacement only (paper-skin.css). Jinja has no
+             list-comprehension syntax, so the {value, label} pairs are built
+             via a namespace accumulator instead of an inline expression. #}
+          {% set opt_ns = namespace(items=[]) %}
+          {% for opt in f.options %}{% set opt_ns.items = opt_ns.items + [{'value': opt, 'label': opt}] %}{% endfor %}
+          <select id="studio-f-{{ f.key }}" class="ds-dropdown-native">{% for opt in f.options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}</select>
+          {{ ds.dropdown(
+            id='studio-f-' + f.key + '-dd', target='studio-f-' + f.key,
+            aria_label=f.label, options=opt_ns.items,
+          ) }}
           {% else %}
           <input id="studio-f-{{ f.key }}" type="text" placeholder="{{ f.placeholder }}" />
           {% endif %}
@@ -205,4 +217,5 @@
   };
 </script>
 <script type="module" src="/static/js/studio.js"></script>
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 {% endblock %}
