@@ -7,7 +7,7 @@ See tests/test_chat_subprocess_provider.py for precedent.
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import duckdb
 import pytest
@@ -3462,5 +3462,79 @@ def test_shutdown_no_notice_when_idle(tmp_path):
             await attach_task
         except (asyncio.CancelledError, Exception):
             pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Approval-decision routing (review follow-ups on #1145)
+# ---------------------------------------------------------------------------
+
+
+def test_approval_decision_local_delivery(manager: ChatManager):
+    """With a live local runner, the decision is written to its stdin — no
+    cross-gateway publish."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        handle = FakeHandle()
+        live = MagicMock()
+        live.handle = handle
+        live._stdin_lock = asyncio.Lock()
+        manager._live[s.id] = live
+        with patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub:
+            await manager.deliver_approval_decision(s.id, "appr-1", "allow", sender_email="u@x")
+        pub.assert_not_called()
+        written = b"".join(handle._stdin_buf)
+        assert b"approval_decision" in written
+        assert b"appr-1" in written
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_dropped_when_no_runner_and_no_owner(manager: ChatManager):
+    """No local runner AND no other gateway owns it → drop, never publish a
+    junk control entry (which could disconnect the caller if coordination is
+    down). Mirrors the kill/cancel owner check (review finding on #1145)."""
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value=None),
+            patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub,
+        ):
+            await manager.deliver_approval_decision("chat_dead", "appr-2", "deny", sender_email="u@x")
+        pub.assert_not_called()
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_forwarded_to_remote_owner(manager: ChatManager):
+    """No local runner but another gateway owns it → forward over the inbound
+    control stream (command='approval')."""
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value="other-gateway"),
+            patch("app.chat.routing.this_gateway_id", return_value="this-gateway"),
+            patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub,
+        ):
+            await manager.deliver_approval_decision("chat_remote", "appr-3", "allow", sender_email="u@x")
+        pub.assert_awaited_once()
+        assert pub.await_args.args[1] == "approval"
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_hardens_invalid_to_deny(manager: ChatManager):
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        handle = FakeHandle()
+        live = MagicMock()
+        live.handle = handle
+        live._stdin_lock = asyncio.Lock()
+        manager._live[s.id] = live
+        await manager.deliver_approval_decision(s.id, "appr-4", "bogus", sender_email="u@x")
+        written = b"".join(handle._stdin_buf)
+        assert b'"decision": "deny"' in written
 
     asyncio.run(_run())

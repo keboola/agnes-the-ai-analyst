@@ -135,8 +135,10 @@ class ApprovalGate:
     were silently inert in cloud chat). An SDK-level PreToolUse hook runs
     in-process, so it CAN block the call while a human answers.
 
-    ``allow_session`` remembers the hook's reason string and auto-allows
-    subsequent asks with the same reason for this runner's lifetime.
+    ``allow_session`` remembers the exact approved COMMAND and auto-allows
+    later asks for that identical command for this runner's lifetime (not
+    the hook's reason string, which is shared across a whole command
+    family and would over-approve).
     """
 
     def __init__(
@@ -189,6 +191,13 @@ class ApprovalGate:
                 fut.set_result("deny")
         self._pending.clear()
 
+    def awaiting_approval(self) -> bool:
+        """True while at least one tool call is suspended waiting for a
+        human decision. The turn watchdog consults this so it doesn't
+        mistake an approval wait for a wedged tool (review finding on
+        #1145)."""
+        return any(not fut.done() for fut in self._pending.values())
+
     async def check(self, input_data: dict, tool_use_id, context) -> dict:
         """SDK PreToolUse callback body. Returns hookSpecificOutput."""
         payload = {
@@ -202,7 +211,15 @@ class ApprovalGate:
             return _hook_output("deny", reason or "Denied by workspace policy.")
         if decision != "ask":
             return {}
-        if reason and reason in self._session_approved:
+        # "Allow for session" dedupes on the exact COMMAND, not the hook's
+        # reason string: the bundled hook emits one fixed reason for the whole
+        # `agnes admin grant|group|user` family, so a reason-keyed cache would
+        # let approving one `agnes admin grant …` silently pre-approve every
+        # `agnes admin user delete …` for the runner's life. Command-keyed
+        # keeps the "Allow for session" blast radius to the identical command
+        # (review finding on #1145).
+        command = str(payload["tool_input"].get("command", ""))
+        if command and command in self._session_approved:
             return _hook_output("allow", "approved by user for this session")
         if not self._enabled:
             return _hook_output(
@@ -212,7 +229,6 @@ class ApprovalGate:
             )
         self._counter += 1
         request_id = f"appr-{os.getpid()}-{self._counter}"
-        command = str(payload["tool_input"].get("command", ""))
         self._emit(
             {
                 "type": "approval_request",
@@ -238,8 +254,8 @@ class ApprovalGate:
             }
         )
         if outcome in ("allow", "allow_session"):
-            if outcome == "allow_session" and reason:
-                self._session_approved.add(reason)
+            if outcome == "allow_session" and command:
+                self._session_approved.add(command)
             return _hook_output("allow", "approved by user")
         if outcome == "timeout":
             return _hook_output(
@@ -688,10 +704,15 @@ async def _real_agent_loop(
         setting_sources=["user", "project", "local"],
         mcp_servers=mcp_servers,
     )
-    # Approval gate (SDK in-process PreToolUse hook). HookMatcher is absent
-    # on older SDKs — degrade to today's behavior (no gate) rather than
-    # crash the runner in a stale sandbox template.
-    if gate is not None:
+    # Approval gate (SDK in-process PreToolUse hook). HookMatcher AND the
+    # ClaudeAgentOptions.hooks field must both exist — an older sandbox
+    # template (the E2B :latest tag is mutable, outside the wheel's pin) could
+    # ship one without the other; degrade to today's behavior (no gate) rather
+    # than crash the runner at ClaudeAgentOptions(**options_kwargs). Same
+    # __dataclass_fields__ probe used for include_partial_messages below
+    # (review finding on #1145).
+    _hooks_supported = "hooks" in getattr(ClaudeAgentOptions, "__dataclass_fields__", {})
+    if gate is not None and _hooks_supported:
         try:
             from claude_agent_sdk import HookMatcher  # type: ignore[attr-defined]
         except ImportError:
@@ -701,6 +722,13 @@ async def _real_agent_loop(
             async def _gate_hook(input_data, tool_use_id, context):
                 return await gate.check(input_data, tool_use_id, context)
 
+            # Matcher is Bash-only: the bundled workspace hook short-circuits
+            # to allow for every non-Bash tool, so no policy is lost today,
+            # and gating every Read/Write/Edit through a per-call file-hook
+            # subprocess would add real latency. Consequence documented in
+            # docs/cloud-chat.md: an operator override that adds `ask` rules
+            # for Write/Edit/WebFetch would need this widened to see them
+            # (review note on #1145).
             options_kwargs["hooks"] = {
                 "PreToolUse": [
                     HookMatcher(
@@ -810,7 +838,7 @@ async def _real_agent_loop(
             # arriving MID-TURN sat in the queue until the turn finished
             # naturally — by which point interrupt() was a no-op and the
             # Stop button did nothing (Devin Review on #975).
-            turn_task = asyncio.create_task(_consume_turn(client, tool_calls_per_turn=tool_calls_per_turn))
+            turn_task = asyncio.create_task(_consume_turn(client, tool_calls_per_turn=tool_calls_per_turn, gate=gate))
             interrupted_this_turn = False
             while not turn_task.done():
                 ft = _frame_task()
@@ -862,7 +890,7 @@ async def _real_agent_loop(
             _emit({"type": "done"})
 
 
-async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
+async def _consume_turn(client, *, tool_calls_per_turn: int = 50, gate: "ApprovalGate | None" = None) -> None:
     """Drain one turn's ``receive_response()`` stream into outbound frames.
 
     Runs as its own task so ``_real_agent_loop`` can keep consuming stdin
@@ -940,6 +968,14 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50) -> None:
         except StopAsyncIteration:
             break
         except asyncio.TimeoutError:
+            # A tool call suspended on a human approval produces no stream
+            # activity by design — that is NOT a wedged tool. Keep waiting;
+            # the ApprovalGate's own timeout (AGNES_APPROVAL_TIMEOUT_SECONDS)
+            # bounds it and resolves to deny, after which the stream resumes
+            # and a genuinely-idle turn trips this watchdog on the next lap
+            # (review finding on #1145).
+            if gate is not None and gate.awaiting_approval():
+                continue
             _emit(
                 {
                     "type": "error",
