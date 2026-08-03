@@ -1,0 +1,115 @@
+/* ds_dropdown.css — accessible custom dropdown (select replacement), #1055.
+ *
+ * Generalizes the chat composer's "+" upload menu (chat.css
+ * .cloud-chat-plus-btn / .cloud-chat-plus-menu) into a reusable component: a
+ * trigger button opens a role="menu" popover of role="menuitemradio" choices.
+ * See _components.html's `dropdown` macro for the markup this styles and
+ * js/components/ds_dropdown.js for the open/close/select interaction.
+ *
+ * Inputs/selects are never pill-shaped per the design system — this control
+ * keeps the same tight corners as `.fbar-select select` (filter_toolbar.css),
+ * the native control it can stand in for.
+ */
+
+.ds-dropdown {
+    position: relative;
+    display: inline-flex;
+}
+
+/* Paired with a real <select> via data-ds-dropdown-target (back-compat change
+   wiring) — stays out of the way by default, deferring to the native control,
+   until a theme claims it visually (see paper-skin.css). A standalone
+   dropdown (no target) renders normally. */
+.ds-dropdown[data-ds-dropdown-target] {
+    display: none;
+}
+
+.ds-dropdown-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 38px;
+    min-width: 180px;
+    padding: 0 12px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ds-text-primary);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 9px;
+    cursor: pointer;
+    transition:
+        border-color var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease),
+        background var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease);
+}
+.ds-dropdown-btn:hover {
+    background: var(--ds-surface-dim);
+}
+.ds-dropdown-btn.is-open {
+    border-color: var(--ds-primary);
+}
+.ds-dropdown-btn:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+.ds-dropdown-btn-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ds-dropdown-chevron {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    color: var(--ds-text-muted);
+    transition: transform var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease);
+}
+.ds-dropdown-btn.is-open .ds-dropdown-chevron {
+    transform: rotate(180deg);
+}
+
+/* Popover — opens downward, anchored to the trigger's left edge (its wrapper
+   is the positioning context). */
+.ds-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    min-width: 100%;
+    max-width: min(320px, 90vw);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-lg, 12px);
+    box-shadow: var(--ds-shadow-md);
+    padding: 6px;
+    list-style: none;
+    margin: 0;
+}
+.ds-dropdown-menu[hidden] {
+    display: none;
+}
+
+.ds-dropdown-menu-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    border-radius: var(--ds-radius-md, 8px);
+    font-size: 13px;
+    color: var(--ds-text-primary);
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+.ds-dropdown-menu-item:hover,
+.ds-dropdown-menu-item:focus-visible {
+    background: var(--ds-accent-info-bg);
+    border-color: var(--ds-accent-info-line);
+    outline: none;
+}
+.ds-dropdown-menu-item.is-selected {
+    font-weight: 600;
+    color: var(--ds-primary);
+}

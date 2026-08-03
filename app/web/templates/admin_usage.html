@@ -6,6 +6,7 @@
 {% set page_hero_subtitle = "Claude Code tool / skill / agent / slash-command invocations across users." %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 {# The /admin/activity page already ships the .obs-* styles via
    activity_center.html. We re-include them here so /admin/usage renders
    identically without depending on the user having visited /admin/activity
@@ -93,17 +94,28 @@
     <div class="obs-topbar-right">
       <label class="obs-window">
         <span class="obs-label">Time range</span>
-        <select id="u-window">
+        <select id="u-window" class="ds-dropdown-native">
           <option value="1440">Last 24h</option>
           <option value="10080" selected>Last 7d</option>
           <option value="43200">Last 30d</option>
           <option value="129600">Last 90d</option>
           <option value="525600">Last 365d</option>
         </select>
+        {{ ds.dropdown(
+          id='u-window-dd', target='u-window',
+          aria_label='Time range', selected='10080',
+          options=[
+            {'value': '1440', 'label': 'Last 24h'},
+            {'value': '10080', 'label': 'Last 7d'},
+            {'value': '43200', 'label': 'Last 30d'},
+            {'value': '129600', 'label': 'Last 90d'},
+            {'value': '525600', 'label': 'Last 365d'},
+          ],
+        ) }}
       </label>
       <label class="obs-window">
         <span class="obs-label">Group by</span>
-        <select id="u-groupby">
+        <select id="u-groupby" class="ds-dropdown-native">
           <option value="">None (raw events)</option>
           <option value="day" selected>Day</option>
           <option value="username">User</option>
@@ -111,6 +123,18 @@
           <option value="source">Source</option>
           <option value="ref_id">Plugin (source/ref_id)</option>
         </select>
+        {{ ds.dropdown(
+          id='u-groupby-dd', target='u-groupby',
+          aria_label='Group by', selected='day',
+          options=[
+            {'value': '', 'label': 'None (raw events)'},
+            {'value': 'day', 'label': 'Day'},
+            {'value': 'username', 'label': 'User'},
+            {'value': 'tool_name', 'label': 'Tool'},
+            {'value': 'source', 'label': 'Source'},
+            {'value': 'ref_id', 'label': 'Plugin (source/ref_id)'},
+          ],
+        ) }}
       </label>
     </div>
   </header>
@@ -208,6 +232,7 @@
 
 </div>
 
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script>
 (function() {
   const state = readUrl();
