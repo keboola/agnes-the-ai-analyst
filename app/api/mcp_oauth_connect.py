@@ -93,6 +93,7 @@ CONNECT_ERROR_MESSAGES: Dict[str, str] = {
     "as_unreachable": "could not reach the authorization server — try again or contact your admin",
     "as_address_rejected": "the authorization server's address was rejected — contact your admin",
     "vault_key_not_configured": "the server's vault key is not configured — contact your admin",
+    "rate_limited": "too many connect attempts — wait a minute and try again",
 }
 
 #: Rendered for any ``?connect_error=`` value not in the map — including
@@ -155,31 +156,36 @@ async def authorize_oauth_connect(
             status_code=303,
         )
     deny_principal(user)
-    src = _get_source_or_404(source_id)
-    _require_oauth_source(src)
+    # This GET is a browser navigation (the Connect button / the CLI-opened
+    # URL) — every human-reachable failure mode lands back on
+    # /me/connections with a fixed banner code, mirroring the callback,
+    # never a raw JSON error page (Devin Review on #1130). deny_principal
+    # above still raises: restricted principals are programmatic callers.
+    src = mcp_sources_repo().get(source_id)
+    if src is None:
+        return _err_redirect("source_missing")
+    try:
+        _require_oauth_source(src)
+    except HTTPException:
+        return _err_redirect("source_not_oauth")
     # Deliberate deviation from the sync-map's `Depends(require_resource_access)`
     # idiom (verify_syncmap WARNs here): per-source MCP access is governed by
     # tool_registry grants, not the generic ResourceType framework, and this
     # inline gate is the SAME one the sibling `my-secret` endpoints have used
     # since #919 — one mechanism, no drift. Swapping to ResourceType would mean
     # refactoring the whole passthrough authorization subsystem (out of scope).
-    _require_source_grant(source_id, user)
+    try:
+        _require_source_grant(source_id, user)
+    except HTTPException:
+        return _err_redirect("not_granted")
     try:
         check_rate_limit(f"oauth-authorize:{source_id}", user["id"], _AUTHORIZE_RATE_LIMIT_PM)
-    except RateLimited as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=str(exc),
-            headers={"Retry-After": str(int(exc.retry_after_seconds) + 1)},
-        ) from exc
+    except RateLimited:
+        return _err_redirect("rate_limited")
 
     client_row = mcp_source_oauth_clients_repo().get(source_id)
     if client_row is None:
-        raise HTTPException(
-            status_code=409,
-            detail="oauth_client_not_registered: an admin must register an OAuth client for "
-            "this source first (POST …/oauth/register or PUT …/oauth/client)",
-        )
+        return _err_redirect("client_registration_missing")
 
     flows_repo = mcp_oauth_flows_repo()
     flows_repo.sweep_expired()  # opportunistic housekeeping, not load-bearing
@@ -188,16 +194,20 @@ async def authorize_oauth_connect(
     nonce = uuid.uuid4().hex
     try:
         flows_repo.create(nonce, source_id, user["id"], verifier)
-    except VaultKeyNotConfiguredError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
-        ) from exc
+    except VaultKeyNotConfiguredError:
+        return _err_redirect("vault_key_not_configured")
+
+    try:
+        redirect_uri = _oauth_redirect_uri()
+    except HTTPException:
+        # public_url unset raises HTTPException(409) — same friendly landing
+        # as the callback's sibling branch.
+        return _err_redirect("public_url_unset")
 
     state = sign_connect_state(source_id, user["id"], nonce)
     params: Dict[str, str] = {
         "client_id": client_row["client_id"],
-        "redirect_uri": _oauth_redirect_uri(),
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "code_challenge": challenge,
         "code_challenge_method": "S256",
