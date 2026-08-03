@@ -1003,6 +1003,7 @@ class UsagePgRepository:
                                COALESCE(SUM(tool_calls), 0)
                           FROM usage_session_summary
                           WHERE CAST((started_at AT TIME ZONE 'UTC') AS DATE) >= :sd
+                            AND {self.REAL_SESSION_PREDICATE}
                           GROUP BY day ORDER BY day"""
                 ),
                 {"sd": start_date},
@@ -1036,7 +1037,7 @@ class UsagePgRepository:
 
     def adoption_top_users(self, since: datetime, limit: int = 10, q: Optional[str] = None) -> List[dict]:
         # adoption stays anchored on started_at (usage-over-time semantics)
-        where = ["started_at >= :since"]
+        where = ["started_at >= :since", self.REAL_SESSION_PREDICATE]
         params: dict = {"since": since, "lim": limit}
         if q:
             where.append("(username LIKE :q OR user_id LIKE :q)")
@@ -1101,7 +1102,8 @@ class UsagePgRepository:
                                MAX(ended_at)
                           FROM usage_session_summary
                           WHERE started_at >= :since
-                            AND (user_id = :uid OR username = :uname)"""
+                            AND (user_id = :uid OR username = :uname)
+                            AND {self.REAL_SESSION_PREDICATE}"""
                 ),
                 p,
             ).fetchone()
@@ -1116,6 +1118,10 @@ class UsagePgRepository:
                 ),
                 p,
             ).fetchone()
+            # The per-user MODEL BREAKDOWN is deliberately NOT filtered: it
+            # answers "which models did this user's sessions run on", and
+            # `<synthetic>` showing up there is how you diagnose the artifact.
+            # Headline KPIs filter; diagnostic breakdowns do not.
             models = conn.execute(
                 sa.text(
                     """SELECT primary_model, COUNT(*) AS n
@@ -1156,6 +1162,7 @@ class UsagePgRepository:
                           FROM usage_session_summary
                           WHERE CAST((started_at AT TIME ZONE 'UTC') AS DATE) >= :sd
                             AND (user_id = :uid OR username = :uname)
+                            AND {self.REAL_SESSION_PREDICATE}
                           GROUP BY day ORDER BY day"""
                 ),
                 {"sd": start_date, "uid": user_id, "uname": username},

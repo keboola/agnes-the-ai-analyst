@@ -172,8 +172,16 @@ def _seed(repo, backend):
     # `<synthetic>` row on the anchor day. Synthetic rows carry no tool calls and
     # no active time — they are a processing artifact, not usage, and must not
     # reach the digest's session KPI.
-    ss_cols = ["session_file", "session_id", "username", "started_at", "processor_version",
-               "primary_model", "tool_calls", "active_seconds"]
+    ss_cols = [
+        "session_file",
+        "session_id",
+        "username",
+        "started_at",
+        "processor_version",
+        "primary_model",
+        "tool_calls",
+        "active_seconds",
+    ]
     _insert(
         repo,
         backend,
@@ -419,6 +427,30 @@ def test_real_session_predicate_is_identical_everywhere():
     # and it really is the three-condition form, not a model-only filter
     one = next(iter(copies.values()))
     assert "primary_model" in one and "tool_calls" in one and "active_seconds" in one
+
+
+def test_every_adoption_read_applies_the_session_predicate():
+    """All adoption surfaces must agree, or one page contradicts itself.
+
+    /admin/adoption renders the KPI tile, the Sessions/day chart and the
+    per-user table from three separate reads of `usage_session_summary`;
+    the per-user drill-down adds two more. Filtering some and not others is
+    how this bug appeared twice already — once between the digest's two
+    "Sessions" tiles, once inside the adoption page itself.
+    """
+    import re
+    from pathlib import Path
+
+    missing = []
+    for path in ("src/repositories/usage.py", "src/repositories/usage_pg.py"):
+        src = Path(path).read_text()
+        for part in re.split(r"\n    def ", src)[1:]:
+            name = part.split("(")[0]
+            if not name.startswith("adoption") or "usage_session_summary" not in part:
+                continue
+            if "REAL_SESSION_PREDICATE" not in part:
+                missing.append(f"{path}::{name}")
+    assert not missing, "adoption reads over usage_session_summary without the session predicate: " + ", ".join(missing)
 
 
 def test_events_daily_buckets_by_utc_day(reports_repo):
