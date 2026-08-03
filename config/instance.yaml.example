@@ -696,8 +696,19 @@ chat:
   #        keep working; weaker than E2B's hostname allowlist).
   # none — internal-only network: the sandbox reaches nothing but the
   #        containers on that network (stronger than E2B; breaks in-sandbox
-  #        package installs). Hostname-level allowlisting is not offered.
+  #        package installs).
+  # allowlist — the internal network of `none` PLUS the egress-proxy sidecar
+  #        (compose profile `chat-docker-egress`): sandboxes get HTTP(S)_PROXY
+  #        pointed at it and may reach only docker_egress_allow_hosts, each
+  #        connection re-checked post-DNS against link-local/metadata/private
+  #        ranges (DNS-rebinding protection). Ignoring the proxy is not a
+  #        bypass — the internal network has no other route out.
   # docker_egress_mode: open
+  # Hostnames reachable in allowlist mode (exact or *.suffix wildcards).
+  # Cloud metadata endpoints stay blocked even if listed.
+  # docker_egress_allow_hosts: [pypi.org, "*.pypi.org", files.pythonhosted.org]
+  # Where sandboxes find the proxy (compose service name on the internal net).
+  # docker_egress_proxy_url: "http://agnes-egress-proxy:3128"
   # Host-wide ceiling on live sandboxes, on top of concurrency_per_user.
   # docker_max_total_sandboxes: 10
   # Kill the sandbox the moment the WS disconnects rather than

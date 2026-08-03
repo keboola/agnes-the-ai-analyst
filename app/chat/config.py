@@ -77,8 +77,21 @@ class ChatConfig:
     # tools that fetch packages). ``none`` — an ``internal`` bridge where the
     # only reachable origin is whatever else is attached to it (stronger than
     # E2B's allowlist, but in-sandbox package installs stop working).
-    # Hostname-level allowlisting is not offered here; see docs/cloud-chat.md.
+    # ``allowlist`` — the internal bridge of ``none`` PLUS an egress-proxy
+    # sidecar (services/egress_proxy) dual-homed onto it: sandboxes get
+    # HTTP(S)_PROXY pointed at the proxy, which enforces
+    # ``docker_egress_allow_hosts`` with a post-resolution IP re-check
+    # (DNS-rebinding/metadata protection). Ignoring the proxy is not a
+    # bypass — the internal network has no other route out.
     docker_egress_mode: str = "open"
+    # Hostnames sandboxes may reach in ``allowlist`` mode (exact or
+    # ``*.suffix`` wildcards). Cloud metadata endpoints stay blocked even
+    # if listed. Empty = deny everything except the direct internal-network
+    # peers (Agnes server / broker relay via NO_PROXY).
+    docker_egress_allow_hosts: list[str] = field(default_factory=list)
+    # Where sandboxes find the egress proxy in ``allowlist`` mode — must be
+    # resolvable on the internal network (the compose service name).
+    docker_egress_proxy_url: str = "http://agnes-egress-proxy:3128"
     # Host-wide ceiling on live sandboxes, checked at spawn on top of
     # ``concurrency_per_user``.
     docker_max_total_sandboxes: int = 10
@@ -185,10 +198,11 @@ def _parse_slack_config(raw_chat: dict) -> SlackConfig:
 
 
 def _parse_docker_egress_mode(raw: dict) -> str:
-    """``open`` | ``none``; anything else warns and falls back to ``open``
-    (same normalize-don't-crash convention as ``_parse_on_detach``)."""
+    """``open`` | ``none`` | ``allowlist``; anything else warns and falls
+    back to ``open`` (same normalize-don't-crash convention as
+    ``_parse_on_detach``)."""
     mode = str(raw.get("docker_egress_mode", "open")).strip().lower()
-    if mode not in ("open", "none"):
+    if mode not in ("open", "none", "allowlist"):
         logger.warning("unknown chat.docker_egress_mode %r — falling back to 'open'", mode)
         mode = "open"
     return mode
@@ -255,6 +269,8 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         docker_cpus=float(raw.get("docker_cpus", 1.0)),
         docker_pids_limit=int(raw.get("docker_pids_limit", 512)),
         docker_egress_mode=_parse_docker_egress_mode(raw),
+        docker_egress_allow_hosts=[str(h) for h in (raw.get("docker_egress_allow_hosts") or [])],
+        docker_egress_proxy_url=str(raw.get("docker_egress_proxy_url") or "http://agnes-egress-proxy:3128"),
         docker_max_total_sandboxes=int(raw.get("docker_max_total_sandboxes", 10)),
         on_detach=_parse_on_detach(raw),
         detach_linger_seconds=detach_linger_seconds,

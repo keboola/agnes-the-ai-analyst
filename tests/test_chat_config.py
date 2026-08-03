@@ -84,8 +84,9 @@ def test_docker_provider_overrides(tmp_path: Path):
 
 
 def test_unknown_docker_egress_mode_normalizes_to_open(tmp_path: Path, caplog):
+    # "allowlist" graduated to a real mode; "wide-open" stays a typo
     y = tmp_path / "instance.yaml"
-    y.write_text("chat:\n  enabled: true\n  provider: docker\n  docker_egress_mode: allowlist\n")
+    y.write_text("chat:\n  enabled: true\n  provider: docker\n  docker_egress_mode: wide-open\n")
     cfg = load_chat_config(y)
     assert cfg.docker_egress_mode == "open"
     assert "docker_egress_mode" in caplog.text

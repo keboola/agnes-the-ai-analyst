@@ -1489,6 +1489,7 @@ async def lifespan(app):
                         cpus=app.state.chat_config.docker_cpus,
                         pids_limit=app.state.chat_config.docker_pids_limit,
                         egress_mode=app.state.chat_config.docker_egress_mode,
+                        egress_proxy_url=app.state.chat_config.docker_egress_proxy_url,
                         max_total_sandboxes=app.state.chat_config.docker_max_total_sandboxes,
                     )
                 else:
@@ -1525,8 +1526,7 @@ async def lifespan(app):
                     else "multi-worker/replica (coordination.backend=redis)"
                 )
                 _chat_sandbox_desc = (
-                    f"image={app.state.chat_config.docker_image}, "
-                    f"egress={app.state.chat_config.docker_egress_mode}"
+                    f"image={app.state.chat_config.docker_image}, egress={app.state.chat_config.docker_egress_mode}"
                     if app.state.chat_config.provider == "docker"
                     else f"template={app.state.chat_config.e2b_template_id}"
                 )
