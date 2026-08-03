@@ -915,6 +915,10 @@
 /* `.cta-modal-foot button` styling moved onto `.btn.btn-primary`
    (rendered via `ds.button`). The canonical .btn-primary supplies the
    green-fill CTA pattern and the hover-darken behavior. */
+/* The foot is `space-between` flex with a long meta sentence on the
+   left; without these the button is the flex item that gives way and
+   its label wraps ("Got / it"). */
+.cta-modal-foot .btn { flex-shrink: 0; white-space: nowrap; }
 
 /* ─────────────────────────────────────────────────────────────────
    Reskin overlay — value-first intro hero, pillars, progress chip,
