@@ -685,6 +685,10 @@ chat:
   max_session_tokens: 200000
   rate_messages_per_hour: 100
   tool_calls_per_turn_budget: 50
+  # How long the in-runner approval gate waits for the user to answer an
+  # approval card (workspace-hook "ask" verdicts) before denying the
+  # suspended tool call.
+  approval_timeout_seconds: 300
   marketplace_sha_debounce_seconds: 300
   # How the chat broker authenticates to Anthropic:
   #   api_key           (default) — use the static ANTHROPIC_API_KEY.

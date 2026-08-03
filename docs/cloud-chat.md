@@ -189,11 +189,26 @@ Single-tenant: all users in one Agnes instance trust each other. The
 E2B microVM bounds FS / process / kernel isolation. The bundled
 PreToolUse hook in the workspace template
 (`.claude/hooks/pre_tool_use.py`) refuses workspace-destructive bash,
-prompts for admin mutations, and enforces the egress allowlist. **Per
+enforces the egress allowlist, and marks high-blast-radius commands as
+needing user confirmation (`ask`). **Per
 Q4 the egress allowlist exists only in the hook** — there is no
 firewall layer baked into the E2B template, so a prompt injection that
 rewrites the hook can reach arbitrary external hosts. The template's
 README documents this trade-off and how to flip it.
+
+**Approval gate.** Under `permission_mode="bypassPermissions"` the CLI
+executes a file-hook `ask` verdict without prompting anyone, so `ask`
+rules used to be silently inert in cloud chat. The runner now re-runs
+the workspace hook from an SDK in-process PreToolUse hook
+(`ApprovalGate` in `app/chat/runner.py`): an `ask` verdict suspends the
+tool call, emits an `approval_request` frame (web chat renders an
+Allow once / Allow for session / Deny card; co-drive participants may
+answer too), and resolves to allow or deny from the user's
+`approval_decision`. No answer within `chat.approval_timeout_seconds`
+(default 300), a Stop, or a surface that cannot prompt (runner env
+`AGNES_APPROVALS=off`) all resolve to deny. Slack surfaces currently
+see the pause + timeout-deny only — interactive Slack approval buttons
+are a follow-up.
 
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.

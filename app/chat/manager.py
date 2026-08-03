@@ -1781,6 +1781,9 @@ class ChatManager:
             "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
             "AGNES_PER_TOOL_CALL_SECONDS": str(self._config.per_tool_call_seconds),
             "AGNES_TOOL_CALLS_PER_TURN": str(self._config.tool_calls_per_turn_budget),
+            # ApprovalGate window for a pending approval_request (runner
+            # denies the suspended tool call on expiry).
+            "AGNES_APPROVAL_TIMEOUT_SECONDS": str(self._config.approval_timeout_seconds),
             # Opt-in: bootstrap the user's marketplace plugins into the sandbox
             # at spawn and load them via setting_sources. Off by default (adds
             # per-spawn latency; only useful once the marketplace ships real
@@ -1931,8 +1934,11 @@ class ChatManager:
             # Accumulate in-flight turn frames for mid-turn replay and partial
             # save. tool_result MUST ride along: a reconnect mid-turn replays
             # this buffer, and tool_calls replayed without their results left
-            # every tool block stuck on "running…" after a refresh.
-            if ftype in ("token", "tool_call", "tool_result"):
+            # every tool block stuck on "running…" after a refresh. Approval
+            # frames ride too so a refresh mid-approval re-renders the pending
+            # card (request + any resolution, reconciled client-side by
+            # request_id).
+            if ftype in ("token", "tool_call", "tool_result", "approval_request", "approval_resolved"):
                 live.turn_buffer.append(frame)
             if ftype == "assistant_message":
                 self._repo.append_message(
@@ -2219,6 +2225,47 @@ class ChatManager:
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
 
+    async def deliver_approval_decision(
+        self,
+        chat_id: str,
+        request_id: str,
+        decision: str,
+        *,
+        sender_email: Optional[str] = None,
+    ) -> None:
+        """Route a user's approval decision to ``chat_id``'s runner.
+
+        Owner path: one ``approval_decision`` stdin frame (no turn-state
+        bookkeeping — the turn is already in flight, suspended inside the
+        runner's ApprovalGate). Non-owner path: ride the inbound control
+        stream (``command="approval"``) so the owning gateway's consumer
+        delivers it — same mechanism as remote kill/cancel. Unknown or
+        invalid decisions harden to "deny". Audited either way.
+        """
+        if decision not in ("allow", "allow_session", "deny"):
+            decision = "deny"
+        write_audit(
+            user_email=sender_email or "",
+            action="chat.approval_decision",
+            details={"session_id": chat_id, "request_id": request_id, "decision": decision},
+        )
+        live = self._live.get(chat_id)
+        if live is None or live.handle is None:
+            await inbound.publish_control(
+                chat_id,
+                "approval",
+                extra={"request_id": request_id, "decision": decision, "sender": sender_email or ""},
+            )
+            return
+        await self._deliver_local_approval(live, request_id, decision)
+
+    async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
+        payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"
+        async with live._stdin_lock:
+            live.handle.stdin.write(payload.encode("utf-8"))
+            await live.handle.stdin.drain()
+        live.last_activity = datetime.now(timezone.utc)
+
     def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
         """Make sure ``live`` has a ``SlackSinkBridge`` for the Slack
         channel in ``slack_origin`` (``{"channel": ..., "thread_ts": ...}``),
@@ -2377,6 +2424,23 @@ class ChatManager:
                                 await self.cancel(chat_id)
                             except Exception:
                                 logger.exception("inbound consumer: remote cancel failed for %s", chat_id)
+                        elif command == "approval":
+                            # Approval decision forwarded from a non-owning
+                            # gateway. Deliver straight to the local runner's
+                            # stdin; if the session died meanwhile the pending
+                            # request died with it — drop with a log, never
+                            # re-publish (that would loop).
+                            if live.handle is not None:
+                                try:
+                                    await self._deliver_local_approval(
+                                        live,
+                                        str(entry.get("request_id", "")),
+                                        str(entry.get("decision", "deny")),
+                                    )
+                                except Exception:
+                                    logger.exception("inbound consumer: approval delivery failed for %s", chat_id)
+                            else:
+                                logger.info("inbound consumer: dropping approval for %s (no live runner)", chat_id)
                         else:
                             logger.warning(
                                 "inbound consumer: unknown control command %r for %s (seq %s) — skipped",

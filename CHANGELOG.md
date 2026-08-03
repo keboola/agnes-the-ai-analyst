@@ -21,6 +21,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+- Cloud chat approval gate: the workspace PreToolUse hook's `ask` verdicts are now enforced end-to-end. Under `bypassPermissions` the CLI silently executed `ask`-flagged commands (verified empirically — `agnes admin …` mutations ran with no confirmation); the runner's new in-process `ApprovalGate` suspends the tool call, web chat renders an Allow once / Allow for session / Deny card (co-drive participants included, decisions audited), and timeout (`chat.approval_timeout_seconds`, default 300 s), Stop, or a non-interactive surface all resolve to deny.
+- Chat runner: fixed a latent task-GC bug — the stdin reader task was created without a strong reference, so a garbage-collection cycle during a long-running turn could silently kill inbound frame routing (Stop/cancel and credential `ticket_push` frames stopped arriving).
 
 ## [0.77.32] - 2026-07-30
 
