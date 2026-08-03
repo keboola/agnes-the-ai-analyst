@@ -13,7 +13,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.chat import agent_profile, inbound, routing
+# `runner` is imported for the stdin-protocol constants it defines (the
+# UNATTENDED approval decision) — it is stdlib-only at import time and does
+# not import back into this module.
+from app.chat import agent_profile, inbound, routing, runner
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.frame_seq import stamp_frame
@@ -1809,13 +1812,6 @@ class ChatManager:
             # ApprovalGate window for a pending approval_request (runner
             # denies the suspended tool call on expiry).
             "AGNES_APPROVAL_TIMEOUT_SECONDS": str(self._config.approval_timeout_seconds),
-            # Interactive approval cards render only on the web surface. On
-            # non-interactive surfaces (agent-API one-shot, Slack — no card
-            # yet) an `ask` verdict has nobody to answer it, so switch the
-            # gate off there: it denies immediately with an actionable
-            # message instead of freezing for the full approval timeout
-            # (review finding on #1145).
-            "AGNES_APPROVALS": "on" if session.surface == Surface.WEB.value else "off",
             # Which agent engine drives the session (app/chat/harness.py
             # seam; boot-validated against APPROVED_HARNESSES).
             "AGNES_HARNESS": getattr(self._config, "harness", "claude-code"),
@@ -1964,6 +1960,13 @@ class ChatManager:
             except json.JSONDecodeError:
                 continue
             live.last_activity = datetime.now(timezone.utc)
+            if frame.get("type") == "approval_request":
+                # Stamped BEFORE the fan-out so every sink sees the same
+                # envelope (frame_seq contract) and a push-only sink can tell
+                # whether someone is already looking at a card: the Slack
+                # bridge posts its "approve this on the web" nudge only when
+                # nobody is.
+                frame["attended"] = any(getattr(e.sink, "supports_approvals", False) for e in live.sinks)
             await self._broadcast(live, frame)
             ftype = frame.get("type")
             # Accumulate in-flight turn frames for mid-turn replay and partial
@@ -1981,6 +1984,8 @@ class ChatManager:
                     live.pending_approvals[rid] = frame
             elif ftype == "approval_resolved":
                 live.pending_approvals.pop(frame.get("request_id"), None)
+            if ftype == "approval_request" and not frame.get("attended"):
+                await self._resolve_if_unattended(live, frame)
             if ftype == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
@@ -2361,6 +2366,51 @@ class ChatManager:
                     "reason": "the sandbox restarted before this was answered",
                 },
             )
+
+    async def _resolve_if_unattended(self, live: "LiveSession", frame: dict) -> None:
+        """Answer an ``approval_request`` that nobody can ever answer.
+
+        Called only for a request no attached sink can respond to (``frame
+        ["attended"]`` is False). The runner's gate is armed on every
+        surface; whether a human can actually respond is a property of the
+        SINKS attached right now, not of the surface the session was started
+        on — a Slack-origin session opened through "Continue on web" has a
+        card-capable client, and a web session whose browser is closed does
+        not. So the decision lives here, at the fan-out, rather than in a
+        spawn-time env var.
+
+        Two cases remain:
+
+        - A capable sink could still arrive: leave the request pending for
+          the gate's full ``chat.approval_timeout_seconds``. This is what
+          makes Slack's "Continue on web" button work — the request rides
+          ``live.pending_approvals``, so a browser attaching mid-approval
+          replays the pending card and can answer it. Waiting is strictly more
+          useful than a fast deny here: the user is a click away, and the
+          gate's timeout is the backstop either way.
+        - None can ever attach — ``Surface.API``, where a ``HeadlessSink``/
+          ``StreamingSink`` is seated by construction and the caller is a
+          program blocked on an HTTP response, not a person who can open a
+          browser: resolve immediately as
+          :data:`~app.chat.runner.UNATTENDED` so the one-shot path keeps its
+          fast, actionable deny instead of stalling for the full timeout.
+        """
+        if live.surface != Surface.API.value:
+            return
+        request_id = str(frame.get("request_id", ""))
+        if not request_id or live.handle is None:
+            return
+        logger.info(
+            "approval request %s on %s auto-denied — agent-API session has no client that can answer",
+            request_id,
+            live.chat_id,
+        )
+        write_audit(
+            user_email=live.user_email,
+            action="chat.approval_decision",
+            details={"session_id": live.chat_id, "request_id": request_id, "decision": runner.UNATTENDED},
+        )
+        await self._deliver_local_approval(live, request_id, runner.UNATTENDED)
 
     async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
         payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"

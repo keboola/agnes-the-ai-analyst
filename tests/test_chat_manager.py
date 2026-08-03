@@ -960,7 +960,9 @@ def test_active_count_for_user_matches_private(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _attach_fake_live_with_fake_handle(mgr: ChatManager, chat_id: str, user_email: str, sink):
+def _attach_fake_live_with_fake_handle(
+    mgr: ChatManager, chat_id: str, user_email: str, sink, *, surface: str = Surface.WEB.value, extra_sinks=()
+):
     """Insert a LiveSession with FakeHandle (has emit/readline) and one sink."""
     from datetime import datetime, timezone
     from app.chat.manager import LiveSession
@@ -973,7 +975,8 @@ def _attach_fake_live_with_fake_handle(mgr: ChatManager, chat_id: str, user_emai
         handle=handle,
         started_at=datetime.now(timezone.utc),
         last_activity=datetime.now(timezone.utc),
-        sinks=[SinkEntry(participant_email=user_email, sink=sink)],
+        surface=surface,
+        sinks=[SinkEntry(participant_email=user_email, sink=s) for s in (sink, *extra_sinks)],
     )
     mgr._live[chat_id] = live
     return live
@@ -3566,10 +3569,11 @@ def test_approval_decision_hardens_invalid_to_deny(manager: ChatManager):
     asyncio.run(_run())
 
 
-def test_spawn_env_approvals_gated_by_surface(manager: ChatManager, monkeypatch):
-    """Approvals are on for web (renders the card), off for non-interactive
-    surfaces (agent-API one-shot, Slack) so an ask denies immediately
-    instead of freezing for the full timeout (review finding on #1145)."""
+def test_spawn_env_arms_approvals_on_every_surface(manager: ChatManager, monkeypatch):
+    """The gate is armed regardless of origin surface — whether anyone can
+    answer a request is decided per-request at the fan-out from the attached
+    sinks, not once at spawn from `session.surface`. A Slack session
+    continued on the web must be able to approve."""
     monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "jwt")
     import app.chat.manager as manager_mod
 
@@ -3590,14 +3594,146 @@ def test_spawn_env_approvals_gated_by_surface(manager: ChatManager, monkeypatch)
         return captured["env"]
 
     async def _run():
-        web = await _env_for(Surface.WEB)
-        assert web["AGNES_APPROVALS"] == "on"
-        api = await _env_for(Surface.API)
-        assert api["AGNES_APPROVALS"] == "off"
-        dm = await _env_for(
-            Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        # No surface switches the gate off: the runner defaults to armed and
+        # nothing here overrides it (AGNES_APPROVALS survives only as an
+        # operator kill-switch).
+        for env in (
+            await _env_for(Surface.WEB),
+            await _env_for(Surface.API),
+            await _env_for(Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None),
+        ):
+            assert env.get("AGNES_APPROVALS", "on") == "on"
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# approval_request fan-out: who (if anyone) can answer a pending request
+# ---------------------------------------------------------------------------
+
+
+def _approval_decisions_written(handle) -> list[dict]:
+    """Every approval_decision frame the manager wrote to the runner's stdin."""
+    out = []
+    for line in b"".join(handle._stdin_buf).decode().splitlines():
+        try:
+            frame = json.loads(line)
+        except ValueError:
+            continue
+        if frame.get("type") == "approval_decision":
+            out.append(frame)
+    return out
+
+
+async def _pump_one_approval_request(mgr: ChatManager, live, *, request_id: str = "appr-1"):
+    """Run the pump over a single approval_request frame and stop."""
+    pump = asyncio.create_task(mgr._pump_subprocess_to_ws(live))
+    live.handle.emit(
+        {
+            "type": "approval_request",
+            "request_id": request_id,
+            "tool": "Bash",
+            "command": "agnes admin user delete bob@x",
+            "reason": "admin mutation",
+            "timeout_seconds": 300,
+        }
+    )
+    await _wait_until(lambda: any(f.get("type") == "approval_request" for f in live.turn_buffer))
+    pump.cancel()
+    try:
+        await pump
+    except asyncio.CancelledError:
+        pass
+
+
+def test_slack_origin_approval_waits_for_a_client(manager: ChatManager):
+    """A Slack-origin session has no card-capable sink, but the user is one
+    "Continue on web" click away — so the request is NOT auto-denied. It
+    stays pending (the gate's own timeout is the backstop) and rides
+    turn_buffer so a browser attaching later replays the card."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
         )
-        assert dm["AGNES_APPROVALS"] == "off"
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+        await _pump_one_approval_request(manager, live)
+
+        assert _approval_decisions_written(live.handle) == [], "a Slack session must not be auto-denied"
+        buffered = [f for f in live.turn_buffer if f.get("type") == "approval_request"]
+        assert buffered and buffered[0]["attended"] is False
+
+    asyncio.run(_run())
+
+
+def test_slack_session_continued_on_web_can_approve(manager: ChatManager):
+    """The bug this fixes: a session STARTED in Slack and opened through the
+    "Continue on web" deep link has a real web sink attached, so the request
+    is marked attended, is never auto-denied, and the user's decision
+    reaches the runner."""
+
+    async def _run():
+        from app.chat.replay import GapReplayGate
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        # The Slack bridge stand-in stays seated; the browser arrives as the
+        # real web sink wrapper (GapReplayGate is what app/api/chat.py seats).
+        web = GapReplayGate(FakeWS())
+        live = _attach_fake_live_with_fake_handle(
+            manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value, extra_sinks=(web,)
+        )
+        await _pump_one_approval_request(manager, live)
+
+        assert _approval_decisions_written(live.handle) == []
+        buffered = [f for f in live.turn_buffer if f.get("type") == "approval_request"]
+        assert buffered and buffered[0]["attended"] is True
+
+        # …and the approval actually goes through.
+        await manager.deliver_approval_decision(s.id, "appr-1", "allow", sender_email="u@x")
+        assert _approval_decisions_written(live.handle) == [
+            {"type": "approval_decision", "request_id": "appr-1", "decision": "allow"}
+        ]
+
+    asyncio.run(_run())
+
+
+def test_agent_api_one_shot_denies_approval_immediately(manager: ChatManager):
+    """The agent-API one-shot path has a HeadlessSink by construction and no
+    human who could ever attach a browser, so it keeps the fast deny rather
+    than stalling the caller for the full approval timeout. The decision is
+    `unattended`, which the runner turns into an actionable message."""
+
+    async def _run():
+        from app.chat.headless import HeadlessSink
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.API)
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", HeadlessSink(), surface=Surface.API.value)
+        await _pump_one_approval_request(manager, live)
+
+        assert _approval_decisions_written(live.handle) == [
+            {"type": "approval_decision", "request_id": "appr-1", "decision": "unattended"}
+        ]
+
+    asyncio.run(_run())
+
+
+def test_web_session_with_no_attached_browser_still_waits(manager: ChatManager):
+    """A web session whose browser is closed mid-turn keeps the request
+    pending — the user reconnects and answers the replayed card. Only
+    Surface.API is treated as permanently clientless."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", None)
+        live.sinks.clear()
+        await _pump_one_approval_request(manager, live)
+
+        assert _approval_decisions_written(live.handle) == []
 
     asyncio.run(_run())
 
