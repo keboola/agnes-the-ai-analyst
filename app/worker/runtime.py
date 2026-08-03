@@ -667,7 +667,21 @@ async def worker_loop(*, worker_id: str, poll_interval_s: float = 5.0) -> None:
         for t in tasks:
             if not t.done() and t.cancelling() == 0:
                 t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Bounded: skipping the second cancel for a task that is mid-drain is
+        # right, but it means a task which somehow lost its cancellation is
+        # never asked again — and an unbounded wait on it would hang shutdown
+        # forever, the very symptom this change removes. The drains inside
+        # those tasks are themselves bounded by the shared DB-drain budget,
+        # so this only has to outlast that — the worker's own (larger) drain
+        # knob does. Past it we log and let shutdown proceed (review finding
+        # on #1140).
+        _, still_running = await asyncio.wait(tasks, timeout=_drain_timeout_s())
+        for t in still_running:
+            logger.warning(
+                "worker %s: lane task %s did not stop within the shutdown budget; abandoning it",
+                worker_id,
+                t.get_name(),
+            )
         # Every lane slot has now stopped claiming new work. Any handler
         # that was mid-flight when its slot got cancelled was handed off
         # into `in_flight` (see _run_one) instead of being abandoned —
