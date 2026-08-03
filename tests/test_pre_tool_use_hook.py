@@ -506,3 +506,25 @@ def test_heredoc_body_is_data_not_commands():
     assert _decide("cat <<EOF > a.txt\nhi\nEOF\nrm -rf /data") == "ask"
     # a here-string is one line, not a heredoc
     assert _decide("grep x <<< 'rm -rf /data'") == "allow"
+
+
+def test_discard_errors_redirection_does_not_hide_the_command():
+    """`env 2>/dev/null` is still an environment dump.
+
+    The segment lexer splits the glued form into `2`, `>`, `/dev/null`, so
+    the bare descriptor number was becoming the head.
+    """
+    assert _decide("env 2>/dev/null") == "deny"
+    assert _decide("env 2> /dev/null") == "deny"
+    assert _decide("printenv 2>/dev/null") == "deny"
+    assert _decide("2>/dev/null rm -rf /data") == "ask"
+    assert _decide("python train.py 2>/dev/null") == "allow"
+
+
+def test_quoted_heredoc_marker_is_not_a_heredoc():
+    """Only an unquoted `<<` opens one.
+
+    Matching the raw line let a quoted `<<` swallow every later line of a
+    multi-line command.
+    """
+    assert _decide("echo 'a << b'\nrm -rf /data") == "ask"
