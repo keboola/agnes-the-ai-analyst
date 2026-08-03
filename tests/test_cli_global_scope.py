@@ -52,11 +52,15 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rm_module, "CLONE_DIR", clone)
 
+    agnes_bin = tmp_path / "bin" / "agnes"
+    agnes_bin.parent.mkdir(parents=True, exist_ok=True)
+    agnes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+
     rec = _Recorder()
     monkeypatch.setattr(rm_module.subprocess, "run", rec.run)
     monkeypatch.setattr(gs_module.subprocess, "run", rec.run)
     monkeypatch.setattr(rm_module.shutil, "which", lambda n: "claude" if n == "claude" else None)
-    monkeypatch.setattr(gs_module.shutil, "which", lambda n: {"claude": "claude", "agnes": "/fake/bin/agnes"}.get(n))
+    monkeypatch.setattr(gs_module.shutil, "which", lambda n: {"claude": "claude", "agnes": str(agnes_bin)}.get(n))
     rec.scripts.append(
         (
             ("claude", "plugin", "list", "--json"),
@@ -70,7 +74,14 @@ def env(tmp_path, monkeypatch):
         )
     )
     monkeypatch.setattr(gs_module, "_verify_credentials", lambda: True)
-    return {"rec": rec, "claude_md": claude_md, "settings": settings, "cfg_dir": cfg_dir}
+    return {
+        "rec": rec,
+        "claude_md": claude_md,
+        "settings": settings,
+        "cfg_dir": cfg_dir,
+        "agnes_bin": agnes_bin,
+        "clone": clone,
+    }
 
 
 def test_enable_converges_all_artifacts(env):
@@ -120,7 +131,7 @@ def test_disable_reverts_exactly(env):
         (
             ("claude", "mcp", "get"),
             subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="agnes:\n  Command: /fake/bin/agnes\n  Args: mcp\n", stderr=""
+                args=[], returncode=0, stdout=f"agnes:\n  Command: {env['agnes_bin']}\n  Args: mcp\n", stderr=""
             ),
         ),
     )
@@ -172,7 +183,7 @@ def test_status_reports_each_artifact(env):
         (
             ("claude", "mcp", "get"),
             subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="agnes:\n  Command: /fake/bin/agnes\n  Args: mcp\n", stderr=""
+                args=[], returncode=0, stdout=f"agnes:\n  Command: {env['agnes_bin']}\n  Args: mcp\n", stderr=""
             ),
         ),
     )
@@ -185,3 +196,70 @@ def test_status_reports_each_artifact(env):
     assert rows["flag"] == "ok"
     assert rows["mcp"] == "ok"
     assert "plugins" in rows
+
+
+def test_same_name_foreign_mcp_with_mcp_args_is_not_ours(env):
+    """Review finding: the ours-detection must key on the command BASENAME,
+    not on the literal 'agnes' (always present — it is the lookup name)."""
+    env["rec"].scripts.insert(
+        0,
+        (
+            ("claude", "mcp", "get"),
+            subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="agnes:\n  Command: /usr/bin/other-tool\n  Args: mcp\n", stderr=""
+            ),
+        ),
+    )
+    state, cmd = gs_module._mcp_entry_info()
+    assert state == "foreign"
+    result = CliRunner().invoke(gs_module.global_app, ["disable"])
+    assert result.exit_code == 0
+    assert not any(c[:3] == ["claude", "mcp", "remove"] for c in env["rec"].calls)
+
+
+def test_status_drifted_when_registered_binary_missing(env):
+    CliRunner().invoke(gs_module.global_app, ["enable"])
+    env["rec"].scripts.insert(
+        0,
+        (
+            ("claude", "mcp", "get"),
+            subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="agnes:\n  Command: /gone/away/agnes\n  Args: mcp\n", stderr=""
+            ),
+        ),
+    )
+    result = CliRunner().invoke(gs_module.global_app, ["status", "--json"])
+    doc = json.loads(result.output)
+    rows = {row["artifact"]: row for row in doc["artifacts"]}
+    assert rows["mcp"]["state"] == "drifted"
+    assert "/gone/away/agnes" in rows["mcp"]["detail"]
+
+
+def test_convergence_repairs_dead_binary_path(env):
+    env["rec"].scripts.insert(
+        0,
+        (
+            ("claude", "mcp", "get"),
+            subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="agnes:\n  Command: /gone/away/agnes\n  Args: mcp\n", stderr=""
+            ),
+        ),
+    )
+    report: list[dict] = []
+    gs_module.run_convergence(want_hook=False, force=False, report=report)
+    mcp_rows = [r for r in report if r["stage"] == "mcp"]
+    assert mcp_rows and mcp_rows[0]["status"] == "repaired"
+    adds = [c for c in env["rec"].calls if c[:3] == ["claude", "mcp", "add"]]
+    assert adds and adds[0][-2] == str(env["agnes_bin"])
+
+
+def test_enable_json_stays_pure_on_bootstrap_path(env, tmp_path):
+    """Review finding: the first-ever enable (no clone) must not leak the
+    bootstrap's progress echoes into the --json stdout contract."""
+    import shutil as _shutil
+
+    _shutil.rmtree(env["clone"] / ".git")
+    result = CliRunner().invoke(gs_module.global_app, ["enable", "--json"])
+    assert result.exit_code == 0, result.output
+    doc = json.loads(result.stdout)  # raises if any stray echo corrupted stdout
+    assert "report" in doc
