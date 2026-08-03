@@ -277,7 +277,14 @@ def _split_segments(cmd: str) -> list[str]:
             lex.commenters = ""
             tokens = list(lex)
         except ValueError:
+            # Unbalanced quotes: the naive split is all that is left, and the
+            # docstring above is right that it fails OPEN for the egress check
+            # (a host can land in a segment whose head is no longer curl). So
+            # also scan the WHOLE line as one segment: extra segments can only
+            # add verdicts, never remove them, and this one's head is the real
+            # command (review finding on #1141).
             segments.extend(p.strip() for p in re.split(r"[;&|]", line) if p.strip())
+            segments.append(line.strip())
             continue
 
         current: list[str] = []
@@ -328,7 +335,7 @@ def _normalized(seg: str) -> str:
     return " ".join(toks) if toks else seg
 
 
-def _strip_prefix(toks: list[str], *, env_is_wrapper: bool) -> list[str]:
+def _strip_prefix(toks: list[str], *, env_is_wrapper: bool, wrapper: str | None = None) -> list[str]:
     """Strip leading wrappers / their flags, values and positionals / VAR=val.
 
     ONE implementation, two callers. `_is_env_dump` used to keep its own copy
@@ -346,7 +353,7 @@ def _strip_prefix(toks: list[str], *, env_is_wrapper: bool) -> list[str]:
     mask for the command and scanned nothing.
     """
     i = 0
-    current: str | None = None
+    current: str | None = wrapper
     positionals_left = 0
     while i < len(toks):
         t = _basename(toks[i])
@@ -405,8 +412,12 @@ def _is_env_dump(seg: str) -> bool:
         # trailing token can itself be a dump — `env printenv`, `env env` —
         # so step over assignments and re-check the head rather than bailing
         # on the mere presence of a trailing word (security review on #1141).
-        trailing = [t for t in rest[1:] if not t.startswith("-")]
-        trailing = [t for t in trailing if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t)]
+        # Reuse the shared walk rather than filtering out anything starting
+        # with "-": that filter dropped flags but kept their VALUES, so
+        # `env -u FOO printenv` read "FOO" as the command being run and the
+        # dump was allowed. Third time flag-values have bitten in this file
+        # (review finding on #1141) — hence one implementation.
+        trailing = _strip_prefix(rest[1:], env_is_wrapper=False, wrapper="env")
         if not trailing:
             return True
         return _basename(trailing[0]) in ("env", "printenv")
