@@ -699,3 +699,34 @@ def test_manual_client_with_a_new_client_id_drops_user_tokens(seeded_app):
     assert mcp_oauth_flows_repo().consume("manual-swap-nonce") is None
     # The new registration itself is stored, not purged.
     assert mcp_source_oauth_clients_repo().get(sid)["client_id"] == "cid-second"
+
+
+def test_reregister_returning_the_same_client_id_does_not_revoke_it(seeded_app, monkeypatch):
+    """RFC 7591 does not require a fresh client_id per registration — an AS
+    that dedupes on client_name/redirect_uris hands back the same one.
+    Revoking it would delete the registration just re-issued and leave the
+    stored row pointing at nothing (Devin Review on #1124)."""
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_oauth_same_cid")
+    revokes = _patch_discovery_success(monkeypatch, registered_client_id="cid-stable")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    assert revokes == []  # nothing to revoke on a first registration
+
+    # AS returns the SAME client_id — the live registration must survive.
+    revokes2 = _patch_discovery_success(monkeypatch, registered_client_id="cid-stable")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    assert revokes2 == [], "re-registration revoked the client_id the AS had just re-issued"
+
+    # A genuinely different client_id still gets the old one revoked.
+    revokes3 = _patch_discovery_success(monkeypatch, registered_client_id="cid-new")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    assert [c[1] for c in revokes3] == ["cid-stable"]

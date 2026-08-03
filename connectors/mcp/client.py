@@ -221,9 +221,29 @@ def _build_http_headers(
 #: Refresh once the stored access token is within this many seconds of
 #: ``expires_at`` (or already expired).
 _OAUTH_REFRESH_SKEW_SECONDS = 60
-#: Coordination-lease TTL for the cross-process refresh single-flight.
-#: Short — a refresh call is one HTTP round-trip, never a long operation.
-_OAUTH_REFRESH_LEASE_TTL_S = 30
+#: Headroom added to the token-endpoint timeout to get the coordination-lease
+#: TTL for the cross-process refresh single-flight. The lease must comfortably
+#: OUTLIVE the call it protects plus the persist that follows: at TTL ==
+#: timeout the lease can expire while the holder is still waiting on a slow
+#: AS, the next process wins it, re-reads the row, still sees the un-rotated
+#: refresh token and replays it — the exact reuse an AS with replay detection
+#: answers by revoking the user's whole grant (Devin Review on #1124). Kept as
+#: a margin rather than an absolute so it tracks the timeout automatically;
+#: see _oauth_refresh_lease_ttl_s().
+_OAUTH_REFRESH_LEASE_MARGIN_S = 60
+
+
+def _oauth_refresh_lease_ttl_s() -> int:
+    """Lease TTL derived from the OAuth HTTP client's own timeout.
+
+    Read at call time, not import time: ``connectors.mcp.oauth_client``
+    imports ``exc_summary`` from THIS module, so a module-level import here
+    would be circular.
+    """
+    from connectors.mcp.oauth_client import DEFAULT_TIMEOUT_SEC
+
+    return int(DEFAULT_TIMEOUT_SEC) + _OAUTH_REFRESH_LEASE_MARGIN_S
+
 
 #: In-process single-flight: one ``asyncio.Lock`` per (event loop,
 #: source_id, user_id), created lazily. Guards concurrent coroutines in
@@ -319,7 +339,7 @@ async def _refresh_oauth_token_with_lease(
 
     lease_name = f"mcp_oauth_refresh:{source_id}:{user_id}"
     try:
-        acquired = coordination().lease_acquire(lease_name, holder_id, ttl_s=_OAUTH_REFRESH_LEASE_TTL_S)
+        acquired = coordination().lease_acquire(lease_name, holder_id, ttl_s=_oauth_refresh_lease_ttl_s())
     except CoordinationUnavailable:
         # Fail OPEN: a down coordination backend must not wedge every MCP
         # call on an oauth source — proceed unserialized (the in-process

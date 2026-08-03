@@ -424,3 +424,17 @@ def test_vault_key_lost_during_refresh_still_returns_the_new_token(oauth_db, mon
 
     assert result == "new-at"  # usable until it expires; nothing borrowed
     assert any("vault key is unavailable" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_refresh_lease_ttl_outlives_the_token_endpoint_timeout():
+    """The single-flight lease must outlive the call it protects, or it can
+    expire mid-refresh; the next process then re-reads the row, still sees the
+    un-rotated refresh token and replays it — reuse that an AS with replay
+    detection answers by revoking the user's whole grant (Devin Review
+    on #1124)."""
+    from connectors.mcp.client import _oauth_refresh_lease_ttl_s
+    from connectors.mcp.oauth_client import DEFAULT_TIMEOUT_SEC
+
+    assert _oauth_refresh_lease_ttl_s() > DEFAULT_TIMEOUT_SEC, (
+        "lease TTL must exceed the token-endpoint timeout, with margin for the persist that follows"
+    )

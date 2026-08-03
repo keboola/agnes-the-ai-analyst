@@ -458,7 +458,10 @@ def source_oauth_client(
     public_client: bool = typer.Option(
         False,
         "--public-client",
-        help="Register as a public (PKCE-only, no secret) client — skips the stdin secret prompt.",
+        help=(
+            "Configure as a public (PKCE-only, no secret) client — skips the stdin secret "
+            "prompt and CLEARS any secret already on file for this source."
+        ),
     ),
 ):
     """Manually configure the OAuth client for an ``auth_method='oauth'``
@@ -479,7 +482,15 @@ def source_oauth_client(
         payload["issuer"] = issuer
     if scopes:
         payload["scopes"] = scopes
-    if client_secret:
+    if public_client:
+        # The endpoint reads an omitted client_secret as "keep whatever is on
+        # file" — so omitting it here would silently leave an existing
+        # confidential secret in place, and Agnes would keep sending Basic
+        # auth (_client_auth_kwargs keys off secret presence). An explicit ""
+        # is the documented "clear it" signal, and converting a registration
+        # to public is exactly what this flag means (Devin Review on #1124).
+        payload["client_secret"] = ""
+    elif client_secret:
         payload["client_secret"] = client_secret
     resp = api_put(f"/api/admin/mcp-sources/{src_id}/oauth/client", json=payload)
     if resp.status_code != 200:
