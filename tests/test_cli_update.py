@@ -1069,3 +1069,56 @@ def test_marketplace_no_drift_prune_is_silent_under_quiet(monkeypatch, tmp_path,
     cfg = json.loads((ws / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert "ghost@agnes" not in cfg["enabledPlugins"]
     assert cfg["enabledPlugins"]["superpowers@claude-plugins-official"] is True
+
+
+class TestBootstrapTokenCleanup:
+    """`_step_bootstrap_token_cleanup` — the reconcile-path answer to the
+    plaintext `~/.agnes/token` leftover: step 4 of the web guide writes it,
+    only `agnes init` consumed it, so a re-running analyst kept a live
+    90-day credential on disk indefinitely. The cleanup deletes it once an
+    authenticated step proved the SAVED credential works, and keeps it when
+    nothing did (it is the recovery input for `agnes init --force`).
+    """
+
+    def _home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".agnes").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        import pathlib
+
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: home))
+        return home
+
+    def test_removes_file_after_proven_auth_step(self, tmp_path, monkeypatch):
+        home = self._home(tmp_path, monkeypatch)
+        token_file = home / ".agnes" / "token"
+        token_file.write_text("eyJ-leftover", encoding="utf-8")
+        from cli.commands.update import _step_bootstrap_token_cleanup
+
+        report = [{"stage": "pull", "status": "ok", "detail": "x"}]
+        _step_bootstrap_token_cleanup(report)
+        assert not token_file.exists()
+        assert any(s["stage"] == "bootstrap-token" and s["status"] == "ok" for s in report)
+
+    def test_keeps_file_without_authenticated_step(self, tmp_path, monkeypatch):
+        home = self._home(tmp_path, monkeypatch)
+        token_file = home / ".agnes" / "token"
+        token_file.write_text("eyJ-leftover", encoding="utf-8")
+        from cli.commands.update import _step_bootstrap_token_cleanup
+
+        report = [
+            {"stage": "workspace", "status": "error", "detail": "401"},
+            {"stage": "pull", "status": "skipped", "detail": "no token"},
+        ]
+        _step_bootstrap_token_cleanup(report)
+        assert token_file.exists(), "recovery input must survive an unproven run"
+        assert any(s["stage"] == "bootstrap-token" and s["status"] == "skipped" for s in report)
+
+    def test_noop_without_file(self, tmp_path, monkeypatch):
+        self._home(tmp_path, monkeypatch)
+        from cli.commands.update import _step_bootstrap_token_cleanup
+
+        report = [{"stage": "pull", "status": "ok", "detail": "x"}]
+        _step_bootstrap_token_cleanup(report)
+        assert not any(s["stage"] == "bootstrap-token" for s in report)

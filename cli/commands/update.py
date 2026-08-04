@@ -104,6 +104,60 @@ def _resolve_workspace() -> Optional[Path]:
     return None
 
 
+def _step_bootstrap_token_cleanup(report: list[dict]) -> None:
+    """Remove a leftover ``~/.agnes/token`` once the saved credential is proven.
+
+    Step 4 of the web install guide writes the bootstrap token file; only
+    ``agnes init`` consumes and deletes it. On the reconcile path (this
+    command) the file used to survive indefinitely — a plaintext 90-day
+    credential on disk guarded only by umask/NTFS ACLs. Once this run has
+    completed an authenticated server round-trip (a workspace/push/pull step
+    that neither errored nor was skipped), the saved credential in
+    ``~/.config/agnes/token.json`` is proven to work and the bootstrap file
+    is redundant — remove it. When NO step proved the credential (auth
+    failure, offline run), the file is kept on purpose: it is exactly the
+    input the expired-credential recovery (``agnes init --force
+    --token-file``) needs.
+    """
+    bootstrap = Path.home() / ".agnes" / "token"
+    try:
+        exists = bootstrap.is_file()
+    except OSError:
+        exists = False
+    if not exists:
+        return  # nothing to clean; no report noise
+    proven = any(
+        step.get("stage") in ("workspace", "push", "pull") and step.get("status") not in ("error", "skipped")
+        for step in report
+    )
+    if not proven:
+        report.append(
+            {
+                "stage": "bootstrap-token",
+                "status": "skipped",
+                "detail": "leftover ~/.agnes/token kept — no authenticated step succeeded this run",
+            }
+        )
+        return
+    try:
+        bootstrap.unlink()
+        report.append(
+            {
+                "stage": "bootstrap-token",
+                "status": "ok",
+                "detail": "removed leftover ~/.agnes/token (saved credential verified this run)",
+            }
+        )
+    except OSError as exc:
+        report.append(
+            {
+                "stage": "bootstrap-token",
+                "status": "error",
+                "detail": f"could not remove leftover ~/.agnes/token: {exc}",
+            }
+        )
+
+
 def _run_step(name: str, fn: Callable[[], None], report: list[dict]) -> None:
     """Run one convergence step, swallowing any failure into the report.
 
@@ -699,6 +753,11 @@ def update(
                         lambda: _step_pull(
                             workspace, server_url=server_url, token=token, quiet=step_quiet, report=report
                         ),
+                        report,
+                    )
+                    _run_step(
+                        "bootstrap-token",
+                        lambda: _step_bootstrap_token_cleanup(report),
                         report,
                     )
                 finally:

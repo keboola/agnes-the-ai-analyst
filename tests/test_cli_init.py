@@ -247,6 +247,39 @@ def test_init_deletes_bootstrap_token_file(tmp_path, monkeypatch):
     assert not token_file.exists(), "~/.agnes/token should be deleted after init"
 
 
+def test_init_token_file_unreadable_but_present_hard_fails(tmp_path, monkeypatch):
+    """An ABSENT --token-file falls back to the saved credential (the file
+    was consumed by an earlier init — benign). A file that EXISTS but cannot
+    be read is a real error: silently falling back would authenticate with a
+    possibly-expired saved credential and blame the server. A directory in
+    the token-file's place triggers exactly that read failure portably.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    bad = home / ".agnes" / "token"
+    bad.mkdir(parents=True)  # a DIRECTORY named token — read_text raises, path exists
+
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token-file",
+            str(bad),
+            "--workspace",
+            str(tmp_path / "ws"),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "could not be read" in result.output
+
+
 def test_init_token_file_strips_windows_powershell_bom(tmp_path, monkeypatch):
     """/home's Windows Step 4 command writes ~/.agnes/token via PowerShell;
     Windows PowerShell 5 emits UTF-8 *with BOM* for `-Encoding utf8` (older

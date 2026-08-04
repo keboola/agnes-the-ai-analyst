@@ -475,14 +475,32 @@ def init(
                     token = line
                     break
         except OSError as exc:
-            # Not fatal: the install prompt always passes --token-file, but on
-            # a machine that already signed in the file was consumed by an
-            # earlier `agnes init` — the saved credential in
-            # ~/.config/agnes/token.json (fallback below) is the normal source
-            # then. Only if NO fallback yields a token does init fail, with
-            # the standard missing-token guidance.
+            # ABSENT file is benign: the install prompt always passes
+            # --token-file, but on a machine that already signed in the file
+            # was consumed by an earlier `agnes init` — the saved credential
+            # in ~/.config/agnes/token.json (fallback below) is the normal
+            # source then. A file that EXISTS but cannot be read is a real
+            # error (permissions, a directory in its place): silently falling
+            # back would authenticate with a possibly-expired saved credential
+            # and misattribute the failure to the server — exactly the
+            # expired-token recovery scenario, where the fresh token IS the
+            # file. Hard-fail that case.
+            if Path(token_file).expanduser().exists():
+                typer.echo(
+                    render_error(
+                        0,
+                        {
+                            "detail": {
+                                "kind": "partial_state",
+                                "hint": f"--token-file {token_file!r} exists but could not be read: {exc}",
+                            }
+                        },
+                    ),
+                    err=True,
+                )
+                raise typer.Exit(1)
             typer.echo(
-                f"note: --token-file {token_file!r} could not be read ({exc}); "
+                f"note: --token-file {token_file!r} does not exist; "
                 "falling back to AGNES_TOKEN / the saved credential.",
                 err=True,
             )
