@@ -621,7 +621,7 @@ def _required_connectors_block(
     instance_brand: str,
 ) -> list[str]:
     """Mandatory-install step for ``required=True`` connectors — rendered
-    between diagnose and the optional Y/n tiles, with NO per-tool ask.
+    between diagnose and the optional yes/no tiles, with NO per-tool ask.
 
     Same fail-soft body handling as :func:`_connectors_block` (missing
     SKILL.md body → warn + skip, letters stay tight) so a bad seed commit
@@ -741,7 +741,10 @@ def _connectors_block(
         # reference {instance_brand} in their token-label hints.
         body = body.replace("{instance_brand}", instance_brand)
         lines.append(f"   {_SUB_LETTERS[letter_idx]}) {entry.display_name} — {entry.short_summary}")
-        lines.append(f'      Ask: "Set up {entry.display_name} now? (Y/n)"')
+        # Neutral (yes/no) — the header above requires a clear yes and treats
+        # declining/deferring as valid skips, so the ask must not carry the
+        # capital-Y "Enter means yes" convention the old default-yes flow had.
+        lines.append(f'      Ask: "Set up {entry.display_name} now? (yes/no)"')
         lines.append("      If the user agrees, follow this outline:")
         lines.append("")
         for body_line in body.split("\n"):
@@ -1220,7 +1223,7 @@ def resolve_lines(
 
     `connector_manifest` is a list of validated ConnectorEntry objects
     sourced from :func:`src.connectors_manifest.load_manifest`. Entries
-    with ``required=True`` render as a separate mandatory step (no Y/n
+    with ``required=True`` render as a separate mandatory step (no yes/no
     ask) before the optional tiles. ``None`` triggers a fresh manifest
     load. ``[]`` (empty list) is treated differently from ``None``: it
     intentionally renders no connector blocks.
@@ -1275,9 +1278,9 @@ def resolve_lines(
             )
         )
     # Optional connectors are the LAST interactive ask before the
-    # restart-claude cue. Per-connector default-yes — empty/Enter is
-    # install, explicit "no" skips. No optional entries renders no block
-    # (the step number is dropped).
+    # restart-claude cue. Per-connector explicit ask — only a clear yes
+    # installs; declining and deferring both skip. No optional entries
+    # renders no block (the step number is dropped).
     lines.extend(
         _connectors_block(
             steps["connectors"],

@@ -112,7 +112,7 @@ connector:
 ---
 
 <SKILL.md body — the wizard prose that Claude Code executes when the
-analyst accepts the tile's "Set up <Vendor> now? (Y/n)" ask>
+analyst accepts the tile's "Set up <Vendor> now? (yes/no)" ask>
 ```
 
 **Validation rules** (enforced by `src/connectors_manifest.py`):
@@ -225,7 +225,7 @@ For each manifest entry, the server renders this exact markdown block:
 
 ```
    {letter}) {display_name} — {short_summary}
-      Ask: "Set up {display_name} now? (Y/n)"
+      Ask: "Set up {display_name} now? (yes/no)"
       If the user agrees, follow this outline:
 
       {SKILL.md body, indented 6 spaces, frontmatter stripped, {instance_brand} substituted}

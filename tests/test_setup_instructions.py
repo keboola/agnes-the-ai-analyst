@@ -869,9 +869,9 @@ def test_connectors_block_renders_all_three_asks():
 
     cm.invalidate_cache()
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert 'Ask: "Set up Asana now? (Y/n)"' in joined
-    assert 'Ask: "Set up Google Workspace now? (Y/n)"' in joined
-    assert 'Ask: "Set up Atlassian (Jira / Confluence) now? (Y/n)"' in joined
+    assert 'Ask: "Set up Asana now? (yes/no)"' in joined
+    assert 'Ask: "Set up Google Workspace now? (yes/no)"' in joined
+    assert 'Ask: "Set up Atlassian (Jira / Confluence) now? (yes/no)"' in joined
     assert "declining and deferring are both valid" in joined
 
 
@@ -1048,9 +1048,9 @@ def test_required_block_mix_layout(monkeypatch):
     assert opt_idx < restart_idx < confirm_idx
 
     # Required tools get no ask; the optional tile keeps its ask.
-    assert 'Ask: "Set up XTool now? (Y/n)"' not in joined
-    assert 'Ask: "Set up YTool now? (Y/n)"' not in joined
-    assert 'Ask: "Set up ZTool now? (Y/n)"' in joined
+    assert 'Ask: "Set up XTool now? (yes/no)"' not in joined
+    assert 'Ask: "Set up YTool now? (yes/no)"' not in joined
+    assert 'Ask: "Set up ZTool now? (yes/no)"' in joined
     assert "This instance requires the tools below for every account" in joined
 
     # Letter sequences are independent per block.
