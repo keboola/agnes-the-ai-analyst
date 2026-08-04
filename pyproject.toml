@@ -239,7 +239,7 @@ slack-socket = [
     # services/slack_bot/socket_mode_client.py) needs aiohttp at runtime;
     # slack_sdk does NOT pull it in, so Socket Mode fail-closed with
     # `ModuleNotFoundError: No module named 'aiohttp'` until it is declared here.
-    "aiohttp>=3.9",
+    "aiohttp>=3.14.3",
 ]
 distribution = [
     # S3-compatible client for signed-URL distribution (three-plane wave
