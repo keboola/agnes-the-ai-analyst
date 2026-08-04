@@ -12,6 +12,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.78.1] - 2026-08-04
+
+### Added
 - MCP OAuth sources, phase 2 — the per-user browser connect flow: `GET
   /api/mcp/sources/{id}/oauth/authorize` (signed, single-use PKCE state;
   grant- and rate-limit-gated) redirects the analyst's browser to the
@@ -28,19 +41,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   callback path — operators should apply the same redaction in their
   TLS-terminating reverse proxy's access log (see `docs/DEPLOYMENT.md`).
 
-### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.78.1] - 2026-08-04
-
-### Added
 
 ### Changed
 
