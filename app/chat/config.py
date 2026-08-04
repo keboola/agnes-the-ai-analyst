@@ -372,3 +372,48 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         agent_memory_pending_ttl_days=_raw_int(raw, "agent_memory_pending_ttl_days", 30),
         slack=_parse_slack_config(raw),
     )
+
+
+#: What `docker-compose.yml` pins for the egress-proxy sidecar. Allowlist
+#: mode only works when the app's config agrees with these.
+_COMPOSE_EGRESS_NETWORK = "agnes-apps"
+_COMPOSE_EGRESS_PROXY_URL = "http://agnes-egress-proxy:3128"
+
+
+def egress_compose_mismatches(cfg: "ChatConfig") -> list[str]:
+    """Ways an allowlist-mode instance's config can disagree with compose.
+
+    Allowlist mode is split across two owners: the app decides which
+    sandboxes exist, while `docker-compose.yml` owns the proxy sidecar —
+    its hostname, its network, and the allowlist it actually enforces. The
+    `chat.*` keys for all three read like ordinary knobs, so turning any of
+    them produces a *silent* failure: the sandbox network has no route out
+    by design, so a proxy that is not on it, or is not told the same hosts,
+    denies everything with nothing in the logs pointing at the cause.
+
+    Collected in one place, and checked together, because these are three
+    faces of one assumption — that `chat.*` is authoritative for the
+    sidecar, when compose holds the enforcing copy (Devin Review on #1148).
+    """
+    if cfg.docker_egress_mode != "allowlist":
+        return []
+    out = []
+    if cfg.docker_egress_allow_hosts:
+        out.append(
+            "chat.docker_egress_allow_hosts is set, but the enforcing copy is the egress-proxy "
+            "sidecar's EGRESS_ALLOW_HOSTS environment variable — if the two disagree, sandboxes "
+            "are denied hosts you believe you allowed"
+        )
+    if cfg.docker_network != _COMPOSE_EGRESS_NETWORK:
+        out.append(
+            f"chat.docker_network is {cfg.docker_network!r}, so sandboxes join "
+            f"{cfg.docker_network}-internal, but docker-compose.yml puts the egress proxy on "
+            f"{_COMPOSE_EGRESS_NETWORK}-internal — the proxy will not be reachable and ALL egress "
+            f"will fail. Allowlist mode requires chat.docker_network: {_COMPOSE_EGRESS_NETWORK}"
+        )
+    if cfg.docker_egress_proxy_url != _COMPOSE_EGRESS_PROXY_URL:
+        out.append(
+            f"chat.docker_egress_proxy_url is {cfg.docker_egress_proxy_url!r}, but compose names "
+            f"the sidecar container agnes-egress-proxy ({_COMPOSE_EGRESS_PROXY_URL})"
+        )
+    return out
