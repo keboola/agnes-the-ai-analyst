@@ -90,6 +90,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "aiohttp" },
     { name = "boto3" },
     { name = "faker" },
     { name = "fakeredis" },
@@ -122,6 +123,9 @@ slack-socket = [
     { name = "aiohttp" },
     { name = "slack-sdk" },
 ]
+telegram = [
+    { name = "aiohttp" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -143,7 +147,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", marker = "extra == 'dev'", specifier = ">=3.14.3" },
     { name = "aiohttp", marker = "extra == 'slack-socket'", specifier = ">=3.14.3" },
+    { name = "aiohttp", marker = "extra == 'telegram'", specifier = ">=3.14.3" },
     { name = "alembic", specifier = ">=1.13" },
     { name = "anthropic", specifier = ">=0.30.0" },
     { name = "argon2-cffi", specifier = ">=23.1.0" },
@@ -211,7 +217,7 @@ requires-dist = [
     { name = "urllib3", specifier = ">=2.7.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
 ]
-provides-extras = ["server", "observability", "embeddings", "docling", "slack-socket", "distribution", "dev"]
+provides-extras = ["server", "observability", "embeddings", "docling", "slack-socket", "telegram", "distribution", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

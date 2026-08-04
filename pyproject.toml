@@ -311,6 +311,12 @@ dev = [
     # above (mirrored here so `.[dev]` — what CI installs — pulls it in
     # too; see the matching entry in `[tool.uv] dev-dependencies` below).
     "boto3>=1.34",
+    # aiohttp for tests/test_telegram_bot.py — that module imports
+    # `from aiohttp import web` at module scope, so without this the test file
+    # skips through its guarded import and the very ImportError the `telegram`
+    # extra exists to prevent goes untested in CI. Same reasoning, and the same
+    # mirroring, as the boto3 entry above.
+    "aiohttp>=3.14.3",
 ]
 
 [project.scripts]
