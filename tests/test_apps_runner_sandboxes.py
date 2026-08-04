@@ -107,6 +107,15 @@ class FakeImages:
         return object()
 
 
+class FakeNetwork:
+    """Stands in for a docker network object — `attrs` is what the real
+    SDK exposes, and `Internal` is the flag the sidecar has to check."""
+
+    def __init__(self, name, kw):
+        self.name = name
+        self.attrs = {"Internal": bool(kw.get("internal"))}
+
+
 class FakeDocker:
     def __init__(self):
         self.run_calls = []
@@ -133,7 +142,7 @@ class FakeDocker:
 
     def list(self, all=True, filters=None, names=None):
         if names is not None:
-            return [n for n in names if n in {net for net, _ in self.networks_created}]
+            return [FakeNetwork(n, kw) for n, kw in self.networks_created if n in names]
         if filters and "label" in filters:
             want = filters["label"]
             want = [want] if isinstance(want, str) else list(want)
@@ -316,6 +325,30 @@ def test_up_internal_network_is_created_internal(client):
     assert created["agnes-chat-internal"]["internal"] is True
     _, kw = fake.run_calls[-1]
     assert kw["network"] == "agnes-chat-internal"
+
+
+def test_up_refuses_to_reuse_a_non_internal_network(client):
+    """Docker will not reconcile `internal` on a network that already
+    exists, so a same-named bridge from before internal mode would leave
+    allowlist mode enforcing nothing while looking healthy."""
+    c, fake, tmp = client
+    fake.networks_created.append(("agnes-chat-internal", {"driver": "bridge"}))
+
+    r = _up(c, tmp, internal_network=True, network="agnes-chat-internal")
+
+    assert r.status_code == 409
+    assert "network_not_internal" in r.json()["detail"]
+    assert fake.run_calls == []  # nothing started without the enforcement layer
+
+
+def test_up_reuses_an_existing_internal_network(client):
+    c, fake, tmp = client
+    fake.networks_created.append(("agnes-chat-internal", {"driver": "bridge", "internal": True}))
+
+    r = _up(c, tmp, internal_network=True, network="agnes-chat-internal")
+
+    assert r.status_code == 200
+    assert len(fake.networks_created) == 1  # reused, not recreated
 
 
 @pytest.mark.parametrize(

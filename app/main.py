@@ -1492,6 +1492,21 @@ async def lifespan(app):
                         egress_proxy_url=app.state.chat_config.docker_egress_proxy_url,
                         max_total_sandboxes=app.state.chat_config.docker_max_total_sandboxes,
                     )
+                    if app.state.chat_config.docker_egress_mode == "allowlist":
+                        # The proxy sidecar enforces its OWN copy of the list
+                        # (EGRESS_ALLOW_HOSTS in its environment); the
+                        # instance.yaml key is documentation for operators. An
+                        # operator who sets only the yaml key gets a proxy with
+                        # an empty list — fail-closed, so all egress is denied
+                        # and chat looks broken for no visible reason. Say so
+                        # at startup rather than leaving it to be discovered.
+                        if app.state.chat_config.docker_egress_allow_hosts:
+                            logger.warning(
+                                "chat.docker_egress_allow_hosts is set in instance.yaml, but the "
+                                "enforcing copy is the egress-proxy sidecar's EGRESS_ALLOW_HOSTS "
+                                "environment variable — make sure the two agree, or the sandboxes "
+                                "will be denied hosts you believe you allowed"
+                            )
                 else:
                     from app.chat.e2b_provider import E2BProvider
 

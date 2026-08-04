@@ -26,7 +26,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
-- Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). Ignoring the proxy env is not a bypass — the internal network has no other route. Closes the "hostname-level allowlisting is E2B-only" gap.
+- Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). Ignoring the proxy env is not a bypass — the internal network has no other route. Docker never reconciles the `internal` flag on a network that already exists, so a sandbox start refuses with `network_not_internal` rather than silently running without that layer if a same-named non-internal bridge is left over; remove it and it is recreated correctly. Closes the "hostname-level allowlisting is E2B-only" gap.
 
 ## [0.77.32] - 2026-07-30
 

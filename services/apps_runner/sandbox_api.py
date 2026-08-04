@@ -239,13 +239,29 @@ def sandbox_up(name: str, payload: dict = Body(...), x_runner_token: str | None 
     volumes = _validate_mounts(spec.get("mounts") or [])
 
     network = str(spec.get("network") or "")
-    if network and not client.networks.list(names=[network]):
-        net_kwargs: dict = {"driver": "bridge"}
-        if spec.get("internal_network"):
-            # `internal` bridges have no route off the host: the sandbox can
-            # only reach containers attached to the same network.
-            net_kwargs["internal"] = True
-        client.networks.create(network, **net_kwargs)
+    if network:
+        existing = client.networks.list(names=[network])
+        if not existing:
+            net_kwargs: dict = {"driver": "bridge"}
+            if spec.get("internal_network"):
+                # `internal` bridges have no route off the host: the sandbox can
+                # only reach containers attached to the same network.
+                net_kwargs["internal"] = True
+            client.networks.create(network, **net_kwargs)
+        elif spec.get("internal_network") and not existing[0].attrs.get("Internal"):
+            # Docker never reconciles this flag on an existing network, so a
+            # same-named bridge left over from a build that predates internal
+            # mode (or created by hand) silently drops the "no route out"
+            # layer that allowlist mode is built on. Fail closed: running
+            # anyway would look identical while enforcing nothing
+            # (Devin Review on #1148).
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"network_not_internal: {network!r} exists but is not internal; "
+                    f"remove it (docker network rm {network}) so it can be recreated"
+                ),
+            )
 
     old = _api()._container(name)
     if old is not None:
