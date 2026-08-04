@@ -1400,3 +1400,64 @@ def test_a_resave_after_key_rotation_keeps_the_deregistration_token(seeded_app, 
     monkeypatch.setenv("AGNES_VAULT_KEY", key_a)
     _reset_ephemeral_key_for_tests()
     assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token"] == "new-rat"
+
+
+def test_an_explicit_null_name_does_not_destroy_credentials_then_fail(seeded_app):
+    """`name` is NOT NULL, and an explicit null slipped past every guard.
+
+    The handler's empty-name check reads the PATCH (`payload.name is not None
+    and not new_name`), which an explicit null never trips, and
+    `validate_source_fields` does not look at `name` at all — so `{"name":
+    null}` alongside a url change rode past the irreversible purge and only
+    died on the NOT NULL constraint, surfacing as a bogus "name_exists" 409.
+    Credentials gone, edit refused, error misleading (Devin Review on #1124).
+    """
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    sid = "src_null_name"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="null_name",
+        transport="http",
+        url="https://h1.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    per_user_secrets_repo().upsert(sid, "admin1", "tok-for-h1")
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"url": "https://h2.example/mcp", "name": None},
+    )
+    assert r.status_code == 200, r.text
+    assert mcp_sources_repo().get(sid)["name"] == "null_name", "an explicit null blanked the name"
+    # The url DID change, so this purge is correct — the point is that the
+    # request succeeded rather than purging and then 409-ing.
+    assert per_user_secrets_repo().has(sid, "admin1") is False
+
+
+def test_an_explicit_null_transport_is_refused_before_the_purge(seeded_app):
+    """`transport` is NOT NULL too, but it reaches the purge guard through
+    `validate_source_fields`, so it 400s with the credentials intact. Pinned
+    so the two non-nullable fields cannot drift apart."""
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    sid = "src_null_transport"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="null_transport",
+        transport="http",
+        url="https://h1.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    per_user_secrets_repo().upsert(sid, "admin1", "tok-for-h1")
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"url": "https://h2.example/mcp", "transport": None},
+    )
+    assert r.status_code == 400, r.text
+    assert per_user_secrets_repo().has(sid, "admin1") is True

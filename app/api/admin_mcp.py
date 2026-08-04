@@ -482,6 +482,15 @@ def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest)
     if merged["enabled"] is None:
         merged["enabled"] = bool(existing["enabled"]) if existing.get("enabled") is not None else True
     merged["scope"] = merged["scope"] or existing.get("scope") or "shared"
+    # `name` belongs to the same non-nullable group (`name VARCHAR NOT NULL
+    # UNIQUE`). It was missed because the handler's own empty-name guard reads
+    # the PATCH (`payload.name is not None and not new_name`) and an explicit
+    # null never trips it, while `validate_source_fields` does not look at
+    # `name` at all — so a `{"name": null}` rode all the way past the
+    # irreversible credential purge and only died on the NOT NULL constraint,
+    # surfacing as a bogus "name_exists" 409 (Devin Review on #1124).
+    if merged["name"] is None:
+        merged["name"] = existing.get("name")
     return merged
 
 

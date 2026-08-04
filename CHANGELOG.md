@@ -68,7 +68,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   — naming which of the two independent purges ran, since flipping
   `auth_method` off `oauth` destroys every analyst's tokens and the client
   registration without any url change at all — so the effect is traceable
-  afterwards.
+  afterwards. An explicit JSON `null` for a non-nullable field (`name`,
+  `scope`, `enabled`) means "leave unchanged" rather than being written
+  through: `name` in particular reached the write as NULL, after the purge,
+  and surfaced as a misleading `name_exists` 409 — credentials destroyed and
+  the edit refused. The nullable fields keep their existing meaning, where
+  `null` is the only way to clear them and the admin UI sends it deliberately.
 
 - MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
 - **MCP tool parameter schemas tightened.** `stack_browse`/`stack_subscribe`/`stack_unsubscribe` (`resource_type`), `admin_analytics_migrate` (`to`), `data_apps_list` (`kind`) and `data_app_deploy` (`mode`) declare their valid values as `Literal[…]`, so the constraint reaches `tools/list` as a JSON-schema enum instead of living only in the `Args:` prose the trimmed description drops; `store_rate` (`vote`) uses a bounded `int` rather than a literal union, because a literal would stop accepting the string `"1"` that models commonly emit for numbers. Applied on both MCP surfaces, so the HTTP and stdio copies of a tool keep advertising the same contract.

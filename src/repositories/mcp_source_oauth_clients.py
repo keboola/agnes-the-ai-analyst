@@ -70,7 +70,14 @@ class MCPSourceOAuthClientRepository:
         rat_enc = (
             None if keep_rat else (encrypt_secret(registration_access_token) if registration_access_token else None)
         )
-        rat_update = "registration_access_token_enc" if keep_rat else "excluded.registration_access_token_enc"
+        # Table-qualified on both backends. DuckDB accepts the bare name here
+        # (verified), but Postgres rejects it as ambiguous — matching the two
+        # removes the question of which dialect tolerates what.
+        rat_update = (
+            "mcp_source_oauth_clients.registration_access_token_enc"
+            if keep_rat
+            else "excluded.registration_access_token_enc"
+        )
         self.conn.execute(
             f"""INSERT INTO mcp_source_oauth_clients
                (source_id, issuer, client_id, client_secret_enc, registration_access_token_enc,
