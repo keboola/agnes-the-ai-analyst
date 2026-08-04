@@ -185,6 +185,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- AgentHarness seam: harness selection is an explicit extension point (`app/chat/harness.py` + `chat.harness` config knob + runner-side registry). `claude-code` stays the only approved engine — behavior is unchanged — but an alternative agent engine can now plug in behind the same frame protocol; an explicitly configured unknown harness refuses chat at boot, while a version-skewed sandbox degrades an inherited unknown id to the default.
+
 - Duplicate MCP source names surface as 409 on both backends — Postgres raises
   the unique violation as a SQLAlchemy `IntegrityError`, which fell through to
   a 500. It matters more now that the credential purge runs before the write:

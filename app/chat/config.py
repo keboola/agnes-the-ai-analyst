@@ -33,6 +33,10 @@ class ChatConfig:
     # value; future variants (mock_e2b for tests, sandbox-as-a-service
     # alternatives) would extend the gate in ``app/main.py``.
     provider: str = "e2b"
+    # Agent harness id — which engine drives the in-sandbox session
+    # (app/chat/harness.py seam; validated against APPROVED_HARNESSES at
+    # boot). ``claude-code`` is the only production harness today.
+    harness: str = "claude-code"
     concurrency_per_user: int = 3
     idle_ttl_seconds: int = 30 * 60
     per_tool_call_seconds: int = 90
@@ -203,6 +207,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
     return ChatConfig(
         enabled=_resolve_chat_enabled(raw),
         provider=str(raw.get("provider", "e2b")),
+        harness=str(raw.get("harness", "claude-code")),
         concurrency_per_user=int(raw.get("concurrency_per_user", 3)),
         idle_ttl_seconds=int(raw.get("idle_ttl_seconds", 30 * 60)),
         per_tool_call_seconds=int(raw.get("per_tool_call_seconds", 90)),
