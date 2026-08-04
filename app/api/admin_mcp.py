@@ -431,9 +431,21 @@ def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest)
     """Merge a partial source patch onto the existing row.
 
     Returns the kwargs dict to pass to ``MCPSourceRepository.upsert``.
+
+    Fields with a non-nullable default (``scope``, ``enabled``) are normalized
+    HERE rather than at the call sites. ``exclude_unset`` treats an explicit
+    JSON ``null`` as set, so ``{"scope": null}`` used to survive the merge as
+    ``None`` — and a caller that substituted a default while validating, but
+    passed this dict verbatim to ``upsert``, would validate one value and write
+    another. On the update path that divergence sat in front of the
+    irreversible credential purge: the request validated as ``'shared'``,
+    purged, and only then 400'd inside ``upsert`` on ``scope=None``. Normalizing
+    the merged row makes the validated value and the written value the same
+    object by construction, instead of by every call site remembering to use
+    the same expression (Devin Review on #1124).
     """
     data = patch.model_dump(exclude_unset=True)
-    return {
+    merged = {
         "id": existing["id"],
         "name": data.get("name", existing.get("name")),
         "transport": data.get("transport", existing.get("transport")),
@@ -447,9 +459,13 @@ def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest)
             "enabled",
             bool(existing.get("enabled")) if existing.get("enabled") is not None else True,
         ),
-        "scope": data.get("scope", existing.get("scope") or "shared"),
+        "scope": data.get("scope", existing.get("scope")),
         "connect_hint": data.get("connect_hint", existing.get("connect_hint")),
     }
+    merged["scope"] = merged["scope"] or "shared"
+    if merged["enabled"] is None:
+        merged["enabled"] = True
+    return merged
 
 
 def _merge_tool_patch(existing: Dict[str, Any], patch: UpdateToolRequest) -> Dict[str, Any]:
@@ -665,13 +681,18 @@ async def update_mcp_source(
     # the other two fields, so the patch alone is not enough to judge. Running
     # the repo's validator — not a local restatement of it — is what keeps the
     # purge below from firing for a request that is about to 400 anyway.
+    #
+    # Every value below is read straight out of `merged`, with no defaulting:
+    # substituting one here would validate a row that differs from the one
+    # `upsert` is handed, and the purge sits between the two. Defaults belong
+    # to _merge_source_patch, which applies them once.
     try:
         validate_source_fields(
             transport=merged.get("transport"),
             command=merged.get("command"),
             url=merged.get("url"),
             auth_method=merged.get("auth_method"),
-            scope=merged.get("scope") or "shared",
+            scope=merged["scope"],
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

@@ -939,6 +939,43 @@ def test_a_rejected_patch_does_not_purge_credentials(seeded_app):
     assert mcp_sources_repo().get(sid)["url"] == "https://h1.example/mcp"
 
 
+def test_an_explicit_null_scope_cannot_slip_past_the_pre_purge_check(seeded_app):
+    """The guard only holds if the validated row IS the written row.
+
+    `exclude_unset` treats an explicit JSON `null` as set, so `{"scope": null}`
+    used to reach the merge as `None`. The endpoint validated it with a
+    substituted `"shared"` — which passes — then purged, then handed the raw
+    `None` to `upsert`, which raised `unsupported scope: None` → 400. Credentials
+    gone, edit refused. Defaults are now applied once, in the merge, so no
+    caller can validate one value and write another (Devin Review on #1124).
+    """
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    sid = "src_null_scope"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="null_scope",
+        transport="http",
+        url="https://h1.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    per_user_secrets_repo().upsert(sid, "admin1", "tok-for-h1")
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"url": "https://h2.example/mcp", "scope": None},
+    )
+    # Whatever the endpoint decides the null means, it must not both destroy
+    # the credentials and refuse the edit.
+    assert r.status_code == 200, r.text
+    assert mcp_sources_repo().get(sid)["scope"] == "shared"
+    # url DID change, so the purge is correct here — it just must not have run
+    # for a request that then failed.
+    assert per_user_secrets_repo().has(sid, "admin1") is False
+
+
 def test_a_failed_purge_leaves_the_source_pointing_at_the_old_host(seeded_app, monkeypatch):
     """Pins the purge/write ORDER, which is the whole point of the fix.
 
