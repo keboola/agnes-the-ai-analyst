@@ -419,6 +419,24 @@ async def register_dynamic_client(
             f"{granted_auth_method!r}; Agnes implements 'client_secret_basic' and 'none'. "
             "Configure the client manually via PUT …/oauth/client instead."
         )
+    # A registration recorded as confidential but issued no secret is unusable:
+    # _client_auth_kwargs keys off secret PRESENCE, so it would send no client
+    # authentication at all against a client the AS has on file as Basic, and
+    # every exchange and refresh would come back invalid_client. Omitting
+    # token_endpoint_auth_method means the RFC 7591 default, which is
+    # client_secret_basic — so the ambiguous "neither field" response is the
+    # same broken shape. Fail at registration with something the admin can act
+    # on, rather than silently downgrading to a method the AS did not register
+    # and hitting the identical error later with no explanation
+    # (Devin Review on #1124).
+    effective_auth_method = granted_auth_method or auth_method
+    if effective_auth_method == "client_secret_basic" and not body.get("client_secret"):
+        raise OAuthDiscoveryError(
+            "authorization server registered the client for 'client_secret_basic' but issued no "
+            "client_secret, so no client authentication could ever be sent. Configure the client "
+            "manually via PUT …/oauth/client, or use an authorization server that advertises 'none' "
+            "for public clients."
+        )
     authorization_endpoint = as_metadata.get("authorization_endpoint")
     token_endpoint = as_metadata.get("token_endpoint")
     if not authorization_endpoint or not token_endpoint:
@@ -437,7 +455,12 @@ async def register_dynamic_client(
         authorization_endpoint=authorization_endpoint,
         token_endpoint=token_endpoint,
         registration_endpoint=registration_endpoint,
-        scopes=scopes,
+        # RFC 7591 §3.2.1: the AS MAY return a different `scope` than the one
+        # requested, and its answer is the authoritative one. Recording what we
+        # ASKED for would put a scope the client does not hold into the stored
+        # row — and straight into the authorize URL PR 2 builds from it, where
+        # the AS answers invalid_scope (Devin Review on #1124).
+        scopes=body.get("scope") or scopes,
     )
 
 

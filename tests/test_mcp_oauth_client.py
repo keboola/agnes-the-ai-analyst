@@ -732,3 +732,58 @@ def test_a_json_envelope_that_is_not_metadata_also_falls_through():
 
     meta = run(_impl())
     assert meta["authorization_servers"] == ["https://as.example.com"]
+
+
+def _dcr(body, *, status=201, scopes=None, meta=None):
+    def handler(request):
+        return httpx.Response(status, json=body)
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await register_dynamic_client(
+                meta or _AS_METADATA,
+                redirect_uri="https://agnes.example.com/cb",
+                client=client,
+                scopes=scopes,
+            )
+
+    return run(_impl())
+
+
+def test_a_confidential_registration_without_a_secret_is_refused():
+    """`_client_auth_kwargs` keys off secret PRESENCE, so a client the AS
+    recorded as `client_secret_basic` but issued no secret for would send no
+    client authentication at all — every exchange and refresh coming back
+    `invalid_client`. Fail at registration, where the message can say what to
+    do, instead of at every token call with no explanation (Devin Review on
+    #1124)."""
+    with pytest.raises(OAuthDiscoveryError, match="issued no client_secret"):
+        _dcr({"client_id": "abc", "token_endpoint_auth_method": "client_secret_basic"})
+
+    # Omitting the field entirely means the RFC 7591 default, which IS
+    # client_secret_basic — same broken shape, same refusal.
+    with pytest.raises(OAuthDiscoveryError, match="issued no client_secret"):
+        _dcr({"client_id": "abc"})
+
+
+def test_a_public_registration_without_a_secret_is_fine():
+    """The counterpart: an AS that explicitly registers the client as `none`
+    is a correct public client and must not be refused."""
+    result = _dcr({"client_id": "abc", "token_endpoint_auth_method": "none"})
+    assert result.client_id == "abc"
+    assert result.client_secret is None
+
+
+def test_the_scope_the_as_granted_wins_over_the_one_requested():
+    """RFC 7591 §3.2.1 lets the AS register a different `scope` than asked for,
+    and its answer is authoritative. Storing the requested value would put a
+    scope the client does not hold into the authorize URL, where the AS answers
+    `invalid_scope` (Devin Review on #1124)."""
+    result = _dcr(
+        {"client_id": "abc", "client_secret": "s", "scope": "read"},
+        scopes="read write admin",
+    )
+    assert result.scopes == "read"
+
+    # No `scope` in the response: the requested value stands.
+    assert _dcr({"client_id": "abc", "client_secret": "s"}, scopes="read write").scopes == "read write"

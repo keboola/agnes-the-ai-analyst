@@ -82,6 +82,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
+- Dynamic client registration takes the authorization server's answer as
+  authoritative on two more fields it was ignoring (RFC 7591 §3.2.1). A
+  registration the AS records as `client_secret_basic` while issuing no
+  `client_secret` is now refused at registration time with an actionable
+  message: client authentication is selected by secret presence, so such a
+  client would have sent none at all and every token exchange and refresh
+  would have failed `invalid_client` with nothing pointing at why. And the
+  `scope` the AS grants is stored in place of the one requested — recording
+  the request would put a scope the client does not hold into the stored row,
+  and from there into the authorize URL.
+
 - An OAuth client re-save no longer discards a registration access token the
   current vault key cannot open. The repositories decrypt that column with the
   same helper that reports `None` for a NULL column, so "no token" and "token
