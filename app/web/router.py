@@ -1123,8 +1123,13 @@ async def me_connections_page(
             continue
         is_oauth = (src.get("auth_method") or "").lower() == "oauth"
         if is_oauth:
+            from app.api.mcp_policy import oauth_connection_usable
+
             token_row = mcp_user_oauth_tokens_repo().get(src["id"], user["id"])
-            has_secret = token_row is not None
+            # Same validity rule the server enforces at call time — a lapsed,
+            # unrenewable token must show Connect, not a green Connected pill
+            # (Devin Review on #1130).
+            has_secret = oauth_connection_usable(src["id"], user["id"])
             updated_at = token_row["updated_at"].isoformat() if token_row and token_row.get("updated_at") else None
             expires_at = token_row["expires_at"].isoformat() if token_row and token_row.get("expires_at") else None
         else:
