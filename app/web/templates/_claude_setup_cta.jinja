@@ -205,12 +205,16 @@
         ta.value = instructions;
         ta.focus();
         ta.select();
-        overlay.addEventListener('click', function (ev) {
-            if (ev.target === overlay) { document.body.removeChild(overlay); }
-        });
-        overlay.querySelector('[data-action="close"]').addEventListener('click', function () {
+        // Scrub the revealed token from the textarea before dropping the
+        // overlay, so no detached DOM node keeps carrying it.
+        function closeOverlay() {
+            ta.value = '';
             document.body.removeChild(overlay);
+        }
+        overlay.addEventListener('click', function (ev) {
+            if (ev.target === overlay) { closeOverlay(); }
         });
+        overlay.querySelector('[data-action="close"]').addEventListener('click', closeOverlay);
         overlay.querySelector('[data-action="select"]').addEventListener('click', function () {
             ta.focus();
             ta.select();

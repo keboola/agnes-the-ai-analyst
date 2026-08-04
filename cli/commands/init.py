@@ -465,7 +465,11 @@ def init(
     # ------------------------------------------------------------------
     if token is None and token_file:
         try:
-            for line in Path(token_file).expanduser().read_text(encoding="utf-8").splitlines():
+            # utf-8-sig: Windows PowerShell 5 writes UTF-8 *with BOM* for
+            # `-Encoding utf8`; a plain utf-8 read keeps U+FEFF glued to the
+            # token (str.strip() does not remove it) and the bearer auth
+            # fails. utf-8-sig reads BOM-less files identically.
+            for line in Path(token_file).expanduser().read_text(encoding="utf-8-sig").splitlines():
                 line = line.strip()
                 if line:
                     token = line

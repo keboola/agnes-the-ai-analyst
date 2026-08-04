@@ -583,8 +583,10 @@ def write_agnes_env(
     and may carry the GWS OAuth client-secret value
     (``AGNES_GWS_CLIENT_SECRET`` — an app identifier for a Desktop-app
     OAuth client, not a user credential). Guarded by the 0600 chmod +
-    atomic write here, and by the seed template's ``.gitignore`` entry
-    for ``.claude/agnes/``. Legacy ``*_ENV`` pointer keys also pass
+    atomic write here; workspace templates that ship a ``.gitignore``
+    also ignore ``.claude/agnes/`` (the wheel-bundled seed carries no
+    workspace .gitignore — an analyst who ``git init``s such a
+    workspace should not commit that dir). Legacy ``*_ENV`` pointer keys also pass
     through unchanged — the server's GWS fallback keeps emitting the
     pointer alongside the value for backward compatibility.
     """
