@@ -1086,6 +1086,12 @@ async def mcp_connect_page(
     for Cursor, VS Code / GitHub Copilot, and any client accepting a URL.
 
     Any authenticated user (not admin-only) can reach this page.
+
+    Entry points: the AI Connector page (`/me/ai-connector`) links here as the
+    token fallback to its OAuth flow, plus a Cmd/Ctrl-K palette entry. It is
+    deliberately NOT a nav item — "connect an AI client" is one job and
+    `/me/ai-connector` owns it. Both links are guarded by
+    `tests/test_web_nav_agents.py`; don't drop them.
     """
     ctx = _build_context(
         request,
