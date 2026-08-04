@@ -907,13 +907,29 @@ def test_step_push_reports_uploaded_counts(monkeypatch):
     assert calls == [{"quiet": False, "as_json": True, "dry_run": False}]
 
 
-def test_step_push_omits_local_md_when_not_uploaded(monkeypatch):
+def test_step_push_zero_work_reports_skipped_not_ok(monkeypatch):
+    """A push with nothing to upload makes NO HTTP request (the capability
+    probe is gated on having work), so it must not report `ok` — the
+    bootstrap-token cleanup treats a non-error/non-skipped push as proof the
+    saved credential works and would otherwise delete the ~/.agnes/token
+    recovery input on a run where workspace/pull failed auth."""
     _stub_push(monkeypatch, json.dumps({"sessions": 0, "local_md": False, "errors": []}))
 
     report: list[dict] = []
     upd._step_push(report=report)
 
-    assert report == [{"stage": "push", "status": "ok", "detail": "0 session(s)"}]
+    assert report == [{"stage": "push", "status": "skipped", "detail": "nothing to upload; no server request made"}]
+
+
+def test_step_push_local_md_only_still_counts_as_ok(monkeypatch):
+    """Uploading only CLAUDE.local.md is a real authenticated request, so
+    it keeps reporting `ok` (and thus proves the saved credential)."""
+    _stub_push(monkeypatch, json.dumps({"sessions": 0, "local_md": True, "errors": []}))
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert report == [{"stage": "push", "status": "ok", "detail": "0 session(s) + CLAUDE.local.md"}]
 
 
 def test_step_push_skipped_when_another_push_holds_lock(monkeypatch):
@@ -1113,6 +1129,26 @@ class TestBootstrapTokenCleanup:
         ]
         _step_bootstrap_token_cleanup(report)
         assert token_file.exists(), "recovery input must survive an unproven run"
+        assert any(s["stage"] == "bootstrap-token" and s["status"] == "skipped" for s in report)
+
+    def test_keeps_file_when_only_finished_step_was_noop_push(self, tmp_path, monkeypatch):
+        """Expired saved credential (workspace + pull error) and no new
+        transcripts: the zero-work push made no request and reports skipped,
+        so nothing authenticated ran — the fresh bootstrap token from the
+        install guide's step 4 must survive for
+        `agnes init --force --token-file`."""
+        home = self._home(tmp_path, monkeypatch)
+        token_file = home / ".agnes" / "token"
+        token_file.write_text("eyJ-fresh", encoding="utf-8")
+        from cli.commands.update import _step_bootstrap_token_cleanup
+
+        report = [
+            {"stage": "workspace", "status": "error", "detail": "401"},
+            {"stage": "push", "status": "skipped", "detail": "nothing to upload; no server request made"},
+            {"stage": "pull", "status": "error", "detail": "401"},
+        ]
+        _step_bootstrap_token_cleanup(report)
+        assert token_file.exists(), "a no-op push must not count as credential proof"
         assert any(s["stage"] == "bootstrap-token" and s["status"] == "skipped" for s in report)
 
     def test_noop_without_file(self, tmp_path, monkeypatch):

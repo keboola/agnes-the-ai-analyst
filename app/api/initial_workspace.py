@@ -638,8 +638,23 @@ def _compute_render_dry_run() -> dict:
         # Scaffolding tier — IWT clone first, bundled fallback.
         template = resolve_seed_file("install-prompt/template.md.tmpl")
         if template is not None:
-            _content, source = template
+            content, source = template
             summary["scaffolding_source"] = source
+            # Retired-placeholder guard: the editor save path rejects
+            # `{token}` (app/api/prompts.py) and bind-git checks the bound
+            # file, but a later `Sync now` can move an already-bound seed
+            # onto content that embeds it. Rendered literally, the old
+            # `{token}` heredoc would write the string `{token}` into every
+            # analyst's ~/.agnes/token and 401 every `agnes init`.
+            if "{token}" in content:
+                summary["errors"].append(
+                    "install-prompt/template.md.tmpl references the retired "
+                    "`{token}` placeholder — the install prompt must not "
+                    "embed the access token (it is saved to ~/.agnes/token "
+                    "by the install guide and read via `agnes init "
+                    "--token-file`)"
+                )
+                summary["ok"] = False
         elif is_configured():
             # IWT configured but neither tier has the file — that's the
             # bundled fallback below, but only if the bundle survived

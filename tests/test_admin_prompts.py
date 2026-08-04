@@ -360,6 +360,37 @@ def test_source_toggle_to_git_requires_iwt(admin_client):
     assert r.json()["detail"]["kind"] == "iwt_not_configured"
 
 
+def test_bind_git_rejects_token_placeholder_for_install(admin_client, monkeypatch):
+    """Git-bound content never passes the editor save guard (PUT is refused
+    with prompt_in_git_mode), so bind-git itself must reject an install file
+    that still carries the retired `{token}` placeholder."""
+    client, token = admin_client
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+
+    seed = {
+        "install-prompt/legacy.md.tmpl": "curl -H {token} … writes it to ~/.agnes/token",
+        "install-prompt/clean.md.tmpl": "reads ~/.agnes/token via --token-file",
+    }
+    monkeypatch.setattr(iw, "resolve_seed_file", lambda rel: (seed[rel], "iwt") if rel in seed else None)
+
+    r = client.post(
+        "/api/admin/prompts/install/bind-git",
+        headers=_hdr(token),
+        json={"git_path": "install-prompt/legacy.md.tmpl"},
+    )
+    assert r.status_code == 400, r.text
+    assert "{token}" in r.json()["detail"]
+
+    r = client.post(
+        "/api/admin/prompts/install/bind-git",
+        headers=_hdr(token),
+        json={"git_path": "install-prompt/clean.md.tmpl"},
+    )
+    assert r.status_code == 200, r.text
+
+
 def test_bind_git_requires_iwt(admin_client):
     client, token = admin_client
     r = client.post(

@@ -127,8 +127,9 @@ analyst accepts the tile's "Set up <Vendor> now? (Y/n)" ask>
   value moves the connector out of the optional Y/n tile list into a
   separate numbered **"Install required tools"** step rendered between
   diagnose and the optional tiles: no per-tool ask, and the prompt
-  instructs the agent to finish every required tool (verbatim ✅/❌
-  line) before moving on. A bad value never rejects the entry.
+  instructs the agent to finish every required tool (its ✅/❌ verify
+  line is echoed in the Confirm summary) before moving on. A bad value
+  never rejects the entry.
 - Invalid blocks (missing required field, wrong type, parse error) skip
   the entire connector entry with an `audit_log` warning. The rest of
   the manifest still renders — one bad seed commit can't take down
@@ -225,7 +226,7 @@ For each manifest entry, the server renders this exact markdown block:
 ```
    {letter}) {display_name} — {short_summary}
       Ask: "Set up {display_name} now? (Y/n)"
-      If yes (default) — follow this inline prompt verbatim:
+      If the user agrees, follow this outline:
 
       {SKILL.md body, indented 6 spaces, frontmatter stripped, {instance_brand} substituted}
 ```
@@ -240,7 +241,7 @@ line:
 
 ```
    {letter}) {display_name} — {short_summary}
-      Follow this inline prompt verbatim:
+      Follow this inline prompt:
 
       {SKILL.md body, same indent/substitution rules as above}
 ```

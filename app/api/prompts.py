@@ -80,6 +80,31 @@ def _live_default(kind: str, conn, *, user: dict, server_url: str) -> str:
     return compute_default_agent_prompt(conn, user=user, server_url=server_url)
 
 
+def _reject_token_placeholder(content: str) -> None:
+    """400 when install-prompt content references the retired ``{token}``.
+
+    The renderer stopped substituting `{token}` when the PAT handoff moved
+    to /home step 4 (the token is saved to ~/.agnes/token before the prompt
+    is generated, and the prompt body must stay token-free). Content still
+    carrying the placeholder would emit the literal string `{token}` and
+    produce installs that authenticate with garbage — reject at save time
+    (editor PUT) and at bind time (git mode) instead of failing every
+    analyst.
+    """
+    if "{token}" not in content:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Template invalid: `{token}` is no longer a supported "
+            "placeholder — the install prompt must not embed the access "
+            "token. The token is saved to ~/.agnes/token by the install "
+            "guide's step 4 and read via `agnes init --token-file`; "
+            "reference that file path instead."
+        ),
+    )
+
+
 def _validate_template(kind: str, content: str) -> None:
     """Two-pass Jinja validation matching the legacy editors' contract.
 
@@ -108,23 +133,8 @@ def _validate_template(kind: str, content: str) -> None:
             "is publicly accessible."
         )
 
-    if kind == "install" and "{token}" in content:
-        # The renderer stopped substituting `{token}` when the PAT handoff
-        # moved to /home step 4 (the token is saved to ~/.agnes/token before
-        # the prompt is generated, and the prompt body must stay token-free).
-        # An override still carrying the placeholder would emit the literal
-        # string `{token}` and produce installs that authenticate with
-        # garbage — reject at save time instead of failing every analyst.
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Template invalid: `{token}` is no longer a supported "
-                "placeholder — the install prompt must not embed the access "
-                "token. The token is saved to ~/.agnes/token by the install "
-                "guide's step 4 and read via `agnes init --token-file`; "
-                "reference that file path instead."
-            ),
-        )
+    if kind == "install":
+        _reject_token_placeholder(content)
 
     env = make_prompt_env()  # F4: sandboxed — admin-authored content
     try:
@@ -370,6 +380,8 @@ async def bind_git(
                 ),
             },
         )
+    from src.initial_workspace import resolve_seed_file
+
     if not _git_path_exists(kind, payload.git_path):
         raise HTTPException(
             status_code=400,
@@ -384,6 +396,15 @@ async def bind_git(
                 ),
             },
         )
+    if kind == "install":
+        # Git-bound content never passes through _validate_template (PUT is
+        # refused with prompt_in_git_mode), so the retired-`{token}` guard
+        # fires here at bind time; the seed-sync render dry-run covers later
+        # syncs moving already-bound content onto a legacy seed.
+        resolved_seed = resolve_seed_file(payload.git_path)
+        if resolved_seed is not None:
+            _reject_token_placeholder(resolved_seed[0])
+
     # Stamp the per-file git BLOB sha as the binding's base (Slice 2):
     # precise divergence — flips only when THIS file's content changes, not
     # when any unrelated commit lands. (Slice 1 stamped the HEAD commit sha;

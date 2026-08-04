@@ -117,7 +117,9 @@ def _step_bootstrap_token_cleanup(report: list[dict]) -> None:
     is redundant — remove it. When NO step proved the credential (auth
     failure, offline run), the file is kept on purpose: it is exactly the
     input the expired-credential recovery (``agnes init --force
-    --token-file``) needs.
+    --token-file``) needs. (``_step_push`` reports a zero-work run — which
+    makes no HTTP request at all — as ``skipped`` for exactly this reason:
+    finishing without work proves nothing about the credential.)
     """
     bootstrap = Path.home() / ".agnes" / "token"
     try:
@@ -575,6 +577,15 @@ def _step_push(*, report: list[dict]) -> None:
     errors = summary.get("errors") or []
     if errors:
         report.append({"stage": "push", "status": "error", "detail": f"{detail}; errors={errors}"})
+    elif not summary.get("sessions") and not summary.get("local_md"):
+        # Zero uploads and no CLAUDE.local.md means push deliberately made
+        # no HTTP request at all (the capability probe is gated on having
+        # work), so this run proved nothing about the saved credential.
+        # Report skipped, not ok — _step_bootstrap_token_cleanup counts a
+        # non-error/non-skipped push as an authenticated round-trip, and a
+        # no-op must never delete the ~/.agnes/token recovery input on a
+        # run where workspace/pull failed auth.
+        report.append({"stage": "push", "status": "skipped", "detail": "nothing to upload; no server request made"})
     else:
         report.append({"stage": "push", "status": "ok", "detail": detail})
 

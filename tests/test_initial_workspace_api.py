@@ -962,6 +962,23 @@ def test_dry_run_errors_on_required_connector_missing_body(monkeypatch):
     ), summary["errors"]
 
 
+def test_dry_run_errors_on_token_placeholder_in_seed_template(monkeypatch):
+    """An operator seed still carrying the retired `{token}` placeholder
+    renders it literally — the old heredoc would write the string `{token}`
+    into ~/.agnes/token and 401 every `agnes init`. The editor save path
+    rejects it (app/api/prompts.py); a git-bound seed only surfaces at
+    sync, so the dry-run flags it as an error."""
+    import src.initial_workspace as iw
+
+    from app.api import initial_workspace as api
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", lambda rel: ("echo {token} > ~/.agnes/token", "iwt"))
+    summary = api._compute_render_dry_run()
+    assert summary["ok"] is False
+    assert any("{token}" in e for e in summary["errors"]), summary["errors"]
+
+
 def test_dry_run_warns_on_optional_connector_missing_body(monkeypatch):
     from app.api import initial_workspace as api
 
