@@ -59,7 +59,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   different path can be a different protected resource. This is irreversible
   and is not separately confirmed, so an admin fixing a typo in a `bearer`
   source's url will have to re-enter its secret and their analysts will have
-  to re-connect. The purge runs before the row is repointed, and the audit row
+  to re-connect. It applies only where the url is live — on a `stdio` source
+  the secret is injected into the subprocess environment and the url is never
+  read, so editing it there changes nothing. Conversely, flipping a `stdio`
+  source to http/sse purges even with the url untouched: that edit makes an
+  already stored url live for the first time. The purge runs before the row is repointed, and the audit row
   records `credentials_purged` so the effect is traceable afterwards.
 
 - MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.

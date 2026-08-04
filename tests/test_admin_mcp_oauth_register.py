@@ -968,9 +968,10 @@ def test_an_explicit_null_scope_cannot_slip_past_the_pre_purge_check(seeded_app)
         json={"url": "https://h2.example/mcp", "scope": None},
     )
     # Whatever the endpoint decides the null means, it must not both destroy
-    # the credentials and refuse the edit.
+    # the credentials and refuse the edit. (It means "unchanged" — see
+    # test_an_explicit_null_leaves_enabled_and_scope_unchanged.)
     assert r.status_code == 200, r.text
-    assert mcp_sources_repo().get(sid)["scope"] == "shared"
+    assert mcp_sources_repo().get(sid)["scope"] == "per_user"
     # url DID change, so the purge is correct here — it just must not have run
     # for a request that then failed.
     assert per_user_secrets_repo().has(sid, "admin1") is False
@@ -1197,3 +1198,90 @@ def test_a_public_client_needs_no_vault_key_at_all(seeded_app, monkeypatch):
         },
     )
     assert r.status_code == 200, r.text
+
+
+def test_editing_the_url_of_a_stdio_source_keeps_its_credentials(seeded_app):
+    """On a stdio row the secret goes into the subprocess environment under
+    `auth_secret_env`; `url` is never read. Purging there is pure data loss —
+    an admin filling in a documentation-style url would destroy the vault
+    secret and every analyst's per-user secret for a field the credential
+    never travels to (Devin Review on #1124)."""
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    sid = "src_stdio_url"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="stdio_url",
+        transport="stdio",
+        command="/usr/bin/some-mcp",
+        auth_method="bearer",
+        auth_secret_env="SOME_MCP_TOKEN",
+        scope="per_user",
+    )
+    per_user_secrets_repo().upsert(sid, "admin1", "tok-for-subprocess")
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"url": "https://docs.example/where-this-came-from"},
+    )
+    assert r.status_code == 200, r.text
+    assert per_user_secrets_repo().has(sid, "admin1") is True
+
+
+def test_flipping_a_stdio_source_onto_the_network_purges_its_credentials(seeded_app):
+    """The counterpart, and not a url edit at all: switching transport to
+    http/sse makes an already stored url LIVE for the first time, so a secret
+    minted for a subprocess would start being sent as an Authorization header
+    to a host it was never meant for."""
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    sid = "src_stdio_flip"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="stdio_flip",
+        transport="stdio",
+        command="/usr/bin/some-mcp",
+        url="https://elsewhere.example/mcp",
+        auth_method="bearer",
+        auth_secret_env="SOME_MCP_TOKEN",
+        scope="per_user",
+    )
+    per_user_secrets_repo().upsert(sid, "admin1", "tok-for-subprocess")
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"transport": "http"},  # url unchanged — it just became live
+    )
+    assert r.status_code == 200, r.text
+    assert per_user_secrets_repo().has(sid, "admin1") is False
+
+
+def test_an_explicit_null_leaves_enabled_and_scope_unchanged(seeded_app):
+    """`exclude_unset` cannot tell "deliberately null" from "a client that
+    serializes unset optionals as null", so an explicit null must mean "leave
+    it alone" rather than "reset to the default" — otherwise such a client
+    silently re-enables a source the admin disabled (Devin Review on #1124)."""
+    from src.repositories import mcp_sources_repo
+
+    sid = "src_null_unchanged"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="null_unchanged",
+        transport="http",
+        url="https://h1.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+        enabled=False,
+    )
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"enabled": None, "scope": None, "connect_hint": "note"},
+    )
+    assert r.status_code == 200, r.text
+    row = mcp_sources_repo().get(sid)
+    assert bool(row["enabled"]) is False, "an explicit null re-enabled a disabled source"
+    assert row["scope"] == "per_user", "an explicit null reset scope to the default"

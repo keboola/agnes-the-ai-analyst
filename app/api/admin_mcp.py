@@ -463,9 +463,16 @@ def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest)
         "scope": data.get("scope", existing.get("scope")),
         "connect_hint": data.get("connect_hint", existing.get("connect_hint")),
     }
-    merged["scope"] = merged["scope"] or "shared"
+    # An explicit null means "leave unchanged", not "reset to the default".
+    # `exclude_unset` cannot tell the two apart — a client that serializes its
+    # unset optionals as null looks identical to one deliberately clearing the
+    # field — so the reading that cannot surprise anyone wins: fall back to the
+    # stored value first, and only then to the type's default. Coercing to the
+    # default instead would silently re-enable a source an admin had disabled
+    # (Devin Review on #1124).
     if merged["enabled"] is None:
-        merged["enabled"] = True
+        merged["enabled"] = bool(existing["enabled"]) if existing.get("enabled") is not None else True
+    merged["scope"] = merged["scope"] or existing.get("scope") or "shared"
     return merged
 
 
@@ -643,14 +650,19 @@ async def update_mcp_source(
 ):
     """Partial update. Audit row carries before/after for the changed fields.
 
-    **Changing ``url`` discards every stored credential for the source** —
-    the shared vault secret, all per-user secrets, and (when the source is
-    OAuth) its client registration, user tokens and in-flight flows. This is
-    irreversible and happens without a separate confirmation, because a
-    credential must never be forwarded to a host that did not issue it, and
+    **Changing ``url`` on an http/sse source discards every stored credential
+    for it** — the shared vault secret, all per-user secrets, and (when the
+    source is OAuth) its client registration, user tokens and in-flight flows.
+    This is irreversible and happens without a separate confirmation, because
+    a credential must never be forwarded to a host that did not issue it, and
     a path-only edit can still be a different protected resource. Users
-    re-connect afterwards. The audit row records ``credentials_purged`` so
-    the effect is traceable after the fact.
+    re-connect afterwards. The audit row records ``credentials_purged`` so the
+    effect is traceable after the fact.
+
+    Flipping a ``stdio`` source to http/sse purges too: it makes an already
+    stored ``url`` live for the first time. Editing ``url`` on a row that stays
+    ``stdio`` does not — there the secret goes into the subprocess environment
+    and the url is never read.
     """
     repo = mcp_sources_repo()
     existing = repo.get(source_id)
@@ -707,7 +719,22 @@ async def update_mcp_source(
     # which reads the freshly-written url. Any change counts — a path-only
     # edit can still be a different protected resource (Devin Review on #1124
     # for the OAuth half; invariant sweep for the rest).
-    url_repointed = (existing.get("url") or "") != (merged.get("url") or "")
+    #
+    # It is only true where the url is LIVE, though. On a `stdio` row the
+    # secret is injected into the subprocess environment under
+    # `auth_secret_env` and `url` is never read at all — inert documentation.
+    # Purging there is pure data loss: an admin filling in or correcting that
+    # note would destroy the vault secret and every analyst's per-user secret
+    # for a field the credential never travels to (Devin Review on #1124).
+    #
+    # The gate is the NEW transport, which also covers the case that is not a
+    # url edit at all: flipping a stdio source to http/sse makes an already
+    # stored url live for the first time, so a secret minted for a subprocess
+    # starts being sent as an `Authorization` header to a host it was never
+    # meant for. Same exposure, so the same purge.
+    now_network = (merged.get("transport") or "") in ("http", "sse")
+    was_network = (existing.get("transport") or "") in ("http", "sse")
+    url_repointed = now_network and ((existing.get("url") or "") != (merged.get("url") or "") or not was_network)
     # The purge runs BEFORE the row is repointed, deliberately. There is no
     # transaction spanning the sources row and the vault tables, so one of the
     # two orders has to lose on a mid-sequence failure — and they do not lose
