@@ -991,7 +991,7 @@ def test_v99_db_migrates_to_v100_adds_sync_state_parts(tmp_path):
 # past these version numbers, so every one of these steps is skipped forever.
 _STRANDED = {
     "chat_sessions": ["agent_id"],  # _v100_to_v101
-    "personal_access_tokens": ["agent_id"],  # _v100_to_v101
+    "personal_access_tokens": ["agent_id", "surface"],  # _v100_to_v101, _v105_to_v106
     "sync_state": ["parts"],  # _v99_to_v100
     "data_apps": [  # _v98_to_v99 + _v107_to_v108
         "parent_app_id",
@@ -1115,3 +1115,59 @@ def test_v113_heal_is_idempotent_on_healthy_db(tmp_path):
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
         assert set(columns) <= cols
     conn.close()
+
+
+def test_v113_heal_lets_a_stranded_db_mint_tokens_again(tmp_path):
+    """`personal_access_tokens.surface` (_v105_to_v106) is stranded by the same
+    renumbering, and every PAT mint names it — including the CLI sign-in
+    exchange. Healing chat but not this would fix the browser and leave the
+    operator locked out of the CLI (Devin Review on #1158)."""
+    db_path = tmp_path / "stranded_pat.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _strand(conn)
+    conn.execute("UPDATE schema_version SET version = 113")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('personal_access_tokens')").fetchall()}
+    assert "surface" in cols, "a stranded DB still cannot mint a token"
+    # the column is usable, not merely present
+    conn.execute(
+        "INSERT INTO personal_access_tokens (id, user_id, token_hash, prefix, name, surface) "
+        "VALUES ('t1', 'u1', 'h', 'agn_', 'cli', 'stack')"
+    )
+    assert conn.execute("SELECT surface FROM personal_access_tokens WHERE id='t1'").fetchone() == ("stack",)
+    conn.close()
+
+
+def test_v113_heal_flushes_its_ddl_to_the_main_db_file(tmp_path):
+    """The post-migration CHECKPOINT sits inside `if current < SCHEMA_VERSION`,
+    and a stranded DB is stamped AT the head — so on exactly the databases these
+    heals exist for it never runs, and their ALTER TABLE ... ADD COLUMN
+    statements would sit in the WAL. That is the shape the migration checkpoint
+    documents as able to leave system.duckdb unrecoverable on a cross-version
+    WAL replay after an abrupt restart (Devin Review on #1158).
+
+    Asserted by reading the healed DB from a SECOND connection after an
+    unclean-looking handoff: what is visible there came from the main file.
+    """
+    db_path = tmp_path / "stranded_wal.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _strand(conn)
+    conn.execute("UPDATE schema_version SET version = 113")
+    conn.close()
+
+    healer = duckdb.connect(str(db_path))
+    _ensure_schema(healer)  # heals + checkpoints
+    wal = db_path.with_suffix(".duckdb.wal")
+    healer.close()
+
+    reader = duckdb.connect(str(db_path))
+    for table, columns in _STRANDED.items():
+        cols = {r[1] for r in reader.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        assert set(columns) <= cols, f"{table} lost {set(columns) - cols} — heal DDL was not durable"
+    reader.close()
+    assert not wal.exists() or wal.stat().st_size == 0, "WAL still holds the heal DDL after the checkpoint"

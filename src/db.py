@@ -7122,6 +7122,11 @@ def _heal_stranded_ladder_columns(conn: duckdb.DuckDBPyConnection) -> None:
         ("data_apps", "source_ref", "VARCHAR"),  # _v107_to_v108
         ("data_apps", "managed", "BOOLEAN DEFAULT FALSE"),  # _v107_to_v108
         ("data_apps", "description_override", "TEXT"),  # _v107_to_v108
+        # _v105_to_v106. Without it every PAT mint fails — including the CLI
+        # sign-in exchange — on exactly the databases this heal repairs, so
+        # leaving it out would fix chat and leave the operator locked out of
+        # the CLI (Devin Review on #1158).
+        ("personal_access_tokens", "surface", "VARCHAR DEFAULT 'all'"),
     ]
 
     present: dict[str, set[str]] = {}
@@ -8315,6 +8320,25 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
         _heal_data_package_publisher_column(conn)
         _heal_legacy_agents_table(conn)
         _heal_stranded_ladder_columns(conn)
+        # Flush whatever the heals just wrote. The post-migration CHECKPOINT
+        # above sits inside `if current < SCHEMA_VERSION`, and a stranded DB
+        # is stamped AT the head — so on precisely the databases these heals
+        # exist for, that checkpoint never runs and their ALTER TABLE ... ADD
+        # COLUMN statements stay in the WAL. That is the exact shape the
+        # migration checkpoint documents as able to leave system.duckdb
+        # unrecoverable on a cross-version WAL replay after an abrupt restart
+        # (Devin Review on #1158). Unconditional and best-effort: a no-op
+        # checkpoint on an unchanged DB is cheap, and deciding whether any
+        # heal altered anything would put the correctness of a corruption
+        # guard behind four independent return values.
+        try:
+            conn.execute("CHECKPOINT")
+        except Exception as e:
+            logger.warning(
+                "Post-heal CHECKPOINT failed (%s); repaired columns may sit in the WAL. "
+                "Shut this process down cleanly before any container restart.",
+                e,
+            )
 
 
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:
