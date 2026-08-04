@@ -2259,6 +2259,17 @@ _SKILL_VISIBILITY: dict[str, tuple[str, str]] = {
 }
 
 
+#: Tooltips for a membership the caller cannot drop. Two kinds of row reach
+#: these — an auto-membership grant (data package / memory domain / recipe,
+#: where the grant IS the membership) and the subset of plugin rows the
+#: uninstall API refuses (``is_system`` or required-tier). Module constants
+#: rather than literals at each site because they are the same sentence
+#: making the same promise, and ``tests/test_web_library.py`` asserts them
+#: verbatim so the shipped copy cannot drift from the spec.
+_LOCKED_STACK_TOOLTIP = "Required by your admin and cannot be removed from your stack."
+_GRANTED_STACK_TOOLTIP = "Granted to your group — only an admin can remove it from your Stack."
+
+
 def _library_row_base(
     *,
     item_id: str,
@@ -2861,9 +2872,9 @@ async def library_page(
         items[-1]["stack_pill"] = "In Stack"
         items[-1]["stack_locked"] = True
         if requirement == "required":
-            items[-1]["stack_title"] = "Required by your admin and cannot be removed from your stack."
+            items[-1]["stack_title"] = _LOCKED_STACK_TOOLTIP
         else:
-            items[-1]["stack_title"] = "Granted to your group — only an admin can remove it from your Stack."
+            items[-1]["stack_title"] = _GRANTED_STACK_TOOLTIP
 
     # Governed data packages + memory domains — StackResolver.browse() is
     # exactly "required ∪ available for my groups" for these two types.
@@ -2955,15 +2966,36 @@ async def library_page(
             # matched no grant, and silently dropped EVERY curated plugin from
             # the Library — invisibly, because a non-matching path is not an
             # exception the enclosing handler could report.
+            #
+            # Plugins are the one granted kind whose membership is NOT
+            # automatic, so they override the stack fields `_add_shared_row`
+            # sets: for a plugin the grant is only ELIGIBILITY. Model B (v28+)
+            # has `resolve_user_marketplace` serve `subscriptions ∪
+            # required-tier grants`, so a plugin granted at the `available`
+            # tier and never subscribed is genuinely absent from the caller's
+            # served set — its skills and commands are NOT loaded in their
+            # Claude Code. Treating the grant as membership (as this did) made
+            # the Library claim a locked "In Stack" for every eligible plugin:
+            # it contradicted both the /marketplace card and the agent's own
+            # `marketplace_search`, and — because the row rendered locked — it
+            # removed the only affordance that could have fixed the state.
+            # Deriving it from `_curated_stack_sets`, the same helper
+            # `GET /api/marketplace/items` computes its `installed` flag from,
+            # is what keeps the two surfaces from drifting again.
+            from app.api.marketplace import _curated_stack_sets
+
+            plugin_in_stack, plugin_required = _curated_stack_sets(None, uid)
             for pl in marketplace_plugins_repo().list_all():
-                path = f"{pl.get('marketplace_id')}/{pl.get('name')}"
+                mid, pname = pl.get("marketplace_id"), pl.get("name")
+                path = f"{mid}/{pname}"
                 if path not in plugin_paths:
                     continue
+                key = (mid, pname)
                 _add_shared_row(
                     item_id=path,
                     title=pl.get("display_name") or pl.get("name"),
                     description=pl.get("description"),
-                    href=f"/marketplace/curated/{pl.get('marketplace_id')}/{pl.get('name')}",
+                    href=f"/marketplace/curated/{mid}/{pname}",
                     glyph="plugins",
                     type_key="plugin",
                     type_label="Plugin",
@@ -2972,7 +3004,34 @@ async def library_page(
                     added=None,
                     meta_text=pl.get("category") or "",
                     owner_label="Your workspace",
+                    # The tier is real for plugins too, so the Optional/Required
+                    # facet slices them the way it slices data packages.
+                    requirement=("required" if key in plugin_required else "optional"),
                 )
+                row = items[-1]
+                # Same endpoint both ways: POST subscribes, DELETE unsubscribes
+                # (`curated_install` / `curated_uninstall`). The Library's toggle
+                # is kind-agnostic — it POSTs/DELETEs whatever the row names.
+                row["stack_endpoint"] = f"/api/marketplace/curated/{mid}/{pname}/install"
+                # Droppable unless an admin pinned it globally (`is_system`) or
+                # required-tier-granted it to one of the caller's groups. Those
+                # are precisely the two cases `curated_uninstall` answers 409
+                # to, so the lock promises exactly what the API enforces.
+                locked = bool(pl.get("is_system")) or key in plugin_required
+                if key in plugin_in_stack:
+                    row["stack_state"] = "in_stack"
+                    row["stack_pill"] = "In Stack"
+                    row["stack_locked"] = locked
+                    row["stack_removable"] = not locked
+                    row["stack_title"] = (
+                        _LOCKED_STACK_TOOLTIP if locked else "The default agent can use this — click to remove it"
+                    )
+                else:
+                    row["stack_state"] = "available"
+                    row["stack_pill"] = ""
+                    row["stack_locked"] = False
+                    row["stack_addable"] = True
+                    row["stack_title"] = "Granted to you, but the default agent can't use it until you add it"
     except Exception as e:
         logger.warning("/library: could not resolve marketplace plugins: %s", e)
 
