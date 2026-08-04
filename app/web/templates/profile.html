@@ -86,17 +86,20 @@
                    klass='section-card',
                    attrs='aria-label="Admin mode"') %}
     {% if elevation_paused %}
-      <p>Admin elevation is <strong>paused</strong> for this browser — you see
-      the app with exactly your explicit group grants, and admin pages refuse
-      until you re-enable it.</p>
+      <p>Admin elevation is <strong>paused</strong> for this browser — admin
+      pages refuse, and entity access checks fall back to your explicit group
+      grants, until you re-enable it. Surfaces that read Admin membership
+      directly (the table catalog among them) still show everything: this is a
+      consent gate against accidental god-mode use, not a containment
+      boundary.</p>
       <button type="button" class="ds-btn" id="elevation-toggle" data-paused="false">
         Re-enable admin mode
       </button>
     {% else %}
       <p>Admin elevation is <strong>active</strong>: every access check
-      short-circuits to allow. Pause it to browse with only your explicit
-      grants (a consent gate against accidental god-mode use — you can
-      re-enable it here at any time).</p>
+      short-circuits to allow. Pause it to make entity checks fall back to your
+      explicit grants and admin pages refuse (a consent gate against accidental
+      god-mode use — you can re-enable it here at any time).</p>
       <button type="button" class="ds-btn" id="elevation-toggle" data-paused="true">
         Pause admin mode for this browser
       </button>

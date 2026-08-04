@@ -288,7 +288,7 @@ def can_access(
     if admin_id is not None and admin_id in group_ids:
         from app.auth.elevation import elevation_paused
 
-        if not elevation_paused():
+        if not elevation_paused(user_id):
             _note_god_mode_hit(user_id, resource_type, resource_id, conn=conn)
             return True
         # Elevation paused (consent gate): fall through to the explicit
