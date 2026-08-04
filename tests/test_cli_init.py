@@ -277,7 +277,9 @@ def test_init_token_file_unreadable_but_present_hard_fails(tmp_path, monkeypatch
         ],
     )
     assert result.exit_code == 1
-    assert "could not be read" in result.output
+    # The error renderer wraps long hints at terminal width, which can split
+    # the phrase across lines — normalize whitespace before matching.
+    assert "could not be read" in " ".join(result.output.split())
 
 
 def test_init_token_file_strips_windows_powershell_bom(tmp_path, monkeypatch):
