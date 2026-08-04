@@ -125,11 +125,19 @@ Open, unblocked, unclaimed — lowest number first:
 ```bash
 for f in docs/superpowers/maps/<effort>/issues/*.md; do
   grep -q '^Status: open' "$f" || continue
-  b=$(sed -n 's/^Blocked by: //p' "$f" | head -1)
-  [ "$b" = "—" ] && { echo "$f"; continue; }
+  # Decide on the NUMBERS, not on the exact shape of the "none" marker. An
+  # em-dash equality test made "-", "— " or "none" read as a dependency,
+  # whose glob then matched nothing and hid the ticket for good — work
+  # vanishing from the queue is worse than a stray ticket appearing in it.
+  b=$(sed -n 's/^Blocked by: //p' "$f" | head -1 | tr ',' ' ')
   blocked=0
-  for n in ${b//,/ }; do
-    grep -q '^Status: resolved' docs/superpowers/maps/<effort>/issues/$n-*.md || blocked=1
+  for n in $(printf '%s\n' $b | grep -oE '^[0-9]+$'); do
+    # Match the number however it was written: tickets are zero-padded, a
+    # human reference often is not.
+    d=$(printf '%02d' "$((10#$n))")
+    grep -q '^Status: resolved' \
+      docs/superpowers/maps/<effort>/issues/"$n"-*.md \
+      docs/superpowers/maps/<effort>/issues/"$d"-*.md 2>/dev/null || blocked=1
   done
   [ $blocked = 0 ] && echo "$f"
 done
