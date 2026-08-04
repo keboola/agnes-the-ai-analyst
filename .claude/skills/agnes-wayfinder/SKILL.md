@@ -92,7 +92,7 @@ ticket. The map gists it and links; it never restates it.
 # NN — <the question, as a question>
 
 Type: research | prototype | grilling | task
-Status: open | claimed | resolved
+Status: open | claimed | resolved | out-of-scope
 Blocked by: NN, NN   (or —)
 
 ## Question
@@ -120,7 +120,9 @@ skill. If the human isn't available, leave it open and take another.
 
 ## Frontier
 
-Open, unblocked, unclaimed — lowest number first:
+Unfinished and unblocked — lowest number first. `claimed` counts as
+unfinished: a session that took a ticket and stopped must not remove it
+from the queue (see mode 2 step 2).
 
 ```bash
 for f in docs/superpowers/maps/<effort>/issues/*.md; do
@@ -141,7 +143,10 @@ for f in docs/superpowers/maps/<effort>/issues/*.md; do
     # Match the number however it was written: tickets are zero-padded, a
     # human reference often is not.
     d=$(printf '%02d' "$((10#$n))")
-    grep -q '^Status: resolved' \
+    # out-of-scope settles a dependency too: ruling a question out IS a
+    # decision about it, and treating it as unanswered deadlocks everything
+    # downstream.
+    grep -qE '^Status: (resolved|out-of-scope)' \
       docs/superpowers/maps/<effort>/issues/"$n"-*.md \
       docs/superpowers/maps/<effort>/issues/"$d"-*.md 2>/dev/null || blocked=1
   done
@@ -178,7 +183,10 @@ done
 5. Update the map — add newly-surfaced tickets, graduate fog that just became
    sharp (deleting it from *Not yet specified*, so it lives only as its ticket),
    and if the answer reveals a ticket sits past the destination, **rule it out of
-   scope**: resolve nothing, move one line to *Out of scope*, and say why.
+   scope**: flip it to `Status: out-of-scope`, move one line to *Out of scope*,
+   and say why. It needs a terminal state, not just a mention in the map —
+   left `open` it sits in the frontier forever and nothing waiting on it can
+   ever start.
 
 **One ticket per session**, except `research`. The pull to keep going is the
 signal to stop and let the next session start from the updated map.
@@ -191,8 +199,12 @@ When no tickets remain, the map is done and the route is clear. Hand off:
 2. `/agnes-build` — implements the plan in parallel worktrees.
 3. `verify-agnes-change` → `/agnes-review` — the usual gates.
 
-Then delete `issues/` and keep `map.md` as the decision record, or promote it to
-`docs/superpowers/specs/YYYY-MM-DD-<name>.md` if it earned that.
+Keep `issues/` alongside `map.md`, or promote the map to
+`docs/superpowers/specs/YYYY-MM-DD-<name>.md` if it earned that. Do NOT delete
+the tickets: the map is an index, not a store — *Decisions so far* holds a gist
+per decision and links to the ticket for the reasoning, so deleting `issues/`
+throws away the only full copy and leaves the surviving summary pointing at
+files that no longer exist.
 
 **The map never becomes the build.** If you catch yourself implementing the
 destination inside a ticket, you have reached the edge of the map — that is the
