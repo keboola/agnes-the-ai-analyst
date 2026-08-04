@@ -19,7 +19,9 @@ transports.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
+
+from pydantic import Field
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -566,7 +568,7 @@ def register_foundation_tools(
         return {"unsubscribed": True}
 
     @tool()
-    async def store_rate(entity_id: str, vote: Literal[1, -1, 0]) -> dict:
+    async def store_rate(entity_id: str, vote: Annotated[int, Field(ge=-1, le=1)]) -> dict:
         """Rate a store / marketplace entity thumbs up/down (#398).
 
         Casts, changes, or clears your single vote on an entity — the same effect

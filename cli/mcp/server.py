@@ -28,6 +28,7 @@ Credentials are read from ~/.config/agnes/config.yaml (server URL) and
 from __future__ import annotations
 
 import os
+from typing import Literal
 from pathlib import Path
 
 import httpx
@@ -441,7 +442,7 @@ def _is_data_apps_disabled(exc: V2ClientError) -> bool:
 
 
 @tool()
-def data_apps_list(kind: str = "") -> dict:
+def data_apps_list(kind: Literal["", "hosted", "linked"] = "") -> dict:
     """List data apps you can see (RBAC-filtered).
 
     Visible to any authenticated user: apps you own, apps a group you're in has
@@ -483,7 +484,7 @@ def data_app_get(slug: str) -> dict:
 
 
 @tool()
-def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
+def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> dict:
     """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
     Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given, else the
@@ -725,12 +726,48 @@ def agnes_data_app_credentials(slug: str) -> dict:
     }
 
 
+def _registered_tools() -> dict:
+    """Tools FastMCP currently knows about, including dynamically added ones.
+
+    FastMCP has moved this accessor around between versions, so probe rather
+    than bind to one shape; an unexpected layout degrades to "no dynamic
+    tools" instead of breaking tool_docs.
+    """
+    for attr in ("_tool_manager", "_tools"):
+        holder = getattr(mcp, attr, None)
+        if holder is None:
+            continue
+        tools = getattr(holder, "_tools", holder)
+        if isinstance(tools, dict):
+            return tools
+    return {}
+
+
+def _registered_tool_names() -> list:
+    return list(_registered_tools())
+
+
+def _registered_tool_doc(tool_name: str):
+    tool = _registered_tools().get(tool_name)
+    if tool is None:
+        return None
+    doc = getattr(tool, "description", None) or getattr(getattr(tool, "fn", None), "__doc__", None)
+    return doc.strip() if isinstance(doc, str) and doc.strip() else None
+
+
 @tool()
 def tool_docs(tool_name: str) -> dict:
     """Return the full reference documentation (docstring) for one registered MCP tool — arguments, return shape, and usage tips beyond the short description shown in the tool list."""
     doc = TOOL_DOCS.get(tool_name)
     if doc is None:
-        known = ", ".join(sorted(TOOL_DOCS))
+        # Passthrough tools are registered at start-up from the server's
+        # registry, so they are absent from the static TOOL_DOCS map. An
+        # agent told to call tool_docs for any tool it sees in the listing
+        # would otherwise be answered "Unknown tool" for exactly the ones
+        # whose docs it cannot already read (review finding on #1144).
+        doc = _registered_tool_doc(tool_name)
+    if doc is None:
+        known = ", ".join(sorted(set(TOOL_DOCS) | set(_registered_tool_names())))
         raise ValueError(f"Unknown tool {tool_name!r}. Valid tool names: {known}")
     return {"tool": tool_name, "docs": doc}
 
