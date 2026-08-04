@@ -1130,10 +1130,15 @@ async def me_connections_page(
             # unrenewable token must show Connect, not a green Connected pill
             # (Devin Review on #1130).
             has_secret = oauth_connection_usable(src["id"], user["id"])
+            # `stored` diverges from `has_secret` exactly for a lapsed,
+            # unrenewable token: not usable, but the row still exists and the
+            # user must be able to Disconnect it (Devin Review on #1130).
+            stored = token_row is not None
             updated_at = token_row["updated_at"].isoformat() if token_row and token_row.get("updated_at") else None
             expires_at = token_row["expires_at"].isoformat() if token_row and token_row.get("expires_at") else None
         else:
             has_secret = per_user_secrets_repo().has(src["id"], user["id"])
+            stored = has_secret
             updated_at = per_user_secrets_repo().get_updated_at(src["id"], user["id"])
             expires_at = None
         sources.append(
@@ -1144,20 +1149,24 @@ async def me_connections_page(
                 "hint_html": render_safe(src.get("connect_hint")),
                 "auth_kind": "oauth" if is_oauth else "secret",
                 "has_secret": has_secret,
+                "stored": stored,
                 "updated_at": updated_at,
                 "expires_at": expires_at,
             }
         )
     # Both banners render only fixed text: connect_error arrives as a short
     # code mapped through CONNECT_ERROR_MESSAGES (unknown → generic fallback),
-    # and connected must name a source the caller can actually see — a
-    # crafted link can never put its own words in an Agnes banner (Devin
-    # Review on #1130).
+    # and connected only renders when the caller really has a stored OAuth
+    # connection for that id — a crafted link can never put its own words in
+    # an Agnes banner. Checked against the token row, NOT this page's
+    # tool-derived source list: a freshly registered source has no tools yet
+    # and the admin's post-connect banner must still show (Devin Review on
+    # #1130).
     from app.api.mcp_oauth_connect import CONNECT_ERROR_FALLBACK, CONNECT_ERROR_MESSAGES
 
     error_code = request.query_params.get("connect_error") or ""
     connected = request.query_params.get("connected") or ""
-    if connected and connected not in {s["id"] for s in sources}:
+    if connected and mcp_user_oauth_tokens_repo().get(connected, user["id"]) is None:
         connected = ""
     ctx = _build_context(
         request,

@@ -67,6 +67,8 @@
       </div>
       {% if s.has_secret %}
         <span class="conn-pill conn-pill--on">Connected</span>
+      {% elif s.stored %}
+        <span class="conn-pill conn-pill--off">Expired — reconnect</span>
       {% else %}
         <span class="conn-pill conn-pill--off">Not connected</span>
       {% endif %}
@@ -76,9 +78,13 @@
 
     {% if s.auth_kind == "oauth" %}
     <div class="conn-row">
-      <a class="btn btn-primary btn-sm" href="/api/mcp/sources/{{ s.id }}/oauth/authorize" data-action="oauth-connect">{% if s.has_secret %}Reconnect{% else %}Connect with {{ s.name }}{% endif %}</a>
+      <a class="btn btn-primary btn-sm" href="/api/mcp/sources/{{ s.id }}/oauth/authorize" data-action="oauth-connect">{% if s.stored %}Reconnect{% else %}Connect with {{ s.name }}{% endif %}</a>
       {% if s.has_secret %}
       <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
+      {% endif %}
+      {# Disconnect keys off `stored`, not `has_secret` — a lapsed connection
+         must still be removable (Devin Review on #1130). #}
+      {% if s.stored %}
       <button type="button" class="btn btn-danger btn-sm" data-action="oauth-disconnect">Disconnect</button>
       {% endif %}
     </div>
