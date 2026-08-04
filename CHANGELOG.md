@@ -39,6 +39,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 - New dev-kit skill `agnes-wayfinder` (`.claude/skills/agnes-wayfinder/`) for efforts whose destination is known but whose route is still fogged in — the phase before `superpowers:writing-plans` has anything to plan. It charts a map (`docs/superpowers/maps/<effort>/map.md`) plus numbered decision tickets, resolved one per session until no decisions remain, then hands off to `writing-plans` → `/agnes-build`. Deliberately markdown-in-repo rather than GitHub issues: the *Issue economy* convention exists to stop exactly this kind of question-dumping into a public tracker, and a map under `docs/brainstorms/` would be gitignored and lost with its checkout. Explicit invocation only — if the steps can already be stated, the map is overhead. Adapted from Matt Pocock's `wayfinder` skill (MIT).
+  The frontier query decides on ticket NUMBERS rather than on the exact shape
+  of the "no dependencies" marker, and counts `claimed` as unfinished — both
+  are the same failure otherwise: a ticket silently leaving the queue while
+  the effort reads as finished.
 
 
 - Vault repositories now share one decrypt path: `SharedSecretsRepository`,

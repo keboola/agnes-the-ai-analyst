@@ -124,7 +124,13 @@ Open, unblocked, unclaimed — lowest number first:
 
 ```bash
 for f in docs/superpowers/maps/<effort>/issues/*.md; do
-  grep -q '^Status: open' "$f" || continue
+  # `claimed` counts as unfinished, not as done. A session that claims a
+  # ticket and stops without resolving it would otherwise drop it from every
+  # later frontier — the effort reads as finished while the question is still
+  # open. Listing it is the recovery: a stale claim is visible and can be
+  # picked up or released.
+  st=$(sed -n 's/^Status: //p' "$f" | head -1 | tr -d '[:space:]')
+  case "$st" in open|claimed) ;; *) continue ;; esac
   # Decide on the NUMBERS, not on the exact shape of the "none" marker. An
   # em-dash equality test made "-", "— " or "none" read as a dependency,
   # whose glob then matched nothing and hid the ticket for good — work
@@ -163,7 +169,10 @@ done
 
 1. Read `map.md` — the low-res view, not every ticket.
 2. Take the first frontier ticket (or the one the user named). **Claim it**:
-   `Status: claimed`, saved, before any work.
+   `Status: claimed`, saved, before any work. If you stop without resolving it,
+   flip it back to `Status: open` — a claim is a marker that someone is on it,
+   not a record that it is handled. The frontier lists claimed tickets for
+   exactly this reason, so a forgotten one is visible rather than lost.
 3. Resolve it. Zoom into related tickets on demand; use the skills *Notes* names.
 4. Record: `## Answer`, `Status: resolved`, gist appended to *Decisions so far*.
 5. Update the map — add newly-surfaced tickets, graduate fog that just became
