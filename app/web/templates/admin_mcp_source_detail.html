@@ -684,6 +684,16 @@ async function renderMyConnection() {
       if (link) link.textContent = "Reconnect";
       const disc = document.getElementById("myconn-oauth-disconnect-btn");
       if (disc) disc.style.display = "";
+    } else if (st.updated_at) {
+      // Stored but no longer usable (expired with no refresh path): still
+      // offer Disconnect so the dead row can be removed (Devin Review on
+      // #1130).
+      el.textContent = "Connection expired — reconnect or disconnect";
+      el.style.color = "#b45309";
+      const link = document.getElementById("myconn-oauth-connect-link");
+      if (link) link.textContent = "Reconnect";
+      const disc = document.getElementById("myconn-oauth-disconnect-btn");
+      if (disc) disc.style.display = "";
     } else {
       el.textContent = "Not connected — Introspect will run without your credential";
       el.style.color = "#b45309";
