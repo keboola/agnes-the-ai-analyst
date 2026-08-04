@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -327,6 +328,19 @@ class LiveSession:
     # trades that for a narrow at-most-once window across an ownership
     # change — see _inbound_consumer_loop's seeding comment.
     inbound_last_seq: int = 0
+
+
+def _approval_attended(live: "LiveSession") -> bool:
+    """True when some attached sink can actually answer an approval request.
+
+    Attendance is a property of the sinks attached RIGHT NOW, not of the
+    session's origin surface and not of the moment a request was raised — so
+    it is derived here on every read rather than trusted from a frame's stamp.
+    The web WebSocket wrapper is the only transport that both draws the card
+    and carries a decision back; everything else is push-only until it
+    implements both halves.
+    """
+    return any(getattr(e.sink, "supports_approvals", False) for e in live.sinks)
 
 
 class ChatManager:
@@ -889,7 +903,12 @@ class ChatManager:
         # are separate state precisely because they outlive the turn, so
         # they must be re-sent explicitly rather than ridden along.
         for frame in list(live.pending_approvals.values()):
-            await ws.send_json(frame)
+            # Re-derive `attended` for the replay: the stamp records who was
+            # attached when the request was RAISED, and a Slack bridge seated
+            # later would otherwise post its nudge off a stale False even
+            # though a browser has since attached and is holding the card
+            # (Devin Review on #1157).
+            await ws.send_json({**frame, "attended": _approval_attended(live)})
         for frame in list(live.turn_buffer):
             await ws.send_json(frame)
         if is_primary:
@@ -1647,9 +1666,10 @@ class ChatManager:
         for frame in list(live.turn_buffer):
             await sink.send_json(frame)
         # …and any approval card still waiting for an answer (separate
-        # state: it outlives the turn it was raised in).
+        # state: it outlives the turn it was raised in), with `attended`
+        # re-derived — see the same replay in _seat_sink.
         for frame in list(live.pending_approvals.values()):
-            await sink.send_json(frame)
+            await sink.send_json({**frame, "attended": _approval_attended(live)})
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
         # Sent directly to this one sink (not _broadcast), so it needs its
         # own stamp (wave-2F task 2). The history-replay frames above are
@@ -1815,6 +1835,13 @@ class ChatManager:
             # Which agent engine drives the session (app/chat/harness.py
             # seam; boot-validated against APPROVED_HARNESSES).
             "AGNES_HARNESS": getattr(self._config, "harness", "claude-code"),
+            # The gate is armed on every surface now — this stays only as the
+            # operator kill-switch `docs/cloud-chat.md` documents. The runner
+            # reads it from its own environment, and the sandbox environment is
+            # exactly this dict (the host's is not merged in), so dropping the
+            # entry would have left the switch unsettable anywhere while the
+            # docs still advertised it (Devin Review on #1157).
+            "AGNES_APPROVALS": "on" if self._config.approvals_enabled else "off",
             # Opt-in: bootstrap the user's marketplace plugins into the sandbox
             # at spawn and load them via setting_sources. Off by default (adds
             # per-spawn latency; only useful once the marketplace ships real
@@ -1966,7 +1993,7 @@ class ChatManager:
                 # whether someone is already looking at a card: the Slack
                 # bridge posts its "approve this on the web" nudge only when
                 # nobody is.
-                frame["attended"] = any(getattr(e.sink, "supports_approvals", False) for e in live.sinks)
+                frame["attended"] = _approval_attended(live)
             await self._broadcast(live, frame)
             ftype = frame.get("type")
             # Accumulate in-flight turn frames for mid-turn replay and partial
@@ -1984,8 +2011,29 @@ class ChatManager:
                     live.pending_approvals[rid] = frame
             elif ftype == "approval_resolved":
                 live.pending_approvals.pop(frame.get("request_id"), None)
-            if ftype == "approval_request" and not frame.get("attended"):
-                await self._resolve_if_unattended(live, frame)
+            if ftype == "approval_request":
+                # `attended` is stamped BEFORE the fan-out (the frame_seq
+                # contract wants one envelope for every sink), but _broadcast
+                # is also where a dead sink is discovered: a browser that
+                # dropped without a clean close — sleeping laptop, lost mobile
+                # network — is still in live.sinks at stamp time, so the
+                # request went out marked attended, the Slack nudge stayed
+                # quiet, and the very same fan-out then pruned the sink. The
+                # command stalled for the full timeout with nothing said
+                # anywhere. Re-derive afterwards and correct the record
+                # (Devin Review on #1157).
+                if frame.get("attended") and not _approval_attended(live):
+                    frame["attended"] = False
+                    rid = frame.get("request_id")
+                    if rid:
+                        live.pending_approvals[rid] = frame
+                    for entry in list(live.sinks):
+                        poster = getattr(entry.sink, "_post_approval_request", None)
+                        if poster is not None:
+                            with contextlib.suppress(Exception):
+                                await poster(frame)
+                if not frame.get("attended"):
+                    await self._resolve_if_unattended(live, frame)
             if ftype == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
