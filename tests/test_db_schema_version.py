@@ -1220,3 +1220,29 @@ def test_the_agents_exemption_is_real():
     cols = {r[1] for r in conn.execute("PRAGMA table_info('agents')").fetchall()}
     assert {"greeting", "knowledge", "plugins", "role", "status", "surfaces", "tone"} <= cols
     conn.close()
+
+
+def test_add_column_default_reaches_pre_existing_rows():
+    """Pins what the heals may assume about ADD COLUMN ... DEFAULT.
+
+    `src/db.py` asserted both ways: one comment said a pre-existing row reads
+    NULL and the default applies only to inserts, while several heals add a
+    column with a DEFAULT and no backfill and let read paths filter on the
+    value (`data_apps.is_draft = FALSE` hides an app if it reads NULL). Only
+    one of those can be true, so it is measured here rather than argued
+    (Devin Review on #1158).
+    """
+    import duckdb as _d
+
+    conn = _d.connect(":memory:")
+    conn.execute("CREATE TABLE t (id VARCHAR)")
+    conn.execute("INSERT INTO t VALUES ('pre-existing')")
+    conn.execute("ALTER TABLE t ADD COLUMN IF NOT EXISTS enum_col VARCHAR DEFAULT 'none'")
+    conn.execute("ALTER TABLE t ADD COLUMN flag_col BOOLEAN DEFAULT FALSE")
+    conn.execute("ALTER TABLE t ADD COLUMN no_default TIMESTAMP")
+
+    row = conn.execute("SELECT enum_col, flag_col, no_default FROM t WHERE id='pre-existing'").fetchone()
+    assert row[0] == "none", "a DEFAULT must reach rows that predate the column"
+    assert row[1] is False, "…for BOOLEAN too — is_draft = FALSE filters on it"
+    assert row[2] is None, "…and a column with no DEFAULT still reads NULL"
+    conn.close()

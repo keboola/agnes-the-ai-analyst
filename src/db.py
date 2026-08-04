@@ -7041,9 +7041,13 @@ def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP")
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_by VARCHAR")
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_note TEXT")
-    # A row that predates the columns reads NULL, not the DEFAULT — the default
-    # only applies to inserts. Normalize so every read path can treat these as
-    # non-null enums.
+    # Backfill deliberately, even though it looks redundant. DuckDB (measured
+    # on 1.5.2) DOES apply an ADD COLUMN default to pre-existing rows, so these
+    # UPDATEs are no-ops today — this comment used to claim the opposite, and a
+    # wrong belief about it is what makes the next heal author guess. Keeping
+    # them costs one no-op statement and removes the guess: a column added with
+    # no DEFAULT still reads NULL, and nothing here should depend on which
+    # engine version normalises what (Devin Review on #1158).
     conn.execute("UPDATE store_entities SET publisher_kind = 'user' WHERE publisher_kind IS NULL")
     conn.execute("UPDATE store_entities SET verification_state = 'none' WHERE verification_state IS NULL")
 
