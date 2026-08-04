@@ -2536,13 +2536,21 @@ class ChatManager:
         (services.slack_bot.events), so without this the runner's replies
         for a Slack-surfaced session silently stop reaching Slack.
 
-        ``web_base`` comes from ``SERVER_URL`` (the deployment's public
-        URL) — falling back to no Continue-on-web button when unset, which
-        matches SlackSinkBridge's own empty-``web_base`` behavior. Import
+        ``web_base`` comes from :func:`app.instance_config.get_public_url` —
+        the same resolution (``PUBLIC_URL`` env > ``server.public_url`` in
+        instance.yaml) the ordinary Slack DM/mention path uses via
+        ``app.state.public_url``. This path used to read ``SERVER_URL``
+        directly, so a deployment configuring only ``server.public_url`` got a
+        Continue-on-web button everywhere EXCEPT here (Devin Review on #1157);
+        ``SERVER_URL`` stays as a fallback so deployments setting only it keep
+        working. Unset still degrades to no button, matching
+        SlackSinkBridge's own empty-``web_base`` behavior. Import
         is lazy + guarded so a deployment without the Slack extras
         installed degrades to a logged skip, never a crash in the consumer
         loop. Best-effort by design: idempotent per (session, channel).
         """
+        from app.instance_config import get_public_url
+
         channel = (slack_origin or {}).get("channel") or ""
         if not channel:
             return
@@ -2559,7 +2567,7 @@ class ChatManager:
             thread_ts=(slack_origin or {}).get("thread_ts") or "",
             chat_id=live.chat_id,
             owner=live.user_email,
-            web_base=os.environ.get("SERVER_URL", "").rstrip("/"),
+            web_base=(get_public_url() or os.environ.get("SERVER_URL", "").rstrip("/")),
         )
         live.sinks.append(SinkEntry(participant_email=live.user_email, sink=sink))
         logger.info("re-established Slack sink for %s (channel %s) on forwarded message", live.chat_id, channel)

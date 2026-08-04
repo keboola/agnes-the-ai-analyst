@@ -3957,3 +3957,45 @@ def test_a_rebuilt_slack_bridge_learns_about_a_pending_card(manager: ChatManager
         assert cards, "the rebuilt bridge never heard about the pending card"
 
     asyncio.run(_run())
+
+
+def test_the_rebuilt_slack_bridge_uses_the_documented_public_url(manager: ChatManager, monkeypatch):
+    """`_ensure_slack_sink` read SERVER_URL directly while the ordinary Slack
+    DM/mention path takes web_base from `get_public_url()` (PUBLIC_URL env >
+    server.public_url). A deployment configuring only the yaml key got a
+    Continue-on-web button everywhere EXCEPT this path — and the no-link nudge
+    then named the wrong knob to fix (Devin Review on #1157)."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+
+        seen = {}
+
+        class Bridge:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+            async def send_json(self, frame):
+                pass
+
+        import services.slack_bot.sink as sink_mod
+
+        original = sink_mod.SlackSinkBridge
+        sink_mod.SlackSinkBridge = Bridge
+        monkeypatch.delenv("SERVER_URL", raising=False)
+        monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+        try:
+            await manager._ensure_slack_sink(live, {"channel": "C1", "thread_ts": None})
+        finally:
+            sink_mod.SlackSinkBridge = original
+
+        assert seen.get("web_base") == "https://agnes.example.com", (
+            "the rebuilt bridge ignored the documented public-URL resolution"
+        )
+
+    asyncio.run(_run())

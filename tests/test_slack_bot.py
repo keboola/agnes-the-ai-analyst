@@ -1014,4 +1014,4 @@ def test_the_nudge_does_not_promise_a_web_link_it_cannot_build(monkeypatch):
 
     assert sent, "no reply was posted"
     assert "open the chat on the web" not in sent[0].lower(), "promised a link it cannot build"
-    assert "SERVER_URL" in sent[0], "should say what an operator must fix"
+    assert "PUBLIC_URL" in sent[0], "should name the knob that actually feeds this bridge"

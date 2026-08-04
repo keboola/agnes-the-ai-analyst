@@ -161,7 +161,8 @@ class SlackSinkBridge:
         else:
             lines.append(
                 "This deployment has no public web URL configured, so there is nowhere to answer it — "
-                "it will be denied when it times out. Ask an operator to set SERVER_URL."
+                "it will be denied when it times out. Ask an operator to set PUBLIC_URL "
+                "(or server.public_url in instance.yaml)."
             )
         text = "\n".join(lines)
         link = continue_on_web_block(web_base=self._web_base, chat_id=self._chat_id)
