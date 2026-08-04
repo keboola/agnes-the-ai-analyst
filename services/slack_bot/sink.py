@@ -151,7 +151,18 @@ class SlackSinkBridge:
             lines.append("```{}```".format(command[:400].replace("`", "'")))
         if reason:
             lines.append(reason)
-        lines.append("Open the chat on the web to allow or deny it; it expires on its own if nobody answers.")
+        # Only promise a web hand-off when there IS one. Without a configured
+        # public URL `continue_on_web_block` returns None, and telling someone
+        # to "open the chat on the web" with no link is an instruction they
+        # cannot act on — they then wait out the full approval timeout. Say
+        # what will actually happen instead (Devin Review on #1157).
+        if self._web_base:
+            lines.append("Open the chat on the web to allow or deny it; it expires on its own if nobody answers.")
+        else:
+            lines.append(
+                "This deployment has no public web URL configured, so there is nowhere to answer it — "
+                "it will be denied when it times out. Ask an operator to set SERVER_URL."
+            )
         text = "\n".join(lines)
         link = continue_on_web_block(web_base=self._web_base, chat_id=self._chat_id)
         if link is None:

@@ -63,7 +63,7 @@ Every flag resolver in the codebase (`get_studio_enabled`,
 sites) delegates to this function — nothing re-derives the truthy-string
 rule or the env-over-yaml order by hand.
 
-One exception, by necessity rather than choice: `app.chat.config.load_chat_config`
+Two exceptions, by necessity rather than choice: `app.chat.config.load_chat_config`
 parses a *caller-supplied* `instance.yaml` path, not the process-global merged
 config `get_value()` reads from. Its `chat.enabled` resolution therefore reuses
 only the shared truthy-parsing primitive (`app.instance_config.coerce_flag_value`)
@@ -78,6 +78,15 @@ the `/admin/server-config` editor (which writes the overlay) or the
 `AGNES_CHAT_ENABLED` env var. The `/admin/server-config` flag inventory resolves
 its `chat` row from the same overlay-only source the runtime uses, so the panel
 always reflects what the app actually does.
+
+`chat.approvals_enabled` (the `chat_approvals` flag) is the second exception,
+for the same reason and with the same consequences: the chat gate reads it off
+`load_chat_config`, so setting it in the static base config alone has no effect
+— use the `/admin/server-config` editor or `AGNES_CHAT_APPROVALS_ENABLED`. Both
+flags resolve their panel row through `_chat_flag_runtime_view`
+(`app/api/admin.py`), which is keyed off a `{flag name: ChatConfig attribute}`
+map — a third chat-resolved flag belongs in that map, or the panel will report a
+value the runtime does not use.
 
 ## The registry
 
