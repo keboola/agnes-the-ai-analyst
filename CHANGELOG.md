@@ -43,6 +43,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   of the "no dependencies" marker, and counts `claimed` as unfinished — both
   are the same failure otherwise: a ticket silently leaving the queue while
   the effort reads as finished.
+  A ticket ruled past the destination gets a terminal `out-of-scope` status
+  instead of staying `open` forever, and that status settles a dependency —
+  otherwise the effort could never reach its "nothing left" finish line and
+  anything waiting on the ruled-out question deadlocked. The exit step keeps
+  `issues/` rather than deleting it: the map is an index whose *Decisions so
+  far* links into the tickets, so removing them discarded the only full copy
+  of the reasoning and left the summary pointing at nothing.
 
 
 - Vault repositories now share one decrypt path: `SharedSecretsRepository`,
