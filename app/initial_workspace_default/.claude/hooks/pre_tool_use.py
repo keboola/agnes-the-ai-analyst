@@ -362,7 +362,15 @@ def _split_segments_with_seps(cmd: str) -> list[tuple[str, str]]:
         probe = line if found_hd else ""
         m = re.search(r"<<-?\s*([\"\']?)([A-Za-z_][A-Za-z0-9_]*)\1", probe)
         if m and "<<<" not in probe:
-            heredoc_marker = m.group(2)
+            # The body is data ONLY if the receiving program does not execute
+            # it. `bash <<EOF … EOF` runs every line, so skipping it let the
+            # floor rules — which are meant to hold regardless of chaining —
+            # be avoided by writing the same command inside a heredoc
+            # (review finding on #1141).
+            recipient = _unwrap(_tokens(line))
+            feeds_a_shell = bool(recipient) and _basename(recipient[0]) in _SHELLS
+            if not feeds_a_shell:
+                heredoc_marker = m.group(2)
         if not line.strip():
             continue
         try:
