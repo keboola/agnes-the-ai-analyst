@@ -24,6 +24,7 @@ template upload time if absent).
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import shlex
@@ -294,6 +295,11 @@ def _has_unquoted_heredoc(line: str, *, in_single: bool = False, in_double: bool
     # blanking the first left `((1<<N))` opening a phantom heredoc that
     # swallowed every later line (review finding on #1141).
     line = _blank_arithmetic(line)
+    # `let x=1<<n` and `x=$((…))`-free shifts are arithmetic too, just
+    # without the parentheses _blank_arithmetic keys on. A `<<` whose left
+    # side ends in a digit or identifier character is a shift, not a marker.
+    # No whitespace either side: `1<<n` is a shift, `cat <<EOF` is a marker.
+    line = re.sub(r"(?<=[0-9A-Za-z_])<<(?=[0-9A-Za-z_])", " SHIFT ", line)
     found = False
     i = 0
     while i < len(line):
@@ -312,7 +318,8 @@ def _has_unquoted_heredoc(line: str, *, in_single: bool = False, in_double: bool
     return found, in_single, in_double
 
 
-def _split_segments_with_seps(cmd: str) -> list[tuple[str, str]]:
+@functools.lru_cache(maxsize=16)
+def _split_segments_with_seps(cmd: str) -> tuple[tuple[str, str], ...]:
     """Split a command line into independently-scanned shell segments.
 
     Quote-AWARE: a plain ``re.split`` on ``[;&|\n]`` tears a quoted argument
@@ -337,6 +344,11 @@ def _split_segments_with_seps(cmd: str) -> list[tuple[str, str]]:
     # lines as ONE command, so joining them first keeps a deletion or
     # download written across two lines recognizable (review on #1141).
     joined = re.sub(r"\\\n", " ", cmd)
+    # Backticks are command substitution just like `$(...)`, but they glue
+    # the inner command into one token so its head is never seen. Turning
+    # them into whitespace exposes the inner command to the same rules
+    # (review finding on #1141).
+    joined = joined.replace("`", " ")
     # Newlines then split: shlex treats them as ordinary whitespace, so they
     # would never produce a boundary and every line after the first would be
     # read as arguments of the first command.
@@ -419,7 +431,7 @@ def _split_segments_with_seps(cmd: str) -> list[tuple[str, str]]:
         if current:
             segments.append((" ".join(current), pending_sep))
             pending_sep = ""
-    return segments
+    return tuple(segments)
 
 
 def _split_segments(cmd: str) -> list[str]:
@@ -427,11 +439,23 @@ def _split_segments(cmd: str) -> list[str]:
     return [seg for seg, _ in _split_segments_with_seps(cmd)]
 
 
-def _tokens(seg: str) -> list[str]:
+@functools.lru_cache(maxsize=64)
+def _tokens_cached(seg: str) -> tuple[str, ...]:
     try:
-        return shlex.split(seg)
+        return tuple(shlex.split(seg))
     except ValueError:
-        return seg.split()
+        return tuple(seg.split())
+
+
+def _tokens(seg: str) -> list[str]:
+    """Tokens for one segment.
+
+    Cached: every rule re-derives them from the same text, and each parse is
+    superlinear in the length of a single token — a 400k-character argument
+    cost ~7s across the repeated parses, past the CLI's 10s hook timeout,
+    which makes the hook not run at all (review finding on #1141).
+    """
+    return list(_tokens_cached(seg))
 
 
 def _basename(tok: str) -> str:
@@ -688,9 +712,26 @@ def _bare_hosts(toks: list[str]) -> list[str]:
     return hosts
 
 
+#: Above this, the command is not parsed. shlex is superlinear in the length
+#: of a single token, so a multi-hundred-kilobyte argument pushed the scan
+#: past the CLI's 10s hook timeout — and a hook that times out does not run,
+#: which fails OPEN. Refusing to vouch for input we cannot inspect is the
+#: only honest answer (review finding on #1141).
+_MAX_SCAN_CHARS = 100_000
+
+
 def _scan(cmd: str) -> list[tuple[str, str]]:
     """Collect every (decision, reason) the command trips, across segments."""
     verdicts: list[tuple[str, str]] = []
+
+    if len(cmd) > _MAX_SCAN_CHARS:
+        return [
+            (
+                "ask",
+                f"Command is {len(cmd)} characters — too large for the policy hook to inspect "
+                f"(limit {_MAX_SCAN_CHARS}). Confirm with the user, or split it into smaller steps.",
+            )
+        ]
 
     # Whole-command checks first: these patterns span segment separators
     # (`:|:&` contains `&`, pipe-to-shell contains `|`) or live inside
