@@ -145,3 +145,46 @@ def test_no_env_var_falls_through_to_yaml(tmp_path: Path, monkeypatch):
     y = tmp_path / "instance.yaml"
     y.write_text("chat:\n  enabled: true\n")
     assert load_chat_config(y).enabled is True
+
+
+def test_approvals_kill_switch_uses_the_shared_truthy_rule(tmp_path: Path):
+    """`bool("false")` is True, so a plain truth test would read a quoted YAML
+    value — or one produced by an env-substituted template — as "on" and leave
+    approvals armed for an operator who asked for them off. Every boolean
+    config value in Agnes goes through coerce_flag_value
+    (docs/feature-flags.md) (Devin Review on #1157)."""
+    for written, expected in (
+        (None, True),
+        ("false", False),
+        ('"false"', False),
+        ("off", False),
+        ('"0"', False),
+        ("true", True),
+    ):
+        yaml = tmp_path / "instance.yaml"
+        body = "instance_name: test\nchat:\n  enabled: true\n"
+        if written is not None:
+            body += f"  approvals_enabled: {written}\n"
+        yaml.write_text(body)
+        assert load_chat_config(yaml).approvals_enabled is expected, written
+
+
+def test_the_approvals_env_override_is_honoured(tmp_path: Path, monkeypatch):
+    """The registry and docs advertise AGNES_CHAT_APPROVALS_ENABLED, and
+    /admin/server-config resolves flags env-first — so reading only the YAML
+    left the documented switch inert AND the admin panel reporting a value the
+    running gate does not honour (Devin Review on #1157)."""
+    from app.chat.config import load_chat_config
+
+    yaml = tmp_path / "instance.yaml"
+    yaml.write_text("instance_name: test\nchat:\n  enabled: true\n  approvals_enabled: true\n")
+
+    monkeypatch.setenv("AGNES_CHAT_APPROVALS_ENABLED", "0")
+    assert load_chat_config(yaml).approvals_enabled is False, "env must win over the yaml value"
+
+    monkeypatch.setenv("AGNES_CHAT_APPROVALS_ENABLED", "true")
+    yaml.write_text("instance_name: test\nchat:\n  enabled: true\n  approvals_enabled: false\n")
+    assert load_chat_config(yaml).approvals_enabled is True
+
+    monkeypatch.delenv("AGNES_CHAT_APPROVALS_ENABLED")
+    assert load_chat_config(yaml).approvals_enabled is False, "…and the yaml stands when env is unset"

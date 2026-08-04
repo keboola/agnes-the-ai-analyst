@@ -227,10 +227,28 @@ tool call, emits an `approval_request` frame (web chat renders an
 Allow once / Allow for session / Deny card; co-drive participants may
 answer too), and resolves to allow or deny from the user's
 `approval_decision`. No answer within `chat.approval_timeout_seconds`
-(default 300), a Stop, or a surface that cannot prompt (runner env
-`AGNES_APPROVALS=off`) all resolve to deny. Slack surfaces currently
-see the pause + timeout-deny only — interactive Slack approval buttons
-are a follow-up.
+(default 300), a Stop, or the operator kill-switch (`chat.approvals_enabled:
+false`, which the manager passes to the sandbox as `AGNES_APPROVALS=off`) all
+resolve to deny. Set it in `instance.yaml`, not in the server's own
+environment: the sandbox environment is built by the manager and the host's is
+not merged in.
+
+The gate is armed on every surface. Whether a given request can be
+answered is decided per request, at the manager's fan-out, from the
+sinks attached at that moment — the web WebSocket's `GapReplayGate` is
+the only sink that both renders the card and carries a decision back
+(`supports_approvals`), so a new sink is assumed unable to approve until
+it implements both halves. A session with no such sink attached keeps
+the request pending for the full timeout, because one can still arrive:
+a chat started in Slack and opened through the "Continue on web" deep
+link replays the pending card out of `turn_buffer` and can approve it
+normally. Slack renders no buttons of its own, so the bridge posts the
+command, the reason, and the Continue-on-web button when nobody is
+holding the card, and reports the outcome afterwards. The exception is
+`Surface.API`: an agent-API session has a `HeadlessSink`/`StreamingSink`
+by construction and a program, not a person, on the other end, so its
+requests resolve immediately to a deny that explains why rather than
+stalling the caller for 300 s.
 
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.
@@ -269,7 +287,8 @@ trim local files.
 - **Bundled workspace ships no sub-agents.** `app/initial_workspace_default/.claude/agents/` is empty. Sub-agent dispatch (Task tool) requires the operator to install marketplace plugins that ship `agnes-*.md` agent definitions; without them the chat agent will answer directly without sub-agent delegation. The E2E test `tests/e2e/test_sub_agent_dispatch.py::F.9` auto-skips when no agents are present in the workspace.
 - **`ANTHROPIC_API_KEY` + `E2B_API_KEY` + `chat.e2b_template_id` are gate-checked at startup.** Any missing value refuses chat with a clear log line.
 - **Egress is enforced at the VM level**, not by the in-sandbox hook. `E2BProvider.spawn` passes `network={"allow_out": …, "deny_out": [ALL_TRAFFIC]}`, so everything outside `chat.egress_allow_out` (default: the Agnes host, loopback, `api.anthropic.com`, `api.github.com`) is blocked by the platform. The workspace `PreToolUse` hook is defense-in-depth only: it is fail-open, inspects Bash alone, and is a workspace file the agent could rewrite — the VM-level deny-list survives its removal. (This supersedes the original Q4 fail-open decision.)
-- **Approvals follow the session's ORIGIN surface, not where it is currently open.** `AGNES_APPROVALS` is fixed when the sandbox spawns, from `session.surface`. A chat started in Slack and later opened through the "Continue on web" deep link (`/chat?session=…`) therefore still refuses `ask`-flagged commands, even though the approve/deny card would render in that browser. Deliberate for now — making it dynamic means moving the "can anyone answer this?" decision from spawn-time env to request-time sink routing. Start the task in a web chat if it needs confirmable commands.
+- **A "Continue on web" click that lands on another replica loses the pending approval.** `attach()` resolves a session owned by a different gateway through a claim-then-respawn takeover, and a fresh runner has no memory of the suspended tool call — the old sandbox's gate dies with it. The user sees the turn restart rather than the card. Single-replica deployments are unaffected; on a multi-replica one, answer from a browser attached to the owning gateway (or just re-ask).
+- **Slash-command sessions get no approval nudge of their own.** `EphemeralCommandSink` posts to a `response_url` and carries no `chat_id`/`web_base` to build a deep link from, so it stays silent on `approval_request`. In practice those sessions also carry a `SlackSinkBridge`, which does post the nudge.
 - **The approval gate matches `Bash` tool calls only.** The bundled workspace hook returns `allow` for every non-Bash tool, so no policy is lost as shipped. An operator override that adds `ask` rules for `Write`/`Edit`/`WebFetch` would find them inert in cloud chat until the SDK hook matcher (`app/chat/runner.py`) is widened past `Bash` — a deliberate scope choice (gating every `Read`/`Write` through a per-call file-hook subprocess adds real latency).
 - **`audit_log.user_id` for chat rows holds the user email, not the user UUID.** Joining `audit_log` to `users` for chat events requires `audit_log.user_id = users.email` for `action LIKE 'chat.%'` and the usual `audit_log.user_id = users.id` for everything else. Documented in `app/chat/audit.py::write_audit`.
 - **`_real_agent_loop` enforces a turn-level wall-clock cap, not per-tool.** `claude-agent-sdk` 0.2.x doesn't expose per-tool dispatch hooks; the runner enforces `tool_calls_per_turn_budget` and a turn-level timeout instead of per-tool granularity. Revisit when the SDK ships per-tool hooks.
