@@ -842,7 +842,12 @@ What would you like to do?
     document.querySelectorAll('.os-tab[data-os-tab]').forEach(function (tab) {
         tab.addEventListener('click', function () {
             var target = tab.getAttribute('data-os-tab');
-            var scope = tab.closest('.install-block') || document;
+            // Page-wide on purpose: the OS tabs repeat per step, but the OS
+            // does not change between steps — and Step 4's command is masked,
+            // so a stale per-step default (bash for a Windows user) would be
+            // invisible until the pasted line fails in PowerShell. One click
+            // anywhere selects the OS everywhere.
+            var scope = document;
             scope.querySelectorAll('.os-tab[data-os-tab]').forEach(function (t) {
                 var on = t.getAttribute('data-os-tab') === target;
                 t.classList.toggle('is-active', on);
