@@ -21,7 +21,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-- MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
+- MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars. Parameters whose valid values were documented only in the `Args:` prose now carry them in the type hint (`Literal[…]`), so the constraint reaches the wire as JSON-schema enum rather than being lost with the trimmed description — a caller that never fetches `tool_docs` still cannot guess them wrong.
 - MCP: `query` and `describe` (plus CLI `query_local`) refuse responses whose serialized size exceeds `AGNES_MCP_MAX_OUTPUT_CHARS` (default 100 000; `0` disables) with actionable narrowing guidance, instead of returning megabyte payloads into the model's context. Row-level `limit`/`truncated` semantics are unchanged.
 
 ### Fixed
