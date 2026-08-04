@@ -15,6 +15,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Two pages that shipped with no way to reach them from the UI. The agent
+  builder (`/agents`) now has a **My agents** entry in the user dropdown —
+  a per-user resource list, so it sits next to *My connections* rather than in
+  the primary nav or the admin menu — and the token-based editor setup page
+  (`/mcp-connect`) is linked from the AI Connector page as the fallback for
+  clients that can't complete the browser sign-in. Both also gained Cmd/Ctrl-K
+  palette entries, and `tests/test_web_nav_agents.py` guards the links so the
+  pages can't go unreachable again (same bug class as #919's
+  `/me/connections`). The **News** page (`/news`) joins the palette too:
+  its only link was /home's news strip, which needs both a published version
+  and an instance whose `home_route` is `/home`, so on the `/dashboard` default
+  non-admins had no way in. The new-web-page playbook now carries a "wire an
+  inbound link" step — a route alone is not a shipped page.
+  `/news` gets a dropdown entry too: its other two entry points are both
+  conditional — /home's "What's new" strip needs a published version AND
+  `home_route == '/home'`, and the command palette initializes only when the
+  admin menu is in the DOM — so on the `/dashboard` default a non-admin could
+  not reach it at all.
+
 
 ### Removed
 
@@ -151,7 +170,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
-- Repointing an OAuth source's endpoints no longer keeps the previous
   provider's client secret. Retention of the stored secret and registration
   access token was keyed on `client_id` alone while the token purge compared
   the whole `(issuer, authorization_endpoint, token_endpoint, client_id)`

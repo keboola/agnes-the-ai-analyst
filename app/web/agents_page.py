@@ -46,6 +46,13 @@ def _memories_for_panel(agent_id: str) -> list[dict]:
     return [{**m, "in_budget": (m["id"] in in_budget_ids) if m["status"] == "active" else None} for m in memories]
 
 
+# Entry points: "My agents" in the user dropdown
+# (`app/web/templates/_app_header.html`) plus a Cmd/Ctrl-K palette entry — a
+# per-user resource list, so deliberately not primary nav and not the admin
+# mega-menu (instance-level agent authoring is Studio's /admin/studio/agent).
+# Both links are guarded by `tests/test_web_nav_agents.py`; don't drop them.
+# Kept as a comment rather than a docstring: FastAPI copies docstrings into the
+# OpenAPI description, and internal nav notes don't belong in the public schema.
 @router.get("/agents", response_class=HTMLResponse)
 async def agents_page(request: Request, user: dict = Depends(get_current_user)):
     rows = agents_repo().list_for_user(user["id"])
