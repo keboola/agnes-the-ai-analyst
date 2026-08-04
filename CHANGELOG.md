@@ -21,6 +21,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+- `aiohttp` floor raised to `>=3.14.3`, clearing three upstream advisories:
+  an out-of-bounds heap read in the C HTTP response parser's error path
+  (high, GHSA-cq5v-8q36-5273), HTTP request smuggling via a WebSocket upgrade
+  (GHSA-mfx4-hv73-q22v), and a WebSocket client accepting compressed frames
+  without a negotiated extension (GHSA-mq44-7p77-q5h7). The two WebSocket ones
+  reach the `slack-socket` extra directly — the Socket Mode client is an
+  aiohttp WebSocket client — which is why the floor moves rather than only the
+  lock: a fresh install must not be able to resolve back to a vulnerable
+  release.
+
 
 ## [0.78.0] - 2026-08-04
 
