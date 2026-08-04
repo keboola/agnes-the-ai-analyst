@@ -134,6 +134,12 @@ from the queue (see mode 2 step 2).
 # the list is a nuisance; a lost one is the failure this skill exists to catch.
 M=docs/superpowers/maps/<effort>/issues
 for f in "$M"/*.md; do
+  # An unmatched glob stays literal in POSIX shells, so on a map with no
+  # tickets yet `$f` is the pattern itself. Skipping a non-existent path is
+  # the one place "cannot read it" must NOT list: the rule below is about
+  # tickets that exist, and a freshly charted map has no outstanding work to
+  # invent.
+  [ -e "$f" ] || continue
   # `claimed` is unfinished, not done: a session that took a ticket and stopped
   # must not remove it from the queue (mode 2 step 2).
   st=$(sed -n 's/^Status: //p' "$f" | head -1 | tr -d '[:space:]')
