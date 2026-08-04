@@ -11,6 +11,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.78.0] - 2026-08-04
+
+### Added
 - Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
   behavior yet): schema v109 adds `mcp_source_oauth_clients`,
   `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
