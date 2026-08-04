@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.78.0"
+version = "0.78.1"
 description = "Agnes — self-hosted AI harness for organizations: governed data access, agents as an API, skills marketplace, corporate memory, hosted data apps, and agent surfaces (web chat, Slack, MCP, CLI)"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -239,7 +239,16 @@ slack-socket = [
     # services/slack_bot/socket_mode_client.py) needs aiohttp at runtime;
     # slack_sdk does NOT pull it in, so Socket Mode fail-closed with
     # `ModuleNotFoundError: No module named 'aiohttp'` until it is declared here.
-    "aiohttp>=3.9",
+    "aiohttp>=3.14.3",
+]
+telegram = [
+    # services/telegram_bot/bot.py imports `from aiohttp import web` at module
+    # scope — unconditionally, unlike the Slack client's lazy import — so this
+    # is a hard requirement, not a fail-closed one. It used to work only
+    # because the shipped image installs [slack-socket] alongside, which
+    # happens to pull aiohttp in: an operator installing [server] and running
+    # only the Telegram bot got ImportError at startup (Devin Review on #1163).
+    "aiohttp>=3.14.3",
 ]
 distribution = [
     # S3-compatible client for signed-URL distribution (three-plane wave
@@ -302,6 +311,12 @@ dev = [
     # above (mirrored here so `.[dev]` — what CI installs — pulls it in
     # too; see the matching entry in `[tool.uv] dev-dependencies` below).
     "boto3>=1.34",
+    # aiohttp for tests/test_telegram_bot.py — that module imports
+    # `from aiohttp import web` at module scope, so without this the test file
+    # skips through its guarded import and the very ImportError the `telegram`
+    # extra exists to prevent goes untested in CI. Same reasoning, and the same
+    # mirroring, as the boto3 entry above.
+    "aiohttp>=3.14.3",
 ]
 
 [project.scripts]
@@ -364,6 +379,10 @@ dev-dependencies = [
     "pixeltable-pgserver>=0.5.1",
     "fakeredis>=2.20",
     "boto3>=1.34",
+    # Mirrors the dev extra above — without it a `uv sync` environment still
+    # skips tests/test_telegram_bot.py, which is the case the telegram extra
+    # exists to catch.
+    "aiohttp>=3.14.3",
 ]
 # Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
 # hasn't relaxed it as of 2026-05-12 but the SDK works fine against
