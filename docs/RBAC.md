@@ -59,6 +59,22 @@ check), so this is a guard against accidental god-mode use plus an audit
 hook (`admin_elevation_paused`/`admin_elevation_resumed` audit actions),
 not a containment boundary — a paused admin can re-elevate at will.
 
+Scope, precisely: the gate sits in `can_access` and `require_admin`. Surfaces
+that consult Admin membership directly rather than going through those — the
+table/catalog visibility path is the notable one — are unaffected, so a paused
+admin still sees every table. WebSocket routes are unaffected too: the stamping
+middleware is `@app.middleware("http")` and never runs for a `ws` scope, so
+those connections read the contextvar default (elevated). Both cases fail
+toward the historical behavior and neither can grant a non-admin anything.
+Widening the gate to the membership checks is a separate change: several of
+them decide whether to offer the toggle at all.
+
+The pause belongs to the admin who set it. `can_access` is also asked about
+OTHER users (co-drive invites check the invitee), so the request also carries
+whose pause it is — a paused admin's own checks fall through to their grants
+while a question about a colleague is answered from the colleague's own
+permissions.
+
 The instance default is `access.admin_default_elevation: "elevated"`
 (historical behavior); set `"paused"` for consent-first deployments.
 The default applies to **browser sessions only**: Bearer-authenticated

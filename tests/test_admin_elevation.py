@@ -196,3 +196,73 @@ def test_instance_default_paused_is_browser_only(seeded_app, monkeypatch):
     finally:
         c.cookies.delete(elevation.ELEVATION_COOKIE)
         c.cookies.delete("access_token")
+
+
+def test_a_pause_only_applies_to_the_person_who_paused(monkeypatch):
+    """The pause is an admin pausing THEIR OWN god-mode, so it must not answer
+    authorization questions asked about somebody else.
+
+    `can_access` is called about other users — the co-drive invite checks the
+    INVITEE's access, not the caller's — and consulting the caller's pause
+    there told an admin their admin colleague "lacks chat access" while the
+    colleague's own permissions were untouched (Devin Review on #1146).
+    """
+    from app.auth.elevation import (
+        elevation_paused,
+        reset_caller_for_request,
+        reset_for_request,
+        set_caller_for_request,
+        set_paused_for_request,
+    )
+
+    ptok = set_paused_for_request(True)
+    ctok = set_caller_for_request("admin-a")
+    try:
+        assert elevation_paused("admin-a") is True, "the pauser's own checks stay paused"
+        assert elevation_paused("admin-b") is False, "…but a colleague's do not"
+        assert elevation_paused() is True, "no subject keeps the request-scoped meaning"
+    finally:
+        reset_caller_for_request(ctok)
+        reset_for_request(ptok)
+
+
+def test_an_unknown_caller_still_honours_the_pause():
+    """Fail toward less privilege: if nothing stamped the caller, the pause
+    stands rather than being silently discarded."""
+    from app.auth.elevation import elevation_paused, reset_for_request, set_paused_for_request
+
+    tok = set_paused_for_request(True)
+    try:
+        assert elevation_paused("anyone") is True
+    finally:
+        reset_for_request(tok)
+
+
+def test_not_paused_is_never_paused_for_anyone():
+    from app.auth.elevation import elevation_paused
+
+    assert elevation_paused("admin-a") is False
+    assert elevation_paused() is False
+
+
+def test_can_access_ignores_the_pause_when_asked_about_another_admin(system_conn):
+    """End-to-end counterpart: the co-drive invite calls `can_access` about the
+    INVITEE. With the caller stamped, one admin's pause must not answer a
+    question about a different admin (Devin Review on #1146)."""
+    from src.repositories.user_group_members import UserGroupMembersRepository
+
+    admin_gid = system_conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
+    UserGroupMembersRepository(system_conn).add_member("admin2", admin_gid, source="admin")
+
+    ptok = elevation.set_paused_for_request(True)
+    ctok = elevation.set_caller_for_request("admin1")
+    try:
+        assert not access.can_access("admin1", "table", "keboola.ungranted", conn=system_conn), (
+            "the pauser still short-circuits"
+        )
+        assert access.can_access("admin2", "table", "keboola.ungranted", conn=system_conn), (
+            "one admin's pause blocked a check about a different admin"
+        )
+    finally:
+        elevation.reset_caller_for_request(ctok)
+        elevation.reset_for_request(ptok)

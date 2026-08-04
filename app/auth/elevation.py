@@ -33,6 +33,7 @@ default.
 from __future__ import annotations
 
 from contextvars import ContextVar
+from typing import Optional
 
 ELEVATION_COOKIE = "agnes_elevation"
 
@@ -44,6 +45,9 @@ PAUSED = "paused"
 # contexts (scheduler, CLI) and instances that never touch the feature
 # behave exactly as before.
 _elevation_paused: ContextVar[bool] = ContextVar("agnes_elevation_paused", default=False)
+#: Whose pause it is. Stamped once the auth dependency resolves the caller —
+#: the middleware runs before authentication and cannot know it.
+_elevation_caller: ContextVar[Optional[str]] = ContextVar("agnes_elevation_caller", default=None)
 
 
 def default_elevation() -> str:
@@ -88,9 +92,34 @@ def reset_for_request(token) -> None:
     _elevation_paused.reset(token)
 
 
-def elevation_paused() -> bool:
-    """Is the current request's admin elevation paused?
+def set_caller_for_request(user_id: Optional[str]):
+    """Record WHOSE elevation the request-scoped pause belongs to."""
+    return _elevation_caller.set(user_id)
+
+
+def reset_caller_for_request(token) -> None:
+    _elevation_caller.reset(token)
+
+
+def elevation_paused(subject_user_id: Optional[str] = None) -> bool:
+    """Is admin elevation paused for ``subject_user_id`` on this request?
 
     False outside request context by construction (contextvar default).
+
+    The pause is a person pausing THEIR OWN god-mode, so it must only apply to
+    authorization questions asked about that person. ``can_access`` is also
+    called about OTHER users — the co-drive invite checks the invitee's access,
+    not the caller's — and consulting the caller's pause there told an admin
+    their admin colleague "lacks chat access" while the colleague's own
+    permissions were untouched (Devin Review on #1146).
+
+    Passing no subject keeps the old request-scoped meaning, and an unknown
+    caller still honours the pause: it only ever reduces privilege, so the
+    conservative answer is the safe one.
     """
-    return _elevation_paused.get()
+    if not _elevation_paused.get():
+        return False
+    if subject_user_id is None:
+        return True
+    caller = _elevation_caller.get()
+    return caller is None or caller == subject_user_id
