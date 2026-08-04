@@ -99,7 +99,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `client_secret` is now refused at registration time with an actionable
   message: client authentication is selected by secret presence, so such a
   client would have sent none at all and every token exchange and refresh
-  would have failed `invalid_client` with nothing pointing at why. And the
+  would have failed `invalid_client` with nothing pointing at why. The mirror
+  case — a registration the AS records as public that nonetheless returns a
+  secret — has that secret dropped, with a warning, since Basic auth to a
+  public client fails the same way. Together the two make a stored secret
+  present exactly when the AS registered the client as confidential, which is
+  what makes selecting client auth on presence correct at all. And the
   `scope` the AS grants is stored in place of the one requested — recording
   the request would put a scope the client does not hold into the stored row,
   and from there into the authorize URL.

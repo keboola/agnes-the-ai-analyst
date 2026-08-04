@@ -430,13 +430,32 @@ async def register_dynamic_client(
     # and hitting the identical error later with no explanation
     # (Devin Review on #1124).
     effective_auth_method = granted_auth_method or auth_method
-    if effective_auth_method == "client_secret_basic" and not body.get("client_secret"):
+    client_secret = body.get("client_secret")
+    if effective_auth_method == "client_secret_basic" and not client_secret:
         raise OAuthDiscoveryError(
             "authorization server registered the client for 'client_secret_basic' but issued no "
             "client_secret, so no client authentication could ever be sent. Configure the client "
             "manually via PUT …/oauth/client, or use an authorization server that advertises 'none' "
             "for public clients."
         )
+    if effective_auth_method == "none" and client_secret:
+        # The mirror case, and the reason both are worth handling: token calls
+        # select client auth by secret PRESENCE, not by the registered method,
+        # so a stray secret on a public registration would send HTTP Basic to a
+        # client the AS has on file as public — invalid_client, again with
+        # nothing pointing at why. Dropping the secret rather than refusing,
+        # because the registration itself is perfectly usable as what the AS
+        # says it is; loudly, because discarding credential material silently
+        # is its own trap. With both guards the stored secret's presence now
+        # AGREES with the registered method by construction, which is what
+        # makes selecting on presence correct (Devin Review on #1124).
+        logger.warning(
+            "mcp oauth DCR: authorization server registered client %s as public "
+            "(token_endpoint_auth_method='none') yet returned a client_secret; discarding it — "
+            "sending Basic auth to a public client would fail invalid_client",
+            client_id,
+        )
+        client_secret = None
     authorization_endpoint = as_metadata.get("authorization_endpoint")
     token_endpoint = as_metadata.get("token_endpoint")
     if not authorization_endpoint or not token_endpoint:
@@ -450,7 +469,7 @@ async def register_dynamic_client(
     return RegisteredOAuthClient(
         issuer=issuer,
         client_id=client_id,
-        client_secret=body.get("client_secret"),
+        client_secret=client_secret,
         registration_access_token=body.get("registration_access_token"),
         authorization_endpoint=authorization_endpoint,
         token_endpoint=token_endpoint,

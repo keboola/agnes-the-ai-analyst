@@ -787,3 +787,37 @@ def test_the_scope_the_as_granted_wins_over_the_one_requested():
 
     # No `scope` in the response: the requested value stands.
     assert _dcr({"client_id": "abc", "client_secret": "s"}, scopes="read write").scopes == "read write"
+
+
+def test_a_public_registration_that_returns_a_secret_drops_it(caplog):
+    """Mirror of the refusal above, and the reason both matter: token calls
+    select client auth by secret PRESENCE, not by the registered method. A
+    stray secret on a registration the AS recorded as public would send HTTP
+    Basic to a public client — `invalid_client`, with nothing pointing at why.
+
+    Dropped rather than refused, because the registration is perfectly usable
+    as what the AS says it is; logged, because silently discarding credential
+    material is its own trap (Devin Review on #1124).
+    """
+    with caplog.at_level("WARNING"):
+        result = _dcr(
+            {"client_id": "abc", "token_endpoint_auth_method": "none", "client_secret": "stray"},
+        )
+    assert result.client_secret is None
+    assert "discarding" in caplog.text
+
+
+def test_secret_presence_agrees_with_the_registered_method():
+    """The invariant the two guards establish together: after registration, a
+    stored secret exists iff the AS registered the client as confidential — so
+    selecting client auth on presence alone is correct by construction."""
+    assert _dcr({"client_id": "a", "token_endpoint_auth_method": "none"}).client_secret is None
+    assert _dcr({"client_id": "a", "token_endpoint_auth_method": "none", "client_secret": "x"}).client_secret is None
+    assert (
+        _dcr(
+            {"client_id": "a", "token_endpoint_auth_method": "client_secret_basic", "client_secret": "x"}
+        ).client_secret
+        == "x"
+    )
+    with pytest.raises(OAuthDiscoveryError):
+        _dcr({"client_id": "a", "token_endpoint_auth_method": "client_secret_basic"})
