@@ -75,6 +75,39 @@ async def _open_vetted(decision: Decision) -> tuple[asyncio.StreamReader, asynci
     raise OSError(f"no vetted address reachable: {last_exc}")
 
 
+#: Dropped when relaying absolute-form requests: they are hop-by-hop, and
+#: keeping them alive is what lets a client put a second request on a
+#: connection whose destination was authorized for the first one.
+_HOP_BY_HOP = (b"connection", b"proxy-connection", b"keep-alive", b"proxy-authorization")
+
+
+def _relay_headers(rest: bytes) -> tuple[bytes, int, bool]:
+    """Prepare an absolute-form request's headers for the upstream.
+
+    Returns ``(headers, content_length, chunked)``. Hop-by-hop headers are
+    dropped and ``Connection: close`` forced, so the upstream ends the
+    response by closing and the client cannot reuse the socket.
+    """
+    lines = rest.split(b"\r\n")
+    kept, length, chunked = [], 0, False
+    for line in lines:
+        if not line:
+            continue
+        name, _, value = line.partition(b":")
+        key = name.strip().lower()
+        if key == b"content-length":
+            try:
+                length = int(value.strip())
+            except ValueError:
+                length = 0
+        elif key == b"transfer-encoding":
+            chunked = True
+        if key not in _HOP_BY_HOP:
+            kept.append(line)
+    kept.append(b"Connection: close")
+    return b"\r\n".join(kept) + b"\r\n\r\n", length, chunked
+
+
 def _deny_response(reason: str) -> bytes:
     body = f"egress denied: {reason}\n".encode()
     return (
@@ -207,15 +240,43 @@ class EgressProxy:
             await writer.drain()
             writer.close()
             return
-        # Rewrite the request line to origin-form; keep headers verbatim.
+        # Rewrite the request line to origin-form.
         origin_path = split.path or "/"
         if split.query:
             origin_path += "?" + split.query
         first, rest = head.split(b"\r\n", 1)
         _m, _t, version = first.decode("latin-1").split()
-        up_w.write(f"{method} {origin_path} {version}\r\n".encode("latin-1") + rest)
+        headers, body_len, chunked = _relay_headers(rest)
+        if chunked:
+            # A chunked body has no length to bound the forward by, so we
+            # could not tell where it ends and the next request begins.
+            writer.write(_deny_response("chunked request bodies are not supported over the egress proxy"))
+            await writer.drain()
+            writer.close()
+            up_w.close()
+            return
+        up_w.write(f"{method} {origin_path} {version}\r\n".encode("latin-1") + headers)
+
+        # Forward EXACTLY this request's body, then half-close upstream.
+        #
+        # The client→upstream direction must not stay open: HTTP proxy
+        # clients pool per-proxy, not per-destination, so a follow-up
+        # `http://other-host/…` on the same socket used to be piped straight
+        # into the connection opened for the FIRST host — never re-checked
+        # against the allowlist, and carrying that request's cookies and
+        # Authorization header to a host it was never meant for
+        # (Devin Review on #1148). Only the response comes back.
+        remaining = body_len
+        while remaining > 0:
+            chunk = await reader.read(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            up_w.write(chunk)
         await up_w.drain()
-        await asyncio.gather(_pipe(reader, up_w), _pipe(up_r, writer))
+        if up_w.can_write_eof():
+            up_w.write_eof()
+        await _pipe(up_r, writer)
         for w in (up_w, writer):
             try:
                 w.close()

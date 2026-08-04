@@ -142,7 +142,10 @@ class FakeDocker:
 
     def list(self, all=True, filters=None, names=None):
         if names is not None:
-            return [FakeNetwork(n, kw) for n, kw in self.networks_created if n in names]
+            # Docker's `name` filter matches on any PART of the name, so the
+            # fake has to as well or it cannot catch the bug where
+            # `agnes-apps` silently resolves to `agnes-apps-internal`.
+            return [FakeNetwork(n, kw) for n, kw in self.networks_created if any(w in n for w in names)]
         if filters and "label" in filters:
             want = filters["label"]
             want = [want] if isinstance(want, str) else list(want)
@@ -339,6 +342,25 @@ def test_up_refuses_to_reuse_a_non_internal_network(client):
     assert r.status_code == 409
     assert "network_not_internal" in r.json()["detail"]
     assert fake.run_calls == []  # nothing started without the enforcement layer
+
+
+def test_up_does_not_mistake_a_substring_named_network_for_the_real_one(client):
+    """`docker network ls --filter name=X` matches substrings.
+
+    A host that has run allowlist mode has `agnes-apps-internal`; asking
+    for `agnes-apps` used to match it, so the network was never created
+    (every spawn then 502s) and the Internal check ran against a network
+    the sandbox never joins.
+    """
+    c, fake, tmp = client
+    fake.networks_created.append(("agnes-apps-internal", {"driver": "bridge", "internal": True}))
+
+    r = _up(c, tmp, network="agnes-apps")
+
+    assert r.status_code == 200
+    assert ("agnes-apps", {"driver": "bridge"}) in [
+        (n, {"driver": kw.get("driver")}) for n, kw in fake.networks_created
+    ]
 
 
 def test_up_reuses_an_existing_internal_network(client):
