@@ -110,4 +110,5 @@ without grepping the codebase.
 | `studio` | `studio.enabled` | `AGNES_STUDIO_ENABLED` | `true` | Grandfathered — shipped enabled before this convention. |
 | `guardrails` | `guardrails.enabled` | `AGNES_GUARDRAILS_ENABLED` | `true` | Grandfathered. Env override added in #1022 (new, additive). |
 | `chat` | `chat.enabled` | `AGNES_CHAT_ENABLED` | `false` | New feature — off by default. |
+| `chat_approvals` | `chat.approvals_enabled` | `AGNES_CHAT_APPROVALS_ENABLED` | `true` | Operator kill-switch for interactive approval prompts. Off denies ask-flagged tool calls instantly instead of waiting for a human. |
 | `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | New feature — off by default. |

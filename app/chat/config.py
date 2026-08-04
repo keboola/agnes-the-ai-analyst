@@ -224,7 +224,12 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         rate_messages_per_hour=int(raw.get("rate_messages_per_hour", 100)),
         tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
         approval_timeout_seconds=int(raw.get("approval_timeout_seconds", 300)),
-        approvals_enabled=bool(raw.get("approvals_enabled", True)),
+        # coerce_flag_value, not bool(): the shared truthy rule
+        # (docs/feature-flags.md) applies to every boolean config value, and
+        # bool("false") is True — so a quoted YAML value, or one produced by an
+        # env-substituted template, would have read as "on" and left approvals
+        # armed for an operator who asked for them off (Devin Review on #1157).
+        approvals_enabled=coerce_flag_value(raw.get("approvals_enabled"), True),
         marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
         e2b_template_id=raw.get("e2b_template_id") or None,
         egress_allow_out=list(raw.get("egress_allow_out") or []),
