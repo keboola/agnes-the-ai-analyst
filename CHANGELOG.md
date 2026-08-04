@@ -82,6 +82,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
+- `agnes admin mcp source oauth-client` gains `--keep-secret`, and the two
+  commands that read secret material from stdin now say so first. The endpoint
+  has three secret states — replace, clear, leave alone — but the CLI exposed
+  only the first two, so editing the endpoints or scopes of an existing
+  confidential client fell into an unprompted blocking read that is
+  indistinguishable from a hang. The notice goes to stderr and only when stdin
+  is a terminal, so the piped form (`printf %s "$SECRET" | agnes …`) stays
+  byte-clean; `--keep-secret` skips the read entirely and omits the field,
+  which is what the server reads as "keep". Passing it together with
+  `--public-client` is refused rather than silently picking one.
+
 - Dynamic client registration takes the authorization server's answer as
   authoritative on two more fields it was ignoring (RFC 7591 §3.2.1). A
   registration the AS records as `client_secret_basic` while issuing no

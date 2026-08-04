@@ -42,6 +42,25 @@ _console = Console()
 # ---------------------------------------------------------------------------
 
 
+def _read_secret_line(what: str) -> str:
+    """Read one line of secret material from stdin.
+
+    Announces itself on stderr FIRST when stdin is a terminal. Without that an
+    interactive admin sees a command that has simply stopped, with nothing on
+    screen saying it is waiting for them — indistinguishable from a hang
+    (Devin Review on #1124). The notice goes to stderr and only on a TTY, so
+    the piped form (`printf %s "$SECRET" | agnes …`, CI) stays byte-clean.
+
+    ``getpass`` would hide the typing but does not work on a piped stdin,
+    which is the form the help text recommends — so a plain read it is.
+    """
+    import sys
+
+    if sys.stdin.isatty():
+        typer.echo(f"Reading {what} from stdin — type it and press Enter (Ctrl-C to abort):", err=True)
+    return sys.stdin.readline().rstrip("\n")
+
+
 def _fail(resp) -> None:
     """Render a server error and exit non-zero. Mirrors the helper in
     ``admin_data_package.py`` so behaviour is consistent across admin CLIs."""
@@ -367,12 +386,7 @@ def source_set_secret(
     """
     src_id = _resolve_source_id(name_or_id)
     if value is None:
-        # Read one line, strip the trailing newline. ``getpass`` would be
-        # nicer but it doesn't work on a piped stdin (CI / `... | agnes`
-        # patterns), so a plain stdin read it is.
-        import sys
-
-        value = sys.stdin.readline().rstrip("\n")
+        value = _read_secret_line("the secret value")
     if not value:
         typer.echo("set-secret: secret value is empty — refusing.", err=True)
         raise typer.Exit(2)
@@ -463,16 +477,30 @@ def source_oauth_client(
             "prompt and CLEARS any secret already on file for this source."
         ),
     ),
+    keep_secret: bool = typer.Option(
+        False,
+        "--keep-secret",
+        help=(
+            "Leave the stored client secret alone — for editing endpoints or scopes on an "
+            "existing confidential client without re-entering it."
+        ),
+    ),
 ):
     """Manually configure the OAuth client for an ``auth_method='oauth'``
     source — the escape hatch for an authorization server without dynamic
     client registration (spec §2).
     """
+    if public_client and keep_secret:
+        typer.echo(
+            "oauth-client: --public-client clears the secret and --keep-secret preserves it — pick one.", err=True
+        )
+        raise typer.Exit(2)
     src_id = _resolve_source_id(name_or_id)
-    if client_secret is None and not public_client:
-        import sys
-
-        client_secret = sys.stdin.readline().rstrip("\n") or None
+    # Three server-side states, three ways to ask for them: --client-secret
+    # replaces, --public-client clears, --keep-secret leaves it alone. Without
+    # any of them we read stdin, which is the "pipe me the secret" form.
+    if client_secret is None and not public_client and not keep_secret:
+        client_secret = _read_secret_line("the client secret") or None
     payload: dict = {
         "client_id": client_id,
         "authorization_endpoint": authorization_endpoint,

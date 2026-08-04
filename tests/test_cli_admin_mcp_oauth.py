@@ -184,3 +184,84 @@ class TestOAuthClient:
             )
         assert result.exit_code == 1
         assert "SSRF" in result.output
+
+
+class TestOAuthClientSecretStates:
+    """The endpoint has three secret states; the CLI must reach all three.
+
+    Replace / clear were exposed as `--client-secret` and `--public-client`;
+    "leave it alone" was reachable only by piping an empty line, so an admin
+    editing endpoints on an existing confidential client fell into an
+    unprompted blocking stdin read that looks exactly like a hang
+    (Devin Review on #1124).
+    """
+
+    _BASE = [
+        "admin",
+        "mcp",
+        "source",
+        "oauth-client",
+        "src_abc123",
+        "--client-id",
+        "cid",
+        "--authorization-endpoint",
+        "https://as.example.com/authorize",
+        "--token-endpoint",
+        "https://as.example.com/token",
+    ]
+
+    def test_keep_secret_omits_the_field_entirely(self):
+        with (
+            patch("cli.commands.admin_mcp.api_get", return_value=_sources_list_resp()),
+            patch("cli.commands.admin_mcp.api_put", return_value=_resp(200, {"client_id": "cid"})) as mock_put,
+        ):
+            result = runner.invoke(app, [*self._BASE, "--keep-secret", "--scopes", "read"])
+        assert result.exit_code == 0, result.output
+        _, kwargs = mock_put.call_args
+        assert "client_secret" not in kwargs["json"], "omission is what the server reads as 'keep'"
+        assert kwargs["json"]["scopes"] == "read"
+
+    def test_keep_secret_does_not_read_stdin(self):
+        """The point of the flag: no blocking read, so the command cannot hang."""
+
+        def _boom():
+            raise AssertionError("stdin was read despite --keep-secret")
+
+        with (
+            patch("cli.commands.admin_mcp.api_get", return_value=_sources_list_resp()),
+            patch("cli.commands.admin_mcp.api_put", return_value=_resp(200, {"client_id": "cid"})),
+            patch("cli.commands.admin_mcp._read_secret_line", side_effect=lambda *_: _boom()),
+        ):
+            result = runner.invoke(app, [*self._BASE, "--keep-secret"])
+        assert result.exit_code == 0, result.output
+
+    def test_keep_secret_and_public_client_together_are_refused(self):
+        """They ask for opposite things — silently letting one win would either
+        strand a secret or destroy one."""
+        with (
+            patch("cli.commands.admin_mcp.api_get", return_value=_sources_list_resp()),
+            patch("cli.commands.admin_mcp.api_put", return_value=_resp(200, {})) as mock_put,
+        ):
+            result = runner.invoke(app, [*self._BASE, "--keep-secret", "--public-client"])
+        assert result.exit_code == 2, result.output
+        assert mock_put.call_count == 0
+
+    def test_the_stdin_read_announces_itself_on_a_terminal(self):
+        """Without a notice the command just stops, with nothing on screen
+        saying it wants input — indistinguishable from a hang. The notice goes
+        to stderr and only on a TTY, so the piped form stays byte-clean."""
+        import cli.commands.admin_mcp as mod
+
+        for isatty, expect_notice in ((True, True), (False, False)):
+            with (
+                patch("sys.stdin") as stdin,
+                patch.object(mod.typer, "echo") as echo,
+            ):
+                stdin.isatty.return_value = isatty
+                stdin.readline.return_value = "the-value\n"
+                assert mod._read_secret_line("the client secret") == "the-value"
+
+            notices = [c for c in echo.call_args_list if c.kwargs.get("err")]
+            assert bool(notices) is expect_notice, f"isatty={isatty}: notice={bool(notices)}"
+            if expect_notice:
+                assert "the client secret" in notices[0].args[0]
