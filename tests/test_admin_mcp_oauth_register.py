@@ -977,3 +977,89 @@ def test_a_failed_purge_leaves_the_source_pointing_at_the_old_host(seeded_app, m
         )
 
     assert mcp_sources_repo().get(sid)["url"] == "https://h1.example/mcp"
+
+
+def test_deduped_reregistration_keeps_the_secret_and_rat_it_was_not_re_issued(seeded_app, monkeypatch):
+    """A deduping AS answers a second DCR with the SAME client_id and may
+    re-issue neither the client secret nor the registration access token —
+    RFC 7591 requires neither. Writing those Nones through wipes both: the
+    lost RAT silently disables upstream deregistration, and the lost secret
+    demotes a confidential registration to a public one, so client auth stops
+    being sent and every token call fails. Same "keep what's on file" rule the
+    manual PUT carries (Devin Review on #1124 for the RAT half).
+    """
+    import connectors.mcp.oauth_client as oc
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_oauth_dedupe")
+
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-stable")
+    r = seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app))
+    assert r.status_code == 200, r.text
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row["client_secret"] == "new-secret"
+    assert row["registration_access_token"] == "new-rat"
+
+    # Second registration: same identity, nothing re-issued.
+    revoke_calls = _patch_discovery_success(monkeypatch, registered_client_id="cid-stable")
+
+    async def _dedupe_register(as_metadata, *, redirect_uri, client, scopes=None, client_name="Agnes"):
+        return oc.RegisteredOAuthClient(
+            issuer=as_metadata["issuer"],
+            client_id="cid-stable",
+            client_secret=None,
+            registration_access_token=None,
+            authorization_endpoint=as_metadata["authorization_endpoint"],
+            token_endpoint=as_metadata["token_endpoint"],
+            registration_endpoint=as_metadata["registration_endpoint"],
+            scopes=scopes,
+        )
+
+    monkeypatch.setattr(oc, "register_dynamic_client", _dedupe_register)
+    r2 = seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app))
+    assert r2.status_code == 200, r2.text
+    assert revoke_calls == []  # same client_id — nothing to revoke
+
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row["client_secret"] == "new-secret"
+    assert row["registration_access_token"] == "new-rat"
+
+
+def test_a_genuinely_new_registration_replaces_secret_and_rat_wholesale(seeded_app, monkeypatch):
+    """The counterpart: a DIFFERENT client_id is a new registration, so the old
+    client's secret and RAT must NOT be carried onto it."""
+    import connectors.mcp.oauth_client as oc
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_oauth_replaced")
+
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-first")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-second")
+
+    async def _public_register(as_metadata, *, redirect_uri, client, scopes=None, client_name="Agnes"):
+        return oc.RegisteredOAuthClient(
+            issuer=as_metadata["issuer"],
+            client_id="cid-second",
+            client_secret=None,
+            registration_access_token=None,
+            authorization_endpoint=as_metadata["authorization_endpoint"],
+            token_endpoint=as_metadata["token_endpoint"],
+            registration_endpoint=as_metadata["registration_endpoint"],
+            scopes=scopes,
+        )
+
+    monkeypatch.setattr(oc, "register_dynamic_client", _public_register)
+    r = seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app))
+    assert r.status_code == 200, r.text
+
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row["client_id"] == "cid-second"
+    assert row["client_secret"] is None
+    assert row["registration_access_token"] is None

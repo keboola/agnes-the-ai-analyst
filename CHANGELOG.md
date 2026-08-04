@@ -49,6 +49,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`SECURITY.md` — public threat model and vulnerability-reporting process.** States the deployment/trust model (single-org per instance; the agent sandbox is never trusted to make authorization decisions), documents the controls that carry the most weight (the secret broker keeping credential material out of the sandbox, live per-request agent scope intersection, server-side data-access checks on every read surface, VM-level sandbox egress, the untrusted-input controls, the Fernet secret vault), and lists known limitations honestly — unscreened prompt injection, `bypassPermissions` inside the sandbox, admin god-mode, non-revocable 30-day session cookies, `SameSite`-only CSRF, coarse data-app isolation, non-tamper-evident audit, unencrypted data at rest, and the unsigned-artifact/unpinned-marketplace supply chain. Closes with an operator security checklist. Linked from `README.md` and `docs/README.md`; reports go through GitHub private vulnerability reporting.
 
 ### Changed
+- **Editing an MCP source's `url` now discards every stored credential for
+  that source, not just the OAuth ones.** The shared vault secret and every
+  analyst's per-user secret are dropped alongside the OAuth client
+  registration, tokens and in-flight flows, because all of them are forwarded
+  as `Authorization` headers by the same seam that reads the freshly written
+  url — a credential must never reach a host that did not issue it. Any
+  difference counts, including a path-only edit or an added trailing slash: a
+  different path can be a different protected resource. This is irreversible
+  and is not separately confirmed, so an admin fixing a typo in a `bearer`
+  source's url will have to re-enter its secret and their analysts will have
+  to re-connect. The purge runs before the row is repointed, and the audit row
+  records `credentials_purged` so the effect is traceable afterwards.
+
 - MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
 - **MCP tool parameter schemas tightened.** `stack_browse`/`stack_subscribe`/`stack_unsubscribe` (`resource_type`), `admin_analytics_migrate` (`to`), `data_apps_list` (`kind`) and `data_app_deploy` (`mode`) declare their valid values as `Literal[…]`, so the constraint reaches `tools/list` as a JSON-schema enum instead of living only in the `Args:` prose the trimmed description drops; `store_rate` (`vote`) uses a bounded `int` rather than a literal union, because a literal would stop accepting the string `"1"` that models commonly emit for numbers. Applied on both MCP surfaces, so the HTTP and stdio copies of a tool keep advertising the same contract.
 - MCP: `query` and `describe` (plus CLI `query_local`) refuse responses whose serialized size exceeds `AGNES_MCP_MAX_OUTPUT_CHARS` (default 100 000; `0` disables) with actionable narrowing guidance, instead of returning megabyte payloads into the model's context. Row-level `limit`/`truncated` semantics are unchanged.
@@ -76,6 +89,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- Re-registering an OAuth MCP source no longer discards a client secret or
+  registration access token the authorization server did not re-issue. RFC
+  7591 requires neither on a deduped registration, so an AS that answers a
+  second DCR with the same `client_id` and omits them used to have both
+  wiped — silently disabling upstream deregistration and demoting a
+  confidential registration to a public one. A different `client_id` still
+  replaces both wholesale.
+
 - `mcp_sources` field validation (transport/command/url/scope plus the oauth
   coupling rule) is defined once in `src/repositories/mcp_sources.py` and
   called by both backends' `upsert` and by the admin update endpoint, which

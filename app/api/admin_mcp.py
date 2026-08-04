@@ -981,6 +981,37 @@ async def register_oauth_client(
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"oauth_discovery_failed: {_exc_summary(exc)}")
 
+    # Same "keep what's on file" rule the manual PUT carries, for the same
+    # reason: a write of this row must not drop a field just because the
+    # inbound side had nothing to say about it. RFC 7591 does not require an
+    # AS to re-issue anything on a deduped registration, so an AS that hands
+    # back the SAME client_id may answer with no client_secret and no
+    # registration access token — passing those through wipes both. Losing the
+    # RAT silently disables upstream deregistration (best_effort_revoke_
+    # registration no-ops without one); losing the secret is worse, demoting a
+    # confidential registration to a public one so _client_auth_kwargs stops
+    # sending Basic auth and every token call fails. A DIFFERENT client_id is
+    # a new registration and replaces both wholesale (Devin Review on #1124
+    # for the RAT; the secret has the same exposure).
+    same_client = bool(existing) and existing.get("client_id") == registered.client_id
+    keep_secret = registered.client_secret
+    if keep_secret is None and same_client:
+        keep_secret = existing.get("client_secret")
+        if keep_secret is None and existing.get("client_secret_present"):
+            # Stored ciphertext we can no longer open (vault key rotated).
+            # Unlike the manual PUT, refusing here is not an option — the DCR
+            # call upstream has already happened, so a 409 would strand it.
+            # Say so instead of demoting the registration in silence.
+            logger.warning(
+                "mcp oauth re-register: source %s keeps client_id %s but its stored client secret is "
+                "undecryptable and the AS returned none — the registration is being written as a public "
+                "client. Re-enter the secret via PUT .../oauth/client if it is a confidential one.",
+                source_id,
+                registered.client_id,
+            )
+    keep_rat = registered.registration_access_token
+    if keep_rat is None and same_client:
+        keep_rat = existing.get("registration_access_token")
     try:
         clients_repo.upsert(
             source_id,
@@ -988,8 +1019,8 @@ async def register_oauth_client(
             client_id=registered.client_id,
             authorization_endpoint=registered.authorization_endpoint,
             token_endpoint=registered.token_endpoint,
-            client_secret=registered.client_secret,
-            registration_access_token=registered.registration_access_token,
+            client_secret=keep_secret,
+            registration_access_token=keep_rat,
             scopes=registered.scopes,
         )
     except VaultKeyNotConfiguredError as exc:
