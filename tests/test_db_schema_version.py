@@ -1171,3 +1171,52 @@ def test_v113_heal_flushes_its_ddl_to_the_main_db_file(tmp_path):
         assert set(columns) <= cols, f"{table} lost {set(columns) - cols} — heal DDL was not durable"
     reader.close()
     assert not wal.exists() or wal.stat().st_size == 0, "WAL still holds the heal DDL after the checkpoint"
+
+
+def test_every_stranded_column_is_covered_by_some_heal():
+    """Derives the repair list from the ladder instead of trusting it.
+
+    The renumbering strands every column added by a step in the v98..v112
+    window. `stranded` is hand-maintained, and it drifted twice — first missing
+    `personal_access_tokens.surface`, then three more — each time shipping a
+    repair that fixed one screen and left another broken. This asserts the
+    comparison rather than the contents: any future step in that window adding
+    a column neither heal covers fails here (Devin Review on #1158).
+    """
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "db.py").read_text()
+
+    adds: dict[tuple[str, str], list[str]] = {}
+    for m in re.finditer(r"^def _v(\d+)_to_v(\d+)\(conn.*?(?=^def )", src, re.S | re.M):
+        lo = int(m.group(1))
+        if not 98 <= lo <= 112:
+            continue
+        for table, col in re.findall(r"ALTER TABLE\s+(\w+)\s+ADD COLUMN(?:\s+IF NOT EXISTS)?\s+(\w+)", m.group(0)):
+            adds.setdefault((table, col), []).append(f"_v{m.group(1)}_to_v{m.group(2)}")
+
+    declared = {
+        (t, c)
+        for t, c in re.findall(
+            r'\(\s*"(\w+)",\s*"(\w+)",\s*"[^"]*"\s*\)', src.split("stranded = [")[1].split("\n    ]")[0]
+        )
+    }
+    # agents is rebuilt wholesale by _heal_legacy_agents_table from the
+    # canonical DDL, so its columns need no entry in `stranded`.
+    uncovered = {k: v for k, v in adds.items() if k not in declared and k[0] != "agents"}
+    assert not uncovered, "steps add columns no heal repairs: " + ", ".join(
+        f"{t}.{c} ({'/'.join(w)})" for (t, c), w in sorted(uncovered.items())
+    )
+
+
+def test_the_agents_exemption_is_real():
+    """Pins the exemption above: a fresh DB's agents table must actually carry
+    the columns those steps ALTER in, or the exemption is hiding a gap."""
+    import duckdb as _d
+
+    conn = _d.connect(":memory:")
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('agents')").fetchall()}
+    assert {"greeting", "knowledge", "plugins", "role", "status", "surfaces", "tone"} <= cols
+    conn.close()

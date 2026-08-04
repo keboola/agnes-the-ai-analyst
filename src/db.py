@@ -7127,7 +7127,16 @@ def _heal_stranded_ladder_columns(conn: duckdb.DuckDBPyConnection) -> None:
         # leaving it out would fix chat and leave the operator locked out of
         # the CLI (Devin Review on #1158).
         ("personal_access_tokens", "surface", "VARCHAR DEFAULT 'all'"),
+        ("usage_session_summary", "uploaded_at", "TIMESTAMP"),  # _v104_to_v105
+        ("file_corpora", "origin", "VARCHAR DEFAULT 'uploaded'"),  # _v108_to_v109
+        ("chat_sessions", "pinned_at", "TIMESTAMP"),  # _v111_to_v112
     ]
+    # The seven agents.* columns those steps also add are NOT listed here:
+    # _heal_legacy_agents_table rebuilds that table from the canonical DDL,
+    # which carries them. tests/test_db_schema_version.py derives this
+    # comparison from the ladder and fails if a future step adds a column that
+    # neither heal covers — this list drifted twice before that guard existed
+    # (Devin Review on #1158).
 
     present: dict[str, set[str]] = {}
     for table, column, ddl in stranded:
