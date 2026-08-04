@@ -440,9 +440,150 @@ def test_library_lists_granted_curated_plugins(seeded_app):
     body = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     assert "granted-plugin" in body, "granted curated plugin missing from the Library"
     row = _row_for(body, "granted-plugin")
-    # Granted, so it reports membership and offers no toggle.
-    assert "In Stack" in row
+    # Granted at the `available` tier and never subscribed, so the grant is
+    # ELIGIBILITY, not membership: the row offers the toggle. (This assertion
+    # used to read "In Stack" + no toggle — the auto-membership model, which is
+    # right for data packages and wrong for plugins. See the dedicated
+    # subscription-tracking test below for why.)
+    assert "data-add-to-stack" in row
+    assert 'data-stack="available"' in row
+
+
+def _seed_granted_plugin(
+    conn,
+    *,
+    marketplace_id: str,
+    name: str,
+    user_id: str,
+    requirement: str | None = None,
+    is_system: bool = False,
+) -> None:
+    """Seed a curated plugin granted to ``user_id``'s group at ``requirement``."""
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    if not conn.execute("SELECT 1 FROM marketplace_registry WHERE id = ?", [marketplace_id]).fetchone():
+        conn.execute(
+            "INSERT INTO marketplace_registry (id, name, url) VALUES (?, 'Curated Co', 'https://example.com/r.git')",
+            [marketplace_id],
+        )
+    conn.execute(
+        "INSERT INTO marketplace_plugins (marketplace_id, name, description, is_system) VALUES (?, ?, 'p', ?)",
+        [marketplace_id, name, is_system],
+    )
+    groups = UserGroupsRepository(conn)
+    grp = groups.get_by_name(f"grp-{name}") or groups.create(name=f"grp-{name}", description="t", created_by="t")
+    UserGroupMembersRepository(conn).add_member(user_id, grp["id"], source="admin", added_by="t")
+    ResourceGrantsRepository(conn).create(
+        group_id=grp["id"],
+        resource_type="marketplace_plugin",
+        resource_id=f"{marketplace_id}/{name}",
+        assigned_by="admin",
+        requirement=requirement,
+    )
+
+
+def test_library_plugin_stack_state_tracks_subscription_not_the_grant(seeded_app):
+    """A plugin's Library Stack state must follow the SUBSCRIPTION, not the grant.
+
+    Plugins are the one granted kind whose membership is not automatic: Model B
+    (v28+) has ``resolve_user_marketplace`` serve ``subscriptions ∪
+    required-tier grants``, so an ``available``-tier grant the caller never
+    subscribed to is genuinely NOT in their served set — its skills and commands
+    are not loaded in their Claude Code.
+
+    The Library used to reuse the auto-membership model that data packages and
+    memory domains legitimately have, rendering every eligible plugin as a
+    LOCKED "In Stack". That was wrong twice over: it contradicted /marketplace
+    and the agent's own ``marketplace_search`` (both of which read the
+    subscription union), and because the row rendered locked it removed the only
+    affordance that could have corrected the state.
+    """
+    from src.db import get_system_db
+
+    c = seeded_app["client"]
+    hdr = _auth(seeded_app["analyst_token"])
+    conn = get_system_db()
+    _seed_granted_plugin(conn, marketplace_id="sub-mp", name="optional-plugin", user_id="analyst1")
+    conn.close()
+
+    endpoint = "/api/marketplace/curated/sub-mp/optional-plugin/install"
+
+    # Eligible, not subscribed → addable, and the row names the endpoint the
+    # kind-agnostic toggle POSTs to.
+    row = _row_for(c.get("/library", headers=hdr).text, "optional-plugin")
+    assert 'data-stack="available"' in row
+    assert "data-add-to-stack" in row
+    assert endpoint in row
+    assert "lib-instack--locked" not in row
+
+    # Subscribed → in stack, and REMOVABLE: the subscription is the caller's own.
+    assert c.post(endpoint, headers=hdr).status_code == 200
+    row = _row_for(c.get("/library", headers=hdr).text, "optional-plugin")
+    assert 'data-stack="in_stack"' in row
+    assert "data-remove-from-stack" in row
+    assert "lib-instack--locked" not in row
+    assert GRANTED_TOOLTIP not in row  # an admin is not who removes this one
+
+    # …and unsubscribing returns it to addable rather than stranding the pill.
+    assert c.delete(endpoint, headers=hdr).status_code == 204
+    row = _row_for(c.get("/library", headers=hdr).text, "optional-plugin")
+    assert "data-add-to-stack" in row
+
+
+def test_library_required_plugin_grant_is_locked_in_stack(seeded_app):
+    """A required-tier plugin grant IS membership (the resolver unions it in) and
+    the caller cannot drop it — ``curated_uninstall`` answers 409
+    ``cannot_uninstall_required_plugin``. So it locks, exactly like a required
+    data package, and the lock promises what the API enforces."""
+    from src.db import get_system_db
+
+    c = seeded_app["client"]
+    hdr = _auth(seeded_app["analyst_token"])
+    conn = get_system_db()
+    _seed_granted_plugin(
+        conn, marketplace_id="req-mp", name="mandated-plugin", user_id="analyst1", requirement="required"
+    )
+    conn.close()
+
+    row = _row_for(c.get("/library", headers=hdr).text, "mandated-plugin")
+    assert 'data-stack="in_stack"' in row
+    assert "lib-instack--locked" in row
+    assert LOCKED_TOOLTIP in row
     assert "data-add-to-stack" not in row
+    assert "data-remove-from-stack" not in row
+    # The affordance is not a lie: the API refuses the drop it doesn't offer.
+    assert c.delete("/api/marketplace/curated/req-mp/mandated-plugin/install", headers=hdr).status_code == 409
+
+
+def test_library_plugin_stack_state_agrees_with_marketplace_items(seeded_app):
+    """Cross-surface guard: for the same caller and the same plugin, the
+    Library's Stack state and ``GET /api/marketplace/items``' ``installed`` flag
+    must agree — they are two renderings of one fact (what
+    ``resolve_user_marketplace`` serves), and the bug this pins was precisely
+    them disagreeing. Both now derive from ``_curated_stack_sets``.
+    """
+    from src.db import get_system_db
+
+    c = seeded_app["client"]
+    hdr = _auth(seeded_app["analyst_token"])
+    conn = get_system_db()
+    _seed_granted_plugin(conn, marketplace_id="agree-mp", name="agree-plugin", user_id="analyst1")
+    conn.close()
+
+    def _both() -> tuple[bool, bool]:
+        items = c.get("/api/marketplace/items", params={"tab": "curated"}, headers=hdr).json()["items"]
+        api = next(i["installed"] for i in items if i["id"] == "curated-agree-mp/agree-plugin")
+        library = 'data-stack="in_stack"' in _row_for(c.get("/library", headers=hdr).text, "agree-plugin")
+        return api, library
+
+    api, library = _both()
+    assert api is False and library is False, "eligible-but-unsubscribed must read the same on both surfaces"
+
+    assert c.post("/api/marketplace/curated/agree-mp/agree-plugin/install", headers=hdr).status_code == 200
+    api, library = _both()
+    assert api is True and library is True, "subscribed must read the same on both surfaces"
 
 
 def test_library_own_artefact_keeps_a_real_stack_toggle(seeded_app):

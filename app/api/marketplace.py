@@ -482,7 +482,7 @@ def _flea_detail_url(entity_id: str) -> str:
     return f"/marketplace/flea/{entity_id}"
 
 
-def _curated_stack_sets(conn: duckdb.DuckDBPyConnection, user_id: str) -> Tuple[set, set]:
+def _curated_stack_sets(conn: Optional[duckdb.DuckDBPyConnection], user_id: str) -> Tuple[set, set]:
     """``(in_stack, required)`` curated plugin key sets for a user.
 
     ``in_stack`` is the union ``resolve_user_marketplace`` actually serves:
@@ -491,6 +491,15 @@ def _curated_stack_sets(conn: duckdb.DuckDBPyConnection, user_id: str) -> Tuple[
     groups). ``required`` is surfaced separately so cards / detail pages
     can render the locked "Required" state for group-required plugins the
     same way they do for global ``is_system`` ones.
+
+    ``conn`` is optional — it is only a DuckDB-backend fast path for the
+    group-membership read (see ``app.auth.access._user_group_ids``), so a
+    caller without a request-scoped connection passes ``None`` and gets the
+    same answer through the repo factory. That is what lets the Library
+    (``app.web.router.library_page``, which takes no ``conn``) derive its
+    plugin rows' Stack state from THIS helper rather than reimplementing the
+    union — the two surfaces disagreeing about the same plugin is exactly
+    the drift this is the single source of truth for.
     """
     required = required_plugin_keys(conn, user_id)
     subs = user_curated_subscriptions_repo().subscribed_set(user_id)

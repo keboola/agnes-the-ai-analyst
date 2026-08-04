@@ -415,11 +415,23 @@
                     {% else %}
                     {# In the Stack and not removable. Every such row says the
                        same thing about membership — "In Stack", because it is
-                       — and a LOCK marks the ones the caller cannot drop,
-                       which is every group grant of either tier (the grant IS
-                       the membership; only an admin can revoke it). Without the
-                       lock those rows wore the success-tinted check that a
-                       REMOVABLE pill shows at rest, so the two were
+                       — and a LOCK marks the ones the caller cannot drop.
+                       Which rows those are depends on the kind, because
+                       "granted" and "in my Stack" are the same fact for some
+                       kinds and not others:
+
+                         DATA PACKAGES / MEMORY DOMAINS / RECIPES — the grant IS
+                           the membership (auto-membership, StackResolver.browse),
+                           so every tier is locked: there is no per-user row to
+                           drop, only a grant an admin can revoke.
+                         PLUGINS — the grant is only ELIGIBILITY (Model B): the
+                           caller subscribes, so their own membership is theirs
+                           to drop and renders as the REMOVABLE button next
+                           door. Only the two the uninstall API refuses (409)
+                           reach here — `is_system` and required-tier grants.
+
+                       Without the lock these rows wore the success-tinted check
+                       that a REMOVABLE pill shows at rest, so the two were
                        indistinguishable until you hovered one. The tier is an
                        attribute of the membership, not a separate state — it
                        lives in the tooltip and the Optional/Required facet. #}
