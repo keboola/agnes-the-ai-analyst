@@ -281,7 +281,7 @@ def _blank_arithmetic(line: str) -> str:
 
 
 def _has_unquoted_heredoc(line: str, *, in_single: bool = False, in_double: bool = False) -> tuple[bool, bool, bool]:
-    """Whether `<<` appears outside quotes, plus the quote state at line end.
+    """The heredoc marker opened outside quotes (or None), plus end-of-line quote state.
 
     The caller threads the returned quote state into the next line: a string
     spanning several lines otherwise reset it and a quoted `<<` inside one
@@ -300,7 +300,7 @@ def _has_unquoted_heredoc(line: str, *, in_single: bool = False, in_double: bool
     # side ends in a digit or identifier character is a shift, not a marker.
     # No whitespace either side: `1<<n` is a shift, `cat <<EOF` is a marker.
     line = re.sub(r"(?<=[0-9A-Za-z_])<<(?=[0-9A-Za-z_])", " SHIFT ", line)
-    found = False
+    marker = None
     i = 0
     while i < len(line):
         c = line[i]
@@ -309,13 +309,21 @@ def _has_unquoted_heredoc(line: str, *, in_single: bool = False, in_double: bool
             continue
         if c == "'" and not in_double:
             in_single = not in_single
-        elif c == '"' and not in_single:
+        elif c == '"' and not in_double and not in_single:
             in_double = not in_double
+        elif c == '"' and in_double:
+            in_double = False
         elif c == "<" and not in_single and not in_double and line[i : i + 2] == "<<":
-            if not found and line[i : i + 3] != "<<<":
-                found = True
+            if marker is None and line[i : i + 3] != "<<<":
+                # Extract the marker HERE, from the unquoted `<<` we just
+                # found. Re-searching the raw line afterwards could pick a
+                # quoted lookalike earlier in it and silence every following
+                # line (review finding on #1141).
+                m = re.match(r"<<-?\s*([\"\']?)([A-Za-z_][A-Za-z0-9_]*)\1", line[i:])
+                if m:
+                    marker = m.group(2)
         i += 1
-    return found, in_single, in_double
+    return marker, in_single, in_double
 
 
 @functools.lru_cache(maxsize=16)
@@ -368,12 +376,10 @@ def _split_segments_with_seps(cmd: str) -> tuple[tuple[str, str], ...]:
         # Only an UNQUOTED << opens a heredoc. Searching the raw line let a
         # quoted one (echo 'a << b') swallow every later line of a
         # multi-line command (review finding on #1141).
-        found_hd, q_single, q_double = _has_unquoted_heredoc(
+        found_marker, q_single, q_double = _has_unquoted_heredoc(
             line, in_single=q_single, in_double=q_double
         )
-        probe = line if found_hd else ""
-        m = re.search(r"<<-?\s*([\"\']?)([A-Za-z_][A-Za-z0-9_]*)\1", probe)
-        if m and "<<<" not in probe:
+        if found_marker:
             # The body is data ONLY if the receiving program does not execute
             # it. `bash <<EOF … EOF` runs every line, so skipping it let the
             # floor rules — which are meant to hold regardless of chaining —
@@ -388,7 +394,7 @@ def _split_segments_with_seps(cmd: str) -> tuple[tuple[str, str], ...]:
                 for part in re.split(r"[|;&]", line)
             )
             if not feeds_a_shell:
-                heredoc_marker = m.group(2)
+                heredoc_marker = found_marker
         if not line.strip():
             continue
         try:

