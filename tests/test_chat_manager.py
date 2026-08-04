@@ -3912,3 +3912,48 @@ def test_a_browser_leaving_later_still_nudges_the_slack_thread(manager: ChatMana
         assert len(slack.nudges) == 1
 
     asyncio.run(_run())
+
+
+def test_a_rebuilt_slack_bridge_learns_about_a_pending_card(manager: ChatManager):
+    """`_ensure_slack_sink` appends straight into `live.sinks` instead of going
+    through `_seat_sink`/`add_sink`, so it missed the pending-approval replay:
+    a bridge rebuilt on the cross-gateway forwarded-message path stayed silent
+    about a card already waiting, and the unattended re-check skipped it too
+    because the stored frame's `attended` was already latched False
+    (Devin Review on #1157)."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+        await _pump_one_approval_request(manager, live)
+        assert live.pending_approvals, "a card should be waiting"
+
+        seen = []
+
+        class Bridge:
+            """A real class, not a lambda: `_ensure_slack_sink` idempotence
+            uses isinstance against this symbol."""
+
+            def __init__(self, **kw):
+                pass
+
+            async def send_json(self, frame):
+                seen.append(frame)
+
+        import services.slack_bot.sink as sink_mod
+
+        original = sink_mod.SlackSinkBridge
+        sink_mod.SlackSinkBridge = Bridge
+        try:
+            await manager._ensure_slack_sink(live, {"channel": "C1", "thread_ts": None})
+        finally:
+            sink_mod.SlackSinkBridge = original
+
+        cards = [f for f in seen if f.get("type") == "approval_request"]
+        assert cards, "the rebuilt bridge never heard about the pending card"
+
+    asyncio.run(_run())

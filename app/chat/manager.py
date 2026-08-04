@@ -902,13 +902,7 @@ class ChatManager:
         # Unanswered approval cards replay alongside the turn buffer: they
         # are separate state precisely because they outlive the turn, so
         # they must be re-sent explicitly rather than ridden along.
-        for frame in list(live.pending_approvals.values()):
-            # Re-derive `attended` for the replay: the stamp records who was
-            # attached when the request was RAISED, and a Slack bridge seated
-            # later would otherwise post its nudge off a stale False even
-            # though a browser has since attached and is holding the card
-            # (Devin Review on #1157).
-            await ws.send_json({**frame, "attended": _approval_attended(live)})
+        await self._replay_pending_approvals_to(live, ws)
         for frame in list(live.turn_buffer):
             await ws.send_json(frame)
         if is_primary:
@@ -1065,6 +1059,26 @@ class ChatManager:
             raise
 
     # --- detach / linger / pause --------------------------------------------
+
+    async def _replay_pending_approvals_to(self, live: "LiveSession", sink) -> None:
+        """Send every still-unanswered approval card to a newly seated sink.
+
+        One rule for all three attach paths — ``_seat_sink``, ``add_sink`` and
+        ``_ensure_slack_sink``. The last one appends straight into
+        ``live.sinks`` and so missed the replay entirely: a Slack bridge
+        rebuilt on the cross-gateway forwarded-message path stayed silent about
+        a card already pending, and ``_renotify_unattended_approvals`` skipped
+        it too because the stored frame's ``attended`` was already latched
+        False (Devin Review on #1157).
+
+        ``attended`` is re-derived rather than replayed: the stamp records who
+        was attached when the request was RAISED, which is not a claim about
+        who is attached now.
+        """
+        attended = _approval_attended(live)
+        for frame in list(live.pending_approvals.values()):
+            with contextlib.suppress(Exception):
+                await sink.send_json({**frame, "attended": attended})
 
     async def _renotify_unattended_approvals(self, live: "LiveSession") -> None:
         """Re-derive attendance for every pending card and nudge if it lapsed.
@@ -1692,10 +1706,8 @@ class ChatManager:
         for frame in list(live.turn_buffer):
             await sink.send_json(frame)
         # …and any approval card still waiting for an answer (separate
-        # state: it outlives the turn it was raised in), with `attended`
-        # re-derived — see the same replay in _seat_sink.
-        for frame in list(live.pending_approvals.values()):
-            await sink.send_json({**frame, "attended": _approval_attended(live)})
+        # state: it outlives the turn it was raised in).
+        await self._replay_pending_approvals_to(live, sink)
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
         # Sent directly to this one sink (not _broadcast), so it needs its
         # own stamp (wave-2F task 2). The history-replay frames above are
@@ -2512,7 +2524,7 @@ class ChatManager:
             return
         live.last_activity = datetime.now(timezone.utc)
 
-    def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
+    async def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
         """Make sure ``live`` has a ``SlackSinkBridge`` for the Slack
         channel in ``slack_origin`` (``{"channel": ..., "thread_ts": ...}``),
         creating and seating one if missing.
@@ -2551,6 +2563,12 @@ class ChatManager:
         )
         live.sinks.append(SinkEntry(participant_email=live.user_email, sink=sink))
         logger.info("re-established Slack sink for %s (channel %s) on forwarded message", live.chat_id, channel)
+        # This path appends straight into live.sinks rather than going through
+        # _seat_sink/add_sink, so the replay has to be explicit here. Awaited,
+        # not fired off: a bare create_task has no strong reference and a GC
+        # cycle can collect it mid-flight — the same latent bug already fixed
+        # once in this runner's stdin reader.
+        await self._replay_pending_approvals_to(live, sink)
 
     async def _forward_inbound_message(
         self, chat_id: str, text: str, *, sender_email: Optional[str], slack_origin: Optional[dict] = None
@@ -2715,7 +2733,7 @@ class ChatManager:
                         # has somewhere to land on Slack (a takeover builds
                         # LiveSession with sinks=[], and the non-owning
                         # webhook handler never attaches one).
-                        self._ensure_slack_sink(live, slack_origin)
+                        await self._ensure_slack_sink(live, slack_origin)
                     try:
                         await self._deliver_local_user_message(live, text)
                     except Exception:
