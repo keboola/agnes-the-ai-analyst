@@ -254,9 +254,9 @@
             </div>
             <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="windows" hidden>
                 <span class="multiline install-cmd-masked" id="install-cmd-token-windows"
-                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; Set-Content &quot;$HOME\.agnes\token&quot; -Value '{TOKEN}' -NoNewline -Encoding utf8; claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;"
+                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}'); claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;"
                       aria-label="Saves your login token to a file, then launches Claude. The token itself is masked here and never shown on screen."
-                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; Set-Content "$HOME\.agnes\token" -Value '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' -NoNewline -Encoding utf8; claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"</span>
+                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'); claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"</span>
             </div>
 
             <div class="setup-cta-row">
@@ -306,9 +306,9 @@ What can I help you with?
             </div>
             <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="windows" hidden>
                 <span class="multiline install-cmd-masked" id="install-cmd-token-windows"
-                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; Set-Content &quot;$HOME\.agnes\token&quot; -Value '{TOKEN}' -NoNewline -Encoding utf8"
+                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}')"
                       aria-label="Saves your login token to a file. The token itself is masked here and never shown on screen."
-                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; Set-Content "$HOME\.agnes\token" -Value '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' -NoNewline -Encoding utf8</span>
+                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;')</span>
             </div>
 
             <div class="setup-cta-row">
