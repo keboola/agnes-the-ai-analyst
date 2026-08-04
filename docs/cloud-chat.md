@@ -212,8 +212,11 @@ tool call, emits an `approval_request` frame (web chat renders an
 Allow once / Allow for session / Deny card; co-drive participants may
 answer too), and resolves to allow or deny from the user's
 `approval_decision`. No answer within `chat.approval_timeout_seconds`
-(default 300), a Stop, or the operator kill-switch (runner env
-`AGNES_APPROVALS=off`) all resolve to deny.
+(default 300), a Stop, or the operator kill-switch (`chat.approvals_enabled:
+false`, which the manager passes to the sandbox as `AGNES_APPROVALS=off`) all
+resolve to deny. Set it in `instance.yaml`, not in the server's own
+environment: the sandbox environment is built by the manager and the host's is
+not merged in.
 
 The gate is armed on every surface. Whether a given request can be
 answered is decided per request, at the manager's fan-out, from the

@@ -45,6 +45,12 @@ class ChatConfig:
     # How long the runner's ApprovalGate waits for the user to answer an
     # approval_request before denying the suspended tool call.
     approval_timeout_seconds: int = 300
+    # Operator kill-switch. The gate is armed on every surface and whether a
+    # request CAN be answered is decided per request from the attached sinks,
+    # so this is not a routing knob — it is the escape hatch for a deployment
+    # that would rather run unasked than have tool calls wait. False makes the
+    # gate deny instantly with an actionable message.
+    approvals_enabled: bool = True
     marketplace_sha_debounce_seconds: int = 5 * 60
     # E2B template id (``agnes-chat`` for the default operator build per
     # Q2 — single mutable ``:latest`` tag). Required when
@@ -213,6 +219,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         rate_messages_per_hour=int(raw.get("rate_messages_per_hour", 100)),
         tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
         approval_timeout_seconds=int(raw.get("approval_timeout_seconds", 300)),
+        approvals_enabled=bool(raw.get("approvals_enabled", True)),
         marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
         e2b_template_id=raw.get("e2b_template_id") or None,
         egress_allow_out=list(raw.get("egress_allow_out") or []),
