@@ -145,3 +145,25 @@ def test_no_env_var_falls_through_to_yaml(tmp_path: Path, monkeypatch):
     y = tmp_path / "instance.yaml"
     y.write_text("chat:\n  enabled: true\n")
     assert load_chat_config(y).enabled is True
+
+
+def test_approvals_kill_switch_uses_the_shared_truthy_rule(tmp_path: Path):
+    """`bool("false")` is True, so a plain truth test would read a quoted YAML
+    value — or one produced by an env-substituted template — as "on" and leave
+    approvals armed for an operator who asked for them off. Every boolean
+    config value in Agnes goes through coerce_flag_value
+    (docs/feature-flags.md) (Devin Review on #1157)."""
+    for written, expected in (
+        (None, True),
+        ("false", False),
+        ('"false"', False),
+        ("off", False),
+        ('"0"', False),
+        ("true", True),
+    ):
+        yaml = tmp_path / "instance.yaml"
+        body = "instance_name: test\nchat:\n  enabled: true\n"
+        if written is not None:
+            body += f"  approvals_enabled: {written}\n"
+        yaml.write_text(body)
+        assert load_chat_config(yaml).approvals_enabled is expected, written
