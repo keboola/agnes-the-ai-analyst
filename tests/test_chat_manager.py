@@ -3638,7 +3638,7 @@ async def _pump_one_approval_request(mgr: ChatManager, live, *, request_id: str 
             "timeout_seconds": 300,
         }
     )
-    await _wait_until(lambda: any(f.get("type") == "approval_request" for f in live.turn_buffer))
+    await _wait_until(lambda: bool(live.pending_approvals))
     pump.cancel()
     try:
         await pump
@@ -3650,7 +3650,7 @@ def test_slack_origin_approval_waits_for_a_client(manager: ChatManager):
     """A Slack-origin session has no card-capable sink, but the user is one
     "Continue on web" click away — so the request is NOT auto-denied. It
     stays pending (the gate's own timeout is the backstop) and rides
-    turn_buffer so a browser attaching later replays the card."""
+    ``pending_approvals`` so a browser attaching later replays the card."""
 
     async def _run():
         from tests.chat_fakes import FakeWS
@@ -3662,8 +3662,8 @@ def test_slack_origin_approval_waits_for_a_client(manager: ChatManager):
         await _pump_one_approval_request(manager, live)
 
         assert _approval_decisions_written(live.handle) == [], "a Slack session must not be auto-denied"
-        buffered = [f for f in live.turn_buffer if f.get("type") == "approval_request"]
-        assert buffered and buffered[0]["attended"] is False
+        pending = list(live.pending_approvals.values())
+        assert pending and pending[0]["attended"] is False
 
     asyncio.run(_run())
 
@@ -3690,8 +3690,8 @@ def test_slack_session_continued_on_web_can_approve(manager: ChatManager):
         await _pump_one_approval_request(manager, live)
 
         assert _approval_decisions_written(live.handle) == []
-        buffered = [f for f in live.turn_buffer if f.get("type") == "approval_request"]
-        assert buffered and buffered[0]["attended"] is True
+        pending = list(live.pending_approvals.values())
+        assert pending and pending[0]["attended"] is True
 
         # …and the approval actually goes through.
         await manager.deliver_approval_decision(s.id, "appr-1", "allow", sender_email="u@x")
