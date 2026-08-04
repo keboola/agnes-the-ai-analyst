@@ -406,6 +406,54 @@ def test_my_secret_status_oauth_source_connected_reports_expiry(seeded_app):
     assert body["updated_at"] is not None
 
 
+def test_my_secret_status_expired_unrenewable_token_reports_not_connected(seeded_app):
+    """has_secret must use the same validity rule as enforce_per_user_credential:
+    an expired token with no refresh token 403s on every call, so the status
+    surface must not advertise it as connected (Devin Review on #1130)."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.repositories import mcp_user_oauth_tokens_repo
+
+    _seed_oauth_source(source_id="src_oauth_expired")
+    expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    mcp_user_oauth_tokens_repo().upsert(
+        "src_oauth_expired", "analyst1", "atok", refresh_token=None, expires_at=expires_at
+    )
+    r = seeded_app["client"].get(
+        "/api/mcp/sources/src_oauth_expired/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["has_secret"] is False
+
+
+def test_my_secret_status_expired_but_renewable_token_reports_connected(seeded_app):
+    """Expired + refresh token + live client registration = renewable at the
+    next call, so it still counts as connected."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.repositories import mcp_source_oauth_clients_repo, mcp_user_oauth_tokens_repo
+
+    _seed_oauth_source(source_id="src_oauth_renewable")
+    mcp_source_oauth_clients_repo().upsert(
+        "src_oauth_renewable",
+        issuer="https://as.example.com",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+        client_id="agnes-client",
+    )
+    expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    mcp_user_oauth_tokens_repo().upsert(
+        "src_oauth_renewable", "analyst1", "atok", refresh_token="rtok", expires_at=expires_at
+    )
+    r = seeded_app["client"].get(
+        "/api/mcp/sources/src_oauth_renewable/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["has_secret"] is True
+
+
 def test_my_secret_test_endpoint_uses_oauth_token_for_oauth_source(seeded_app, monkeypatch):
     """``…/my-secret/test`` on an oauth source introspects via
     ``list_tools_async`` (which already resolves the oauth token internally)

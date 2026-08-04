@@ -146,13 +146,14 @@ async def get_my_secret_status(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     _require_source_grant(source_id, user)
     if (source.get("auth_method") or "").lower() == "oauth":
+        from app.api.mcp_policy import oauth_connection_usable
         from src.repositories import mcp_user_oauth_tokens_repo
 
         row = mcp_user_oauth_tokens_repo().get(source_id, user["id"])
         expires_at = row.get("expires_at") if row else None
         updated_at = row.get("updated_at") if row else None
         return HasSecretResponse(
-            has_secret=row is not None,
+            has_secret=oauth_connection_usable(source_id, user["id"]),
             source_scope=(source.get("scope") or "shared"),
             updated_at=updated_at.isoformat() if updated_at else None,
             auth_kind="oauth",
