@@ -37,6 +37,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+
+## [0.78.1] - 2026-08-04
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
 - `aiohttp` floor raised to `>=3.14.3`, clearing three upstream advisories:
   an out-of-bounds heap read in the C HTTP response parser's error path
   (high, GHSA-cq5v-8q36-5273), HTTP request smuggling via a WebSocket upgrade

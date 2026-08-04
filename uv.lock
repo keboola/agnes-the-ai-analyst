@@ -35,7 +35,7 @@ wheels = [
 
 [[package]]
 name = "agnes-the-ai-analyst"
-version = "0.78.0"
+version = "0.78.1"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -129,6 +129,7 @@ telegram = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiohttp" },
     { name = "anthropic" },
     { name = "boto3" },
     { name = "faker" },
@@ -221,6 +222,7 @@ provides-extras = ["server", "observability", "embeddings", "docling", "slack-so
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "anthropic", specifier = ">=0.30.0" },
     { name = "boto3", specifier = ">=1.34" },
     { name = "faker", specifier = ">=24.0.0" },
