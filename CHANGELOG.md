@@ -84,7 +84,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   flows before writing the new registration, matching the source `url`
   repoint: the refresh path reads the endpoints and client secret straight off
   that row, so purge-last could leave it addressing a new authorization server
-  while the old server's refresh tokens were still on file.
+  while the old server's refresh tokens were still on file. A refresh failure
+  that is not an OAuth protocol error — an SSRF rejection when a token
+  endpoint later resolves to a blocked address — is caught on the same path
+  rather than escaping and failing the whole call without recording a
+  back-off.
 
 - A malformed `AGNES_VAULT_KEY` no longer 500s every request that reads a
   secret. `_get_fernet()` raises `RuntimeError` when the env var is set but is

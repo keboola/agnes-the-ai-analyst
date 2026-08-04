@@ -496,6 +496,25 @@ async def _refresh_oauth_token_with_lease(
                 _OAUTH_REFRESH_COOLDOWN_S,
             )
             return row["access_token"]
+        except Exception as exc:
+            # Anything the token call can raise that ISN'T an OAuthTokenError.
+            # httpx faults are already wrapped, but the SSRF-guard transport
+            # raises SSRFRejected — a plain Exception — so a token endpoint that
+            # later resolves to a blocked address (DNS change, rebind attempt)
+            # used to escape here, fail the whole MCP forward, and skip the
+            # cooldown: every subsequent call retried immediately, which is the
+            # hot loop the cooldown exists to prevent (Devin Review on #1124).
+            # Treated exactly like a non-invalid_grant AS error: back off, hand
+            # back the stale token, let the upstream reject it.
+            _start_refresh_cooldown(source_id, user_id)
+            logger.warning(
+                "mcp oauth refresh errored for source=%s user=%s: %s (backing off %.0fs)",
+                source_id,
+                user_id,
+                exc_summary(exc),
+                _OAUTH_REFRESH_COOLDOWN_S,
+            )
+            return row["access_token"]
 
         expires_at = _expiry_after_refresh(row, token_set.expires_in)
         # Rotated refresh tokens are persisted atomically with the new

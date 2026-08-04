@@ -525,3 +525,28 @@ def test_invalid_grant_is_not_put_in_cooldown(oauth_db, monkeypatch):
     monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _revoked)
     assert asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1")) is None
     assert mcp_client._refresh_in_cooldown("src_oauth1", "user1") is False
+
+
+def test_a_non_oauth_error_also_backs_off_instead_of_escaping(oauth_db, monkeypatch):
+    """`refresh_access_token` wraps httpx faults, but the SSRF-guard transport
+    raises `SSRFRejected`, a plain Exception. A token endpoint that later
+    resolves to a blocked address used to escape the refresh path entirely:
+    the whole MCP forward failed, no cooldown was recorded, and every
+    subsequent call retried immediately — the hot loop the cooldown exists to
+    prevent (Devin Review on #1124).
+    """
+    _seed_client_row(oauth_db)
+    _seed_token_row(oauth_db, expires_in_seconds=10, refresh_token="rt-1")
+
+    calls = []
+
+    async def _ssrf(**kwargs):
+        calls.append(1)
+        raise RuntimeError("SSRF: token endpoint resolved to a private address")
+
+    monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _ssrf)
+
+    for _ in range(3):
+        # Does not raise, and does not strand the caller without a token.
+        assert asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1")) == "at-1"
+    assert len(calls) == 1, f"AS was hit {len(calls)} times for 3 forwards — the error skipped the back-off"

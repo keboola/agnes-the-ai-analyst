@@ -1147,3 +1147,53 @@ def test_a_failed_token_purge_leaves_the_client_row_on_the_old_provider(seeded_a
     assert row["token_endpoint"] == "https://as.example.com/token", (
         "client row was repointed while the old provider's tokens were still on file"
     )
+
+
+def test_local_dev_can_configure_an_oauth_client_without_a_vault_key(seeded_app, monkeypatch):
+    """The pre-check that stops a doomed write from purging tokens first must
+    match the predicate `encrypt_secret` actually guards on.
+
+    `encrypt_secret` only refuses when the key is unset AND local-dev mode is
+    off — in local dev it deliberately falls back to the ephemeral key. Gating
+    on `vault_key_configured()` alone refused a request that would have
+    succeeded, so an admin on a dev install could never configure an OAuth
+    source (Devin Review on #1124).
+    """
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+    _reset_ephemeral_key_for_tests()
+
+    sid = _seed_oauth_source(source_id="src_oauth_localdev")
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}/oauth/client",
+        headers=_hdr(seeded_app),
+        json={
+            "client_id": "cid-dev",
+            "client_secret": "shh",
+            "authorization_endpoint": "https://as.example.com/authorize",
+            "token_endpoint": "https://as.example.com/token",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_a_public_client_needs_no_vault_key_at_all(seeded_app, monkeypatch):
+    """A PKCE-only client stores no secret material, so `encrypt_secret` is
+    never called and the vault-key pre-check must not fire."""
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    _reset_ephemeral_key_for_tests()
+
+    sid = _seed_oauth_source(source_id="src_oauth_public")
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}/oauth/client",
+        headers=_hdr(seeded_app),
+        json={
+            "client_id": "cid-public",
+            "authorization_endpoint": "https://as.example.com/authorize",
+            "token_endpoint": "https://as.example.com/token",
+        },
+    )
+    assert r.status_code == 200, r.text

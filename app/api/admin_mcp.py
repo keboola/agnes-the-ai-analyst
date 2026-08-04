@@ -46,7 +46,7 @@ from src.identifier_validation import is_safe_identifier
 
 from app.secrets_vault import (
     VaultKeyNotConfiguredError,
-    vault_key_configured,
+    can_store_secrets,
 )
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
@@ -1037,7 +1037,12 @@ async def register_oauth_client(
     # The one operator-triggerable failure of the write below is a missing
     # vault key. Check it here so a request that is going to 409 cannot first
     # destroy everyone's tokens (the write itself still raises, for the race).
-    if not vault_key_configured():
+    # Two things the check must NOT do, both of which would refuse a request
+    # that works: fire in local-dev mode, where encrypt_secret falls back to
+    # the ephemeral key on purpose, and fire for a public PKCE client, which
+    # stores no secret material and so never reaches encrypt_secret at all
+    # (Devin Review on #1124).
+    if (keep_secret or keep_rat) and not can_store_secrets():
         raise HTTPException(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
@@ -1184,10 +1189,10 @@ async def set_oauth_client_config(
                     'replace it, or send "" to clear it and convert this to a public client.'
                 ),
             )
-    # The one operator-triggerable failure of the write below is a missing
-    # vault key. Check it here so a request that is going to 409 cannot first
-    # destroy everyone's tokens (the write itself still raises, for the race).
-    if not vault_key_configured():
+    # See the same check in register_oauth_client: match the predicate
+    # encrypt_secret actually guards on (a key, OR local dev), and skip it
+    # entirely when there is no secret material to encrypt.
+    if (client_secret or keep_rat) and not can_store_secrets():
         raise HTTPException(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
@@ -1203,16 +1208,9 @@ async def set_oauth_client_config(
     # secret via Basic auth, to the new host. Purge-first leaves the row
     # untouched instead: users re-connect, nothing is disclosed. Same rule and
     # same reasoning as the source `url` repoint in update_mcp_source
-    # (Devin Review on #1124).
-    # A stored token is only usable against the exact (issuer, endpoints,
-    # client_id) it was minted for — so ANY change to that tuple strands it,
-    # not just a client_id swap. Repointing token_endpoint at a different
-    # authorization server while keeping client_id is the dangerous case: the
-    # refresh path reads the freshly-written row and would POST the OLD
-    # server's refresh token — and, when a secret is on file, the client
-    # secret via Basic auth — to the NEW host. Same reasoning as the source
-    # `url` repoint above; this is its mirror image on the client row
-    # (Devin Review on #1124).
+    # (Devin Review on #1124). ANY change to the (issuer, endpoints, client_id)
+    # tuple strands the tokens, not just a client_id swap — repointing
+    # token_endpoint while keeping client_id is the dangerous case.
     if existing and _oauth_identity_changed(
         existing,
         issuer=issuer,

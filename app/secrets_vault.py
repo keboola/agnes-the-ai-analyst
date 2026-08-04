@@ -70,6 +70,19 @@ def vault_key_configured() -> bool:
         return False
 
 
+def can_store_secrets() -> bool:
+    """True iff :func:`encrypt_secret` will accept a write right now.
+
+    Exactly the predicate ``encrypt_secret`` guards on — a configured key, OR
+    local-dev mode where the ephemeral fallback is deliberately allowed. Callers
+    that want to reject a doomed write BEFORE doing something irreversible must
+    use this rather than :func:`vault_key_configured`, which is the narrower
+    "is a real key configured" question and answers ``False`` in local dev where
+    the write would in fact succeed (Devin Review on #1124).
+    """
+    return vault_key_configured() or _is_local_dev_mode()
+
+
 def _get_fernet() -> Fernet:
     """Return a Fernet instance built from ``$AGNES_VAULT_KEY``, or an
     ephemeral key when the env var is absent.
