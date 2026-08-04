@@ -17314,7 +17314,7 @@
         ]
       },
       "put": {
-        "description": "Partial update. Audit row carries before/after for the changed fields.\n\n**Changing ``url`` discards every stored credential for the source** \u2014\nthe shared vault secret, all per-user secrets, and (when the source is\nOAuth) its client registration, user tokens and in-flight flows. This is\nirreversible and happens without a separate confirmation, because a\ncredential must never be forwarded to a host that did not issue it, and\na path-only edit can still be a different protected resource. Users\nre-connect afterwards. The audit row records ``credentials_purged`` so\nthe effect is traceable after the fact.",
+        "description": "Partial update. Audit row carries before/after for the changed fields.\n\n**Changing ``url`` on an http/sse source discards every stored credential\nfor it** \u2014 the shared vault secret, all per-user secrets, and (when the\nsource is OAuth) its client registration, user tokens and in-flight flows.\nThis is irreversible and happens without a separate confirmation, because\na credential must never be forwarded to a host that did not issue it, and\na path-only edit can still be a different protected resource. Users\nre-connect afterwards. The audit row records ``credentials_purged`` so the\neffect is traceable after the fact.\n\nFlipping a ``stdio`` source to http/sse purges too: it makes an already\nstored ``url`` live for the first time. Editing ``url`` on a row that stays\n``stdio`` does not \u2014 there the secret goes into the subprocess environment\nand the url is never read.",
         "operationId": "update_mcp_source_api_admin_mcp_sources__source_id__put",
         "parameters": [
           {

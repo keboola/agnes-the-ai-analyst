@@ -164,6 +164,18 @@ async def discover_protected_resource_metadata(
                 return _json_or_discovery_error(resp, candidate)
         except httpx.HTTPError as exc:
             logger.debug("protected-resource well-known fetch failed for %s: %s", candidate, exc_summary(exc))
+        except OAuthDiscoveryError as exc:
+            # A 200 carrying a junk body is not the metadata document — these
+            # URLs are PROBED, not advertised, and a host that answers unknown
+            # paths with a catch-all HTML page (SPA, edge proxy) returns 200
+            # for both. Letting that abort the search skipped the remaining
+            # candidate AND the 401-challenge fallback, which is the path the
+            # design spec calls out as the observed real-world case — so the
+            # one shape most likely to need the fallback was the one shape
+            # that never reached it. The hard error is kept below for the
+            # resource_metadata URL the server explicitly advertised, where a
+            # junk body IS the actionable answer (Devin Review on #1124).
+            logger.debug("protected-resource well-known at %s is not a metadata document: %s", candidate, exc)
 
     try:
         probe = await client.get(source_url)

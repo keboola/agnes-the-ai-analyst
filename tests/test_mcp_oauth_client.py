@@ -109,12 +109,25 @@ def test_discover_protected_resource_falls_back_to_suffix_form():
     assert calls[1] == "https://mcp.example.com/mcp/.well-known/oauth-protected-resource"
 
 
-def test_discovery_junk_json_is_translated():
+def test_junk_json_at_the_advertised_metadata_url_is_translated():
     """A 200 with a non-JSON body must raise OAuthDiscoveryError, not a raw
-    ValueError that would surface as a 500 (Devin Review on #1124)."""
+    ValueError that would surface as a 500 (Devin Review on #1124).
+
+    Asserted at the URL the server ADVERTISED via its 401 challenge: there a
+    junk body is the actionable answer and there is nothing left to try. On a
+    probed well-known path it means "not the document" instead — see
+    test_a_catch_all_html_host_still_reaches_the_401_fallback.
+    """
 
     def handler(request):
-        return httpx.Response(200, text="<html>not json</html>")
+        if str(request.url) == "https://mcp.example.com/mcp":
+            return httpx.Response(
+                401,
+                headers={"WWW-Authenticate": 'Bearer resource_metadata="https://mcp.example.com/.well-known/rm"'},
+            )
+        if str(request.url) == "https://mcp.example.com/.well-known/rm":
+            return httpx.Response(200, text="<html>not json</html>")
+        return httpx.Response(404)
 
     async def _impl():
         async with _client(handler) as client:
@@ -122,6 +135,39 @@ def test_discovery_junk_json_is_translated():
 
     with pytest.raises(OAuthDiscoveryError, match="not valid JSON"):
         run(_impl())
+
+
+def test_a_catch_all_html_host_still_reaches_the_401_fallback():
+    """A host that answers unknown paths with a catch-all 200 HTML page (SPA,
+    edge proxy) used to abort discovery at the first probed well-known URL: the
+    junk body raised out of the candidate loop, so the second candidate AND the
+    401-challenge fallback were never tried. That shape is precisely the one
+    the design spec names as the observed real-world case, so the servers most
+    likely to need the fallback were the ones that never reached it
+    (Devin Review on #1124).
+    """
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if str(request.url) == "https://mcp.example.com/mcp":
+            return httpx.Response(
+                401,
+                headers={"WWW-Authenticate": 'Bearer resource_metadata="https://mcp.example.com/.well-known/rm"'},
+            )
+        if str(request.url) == "https://mcp.example.com/.well-known/rm":
+            return httpx.Response(200, json={"authorization_servers": ["https://as.example.com"]})
+        # Every other path: the catch-all landing page.
+        return httpx.Response(200, text="<!doctype html><title>Our API</title>")
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await discover_protected_resource_metadata("https://mcp.example.com/mcp", client=client)
+
+    meta = run(_impl())
+    assert meta["authorization_servers"] == ["https://as.example.com"]
+    # Both well-known candidates were probed and rejected before the fallback.
+    assert sum(".well-known/oauth-protected-resource" in c for c in calls) == 2
 
 
 def test_discover_protected_resource_falls_back_to_401_challenge():
@@ -591,6 +637,7 @@ def test_registration_fails_closed_on_post_only_client_auth():
 
     with pytest.raises(OAuthDiscoveryError, match="client_secret_basic"):
         run(_impl())
+
 
 def test_async_ssrf_transport_does_not_block_the_event_loop():
     """resolve_safe() calls a blocking socket.getaddrinfo(); the async

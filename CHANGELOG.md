@@ -92,7 +92,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   that is not an OAuth protocol error — an SSRF rejection when a token
   endpoint later resolves to a blocked address — is caught on the same path
   rather than escaping and failing the whole call without recording a
-  back-off.
+  back-off. Protected-resource discovery no longer gives up when a *probed*
+  well-known URL answers 200 with a non-JSON body: a host that serves a
+  catch-all HTML page for unknown paths aborted discovery at the first
+  candidate, skipping the second and the `401`-challenge fallback — the very
+  path such a host needs. A junk body at the `resource_metadata` URL the
+  server explicitly advertised is still a hard, actionable error.
 
 - A malformed `AGNES_VAULT_KEY` no longer 500s every request that reads a
   secret. `_get_fernet()` raises `RuntimeError` when the env var is set but is
@@ -114,6 +119,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- `make update-openapi-snapshot` generates to a temp file and moves it into
+  place, and runs the project venv's interpreter rather than whatever `python`
+  is on PATH. The shell truncates a `>` target before the command runs, so a
+  generator that failed to import left the committed snapshot empty — which
+  the freshness check then reported as the entire API having been removed.
+
 - Re-registering an OAuth MCP source no longer discards a client secret or
   registration access token the authorization server did not re-issue. RFC
   7591 requires neither on a deduped registration, so an AS that answers a
