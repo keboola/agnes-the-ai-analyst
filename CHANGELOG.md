@@ -82,6 +82,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
+- Repointing an OAuth source's endpoints no longer keeps the previous
+  provider's client secret. Retention of the stored secret and registration
+  access token was keyed on `client_id` alone while the token purge compared
+  the whole `(issuer, authorization_endpoint, token_endpoint, client_id)`
+  identity, so a PUT that moved a source to a different authorization server
+  while re-typing the same client name purged every analyst's tokens yet left
+  the old provider's secret on the row — where client auth sends it as HTTP
+  Basic to the new token endpoint, and the retained registration token is
+  bearer-sent to the new provider too. Both halves now use the one identity
+  predicate, on the DCR path as well as the manual one.
+
 - `agnes admin mcp source oauth-client` gains `--keep-secret`, and the two
   commands that read secret material from stdin now say so first. The endpoint
   has three secret states — replace, clear, leave alone — but the CLI exposed

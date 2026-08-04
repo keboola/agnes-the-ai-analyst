@@ -1461,3 +1461,72 @@ def test_an_explicit_null_transport_is_refused_before_the_purge(seeded_app):
     )
     assert r.status_code == 400, r.text
     assert per_user_secrets_repo().has(sid, "admin1") is True
+
+
+def test_repointing_the_endpoints_drops_the_old_providers_secret(seeded_app, monkeypatch):
+    """Credential retention and the token purge must judge the same thing.
+
+    Retention keyed on `client_id` alone while the purge compared all four
+    identity fields, so a PUT that moved `issuer`/`token_endpoint` to a
+    DIFFERENT authorization server while re-typing the same client name purged
+    the user tokens yet kept the previous provider's client secret — which
+    `_client_auth_kwargs` then sends as HTTP Basic to the new token endpoint
+    (Devin Review on #1124).
+    """
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_repoint_secret")
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-shared")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    assert mcp_source_oauth_clients_repo().get(sid)["client_secret"] == "new-secret"
+
+    # Same client_id, different authorization server, no secret supplied.
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}/oauth/client",
+        headers=_hdr(seeded_app),
+        json={
+            "client_id": "cid-shared",
+            "authorization_endpoint": "https://other-as.example.com/authorize",
+            "token_endpoint": "https://other-as.example.com/token",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row["token_endpoint"] == "https://other-as.example.com/token"
+    assert row["client_secret"] is None, "the previous provider's secret was re-aimed at the new one"
+    assert row["registration_access_token"] is None, "…and so was its deregistration token"
+
+
+def test_a_scopes_only_edit_still_keeps_the_secret(seeded_app, monkeypatch):
+    """The counterpart — retention must not become so strict that an ordinary
+    re-save wipes a write-only field the form cannot resubmit."""
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_scopes_only")
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-keep")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}/oauth/client",
+        headers=_hdr(seeded_app),
+        json={
+            "client_id": "cid-keep",
+            "authorization_endpoint": "https://as.example.com/authorize",
+            "token_endpoint": "https://as.example.com/token",
+            "scopes": "read write",
+        },
+    )
+    assert r.status_code == 200, r.text
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row["scopes"] == "read write"
+    assert row["client_secret"] == "new-secret"
+    assert row["registration_access_token"] == "new-rat"

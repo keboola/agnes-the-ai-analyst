@@ -1079,7 +1079,17 @@ async def register_oauth_client(
     # sending Basic auth and every token call fails. A DIFFERENT client_id is
     # a new registration and replaces both wholesale (Devin Review on #1124
     # for the RAT; the secret has the same exposure).
-    same_client = bool(existing) and existing.get("client_id") == registered.client_id
+    # Same predicate as the manual PUT and as the token purge below: discovery
+    # can hand back new endpoints for an unchanged client_id, and a secret
+    # minted by the old authorization server must not be paired with the new
+    # one (Devin Review on #1124).
+    same_client = bool(existing) and not _oauth_identity_changed(
+        existing,
+        issuer=registered.issuer,
+        authorization_endpoint=registered.authorization_endpoint,
+        token_endpoint=registered.token_endpoint,
+        client_id=registered.client_id,
+    )
     keep_secret = registered.client_secret
     if keep_secret is None and same_client:
         keep_secret = existing.get("client_secret")
@@ -1227,14 +1237,29 @@ async def set_oauth_client_config(
     issuer = payload.issuer or _url_origin(payload.authorization_endpoint)
 
     clients_repo = mcp_source_oauth_clients_repo()
-    # A manual PUT for the SAME client_id is a tweak (endpoints/scopes/secret)
-    # of a possibly DCR-created registration — keep its registration access
-    # token so a later re-register can still revoke it upstream. A different
-    # client_id replaces the registration entirely; the old RAT belongs to
-    # the old client and must not be paired with the new one (Devin Review
-    # on #1124).
+    # A PUT that leaves the registration's IDENTITY alone is a tweak (scopes,
+    # a re-typed secret) — keep the stored secret and registration access
+    # token, since a form re-save has nothing to resubmit for a write-only
+    # field. Anything that moves the identity replaces the registration, and
+    # the old credentials belong to the old one.
+    #
+    # "Identity" is the same four fields the token purge below uses, NOT
+    # client_id alone. Keying retention on client_id let the two disagree for
+    # the request where it matters most: repointing issuer/token_endpoint at a
+    # DIFFERENT authorization server while re-typing the same client name
+    # purged the user tokens (identity changed) yet kept the previous
+    # provider's client secret — which _client_auth_kwargs then sends as HTTP
+    # Basic to the new token_endpoint, and best_effort_revoke_registration
+    # bearer-sends the retained registration token to the new provider too
+    # (Devin Review on #1124).
     existing = clients_repo.get(source_id)
-    same_client = bool(existing) and existing.get("client_id") == payload.client_id
+    same_client = bool(existing) and not _oauth_identity_changed(
+        existing,
+        issuer=issuer,
+        authorization_endpoint=payload.authorization_endpoint,
+        token_endpoint=payload.token_endpoint,
+        client_id=payload.client_id,
+    )
     keep_rat = existing.get("registration_access_token") if same_client else None
     if keep_rat is None and same_client and existing.get("registration_access_token_present"):
         # See register_oauth_client: a decrypted None cannot round-trip a
@@ -1242,11 +1267,11 @@ async def set_oauth_client_config(
         # loses the only means of deregistering upstream.
         keep_rat = KEEP_STORED
     # The secret is write-only over the API (GET never echoes it), so a form
-    # re-saving scopes/endpoints has nothing to resubmit and arrives with
-    # client_secret=None. Treat that as "leave it alone" for the SAME
-    # client_id — passing it through wipes client_secret_enc and breaks every
+    # re-saving scopes has nothing to resubmit and arrives with
+    # client_secret=None. Treat that as "leave it alone" for an UNCHANGED
+    # identity — passing it through wipes client_secret_enc and breaks every
     # user's refresh (Devin Review on #1124). An explicit "" still clears it
-    # for a public PKCE-only client, and a different client_id replaces the
+    # for a public PKCE-only client, and a changed identity replaces the
     # registration and its secret wholesale.
     client_secret = payload.client_secret
     if client_secret is None and same_client:
