@@ -445,3 +445,20 @@ def test_every_compose_coupled_knob_is_reported_together():
         )
     )
     assert len(msgs) == 3  # one per knob, not first-one-wins
+
+
+def test_an_empty_config_key_falls_back_to_its_documented_default(tmp_path):
+    """A key written with nothing after it is PRESENT and holds None, so a
+    `.get(key, default)` default never applies. For docker_egress_mode that
+    produced "none" — itself a valid mode — so sandboxes lost all egress
+    and the unknown-value warning could not fire either.
+    """
+    from app.chat.config import load_chat_config
+
+    cfg_file = tmp_path / "instance.yaml"
+    cfg_file.write_text("chat:\n  enabled: true\n  provider:\n  docker_egress_mode:\n  on_detach:\n")
+    cfg = load_chat_config(cfg_file)
+
+    assert cfg.docker_egress_mode == "open"  # not "none"
+    assert cfg.provider == "e2b"  # not "None"
+    assert cfg.on_detach == "pause"

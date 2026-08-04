@@ -201,7 +201,12 @@ def _parse_docker_egress_mode(raw: dict) -> str:
     """``open`` | ``none`` | ``allowlist``; anything else warns and falls
     back to ``open`` (same normalize-don't-crash convention as
     ``_parse_on_detach``)."""
-    mode = str(raw.get("docker_egress_mode", "open")).strip().lower()
+    # `or`, not a .get() default: `docker_egress_mode:` with nothing after
+    # it is a PRESENT key holding None, so the default never applies and
+    # str(None) is "none" — itself a valid mode, so the warning below
+    # cannot fire either. The operator gets sandboxes with no route out and
+    # nothing saying why (Devin Review on #1148).
+    mode = str(raw.get("docker_egress_mode") or "open").strip().lower()
     if mode not in ("open", "none", "allowlist"):
         logger.warning("unknown chat.docker_egress_mode %r — falling back to 'open'", mode)
         mode = "open"
@@ -209,7 +214,10 @@ def _parse_docker_egress_mode(raw: dict) -> str:
 
 
 def _parse_on_detach(raw: dict) -> str:
-    on_detach = str(raw.get("on_detach", "")).strip().lower()
+    # Same reason as _parse_docker_egress_mode: an empty key yields "none",
+    # which lands on the right default here only because "none" happens not
+    # to be an accepted value — but it warns about a value nobody wrote.
+    on_detach = str(raw.get("on_detach") or "").strip().lower()
     if on_detach not in ("pause", "kill"):
         if on_detach:
             logger.warning("unknown chat.on_detach %r — falling back to 'pause'", on_detach)
@@ -249,7 +257,10 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
     detach_linger_seconds = int(raw.get("detach_linger_seconds", 60))
     return ChatConfig(
         enabled=_resolve_chat_enabled(raw),
-        provider=str(raw.get("provider", "e2b")),
+        # `or` for the same reason as the two parsers above — an empty
+        # `provider:` key would otherwise become the string "None", which
+        # reaches the e2b branch only by not being "docker".
+        provider=str(raw.get("provider") or "e2b"),
         concurrency_per_user=int(raw.get("concurrency_per_user", 3)),
         idle_ttl_seconds=int(raw.get("idle_ttl_seconds", 30 * 60)),
         per_tool_call_seconds=int(raw.get("per_tool_call_seconds", 90)),
