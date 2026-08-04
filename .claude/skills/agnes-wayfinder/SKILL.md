@@ -132,7 +132,12 @@ from the queue (see mode 2 step 2).
 # different clothes: something unrecognised defaulted to "blocked", and the
 # question left the queue while the effort read as finished. A stray ticket in
 # the list is a nuisance; a lost one is the failure this skill exists to catch.
-M=docs/superpowers/maps/<effort>/issues
+EFFORT='<effort>'                     # ← fill this in first (quoted: bare <…> is a redirection)
+M=docs/superpowers/maps/$EFFORT/issues
+# Loudly, because the alternative is worse than an error: an unset or wrong
+# path globs nothing, the loop prints no tickets, and "no work left" is the
+# hand-off signal. A missing map must not read as a finished one.
+[ -d "$M" ] || { echo "no such map: $M — set EFFORT" >&2; return 2 2>/dev/null || exit 2; }
 for f in "$M"/*.md; do
   # An unmatched glob stays literal in POSIX shells, so on a map with no
   # tickets yet `$f` is the pattern itself. Skipping a non-existent path is
