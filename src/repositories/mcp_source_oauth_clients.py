@@ -23,6 +23,24 @@ import duckdb
 from app.secrets_vault import decrypt_optional, encrypt_secret
 
 
+class _Keep:
+    """Sentinel for "leave this encrypted column exactly as stored"."""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "KEEP_STORED"
+
+
+#: Pass as ``registration_access_token`` to preserve the stored ciphertext.
+#:
+#: Needed because a decrypted value cannot round-trip a column the current
+#: vault key can no longer open: ``get()`` hands back ``None`` for both "no
+#: token" and "token we can't read", so writing that ``None`` back destroys
+#: still-valid ciphertext and permanently disables upstream deregistration.
+#: Callers use it together with ``registration_access_token_present``
+#: (Devin Review on #1124).
+KEEP_STORED = _Keep()
+
+
 class MCPSourceOAuthClientRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
@@ -36,19 +54,25 @@ class MCPSourceOAuthClientRepository:
         authorization_endpoint: str,
         token_endpoint: str,
         client_secret: Optional[str] = None,
-        registration_access_token: Optional[str] = None,
+        registration_access_token: Any = None,
         scopes: Optional[str] = None,
     ) -> None:
         """Insert or replace the OAuth client registration for ``source_id``.
 
         Idempotent re-registration: a second call for the same ``source_id``
-        (e.g. after DCR rotation) replaces the row wholesale.
+        (e.g. after DCR rotation) replaces the row wholesale. Pass
+        :data:`KEEP_STORED` for ``registration_access_token`` to leave that
+        one column untouched.
         """
         now = datetime.now(timezone.utc)
         secret_enc = encrypt_secret(client_secret) if client_secret else None
-        rat_enc = encrypt_secret(registration_access_token) if registration_access_token else None
+        keep_rat = isinstance(registration_access_token, _Keep)
+        rat_enc = (
+            None if keep_rat else (encrypt_secret(registration_access_token) if registration_access_token else None)
+        )
+        rat_update = "registration_access_token_enc" if keep_rat else "excluded.registration_access_token_enc"
         self.conn.execute(
-            """INSERT INTO mcp_source_oauth_clients
+            f"""INSERT INTO mcp_source_oauth_clients
                (source_id, issuer, client_id, client_secret_enc, registration_access_token_enc,
                 authorization_endpoint, token_endpoint, scopes, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -56,7 +80,7 @@ class MCPSourceOAuthClientRepository:
                    issuer                         = excluded.issuer,
                    client_id                      = excluded.client_id,
                    client_secret_enc              = excluded.client_secret_enc,
-                   registration_access_token_enc  = excluded.registration_access_token_enc,
+                   registration_access_token_enc  = {rat_update},
                    authorization_endpoint         = excluded.authorization_endpoint,
                    token_endpoint                 = excluded.token_endpoint,
                    scopes                         = excluded.scopes,
@@ -98,6 +122,7 @@ class MCPSourceOAuthClientRepository:
         # still open it. `client_secret` alone cannot tell "no secret" from
         # "secret we can no longer read" (Devin Review on #1124).
         d["client_secret_present"] = secret_enc is not None
+        d["registration_access_token_present"] = rat_enc is not None
         d["client_secret"] = decrypt_optional(
             secret_enc, context=f"mcp_source_oauth_clients.client_secret[{source_id}]"
         )

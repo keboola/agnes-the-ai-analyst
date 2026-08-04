@@ -417,3 +417,73 @@ def test_oauth_client_secret_absent_reports_not_present(oauth_clients_repo, monk
     row = oauth_clients_repo.get("src-pub2")
     assert row["client_secret"] is None
     assert row["client_secret_present"] is False
+
+
+def test_keep_stored_preserves_a_registration_token_the_key_cannot_open(oauth_clients_repo, monkeypatch):
+    """A decrypted value cannot round-trip a column the current vault key can
+    no longer open: `get()` returns None for both "no token" and "token we
+    can't read", so an ordinary re-save wrote NULL over still-valid ciphertext
+    and permanently disabled upstream deregistration —
+    `best_effort_revoke_registration` returns early without a token. The
+    presence flag distinguishes the two states and `KEEP_STORED` preserves the
+    column (Devin Review on #1124). Both backends must agree.
+    """
+    from app.secrets_vault import _reset_ephemeral_key_for_tests
+    from src.repositories.mcp_source_oauth_clients import KEEP_STORED
+
+    key_a = "TWMxHbnAmXbo9lHXNfLC8_ItqIYWatKQ_rOx1Vgg1yA="
+    key_b = "kQ9WkkFvvQ0dQXKtGZLUpb0N7cHRTiDSCNSHKmZfXBg="
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", key_a)
+    oauth_clients_repo.upsert(
+        "src-keep",
+        issuer="https://as.example.com",
+        client_id="cid-keep",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+        registration_access_token="rat-secret",
+    )
+    row = oauth_clients_repo.get("src-keep")
+    assert row["registration_access_token"] == "rat-secret"
+    assert row["registration_access_token_present"] is True
+
+    # Key rotated: unreadable, but still stored.
+    monkeypatch.setenv("AGNES_VAULT_KEY", key_b)
+    _reset_ephemeral_key_for_tests()
+    rotated = oauth_clients_repo.get("src-keep")
+    assert rotated["registration_access_token"] is None
+    assert rotated["registration_access_token_present"] is True
+
+    # An ordinary re-save (new scopes) preserving the column.
+    oauth_clients_repo.upsert(
+        "src-keep",
+        issuer="https://as.example.com",
+        client_id="cid-keep",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+        registration_access_token=KEEP_STORED,
+        scopes="read write",
+    )
+    after = oauth_clients_repo.get("src-keep")
+    assert after["scopes"] == "read write", "the rest of the row still updates"
+    assert after["registration_access_token_present"] is True, "the stored token was destroyed"
+
+    # And it is the ORIGINAL ciphertext — readable again under the old key.
+    monkeypatch.setenv("AGNES_VAULT_KEY", key_a)
+    _reset_ephemeral_key_for_tests()
+    assert oauth_clients_repo.get("src-keep")["registration_access_token"] == "rat-secret"
+
+
+def test_a_registration_token_absent_reports_not_present(oauth_clients_repo, monkeypatch):
+    """The other side, so callers can tell "no token" from "unreadable token"."""
+    monkeypatch.setenv("AGNES_VAULT_KEY", "TWMxHbnAmXbo9lHXNfLC8_ItqIYWatKQ_rOx1Vgg1yA=")
+    oauth_clients_repo.upsert(
+        "src-no-rat",
+        issuer="https://as.example.com",
+        client_id="cid-no-rat",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+    )
+    row = oauth_clients_repo.get("src-no-rat")
+    assert row["registration_access_token"] is None
+    assert row["registration_access_token_present"] is False

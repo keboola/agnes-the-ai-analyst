@@ -12,6 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
 from app.secrets_vault import decrypt_optional, encrypt_secret
+from src.repositories.mcp_source_oauth_clients import KEEP_STORED, _Keep  # noqa: F401  # KEEP_STORED re-exported for PG callers
 
 
 class MCPSourceOAuthClientPgRepository:
@@ -27,16 +28,29 @@ class MCPSourceOAuthClientPgRepository:
         authorization_endpoint: str,
         token_endpoint: str,
         client_secret: Optional[str] = None,
-        registration_access_token: Optional[str] = None,
+        registration_access_token: Any = None,
         scopes: Optional[str] = None,
     ) -> None:
+        """Mirrors the DuckDB sibling, including :data:`KEEP_STORED` for
+        ``registration_access_token`` — see its docstring for why a decrypted
+        value cannot round-trip an unreadable column."""
         now = datetime.now(timezone.utc)
         secret_enc = encrypt_secret(client_secret) if client_secret else None
-        rat_enc = encrypt_secret(registration_access_token) if registration_access_token else None
+        keep_rat = isinstance(registration_access_token, _Keep)
+        rat_enc = (
+            None if keep_rat else (encrypt_secret(registration_access_token) if registration_access_token else None)
+        )
+        # Table-qualified: a bare column name on the right of DO UPDATE SET is
+        # ambiguous in Postgres (it could be the excluded row's).
+        rat_update = (
+            "mcp_source_oauth_clients.registration_access_token_enc"
+            if keep_rat
+            else "EXCLUDED.registration_access_token_enc"
+        )
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
-                    """INSERT INTO mcp_source_oauth_clients
+                    f"""INSERT INTO mcp_source_oauth_clients
                            (source_id, issuer, client_id, client_secret_enc,
                             registration_access_token_enc, authorization_endpoint,
                             token_endpoint, scopes, created_at, updated_at)
@@ -47,7 +61,7 @@ class MCPSourceOAuthClientPgRepository:
                            issuer                         = EXCLUDED.issuer,
                            client_id                      = EXCLUDED.client_id,
                            client_secret_enc              = EXCLUDED.client_secret_enc,
-                           registration_access_token_enc  = EXCLUDED.registration_access_token_enc,
+                           registration_access_token_enc  = {rat_update},
                            authorization_endpoint         = EXCLUDED.authorization_endpoint,
                            token_endpoint                 = EXCLUDED.token_endpoint,
                            scopes                         = EXCLUDED.scopes,
@@ -85,6 +99,7 @@ class MCPSourceOAuthClientPgRepository:
         # still open it. `client_secret` alone cannot tell "no secret" from
         # "secret we can no longer read" (Devin Review on #1124).
         d["client_secret_present"] = secret_enc is not None
+        d["registration_access_token_present"] = rat_enc is not None
         d["client_secret"] = decrypt_optional(
             secret_enc, context=f"mcp_source_oauth_clients.client_secret[{source_id}]"
         )

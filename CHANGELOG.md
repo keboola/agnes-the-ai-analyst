@@ -77,6 +77,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
+- An OAuth client re-save no longer discards a registration access token the
+  current vault key cannot open. The repositories decrypt that column with the
+  same helper that reports `None` for a NULL column, so "no token" and "token
+  we can no longer read" were indistinguishable — an ordinary re-save after a
+  key rotation wrote NULL over still-valid ciphertext and permanently disabled
+  deregistering the client upstream, leaving a dangling registration at the
+  authorization server. Both backends now expose
+  `registration_access_token_present` alongside `client_secret_present`, and a
+  `KEEP_STORED` sentinel preserves the column instead of round-tripping a
+  decrypted value through it. Covered by the cross-engine contract test.
+
 - OAuth MCP refresh survives a response that omits `expires_in`, backs off
   after a failed attempt, and never repoints a client row ahead of purging the
   tokens it strands. `expires_in` is RECOMMENDED rather than required (RFC

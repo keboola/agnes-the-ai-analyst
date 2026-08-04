@@ -45,6 +45,7 @@ from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.identifier_validation import is_safe_identifier
 
+from src.repositories.mcp_source_oauth_clients import KEEP_STORED
 from app.secrets_vault import (
     VaultKeyNotConfiguredError,
     can_store_secrets,
@@ -1088,6 +1089,14 @@ async def register_oauth_client(
     keep_rat = registered.registration_access_token
     if keep_rat is None and same_client:
         keep_rat = existing.get("registration_access_token")
+        if keep_rat is None and existing.get("registration_access_token_present"):
+            # Present but unreadable under the current vault key. `get()` cannot
+            # distinguish that from "no token", so writing the decrypted None
+            # back would destroy still-valid ciphertext and silently disable
+            # upstream deregistration forever — best_effort_revoke_registration
+            # returns early without a token. Preserve the column instead
+            # (Devin Review on #1124).
+            keep_rat = KEEP_STORED
     # The one operator-triggerable failure of the write below is a missing
     # vault key. Check it here so a request that is going to 409 cannot first
     # destroy everyone's tokens (the write itself still raises, for the race).
@@ -1218,6 +1227,11 @@ async def set_oauth_client_config(
     existing = clients_repo.get(source_id)
     same_client = bool(existing) and existing.get("client_id") == payload.client_id
     keep_rat = existing.get("registration_access_token") if same_client else None
+    if keep_rat is None and same_client and existing.get("registration_access_token_present"):
+        # See register_oauth_client: a decrypted None cannot round-trip a
+        # column the current vault key can no longer open, and overwriting it
+        # loses the only means of deregistering upstream.
+        keep_rat = KEEP_STORED
     # The secret is write-only over the API (GET never echoes it), so a form
     # re-saving scopes/endpoints has nothing to resubmit and arrives with
     # client_secret=None. Treat that as "leave it alone" for the SAME

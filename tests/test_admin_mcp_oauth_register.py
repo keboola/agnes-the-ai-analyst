@@ -1354,3 +1354,49 @@ def test_an_edit_that_purges_nothing_says_so(seeded_app):
     params = _last_audit("mcp_source.update", f"mcp_source:{sid}")
     assert params["credentials_purged"] is False
     assert params["purged_kinds"] == []
+
+
+def test_a_resave_after_key_rotation_keeps_the_deregistration_token(seeded_app, monkeypatch):
+    """End-to-end counterpart to the repo contract test: an ordinary re-save
+    through the manual PUT must not destroy a registration access token the
+    current vault key can no longer open. Losing it silently disables
+    deregistering the client upstream, leaving a dangling registration behind
+    (Devin Review on #1124)."""
+    from app.secrets_vault import _reset_ephemeral_key_for_tests
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    key_a = Fernet.generate_key().decode()
+    monkeypatch.setenv("AGNES_VAULT_KEY", key_a)
+    _reset_ephemeral_key_for_tests()
+
+    sid = _seed_oauth_source(source_id="src_rat_rotate")
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-rot")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token"] == "new-rat"
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    _reset_ephemeral_key_for_tests()
+    assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token"] is None
+    assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token_present"] is True
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}/oauth/client",
+        headers=_hdr(seeded_app),
+        json={
+            "client_id": "cid-rot",
+            "client_secret": "re-entered",  # the secret path already demands this
+            "authorization_endpoint": "https://as.example.com/authorize",
+            "token_endpoint": "https://as.example.com/token",
+            "scopes": "read",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token_present"] is True
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", key_a)
+    _reset_ephemeral_key_for_tests()
+    assert mcp_source_oauth_clients_repo().get(sid)["registration_access_token"] == "new-rat"
