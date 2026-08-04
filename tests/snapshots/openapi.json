@@ -9710,7 +9710,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.78.0"
+    "version": "0.78.1"
   },
   "openapi": "3.1.0",
   "paths": {
