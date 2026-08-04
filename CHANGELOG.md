@@ -27,21 +27,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   signed state are now redacted from the server's own access log for the
   callback path — operators should apply the same redaction in their
   TLS-terminating reverse proxy's access log (see `docs/DEPLOYMENT.md`).
-
-### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.33] - 2026-07-31
-
-### Added
-
 - Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
   behavior yet): schema v109 adds `mcp_source_oauth_clients`,
   `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
@@ -80,6 +65,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`SECURITY.md` — public threat model and vulnerability-reporting process.** States the deployment/trust model (single-org per instance; the agent sandbox is never trusted to make authorization decisions), documents the controls that carry the most weight (the secret broker keeping credential material out of the sandbox, live per-request agent scope intersection, server-side data-access checks on every read surface, VM-level sandbox egress, the untrusted-input controls, the Fernet secret vault), and lists known limitations honestly — unscreened prompt injection, `bypassPermissions` inside the sandbox, admin god-mode, non-revocable 30-day session cookies, `SameSite`-only CSRF, coarse data-app isolation, non-tamper-evident audit, unencrypted data at rest, and the unsigned-artifact/unpinned-marketplace supply chain. Closes with an operator security checklist. Linked from `README.md` and `docs/README.md`; reports go through GitHub private vulnerability reporting.
 
 ### Changed
+
 - **Editing an MCP source's `url` now discards every stored credential for
   that source, not just the OAuth ones.** The shared vault secret and every
   analyst's per-user secret are dropped alongside the OAuth client
@@ -113,6 +99,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
+
 - Repointing an OAuth source's endpoints no longer keeps the previous
   provider's client secret. Retention of the stored secret and registration
   access token was keyed on `client_id` alone while the token purge compared
@@ -216,6 +203,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
 - Duplicate MCP source names surface as 409 on both backends — Postgres raises
   the unique violation as a SQLAlchemy `IntegrityError`, which fell through to
   a 500. It matters more now that the credential purge runs before the write:
@@ -244,6 +232,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - The committed OpenAPI snapshot (`tests/snapshots/openapi.json`) is now enforced for freshness and has been regenerated. The existing guard was a one-directional ratchet — it fired only when a path or method *disappeared* — so added routes and in-place operation changes rotted the snapshot silently while CI stayed green: the file had drifted to 468 paths against the app's 509 (41 missing, including `/agents`, `/api/data-apps*`, and `/admin/studio`), with a further 22 paths stale in place (for example the `/admin/contribute-skill/{name}/delete` form POST was recorded with no request body). A new `test_snapshot_is_fresh` compares the whole document and fails with the added/removed/changed paths plus the `make update-openapi-snapshot` remedy. `info.version` is normalized out of the comparison: it resolves from installed package metadata, so comparing it would red every release-cut PR without ever catching an API change.
 
 ### Security
+
 - Cloud chat approval gate: the workspace PreToolUse hook's `ask` verdicts are now enforced end-to-end. Under `bypassPermissions` the CLI silently executed `ask`-flagged commands (verified empirically — `agnes admin …` mutations ran with no confirmation); the runner's new in-process `ApprovalGate` suspends the tool call, web chat renders an Allow once / Allow for session / Deny card (co-drive participants included, decisions audited), and timeout (`chat.approval_timeout_seconds`, default 300 s), Stop, or a non-interactive surface all resolve to deny. The turn's idle watchdog no longer counts the time a user spends deciding: it polls in slices and restarts the budget while an approval is outstanding, so a tool approved late in the window is not aborted moments later as "stuck". It also keeps the in-flight stream read shielded across those polls — cancelling an `__anext__` closes the underlying async generator, so the previous retry-after-timeout would have ended the turn silently on exactly the approvals this feature introduces. The gate also accepts the nested `hookSpecificOutput` verdict shape the Claude Code spec allows, not only the flat one the bundled hook emits, and logs when a hook returns JSON carrying no recognizable decision — otherwise an operator override written against the spec would have its `ask`/`deny` rules silently ignored. The wedged-turn drain is bounded as a whole rather than per message, so a hung agent cannot hold the chat before the next message is served. Forwarding a decision to another replica no longer lets a coordination failure escape into the caller's WebSocket loop and drop their chat — it is logged like the cross-gateway kill path already does, and the gate's own timeout still finishes the turn. A pending approval card also survives a reconnect: the frame-dedup guard exempts approval frames, whose handlers are keyed by `request_id` and already no-op on re-delivery, so a brief disconnect no longer leaves the user without Allow/Deny buttons and the command stalled until the gate times out. On an SDK whose `HookMatcher` takes no `timeout` the hook is still registered, with the gate disabled: a disabled gate denies instantly, so there is no wait for a CLI-side hook timeout to cut short — whereas skipping registration would leave nothing to deny and `ask` verdicts would run unasked. When the SDK cannot register a PreToolUse hook at all (no `hooks` field, no `HookMatcher`) approvals genuinely cannot be enforced; that is logged as such rather than described as failing closed. Delivering a decision to a sandbox that has since died is logged rather than allowed to escape into the caller's WebSocket loop. Unanswered cards are tracked as their own session state rather than as turn-replay frames — a pending approval outlives the turn it was raised in — so they survive both a reconnect and the caller typing meanwhile, without pinning the replay watermark and making a reconnect skip everything said since. They are dropped whenever the session's runner process is swapped — every handle swap goes through one helper, so a resume-failure respawn cannot leave a card whose request id the fresh gate would silently drop. The web client mirrors the same separation: pending cards are re-drawn after any transcript reload, so a `full_refresh` racing a replayed card cannot erase it, and dropped when switching conversations so one conversation's card cannot appear in another; an id the user already answered is remembered, so a replay cannot resurrect it as if it still needed a decision. Approval request ids are globally unique rather than pid-plus-counter, which a respawned sandbox could reissue — the client dedups cards by id, so such a prompt was never drawn and its command hung to the timeout. A cancelled approval (Stop, turn teardown) announces `approval_resolved(cancelled)` before unwinding, so the card is retired rather than reappearing on every reconnect with dead buttons, and no longer leaks its future into the gate's pending map, which had left `awaiting_approval()` true for the rest of the session and silently disabled the stuck-tool watchdog.
 - `SECURITY.md` gains a **Supported versions** section: Agnes is pre-1.0 and released continuously, security fixes ship in the next release (`:stable` plus the matching `v0.X.Y` tag) and older releases get no backports, so self-hosted operators should track `:stable`.
 - The remaining state-changing HTML form POSTs — `/admin/contribute-skill`, its per-plugin delete action, and `/me/profile/refetch-groups` — now require a double-submit CSRF token (a `web_csrf` cookie matching a hidden form field, or the `X-CSRF-Token` header for the profile page's JS call) instead of relying on `SameSite=Lax` alone, matching the protection the Slack-bind pair already had. The hosting pages issue the token; a rejected POST returns 400 (forms) or 403 (JSON) without performing the action, and does not re-issue the cookie to a caller that already holds one — since the cookie is `SameSite=Strict`, a cross-site POST arrives without it, and unconditionally setting it there would let any site rotate a signed-in admin's token and break their other open tabs. Token comparison is UTF-8-bytes-based (including the pre-existing Slack-bind check): the str overload of `compare_digest` raises on non-ASCII input, so a crafted token previously produced a 500 instead of a clean rejection.
