@@ -10,6 +10,8 @@ import asyncio
 import socket
 import time
 
+import pytest
+
 from services.egress_proxy.authz import decide
 from services.egress_proxy.proxy import EgressProxy
 
@@ -296,6 +298,61 @@ def test_a_second_request_on_a_pooled_connection_never_reaches_the_first_host():
         assert b"keep-alive" not in relayed.lower()
 
     asyncio.run(_run())
+
+
+class _FakeWriter:
+    def __init__(self):
+        self.closed = False
+        self.buf = b""
+
+    def write(self, data):
+        self.buf += data
+
+    async def drain(self):
+        pass
+
+    def can_write_eof(self):
+        return True
+
+    def write_eof(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+def test_upstream_is_closed_when_relaying_the_body_raises(monkeypatch):
+    """`handle` can only close the CLIENT socket — it holds no reference
+    to the upstream one. Without a finally, a sandbox that resets
+    mid-upload left that socket alive until the GC noticed, and they
+    accumulate on a sidecar shared by every sandbox.
+
+    Driven through an exception rather than a real dropped connection: a
+    clean close gives `read()` an EOF, which takes the ordinary path and
+    closes everything anyway — only an error escapes the old code.
+    """
+    import services.egress_proxy.proxy as pxy
+
+    upstream_w = _FakeWriter()
+
+    async def _fake_open(decision):
+        return (asyncio.StreamReader(), upstream_w)
+
+    monkeypatch.setattr(pxy, "_open_vetted", _fake_open)
+
+    class _BoomReader:
+        async def read(self, n):
+            raise ConnectionResetError("sandbox vanished mid-upload")
+
+    async def _run():
+        proxy = EgressProxy(["ok.example.com"], block_private=False, resolver=_resolver_for("127.0.0.1"))
+        client_w = _FakeWriter()
+        head = b"POST http://ok.example.com/upload HTTP/1.1\r\nHost: ok.example.com\r\nContent-Length: 99\r\n\r\n"
+        with pytest.raises(ConnectionResetError):
+            await proxy._handle_absolute("POST", "http://ok.example.com/upload", head, _BoomReader(), client_w)
+
+    asyncio.run(_run())
+    assert upstream_w.closed, "upstream socket leaked when the body relay raised"
 
 
 # ---------------------------------------------------------------------------
