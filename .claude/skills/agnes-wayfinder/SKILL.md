@@ -138,6 +138,7 @@ M=docs/superpowers/maps/$EFFORT/issues
 # path globs nothing, the loop prints no tickets, and "no work left" is the
 # hand-off signal. A missing map must not read as a finished one.
 [ -d "$M" ] || { echo "no such map: $M — set EFFORT" >&2; return 2 2>/dev/null || exit 2; }
+frontier=; held=
 for f in "$M"/*.md; do
   # An unmatched glob stays literal in POSIX shells, so on a map with no
   # tickets yet `$f` is the pattern itself. Skipping a non-existent path is
@@ -173,8 +174,22 @@ for f in "$M"/*.md; do
       *) echo "  ! $dep has unreadable status '$dst' — not treating it as a blocker" >&2 ;;
     esac
   done
-  [ $blocked = 0 ] && echo "$f"
+  if [ $blocked = 0 ]; then frontier="$frontier$f
+"; else held="$held$f
+"; fi
 done
+
+# An empty frontier means one of two very different things, and only one of
+# them is "done". If nothing is workable while unfinished tickets exist, the
+# blockers form a cycle (A waits on B, B waits on A) — every one of them stays
+# hidden and the effort reads as finished. Show them instead: a deadlock the
+# reader can see is recoverable, one that looks like an empty queue is not.
+if [ -z "$frontier" ] && [ -n "$held" ]; then
+  echo "no ticket is unblocked — the remaining blockers form a cycle; break one:" >&2
+  printf '%s' "$held"
+else
+  printf '%s' "$frontier"
+fi
 ```
 
 ## Mode 1 — chart the map
