@@ -18,6 +18,21 @@ import pytest
 
 pytest.importorskip("mcp", reason="mcp SDK not installed")
 
+from cryptography.fernet import Fernet
+
+from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+
+@pytest.fixture(autouse=True)
+def _stable_vault_key(monkeypatch):
+    """Token upserts in these tests encrypt through the vault — same
+    autouse key fixture as tests/test_mcp_user_secrets.py."""
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    _reset_ephemeral_key_for_tests()
+    yield
+    _reset_ephemeral_key_for_tests()
+
+
 TPL = Path("app/web/templates")
 
 
@@ -102,7 +117,10 @@ def test_me_connections_page_renders_oauth_source(seeded_app):
 
 
 def test_me_connections_page_shows_connected_banner(seeded_app):
+    from src.repositories import mcp_user_oauth_tokens_repo
+
     _seed_oauth_source()
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_ui", "analyst1", "atok")
     r = seeded_app["client"].get(
         "/me/connections",
         params={"connected": "src_oauth_ui"},
@@ -110,6 +128,63 @@ def test_me_connections_page_shows_connected_banner(seeded_app):
     )
     assert r.status_code == 200
     assert "Connected src_oauth_ui" in r.text
+
+
+def test_me_connections_connected_banner_shows_for_source_without_tools(seeded_app):
+    """The banner check keys off the caller's stored token row, not the
+    page's tool-derived source list — a freshly registered source has no
+    tools yet, and the admin's post-connect banner must still show (Devin
+    Review on #1130)."""
+    from src.db import get_system_db
+    from src.repositories import mcp_user_oauth_tokens_repo
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_oauth_fresh",
+        name="src_oauth_fresh",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_fresh", "analyst1", "atok")
+    r = seeded_app["client"].get(
+        "/me/connections",
+        params={"connected": "src_oauth_fresh"},
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    assert "Connected src_oauth_fresh" in r.text
+
+
+def test_me_connections_lapsed_connection_still_offers_disconnect(seeded_app):
+    """An expired token with no refresh path is not usable (no green pill),
+    but the stored row must still be removable from the page (Devin Review
+    on #1130)."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.repositories import mcp_user_oauth_tokens_repo
+
+    _seed_oauth_source(source_id="src_oauth_lapsed")
+    mcp_user_oauth_tokens_repo().upsert(
+        "src_oauth_lapsed",
+        "analyst1",
+        "atok",
+        refresh_token=None,
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    r = seeded_app["client"].get(
+        "/me/connections",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    section = r.text.split('id="source-src_oauth_lapsed"')[1]
+    section = section.split('class="conn-card"')[0]  # just this card
+    assert "Expired — reconnect" in section
+    assert 'data-action="oauth-disconnect"' in section
+    assert ">Reconnect<" in section
 
 
 def test_me_connections_page_shows_connect_error_banner(seeded_app):
