@@ -137,6 +137,15 @@ class FakeImages:
         return object()
 
 
+class FakeNetwork:
+    """Stands in for a docker network object — `attrs` is what the real
+    SDK exposes, and `Internal` is the flag the sidecar has to check."""
+
+    def __init__(self, name, kw):
+        self.name = name
+        self.attrs = {"Internal": bool(kw.get("internal"))}
+
+
 class FakeDocker:
     def __init__(self):
         self.run_calls = []

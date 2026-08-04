@@ -8,9 +8,14 @@ connects to exactly the vetted address (never re-resolves).
 
 import asyncio
 import socket
+import time
 
 from services.egress_proxy.authz import decide
 from services.egress_proxy.proxy import EgressProxy
+
+#: How long the stand-in resolver blocks. Long enough that a frozen loop
+#: is unmistakable, short enough not to drag the suite.
+_LOOKUP = 0.4
 
 
 def _resolver_for(*ips):
@@ -136,6 +141,60 @@ def test_connect_tunnel_pipes_and_denies():
 
         server.close()
         upstream.close()
+
+    asyncio.run(_run())
+
+
+def test_a_slow_resolution_does_not_stall_the_event_loop():
+    """One sandbox's slow DNS must not freeze every other sandbox.
+
+    The proxy is a single asyncio process shared by every sandbox on the
+    internal network, and the default resolver is the blocking
+    ``socket.getaddrinfo``. Deciding inline held the loop for the whole
+    resolver timeout — no accepts, no progress on any in-flight tunnel.
+
+    Asserted by watching a heartbeat task rather than by racing a second
+    connection: which handler reaches the resolver first is not
+    deterministic, so a two-connection version of this test passes even
+    against the blocking call.
+    """
+
+    async def _run():
+        ticks = 0
+
+        async def heartbeat():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        def _resolve(host, port):
+            time.sleep(_LOOKUP)  # stands in for an unresponsive DNS server
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+
+        proxy = EgressProxy(["slow.example.com"], block_private=False, resolver=_resolve)
+        server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+        p_port = server.sockets[0].getsockname()[1]
+
+        hb = asyncio.create_task(heartbeat())
+        await asyncio.sleep(0.05)
+        before = ticks
+
+        r, w = await asyncio.open_connection("127.0.0.1", p_port)
+        w.write(b"CONNECT slow.example.com:443 HTTP/1.1\r\n\r\n")
+        await w.drain()
+        # nothing listens on :443, so the vetted connect fails and the
+        # proxy answers 403 — all we need is for the decision to finish
+        assert (await r.read(4096)).startswith(b"HTTP/1.1 403")
+
+        hb.cancel()
+        w.close()
+        server.close()
+
+        # A frozen loop cannot tick. Half the ticks the lookup had room
+        # for is a wide margin against a loaded CI box while still being
+        # unreachable if the resolver ran inline.
+        assert ticks - before > (_LOOKUP / 0.01) / 2
 
     asyncio.run(_run())
 

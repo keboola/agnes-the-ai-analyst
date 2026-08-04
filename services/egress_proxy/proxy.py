@@ -102,6 +102,24 @@ class EgressProxy:
             **({"resolver": resolver} if resolver is not None else {}),
         )
 
+    async def _decide_off_loop(self, host: str, port: int) -> Decision:
+        """``decide`` for the serving path — run in a worker thread.
+
+        ``decide`` resolves the host, and the default resolver is the
+        blocking ``socket.getaddrinfo``. Calling it inline from the
+        connection handlers held the single event loop for the full
+        resolver timeout on a slow or unresponsive DNS server — and this
+        one process proxies every sandbox on the internal network, so
+        that stalled the accept loop and every in-flight tunnel too, not
+        just the request doing the lookup (Devin Review on #1148).
+
+        The policy itself stays in the one synchronous ``decide`` the
+        unit tests exercise; only *where it runs* changes. A second,
+        async copy of the decision logic would be free to drift from the
+        copy the tests pin.
+        """
+        return await asyncio.to_thread(self._decide, host, port)
+
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), _CONNECT_TIMEOUT)
@@ -144,7 +162,7 @@ class EgressProxy:
             await writer.drain()
             writer.close()
             return
-        decision = self._decide(host, port)
+        decision = await self._decide_off_loop(host, port)
         self._log(decision, host, port)
         if not decision.allowed:
             writer.write(_deny_response(decision.reason))
@@ -175,7 +193,7 @@ class EgressProxy:
             writer.close()
             return
         port = split.port or 80
-        decision = self._decide(split.hostname, port)
+        decision = await self._decide_off_loop(split.hostname, port)
         self._log(decision, split.hostname, port)
         if not decision.allowed:
             writer.write(_deny_response(decision.reason))
