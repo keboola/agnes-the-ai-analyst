@@ -238,6 +238,16 @@
                 <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
+                {# /news needs a NON-admin entry point. Its other two are
+                   conditional: /home's "What's new" strip renders only when a
+                   version is published AND home_route resolves to /home, and
+                   the command palette bails out unless #adminMenu exists. On
+                   the /dashboard default a non-admin could not reach the page
+                   at all (Devin Review on #1159). Label is "News", not the
+                   page's "What's new" heading — tests/test_web_news_page.py
+                   asserts that phrase is absent from /home when nothing is
+                   published. #}
+                <a class="app-user-menu-item {% if _path.startswith('/news') %}is-active{% endif %}" role="menuitem" href="/news">News</a>
 
                 <div class="app-user-menu-sep" role="separator"></div>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>

@@ -28,6 +28,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   and an instance whose `home_route` is `/home`, so on the `/dashboard` default
   non-admins had no way in. The new-web-page playbook now carries a "wire an
   inbound link" step — a route alone is not a shipped page.
+  `/news` gets a dropdown entry too: its other two entry points are both
+  conditional — /home's "What's new" strip needs a published version AND
+  `home_route == '/home'`, and the command palette initializes only when the
+  admin menu is in the DOM — so on the `/dashboard` default a non-admin could
+  not reach it at all.
 
 
 ### Removed

@@ -49,19 +49,31 @@ def test_mcp_connect_linked_from_ai_connector_page(seeded_app):
     assert 'href="/mcp-connect"' in resp.text
 
 
-def test_command_palette_carries_both_pages(seeded_app):
-    """Secondary entry point: both pages are listed in the Cmd/Ctrl-K palette
-    under the user-facing group."""
+def test_news_link_in_user_dropdown_for_non_admin(seeded_app):
+    """`/news`'s other two entry points are both conditional: /home's "What's
+    new" strip needs a published version AND `home_route == '/home'`, and the
+    command palette bails out unless `#adminMenu` is in the DOM. On the
+    `/dashboard` default that left a non-admin unable to reach the page at all
+    (Devin Review on #1159), so it gets a dropdown entry like the others."""
     c = seeded_app["client"]
     body = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
+    assert 'href="/news">News</a>' in body
+
+
+def test_command_palette_is_admin_only_so_it_cannot_be_the_entry_point(seeded_app):
+    """Pins WHY the dropdown entries above have to exist.
+
+    The palette is a convenience for admins, not a reachability guarantee: its
+    IIFE returns immediately when `#adminMenu` is absent. Asserting the palette
+    rows alone would pass for a non-admin — the `<script>` body is emitted for
+    everyone — while the surface never initializes, which is false assurance of
+    exactly the property these tests exist to defend."""
+    c = seeded_app["client"]
+    body = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
+    # the rows ship to everyone …
     assert "href: '/agents'" in body
     assert "href: '/mcp-connect'" in body
-
-
-def test_command_palette_carries_news(seeded_app):
-    """`/news` is otherwise only linked from /home's "What's new" strip, which
-    needs both a published version and `home_route == '/home'` — on the
-    `/dashboard` default that left the page with no non-admin entry point."""
-    c = seeded_app["client"]
-    body = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
     assert "href: '/news'" in body
+    # … behind a gate a non-admin never passes.
+    assert "if (!document.getElementById('adminMenu')) return;" in body
+    assert 'id="adminMenu"' not in body, "non-admin page must not carry the admin menu"
