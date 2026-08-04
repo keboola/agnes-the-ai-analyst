@@ -836,3 +836,22 @@ def test_discovery_advertises_public_client_revocation(seeded_app):
         meta = r.json()
         methods = meta.get("revocation_endpoint_auth_methods_supported") or []
         assert "none" in methods, f"{path}: {methods}"
+
+
+def test_non_numeric_expires_in_does_not_break_the_refresh():
+    """RFC 6749 says expires_in is a number; real servers ship strings.
+
+    The raw value reached `timedelta(seconds=...)` AFTER the refresh had
+    already rotated the tokens, and the TypeError escaped the
+    OAuthTokenError boundary — so the rotated refresh token was lost and
+    the connection broke permanently rather than for one call.
+    """
+    from connectors.mcp.oauth_client import _coerce_expires_in
+
+    assert _coerce_expires_in(3600) == 3600
+    assert _coerce_expires_in("3600") == 3600
+    assert _coerce_expires_in("3600.0") == 3600
+    assert _coerce_expires_in(0) == 0
+    # unusable values mean "no known expiry", never a crash
+    for bad in (None, "", "abc", True, [], {}):
+        assert _coerce_expires_in(bad) is None, bad

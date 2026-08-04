@@ -627,7 +627,17 @@ async def update_mcp_source(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Partial update. Audit row carries before/after for the changed fields."""
+    """Partial update. Audit row carries before/after for the changed fields.
+
+    **Changing ``url`` discards every stored credential for the source** —
+    the shared vault secret, all per-user secrets, and (when the source is
+    OAuth) its client registration, user tokens and in-flight flows. This is
+    irreversible and happens without a separate confirmation, because a
+    credential must never be forwarded to a host that did not issue it, and
+    a path-only edit can still be a different protected resource. Users
+    re-connect afterwards. The audit row records ``credentials_purged`` so
+    the effect is traceable after the fact.
+    """
     repo = mcp_sources_repo()
     existing = repo.get(source_id)
     if not existing:
@@ -702,7 +712,11 @@ async def update_mcp_source(
         user["id"],
         "mcp_source.update",
         f"mcp_source:{source_id}",
-        {"after": after},
+        # credentials_purged is recorded because the purge is irreversible
+        # and is a side effect of an ordinary field edit — without it the
+        # audit trail shows a url change and no trace of what it destroyed
+        # (review finding on #1124).
+        {"after": after, "credentials_purged": bool(url_repointed)},
         params_before={"before": before},
     )
     return (

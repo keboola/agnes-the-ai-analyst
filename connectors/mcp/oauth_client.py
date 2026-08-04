@@ -474,6 +474,28 @@ async def _raise_as_error(resp: httpx.Response, *, action: str) -> None:
     raise OAuthTokenError(f"{action} failed (HTTP {resp.status_code}): {detail}")
 
 
+def _coerce_expires_in(raw: Any) -> Optional[int]:
+    """Seconds as an int, or None when the server did not give a usable one.
+
+    RFC 6749 says this is a number, but real servers ship it as a string.
+    The value was passed through untyped and later reached
+    ``timedelta(seconds=...)``, which raises TypeError — and that happens
+    AFTER the refresh has already rotated the tokens, outside the
+    OAuthTokenError boundary, so the rotated refresh token is lost and the
+    connection breaks permanently rather than for one call (review finding
+    on #1124). An unusable value simply means "no known expiry".
+    """
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    try:
+        return int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        logger.warning("mcp oauth: ignoring non-numeric expires_in %r from the token endpoint", raw)
+        return None
+
+
 def _token_set_from_response(body: Dict[str, Any]) -> TokenSet:
     access_token = body.get("access_token")
     if not access_token:
@@ -482,7 +504,7 @@ def _token_set_from_response(body: Dict[str, Any]) -> TokenSet:
     return TokenSet(
         access_token=access_token,
         refresh_token=body.get("refresh_token"),
-        expires_in=body.get("expires_in"),
+        expires_in=_coerce_expires_in(body.get("expires_in")),
         scopes=scope if isinstance(scope, str) else None,
     )
 
