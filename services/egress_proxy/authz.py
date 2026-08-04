@@ -97,14 +97,49 @@ def _host_allowlisted(host: str, allow_hosts: Iterable[str]) -> bool:
     return False
 
 
+def _unwrap_embedded_v4(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+    """Return the IPv4 address an IPv6 address carries, or the input.
+
+    ``::ffff:169.254.169.254`` is an ``IPv6Address``, so a family-matched
+    range walk compares it against the v6 ranges only — it is in none of
+    them and sails through, while a dual-stack host connecting to it
+    reaches the v4 metadata service. 6to4 (``2002::/16``) and Teredo
+    (``2001::/32``) embed a v4 address the same way. Unwrapping first
+    means one set of rules covers every spelling of an address
+    (Devin Review on #1148).
+    """
+    if ip.version != 6:
+        return ip
+    for embedded in (ip.ipv4_mapped, ip.sixtofour):  # type: ignore[union-attr]
+        if embedded is not None:
+            return embedded
+    teredo = ip.teredo  # type: ignore[union-attr]
+    if teredo is not None:
+        return teredo[1]  # the client address, i.e. what we would reach
+    return ip
+
+
 def _ip_blocked(ip: ipaddress._BaseAddress, *, block_private: bool) -> str | None:
+    shown = ip
+    ip = _unwrap_embedded_v4(ip)
+
+    # Categorical rejections, ahead of the range walk: enumerating networks
+    # cannot express these, and `0.0.0.0`/`::` in particular are in none of
+    # the loopback ranges yet connecting to them reaches loopback on Linux.
+    if ip.is_unspecified:
+        return f"resolved address {shown} is the unspecified address"
+    if ip.is_multicast:
+        return f"resolved address {shown} is multicast"
+    if ip.is_reserved:
+        return f"resolved address {shown} is reserved"
+
     for net in _HARD_BLOCKED_NETS:
         if ip.version == net.version and ip in net:
-            return f"resolved address {ip} is in blocked range {net}"
+            return f"resolved address {shown} is in blocked range {net}"
     if block_private:
         for net in _PRIVATE_NETS:
             if ip.version == net.version and ip in net:
-                return f"resolved address {ip} is in private range {net}"
+                return f"resolved address {shown} is in private range {net}"
     return None
 
 
