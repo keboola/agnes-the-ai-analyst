@@ -63,8 +63,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the secret is injected into the subprocess environment and the url is never
   read, so editing it there changes nothing. Conversely, flipping a `stdio`
   source to http/sse purges even with the url untouched: that edit makes an
-  already stored url live for the first time. The purge runs before the row is repointed, and the audit row
-  records `credentials_purged` so the effect is traceable afterwards.
+  already stored url live for the first time. The purge runs before the row is
+  repointed, and the audit row records `credentials_purged` plus `purged_kinds`
+  — naming which of the two independent purges ran, since flipping
+  `auth_method` off `oauth` destroys every analyst's tokens and the client
+  registration without any url change at all — so the effect is traceable
+  afterwards.
 
 - MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
 - **MCP tool parameter schemas tightened.** `stack_browse`/`stack_subscribe`/`stack_unsubscribe` (`resource_type`), `admin_analytics_migrate` (`to`), `data_apps_list` (`kind`) and `data_app_deploy` (`mode`) declare their valid values as `Literal[…]`, so the constraint reaches `tools/list` as a JSON-schema enum instead of living only in the `Args:` prose the trimmed description drops; `store_rate` (`vote`) uses a bounded `int` rather than a literal union, because a literal would stop accepting the string `"1"` that models commonly emit for numbers. Applied on both MCP surfaces, so the HTTP and stdio copies of a tool keep advertising the same contract.

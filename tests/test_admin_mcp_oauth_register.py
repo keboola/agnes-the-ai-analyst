@@ -1285,3 +1285,72 @@ def test_an_explicit_null_leaves_enabled_and_scope_unchanged(seeded_app):
     row = mcp_sources_repo().get(sid)
     assert bool(row["enabled"]) is False, "an explicit null re-enabled a disabled source"
     assert row["scope"] == "per_user", "an explicit null reset scope to the default"
+
+
+def _last_audit(action: str, resource: str) -> dict:
+    import json
+
+    from src.repositories import audit_repo
+
+    rows, _cursor = audit_repo().query(limit=200)
+    for r in rows:
+        if r.get("action") == action and r.get("resource") == resource:
+            params = r.get("params")
+            return json.loads(params) if isinstance(params, str) else (params or {})
+    raise AssertionError(f"no audit row for {action} / {resource}")
+
+
+def test_the_audit_row_records_the_purge_that_actually_ran(seeded_app, monkeypatch):
+    """`credentials_purged` has to reflect what ran, not the predicate that was
+    expected to trigger it.
+
+    Two independent branches purge. Keying the flag off `url_repointed` alone
+    missed the second entirely: flipping `auth_method` off oauth destroys every
+    analyst's tokens and the client registration while `url_repointed` is
+    False, so the audit row claimed nothing was purged — exactly the row an
+    operator would be reading to find out why everyone lost access
+    (Devin Review on #1124).
+    """
+    from src.repositories import mcp_source_oauth_clients_repo, mcp_user_oauth_tokens_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_audit_purge")
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-audit")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "at", refresh_token="rt", expires_at=None)
+
+    # url untouched — only the auth method changes.
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        json={"auth_method": "bearer", "scope": "shared"},
+    )
+    assert r.status_code == 200, r.text
+
+    assert mcp_user_oauth_tokens_repo().get(sid, "admin1") is None
+    assert mcp_source_oauth_clients_repo().get(sid) is None
+
+    params = _last_audit("mcp_source.update", f"mcp_source:{sid}")
+    assert params["credentials_purged"] is True, "the audit row hid a purge that destroyed every analyst's tokens"
+    assert params["purged_kinds"] == ["oauth_client_and_tokens"]
+
+
+def test_an_edit_that_purges_nothing_says_so(seeded_app):
+    """The counterpart — the flag must not become decorative."""
+    from src.repositories import mcp_sources_repo
+
+    sid = "src_audit_nopurge"
+    mcp_sources_repo().upsert(
+        id=sid, name="audit_nopurge", transport="http", url="https://h1.example/mcp", auth_method="bearer"
+    )
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}", headers=_hdr(seeded_app), json={"connect_hint": "just a note"}
+    )
+    assert r.status_code == 200, r.text
+
+    params = _last_audit("mcp_source.update", f"mcp_source:{sid}")
+    assert params["credentials_purged"] is False
+    assert params["purged_kinds"] == []

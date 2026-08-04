@@ -746,6 +746,14 @@ async def update_mcp_source(
     # already documents — users re-connect. The failure modes an operator can
     # actually trigger (invalid oauth coupling, name collision) are ruled out
     # above so they cannot reach the purge (Devin Review on #1124).
+    # What the audit records must be what actually RAN, not the predicate that
+    # was expected to trigger it. Keying the flag off `url_repointed` alone
+    # missed the second branch entirely: flipping `auth_method` off oauth
+    # destroys every analyst's tokens and the client registration with
+    # `url_repointed` False, so the row said nothing was purged while an
+    # operator hunting "why did everyone lose access" saw an ordinary field
+    # edit (Devin Review on #1124).
+    purged: List[str] = []
     if url_repointed:
         # Per-user secrets go through the factory — a raw repo would write to
         # the always-DuckDB connection and orphan rows on a PG instance.
@@ -753,6 +761,7 @@ async def update_mcp_source(
         pu_secrets = per_user_secrets_repo()
         for uid in pu_secrets.list_for_source(source_id):
             pu_secrets.delete(source_id, uid)
+        purged.append("vault_secrets")
     if (was_oauth and not still_oauth) or (was_oauth and still_oauth and url_repointed):
         # Flipping away from oauth strands the OAuth trio — the client
         # registration, every user's tokens, and in-flight flows are useless
@@ -768,6 +777,7 @@ async def update_mcp_source(
         mcp_user_oauth_tokens_repo().delete_for_source(source_id)
         mcp_oauth_flows_repo().delete_for_source(source_id)
         mcp_source_oauth_clients_repo().delete(source_id)
+        purged.append("oauth_client_and_tokens")
 
     try:
         repo.upsert(**merged)
@@ -785,8 +795,9 @@ async def update_mcp_source(
         # credentials_purged is recorded because the purge is irreversible
         # and is a side effect of an ordinary field edit — without it the
         # audit trail shows a url change and no trace of what it destroyed
-        # (review finding on #1124).
-        {"after": after, "credentials_purged": bool(url_repointed)},
+        # (review finding on #1124). purged_kinds names WHICH, since the two
+        # branches fire independently and cost the operator different things.
+        {"after": after, "credentials_purged": bool(purged), "purged_kinds": purged},
         params_before={"before": before},
     )
     return (
