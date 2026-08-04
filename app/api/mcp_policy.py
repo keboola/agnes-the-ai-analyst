@@ -261,6 +261,16 @@ def _oauth_credential_missing(source_id: str, caller_user_id: str) -> bool:
     return mcp_source_oauth_clients_repo().get(source_id) is None
 
 
+def oauth_connection_usable(source_id: str, caller_user_id: str) -> bool:
+    """Status-surface twin of :func:`_oauth_credential_missing`: True iff the
+    caller's OAuth connection would pass ``enforce_per_user_credential`` right
+    now. The /me/connections page, the admin "Your connection" card, and
+    ``GET …/my-secret`` must use THIS — not bare row existence — so a lapsed,
+    unrenewable connection never shows a green "Connected" badge while every
+    actual call 403s (Devin Review on #1130)."""
+    return not _oauth_credential_missing(source_id, caller_user_id)
+
+
 def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional[str]) -> None:
     """Fail closed when a ``per_user`` source lacks the caller's own credential.
 

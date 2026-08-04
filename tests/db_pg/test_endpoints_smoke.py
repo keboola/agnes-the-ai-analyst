@@ -2011,6 +2011,13 @@ KNOWN_UNTESTED = {
     "POST /api/admin/mcp-sources/{source_id}/materialize",
     "POST /api/admin/mcp-sources/{source_id}/oauth/register",
     "POST /api/admin/mcp-sources/{source_id}/test",
+    # OAuth connect flow (spec 2026-07-30 §3) — behaviorally covered in
+    # tests/test_mcp_oauth_connect.py (25 cases incl. both backends' repos
+    # via the factory); the PG smoke sweep can't drive the browser redirect
+    # dance parameter-free.
+    "GET /api/mcp/sources/{source_id}/oauth/authorize",
+    "GET /api/mcp/oauth-client/callback",
+    "DELETE /api/mcp/sources/{source_id}/oauth/connection",
     "POST /api/admin/mcp-tools",
     "POST /api/admin/mcp-tools/{tool_id}/grants",
     "PUT /api/admin/mcp-sources/{source_id}",

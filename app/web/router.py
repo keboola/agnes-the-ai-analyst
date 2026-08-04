@@ -1103,10 +1103,16 @@ async def me_connections_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Self-service page: connect / replace / test / remove your own credential
-    for the per_user MCP sources you are granted. Any authenticated user."""
+    for the per_user MCP sources you are granted. Any authenticated user.
+
+    ``auth_method='oauth'`` sources (2026-07-30 outbound MCP OAuth sources
+    spec §3) report against ``mcp_user_oauth_tokens`` instead of the
+    vault-backed per-user secrets table — same card, a Connect/Disconnect
+    button in place of the paste-field (template branches on
+    ``s.auth_kind``)."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.markdown_render import render_safe
-    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+    from src.repositories import mcp_sources_repo, mcp_user_oauth_tokens_repo, per_user_secrets_repo
 
     granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
     sources = []
@@ -1115,16 +1121,53 @@ async def me_connections_page(
             continue
         if (src.get("scope") or "shared").lower() != "per_user":
             continue
+        is_oauth = (src.get("auth_method") or "").lower() == "oauth"
+        if is_oauth:
+            from app.api.mcp_policy import oauth_connection_usable
+
+            token_row = mcp_user_oauth_tokens_repo().get(src["id"], user["id"])
+            # Same validity rule the server enforces at call time — a lapsed,
+            # unrenewable token must show Connect, not a green Connected pill
+            # (Devin Review on #1130).
+            has_secret = oauth_connection_usable(src["id"], user["id"])
+            # `stored` diverges from `has_secret` exactly for a lapsed,
+            # unrenewable token: not usable, but the row still exists and the
+            # user must be able to Disconnect it (Devin Review on #1130).
+            stored = token_row is not None
+            updated_at = token_row["updated_at"].isoformat() if token_row and token_row.get("updated_at") else None
+            expires_at = token_row["expires_at"].isoformat() if token_row and token_row.get("expires_at") else None
+        else:
+            has_secret = per_user_secrets_repo().has(src["id"], user["id"])
+            stored = has_secret
+            updated_at = per_user_secrets_repo().get_updated_at(src["id"], user["id"])
+            expires_at = None
         sources.append(
             {
                 "id": src["id"],
                 "name": src["name"],
                 "transport": src.get("transport"),
                 "hint_html": render_safe(src.get("connect_hint")),
-                "has_secret": per_user_secrets_repo().has(src["id"], user["id"]),
-                "updated_at": per_user_secrets_repo().get_updated_at(src["id"], user["id"]),
+                "auth_kind": "oauth" if is_oauth else "secret",
+                "has_secret": has_secret,
+                "stored": stored,
+                "updated_at": updated_at,
+                "expires_at": expires_at,
             }
         )
+    # Both banners render only fixed text: connect_error arrives as a short
+    # code mapped through CONNECT_ERROR_MESSAGES (unknown → generic fallback),
+    # and connected only renders when the caller really has a stored OAuth
+    # connection for that id — a crafted link can never put its own words in
+    # an Agnes banner. Checked against the token row, NOT this page's
+    # tool-derived source list: a freshly registered source has no tools yet
+    # and the admin's post-connect banner must still show (Devin Review on
+    # #1130).
+    from app.api.mcp_oauth_connect import CONNECT_ERROR_FALLBACK, CONNECT_ERROR_MESSAGES
+
+    error_code = request.query_params.get("connect_error") or ""
+    connected = request.query_params.get("connected") or ""
+    if connected and mcp_user_oauth_tokens_repo().get(connected, user["id"]) is None:
+        connected = ""
     ctx = _build_context(
         request,
         user=user,
@@ -1132,6 +1175,8 @@ async def me_connections_page(
         is_admin=is_user_admin(user["id"], conn),
         connect_sources=sources,
         highlight_source=request.query_params.get("source") or "",
+        connected_source=connected,
+        connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
     )
     return templates.TemplateResponse(request, "me_connections.html", ctx)
 

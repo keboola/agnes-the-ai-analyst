@@ -3548,6 +3548,22 @@
       },
       "HasSecretResponse": {
         "properties": {
+          "auth_kind": {
+            "default": "secret",
+            "title": "Auth Kind",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
           "has_secret": {
             "title": "Has Secret",
             "type": "boolean"
@@ -32849,6 +32865,124 @@
         ]
       }
     },
+    "/api/mcp/oauth-client/callback": {
+      "get": {
+        "description": "Authorization-code redemption \u2014 the upstream AS redirects the user's\nbrowser here after they authorize (or decline).\n\nA browser landing page, not a JSON API: every failure mode redirects\nback to ``/me/connections?connect_error=\u2026`` with a short, redacted\nmessage rather than raising a raw 4xx/5xx (spec \u00a73). ``deny_principal``\nstill applies \u2014 this route requires the caller's normal authenticated\nweb session (cookie or bearer), never a restricted principal.",
+        "operationId": "oauth_connect_callback_api_mcp_oauth_client_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error_description",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error Description"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Connect Callback",
+        "tags": [
+          "mcp-oauth-connect"
+        ]
+      }
+    },
     "/api/mcp/passthrough/tools": {
       "get": {
         "description": "List passthrough MCP tools visible to the caller.\n\nUsed by the stdio MCP server (``agnes mcp``) at startup so analyst\nworkspaces dynamically gain access to upstream MCP tools their admin\nhas curated and granted to their groups.",
@@ -33117,7 +33251,7 @@
         ]
       },
       "get": {
-        "description": "Return ``has_secret: bool`` for the caller + the source's scope so\na UI can show \"Connect your <source>\" or \"Connected\".",
+        "description": "Return ``has_secret: bool`` for the caller + the source's scope so\na UI can show \"Connect your <source>\" or \"Connected\".\n\n``auth_method='oauth'`` sources report against ``mcp_user_oauth_tokens``\ninstead of the vault-backed ``mcp_user_secrets`` table \u2014 same response\nshape, ``auth_kind`` tells the caller which credential kind it's\nreading (spec \u00a73/\u00a75).",
         "operationId": "get_my_secret_status_api_mcp_sources__source_id__my_secret_get",
         "parameters": [
           {
@@ -33308,6 +33442,127 @@
         "summary": "Test My Secret",
         "tags": [
           "mcp-user-secrets"
+        ]
+      }
+    },
+    "/api/mcp/sources/{source_id}/oauth/authorize": {
+      "get": {
+        "description": "Kick off the browser authorization-code + PKCE flow for ``source_id``.\n\n``deny_principal`` \u2014 connect is human-only, an agent/co-session token\nmust never mint a token for its owner without the owner's live browser\ninteraction. ``_require_source_grant`` \u2014 an ungranted caller must not be\nable to park a token for a source they cannot use. Responds ``302`` to\nthe upstream authorization endpoint built from the stored\n``mcp_source_oauth_clients`` row (never from request data).",
+        "operationId": "authorize_oauth_connect_api_mcp_sources__source_id__oauth_authorize_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Authorize Oauth Connect",
+        "tags": [
+          "mcp-oauth-connect"
+        ]
+      }
+    },
+    "/api/mcp/sources/{source_id}/oauth/connection": {
+      "delete": {
+        "description": "Drop the caller's OAuth connection for ``source_id``.\n\n``deny_principal`` + ``_require_source_grant`` \u2014 same human-only,\ngrant-gated contract as authorize. Best-effort RFC 7009 revocation is\ndeferred to spec \u00a77 PR 3: schema v109 does not persist a\n``revocation_endpoint`` for the stored authorization server (only\n``authorization_endpoint``/``token_endpoint`` \u2014 see the design doc's \u00a71\ntable), so there is no endpoint to safely call without guessing a URL\nshape. This mirrors ``\u2026/my-secret`` DELETE, which also only ever drops\nthe local credential row (the upstream token still needs to be revoked\nby the user in the upstream system if they want it fully dead).",
+        "operationId": "disconnect_oauth_api_mcp_sources__source_id__oauth_connection_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Oauth",
+        "tags": [
+          "mcp-oauth-connect"
         ]
       }
     },
@@ -46861,7 +47116,7 @@
     },
     "/me/connections": {
       "get": {
-        "description": "Self-service page: connect / replace / test / remove your own credential\nfor the per_user MCP sources you are granted. Any authenticated user.",
+        "description": "Self-service page: connect / replace / test / remove your own credential\nfor the per_user MCP sources you are granted. Any authenticated user.\n\n``auth_method='oauth'`` sources (2026-07-30 outbound MCP OAuth sources\nspec \u00a73) report against ``mcp_user_oauth_tokens`` instead of the\nvault-backed per-user secrets table \u2014 same card, a Connect/Disconnect\nbutton in place of the paste-field (template branches on\n``s.auth_kind``).",
         "operationId": "me_connections_page_me_connections_get",
         "parameters": [
           {

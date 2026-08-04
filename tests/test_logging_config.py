@@ -6,6 +6,7 @@ import pytest
 from app.logging_config import (
     _derive_slug,
     _JSONFormatter,
+    _OAuthCallbackQueryRedactFilter,
     request_id_var,
     setup_logging,
 )
@@ -288,3 +289,66 @@ def test_slug_main_dunder_falls_back():
     result = _derive_slug("__main__")
     assert isinstance(result, str)
     assert result
+
+
+# ---------------------------------------------------------------------------
+# _OAuthCallbackQueryRedactFilter — outbound MCP OAuth connect callback
+# (2026-07-30 spec §6): strip code/state from uvicorn access-log lines.
+# ---------------------------------------------------------------------------
+
+
+def _access_record(path_with_query: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:1234", "GET", path_with_query, "1.1", 303),
+        exc_info=None,
+    )
+
+
+def test_oauth_callback_filter_strips_query_string():
+    rec = _access_record("/api/mcp/oauth-client/callback?code=SECRET-CODE&state=SIGNED-STATE")
+    assert _OAuthCallbackQueryRedactFilter().filter(rec) is True
+    assert rec.args[2] == "/api/mcp/oauth-client/callback"
+    formatted = rec.getMessage()
+    assert "SECRET-CODE" not in formatted
+    assert "SIGNED-STATE" not in formatted
+
+
+def test_oauth_callback_filter_leaves_other_paths_untouched():
+    rec = _access_record("/api/mcp/sources/src_1/oauth/authorize?foo=bar")
+    assert _OAuthCallbackQueryRedactFilter().filter(rec) is True
+    assert rec.args[2] == "/api/mcp/sources/src_1/oauth/authorize?foo=bar"
+
+
+def test_oauth_callback_filter_leaves_bare_callback_path_untouched():
+    rec = _access_record("/api/mcp/oauth-client/callback")
+    assert _OAuthCallbackQueryRedactFilter().filter(rec) is True
+    assert rec.args[2] == "/api/mcp/oauth-client/callback"
+
+
+def test_oauth_callback_filter_ignores_non_tuple_args():
+    # A single-dict %-style args (the stdlib's own mapping-args convention —
+    # LogRecord unwraps a one-element tuple whose sole item is a Mapping)
+    # must pass through untouched: this filter only ever rewrites the
+    # positional-tuple shape uvicorn's access logger actually uses.
+    rec = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="%(path)s",
+        args=({"path": "/api/mcp/oauth-client/callback?code=x"},),
+        exc_info=None,
+    )
+    assert _OAuthCallbackQueryRedactFilter().filter(rec) is True
+    assert rec.args == {"path": "/api/mcp/oauth-client/callback?code=x"}
+
+
+def test_setup_logging_registers_oauth_callback_filter_on_access_logger():
+    setup_logging("app")
+    access_logger = logging.getLogger("uvicorn.access")
+    assert any(isinstance(f, _OAuthCallbackQueryRedactFilter) for f in access_logger.filters)
