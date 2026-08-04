@@ -241,6 +241,15 @@ slack-socket = [
     # `ModuleNotFoundError: No module named 'aiohttp'` until it is declared here.
     "aiohttp>=3.14.3",
 ]
+telegram = [
+    # services/telegram_bot/bot.py imports `from aiohttp import web` at module
+    # scope — unconditionally, unlike the Slack client's lazy import — so this
+    # is a hard requirement, not a fail-closed one. It used to work only
+    # because the shipped image installs [slack-socket] alongside, which
+    # happens to pull aiohttp in: an operator installing [server] and running
+    # only the Telegram bot got ImportError at startup (Devin Review on #1163).
+    "aiohttp>=3.14.3",
+]
 distribution = [
     # S3-compatible client for signed-URL distribution (three-plane wave
     # 2-H): src/object_store.py's S3ObjectStore uses boto3's V4 signer
