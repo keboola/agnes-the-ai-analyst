@@ -3353,9 +3353,7 @@ def test_shutdown_drains_inflight_turn_with_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         # Simulate a turn in progress.
         mgr._live[s.id].turn_in_flight = True
 
@@ -3386,9 +3384,7 @@ def test_shutdown_pause_path_suppresses_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = True
 
         await mgr.shutdown()
@@ -3415,9 +3411,7 @@ def test_shutdown_pause_failure_falls_back_to_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = True
 
         async def _boom(live):
@@ -3450,9 +3444,7 @@ def test_shutdown_no_notice_when_idle(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = False
 
         await mgr.shutdown()
@@ -3767,3 +3759,113 @@ def test_pending_approvals_live_outside_the_turn_buffer(manager: ChatManager):
     # answering it drops it
     live.pending_approvals.pop("appr-1", None)
     assert live.pending_approvals == {}
+
+
+def test_a_web_sink_that_died_unnoticed_does_not_suppress_the_slack_nudge(manager: ChatManager):
+    """`attended` is stamped BEFORE the fan-out — the frame_seq contract wants
+    one envelope for every sink — but the fan-out is also where a dead sink is
+    discovered. A browser that dropped without a clean close (sleeping laptop,
+    lost mobile network) is still in `live.sinks` at stamp time, so the request
+    went out marked attended, the Slack bridge stayed quiet, and that same
+    broadcast then pruned the sink: the command stalled for the full timeout
+    with nothing said anywhere (Devin Review on #1157).
+    """
+
+    class DeadWeb:
+        """Looks card-capable, but every send fails — the silent-death case."""
+
+        supports_approvals = True
+
+        async def send_json(self, frame):
+            raise ConnectionError("socket went away without a close frame")
+
+    class RecordingSlack:
+        def __init__(self):
+            self.nudges = []
+
+        async def send_json(self, frame):
+            pass
+
+        async def _post_approval_request(self, data):
+            self.nudges.append(data)
+
+    async def _run():
+        slack = RecordingSlack()
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(
+            manager, s.id, "u@x", DeadWeb(), surface=Surface.SLACK_DM.value, extra_sinks=(slack,)
+        )
+        await _pump_one_approval_request(manager, live)
+
+        assert slack.nudges, "the dead web sink suppressed the nudge and nobody was told"
+        assert slack.nudges[0]["attended"] is False
+        pending = list(live.pending_approvals.values())
+        assert pending and pending[0]["attended"] is False, "the stored card still claims someone is holding it"
+
+    asyncio.run(_run())
+
+
+def test_replaying_a_pending_card_re_derives_who_is_attending(manager: ChatManager):
+    """The stamp records who was attached when the request was RAISED. A Slack
+    bridge seated afterwards replays the card, and off a stale `False` it would
+    post its nudge even though a browser has since attached and is holding the
+    buttons (Devin Review on #1157)."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+        await _pump_one_approval_request(manager, live)
+        pending = list(live.pending_approvals.values())
+        assert pending and pending[0]["attended"] is False
+
+        # A browser attaches: card-capable, so the replay must say attended.
+        web = FakeWS()
+        web.supports_approvals = True
+        live.sinks.append(SinkEntry(participant_email="u@x", sink=web))
+
+        late = FakeWS()
+        await manager.add_sink(s.id, late, participant_email="u@x")
+        replayed = [f for f in late.sent if f.get("type") == "approval_request"]
+        assert replayed and replayed[0]["attended"] is True, "replay carried the stale stamp"
+
+    asyncio.run(_run())
+
+
+def test_the_kill_switch_is_settable_again(manager: ChatManager):
+    """`docs/cloud-chat.md` advertises `AGNES_APPROVALS=off` as the operator
+    kill-switch and the runner still honours it, but the sandbox environment is
+    exactly the dict the manager builds — the host's is not merged in — so
+    dropping the entry left the switch unsettable anywhere while the docs said
+    otherwise (Devin Review on #1157)."""
+    captured = {}
+
+    class FakeHandle2(FakeHandle):
+        pass
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return FakeHandle2()
+
+    manager._provider.spawn = fake_spawn
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, Path("/tmp"))
+        assert captured["env"]["AGNES_APPROVALS"] == "on"
+
+        import dataclasses
+
+        manager._config = dataclasses.replace(manager._config, approvals_enabled=False)
+        s2 = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess2 = manager._repo.get_session(s2.id)
+        await manager._spawn_runner(sess2, Path("/tmp"))
+        assert captured["env"]["AGNES_APPROVALS"] == "off"
+
+    asyncio.run(_run())
