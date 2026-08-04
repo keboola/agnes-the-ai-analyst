@@ -38,6 +38,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- New dev-kit skill `agnes-wayfinder` (`.claude/skills/agnes-wayfinder/`) for efforts whose destination is known but whose route is still fogged in — the phase before `superpowers:writing-plans` has anything to plan. It charts a map (`docs/superpowers/maps/<effort>/map.md`) plus numbered decision tickets, resolved one per session until no decisions remain, then hands off to `writing-plans` → `/agnes-build`. Deliberately markdown-in-repo rather than GitHub issues: the *Issue economy* convention exists to stop exactly this kind of question-dumping into a public tracker, and a map under `docs/brainstorms/` would be gitignored and lost with its checkout. Explicit invocation only — if the steps can already be stated, the map is overhead. Adapted from Matt Pocock's `wayfinder` skill (MIT).
+  The frontier query hides a ticket only on positive evidence of a live
+  blocker. Everything it cannot interpret — an odd "no dependencies" marker,
+  an unpadded reference, a reference to a ticket that does not exist, an
+  unrecognised status on either the ticket OR its blocker, a dependency cycle —
+  surfaces the ticket
+  instead of dropping it; `claimed`
+  counts as unfinished, and a ticket ruled past the destination takes a
+  terminal `out-of-scope` status that both leaves the queue and settles
+  anything waiting on it. Five variants of one mistake: something
+  unrecognised defaulted to "blocked", so a question left the work list while
+  the effort read as finished. The exit step also keeps `issues/` rather than
+  deleting it — the map is an index whose decisions link into the tickets, so
+  removing them discarded the only full copy of the reasoning.
+
 
 - Vault repositories now share one decrypt path: `SharedSecretsRepository`,
   `PerUserSecretsRepository`, `ConnectionSecretsRepository` and
