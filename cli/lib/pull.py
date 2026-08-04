@@ -98,6 +98,11 @@ class PullResult:
     tables_via_app: int = 0
     duration_s: float = 0.0
     errors: list[dict] = field(default_factory=list)
+    # #1129 review — snapshot view names withheld this run because the id
+    # names a table the analyst is no longer authorized for (or that turned
+    # server_only). Empty on every ordinary pull; non-empty is the audit
+    # trail for a name that would otherwise have resolved to stale rows.
+    snapshot_views_blocked: list[str] = field(default_factory=list)
     # v49 (Phase 7, Task 7.5) — per-type stack-sync result. Populated when
     # the manifest carries any of ``direct_tables`` / ``data_packages`` /
     # ``memory_domains``. Kept off the constructor signature (None default)
@@ -1031,6 +1036,27 @@ def run_pull(
         # before the admin flipped the flag keeps a local view alive and the
         # table stays locally queryable despite server-only distribution.
         server_only_names = {tid for tid, info in server_tables.items() if info.get("server_only")}
+        # #1129 review — names a snapshot view must NOT take. The prune above
+        # makes a de-authorized or server_only id unresolvable by deleting its
+        # parquet and letting the step 6 rebuild skip it. That leaves the name
+        # free, and `_register_snapshot_views` would then hand it to
+        # `user/snapshots/<table_id>.parquet` (what `agnes snapshot create`
+        # writes with no `--as`), so `agnes query "... FROM <table_id>"` would
+        # answer from stale snapshot rows instead of erroring. Not a new
+        # disclosure — that parquet was downloaded while authorized, is on the
+        # laptop either way, and `read_parquet` over its path never stopped
+        # working — but it makes the sentence above ("the view rebuild would
+        # resurrect it") true of the server copy and false of the name.
+        #
+        # Derived from the CURRENT authorization state, deliberately NOT from
+        # what this run happened to prune: the prune loops only see parquets
+        # that still exist, so they fire once and never again. A prune-derived
+        # set would withhold the name on the pull that removes the file and
+        # release it on every pull after that, which is worse than not fixing
+        # it — the behaviour would depend on how many times you had pulled.
+        blocked_snapshot_names = set(server_only_names)
+        if authorized_names is not None:
+            blocked_snapshot_names |= {tid for tid in server_tables if tid not in authorized_names}
         if parquet_dir.exists() and (authorized_names is not None or server_only_names):
             for pq_file in sorted(parquet_dir.glob("*.parquet")):
                 stem = pq_file.stem
@@ -1088,7 +1114,9 @@ def run_pull(
 
         # 6. Rebuild DuckDB views — unconditional. The DB file is the
         # load-bearing artifact for downstream readers.
-        _rebuild_duckdb_views(workspace, parquet_dir)
+        result.snapshot_views_blocked = _rebuild_duckdb_views(
+            workspace, parquet_dir, blocked_names=blocked_snapshot_names
+        )
 
         # 7. Fetch corporate-memory bundle and lazily write
         # `.claude/rules/km_*.md`. Best-effort: a server outage on this
@@ -1372,13 +1400,23 @@ def _is_valid_parquet(path: Path) -> bool:
         return False
 
 
-def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
+def _rebuild_duckdb_views(
+    workspace: Path, parquet_dir: Path, blocked_names: set[str] | None = None
+) -> list[str]:
     """Recreate DuckDB views from downloaded parquets. Preserve user tables.
 
     The DuckDB file at `<workspace>/user/duckdb/analytics.duckdb` is
     created unconditionally (even on an empty pull) — downstream readers
     expect the file to exist. The parquet rebuild loop is a no-op when
     `parquet_dir` is missing.
+
+    `blocked_names` (#1129 review) are table ids the analyst is no longer
+    authorized for, or that turned `server_only`. A snapshot must not take
+    such a name; see `_register_snapshot_views`. Defaults to None so callers
+    outside `run_pull` (tests, ad-hoc repair) keep working unchanged.
+
+    Returns the snapshot view names withheld for that reason — empty on every
+    ordinary pull.
     """
     import duckdb  # noqa: F401  (kept for the duckdb.Error path below)
     from src.duckdb_conn import _open_duckdb
@@ -1448,7 +1486,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
                     except duckdb.Error:
                         continue
 
-        _register_snapshot_views(conn, workspace)
+        return _register_snapshot_views(conn, workspace, blocked_names)
     finally:
         conn.close()
 
@@ -1465,7 +1503,7 @@ def _quote_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def _register_snapshot_views(conn, workspace: Path) -> None:
+def _register_snapshot_views(conn, workspace: Path, blocked_names: set[str] | None = None) -> list[str]:
     """Re-register views over local snapshots after the clean-slate drop.
 
     `agnes snapshot create` writes `user/snapshots/<name>.parquet` and
@@ -1478,23 +1516,34 @@ def _register_snapshot_views(conn, workspace: Path) -> None:
     Runs last so a registered table always wins a name collision, and is
     self-healing: a workspace whose snapshot views were already destroyed
     gets them back on the next pull with no user action.
+
+    `blocked_names` (#1129 review) are ids step 4b deliberately made
+    unresolvable — de-authorized, or now `server_only`. A snapshot created
+    with no `--as` is named after its source table, so without this check it
+    would silently re-take that id and answer queries from stale rows. The
+    parquet is left on disk and stays reachable through its snapshot path;
+    only the bare id stops resolving. Returns the names withheld.
     """
     import duckdb  # noqa: F401  (duckdb.Error below)
 
+    withheld: list[str] = []
     snapshots_dir = workspace / "user" / "snapshots"
     if not snapshots_dir.exists():
-        return
+        return withheld
 
     # Everything already registered by this rebuild — base tables the user
     # created plus the views just built from `parquet_dir`.
     try:
         taken = {row[0] for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
     except Exception:
-        return
+        return withheld
 
     for entry in sorted(snapshots_dir.glob("*.parquet")):
         view_name = entry.stem
         if view_name in taken:
+            continue
+        if blocked_names and view_name in blocked_names:
+            withheld.append(view_name)
             continue
         if not _is_valid_parquet(entry):
             continue
@@ -1503,6 +1552,8 @@ def _register_snapshot_views(conn, workspace: Path) -> None:
             conn.execute(f"CREATE VIEW {_quote_ident(view_name)} AS SELECT * FROM read_parquet('{abs_path}')")
         except duckdb.Error:
             continue
+
+    return withheld
 
 
 def _item_to_md(item: dict) -> str:

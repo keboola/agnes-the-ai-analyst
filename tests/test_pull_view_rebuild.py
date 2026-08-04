@@ -241,3 +241,79 @@ def test_meta_sidecar_is_not_mistaken_for_a_snapshot(tmp_path):
         assert names == {"cz_recent"}
     finally:
         conn.close()
+
+
+def test_deauthorized_table_id_is_withheld_from_a_snapshot(tmp_path):
+    """#1129 review — step 4b deletes a de-authorized parquet so the name stops
+    resolving. A snapshot created with no `--as` is named after its source
+    table, so without the guard it re-takes that id and `agnes query` answers
+    from stale rows instead of erroring.
+    """
+    pq = tmp_path / "server" / "parquet"
+    pq.mkdir(parents=True, exist_ok=True)
+    # `account` was pruned by step 4b — no server parquet remains on disk.
+    _write_parquet(_snap_dir(tmp_path) / "account.parquet", 9)
+
+    withheld = _rebuild_duckdb_views(tmp_path, pq, blocked_names={"account"})
+
+    assert withheld == ["account"]
+    conn = _analytics(tmp_path)
+    try:
+        names = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+        assert "account" not in names
+    finally:
+        conn.close()
+    # The data itself is untouched and still reachable by its snapshot path.
+    assert (_snap_dir(tmp_path) / "account.parquet").exists()
+
+
+def test_unrelated_snapshots_still_register_when_one_is_blocked(tmp_path):
+    """The guard is per-name, not a kill switch for the whole snapshot tree."""
+    pq = tmp_path / "server" / "parquet"
+    pq.mkdir(parents=True, exist_ok=True)
+    _write_parquet(_snap_dir(tmp_path) / "account.parquet", 9)
+    _write_parquet(_snap_dir(tmp_path) / "cz_recent.parquet", 4)
+
+    withheld = _rebuild_duckdb_views(tmp_path, pq, blocked_names={"account"})
+
+    assert withheld == ["account"]
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM cz_recent").fetchone()[0] == 4
+    finally:
+        conn.close()
+
+
+def test_blocking_is_stable_across_repeated_rebuilds(tmp_path):
+    """The regression the prune-derived version would have had: the name must
+    stay withheld on every subsequent pull, not just the one that pruned it.
+    """
+    pq = tmp_path / "server" / "parquet"
+    pq.mkdir(parents=True, exist_ok=True)
+    _write_parquet(_snap_dir(tmp_path) / "account.parquet", 9)
+
+    for _ in range(3):
+        withheld = _rebuild_duckdb_views(tmp_path, pq, blocked_names={"account"})
+        assert withheld == ["account"]
+        conn = _analytics(tmp_path)
+        try:
+            names = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+            assert "account" not in names
+        finally:
+            conn.close()
+
+
+def test_no_blocked_names_keeps_the_previous_behaviour(tmp_path):
+    """Default arg — every existing caller is unaffected."""
+    pq = tmp_path / "server" / "parquet"
+    pq.mkdir(parents=True, exist_ok=True)
+    _write_parquet(_snap_dir(tmp_path) / "account.parquet", 9)
+
+    withheld = _rebuild_duckdb_views(tmp_path, pq)
+
+    assert withheld == []
+    conn = _analytics(tmp_path)
+    try:
+        assert conn.execute("SELECT count(*) FROM account").fetchone()[0] == 9
+    finally:
+        conn.close()
