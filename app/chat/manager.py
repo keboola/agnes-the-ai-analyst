@@ -1066,6 +1066,30 @@ class ChatManager:
 
     # --- detach / linger / pause --------------------------------------------
 
+    async def _renotify_unattended_approvals(self, live: "LiveSession") -> None:
+        """Re-derive attendance for every pending card and nudge if it lapsed.
+
+        The post-broadcast correction only covers the pump iteration that
+        raised the request. A browser that leaves LATER — a clean detach, or a
+        dead sink pruned by some subsequent broadcast — while the card is still
+        pending would otherwise leave nobody holding it and nobody told: the
+        same stall this branch exists to prevent, in a wider window
+        (Devin Review on #1157). Idempotent: a card already marked unattended
+        is not re-posted, and the Slack bridge dedupes by request_id anyway.
+        """
+        if not live.pending_approvals or _approval_attended(live):
+            return
+        for frame in list(live.pending_approvals.values()):
+            if frame.get("attended") is False:
+                continue
+            frame["attended"] = False
+            for entry in list(live.sinks):
+                poster = getattr(entry.sink, "_post_approval_request", None)
+                if poster is not None:
+                    with contextlib.suppress(Exception):
+                        await poster(frame)
+            await self._resolve_if_unattended(live, frame)
+
     async def detach_sink(self, chat_id: str, ws) -> None:
         """Remove ws from the session's sink list. When the last sink leaves,
         trigger the on_detach policy (linger→pause or kill)."""
@@ -1073,6 +1097,8 @@ class ChatManager:
         if live is None:
             return
         live.sinks = [e for e in live.sinks if e.sink is not ws]
+        # The card holder may have just left; tell whoever is still listening.
+        await self._renotify_unattended_approvals(live)
         if not live.sinks:
             self._on_all_sinks_gone(live)
 
@@ -2131,6 +2157,11 @@ class ChatManager:
         # outlives its audience until the idle reaper notices.
         if dead and not live.sinks and live.state == SessionState.ACTIVE:
             self._on_all_sinks_gone(live)
+        if dead:
+            # The sweep may have removed the only client that could answer a
+            # card raised on an EARLIER frame — the same lapse detach_sink
+            # covers, arriving through the other door.
+            await self._renotify_unattended_approvals(live)
 
     @staticmethod
     async def _safe_close(sink) -> None:
