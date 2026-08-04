@@ -149,9 +149,18 @@ for f in "$M"/*.md; do
     # A reference to a ticket that does not exist (typo, deleted) can never be
     # satisfied — so it must not block. Say so instead of swallowing it.
     [ -z "$dep" ] && { echo "  ! $f references missing ticket $n" >&2; continue; }
-    # out-of-scope settles a dependency: ruling a question out IS a decision
-    # about it, and treating it as unanswered deadlocks everything downstream.
-    grep -qE '^Status: (resolved|out-of-scope)' "$dep" || blocked=1
+    # Same rule on this side: block only on positive evidence the blocker is
+    # still unfinished. A dependency whose status this script cannot read is
+    # not evidence of anything — matching "settled" instead would put the
+    # waiter back in the hidden pile, which is the asymmetry the rule above
+    # exists to remove. (out-of-scope settles a dependency: ruling a question
+    # out IS a decision about it.)
+    dst=$(sed -n 's/^Status: //p' "$dep" | head -1 | tr -d '[:space:]')
+    case "$dst" in
+      open|claimed) blocked=1 ;;
+      resolved|out-of-scope) ;;
+      *) echo "  ! $dep has unreadable status '$dst' — not treating it as a blocker" >&2 ;;
+    esac
   done
   [ $blocked = 0 ] && echo "$f"
 done

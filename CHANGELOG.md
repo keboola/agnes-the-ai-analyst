@@ -42,7 +42,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   The frontier query hides a ticket only on positive evidence of a live
   blocker. Everything it cannot interpret — an odd "no dependencies" marker,
   an unpadded reference, a reference to a ticket that does not exist, an
-  unrecognised status — lists the ticket instead of dropping it; `claimed`
+  unrecognised status on either the ticket OR its blocker — lists the ticket
+  instead of dropping it; `claimed`
   counts as unfinished, and a ticket ruled past the destination takes a
   terminal `out-of-scope` status that both leaves the queue and settles
   anything waiting on it. Five variants of one mistake: something
