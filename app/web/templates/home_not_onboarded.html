@@ -263,22 +263,23 @@
                         data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
             <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="unix">
-                {# The token write stays FIRST and unconditional — the file
-                   survives a missing CLI, so the recovery is just "install
-                   claude, open a new terminal, paste again". The guard only
-                   wraps the launch: without it a missing/stale-PATH `claude`
-                   fails with a raw "command not found" at the exact moment
-                   the user thinks they are done. #}
+                {# The `claude` check runs FIRST; the token is written only
+                   when the flow can actually continue. A missing CLI leaves
+                   NOTHING behind — no 90-day plaintext credential sitting on
+                   disk for a flow that stopped (the very hygiene the
+                   bootstrap-token cleanup exists for); the retry paste
+                   rewrites the token anyway. The write-success gate before
+                   the launch is preserved inside the happy branch. #}
                 <span class="multiline install-cmd-masked" id="install-cmd-token-unix"
-                      data-cmd-template="umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '{TOKEN}' &gt; ~/.agnes/token &amp;&amp; if command -v claude &gt;/dev/null 2&gt;&amp;1; then claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;; else echo '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.'; fi"
-                      aria-label="Saves your login token to a file, then launches Claude. If the Claude Code CLI is missing, it prints guidance instead of failing. The token itself is masked here and never shown on screen."
-                      draggable="false" tabindex="0">umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' &gt; ~/.agnes/token &amp;&amp; if command -v claude &gt;/dev/null 2&gt;&amp;1; then claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"; else echo '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.'; fi</span>
+                      data-cmd-template="if command -v claude &gt;/dev/null 2&gt;&amp;1; then umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '{TOKEN}' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;; else echo '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.'; fi"
+                      aria-label="Checks Claude Code is installed, then saves your login token to a file and launches Claude. If the CLI is missing, it prints guidance and saves nothing. The token itself is masked here and never shown on screen."
+                      draggable="false" tabindex="0">if command -v claude &gt;/dev/null 2&gt;&amp;1; then umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"; else echo '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.'; fi</span>
             </div>
             <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="windows" hidden>
                 <span class="multiline install-cmd-masked" id="install-cmd-token-windows"
-                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}'); if ($?) { if (Get-Command claude -ErrorAction SilentlyContinue) { claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot; } else { Write-Host '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.' } }"
-                      aria-label="Saves your login token to a file, then launches Claude. If the Claude Code CLI is missing, it prints guidance instead of failing. The token itself is masked here and never shown on screen."
-                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'); if ($?) { if (Get-Command claude -ErrorAction SilentlyContinue) { claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)" } else { Write-Host '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.' } }</span>
+                      data-cmd-template="if (Get-Command claude -ErrorAction SilentlyContinue) { New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}'); if ($?) { claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot; } } else { Write-Host '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.' }"
+                      aria-label="Checks Claude Code is installed, then saves your login token to a file and launches Claude. If the CLI is missing, it prints guidance and saves nothing. The token itself is masked here and never shown on screen."
+                      draggable="false" tabindex="0">if (Get-Command claude -ErrorAction SilentlyContinue) { New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'); if ($?) { claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)" } } else { Write-Host '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.' }</span>
             </div>
 
             <div class="setup-cta-row">
