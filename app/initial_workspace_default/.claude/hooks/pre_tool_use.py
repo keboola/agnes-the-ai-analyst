@@ -367,8 +367,14 @@ def _split_segments_with_seps(cmd: str) -> list[tuple[str, str]]:
             # floor rules — which are meant to hold regardless of chaining —
             # be avoided by writing the same command inside a heredoc
             # (review finding on #1141).
-            recipient = _unwrap(_tokens(line))
-            feeds_a_shell = bool(recipient) and _basename(recipient[0]) in _SHELLS
+            # ANY stage of the line, not just its head: in `cat <<EOF | bash`
+            # the head is `cat`, but bash still executes the body (review
+            # finding on #1141). Split on the raw line — the segment list for
+            # this line has not been built yet at this point.
+            feeds_a_shell = any(
+                (lambda t: bool(t) and _basename(t[0]) in _SHELLS)(_unwrap(_tokens(part)))
+                for part in re.split(r"[|;&]", line)
+            )
             if not feeds_a_shell:
                 heredoc_marker = m.group(2)
         if not line.strip():
