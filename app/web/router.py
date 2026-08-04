@@ -4294,11 +4294,14 @@ async def profile_page(
     # troubleshooting partial sends it back as the X-CSRF-Token header.
     csrf_token = _get_or_mint_web_csrf(request)
 
+    from app.auth.elevation import elevation_paused
+
     ctx = _build_context(
         request,
         user=user,
         memberships=memberships,
         is_admin=is_user_admin(user["id"], conn),
+        elevation_paused=elevation_paused(),
         user_record=user_record_safe,
         claims=_decoded_claims(raw_token),
         token_fingerprint=_token_fingerprint(raw_token),

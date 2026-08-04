@@ -3274,6 +3274,19 @@
         "title": "EffectiveAccessResponse",
         "type": "object"
       },
+      "ElevationRequest": {
+        "properties": {
+          "paused": {
+            "title": "Paused",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "paused"
+        ],
+        "title": "ElevationRequest",
+        "type": "object"
+      },
       "EnqueueJobRequest": {
         "properties": {
           "idempotency_key": {
@@ -33349,6 +33362,70 @@
           }
         },
         "summary": "My Effective Access",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/elevation": {
+      "post": {
+        "description": "Pause or resume the calling admin's own god-mode for this browser.\n\nBrowser-session-scoped by design (a cookie the elevation middleware\nreads; the CLI has no cookie jar), so it deliberately has no CLI/MCP\nsibling. Gated on RAW Admin membership \u2014 NOT ``require_admin`` \u2014\nbecause a paused admin must be able to re-elevate (require_admin\nwould 403 them into a locked-out loop). The cookie only ever reduces\nprivilege; see ``app/auth/elevation.py``.\n\nCSRF posture: rides the platform-wide SameSite=Lax + JSON-body\nprotection (a cross-site form POST can neither carry the Lax cookie\nnor produce a JSON body). No double-submit token, consistent with the\nrest of ``/api/me`` and the documented platform CSRF posture.",
+        "operationId": "post_elevation_api_me_elevation_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElevationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Elevation",
         "tags": [
           "me"
         ]

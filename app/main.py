@@ -1750,6 +1750,33 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
+    async def _admin_elevation(request, call_next):
+        # Admin elevation consent gate (app/auth/elevation.py): stamp the
+        # request-scoped paused/elevated flag from the cookie (or instance
+        # default) before any authorization runs, reset after. Only ever
+        # REDUCES privilege — see the module docstring.
+        from app.auth.elevation import (
+            ELEVATION_COOKIE,
+            reset_for_request,
+            resolve_from_cookie,
+            set_paused_for_request,
+        )
+
+        token = set_paused_for_request(
+            resolve_from_cookie(
+                request.cookies.get(ELEVATION_COOKIE),
+                # Bearer callers (CLI/PAT/service tokens) have no cookie jar
+                # to re-elevate with — the instance-wide default must not
+                # apply to them (an explicit paused cookie still would).
+                bearer_auth=request.headers.get("authorization", "").lower().startswith("bearer "),
+            )
+        )
+        try:
+            return await call_next(request)
+        finally:
+            reset_for_request(token)
+
+    @app.middleware("http")
     async def _add_version_headers(request, call_next):
         response = await call_next(request)
         # /api/* only — headers are advisory to the agnes CLI; UI/docs/marketplace
