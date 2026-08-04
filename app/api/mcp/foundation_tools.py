@@ -19,7 +19,7 @@ transports.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -481,7 +481,7 @@ def register_foundation_tools(
             return r.json()
 
     @tool()
-    async def stack_browse(resource_type: str) -> dict:
+    async def stack_browse(resource_type: Literal["data_package", "memory_domain"]) -> dict:
         """List resources you could add to your stack (RBAC-granted candidates).
 
         Unlike ``catalog`` (which lists tables already in your stack), this is the
@@ -507,7 +507,9 @@ def register_foundation_tools(
             return r.json()
 
     @tool()
-    async def stack_subscribe(resource_type: str, resource_id: str) -> dict:
+    async def stack_subscribe(
+        resource_type: Literal["data_package", "memory_domain"], resource_id: str
+    ) -> dict:
         """Subscribe to an available data package or memory domain.
 
         Adds the resource to your persistent stack — the same effect as clicking
@@ -539,7 +541,9 @@ def register_foundation_tools(
         return body
 
     @tool()
-    async def stack_unsubscribe(resource_type: str, resource_id: str) -> dict:
+    async def stack_unsubscribe(
+        resource_type: Literal["data_package", "memory_domain"], resource_id: str
+    ) -> dict:
         """Unsubscribe from a data package or memory domain in your stack.
 
         Removes a previously-subscribed resource. Required resources cannot be
@@ -562,7 +566,7 @@ def register_foundation_tools(
         return {"unsubscribed": True}
 
     @tool()
-    async def store_rate(entity_id: str, vote: int) -> dict:
+    async def store_rate(entity_id: str, vote: Literal[1, -1, 0]) -> dict:
         """Rate a store / marketplace entity thumbs up/down (#398).
 
         Casts, changes, or clears your single vote on an entity — the same effect
@@ -1318,7 +1322,7 @@ def register_foundation_tools(
             return r.json()
 
     @tool()
-    async def admin_analytics_migrate(to: str) -> dict:
+    async def admin_analytics_migrate(to: Literal["ducklake", "legacy"]) -> dict:
         """Migrate the analytics query surface between backends (admin only).
 
         Validates prerequisites (``to="ducklake"`` only: the DuckLake DuckDB
@@ -1447,7 +1451,7 @@ def register_foundation_tools(
             return r.json()
 
     @tool()
-    async def data_apps_list(kind: str = "") -> dict:
+    async def data_apps_list(kind: Literal["", "hosted", "linked"] = "") -> dict:
         """List data apps you can see (RBAC-filtered).
 
         Visible to any authenticated user: apps you own, apps a group you're
@@ -1488,7 +1492,7 @@ def register_foundation_tools(
             return r.json()
 
     @tool()
-    async def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
+    async def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> dict:
         """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
         Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given,
