@@ -1100,3 +1100,50 @@ def test_a_genuinely_new_registration_replaces_secret_and_rat_wholesale(seeded_a
     assert row["client_id"] == "cid-second"
     assert row["client_secret"] is None
     assert row["registration_access_token"] is None
+
+
+def test_a_failed_token_purge_leaves_the_client_row_on_the_old_provider(seeded_app, monkeypatch):
+    """The client-row endpoints follow the same purge-before-write ordering as
+    the source `url` repoint, for the same reason.
+
+    `connectors/mcp/client.py`'s refresh path reads `token_endpoint`,
+    `client_id` and `client_secret` straight off the client row. Purging after
+    the write leaves that row addressing the NEW authorization server while the
+    OLD server's refresh tokens are still on file, so the next forward POSTs
+    the old server's refresh token — and the client secret via Basic auth — to
+    the new host (Devin Review on #1124).
+    """
+    from src.repositories import mcp_source_oauth_clients_repo, mcp_user_oauth_tokens_repo
+
+    monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+    sid = _seed_oauth_source(source_id="src_oauth_order")
+    _patch_discovery_success(monkeypatch, registered_client_id="cid-old")
+    assert (
+        seeded_app["client"].post(f"/api/admin/mcp-sources/{sid}/oauth/register", headers=_hdr(seeded_app)).status_code
+        == 200
+    )
+    mcp_user_oauth_tokens_repo().upsert(sid, "admin1", "at-old", refresh_token="rt-old", expires_at=None)
+
+    import app.api.admin_mcp as admin_mcp
+
+    real = admin_mcp.mcp_sources_repo
+
+    def _boom(*a, **k):
+        raise RuntimeError("token purge failed mid-flight")
+
+    # Repoint the client at a DIFFERENT authorization server via the manual
+    # PUT, with the token purge blowing up.
+    monkeypatch.setattr(admin_mcp, "_oauth_identity_changed", _boom)
+    body = {
+        "client_id": "cid-old",
+        "authorization_endpoint": "https://other-as.example.com/authorize",
+        "token_endpoint": "https://other-as.example.com/token",
+    }
+    with pytest.raises(RuntimeError):
+        seeded_app["client"].put(f"/api/admin/mcp-sources/{sid}/oauth/client", headers=_hdr(seeded_app), json=body)
+
+    monkeypatch.setattr(admin_mcp, "mcp_sources_repo", real)
+    row = mcp_source_oauth_clients_repo().get(sid)
+    assert row["token_endpoint"] == "https://as.example.com/token", (
+        "client row was repointed while the old provider's tokens were still on file"
+    )

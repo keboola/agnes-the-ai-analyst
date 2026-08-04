@@ -410,7 +410,9 @@ def test_vault_key_lost_during_refresh_still_returns_the_new_token(oauth_db, mon
     _seed_token_row(oauth_db, expires_in_seconds=10, refresh_token="old-rt")
 
     async def _fake_refresh(**kwargs):
-        return mcp_oauth_client.TokenSet(access_token="new-at", refresh_token="rotated-rt", expires_in=3600, scopes=None)
+        return mcp_oauth_client.TokenSet(
+            access_token="new-at", refresh_token="rotated-rt", expires_in=3600, scopes=None
+        )
 
     monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _fake_refresh)
 
@@ -438,3 +440,88 @@ def test_refresh_lease_ttl_outlives_the_token_endpoint_timeout():
     assert _oauth_refresh_lease_ttl_s() > DEFAULT_TIMEOUT_SEC, (
         "lease TTL must exceed the token-endpoint timeout, with margin for the persist that follows"
     )
+
+
+def test_a_refresh_without_expires_in_keeps_the_token_refreshable(oauth_db, monkeypatch):
+    """RFC 6749 §5.1 marks `expires_in` RECOMMENDED, not required, so a refresh
+    response may omit it. Writing None over a known expiry is terminal, not a
+    rounding error: `_needs_refresh` reads NULL as "non-expiring, never refresh"
+    and `_oauth_credential_missing` reads it as "connected", so nothing renews
+    the token again and nothing prompts a re-connect — the source just starts
+    returning opaque upstream 401s once the access token lapses, forever
+    (Devin Review on #1124).
+    """
+    from src.repositories.mcp_user_oauth_tokens import MCPUserOAuthTokenRepository
+
+    _seed_client_row(oauth_db)
+    _seed_token_row(oauth_db, expires_in_seconds=10, refresh_token="rt-1")
+
+    async def _no_expiry(**kwargs):
+        return mcp_oauth_client.TokenSet(access_token="new-at", refresh_token="rt-2", expires_in=None, scopes=None)
+
+    monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _no_expiry)
+    assert asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1")) == "new-at"
+
+    row = MCPUserOAuthTokenRepository(oauth_db).get("src_oauth1", "user1")
+    assert row["expires_at"] is not None, "a known expiry was replaced by 'unknown' — refresh loop is now dead"
+    # The previously observed lifetime (10s here) is carried forward, so the
+    # row stays renewable instead of being pinned as non-expiring.
+    expires_at = row["expires_at"].replace(tzinfo=timezone.utc)
+    carried = (expires_at - datetime.now(timezone.utc)).total_seconds()
+    assert 5 <= carried <= 15, carried
+
+
+def test_expiry_is_left_unknown_when_there_is_nothing_to_learn_from():
+    """No prior expiry means no lifetime to carry — None is the honest answer,
+    and matches what the original grant recorded."""
+    now = datetime.now(timezone.utc)
+    assert mcp_client._expiry_after_refresh({"expires_at": None, "updated_at": now}, None) is None
+    # A row written after its own expiry (clock skew) teaches nothing either.
+    skewed = {"expires_at": now - timedelta(hours=1), "updated_at": now}
+    assert mcp_client._expiry_after_refresh(skewed, None) is None
+    # An explicit expires_in always wins.
+    got = mcp_client._expiry_after_refresh(skewed, 300)
+    assert got is not None and 290 <= (got - now).total_seconds() <= 310
+
+
+def test_a_failed_refresh_backs_off_instead_of_retrying_every_call(oauth_db, monkeypatch):
+    """Design spec §4: "repeated failures back off (no hot refresh loop against
+    a broken AS)". The lease serializes concurrent attempts but does not rate
+    limit them, so without a cooldown every forwarded call re-hit a wedged
+    authorization server (Devin Review on #1124).
+    """
+    _seed_client_row(oauth_db)
+    _seed_token_row(oauth_db, expires_in_seconds=10, refresh_token="rt-1")
+
+    calls = []
+
+    async def _failing(**kwargs):
+        calls.append(1)
+        raise mcp_oauth_client.OAuthTokenError("token refresh failed (HTTP 503): server_error: try again")
+
+    monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _failing)
+
+    for _ in range(5):
+        assert asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1")) == "at-1"
+    assert len(calls) == 1, f"AS was hit {len(calls)} times for 5 forwards — no back-off"
+
+    # The cooldown is time-boxed, not permanent: once it lapses the pair is
+    # retried, so a transient outage recovers on its own.
+    mcp_client._OAUTH_REFRESH_COOLDOWN[("src_oauth1", "user1")] = 0.0
+    assert asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1")) == "at-1"
+    assert len(calls) == 2
+
+
+def test_invalid_grant_is_not_put_in_cooldown(oauth_db, monkeypatch):
+    """A revoked grant deletes the row and demands a re-connect — there is
+    nothing to back off from, and a stale cooldown entry must not linger for
+    the pair the user is about to re-connect."""
+    _seed_client_row(oauth_db)
+    _seed_token_row(oauth_db, expires_in_seconds=10, refresh_token="dead-rt")
+
+    async def _revoked(**kwargs):
+        raise mcp_oauth_client.OAuthTokenError("token refresh failed (HTTP 400): invalid_grant: token revoked")
+
+    monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _revoked)
+    assert asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1")) is None
+    assert mcp_client._refresh_in_cooldown("src_oauth1", "user1") is False

@@ -69,6 +69,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
+- OAuth MCP refresh survives a response that omits `expires_in`, backs off
+  after a failed attempt, and never repoints a client row ahead of purging the
+  tokens it strands. `expires_in` is RECOMMENDED rather than required (RFC
+  6749 §5.1), and writing its absence over a known expiry was terminal: a NULL
+  expiry reads as "non-expiring, never refresh" to the renewal path and as
+  "connected" to the fail-closed check, so the token was never renewed again
+  and never prompted a re-connect — the source just returned opaque upstream
+  401s once it lapsed. The previously observed lifetime is now carried
+  forward. A refresh that fails for any reason other than a revoked grant puts
+  that `(source, user)` pair in a short cooldown, so a wedged authorization
+  server is no longer re-hit on every forwarded call (design spec §4). Both
+  OAuth client-write endpoints purge stranded per-user tokens and in-flight
+  flows before writing the new registration, matching the source `url`
+  repoint: the refresh path reads the endpoints and client secret straight off
+  that row, so purge-last could leave it addressing a new authorization server
+  while the old server's refresh tokens were still on file.
+
 - A malformed `AGNES_VAULT_KEY` no longer 500s every request that reads a
   secret. `_get_fernet()` raises `RuntimeError` when the env var is set but is
   not a valid Fernet key, and only `SystemSecretsRepository` caught it — the

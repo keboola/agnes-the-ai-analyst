@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -278,10 +279,43 @@ def _get_oauth_refresh_lock(source_id: str, user_id: str) -> asyncio.Lock:
         return entry[1]
 
 
+#: Seconds a (source, user) pair is left alone after a refresh attempt failed
+#: for a reason that is not the user's fault (a wedged or erroring AS, a
+#: network fault). Design spec §4: "repeated failures back off (no hot refresh
+#: loop against a broken AS)".
+_OAUTH_REFRESH_COOLDOWN_S = 60.0
+
+#: (source_id, user_id) -> monotonic deadline before which no refresh is
+#: re-attempted. Process-local on purpose: the cost this bounds is one process
+#: re-attempting on EVERY forwarded call, which is the hot loop. N replicas
+#: therefore make at most N attempts per window rather than one per request —
+#: bounded, where it was previously unbounded. A cross-process cap would need
+#: shared state on the failure path, which is exactly the path where the
+#: coordination backend may itself be the thing that is down.
+_OAUTH_REFRESH_COOLDOWN: Dict[Tuple[str, str], float] = {}
+
+
+def _refresh_in_cooldown(source_id: str, user_id: str) -> bool:
+    with _OAUTH_REFRESH_LOCKS_GUARD:
+        until = _OAUTH_REFRESH_COOLDOWN.get((source_id, user_id))
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            del _OAUTH_REFRESH_COOLDOWN[(source_id, user_id)]
+            return False
+        return True
+
+
+def _start_refresh_cooldown(source_id: str, user_id: str) -> None:
+    with _OAUTH_REFRESH_LOCKS_GUARD:
+        _OAUTH_REFRESH_COOLDOWN[(source_id, user_id)] = time.monotonic() + _OAUTH_REFRESH_COOLDOWN_S
+
+
 def reset_oauth_refresh_locks_for_tests() -> None:
     """Test-only: drop every cached in-process lock between tests."""
     with _OAUTH_REFRESH_LOCKS_GUARD:
         _OAUTH_REFRESH_LOCKS.clear()
+        _OAUTH_REFRESH_COOLDOWN.clear()
 
 
 def _needs_refresh(row: Dict[str, Any], *, skew_seconds: int = _OAUTH_REFRESH_SKEW_SECONDS) -> bool:
@@ -294,6 +328,44 @@ def _needs_refresh(row: Dict[str, Any], *, skew_seconds: int = _OAUTH_REFRESH_SK
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     return (expires_at - datetime.now(timezone.utc)).total_seconds() <= skew_seconds
+
+
+def _expiry_after_refresh(row: Dict[str, Any], expires_in: Optional[int]) -> Optional[datetime]:
+    """Absolute expiry to store for a just-refreshed token.
+
+    ``expires_in`` is RECOMMENDED, not required (RFC 6749 §5.1), so a refresh
+    response may carry none even when the original grant did. Writing ``None``
+    over a known expiry is not a small loss of precision — it is terminal:
+    :func:`_needs_refresh` reads ``expires_at IS NULL`` as "non-expiring, never
+    refresh proactively" and ``_oauth_credential_missing`` reads it as
+    "connected", so nothing refreshes the token again and nothing prompts the
+    user to re-connect. There is no 401-triggered refresh, so once the access
+    token actually lapses the source returns opaque upstream 401s forever
+    (Devin Review on #1124).
+
+    So when the AS omits it we carry the previously observed lifetime forward —
+    the interval between the last write and the expiry it set. That is an
+    estimate, but a self-correcting one: the next response that does carry
+    ``expires_in`` replaces it, and being early merely costs one extra refresh
+    whereas being absent costs the connection. With no prior expiry to learn
+    from, ``None`` is the honest answer and matches the original grant.
+    """
+    now = datetime.now(timezone.utc)
+    if expires_in is not None:
+        return now + timedelta(seconds=expires_in)
+
+    prior_expiry, prior_written = row.get("expires_at"), row.get("updated_at")
+    if prior_expiry is None or prior_written is None:
+        return None
+    if prior_expiry.tzinfo is None:
+        prior_expiry = prior_expiry.replace(tzinfo=timezone.utc)
+    if prior_written.tzinfo is None:
+        prior_written = prior_written.replace(tzinfo=timezone.utc)
+    lifetime = (prior_expiry - prior_written).total_seconds()
+    if lifetime <= 0:
+        # Clock skew, or a row written after its own expiry. Nothing to learn.
+        return None
+    return now + timedelta(seconds=lifetime)
 
 
 async def _refresh_oauth_token_with_lease(
@@ -331,6 +403,13 @@ async def _refresh_oauth_token_with_lease(
     if not refresh_token:
         # No refresh token on file — nothing we can do; hand back the
         # (possibly expired) access token and let the upstream reject it.
+        return row["access_token"]
+    if _refresh_in_cooldown(source_id, user_id):
+        # A recent attempt failed against the AS. Retrying on the very next
+        # forward turns a broken authorization server into a hot loop driven
+        # by user traffic — the lease serializes those attempts but does not
+        # rate-limit them. Hand back the stale token; the upstream rejecting
+        # it is the same outcome a failed refresh produces anyway.
         return row["access_token"]
 
     client_row = mcp_source_oauth_clients_repo().get(source_id)
@@ -408,17 +487,17 @@ async def _refresh_oauth_token_with_lease(
                     user_id,
                 )
                 return None
+            _start_refresh_cooldown(source_id, user_id)
             logger.warning(
-                "mcp oauth refresh failed for source=%s user=%s: %s",
+                "mcp oauth refresh failed for source=%s user=%s: %s (backing off %.0fs)",
                 source_id,
                 user_id,
                 exc_summary(exc),
+                _OAUTH_REFRESH_COOLDOWN_S,
             )
             return row["access_token"]
 
-        expires_at = None
-        if token_set.expires_in is not None:
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_set.expires_in)
+        expires_at = _expiry_after_refresh(row, token_set.expires_in)
         # Rotated refresh tokens are persisted atomically with the new
         # access token — a single upsert, one row write.
         try:

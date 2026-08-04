@@ -46,6 +46,7 @@ from src.identifier_validation import is_safe_identifier
 
 from app.secrets_vault import (
     VaultKeyNotConfiguredError,
+    vault_key_configured,
 )
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
@@ -1033,25 +1034,26 @@ async def register_oauth_client(
     keep_rat = registered.registration_access_token
     if keep_rat is None and same_client:
         keep_rat = existing.get("registration_access_token")
-    try:
-        clients_repo.upsert(
-            source_id,
-            issuer=registered.issuer,
-            client_id=registered.client_id,
-            authorization_endpoint=registered.authorization_endpoint,
-            token_endpoint=registered.token_endpoint,
-            client_secret=keep_secret,
-            registration_access_token=keep_rat,
-            scopes=registered.scopes,
-        )
-    except VaultKeyNotConfiguredError as exc:
-        # The DCR registration already happened upstream; the next successful
-        # register re-registers and best-effort revokes it. Same actionable
-        # 409 the other credential endpoints give (Devin Review on #1124).
+    # The one operator-triggerable failure of the write below is a missing
+    # vault key. Check it here so a request that is going to 409 cannot first
+    # destroy everyone's tokens (the write itself still raises, for the race).
+    if not vault_key_configured():
         raise HTTPException(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
-        ) from exc
+        )
+    # Ordering, deliberately: the purge runs BEFORE the client row is written.
+    # There is no transaction spanning mcp_source_oauth_clients and
+    # mcp_user_oauth_tokens, so a failure between them has to land somewhere,
+    # and purge-last lands it in the dangerous place — the client row already
+    # addressing the NEW authorization server while the OLD server's refresh
+    # tokens are still on file. connectors/mcp/client.py's refresh path reads
+    # token_endpoint / client_id / client_secret straight off that fresh row,
+    # so the next forward POSTs the old server's refresh token, and the client
+    # secret via Basic auth, to the new host. Purge-first leaves the row
+    # untouched instead: users re-connect, nothing is disclosed. Same rule and
+    # same reasoning as the source `url` repoint in update_mcp_source
+    # (Devin Review on #1124).
     # A stored token is only usable against the exact (issuer, endpoints,
     # client_id) it was minted for, so ANY change to that tuple strands it —
     # discovery can hand back new endpoints for the same client_id just as
@@ -1073,6 +1075,25 @@ async def register_oauth_client(
 
         mcp_user_oauth_tokens_repo().delete_for_source(source_id)
         mcp_oauth_flows_repo().delete_for_source(source_id)
+    try:
+        clients_repo.upsert(
+            source_id,
+            issuer=registered.issuer,
+            client_id=registered.client_id,
+            authorization_endpoint=registered.authorization_endpoint,
+            token_endpoint=registered.token_endpoint,
+            client_secret=keep_secret,
+            registration_access_token=keep_rat,
+            scopes=registered.scopes,
+        )
+    except VaultKeyNotConfiguredError as exc:
+        # The DCR registration already happened upstream; the next successful
+        # register re-registers and best-effort revokes it. Same actionable
+        # 409 the other credential endpoints give (Devin Review on #1124).
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
     _audit(
         conn,
         user["id"],
@@ -1163,22 +1184,26 @@ async def set_oauth_client_config(
                     'replace it, or send "" to clear it and convert this to a public client.'
                 ),
             )
-    try:
-        clients_repo.upsert(
-            source_id,
-            issuer=issuer,
-            client_id=payload.client_id,
-            authorization_endpoint=payload.authorization_endpoint,
-            token_endpoint=payload.token_endpoint,
-            client_secret=client_secret,
-            registration_access_token=keep_rat,
-            scopes=payload.scopes,
-        )
-    except VaultKeyNotConfiguredError as exc:
+    # The one operator-triggerable failure of the write below is a missing
+    # vault key. Check it here so a request that is going to 409 cannot first
+    # destroy everyone's tokens (the write itself still raises, for the race).
+    if not vault_key_configured():
         raise HTTPException(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
-        ) from exc
+        )
+    # Ordering, deliberately: the purge runs BEFORE the client row is written.
+    # There is no transaction spanning mcp_source_oauth_clients and
+    # mcp_user_oauth_tokens, so a failure between them has to land somewhere,
+    # and purge-last lands it in the dangerous place — the client row already
+    # addressing the NEW authorization server while the OLD server's refresh
+    # tokens are still on file. connectors/mcp/client.py's refresh path reads
+    # token_endpoint / client_id / client_secret straight off that fresh row,
+    # so the next forward POSTs the old server's refresh token, and the client
+    # secret via Basic auth, to the new host. Purge-first leaves the row
+    # untouched instead: users re-connect, nothing is disclosed. Same rule and
+    # same reasoning as the source `url` repoint in update_mcp_source
+    # (Devin Review on #1124).
     # A stored token is only usable against the exact (issuer, endpoints,
     # client_id) it was minted for — so ANY change to that tuple strands it,
     # not just a client_id swap. Repointing token_endpoint at a different
@@ -1199,6 +1224,22 @@ async def set_oauth_client_config(
 
         mcp_user_oauth_tokens_repo().delete_for_source(source_id)
         mcp_oauth_flows_repo().delete_for_source(source_id)
+    try:
+        clients_repo.upsert(
+            source_id,
+            issuer=issuer,
+            client_id=payload.client_id,
+            authorization_endpoint=payload.authorization_endpoint,
+            token_endpoint=payload.token_endpoint,
+            client_secret=client_secret,
+            registration_access_token=keep_rat,
+            scopes=payload.scopes,
+        )
+    except VaultKeyNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
     _audit(
         conn,
         user["id"],
