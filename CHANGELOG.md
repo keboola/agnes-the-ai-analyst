@@ -29,7 +29,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   reach the `slack-socket` extra directly — the Socket Mode client is an
   aiohttp WebSocket client — which is why the floor moves rather than only the
   lock: a fresh install must not be able to resolve back to a vulnerable
-  release. A `telegram` extra now declares aiohttp too — `services/telegram_bot/bot.py` imports it at module scope, so that service only ever started because the shipped image installs `[slack-socket]` alongside; an operator installing `[server]` and running only the Telegram bot hit ImportError.
+  release. A `telegram` extra now declares aiohttp too — `services/telegram_bot/bot.py` imports it at module scope, so that service only ever started because the shipped image installs `[slack-socket]` alongside; an operator installing `[server]` and running only the Telegram bot hit ImportError. aiohttp joins the `dev` extra too, so `tests/test_telegram_bot.py` actually executes in CI instead of skipping through its guarded import — the ImportError the extra prevents was previously untested.
 
 
 ## [0.78.0] - 2026-08-04
