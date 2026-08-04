@@ -252,8 +252,41 @@ def _is_operator(tok: str) -> bool:
     return bool(tok) and all(c in _OPERATOR_CHARS for c in tok)
 
 
-def _has_unquoted_heredoc(line: str) -> bool:
-    """True when `<<` appears outside quotes, i.e. really opens a heredoc.
+def _blank_arithmetic(line: str) -> str:
+    """Blank `$((...))` / `((...))` spans with a single linear scan.
+
+    The regex this replaces rescanned the rest of the line for every
+    unmatched `((`, which is quadratic — and the security playbook requires
+    regexes over untrusted text to be linear-time (review finding on #1141).
+    """
+    out = list(line)
+    depth = 0
+    i = 0
+    while i < len(line) - 1:
+        if line[i] == "(" and line[i + 1] == "(":
+            depth += 1
+            out[i] = out[i + 1] = " "
+            i += 2
+            continue
+        if depth and line[i] == ")" and line[i + 1] == ")":
+            depth -= 1
+            out[i] = out[i + 1] = " "
+            i += 2
+            continue
+        if depth:
+            out[i] = " "
+        i += 1
+    if depth and i < len(line):
+        out[i] = " "
+    return "".join(out)
+
+
+def _has_unquoted_heredoc(line: str, *, in_single: bool = False, in_double: bool = False) -> tuple[bool, bool, bool]:
+    """Whether `<<` appears outside quotes, plus the quote state at line end.
+
+    The caller threads the returned quote state into the next line: a string
+    spanning several lines otherwise reset it and a quoted `<<` inside one
+    opened a phantom heredoc.
 
     Arithmetic spans are blanked first: `$((1<<N))` is a left shift, and
     reading it as a heredoc marker made every later line of the command go
@@ -262,8 +295,8 @@ def _has_unquoted_heredoc(line: str) -> bool:
     # Both forms: `$((...))` expansion and the bare `((...))` command. Only
     # blanking the first left `((1<<N))` opening a phantom heredoc that
     # swallowed every later line (review finding on #1141).
-    line = re.sub(r"\$?\(\(.*?\)\)", " ", line)
-    in_single = in_double = False
+    line = _blank_arithmetic(line)
+    found = False
     i = 0
     while i < len(line):
         c = line[i]
@@ -275,9 +308,10 @@ def _has_unquoted_heredoc(line: str) -> bool:
         elif c == '"' and not in_single:
             in_double = not in_double
         elif c == "<" and not in_single and not in_double and line[i : i + 2] == "<<":
-            return line[i : i + 3] != "<<<"
+            if not found and line[i : i + 3] != "<<<":
+                found = True
         i += 1
-    return False
+    return found, in_single, in_double
 
 
 def _split_segments(cmd: str) -> list[str]:
@@ -308,6 +342,10 @@ def _split_segments(cmd: str) -> list[str]:
     # would never produce a boundary and every line after the first would be
     # read as arguments of the first command.
     heredoc_marker: str | None = None
+    # Quote state carries ACROSS lines: a string spanning several lines left
+    # each line judged on its own, so a quoted `<<` inside one opened a
+    # phantom heredoc and the rest went unscanned (review finding on #1141).
+    q_single = q_double = False
     for line in joined.split("\n"):
         # A heredoc body is DATA the command writes, not commands to run.
         # Scanning it as commands refused ordinary file writes because of
@@ -319,7 +357,10 @@ def _split_segments(cmd: str) -> list[str]:
         # Only an UNQUOTED << opens a heredoc. Searching the raw line let a
         # quoted one (echo 'a << b') swallow every later line of a
         # multi-line command (review finding on #1141).
-        probe = line if _has_unquoted_heredoc(line) else ""
+        found_hd, q_single, q_double = _has_unquoted_heredoc(
+            line, in_single=q_single, in_double=q_double
+        )
+        probe = line if found_hd else ""
         m = re.search(r"<<-?\s*([\"\']?)([A-Za-z_][A-Za-z0-9_]*)\1", probe)
         if m and "<<<" not in probe:
             heredoc_marker = m.group(2)
@@ -528,6 +569,31 @@ def _is_env_dump(seg: str) -> bool:
     return False
 
 
+#: Shells a downloaded script must not be piped into. Compared on the
+#: BASENAME of the segment head, so /bin/sh and /usr/bin/bash count too.
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish"})
+
+
+def _pipes_download_into_shell(cmd: str) -> bool:
+    """True when a downloader's output is piped into a shell.
+
+    Decided from the segmentation already computed rather than from another
+    whole-command regex: the regex only recognised a couple of exact
+    spellings, so `| /bin/sh` and `| sudo -E bash` slipped past the
+    confirmation it promises (review finding on #1141).
+    """
+    saw_downloader = False
+    for seg in _split_segments(cmd):
+        toks = _unwrap(_tokens(seg))
+        if not toks:
+            continue
+        head = _basename(toks[0])
+        if saw_downloader and head in _SHELLS:
+            return True
+        saw_downloader = head in ("curl", "wget")
+    return False
+
+
 def _is_force_push(toks: list[str]) -> bool:
     """git push that rewrites remote history, across its common spellings.
 
@@ -621,7 +687,7 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
                 "Destructive SQL (DROP/TRUNCATE) — confirm with the user before running.",
             )
         )
-    if any(_PIPE_TO_SHELL_RE.search(h) for h in (cmd, _normalized(cmd))):
+    if _pipes_download_into_shell(cmd) or any(_PIPE_TO_SHELL_RE.search(h) for h in (cmd, _normalized(cmd))):
         verdicts.append(
             (
                 "ask",
