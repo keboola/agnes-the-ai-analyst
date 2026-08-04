@@ -125,30 +125,33 @@ unfinished: a session that took a ticket and stopped must not remove it
 from the queue (see mode 2 step 2).
 
 ```bash
-for f in docs/superpowers/maps/<effort>/issues/*.md; do
-  # `claimed` counts as unfinished, not as done. A session that claims a
-  # ticket and stops without resolving it would otherwise drop it from every
-  # later frontier — the effort reads as finished while the question is still
-  # open. Listing it is the recovery: a stale claim is visible and can be
-  # picked up or released.
+# One rule holds this query together: a ticket is hidden ONLY on positive
+# evidence of a live blocker. Every other uncertainty — an odd "none" marker,
+# an unpadded number, a dangling reference, a status this script does not
+# know — lists the ticket. Five separate bugs here were the same mistake in
+# different clothes: something unrecognised defaulted to "blocked", and the
+# question left the queue while the effort read as finished. A stray ticket in
+# the list is a nuisance; a lost one is the failure this skill exists to catch.
+M=docs/superpowers/maps/<effort>/issues
+for f in "$M"/*.md; do
+  # `claimed` is unfinished, not done: a session that took a ticket and stopped
+  # must not remove it from the queue (mode 2 step 2).
   st=$(sed -n 's/^Status: //p' "$f" | head -1 | tr -d '[:space:]')
-  case "$st" in open|claimed) ;; *) continue ;; esac
-  # Decide on the NUMBERS, not on the exact shape of the "none" marker. An
-  # em-dash equality test made "-", "— " or "none" read as a dependency,
-  # whose glob then matched nothing and hid the ticket for good — work
-  # vanishing from the queue is worse than a stray ticket appearing in it.
+  case "$st" in resolved|out-of-scope) continue ;; esac
+
+  # Dependencies are NUMBERS. Any spelling of "none" — "—", "-", "none",
+  # empty — simply yields no numbers, so nothing blocks.
   b=$(sed -n 's/^Blocked by: //p' "$f" | head -1 | tr ',' ' ')
   blocked=0
   for n in $(printf '%s\n' $b | grep -oE '^[0-9]+$'); do
-    # Match the number however it was written: tickets are zero-padded, a
-    # human reference often is not.
-    d=$(printf '%02d' "$((10#$n))")
-    # out-of-scope settles a dependency too: ruling a question out IS a
-    # decision about it, and treating it as unanswered deadlocks everything
-    # downstream.
-    grep -qE '^Status: (resolved|out-of-scope)' \
-      docs/superpowers/maps/<effort>/issues/"$n"-*.md \
-      docs/superpowers/maps/<effort>/issues/"$d"-*.md 2>/dev/null || blocked=1
+    d=$(printf '%02d' "$((10#$n))")                 # tickets are padded; refs often are not
+    dep=$(ls "$M"/"$n"-*.md "$M"/"$d"-*.md 2>/dev/null | head -1)
+    # A reference to a ticket that does not exist (typo, deleted) can never be
+    # satisfied — so it must not block. Say so instead of swallowing it.
+    [ -z "$dep" ] && { echo "  ! $f references missing ticket $n" >&2; continue; }
+    # out-of-scope settles a dependency: ruling a question out IS a decision
+    # about it, and treating it as unanswered deadlocks everything downstream.
+    grep -qE '^Status: (resolved|out-of-scope)' "$dep" || blocked=1
   done
   [ $blocked = 0 ] && echo "$f"
 done
