@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from src.repositories.mcp_sources import validate_source_fields
+
 
 class MCPSourcePgRepository:
     def __init__(self, engine: Engine):
@@ -44,21 +46,13 @@ class MCPSourcePgRepository:
         scope: str = "shared",
         connect_hint: Optional[str] = None,
     ) -> None:
-        if transport not in ("stdio", "http", "sse"):
-            raise ValueError(f"unsupported transport: {transport}")
-        if transport == "stdio" and not command:
-            raise ValueError("stdio transport requires 'command'")
-        if transport in ("http", "sse") and not url:
-            raise ValueError(f"{transport} transport requires 'url'")
-        if scope not in ("shared", "per_user"):
-            raise ValueError(f"unsupported scope: {scope!r}; must be 'shared' or 'per_user'")
-        if (auth_method or "").strip().lower() == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
-            # Mirrors the DuckDB repo's coupling rule, normalization included
-            # — see its comment (2026-07-30 outbound MCP OAuth spec §1).
-            raise ValueError(
-                "auth_method='oauth' requires transport in ('http', 'sse') and scope='per_user' "
-                f"(got transport={transport!r}, scope={scope!r})"
-            )
+        validate_source_fields(
+            transport=transport,
+            command=command,
+            url=url,
+            auth_method=auth_method,
+            scope=scope,
+        )
 
         now = datetime.now(timezone.utc)
         args_json = json.dumps(args) if args is not None else None

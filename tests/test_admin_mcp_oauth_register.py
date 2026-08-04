@@ -898,3 +898,82 @@ def test_url_repoint_also_drops_non_oauth_credentials(seeded_app):
     )
     assert r.status_code == 200, r.text
     assert per_user_secrets_repo().has(sid, "admin1") is False
+
+
+def test_a_rejected_patch_does_not_purge_credentials(seeded_app):
+    """The purge runs before the row is repointed — so it must not fire for a
+    request that is going to 400 anyway.
+
+    A PUT can carry a new `url` *and* a field combination the repository
+    rejects. The endpoint used to validate only the oauth coupling before
+    writing, so every other repo rule failed inside `upsert` — which, once the
+    purge moved ahead of the write, would have destroyed credentials for a
+    request that changed nothing. The case below is one pydantic cannot catch:
+    the patch is well-formed in isolation, and only the MERGE with the stored
+    row (switching to `stdio` while the source has no `command`) is invalid.
+    Both halves are asserted: the call is refused AND the credentials survive
+    it (Devin Review on #1124).
+    """
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    sid = "src_rejected_patch"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="rejected_patch",
+        transport="http",
+        url="https://h1.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    per_user_secrets_repo().upsert(sid, "admin1", "tok-for-h1")
+
+    r = seeded_app["client"].put(
+        f"/api/admin/mcp-sources/{sid}",
+        headers=_hdr(seeded_app),
+        # new url (would purge) + a transport the merged row cannot satisfy
+        json={"url": "https://h2.example/mcp", "transport": "stdio"},
+    )
+    assert r.status_code == 400, r.text
+    assert "command" in r.text
+    assert per_user_secrets_repo().has(sid, "admin1") is True
+    assert mcp_sources_repo().get(sid)["url"] == "https://h1.example/mcp"
+
+
+def test_a_failed_purge_leaves_the_source_pointing_at_the_old_host(seeded_app, monkeypatch):
+    """Pins the purge/write ORDER, which is the whole point of the fix.
+
+    There is no transaction spanning the `mcp_sources` row and the vault
+    tables, so a failure between them has to land somewhere. Purge-last put it
+    in the dangerous place: the row already repointed, the old credentials
+    still on file, and the next forward shipping them to the new host. With
+    the purge first, the same failure leaves the source untouched — nothing is
+    disclosed (Devin Review on #1124).
+    """
+    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+
+    sid = "src_purge_boom"
+    mcp_sources_repo().upsert(
+        id=sid,
+        name="purge_boom",
+        transport="http",
+        url="https://h1.example/mcp",
+        auth_method="bearer",
+        scope="per_user",
+    )
+    per_user_secrets_repo().upsert(sid, "admin1", "tok-for-h1")
+
+    import app.api.admin_mcp as admin_mcp
+
+    def _boom():
+        raise RuntimeError("vault backend went away mid-purge")
+
+    monkeypatch.setattr(admin_mcp, "shared_secrets_repo", _boom)
+
+    with pytest.raises(RuntimeError):
+        seeded_app["client"].put(
+            f"/api/admin/mcp-sources/{sid}",
+            headers=_hdr(seeded_app),
+            json={"url": "https://h2.example/mcp"},
+        )
+
+    assert mcp_sources_repo().get(sid)["url"] == "https://h1.example/mcp"

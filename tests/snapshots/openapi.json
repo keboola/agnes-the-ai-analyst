@@ -9697,7 +9697,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.77.32"
+    "version": "0.77.33"
   },
   "openapi": "3.1.0",
   "paths": {

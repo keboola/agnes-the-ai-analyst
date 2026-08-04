@@ -136,9 +136,22 @@ def decrypt_optional(token: object, *, context: str = "secret") -> Optional[str]
 
     Used by the OAuth repos that store OPTIONAL encrypted columns (client
     secrets, refresh tokens, PKCE verifiers, ...): one place for the
-    bytes-coercion + ``InvalidToken``-swallow pattern. Returns ``None`` for
-    a NULL column or an undecryptable value (vault key rotated) — never
-    raises.
+    bytes-coercion + decrypt-failure-swallow pattern. Returns ``None`` for
+    a NULL column or an unreadable value — never raises.
+
+    "Unreadable" covers BOTH failure modes, not just the obvious one:
+
+    * ``InvalidToken`` — the ciphertext doesn't authenticate under the
+      current key (rotated key, or a value written under the ephemeral
+      fallback before a restart). Per-value.
+    * ``RuntimeError`` — ``AGNES_VAULT_KEY`` is set but is not a valid
+      Fernet key (:func:`_get_fernet`). Process-wide: it fires on the FIRST
+      read, for every value, so letting it escape turns a typo in one env
+      var into a 500 on every request that touches a secret instead of the
+      actionable "not connected / not configured" the callers already
+      handle. :meth:`SystemSecretsRepository.get` has caught both since it
+      was written; this helper (and the repos folding onto it) must match,
+      or the fold would silently downgrade them.
 
     The older secret repos (``SharedSecretsRepository`` /
     ``PerUserSecretsRepository`` / ``ConnectionSecretsRepository``) still
@@ -152,8 +165,8 @@ def decrypt_optional(token: object, *, context: str = "secret") -> Optional[str]
         return None
     try:
         return decrypt_secret(bytes(token))
-    except InvalidToken:
-        logger.warning("%s failed to decrypt — vault key rotated?", context)
+    except (InvalidToken, RuntimeError):
+        logger.warning("%s failed to decrypt — vault key rotated or malformed?", context)
         return None
 
 
@@ -205,9 +218,13 @@ class SharedSecretsRepository:
             return None
         try:
             return decrypt_secret(bytes(token))
-        except InvalidToken:
+        except (InvalidToken, RuntimeError):
+            # RuntimeError = malformed AGNES_VAULT_KEY (see decrypt_optional):
+            # process-wide, so letting it escape 500s every read instead of
+            # falling back. Same swallow as SystemSecretsRepository.get.
             logger.warning(
-                "mcp_secrets row for %s failed to decrypt — vault key rotated? Falling back to env-var lookup.",
+                "mcp_secrets row for %s failed to decrypt — vault key rotated or malformed? "
+                "Falling back to env-var lookup.",
                 source_id,
             )
             return None
@@ -340,10 +357,10 @@ class PerUserSecretsRepository:
             return None
         try:
             return decrypt_secret(bytes(token))
-        except InvalidToken:
+        except (InvalidToken, RuntimeError):
             logger.warning(
-                "mcp_user_secrets row (%s, %s) failed to decrypt — vault key rotated? "
-                "Falling back to shared vault / env-var.",
+                "mcp_user_secrets row (%s, %s) failed to decrypt — vault key rotated or "
+                "malformed? Falling back to shared vault / env-var.",
                 source_id,
                 user_id,
             )
@@ -424,8 +441,8 @@ class ConnectionSecretsRepository:
         token = token.encode() if isinstance(token, str) else bytes(token)
         try:
             return decrypt_secret(token)
-        except InvalidToken:
-            logger.warning("connection secret for %s unreadable (key rotated?)", connection_id)
+        except (InvalidToken, RuntimeError):
+            logger.warning("connection secret for %s unreadable (key rotated or malformed?)", connection_id)
             return None
 
     def delete(self, connection_id: str) -> None:

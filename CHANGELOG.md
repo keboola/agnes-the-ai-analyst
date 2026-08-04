@@ -11,6 +11,39 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
+  behavior yet): schema v109 adds `mcp_source_oauth_clients`,
+  `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
+  with dual-backend repositories and Fernet-encrypted token columns.
+  `auth_method='oauth'` is accepted on `mcp_sources` but validated to require
+  an http/sse transport and `scope='per_user'` — at the repository AND admin
+  API layers, including partial updates.
+  Service half (still no user-facing connect UI — that's PR 2): a shared
+  SSRF-safe HTTP client (`src/net/ssrf_safe_client.py`, extracted from the
+  marketplace asset mirror) backs a new outbound OAuth client
+  (`connectors/mcp/oauth_client.py`) doing RFC 9728 protected-resource
+  discovery, RFC 8414 AS metadata discovery, PKCE-S256 fail-closed dynamic
+  client registration (RFC 7591), and authorization-code token
+  exchange/refresh. `connectors/mcp/client.py` resolves and transparently
+  refreshes a caller's OAuth token (single-flight via an in-process lock
+  plus a coordination-backend lease, so multi-process deployments never
+  double-refresh); `enforce_per_user_credential` and the admin connect
+  probes now recognize oauth sources the same way they recognize
+  secret-backed per_user sources. New admin endpoints
+  `POST …/mcp-sources/{id}/oauth/register` (discovery + DCR, idempotent) and
+  `PUT …/mcp-sources/{id}/oauth/client` (manual client config) plus CLI
+  verbs `agnes admin mcp source oauth-register` / `oauth-client`. The stored
+  client secret is write-only (never echoed back), so `PUT …/oauth/client`
+  treats an omitted `client_secret` as "leave it alone" and an explicit `""`
+  as a deliberate clear. Per-user tokens are dropped whenever the
+  registration they were issued against stops being the one Agnes refreshes
+  with — source deletion, a re-registration that changed `client_id`,
+  flipping `auth_method` off `oauth`, or repointing the source's `url` at a
+  different upstream (whose AS did not mint those tokens); that purge runs
+  before the row is repointed, so a mid-sequence failure cannot leave live
+  credentials aimed at a host that never issued them. Design:
+  `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
+
 - MCP: new `tool_docs(tool_name)` tool on both MCP surfaces (HTTP foundation + CLI stdio) returning a tool's full reference documentation on demand.
 
 - **`SECURITY.md` — public threat model and vulnerability-reporting process.** States the deployment/trust model (single-org per instance; the agent sandbox is never trusted to make authorization decisions), documents the controls that carry the most weight (the secret broker keeping credential material out of the sandbox, live per-request agent scope intersection, server-side data-access checks on every read surface, VM-level sandbox egress, the untrusted-input controls, the Fernet secret vault), and lists known limitations honestly — unscreened prompt injection, `bypassPermissions` inside the sandbox, admin god-mode, non-revocable 30-day session cookies, `SameSite`-only CSRF, coarse data-app isolation, non-tamper-evident audit, unencrypted data at rest, and the unsigned-artifact/unpinned-marketplace supply chain. Closes with an operator security checklist. Linked from `README.md` and `docs/README.md`; reports go through GitHub private vulnerability reporting.
@@ -23,6 +56,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
+- A malformed `AGNES_VAULT_KEY` no longer 500s every request that reads a
+  secret. `_get_fernet()` raises `RuntimeError` when the env var is set but is
+  not a valid Fernet key, and only `SystemSecretsRepository` caught it — the
+  shared, per-user and connection secret repos (both backends) caught
+  `InvalidToken` alone, so a typo in one env var surfaced as an internal error
+  on every MCP call, admin probe and connect page instead of the "not
+  configured / not connected" the callers already handle. All read paths, and
+  the `decrypt_optional` helper the OAuth repos share, now swallow both. The
+  distinction matters because the two failures differ in blast radius: an
+  unreadable value is per-row, a bad key is process-wide and fires on the
+  first read.
+
 - Chat runner: fixed a latent task-GC bug — the stdin reader task was created without a strong reference, so a garbage-collection cycle during a long-running turn could silently kill inbound frame routing (Stop/cancel and credential `ticket_push` frames stopped arriving).
 
 - Streamable-MCP OAuth token revocation (RFC 7009) no longer rejects public PKCE clients: a client registered via RFC 7591 dynamic registration with `token_endpoint_auth_method: "none"` (what Claude Code, VS Code, and claude.ai register as) posting `token=…&client_id=…` to `/api/mcp/http/revoke` was answered 400 `client_secret: Field required` by the MCP SDK's request model (a required-but-nullable field — still broken upstream as of mcp 2.0.0), so issued tokens could not be invalidated and lived out their full TTL. The revocation route now validates the form with a truly-optional `client_secret`; confidential clients are unaffected (a stored secret is still enforced by client authentication, and a missing/wrong secret is rejected 401 with the token left intact). OAuth discovery documents additionally advertise `none` in `revocation_endpoint_auth_methods_supported`.
@@ -31,7 +76,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
-- Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
+- `mcp_sources` field validation (transport/command/url/scope plus the oauth
+  coupling rule) is defined once in `src/repositories/mcp_sources.py` and
+  called by both backends' `upsert` and by the admin update endpoint, which
+  previously restated only part of it.
 
 - The committed OpenAPI snapshot (`tests/snapshots/openapi.json`) is now enforced for freshness and has been regenerated. The existing guard was a one-directional ratchet — it fired only when a path or method *disappeared* — so added routes and in-place operation changes rotted the snapshot silently while CI stayed green: the file had drifted to 468 paths against the app's 509 (41 missing, including `/agents`, `/api/data-apps*`, and `/admin/studio`), with a further 22 paths stale in place (for example the `/admin/contribute-skill/{name}/delete` form POST was recorded with no request body). A new `test_snapshot_is_fresh` compares the whole document and fails with the added/removed/changed paths plus the `make update-openapi-snapshot` remedy. `info.version` is normalized out of the comparison: it resolves from installed package metadata, so comparing it would red every release-cut PR without ever catching an API change.
 

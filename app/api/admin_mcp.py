@@ -57,7 +57,11 @@ from src.repositories import (
     shared_secrets_repo,
     tool_registry_repo,
 )
-from src.repositories.mcp_sources import MCPSourceRepository  # noqa: F401  # kept for type-only imports + tests that monkeypatch the symbol
+from src.repositories.mcp_sources import (  # noqa: F401  # MCPSourceRepository kept for type-only imports + tests that monkeypatch the symbol
+    MCPSourceRepository,
+    validate_oauth_scope_coupling,
+    validate_source_fields,
+)
 from src.repositories.tool_registry import (
     MATERIALIZE,
     PASSTHROUGH,
@@ -129,17 +133,10 @@ def _validate_auth_method(v: Optional[str]) -> Optional[str]:
     return v.strip().lower() or None
 
 
-def _validate_oauth_scope_coupling(auth_method: Optional[str], transport: Optional[str], scope: Optional[str]) -> None:
-    """``auth_method='oauth'`` is only valid with a network transport AND
-    ``scope='per_user'`` (2026-07-30 outbound MCP OAuth spec §1) — the same
-    rule ``MCPSourceRepository.upsert()`` enforces at the data layer.
-    Mirrored here so a bad combo 400s with a clear message before ever
-    reaching the repo (and again, defense-in-depth, when it does)."""
-    if (auth_method or "").strip().lower() == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
-        raise ValueError(
-            "auth_method='oauth' requires transport in ('http', 'sse') and scope='per_user' "
-            f"(got transport={transport!r}, scope={scope!r})"
-        )
+#: Re-exported so the request models below 400 on a bad combo before the repo
+#: ever sees it. The rule itself lives with the repository that enforces it —
+#: it was a second copy here until it drifted (Devin Review on #1124).
+_validate_oauth_scope_coupling = validate_oauth_scope_coupling
 
 
 class CreateMCPSourceRequest(BaseModel):
@@ -662,17 +659,23 @@ async def update_mcp_source(
         # exact silent failure this validation exists to prevent.
         merged["name"] = new_name
     before = {k: existing.get(k) for k in ("name", "transport", "command", "url", "enabled")}
+    # Validate the MERGED row against the repo's own rules before anything is
+    # written or purged. A partial update can flip auth_method to 'oauth' (or
+    # transport/scope away from what oauth requires) without ever mentioning
+    # the other two fields, so the patch alone is not enough to judge. Running
+    # the repo's validator — not a local restatement of it — is what keeps the
+    # purge below from firing for a request that is about to 400 anyway.
     try:
-        # A partial update can flip auth_method to 'oauth' (or transport/
-        # scope away from what oauth requires) without ever mentioning the
-        # other two fields — validate the MERGED combo explicitly rather
-        # than relying solely on the repo raising mid-write.
-        _validate_oauth_scope_coupling(merged.get("auth_method"), merged.get("transport"), merged.get("scope"))
-        repo.upsert(**merged)
+        validate_source_fields(
+            transport=merged.get("transport"),
+            command=merged.get("command"),
+            url=merged.get("url"),
+            auth_method=merged.get("auth_method"),
+            scope=merged.get("scope") or "shared",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except duckdb.ConstraintException:
-        raise HTTPException(status_code=409, detail="name_exists")
+
     was_oauth = (existing.get("auth_method") or "").strip().lower() == "oauth"
     still_oauth = (merged.get("auth_method") or "").strip().lower() == "oauth"
     # Repointing `url` sends every stored credential for this source to a
@@ -683,6 +686,17 @@ async def update_mcp_source(
     # edit can still be a different protected resource (Devin Review on #1124
     # for the OAuth half; invariant sweep for the rest).
     url_repointed = (existing.get("url") or "") != (merged.get("url") or "")
+    # The purge runs BEFORE the row is repointed, deliberately. There is no
+    # transaction spanning the sources row and the vault tables, so one of the
+    # two orders has to lose on a mid-sequence failure — and they do not lose
+    # equally. Purge-last leaves the source already pointing at the new host
+    # with the old credentials still on file, i.e. exactly the state the purge
+    # exists to prevent, and the very next forward ships them to that host.
+    # Purge-first leaves credentials gone while the source still points at the
+    # old host: nothing is disclosed, and the recovery is the one this endpoint
+    # already documents — users re-connect. The failure modes an operator can
+    # actually trigger (invalid oauth coupling, name collision) are ruled out
+    # above so they cannot reach the purge (Devin Review on #1124).
     if url_repointed:
         # Per-user secrets go through the factory — a raw repo would write to
         # the always-DuckDB connection and orphan rows on a PG instance.
@@ -705,6 +719,13 @@ async def update_mcp_source(
         mcp_user_oauth_tokens_repo().delete_for_source(source_id)
         mcp_oauth_flows_repo().delete_for_source(source_id)
         mcp_source_oauth_clients_repo().delete(source_id)
+
+    try:
+        repo.upsert(**merged)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except duckdb.ConstraintException:
+        raise HTTPException(status_code=409, detail="name_exists")
     fresh = repo.get(source_id)
     after = {k: (fresh or {}).get(k) for k in ("name", "transport", "command", "url", "enabled")}
     _audit(
