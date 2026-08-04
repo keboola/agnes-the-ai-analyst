@@ -307,3 +307,48 @@ def test_config_parses_allowlist_mode_and_hosts(tmp_path):
     assert cfg.docker_egress_mode == "allowlist"
     assert cfg.docker_egress_allow_hosts == ["api.example.com", "*.pypi.org"]
     assert cfg.docker_egress_proxy_url == "http://agnes-egress-proxy:3128"
+
+
+def _cfg(**kw):
+    from app.chat.config import ChatConfig
+
+    base = {"docker_egress_mode": "allowlist"}
+    base.update(kw)
+    return ChatConfig(**base)
+
+
+def test_no_compose_mismatch_warnings_on_a_default_allowlist_instance():
+    from app.chat.config import egress_compose_mismatches
+
+    assert egress_compose_mismatches(_cfg()) == []
+
+
+def test_compose_mismatches_are_silent_outside_allowlist_mode():
+    from app.chat.config import egress_compose_mismatches
+
+    # The proxy isn't in play, so a custom network is a legitimate choice.
+    assert egress_compose_mismatches(_cfg(docker_egress_mode="none", docker_network="custom")) == []
+
+
+def test_a_renamed_docker_network_is_reported_as_total_egress_failure():
+    """The knob reads as ordinary, but compose pins the proxy to
+    agnes-apps-internal — sandboxes elsewhere have no route out at all."""
+    from app.chat.config import egress_compose_mismatches
+
+    msgs = egress_compose_mismatches(_cfg(docker_network="custom"))
+    assert len(msgs) == 1
+    assert "custom-internal" in msgs[0]
+    assert "ALL egress" in msgs[0]
+
+
+def test_every_compose_coupled_knob_is_reported_together():
+    from app.chat.config import egress_compose_mismatches
+
+    msgs = egress_compose_mismatches(
+        _cfg(
+            docker_network="custom",
+            docker_egress_allow_hosts=["a.example.com"],
+            docker_egress_proxy_url="http://elsewhere:3128",
+        )
+    )
+    assert len(msgs) == 3  # one per knob, not first-one-wins
