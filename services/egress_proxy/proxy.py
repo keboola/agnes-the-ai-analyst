@@ -63,6 +63,15 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
             pass
 
 
+def _close_all(*writers: asyncio.StreamWriter) -> None:
+    """Close every writer, letting none of them mask the others."""
+    for w in writers:
+        try:
+            w.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def _open_vetted(decision: Decision) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     """Connect to the first reachable vetted address from the decision."""
     last_exc: Exception | None = None
@@ -209,14 +218,15 @@ class EgressProxy:
             await writer.drain()
             writer.close()
             return
-        writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        await writer.drain()
-        await asyncio.gather(_pipe(reader, up_w), _pipe(up_r, writer))
-        for w in (up_w, writer):
-            try:
-                w.close()
-            except Exception:  # noqa: BLE001
-                pass
+        # Same finally as the absolute-form path below. `_pipe` swallows
+        # socket errors so this is far less exposed, but cancellation still
+        # escapes — and the upstream socket has no other owner.
+        try:
+            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await writer.drain()
+            await asyncio.gather(_pipe(reader, up_w), _pipe(up_r, writer))
+        finally:
+            _close_all(up_w, writer)
 
     async def _handle_absolute(self, method: str, target: str, head: bytes, reader, writer) -> None:
         split = urlsplit(target)
@@ -240,48 +250,51 @@ class EgressProxy:
             await writer.drain()
             writer.close()
             return
-        # Rewrite the request line to origin-form.
-        origin_path = split.path or "/"
-        if split.query:
-            origin_path += "?" + split.query
-        first, rest = head.split(b"\r\n", 1)
-        _m, _t, version = first.decode("latin-1").split()
-        headers, body_len, chunked = _relay_headers(rest)
-        if chunked:
-            # A chunked body has no length to bound the forward by, so we
-            # could not tell where it ends and the next request begins.
-            writer.write(_deny_response("chunked request bodies are not supported over the egress proxy"))
-            await writer.drain()
-            writer.close()
-            up_w.close()
-            return
-        up_w.write(f"{method} {origin_path} {version}\r\n".encode("latin-1") + headers)
+        # Everything past a successful upstream connect runs under finally:
+        # a sandbox that resets mid-body raises out of reader.read(), and
+        # `handle` above can only close the CLIENT socket — it has no
+        # reference to this upstream one, which then survives until the GC
+        # notices. On a shared sidecar those accumulate
+        # (Devin Review on #1148).
+        try:
+            # Rewrite the request line to origin-form.
+            origin_path = split.path or "/"
+            if split.query:
+                origin_path += "?" + split.query
+            first, rest = head.split(b"\r\n", 1)
+            _m, _t, version = first.decode("latin-1").split()
+            headers, body_len, chunked = _relay_headers(rest)
+            if chunked:
+                # A chunked body has no length to bound the forward by, so
+                # we could not tell where it ends and the next request
+                # begins.
+                writer.write(_deny_response("chunked request bodies are not supported over the egress proxy"))
+                await writer.drain()
+                return
+            up_w.write(f"{method} {origin_path} {version}\r\n".encode("latin-1") + headers)
 
-        # Forward EXACTLY this request's body, then half-close upstream.
-        #
-        # The client→upstream direction must not stay open: HTTP proxy
-        # clients pool per-proxy, not per-destination, so a follow-up
-        # `http://other-host/…` on the same socket used to be piped straight
-        # into the connection opened for the FIRST host — never re-checked
-        # against the allowlist, and carrying that request's cookies and
-        # Authorization header to a host it was never meant for
-        # (Devin Review on #1148). Only the response comes back.
-        remaining = body_len
-        while remaining > 0:
-            chunk = await reader.read(min(65536, remaining))
-            if not chunk:
-                break
-            remaining -= len(chunk)
-            up_w.write(chunk)
-        await up_w.drain()
-        if up_w.can_write_eof():
-            up_w.write_eof()
-        await _pipe(up_r, writer)
-        for w in (up_w, writer):
-            try:
-                w.close()
-            except Exception:  # noqa: BLE001
-                pass
+            # Forward EXACTLY this request's body, then half-close upstream.
+            #
+            # The client→upstream direction must not stay open: HTTP proxy
+            # clients pool per-proxy, not per-destination, so a follow-up
+            # `http://other-host/…` on the same socket used to be piped
+            # straight into the connection opened for the FIRST host —
+            # never re-checked against the allowlist, and carrying that
+            # request's cookies and Authorization header to a host it was
+            # never meant for. Only the response comes back.
+            remaining = body_len
+            while remaining > 0:
+                chunk = await reader.read(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                up_w.write(chunk)
+            await up_w.drain()
+            if up_w.can_write_eof():
+                up_w.write_eof()
+            await _pipe(up_r, writer)
+        finally:
+            _close_all(up_w, writer)
 
     def _log(self, decision: Decision, host: str, port: int) -> None:
         logger.info(
