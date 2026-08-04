@@ -984,3 +984,134 @@ def test_v99_db_migrates_to_v100_adds_sync_state_parts(tmp_path):
     row = conn.execute("SELECT rows, parts FROM sync_state WHERE table_id = 'keep'").fetchone()
     assert row == (7, None)  # data preserved, parts NULL on the legacy row
     conn.close()
+
+
+# Columns stranded by the paper-theme ladder renumbering, and the step each one
+# is normally added by. A DB that climbed the branch's OLD numbering is stamped
+# past these version numbers, so every one of these steps is skipped forever.
+_STRANDED = {
+    "chat_sessions": ["agent_id"],  # _v100_to_v101
+    "personal_access_tokens": ["agent_id"],  # _v100_to_v101
+    "sync_state": ["parts"],  # _v99_to_v100
+    "data_apps": [  # _v98_to_v99 + _v107_to_v108
+        "parent_app_id",
+        "is_draft",
+        "draft_branch",
+        "external_url",
+        "source_ref",
+        "managed",
+        "description_override",
+    ],
+}
+
+
+def _strand(conn):
+    """Rewind a fresh DB to the stranded shape: the ``_STRANDED`` columns gone,
+    everything else intact.
+
+    DuckDB refuses to drop a column while an index or an inbound FOREIGN KEY
+    references the table, so the dependents are parked and replayed from their
+    own DDL. (``ADD COLUMN`` has no such restriction — which is why the heal
+    itself works on a live DB carrying all of them.)
+    """
+    targets = tuple(_STRANDED)
+    placeholders = ", ".join("?" for _ in targets)
+
+    index_sql = [
+        r[0]
+        for r in conn.execute(
+            f"SELECT sql FROM duckdb_indexes() WHERE table_name IN ({placeholders})", list(targets)
+        ).fetchall()
+    ]
+    index_names = [
+        r[0]
+        for r in conn.execute(
+            f"SELECT index_name FROM duckdb_indexes() WHERE table_name IN ({placeholders})", list(targets)
+        ).fetchall()
+    ]
+    # Tables holding an FK into any target, discovered rather than hardcoded so
+    # this keeps working as the schema grows.
+    dependents = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT table_name FROM duckdb_constraints() "
+            "WHERE constraint_type = 'FOREIGN KEY' AND ("
+            + " OR ".join(f"constraint_text ILIKE '%REFERENCES {t}(%'" for t in targets)
+            + ")"
+        ).fetchall()
+    ]
+    dependent_sql = (
+        [
+            r[0]
+            for r in conn.execute(
+                f"SELECT sql FROM duckdb_tables() WHERE table_name IN ({', '.join('?' for _ in dependents)})",
+                dependents,
+            ).fetchall()
+        ]
+        if dependents
+        else []
+    )
+
+    for name in index_names:
+        conn.execute(f"DROP INDEX {name}")
+    for name in dependents:
+        conn.execute(f"DROP TABLE {name}")
+    for table, columns in _STRANDED.items():
+        for column in columns:
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    for sql in dependent_sql + index_sql:
+        conn.execute(sql)
+
+
+def test_v113_db_stranded_by_renumbering_is_healed(tmp_path):
+    """A DB stamped v113 under the paper-theme branch's OLD step numbering is
+    missing every column added by the main-side steps that renumbering shifted
+    underneath it — most visibly ``chat_sessions.agent_id``, which 500s every
+    chat read and write with ``Binder Error: ... agent_id``.
+
+    Reproduces the shape observed on a live preview instance: version already at
+    the head, so no `if current < N` guard fires and the columns never land —
+    which is why ``_heal_stranded_ladder_columns`` checks for the columns instead
+    of trusting the stamp.
+    """
+    db_path = tmp_path / "stranded.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _strand(conn)
+    # Stamped at the head under the old numbering — the whole point of the bug.
+    conn.execute("UPDATE schema_version SET version = 113")
+    conn.execute("INSERT INTO sync_state (table_id, rows, hash, status) VALUES ('keep', 7, 'h', 'ok')")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    for table, columns in _STRANDED.items():
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        assert set(columns) <= cols, f"{table} still missing {set(columns) - cols}"
+
+    # Pre-existing rows survive the heal, and `managed` is backfilled rather
+    # than left NULL (it is NOT NULL in the fresh-install DDL).
+    assert conn.execute("SELECT rows FROM sync_state WHERE table_id = 'keep'").fetchone() == (7,)
+    assert conn.execute("SELECT count(*) FROM data_apps WHERE managed IS NULL").fetchone() == (0,)
+    conn.close()
+
+
+def test_v113_heal_is_idempotent_on_healthy_db(tmp_path):
+    """The heal must be a no-op for DBs that climbed the ladder cleanly — it
+    runs on every instance that upgrades past 113, not just the stranded ones.
+    """
+    db_path = tmp_path / "healthy.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 113")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+    for table, columns in _STRANDED.items():
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        assert set(columns) <= cols
+    conn.close()
