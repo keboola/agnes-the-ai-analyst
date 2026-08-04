@@ -16,51 +16,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`SECURITY.md` — public threat model and vulnerability-reporting process.** States the deployment/trust model (single-org per instance; the agent sandbox is never trusted to make authorization decisions), documents the controls that carry the most weight (the secret broker keeping credential material out of the sandbox, live per-request agent scope intersection, server-side data-access checks on every read surface, VM-level sandbox egress, the untrusted-input controls, the Fernet secret vault), and lists known limitations honestly — unscreened prompt injection, `bypassPermissions` inside the sandbox, admin god-mode, non-revocable 30-day session cookies, `SameSite`-only CSRF, coarse data-app isolation, non-tamper-evident audit, unencrypted data at rest, and the unsigned-artifact/unpinned-marketplace supply chain. Closes with an operator security checklist. Linked from `README.md` and `docs/README.md`; reports go through GitHub private vulnerability reporting.
 
 ### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.33] - 2026-07-31
-
-### Added
-
-- Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
-  behavior yet): schema v109 adds `mcp_source_oauth_clients`,
-  `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
-  with dual-backend repositories and Fernet-encrypted token columns.
-  `auth_method='oauth'` is accepted on `mcp_sources` but validated to require
-  an http/sse transport and `scope='per_user'` — at the repository AND admin
-  API layers, including partial updates.
-  Service half (still no user-facing connect UI — that's PR 2): a shared
-  SSRF-safe HTTP client (`src/net/ssrf_safe_client.py`, extracted from the
-  marketplace asset mirror) backs a new outbound OAuth client
-  (`connectors/mcp/oauth_client.py`) doing RFC 9728 protected-resource
-  discovery, RFC 8414 AS metadata discovery, PKCE-S256 fail-closed dynamic
-  client registration (RFC 7591), and authorization-code token
-  exchange/refresh. `connectors/mcp/client.py` resolves and transparently
-  refreshes a caller's OAuth token (single-flight via an in-process lock
-  plus a coordination-backend lease, so multi-process deployments never
-  double-refresh); `enforce_per_user_credential` and the admin connect
-  probes now recognize oauth sources the same way they recognize
-  secret-backed per_user sources. New admin endpoints
-  `POST …/mcp-sources/{id}/oauth/register` (discovery + DCR, idempotent) and
-  `PUT …/mcp-sources/{id}/oauth/client` (manual client config) plus CLI
-  verbs `agnes admin mcp source oauth-register` / `oauth-client`. The stored
-  client secret is write-only (never echoed back), so `PUT …/oauth/client`
-  treats an omitted `client_secret` as "leave it alone" and an explicit `""`
-  as a deliberate clear. Per-user tokens are dropped whenever the
-  registration they were issued against stops being the one Agnes refreshes
-  with — source deletion, a re-registration that changed `client_id`,
-  flipping `auth_method` off `oauth`, or repointing the source's `url` at a
-  different upstream (whose AS did not mint those tokens). Design:
-  `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
-
-### Changed
 - MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
 - **MCP tool parameter schemas tightened.** `stack_browse`/`stack_subscribe`/`stack_unsubscribe` (`resource_type`), `admin_analytics_migrate` (`to`), `data_apps_list` (`kind`) and `data_app_deploy` (`mode`) declare their valid values as `Literal[…]`, so the constraint reaches `tools/list` as a JSON-schema enum instead of living only in the `Args:` prose the trimmed description drops; `store_rate` (`vote`) uses a bounded `int` rather than a literal union, because a literal would stop accepting the string `"1"` that models commonly emit for numbers. Applied on both MCP surfaces, so the HTTP and stdio copies of a tool keep advertising the same contract.
 - MCP: `query` and `describe` (plus CLI `query_local`) refuse responses whose serialized size exceeds `AGNES_MCP_MAX_OUTPUT_CHARS` (default 100 000; `0` disables) with actionable narrowing guidance, instead of returning megabyte payloads into the model's context. Row-level `limit`/`truncated` semantics are unchanged.
@@ -76,6 +31,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
 
 - The committed OpenAPI snapshot (`tests/snapshots/openapi.json`) is now enforced for freshness and has been regenerated. The existing guard was a one-directional ratchet — it fired only when a path or method *disappeared* — so added routes and in-place operation changes rotted the snapshot silently while CI stayed green: the file had drifted to 468 paths against the app's 509 (41 missing, including `/agents`, `/api/data-apps*`, and `/admin/studio`), with a further 22 paths stale in place (for example the `/admin/contribute-skill/{name}/delete` form POST was recorded with no request body). A new `test_snapshot_is_fresh` compares the whole document and fails with the added/removed/changed paths plus the `make update-openapi-snapshot` remedy. `info.version` is normalized out of the comparison: it resolves from installed package metadata, so comparing it would red every release-cut PR without ever catching an API change.
 
