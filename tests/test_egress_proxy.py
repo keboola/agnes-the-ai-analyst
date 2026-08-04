@@ -85,6 +85,42 @@ def test_private_ranges_denied_by_default_allowed_when_disabled():
     ).allowed
 
 
+def test_an_ipv4_address_wearing_ipv6_clothes_is_still_checked():
+    """`::ffff:169.254.169.254` is an IPv6Address, so a family-matched
+    range walk compared it only against the v6 ranges and let it through —
+    while a dual-stack host connecting to it reaches the v4 metadata
+    service. Every embedded-v4 spelling has to reduce to the same rules."""
+    for spelling in (
+        "::ffff:169.254.169.254",  # IPv4-mapped
+        "2002:a9fe:a9fe::1",  # 6to4 embedding 169.254.169.254
+    ):
+        d = decide("api.example.com", 443, ["api.example.com"], resolver=_resolver_for(spelling))
+        assert not d.allowed, spelling
+        assert "169.254" in d.reason, d.reason
+
+    # ...and the private ranges are not escapable that way either, even
+    # though the mapped form is not inside any v6 private network.
+    d = decide("api.example.com", 443, ["api.example.com"], resolver=_resolver_for("::ffff:10.0.0.5"))
+    assert not d.allowed
+    assert "10.0.0.0/8" in d.reason
+
+
+def test_the_unspecified_address_is_denied():
+    """`0.0.0.0` is in none of the loopback ranges, but connecting to it
+    reaches loopback on Linux."""
+    for spelling in ("0.0.0.0", "::"):
+        d = decide("api.example.com", 443, ["api.example.com"], resolver=_resolver_for(spelling))
+        assert not d.allowed, spelling
+        assert "unspecified" in d.reason
+
+
+def test_ordinary_public_addresses_still_pass_in_every_spelling():
+    """The normalization must not over-block: a mapped PUBLIC address is
+    a legitimate answer."""
+    for spelling in ("93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946", "::ffff:93.184.216.34"):
+        assert decide("api.example.com", 443, ["api.example.com"], resolver=_resolver_for(spelling)).allowed, spelling
+
+
 def test_dns_failure_denies():
     def _fail(host, port):
         raise socket.gaierror("nope")
