@@ -3869,3 +3869,46 @@ def test_the_kill_switch_is_settable_again(manager: ChatManager):
         assert captured["env"]["AGNES_APPROVALS"] == "off"
 
     asyncio.run(_run())
+
+
+def test_a_browser_leaving_later_still_nudges_the_slack_thread(manager: ChatManager):
+    """The post-broadcast correction only covers the pump iteration that raised
+    the request. A browser that leaves LATER — while the card is still pending
+    — would otherwise leave nobody holding it and nobody told: the same stall,
+    in a wider window (Devin Review on #1157)."""
+
+    class RecordingSlack:
+        def __init__(self):
+            self.nudges = []
+
+        async def send_json(self, frame):
+            pass
+
+        async def _post_approval_request(self, data):
+            self.nudges.append(data)
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        web = FakeWS()
+        web.supports_approvals = True
+        slack = RecordingSlack()
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(
+            manager, s.id, "u@x", web, surface=Surface.SLACK_DM.value, extra_sinks=(slack,)
+        )
+        await _pump_one_approval_request(manager, live)
+        assert slack.nudges == [], "a browser was holding the card — no nudge expected yet"
+
+        # The browser goes away while the card is still pending.
+        await manager.detach_sink(s.id, web)
+
+        assert slack.nudges, "nobody can answer any more and nobody was told"
+        assert slack.nudges[0]["attended"] is False
+        # Idempotent: a second detach must not re-post.
+        await manager.detach_sink(s.id, web)
+        assert len(slack.nudges) == 1
+
+    asyncio.run(_run())
