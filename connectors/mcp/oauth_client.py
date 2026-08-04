@@ -161,7 +161,23 @@ async def discover_protected_resource_metadata(
         try:
             resp = await client.get(candidate)
             if resp.status_code == 200:
-                return _json_or_discovery_error(resp, candidate)
+                body = _json_or_discovery_error(resp, candidate)
+                if not body.get("authorization_servers"):
+                    # Parses as a JSON object, but is not RFC 9728 metadata —
+                    # the same not-the-document case as the HTML page below,
+                    # just wearing a content type. API gateways answer unknown
+                    # paths with 200 {"error": ...} envelopes, and accepting
+                    # one here skipped the remaining candidate and the 401
+                    # fallback, then surfaced resolve_issuer's "carries no
+                    # 'authorization_servers'" — which points the admin at the
+                    # document rather than at the missing discovery
+                    # (Devin Review on #1124).
+                    logger.debug(
+                        "protected-resource well-known at %s has no 'authorization_servers'; trying the next route",
+                        candidate,
+                    )
+                    continue
+                return body
         except httpx.HTTPError as exc:
             logger.debug("protected-resource well-known fetch failed for %s: %s", candidate, exc_summary(exc))
         except OAuthDiscoveryError as exc:

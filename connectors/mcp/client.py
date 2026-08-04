@@ -319,14 +319,31 @@ def reset_oauth_refresh_locks_for_tests() -> None:
 
 
 def _needs_refresh(row: Dict[str, Any], *, skew_seconds: int = _OAUTH_REFRESH_SKEW_SECONDS) -> bool:
-    """True iff ``row['expires_at']`` is within ``skew_seconds`` of now (or
+    """True iff ``row['expires_at']`` is within the effective skew of now (or
     already past). ``expires_at is None`` means "non-expiring / unknown" —
-    never refresh proactively for those."""
+    never refresh proactively for those.
+
+    The skew is CLAMPED to half the token's own lifetime. A fixed 60s window
+    assumes tokens live a good deal longer than that; against an AS issuing
+    short-lived ones (``expires_in`` of 60, or 0) the row written by a
+    successful refresh is instantly "due" again, so every forwarded call makes
+    another token-endpoint round trip — a hot loop the failure cooldown does
+    not cover, because nothing here is failing. Clamping keeps the early
+    refresh proportional: half the lifetime is still ample headroom, and it
+    can never be the whole of it (Devin Review on #1124).
+    """
     expires_at = row.get("expires_at")
     if expires_at is None:
         return False
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
+    issued_at = row.get("updated_at")
+    if issued_at is not None:
+        if issued_at.tzinfo is None:
+            issued_at = issued_at.replace(tzinfo=timezone.utc)
+        lifetime = (expires_at - issued_at).total_seconds()
+        if lifetime > 0:
+            skew_seconds = min(skew_seconds, lifetime / 2)
     return (expires_at - datetime.now(timezone.utc)).total_seconds() <= skew_seconds
 
 

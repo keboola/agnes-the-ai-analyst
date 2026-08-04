@@ -116,7 +116,24 @@ def _seed_client_row(conn, source_id="src_oauth1"):
     )
 
 
-def _seed_token_row(conn, *, source_id="src_oauth1", user_id="user1", expires_in_seconds, refresh_token="rt-1"):
+def _seed_token_row(
+    conn,
+    *,
+    source_id="src_oauth1",
+    user_id="user1",
+    expires_in_seconds,
+    refresh_token="rt-1",
+    lifetime_seconds=3600,
+):
+    """Seed a token row with ``expires_in_seconds`` left to live.
+
+    ``lifetime_seconds`` backdates ``updated_at`` so the row describes a token
+    of that ORIGINAL lifetime which is now near its end — the realistic shape.
+    It matters because the proactive-refresh skew is clamped to half the
+    token's own lifetime: a row stamped "issued just now, 10 seconds left"
+    describes a 10-second token, for which refreshing 60 seconds early is
+    neither possible nor meaningful (Devin Review on #1124).
+    """
     from src.repositories.mcp_user_oauth_tokens import MCPUserOAuthTokenRepository
 
     expires_at = None
@@ -129,6 +146,11 @@ def _seed_token_row(conn, *, source_id="src_oauth1", user_id="user1", expires_in
         refresh_token=refresh_token,
         expires_at=expires_at,
     )
+    if expires_at is not None and lifetime_seconds is not None:
+        conn.execute(
+            "UPDATE mcp_user_oauth_tokens SET updated_at = ? WHERE source_id = ? AND user_id = ?",
+            [expires_at - timedelta(seconds=lifetime_seconds), source_id, user_id],
+        )
 
 
 _SOURCE = {
@@ -464,11 +486,12 @@ def test_a_refresh_without_expires_in_keeps_the_token_refreshable(oauth_db, monk
 
     row = MCPUserOAuthTokenRepository(oauth_db).get("src_oauth1", "user1")
     assert row["expires_at"] is not None, "a known expiry was replaced by 'unknown' — refresh loop is now dead"
-    # The previously observed lifetime (10s here) is carried forward, so the
-    # row stays renewable instead of being pinned as non-expiring.
+    # The previously observed lifetime — the seeded row describes an hour-long
+    # token — is carried forward, so the row stays renewable instead of being
+    # pinned as non-expiring.
     expires_at = row["expires_at"].replace(tzinfo=timezone.utc)
     carried = (expires_at - datetime.now(timezone.utc)).total_seconds()
-    assert 5 <= carried <= 15, carried
+    assert 3500 <= carried <= 3700, carried
 
 
 def test_expiry_is_left_unknown_when_there_is_nothing_to_learn_from():
@@ -550,3 +573,38 @@ def test_a_non_oauth_error_also_backs_off_instead_of_escaping(oauth_db, monkeypa
         # Does not raise, and does not strand the caller without a token.
         assert asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1")) == "at-1"
     assert len(calls) == 1, f"AS was hit {len(calls)} times for 3 forwards — the error skipped the back-off"
+
+
+def test_a_short_lived_token_is_not_refreshed_on_every_single_call(oauth_db, monkeypatch):
+    """The 60s proactive-refresh skew assumes tokens live well beyond it. An AS
+    issuing short-lived ones made the row written by a SUCCESSFUL refresh
+    instantly due again, so every forwarded call did another token-endpoint
+    round trip — a hot loop the failure cooldown does not cover, because
+    nothing is failing (Devin Review on #1124)."""
+    _seed_client_row(oauth_db)
+    _seed_token_row(oauth_db, expires_in_seconds=5, refresh_token="rt-1")
+
+    calls = []
+
+    async def _short_lived(**kwargs):
+        calls.append(1)
+        return mcp_oauth_client.TokenSet(access_token="at-short", refresh_token="rt-1", expires_in=30, scopes=None)
+
+    monkeypatch.setattr(mcp_oauth_client, "refresh_access_token", _short_lived)
+
+    for _ in range(4):
+        assert asyncio.run(mcp_client._resolve_oauth_access_token(_SOURCE, "user1")) == "at-short"
+    assert len(calls) == 1, f"{len(calls)} refreshes for 4 forwards — a 30s token is due again immediately"
+
+
+def test_the_clamp_does_not_delay_refresh_for_normal_lifetimes():
+    """The counterpart: clamping must not push a long-lived token's refresh
+    past its expiry. Half of an hour is well beyond the 60s skew, so the fixed
+    skew still governs."""
+    now = datetime.now(timezone.utc)
+    hour = {"updated_at": now - timedelta(minutes=59), "expires_at": now + timedelta(seconds=59)}
+    assert mcp_client._needs_refresh(hour) is True
+    fresh = {"updated_at": now, "expires_at": now + timedelta(hours=1)}
+    assert mcp_client._needs_refresh(fresh) is False
+    # A row with no updated_at to learn a lifetime from keeps the fixed skew.
+    assert mcp_client._needs_refresh({"expires_at": now + timedelta(seconds=30)}) is True

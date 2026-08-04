@@ -101,7 +101,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   catch-all HTML page for unknown paths aborted discovery at the first
   candidate, skipping the second and the `401`-challenge fallback — the very
   path such a host needs. A junk body at the `resource_metadata` URL the
-  server explicitly advertised is still a hard, actionable error.
+  server explicitly advertised is still a hard, actionable error — as is a 200
+  JSON object that is not RFC 9728 metadata, such as the `{"error": …}`
+  envelope an API gateway returns for unknown paths, which used to be accepted
+  as the document and then surfaced as "carries no 'authorization_servers'",
+  pointing the admin at the document rather than at the missing discovery.
+  Proactive refresh no longer fires on every single call against an
+  authorization server that issues short-lived tokens: the 60-second early
+  refresh window is clamped to half the token's own lifetime, so a token valid
+  for less than that is not already due the moment it is written.
 
 - A malformed `AGNES_VAULT_KEY` no longer 500s every request that reads a
   secret. `_get_fernet()` raises `RuntimeError` when the env var is set but is
@@ -123,6 +131,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- Duplicate MCP source names surface as 409 on both backends — Postgres raises
+  the unique violation as a SQLAlchemy `IntegrityError`, which fell through to
+  a 500. It matters more now that the credential purge runs before the write:
+  the losing side of a rename race would have reported an internal error for a
+  request that had already dropped the source's credentials.
+
 - `make update-openapi-snapshot` generates to a temp file and moves it into
   place, and runs the project venv's interpreter rather than whatever `python`
   is on PATH. The shell truncates a `>` target before the command runs, so a

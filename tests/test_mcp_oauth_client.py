@@ -705,3 +705,30 @@ def test_register_rejects_response_granting_an_unperformable_auth_method():
 
     with pytest.raises(OAuthDiscoveryError, match="private_key_jwt"):
         run(_impl())
+
+
+def test_a_json_envelope_that_is_not_metadata_also_falls_through():
+    """The other half of the same class: a probed well-known URL answering 200
+    with a JSON *object* that is not RFC 9728 metadata — the `{"error": ...}`
+    envelope API gateways return for unknown paths — used to be accepted as the
+    document, skipping the remaining candidate and the 401 fallback. The admin
+    then saw resolve_issuer's "carries no 'authorization_servers'", which points
+    at the document rather than at the missing discovery (Devin Review on
+    #1124)."""
+
+    def handler(request):
+        if str(request.url) == "https://mcp.example.com/mcp":
+            return httpx.Response(
+                401,
+                headers={"WWW-Authenticate": 'Bearer resource_metadata="https://mcp.example.com/.well-known/rm"'},
+            )
+        if str(request.url) == "https://mcp.example.com/.well-known/rm":
+            return httpx.Response(200, json={"authorization_servers": ["https://as.example.com"]})
+        return httpx.Response(200, json={"error": "not_found"})
+
+    async def _impl():
+        async with _client(handler) as client:
+            return await discover_protected_resource_metadata("https://mcp.example.com/mcp", client=client)
+
+    meta = run(_impl())
+    assert meta["authorization_servers"] == ["https://as.example.com"]

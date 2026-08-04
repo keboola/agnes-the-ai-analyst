@@ -37,6 +37,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 import duckdb
+from sqlalchemy import exc as sa_exc
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -463,13 +464,20 @@ def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest)
         "scope": data.get("scope", existing.get("scope")),
         "connect_hint": data.get("connect_hint", existing.get("connect_hint")),
     }
-    # An explicit null means "leave unchanged", not "reset to the default".
-    # `exclude_unset` cannot tell the two apart — a client that serializes its
-    # unset optionals as null looks identical to one deliberately clearing the
-    # field — so the reading that cannot surprise anyone wins: fall back to the
-    # stored value first, and only then to the type's default. Coercing to the
-    # default instead would silently re-enable a source an admin had disabled
-    # (Devin Review on #1124).
+    # Explicit-null semantics, and why they differ per field (asked on #1124):
+    # null means CLEAR for the nullable columns (`url`, `command`, `args`,
+    # `auth_method`, `auth_secret_env`, `connect_hint`) because it is the only
+    # way to clear them, and the admin UI relies on exactly that — its save
+    # handler sends `auth_method: <value> || null` and, on a transport switch,
+    # `url: null` / `command: null` to mean "unset this". Taking that away
+    # would leave no way to blank a field.
+    #
+    # `scope` and `enabled` are NOT nullable (`enabled BOOLEAN NOT NULL`;
+    # `scope` is validated against a fixed set), so "clear" has no meaning for
+    # them and null can only be noise from a client that serializes its unset
+    # optionals — fall back to the stored value, then the type's default.
+    # Coercing to the default instead silently re-enabled a source an admin had
+    # disabled (Devin Review on #1124).
     if merged["enabled"] is None:
         merged["enabled"] = bool(existing["enabled"]) if existing.get("enabled") is not None else True
     merged["scope"] = merged["scope"] or existing.get("scope") or "shared"
@@ -599,7 +607,8 @@ async def create_mcp_source(
     except ValueError as exc:
         # transport/command/url validation errors from the repo
         raise HTTPException(status_code=400, detail=str(exc))
-    except duckdb.ConstraintException:
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
+        # Same duplicate name, same 409, either backend — see update_mcp_source.
         raise HTTPException(status_code=409, detail="name_exists")
     _audit(
         conn,
@@ -783,7 +792,14 @@ async def update_mcp_source(
         repo.upsert(**merged)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except duckdb.ConstraintException:
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
+        # The pre-check above rules this out for everything except a rename
+        # racing a concurrent one, so it is the last narrow window where the
+        # purge has already run. Both backends must land on the same 409 —
+        # on Postgres the unique violation arrives as SQLAlchemy
+        # IntegrityError, which fell through to a 500 and, now that the purge
+        # runs first, would have reported an internal error for a request that
+        # had already dropped the source's credentials (Devin Review on #1124).
         raise HTTPException(status_code=409, detail="name_exists")
     fresh = repo.get(source_id)
     after = {k: (fresh or {}).get(k) for k in ("name", "transport", "command", "url", "enabled")}
