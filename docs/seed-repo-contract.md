@@ -199,9 +199,9 @@ The Agnes server substitutes the following placeholders at render time
 deliberately never embedded in the install-prompt body — it is written to
 `~/.agnes/token` out-of-band, by an earlier step of the web onboarding
 flow (the "launch Claude" step that saves the token before the prompt is
-generated; that substitution lives in a sibling ticket, not in this
-Python template), so the raw value never has to appear in the prompt
-text, the browser clipboard, or a pasted chat transcript. A seed's
+generated — implemented by `/home`'s step 4: `home_not_onboarded.html` +
+the shared `_claude_setup_cta.jinja` partial), so the raw value never
+has to appear in the prompt text or a pasted chat transcript. A seed's
 `template.md.tmpl` MUST NOT reference a `{token}` placeholder or inline a
 literal token/JWT example; the prompt instead carries a guard
 (`test -s ~/.agnes/token`) and reads the file via

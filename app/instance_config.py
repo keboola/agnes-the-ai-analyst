@@ -678,9 +678,11 @@ def get_instance_custom_preamble() -> str:
 
     ``{instance_brand}`` (and the other server-side placeholders substituted
     by :func:`app.web.setup_instructions.resolve_lines`) are honored inside
-    the preamble, but it MUST NOT contain literal ``{server_url}`` /
-    ``{token}`` — those are only substituted at click time in the JS
-    clipboard flow, not in the preamble body.
+    the preamble, but it MUST NOT contain a literal ``{server_url}`` (that
+    one is substituted at click time in the JS clipboard flow, not in the
+    preamble body) and MUST NOT reference ``{token}`` at all — the token is
+    no longer a prompt placeholder anywhere; it is handed off via /home's
+    step 4 into ``~/.agnes/token``.
 
     Resolution: ``AGNES_INSTANCE_CUSTOM_PREAMBLE`` env > ``instance.custom_preamble``
     YAML > ``""``. Mirrors :func:`get_instance_overview`.

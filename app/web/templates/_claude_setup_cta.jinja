@@ -187,13 +187,13 @@
         return "Claude Code — " + stamp;
     }
 
-    function showSetupFallback(instructions) {
+    function showSetupFallback(instructions, opts) {
         var overlay = document.createElement('div');
         overlay.className = 'setup-fallback-overlay';
         overlay.innerHTML =
             '<div class="setup-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="setupFallbackTitle">' +
                 '<h4 id="setupFallbackTitle">Copy these setup instructions</h4>' +
-                '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into Claude Code.</p>' +
+                '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into ' + ((opts && opts.pasteTarget) || 'Claude Code') + '.</p>' +
                 '<textarea readonly></textarea>' +
                 '<div class="setup-fallback-actions">' +
                     '<button type="button" data-action="close">Close</button>' +
@@ -375,6 +375,15 @@
             return;
         }
 
+        await deliverTokenCommand(btn, errEl, origText, command);
+    }
+
+    // Clipboard delivery for the already-built (token-bearing) command.
+    // Separate from launchClaudeWithToken so Retry re-attempts ONLY the
+    // clipboard write — the mint already succeeded, and re-minting on
+    // every retry click would pile up live 90-day credentials
+    // server-side.
+    async function deliverTokenCommand(btn, errEl, origText, command) {
         try {
             await copyToClipboard(command);
             btn.textContent = 'Copied! Paste into your terminal';
@@ -391,13 +400,16 @@
             // never dead-end. The real command (including the token) is
             // shown only after this SECOND, deliberate click — never
             // automatically — reusing the same read-only textarea modal
-            // Step 5 uses for its own clipboard-blocked fallback.
+            // Step 5 uses for its own clipboard-blocked fallback. This
+            // command belongs in a TERMINAL — pasting it into the Claude
+            // Code chat would put the token into the session transcript,
+            // so the modal wording steers there explicitly.
             showLaunchError(errEl, 'Clipboard access was blocked.', [
                 {
                     label: 'Reveal the command once so I can copy it manually',
-                    onClick: function () { showSetupFallback(command); },
+                    onClick: function () { showSetupFallback(command, { pasteTarget: 'your terminal (not the Claude Code chat — it would record the token)' }); },
                 },
-                { label: 'Retry', onClick: function () { launchClaudeWithToken(btn); } },
+                { label: 'Retry', onClick: function () { deliverTokenCommand(btn, errEl, origText, command); } },
             ]);
         }
     }

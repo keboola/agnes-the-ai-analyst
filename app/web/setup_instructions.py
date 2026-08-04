@@ -12,8 +12,11 @@ into the JS template and is filled in at click time.
 The analyst's access token is deliberately NOT a placeholder in this
 template. It is written to `~/.agnes/token` out-of-band, before this
 prompt is generated (see `{server_url}/home` step 4) — so the raw token
-value never has to appear in the prompt text, the browser clipboard, or a
-pasted chat transcript. `render_setup_instructions()` still accepts a
+value never has to appear in the prompt text or a pasted chat transcript.
+(Scope of that guarantee: THIS payload. Step 4's own copied shell command
+does carry the token through the browser clipboard transiently — that is
+its delivery mechanism — and its clipboard-blocked fallback can reveal it
+on an explicit second click.) `render_setup_instructions()` still accepts a
 `token` kwarg for backward compatibility with existing callers, but it is
 a no-op today: nothing in the rendered body contains `{token}` to
 substitute.
@@ -511,20 +514,26 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
         "   hooks/statusLine/commands are re-applied on top. Then skip to step 4.",
         "   (If `agnes update` fails on auth because your saved token expired:",
         "   the saved credential lives in ~/.config/agnes/token.json. Re-run",
-        "   step 4 on {server_url}/home to save a fresh token, then re-run",
-        "   this step.)",
+        "   step 4 on {server_url}/home to save a fresh token, then run",
+        f'   `agnes init --force --server-url "{server_url_placeholder}" --token-file ~/.agnes/token --workspace .`',
+        "   — the --force is what makes init re-read the fresh token file;",
+        "   plain `agnes init` refuses once `.claude/init-complete` exists.)",
         "",
         "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
         "   writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
         "   SessionStart/End hooks (auto-refresh), and runs an initial `agnes pull`",
         "   so your DuckDB views are ready.",
         "",
-        "   Verify the token file was consumed:",
-        '   test ! -f ~/.agnes/token && echo "token file consumed"',
+        "   If you ran `agnes init` above, verify the token file was consumed:",
+        '   test -f ~/.agnes/token && echo "token file STILL PRESENT" || echo "token file consumed"',
         "",
         "   `agnes init` deletes ~/.agnes/token once the credential is saved; if",
-        "   the file still exists, the deletion failed and a plaintext access",
-        "   token is left on disk — tell the user to remove it manually.",
+        "   the file still exists after `agnes init`, the deletion failed and a",
+        "   plaintext access token is left on disk — tell the user to remove it",
+        "   manually. After the `agnes update` reconcile path this check does",
+        "   not apply: `agnes update` never touches ~/.agnes/token, so a file",
+        "   saved by step 4 legitimately stays until the next `agnes init`",
+        "   consumes it.",
         "",
         "4) Verify the data is queryable:",
         "   agnes catalog",
@@ -797,7 +806,8 @@ def _finale_lines(
     """
     bullets = [
         "   - `agnes --version` output",
-        "   - Confirmation that `~/.agnes/token` was consumed (no longer exists)",
+        "   - If `agnes init` ran: confirmation that `~/.agnes/token` was consumed",
+        "     (after the `agnes update` reconcile path the file may legitimately remain)",
         "   - First few lines of `agnes catalog` (tables you can see)",
         "   - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist",
         "   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks",
@@ -1087,9 +1097,12 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "First, a quick check: run `test -s ~/.agnes/token`.",
         "  - If the file exists, continue with step 1.",
         "  - If it is missing and this machine was already set up (the checks",
-        "    above say reconcile), that's fine: the token file is consumed",
-        "    and removed by the first `agnes init`, and later runs use the",
-        "    saved credential. Continue.",
+        "    above say reconcile) AND a saved credential exists (`test -s",
+        "    ~/.config/agnes/token.json`), that's fine: the token file is",
+        "    consumed and removed by the first `agnes init`, and later runs use",
+        "    the saved credential. Continue. A working `agnes --version` alone",
+        "    is NOT enough — the CLI may be installed globally while this",
+        "    machine has never signed in.",
         "  - If it is missing on a fresh install, stop here — tell the user",
         '    to open {server_url}/home and run step 4 ("Launch Claude — it',
         '    saves your login token to ~/.agnes/token first"), then paste',

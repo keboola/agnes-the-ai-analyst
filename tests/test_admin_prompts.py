@@ -669,3 +669,23 @@ def test_build_zip_renders_overlay_for_user(tmp_path, monkeypatch):
         conn.close()
     files = _zip_names_and_content(data)
     assert files["CLAUDE.md"] == "Workspace for alice@example.com"
+
+
+def test_install_prompt_save_rejects_token_placeholder():
+    """`{token}` stopped being substituted when the PAT handoff moved to
+    /home step 4 — an override still carrying it would emit the literal
+    string and every analyst's init would authenticate with garbage. The
+    save-time validator must reject it with actionable guidance.
+    """
+    from fastapi import HTTPException
+
+    from app.api.prompts import _validate_template
+
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_template("install", "Set up.\nPersonal access token: {token}\n")
+    assert exc_info.value.status_code == 400
+    assert "{token}" in str(exc_info.value.detail)
+    assert "~/.agnes/token" in str(exc_info.value.detail)
+
+    # The token-free shape stays saveable.
+    _validate_template("install", "Set up.\nagnes init --token-file ~/.agnes/token\n")

@@ -108,6 +108,24 @@ def _validate_template(kind: str, content: str) -> None:
             "is publicly accessible."
         )
 
+    if kind == "install" and "{token}" in content:
+        # The renderer stopped substituting `{token}` when the PAT handoff
+        # moved to /home step 4 (the token is saved to ~/.agnes/token before
+        # the prompt is generated, and the prompt body must stay token-free).
+        # An override still carrying the placeholder would emit the literal
+        # string `{token}` and produce installs that authenticate with
+        # garbage — reject at save time instead of failing every analyst.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Template invalid: `{token}` is no longer a supported "
+                "placeholder — the install prompt must not embed the access "
+                "token. The token is saved to ~/.agnes/token by the install "
+                "guide's step 4 and read via `agnes init --token-file`; "
+                "reference that file path instead."
+            ),
+        )
+
     env = make_prompt_env()  # F4: sandboxed — admin-authored content
     try:
         template = env.from_string(content)

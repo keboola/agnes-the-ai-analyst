@@ -475,19 +475,17 @@ def init(
                     token = line
                     break
         except OSError as exc:
+            # Not fatal: the install prompt always passes --token-file, but on
+            # a machine that already signed in the file was consumed by an
+            # earlier `agnes init` — the saved credential in
+            # ~/.config/agnes/token.json (fallback below) is the normal source
+            # then. Only if NO fallback yields a token does init fail, with
+            # the standard missing-token guidance.
             typer.echo(
-                render_error(
-                    0,
-                    {
-                        "detail": {
-                            "kind": "partial_state",
-                            "hint": f"--token-file {token_file!r} could not be read: {exc}",
-                        }
-                    },
-                ),
+                f"note: --token-file {token_file!r} could not be read ({exc}); "
+                "falling back to AGNES_TOKEN / the saved credential.",
                 err=True,
             )
-            raise typer.Exit(1)
     if token is None:
         token = os.environ.get("AGNES_TOKEN", "").strip() or None
     if token is None:

@@ -334,7 +334,7 @@
             <li><strong>ZIP download</strong> — fallback for environments where the git path can't reach the server (private-CA TLS, restrictive proxies). A SessionStart hook unpacks the served bundle into <code>./marketplace/</code> on each session start.</li>
         </ul>
 
-        <p>The exact registration commands (URL, PAT, hook setup) are baked into the clipboard payload at <a href="/setup">/setup</a> — that page detects your platform and chooses the right channel automatically. The setup script also installs the bundled hooks that keep the marketplace + session telemetry in sync between Claude Desktop and the central catalog.</p>
+        <p>The exact registration commands (URL, hook setup) are baked into the clipboard payload at <a href="/setup">/setup</a> — the payload itself carries no token; your login is saved to a local file by the install guide's token step first. That page detects your platform and chooses the right channel automatically. The setup script also installs the bundled hooks that keep the marketplace + session telemetry in sync between Claude Desktop and the central catalog.</p>
 
         <p class="ad-lead" style="margin-top: 14px;">When to prefer the terminal anyway: large refactors, anything that touches files outside of <code>~/Desktop/{{ workspace_dir }}</code>, or workflows that need Claude Code's CLI-only features (auto-mode, YOLO, custom hooks). Claude Desktop and claude.ai are best for short-form chat with read-only / well-scoped tools.</p>
     </section>
