@@ -7041,9 +7041,13 @@ def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP")
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_by VARCHAR")
     conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_note TEXT")
-    # A row that predates the columns reads NULL, not the DEFAULT — the default
-    # only applies to inserts. Normalize so every read path can treat these as
-    # non-null enums.
+    # Backfill deliberately, even though it looks redundant. DuckDB (measured
+    # on 1.5.2) DOES apply an ADD COLUMN default to pre-existing rows, so these
+    # UPDATEs are no-ops today — this comment used to claim the opposite, and a
+    # wrong belief about it is what makes the next heal author guess. Keeping
+    # them costs one no-op statement and removes the guess: a column added with
+    # no DEFAULT still reads NULL, and nothing here should depend on which
+    # engine version normalises what (Devin Review on #1158).
     conn.execute("UPDATE store_entities SET publisher_kind = 'user' WHERE publisher_kind IS NULL")
     conn.execute("UPDATE store_entities SET verification_state = 'none' WHERE verification_state IS NULL")
 
@@ -7084,6 +7088,92 @@ def _heal_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
         "— healing (see _heal_store_entity_trust_columns)"
     )
     _add_store_entity_trust_columns(conn)
+
+
+def _heal_stranded_ladder_columns(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add back the plain columns the paper-theme renumbering stranded.
+
+    :func:`_heal_legacy_agents_table` repairs the ``agents`` *table* for a DB
+    that reached the merge already stamped past 101 — but ``_v100_to_v101`` also
+    adds two ``agent_id`` columns, and the same skip drops those on the floor.
+    ``chat_sessions.agent_id`` is the one that hurts: every chat read and write
+    names it, so the whole surface 500s with ``Binder Error: Table "s" does not
+    have a column named "agent_id"`` while the instance otherwise looks healthy
+    (``/api/health`` reports ``db_schema: ok`` — the stamp *is* at the head).
+
+    The renumbering shifted more than one step underneath these DBs, so the same
+    treatment is owed to every plain-column addition in the affected range:
+    ``sync_state.parts`` (v100) and the ``data_apps`` draft (v99) + linked (v108)
+    columns. Structural steps are already covered by the sibling heals; these are
+    the ones that are pure ``ADD COLUMN``.
+
+    Stamp-independent and idempotent, for the reasons in
+    :func:`_heal_store_entity_trust_columns` — the stamp is exactly the evidence
+    that is wrong here. Unlike ``DROP COLUMN``, DuckDB has no problem adding a
+    column to a table carrying indexes or inbound foreign keys, so no dependent
+    parking is needed.
+    """
+    # (table, column, DDL) — verbatim from the ladder steps that own them, so a
+    # healed DB is indistinguishable from a cleanly-migrated one.
+    stranded = [
+        ("chat_sessions", "agent_id", "VARCHAR"),  # _v100_to_v101
+        ("personal_access_tokens", "agent_id", "VARCHAR"),  # _v100_to_v101
+        ("sync_state", "parts", "JSON"),  # _v99_to_v100
+        ("data_apps", "parent_app_id", "VARCHAR DEFAULT ''"),  # _v98_to_v99
+        ("data_apps", "is_draft", "BOOLEAN DEFAULT FALSE"),  # _v98_to_v99
+        ("data_apps", "draft_branch", "VARCHAR DEFAULT ''"),  # _v98_to_v99
+        ("data_apps", "external_url", "VARCHAR"),  # _v107_to_v108
+        ("data_apps", "source_ref", "VARCHAR"),  # _v107_to_v108
+        ("data_apps", "managed", "BOOLEAN DEFAULT FALSE"),  # _v107_to_v108
+        ("data_apps", "description_override", "TEXT"),  # _v107_to_v108
+        # _v105_to_v106. Without it every PAT mint fails — including the CLI
+        # sign-in exchange — on exactly the databases this heal repairs, so
+        # leaving it out would fix chat and leave the operator locked out of
+        # the CLI (Devin Review on #1158).
+        ("personal_access_tokens", "surface", "VARCHAR DEFAULT 'all'"),
+        ("usage_session_summary", "uploaded_at", "TIMESTAMP"),  # _v104_to_v105
+        ("file_corpora", "origin", "VARCHAR DEFAULT 'uploaded'"),  # _v108_to_v109
+        ("chat_sessions", "pinned_at", "TIMESTAMP"),  # _v111_to_v112
+    ]
+    # The seven agents.* columns those steps also add are NOT listed here:
+    # _heal_legacy_agents_table rebuilds that table from the canonical DDL,
+    # which carries them. tests/test_db_schema_version.py derives this
+    # comparison from the ladder and fails if a future step adds a column that
+    # neither heal covers — this list drifted twice before that guard existed
+    # (Devin Review on #1158).
+
+    present: dict[str, set[str]] = {}
+    for table, column, ddl in stranded:
+        if table not in present:
+            exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]).fetchone()
+            present[table] = (
+                {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                        [table],
+                    ).fetchall()
+                }
+                if exists
+                else set()
+            )
+        # Empty set means the table itself is absent — nothing to heal, and the
+        # fresh-install path will declare the column from _SYSTEM_SCHEMA anyway.
+        if not present[table] or column in present[table]:
+            continue
+        logger.warning(
+            "%s is missing %s despite schema_version — healing (see _heal_stranded_ladder_columns)",
+            table,
+            column,
+        )
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        present[table].add(column)
+
+    # `managed` is NOT NULL in the fresh-install DDL, but DuckDB cannot ADD
+    # COLUMN with a constraint, so the ladder normalizes instead — same as
+    # _v107_to_v108. Rows predating the column read NULL, not the DEFAULT.
+    if "managed" in present.get("data_apps", set()):
+        conn.execute("UPDATE data_apps SET managed = FALSE WHERE managed IS NULL")
 
 
 def _heal_legacy_agents_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -8233,10 +8323,35 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # there the stamp is not merely ahead of a missing column but ahead of a
     # whole pre-merge table SHAPE (see its docstring), so it too checks the
     # columns directly rather than trusting the version.
+    #
+    # _heal_stranded_ladder_columns closes the rest of that same gap: the
+    # renumbering skipped whole steps, not just the agents table, so the plain
+    # ADD COLUMNs those steps carried (chat_sessions.agent_id above all) need
+    # the same stamp-independent treatment.
     if not _state_backend_is_pg():
         _heal_store_entity_trust_columns(conn)
         _heal_data_package_publisher_column(conn)
         _heal_legacy_agents_table(conn)
+        _heal_stranded_ladder_columns(conn)
+        # Flush whatever the heals just wrote. The post-migration CHECKPOINT
+        # above sits inside `if current < SCHEMA_VERSION`, and a stranded DB
+        # is stamped AT the head — so on precisely the databases these heals
+        # exist for, that checkpoint never runs and their ALTER TABLE ... ADD
+        # COLUMN statements stay in the WAL. That is the exact shape the
+        # migration checkpoint documents as able to leave system.duckdb
+        # unrecoverable on a cross-version WAL replay after an abrupt restart
+        # (Devin Review on #1158). Unconditional and best-effort: a no-op
+        # checkpoint on an unchanged DB is cheap, and deciding whether any
+        # heal altered anything would put the correctness of a corruption
+        # guard behind four independent return values.
+        try:
+            conn.execute("CHECKPOINT")
+        except Exception as e:
+            logger.warning(
+                "Post-heal CHECKPOINT failed (%s); repaired columns may sit in the WAL. "
+                "Shut this process down cleanly before any container restart.",
+                e,
+            )
 
 
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:

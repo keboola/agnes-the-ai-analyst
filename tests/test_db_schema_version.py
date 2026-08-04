@@ -984,3 +984,265 @@ def test_v99_db_migrates_to_v100_adds_sync_state_parts(tmp_path):
     row = conn.execute("SELECT rows, parts FROM sync_state WHERE table_id = 'keep'").fetchone()
     assert row == (7, None)  # data preserved, parts NULL on the legacy row
     conn.close()
+
+
+# Columns stranded by the paper-theme ladder renumbering, and the step each one
+# is normally added by. A DB that climbed the branch's OLD numbering is stamped
+# past these version numbers, so every one of these steps is skipped forever.
+_STRANDED = {
+    "chat_sessions": ["agent_id"],  # _v100_to_v101
+    "personal_access_tokens": ["agent_id", "surface"],  # _v100_to_v101, _v105_to_v106
+    "sync_state": ["parts"],  # _v99_to_v100
+    "data_apps": [  # _v98_to_v99 + _v107_to_v108
+        "parent_app_id",
+        "is_draft",
+        "draft_branch",
+        "external_url",
+        "source_ref",
+        "managed",
+        "description_override",
+    ],
+}
+
+
+def _strand(conn):
+    """Rewind a fresh DB to the stranded shape: the ``_STRANDED`` columns gone,
+    everything else intact.
+
+    DuckDB refuses to drop a column while an index or an inbound FOREIGN KEY
+    references the table, so the dependents are parked and replayed from their
+    own DDL. (``ADD COLUMN`` has no such restriction — which is why the heal
+    itself works on a live DB carrying all of them.)
+    """
+    targets = tuple(_STRANDED)
+    placeholders = ", ".join("?" for _ in targets)
+
+    index_sql = [
+        r[0]
+        for r in conn.execute(
+            f"SELECT sql FROM duckdb_indexes() WHERE table_name IN ({placeholders})", list(targets)
+        ).fetchall()
+    ]
+    index_names = [
+        r[0]
+        for r in conn.execute(
+            f"SELECT index_name FROM duckdb_indexes() WHERE table_name IN ({placeholders})", list(targets)
+        ).fetchall()
+    ]
+    # Tables holding an FK into any target, discovered rather than hardcoded so
+    # this keeps working as the schema grows.
+    dependents = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT table_name FROM duckdb_constraints() "
+            "WHERE constraint_type = 'FOREIGN KEY' AND ("
+            + " OR ".join(f"constraint_text ILIKE '%REFERENCES {t}(%'" for t in targets)
+            + ")"
+        ).fetchall()
+    ]
+    dependent_sql = (
+        [
+            r[0]
+            for r in conn.execute(
+                f"SELECT sql FROM duckdb_tables() WHERE table_name IN ({', '.join('?' for _ in dependents)})",
+                dependents,
+            ).fetchall()
+        ]
+        if dependents
+        else []
+    )
+
+    for name in index_names:
+        conn.execute(f"DROP INDEX {name}")
+    for name in dependents:
+        conn.execute(f"DROP TABLE {name}")
+    for table, columns in _STRANDED.items():
+        for column in columns:
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    for sql in dependent_sql + index_sql:
+        conn.execute(sql)
+
+
+def test_v113_db_stranded_by_renumbering_is_healed(tmp_path):
+    """A DB stamped v113 under the paper-theme branch's OLD step numbering is
+    missing every column added by the main-side steps that renumbering shifted
+    underneath it — most visibly ``chat_sessions.agent_id``, which 500s every
+    chat read and write with ``Binder Error: ... agent_id``.
+
+    Reproduces the shape observed on a live preview instance: version already at
+    the head, so no `if current < N` guard fires and the columns never land —
+    which is why ``_heal_stranded_ladder_columns`` checks for the columns instead
+    of trusting the stamp.
+    """
+    db_path = tmp_path / "stranded.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _strand(conn)
+    # Stamped at the head under the old numbering — the whole point of the bug.
+    conn.execute("UPDATE schema_version SET version = 113")
+    conn.execute("INSERT INTO sync_state (table_id, rows, hash, status) VALUES ('keep', 7, 'h', 'ok')")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    for table, columns in _STRANDED.items():
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        assert set(columns) <= cols, f"{table} still missing {set(columns) - cols}"
+
+    # Pre-existing rows survive the heal, and `managed` is backfilled rather
+    # than left NULL (it is NOT NULL in the fresh-install DDL).
+    assert conn.execute("SELECT rows FROM sync_state WHERE table_id = 'keep'").fetchone() == (7,)
+    assert conn.execute("SELECT count(*) FROM data_apps WHERE managed IS NULL").fetchone() == (0,)
+    conn.close()
+
+
+def test_v113_heal_is_idempotent_on_healthy_db(tmp_path):
+    """The heal must be a no-op for DBs that climbed the ladder cleanly — it
+    runs on every instance that upgrades past 113, not just the stranded ones.
+    """
+    db_path = tmp_path / "healthy.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 113")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+    for table, columns in _STRANDED.items():
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        assert set(columns) <= cols
+    conn.close()
+
+
+def test_v113_heal_lets_a_stranded_db_mint_tokens_again(tmp_path):
+    """`personal_access_tokens.surface` (_v105_to_v106) is stranded by the same
+    renumbering, and every PAT mint names it — including the CLI sign-in
+    exchange. Healing chat but not this would fix the browser and leave the
+    operator locked out of the CLI (Devin Review on #1158)."""
+    db_path = tmp_path / "stranded_pat.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _strand(conn)
+    conn.execute("UPDATE schema_version SET version = 113")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('personal_access_tokens')").fetchall()}
+    assert "surface" in cols, "a stranded DB still cannot mint a token"
+    # the column is usable, not merely present
+    conn.execute(
+        "INSERT INTO personal_access_tokens (id, user_id, token_hash, prefix, name, surface) "
+        "VALUES ('t1', 'u1', 'h', 'agn_', 'cli', 'stack')"
+    )
+    assert conn.execute("SELECT surface FROM personal_access_tokens WHERE id='t1'").fetchone() == ("stack",)
+    conn.close()
+
+
+def test_v113_heal_flushes_its_ddl_to_the_main_db_file(tmp_path):
+    """The post-migration CHECKPOINT sits inside `if current < SCHEMA_VERSION`,
+    and a stranded DB is stamped AT the head — so on exactly the databases these
+    heals exist for it never runs, and their ALTER TABLE ... ADD COLUMN
+    statements would sit in the WAL. That is the shape the migration checkpoint
+    documents as able to leave system.duckdb unrecoverable on a cross-version
+    WAL replay after an abrupt restart (Devin Review on #1158).
+
+    Asserted by reading the healed DB from a SECOND connection after an
+    unclean-looking handoff: what is visible there came from the main file.
+    """
+    db_path = tmp_path / "stranded_wal.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _strand(conn)
+    conn.execute("UPDATE schema_version SET version = 113")
+    conn.close()
+
+    healer = duckdb.connect(str(db_path))
+    _ensure_schema(healer)  # heals + checkpoints
+    wal = db_path.with_suffix(".duckdb.wal")
+    healer.close()
+
+    reader = duckdb.connect(str(db_path))
+    for table, columns in _STRANDED.items():
+        cols = {r[1] for r in reader.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        assert set(columns) <= cols, f"{table} lost {set(columns) - cols} — heal DDL was not durable"
+    reader.close()
+    assert not wal.exists() or wal.stat().st_size == 0, "WAL still holds the heal DDL after the checkpoint"
+
+
+def test_every_stranded_column_is_covered_by_some_heal():
+    """Derives the repair list from the ladder instead of trusting it.
+
+    The renumbering strands every column added by a step in the v98..v112
+    window. `stranded` is hand-maintained, and it drifted twice — first missing
+    `personal_access_tokens.surface`, then three more — each time shipping a
+    repair that fixed one screen and left another broken. This asserts the
+    comparison rather than the contents: any future step in that window adding
+    a column neither heal covers fails here (Devin Review on #1158).
+    """
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "src" / "db.py").read_text()
+
+    adds: dict[tuple[str, str], list[str]] = {}
+    for m in re.finditer(r"^def _v(\d+)_to_v(\d+)\(conn.*?(?=^def )", src, re.S | re.M):
+        lo = int(m.group(1))
+        if not 98 <= lo <= 112:
+            continue
+        for table, col in re.findall(r"ALTER TABLE\s+(\w+)\s+ADD COLUMN(?:\s+IF NOT EXISTS)?\s+(\w+)", m.group(0)):
+            adds.setdefault((table, col), []).append(f"_v{m.group(1)}_to_v{m.group(2)}")
+
+    declared = {
+        (t, c)
+        for t, c in re.findall(
+            r'\(\s*"(\w+)",\s*"(\w+)",\s*"[^"]*"\s*\)', src.split("stranded = [")[1].split("\n    ]")[0]
+        )
+    }
+    # agents is rebuilt wholesale by _heal_legacy_agents_table from the
+    # canonical DDL, so its columns need no entry in `stranded`.
+    uncovered = {k: v for k, v in adds.items() if k not in declared and k[0] != "agents"}
+    assert not uncovered, "steps add columns no heal repairs: " + ", ".join(
+        f"{t}.{c} ({'/'.join(w)})" for (t, c), w in sorted(uncovered.items())
+    )
+
+
+def test_the_agents_exemption_is_real():
+    """Pins the exemption above: a fresh DB's agents table must actually carry
+    the columns those steps ALTER in, or the exemption is hiding a gap."""
+    import duckdb as _d
+
+    conn = _d.connect(":memory:")
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('agents')").fetchall()}
+    assert {"greeting", "knowledge", "plugins", "role", "status", "surfaces", "tone"} <= cols
+    conn.close()
+
+
+def test_add_column_default_reaches_pre_existing_rows():
+    """Pins what the heals may assume about ADD COLUMN ... DEFAULT.
+
+    `src/db.py` asserted both ways: one comment said a pre-existing row reads
+    NULL and the default applies only to inserts, while several heals add a
+    column with a DEFAULT and no backfill and let read paths filter on the
+    value (`data_apps.is_draft = FALSE` hides an app if it reads NULL). Only
+    one of those can be true, so it is measured here rather than argued
+    (Devin Review on #1158).
+    """
+    import duckdb as _d
+
+    conn = _d.connect(":memory:")
+    conn.execute("CREATE TABLE t (id VARCHAR)")
+    conn.execute("INSERT INTO t VALUES ('pre-existing')")
+    conn.execute("ALTER TABLE t ADD COLUMN IF NOT EXISTS enum_col VARCHAR DEFAULT 'none'")
+    conn.execute("ALTER TABLE t ADD COLUMN flag_col BOOLEAN DEFAULT FALSE")
+    conn.execute("ALTER TABLE t ADD COLUMN no_default TIMESTAMP")
+
+    row = conn.execute("SELECT enum_col, flag_col, no_default FROM t WHERE id='pre-existing'").fetchone()
+    assert row[0] == "none", "a DEFAULT must reach rows that predate the column"
+    assert row[1] is False, "…for BOOLEAN too — is_draft = FALSE filters on it"
+    assert row[2] is None, "…and a column with no DEFAULT still reads NULL"
+    conn.close()
