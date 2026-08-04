@@ -158,8 +158,6 @@ _VALUE_TAKING_FLAGS = {"curl": _CURL_VALUE_FLAGS, "wget": _WGET_VALUE_FLAGS}
 # high-blast-radius, so the user confirms in chat before it runs.
 _FORK_BOMB_RE = re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:")
 _DESTRUCTIVE_SQL_RE = re.compile(r"\bdrop\s+(?:table|schema|database)\b|\btruncate\s+table\b", re.IGNORECASE)
-# downloader output piped into a shell (optionally via sudo/env)
-_PIPE_TO_SHELL_RE = re.compile(r"\b(?:curl|wget)\b[^|;&]*\|\s*(?:sudo\s+)?(?:env\s+\S+\s+)?(?:ba|z|da)?sh\b")
 _FORCE_PUSH_FLAGS = {"-f", "--force", "--force-with-lease"}
 
 # Wrappers that prefix the real command; stripped before token checks so
@@ -314,7 +312,7 @@ def _has_unquoted_heredoc(line: str, *, in_single: bool = False, in_double: bool
     return found, in_single, in_double
 
 
-def _split_segments(cmd: str) -> list[str]:
+def _split_segments_with_seps(cmd: str) -> list[tuple[str, str]]:
     """Split a command line into independently-scanned shell segments.
 
     Quote-AWARE: a plain ``re.split`` on ``[;&|\n]`` tears a quoted argument
@@ -333,7 +331,8 @@ def _split_segments(cmd: str) -> list[str]:
     quotes) — an over-eager split can only over-ask, and refusing to scan at
     all would be the one genuinely unsafe option.
     """
-    segments: list[str] = []
+    segments: list[tuple[str, str]] = []
+    pending_sep = ""
     # A trailing backslash continues the line: the shell reads both physical
     # lines as ONE command, so joining them first keeps a deletion or
     # download written across two lines recognizable (review on #1141).
@@ -386,16 +385,17 @@ def _split_segments(cmd: str) -> list[str]:
             # also scan the WHOLE line as one segment: extra segments can only
             # add verdicts, never remove them, and this one's head is the real
             # command (review finding on #1141).
-            segments.extend(p.strip() for p in re.split(r"[;&|]", line) if p.strip())
-            segments.append(line.strip())
+            segments.extend((p.strip(), "|") for p in re.split(r"[;&|]", line) if p.strip())
+            segments.append((line.strip(), ""))
             continue
 
         current: list[str] = []
         for tok in tokens:
             if _is_operator(tok):
                 if current:
-                    segments.append(" ".join(current))
+                    segments.append((" ".join(current), pending_sep))
                     current = []
+                pending_sep = tok
                 continue
             # brace/subshell grouping is punctuation around the real command,
             # not the command itself
@@ -403,8 +403,14 @@ def _split_segments(cmd: str) -> list[str]:
             if stripped:
                 current.append(stripped)
         if current:
-            segments.append(" ".join(current))
+            segments.append((" ".join(current), pending_sep))
+            pending_sep = ""
     return segments
+
+
+def _split_segments(cmd: str) -> list[str]:
+    """Segments only — most rules do not care what joined them."""
+    return [seg for seg, _ in _split_segments_with_seps(cmd)]
 
 
 def _tokens(seg: str) -> list[str]:
@@ -575,22 +581,29 @@ _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish"})
 
 
 def _pipes_download_into_shell(cmd: str) -> bool:
-    """True when a downloader's output is piped into a shell.
+    """True when a downloader's output is PIPED into a shell.
 
-    Decided from the segmentation already computed rather than from another
-    whole-command regex: the regex only recognised a couple of exact
-    spellings, so `| /bin/sh` and `| sudo -E bash` slipped past the
-    confirmation it promises (review finding on #1141).
+    Pipeline-aware, not merely order-aware. Resetting on every segment was
+    wrong in both directions: `curl … ; sh build.sh` is a sequence, not a
+    pipe, and was prompted for nothing; `curl … | tee /tmp/a | sh` is a pipe
+    with a stage in between, and slipped through (review findings on #1141).
+
+    So the walk carries the flag across `|` and clears it on any other
+    separator — which is exactly the distinction the segment separators
+    exist to record.
     """
     saw_downloader = False
-    for seg in _split_segments(cmd):
+    for seg, sep in _split_segments_with_seps(cmd):
+        if "|" not in sep:
+            saw_downloader = False
         toks = _unwrap(_tokens(seg))
         if not toks:
             continue
         head = _basename(toks[0])
         if saw_downloader and head in _SHELLS:
             return True
-        saw_downloader = head in ("curl", "wget")
+        if head in ("curl", "wget"):
+            saw_downloader = True
     return False
 
 
@@ -687,7 +700,10 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
                 "Destructive SQL (DROP/TRUNCATE) — confirm with the user before running.",
             )
         )
-    if _pipes_download_into_shell(cmd) or any(_PIPE_TO_SHELL_RE.search(h) for h in (cmd, _normalized(cmd))):
+    # One implementation, not two: the regex that used to sit alongside this
+    # matched a couple of exact spellings and could only add false positives
+    # the structural check would not make (review findings on #1141).
+    if _pipes_download_into_shell(cmd):
         verdicts.append(
             (
                 "ask",
