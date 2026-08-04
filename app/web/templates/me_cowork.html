@@ -400,6 +400,15 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
     padding: 14px 16px;
     margin: 0;
 }
+/* Neutral pointer to the token fallback (/mcp-connect) — deliberately NOT
+   .cg-note, whose warning colours would over-signal an ordinary alternative
+   path. */
+.cowork-token-fallback {
+    font-size: 13px;
+    color: var(--ds-text-muted);
+    margin-top: var(--space-4);
+}
+
 .cg-note {
     background: var(--ds-accent-warn-bg);
     color: var(--ds-accent-warn-ink);
@@ -591,6 +600,17 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         </div>
       </div>
     </details>
+
+    {# Token fallback — OAuth above is the happy path; clients that can't do
+       the browser sign-in (or locked-down setups) need a static PAT instead,
+       which is what /mcp-connect issues. This is that page's ONLY inbound
+       link — a second near-duplicate nav entry next to "AI Connector" would
+       be noise, so it lives here, next to the job it belongs to. Guarded by
+       tests/test_web_nav_agents.py. #}
+    <p class="cowork-token-fallback">
+      Client can't complete the browser sign-in?
+      <a href="/mcp-connect">Connect it with a token instead &rarr;</a>
+    </p>
   </section>
 
   {# ── Plugin packages — open by default, the cross-project flow ───────── #}

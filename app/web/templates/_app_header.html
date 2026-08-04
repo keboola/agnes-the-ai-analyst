@@ -227,6 +227,14 @@
                     {% endif %}
                 </div>
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
+                {# My agents — the agent-profile builder (/agents, see
+                   app/web/agents_page.py). A per-user resource list like
+                   "My connections", so it belongs here rather than in the
+                   primary nav or the admin mega-menu (instance authoring of
+                   agents is Studio's /admin/studio/agent). This is the page's
+                   only nav entry point — guarded by
+                   tests/test_web_nav_agents.py. #}
+                <a class="app-user-menu-item {% if _path == '/agents' %}is-active{% endif %}" role="menuitem" href="/agents">My agents</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
