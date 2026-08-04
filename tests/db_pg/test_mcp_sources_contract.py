@@ -221,3 +221,92 @@ def test_connect_hint_omitted_is_null_on_both_backends(repo):
     row = repo.get("s1")
     assert row is not None
     assert row.get("connect_hint") is None
+
+
+# ---------------------------------------------------------------------------
+# auth_method='oauth' <-> scope='per_user' coupling (2026-07-30 spec §1)
+# ---------------------------------------------------------------------------
+
+
+def test_oauth_auth_method_requires_per_user_scope_on_both_backends(repo):
+    with pytest.raises(ValueError):
+        repo.upsert(
+            id="s1",
+            name="x",
+            transport="http",
+            url="https://x.example/mcp",
+            auth_method="oauth",
+            scope="shared",
+        )
+
+
+def test_oauth_auth_method_rejects_stdio_transport_on_both_backends(repo):
+    with pytest.raises(ValueError):
+        repo.upsert(
+            id="s1",
+            name="x",
+            transport="stdio",
+            command="x-mcp",
+            auth_method="oauth",
+            scope="per_user",
+        )
+
+
+def test_oauth_auth_method_accepted_with_http_and_per_user_scope(repo):
+    repo.upsert(
+        id="s1",
+        name="x",
+        transport="http",
+        url="https://x.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    row = repo.get("s1")
+    assert row is not None
+    assert row["auth_method"] == "oauth"
+    assert row["scope"] == "per_user"
+
+
+def test_oauth_auth_method_accepted_with_sse_and_per_user_scope(repo):
+    repo.upsert(
+        id="s1",
+        name="x",
+        transport="sse",
+        url="https://x.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    row = repo.get("s1")
+    assert row is not None
+    assert row["auth_method"] == "oauth"
+    assert row["scope"] == "per_user"
+
+
+@pytest.mark.parametrize("spelling", ["OAuth", "OAUTH", " oauth ", "OAuth "])
+def test_oauth_coupling_guard_is_case_and_whitespace_insensitive(repo, spelling):
+    """The repository is documented as the ONE enforcement point the per-user
+    fail-closed paths rely on, but every consumer normalizes before comparing
+    (`_require_oauth_source`, `enforce_per_user_credential`,
+    `_resolve_http_headers_async`). A verbatim comparison here let an 'OAuth'
+    row through with scope='shared' while the call seam still routed it down
+    the OAuth branch — a shared-credential OAuth source with the safeguard
+    silently off (Devin Review on #1124). Both backends must agree.
+    """
+    with pytest.raises(ValueError):
+        repo.upsert(
+            id="s_case",
+            name="x",
+            transport="http",
+            url="https://x.example/mcp",
+            auth_method=spelling,
+            scope="shared",
+        )
+    with pytest.raises(ValueError):
+        repo.upsert(
+            id="s_case2",
+            name="x",
+            transport="stdio",
+            command="x-mcp",
+            auth_method=spelling,
+            scope="per_user",
+        )

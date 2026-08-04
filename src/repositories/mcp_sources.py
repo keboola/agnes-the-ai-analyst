@@ -9,6 +9,57 @@ from typing import Any, Dict, List, Optional
 import duckdb
 
 
+def validate_oauth_scope_coupling(auth_method: Optional[str], transport: Optional[str], scope: Optional[str]) -> None:
+    """``auth_method='oauth'`` requires a network transport AND ``scope='per_user'``.
+
+    2026-07-30 outbound MCP OAuth spec §1: OAuth sources are always per-user
+    (authorization-code + PKCE ties tokens to a human) and only make sense over
+    a network transport — stdio sources keep env-token auth. This is the ONE
+    enforcement point every per-user fail-closed path relies on ``scope`` for,
+    which is why it lives here and is not restated by its callers.
+
+    Normalized, because every consumer normalizes too
+    (``_require_oauth_source``, ``enforce_per_user_credential``,
+    ``_resolve_http_headers_async``). Comparing verbatim let an ``'OAuth'`` row
+    past the guard while the call seam still routed it down the OAuth branch —
+    a shared-credential OAuth source with the fail-closed check silently
+    disabled (Devin Review on #1124).
+    """
+    if (auth_method or "").strip().lower() == "oauth" and (transport not in ("http", "sse") or scope != "per_user"):
+        raise ValueError(
+            "auth_method='oauth' requires transport in ('http', 'sse') and scope='per_user' "
+            f"(got transport={transport!r}, scope={scope!r})"
+        )
+
+
+def validate_source_fields(
+    *,
+    transport: str,
+    command: Optional[str] = None,
+    url: Optional[str] = None,
+    auth_method: Optional[str] = None,
+    scope: str = "shared",
+) -> None:
+    """Field-combination rules for an ``mcp_sources`` row. Raises ``ValueError``.
+
+    One definition, three callers: both backends' ``upsert`` (the authority —
+    no write bypasses it) and the admin update endpoint, which needs to know
+    whether a patch is valid *before* it purges credentials for a repointed
+    url. The rules had drifted into three copies and the endpoint's covered
+    only the oauth coupling, so a PUT carrying both a new url and, say, an
+    invalid ``scope`` purged first and 400'd after (Devin Review on #1124).
+    """
+    if transport not in ("stdio", "http", "sse"):
+        raise ValueError(f"unsupported transport: {transport}")
+    if transport == "stdio" and not command:
+        raise ValueError("stdio transport requires 'command'")
+    if transport in ("http", "sse") and not url:
+        raise ValueError(f"{transport} transport requires 'url'")
+    if scope not in ("shared", "per_user"):
+        raise ValueError(f"unsupported scope: {scope!r}; must be 'shared' or 'per_user'")
+    validate_oauth_scope_coupling(auth_method, transport, scope)
+
+
 class MCPSourceRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
@@ -41,14 +92,13 @@ class MCPSourceRepository:
         scope: str = "shared",
         connect_hint: Optional[str] = None,
     ) -> None:
-        if transport not in ("stdio", "http", "sse"):
-            raise ValueError(f"unsupported transport: {transport}")
-        if transport == "stdio" and not command:
-            raise ValueError("stdio transport requires 'command'")
-        if transport in ("http", "sse") and not url:
-            raise ValueError(f"{transport} transport requires 'url'")
-        if scope not in ("shared", "per_user"):
-            raise ValueError(f"unsupported scope: {scope!r}; must be 'shared' or 'per_user'")
+        validate_source_fields(
+            transport=transport,
+            command=command,
+            url=url,
+            auth_method=auth_method,
+            scope=scope,
+        )
 
         now = datetime.now(timezone.utc)
         args_json = json.dumps(args) if args is not None else None

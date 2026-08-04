@@ -71,9 +71,13 @@ class SharedSecretsPgRepository:
             return None
         try:
             return decrypt_secret(bytes(token))
-        except InvalidToken:
+        except (InvalidToken, RuntimeError):
+            # RuntimeError = malformed AGNES_VAULT_KEY (see decrypt_optional):
+            # process-wide, so letting it escape 500s every read instead of
+            # falling back. Same swallow as SystemSecretsRepository.get.
             logger.warning(
-                "mcp_secrets row for %s failed to decrypt — vault key rotated? Falling back to env-var lookup.",
+                "mcp_secrets row for %s failed to decrypt — vault key rotated or malformed? "
+                "Falling back to env-var lookup.",
                 source_id,
             )
             return None
@@ -212,10 +216,10 @@ class PerUserSecretsPgRepository:
             return None
         try:
             return decrypt_secret(bytes(token))
-        except InvalidToken:
+        except (InvalidToken, RuntimeError):
             logger.warning(
                 "mcp_user_secrets row (%s, %s) failed to decrypt — vault key "
-                "rotated? Falling back to shared vault / env-var.",
+                "rotated or malformed? Falling back to shared vault / env-var.",
                 source_id,
                 user_id,
             )
@@ -304,9 +308,9 @@ class ConnectionSecretsPgRepository:
             token = bytes(token)
         try:
             return decrypt_secret(token)
-        except InvalidToken:
+        except (InvalidToken, RuntimeError):
             logger.warning(
-                "connection_secrets row for %s failed to decrypt — vault key rotated?",
+                "connection_secrets row for %s failed to decrypt — vault key rotated or malformed?",
                 connection_id,
             )
             return None

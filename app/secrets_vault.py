@@ -70,6 +70,19 @@ def vault_key_configured() -> bool:
         return False
 
 
+def can_store_secrets() -> bool:
+    """True iff :func:`encrypt_secret` will accept a write right now.
+
+    Exactly the predicate ``encrypt_secret`` guards on — a configured key, OR
+    local-dev mode where the ephemeral fallback is deliberately allowed. Callers
+    that want to reject a doomed write BEFORE doing something irreversible must
+    use this rather than :func:`vault_key_configured`, which is the narrower
+    "is a real key configured" question and answers ``False`` in local dev where
+    the write would in fact succeed (Devin Review on #1124).
+    """
+    return vault_key_configured() or _is_local_dev_mode()
+
+
 def _get_fernet() -> Fernet:
     """Return a Fernet instance built from ``$AGNES_VAULT_KEY``, or an
     ephemeral key when the env var is absent.
@@ -131,6 +144,45 @@ def decrypt_secret(token: bytes) -> str:
     return _get_fernet().decrypt(token).decode("utf-8")
 
 
+def decrypt_optional(token: object, *, context: str = "secret") -> Optional[str]:
+    """Decrypt a possibly-``None``/possibly-junk Fernet token column.
+
+    Used by the OAuth repos that store OPTIONAL encrypted columns (client
+    secrets, refresh tokens, PKCE verifiers, ...): one place for the
+    bytes-coercion + decrypt-failure-swallow pattern. Returns ``None`` for
+    a NULL column or an unreadable value — never raises.
+
+    "Unreadable" covers BOTH failure modes, not just the obvious one:
+
+    * ``InvalidToken`` — the ciphertext doesn't authenticate under the
+      current key (rotated key, or a value written under the ephemeral
+      fallback before a restart). Per-value.
+    * ``RuntimeError`` — ``AGNES_VAULT_KEY`` is set but is not a valid
+      Fernet key (:func:`_get_fernet`). Process-wide: it fires on the FIRST
+      read, for every value, so letting it escape turns a typo in one env
+      var into a 500 on every request that touches a secret instead of the
+      actionable "not connected / not configured" the callers already
+      handle. :meth:`SystemSecretsRepository.get` has caught both since it
+      was written; this helper (and the repos folding onto it) must match,
+      or the fold would silently downgrade them.
+
+    The older secret repos (``SharedSecretsRepository`` /
+    ``PerUserSecretsRepository`` / ``ConnectionSecretsRepository``) still
+    carry their own inline equivalents and have NOT been folded onto this
+    helper — a worthwhile cleanup, but out of scope where it was added
+    (parity review on #1124).
+    """
+    if token is None:
+        return None
+    if not isinstance(token, (bytes, bytearray, memoryview)):
+        return None
+    try:
+        return decrypt_secret(bytes(token))
+    except (InvalidToken, RuntimeError):
+        logger.warning("%s failed to decrypt — vault key rotated or malformed?", context)
+        return None
+
+
 def _reset_ephemeral_key_for_tests() -> None:
     """Test-only: reset the module-level ephemeral key so each test that
     relies on the unset-env-var fallback starts from a fresh state."""
@@ -179,9 +231,13 @@ class SharedSecretsRepository:
             return None
         try:
             return decrypt_secret(bytes(token))
-        except InvalidToken:
+        except (InvalidToken, RuntimeError):
+            # RuntimeError = malformed AGNES_VAULT_KEY (see decrypt_optional):
+            # process-wide, so letting it escape 500s every read instead of
+            # falling back. Same swallow as SystemSecretsRepository.get.
             logger.warning(
-                "mcp_secrets row for %s failed to decrypt — vault key rotated? Falling back to env-var lookup.",
+                "mcp_secrets row for %s failed to decrypt — vault key rotated or malformed? "
+                "Falling back to env-var lookup.",
                 source_id,
             )
             return None
@@ -314,10 +370,10 @@ class PerUserSecretsRepository:
             return None
         try:
             return decrypt_secret(bytes(token))
-        except InvalidToken:
+        except (InvalidToken, RuntimeError):
             logger.warning(
-                "mcp_user_secrets row (%s, %s) failed to decrypt — vault key rotated? "
-                "Falling back to shared vault / env-var.",
+                "mcp_user_secrets row (%s, %s) failed to decrypt — vault key rotated or "
+                "malformed? Falling back to shared vault / env-var.",
                 source_id,
                 user_id,
             )
@@ -398,8 +454,8 @@ class ConnectionSecretsRepository:
         token = token.encode() if isinstance(token, str) else bytes(token)
         try:
             return decrypt_secret(token)
-        except InvalidToken:
-            logger.warning("connection secret for %s unreadable (key rotated?)", connection_id)
+        except (InvalidToken, RuntimeError):
+            logger.warning("connection secret for %s unreadable (key rotated or malformed?)", connection_id)
             return None
 
     def delete(self, connection_id: str) -> None:

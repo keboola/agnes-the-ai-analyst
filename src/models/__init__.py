@@ -79,8 +79,11 @@ from src.models.telemetry import (
     UserObservabilityView,
 )
 from src.models.mcp import (
+    MCPOAuthFlow,
     MCPSecret,
     MCPSource,
+    MCPSourceOAuthClient,
+    MCPUserOAuthToken,
     MCPUserSecret,
     SetupToken,
     ToolGrant,
@@ -129,8 +132,11 @@ __all__ = [
     "KnowledgeItemUserDismissed",
     "KnowledgeVote",
     "LlmUsage",
+    "MCPOAuthFlow",
     "MCPSecret",
     "MCPSource",
+    "MCPSourceOAuthClient",
+    "MCPUserOAuthToken",
     "MCPUserSecret",
     "MarketplacePlugin",
     "MarketplaceRegistry",

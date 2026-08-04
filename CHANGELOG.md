@@ -11,11 +11,70 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
+  behavior yet): schema v109 adds `mcp_source_oauth_clients`,
+  `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
+  with dual-backend repositories and Fernet-encrypted token columns.
+  `auth_method='oauth'` is accepted on `mcp_sources` but validated to require
+  an http/sse transport and `scope='per_user'` — at the repository AND admin
+  API layers, including partial updates.
+  Service half (still no user-facing connect UI — that's PR 2): a shared
+  SSRF-safe HTTP client (`src/net/ssrf_safe_client.py`, extracted from the
+  marketplace asset mirror) backs a new outbound OAuth client
+  (`connectors/mcp/oauth_client.py`) doing RFC 9728 protected-resource
+  discovery, RFC 8414 AS metadata discovery, PKCE-S256 fail-closed dynamic
+  client registration (RFC 7591), and authorization-code token
+  exchange/refresh. `connectors/mcp/client.py` resolves and transparently
+  refreshes a caller's OAuth token (single-flight via an in-process lock
+  plus a coordination-backend lease, so multi-process deployments never
+  double-refresh); `enforce_per_user_credential` and the admin connect
+  probes now recognize oauth sources the same way they recognize
+  secret-backed per_user sources. New admin endpoints
+  `POST …/mcp-sources/{id}/oauth/register` (discovery + DCR, idempotent) and
+  `PUT …/mcp-sources/{id}/oauth/client` (manual client config) plus CLI
+  verbs `agnes admin mcp source oauth-register` / `oauth-client`. The stored
+  client secret is write-only (never echoed back), so `PUT …/oauth/client`
+  treats an omitted `client_secret` as "leave it alone" and an explicit `""`
+  as a deliberate clear. Per-user tokens are dropped whenever the
+  registration they were issued against stops being the one Agnes refreshes
+  with — source deletion, a re-registration that changed `client_id`,
+  flipping `auth_method` off `oauth`, or repointing the source's `url` at a
+  different upstream (whose AS did not mint those tokens); that purge runs
+  before the row is repointed, so a mid-sequence failure cannot leave live
+  credentials aimed at a host that never issued them. Design:
+  `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
+
 - MCP: new `tool_docs(tool_name)` tool on both MCP surfaces (HTTP foundation + CLI stdio) returning a tool's full reference documentation on demand.
 
 - **`SECURITY.md` — public threat model and vulnerability-reporting process.** States the deployment/trust model (single-org per instance; the agent sandbox is never trusted to make authorization decisions), documents the controls that carry the most weight (the secret broker keeping credential material out of the sandbox, live per-request agent scope intersection, server-side data-access checks on every read surface, VM-level sandbox egress, the untrusted-input controls, the Fernet secret vault), and lists known limitations honestly — unscreened prompt injection, `bypassPermissions` inside the sandbox, admin god-mode, non-revocable 30-day session cookies, `SameSite`-only CSRF, coarse data-app isolation, non-tamper-evident audit, unencrypted data at rest, and the unsigned-artifact/unpinned-marketplace supply chain. Closes with an operator security checklist. Linked from `README.md` and `docs/README.md`; reports go through GitHub private vulnerability reporting.
 
 ### Changed
+- **Editing an MCP source's `url` now discards every stored credential for
+  that source, not just the OAuth ones.** The shared vault secret and every
+  analyst's per-user secret are dropped alongside the OAuth client
+  registration, tokens and in-flight flows, because all of them are forwarded
+  as `Authorization` headers by the same seam that reads the freshly written
+  url — a credential must never reach a host that did not issue it. Any
+  difference counts, including a path-only edit or an added trailing slash: a
+  different path can be a different protected resource. This is irreversible
+  and is not separately confirmed, so an admin fixing a typo in a `bearer`
+  source's url will have to re-enter its secret and their analysts will have
+  to re-connect. It applies only where the url is live — on a `stdio` source
+  the secret is injected into the subprocess environment and the url is never
+  read, so editing it there changes nothing. Conversely, flipping a `stdio`
+  source to http/sse purges even with the url untouched: that edit makes an
+  already stored url live for the first time. The purge runs before the row is
+  repointed, and the audit row records `credentials_purged` plus `purged_kinds`
+  — naming which of the two independent purges ran, since flipping
+  `auth_method` off `oauth` destroys every analyst's tokens and the client
+  registration without any url change at all — so the effect is traceable
+  afterwards. An explicit JSON `null` for a non-nullable field (`name`,
+  `scope`, `enabled`) means "leave unchanged" rather than being written
+  through: `name` in particular reached the write as NULL, after the purge,
+  and surfaced as a misleading `name_exists` 409 — credentials destroyed and
+  the edit refused. The nullable fields keep their existing meaning, where
+  `null` is the only way to clear them and the admin UI sends it deliberately.
+
 - MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
 - **MCP tool parameter schemas tightened.** `stack_browse`/`stack_subscribe`/`stack_unsubscribe` (`resource_type`), `admin_analytics_migrate` (`to`), `data_apps_list` (`kind`) and `data_app_deploy` (`mode`) declare their valid values as `Literal[…]`, so the constraint reaches `tools/list` as a JSON-schema enum instead of living only in the `Args:` prose the trimmed description drops; `store_rate` (`vote`) uses a bounded `int` rather than a literal union, because a literal would stop accepting the string `"1"` that models commonly emit for numbers. Applied on both MCP surfaces, so the HTTP and stdio copies of a tool keep advertising the same contract.
 - MCP: `query` and `describe` (plus CLI `query_local`) refuse responses whose serialized size exceeds `AGNES_MCP_MAX_OUTPUT_CHARS` (default 100 000; `0` disables) with actionable narrowing guidance, instead of returning megabyte payloads into the model's context. Row-level `limit`/`truncated` semantics are unchanged.
@@ -23,6 +82,101 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
 
 ### Fixed
+- Repointing an OAuth source's endpoints no longer keeps the previous
+  provider's client secret. Retention of the stored secret and registration
+  access token was keyed on `client_id` alone while the token purge compared
+  the whole `(issuer, authorization_endpoint, token_endpoint, client_id)`
+  identity, so a PUT that moved a source to a different authorization server
+  while re-typing the same client name purged every analyst's tokens yet left
+  the old provider's secret on the row — where client auth sends it as HTTP
+  Basic to the new token endpoint, and the retained registration token is
+  bearer-sent to the new provider too. Both halves now use the one identity
+  predicate, on the DCR path as well as the manual one.
+
+- `agnes admin mcp source oauth-client` gains `--keep-secret`, and the two
+  commands that read secret material from stdin now say so first. The endpoint
+  has three secret states — replace, clear, leave alone — but the CLI exposed
+  only the first two, so editing the endpoints or scopes of an existing
+  confidential client fell into an unprompted blocking read that is
+  indistinguishable from a hang. The notice goes to stderr and only when stdin
+  is a terminal, so the piped form (`printf %s "$SECRET" | agnes …`) stays
+  byte-clean; `--keep-secret` skips the read entirely and omits the field,
+  which is what the server reads as "keep". Passing it together with
+  `--public-client` is refused rather than silently picking one.
+
+- Dynamic client registration takes the authorization server's answer as
+  authoritative on two more fields it was ignoring (RFC 7591 §3.2.1). A
+  registration the AS records as `client_secret_basic` while issuing no
+  `client_secret` is now refused at registration time with an actionable
+  message: client authentication is selected by secret presence, so such a
+  client would have sent none at all and every token exchange and refresh
+  would have failed `invalid_client` with nothing pointing at why. The mirror
+  case — a registration the AS records as public that nonetheless returns a
+  secret — has that secret dropped, with a warning, since Basic auth to a
+  public client fails the same way. Together the two make a stored secret
+  present exactly when the AS registered the client as confidential, which is
+  what makes selecting client auth on presence correct at all. And the
+  `scope` the AS grants is stored in place of the one requested — recording
+  the request would put a scope the client does not hold into the stored row,
+  and from there into the authorize URL.
+
+- An OAuth client re-save no longer discards a registration access token the
+  current vault key cannot open. The repositories decrypt that column with the
+  same helper that reports `None` for a NULL column, so "no token" and "token
+  we can no longer read" were indistinguishable — an ordinary re-save after a
+  key rotation wrote NULL over still-valid ciphertext and permanently disabled
+  deregistering the client upstream, leaving a dangling registration at the
+  authorization server. Both backends now expose
+  `registration_access_token_present` alongside `client_secret_present`, and a
+  `KEEP_STORED` sentinel preserves the column instead of round-tripping a
+  decrypted value through it. Covered by the cross-engine contract test.
+
+- OAuth MCP refresh survives a response that omits `expires_in`, backs off
+  after a failed attempt, and never repoints a client row ahead of purging the
+  tokens it strands. `expires_in` is RECOMMENDED rather than required (RFC
+  6749 §5.1), and writing its absence over a known expiry was terminal: a NULL
+  expiry reads as "non-expiring, never refresh" to the renewal path and as
+  "connected" to the fail-closed check, so the token was never renewed again
+  and never prompted a re-connect — the source just returned opaque upstream
+  401s once it lapsed. The previously observed lifetime is now carried
+  forward. A refresh that fails for any reason other than a revoked grant puts
+  that `(source, user)` pair in a short cooldown, so a wedged authorization
+  server is no longer re-hit on every forwarded call (design spec §4). Both
+  OAuth client-write endpoints purge stranded per-user tokens and in-flight
+  flows before writing the new registration, matching the source `url`
+  repoint: the refresh path reads the endpoints and client secret straight off
+  that row, so purge-last could leave it addressing a new authorization server
+  while the old server's refresh tokens were still on file. A refresh failure
+  that is not an OAuth protocol error — an SSRF rejection when a token
+  endpoint later resolves to a blocked address — is caught on the same path
+  rather than escaping and failing the whole call without recording a
+  back-off. Protected-resource discovery no longer gives up when a *probed*
+  well-known URL answers 200 with a non-JSON body: a host that serves a
+  catch-all HTML page for unknown paths aborted discovery at the first
+  candidate, skipping the second and the `401`-challenge fallback — the very
+  path such a host needs. A junk body at the `resource_metadata` URL the
+  server explicitly advertised is still a hard, actionable error — as is a 200
+  JSON object that is not RFC 9728 metadata, such as the `{"error": …}`
+  envelope an API gateway returns for unknown paths, which used to be accepted
+  as the document and then surfaced as "carries no 'authorization_servers'",
+  pointing the admin at the document rather than at the missing discovery.
+  Proactive refresh no longer fires on every single call against an
+  authorization server that issues short-lived tokens: the 60-second early
+  refresh window is clamped to half the token's own lifetime, so a token valid
+  for less than that is not already due the moment it is written.
+
+- A malformed `AGNES_VAULT_KEY` no longer 500s every request that reads a
+  secret. `_get_fernet()` raises `RuntimeError` when the env var is set but is
+  not a valid Fernet key, and only `SystemSecretsRepository` caught it — the
+  shared, per-user and connection secret repos (both backends) caught
+  `InvalidToken` alone, so a typo in one env var surfaced as an internal error
+  on every MCP call, admin probe and connect page instead of the "not
+  configured / not connected" the callers already handle. All read paths, and
+  the `decrypt_optional` helper the OAuth repos share, now swallow both. The
+  distinction matters because the two failures differ in blast radius: an
+  unreadable value is per-row, a bad key is process-wide and fires on the
+  first read.
+
 - Chat runner: fixed a latent task-GC bug — the stdin reader task was created without a strong reference, so a garbage-collection cycle during a long-running turn could silently kill inbound frame routing (Stop/cancel and credential `ticket_push` frames stopped arriving).
 
 - Streamable-MCP OAuth token revocation (RFC 7009) no longer rejects public PKCE clients: a client registered via RFC 7591 dynamic registration with `token_endpoint_auth_method: "none"` (what Claude Code, VS Code, and claude.ai register as) posting `token=…&client_id=…` to `/api/mcp/http/revoke` was answered 400 `client_secret: Field required` by the MCP SDK's request model (a required-but-nullable field — still broken upstream as of mcp 2.0.0), so issued tokens could not be invalidated and lived out their full TTL. The revocation route now validates the form with a truly-optional `client_secret`; confidential clients are unaffected (a stored secret is still enforced by client authentication, and a missing/wrong secret is rejected 401 with the token left intact). OAuth discovery documents additionally advertise `none` in `revocation_endpoint_auth_methods_supported`.
@@ -31,6 +185,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- Duplicate MCP source names surface as 409 on both backends — Postgres raises
+  the unique violation as a SQLAlchemy `IntegrityError`, which fell through to
+  a 500. It matters more now that the credential purge runs before the write:
+  the losing side of a rename race would have reported an internal error for a
+  request that had already dropped the source's credentials.
+
+- `make update-openapi-snapshot` generates to a temp file and moves it into
+  place, and runs the project venv's interpreter rather than whatever `python`
+  is on PATH. The shell truncates a `>` target before the command runs, so a
+  generator that failed to import left the committed snapshot empty — which
+  the freshness check then reported as the entire API having been removed.
+
+- Re-registering an OAuth MCP source no longer discards a client secret or
+  registration access token the authorization server did not re-issue. RFC
+  7591 requires neither on a deduped registration, so an AS that answers a
+  second DCR with the same `client_id` and omits them used to have both
+  wiped — silently disabling upstream deregistration and demoting a
+  confidential registration to a public one. A different `client_id` still
+  replaces both wholesale.
+
+- `mcp_sources` field validation (transport/command/url/scope plus the oauth
+  coupling rule) is defined once in `src/repositories/mcp_sources.py` and
+  called by both backends' `upsert` and by the admin update endpoint, which
+  previously restated only part of it.
 
 - The committed OpenAPI snapshot (`tests/snapshots/openapi.json`) is now enforced for freshness and has been regenerated. The existing guard was a one-directional ratchet — it fired only when a path or method *disappeared* — so added routes and in-place operation changes rotted the snapshot silently while CI stayed green: the file had drifted to 468 paths against the app's 509 (41 missing, including `/agents`, `/api/data-apps*`, and `/admin/studio`), with a further 22 paths stale in place (for example the `/admin/contribute-skill/{name}/delete` form POST was recorded with no request body). A new `test_snapshot_is_fresh` compares the whole document and fails with the added/removed/changed paths plus the `make update-openapi-snapshot` remedy. `info.version` is normalized out of the comparison: it resolves from installed package metadata, so comparing it would red every release-cut PR without ever catching an API change.
 

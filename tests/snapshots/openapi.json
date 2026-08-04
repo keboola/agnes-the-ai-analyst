@@ -5081,6 +5081,81 @@
         "title": "NewsBody",
         "type": "object"
       },
+      "OAuthClientConfigRequest": {
+        "description": "Body for ``PUT \u2026/oauth/client`` \u2014 the manual escape hatch for an AS\nwithout dynamic client registration.\n\n``issuer`` is optional: when omitted it defaults to the\n``authorization_endpoint``'s origin \u2014 the schema's ``issuer`` column is\nNOT NULL but the spec's manual-config shape doesn't call out a separate\nissuer field, so this keeps the escape hatch a 4-field form in the\ncommon case (same-origin AS) while still accepting an explicit value\nwhen the issuer differs from the endpoint host.",
+        "properties": {
+          "authorization_endpoint": {
+            "title": "Authorization Endpoint",
+            "type": "string"
+          },
+          "client_id": {
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Secret"
+          },
+          "issuer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          },
+          "token_endpoint": {
+            "title": "Token Endpoint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "authorization_endpoint",
+          "token_endpoint"
+        ],
+        "title": "OAuthClientConfigRequest",
+        "type": "object"
+      },
+      "OAuthRegisterRequest": {
+        "description": "Body for ``POST \u2026/oauth/register`` \u2014 RFC 7591 dynamic registration.\n\nEverything else (issuer, endpoints, PKCE support) is discovered live\nfrom the source's own ``url``; ``scopes`` is the one admin override the\nspec calls out (default empty \u2014 AS/resource defaults apply).",
+        "properties": {
+          "scopes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "title": "OAuthRegisterRequest",
+        "type": "object"
+      },
       "OkResponse": {
         "properties": {
           "ok": {
@@ -17239,7 +17314,7 @@
         ]
       },
       "put": {
-        "description": "Partial update. Audit row carries before/after for the changed fields.",
+        "description": "Partial update. Audit row carries before/after for the changed fields.\n\n**Changing ``url`` on an http/sse source discards every stored credential\nfor it** \u2014 the shared vault secret, all per-user secrets, and (when the\nsource is OAuth) its client registration, user tokens and in-flight flows.\nThis is irreversible and happens without a separate confirmation, because\na credential must never be forwarded to a host that did not issue it, and\na path-only edit can still be a different protected resource. Users\nre-connect afterwards. The audit row records ``credentials_purged`` so the\neffect is traceable after the fact.\n\nFlipping a ``stdio`` source to http/sse purges too: it makes an already\nstored ``url`` live for the first time. Editing ``url`` on a row that stays\n``stdio`` does not \u2014 there the secret goes into the subprocess environment\nand the url is never read.",
         "operationId": "update_mcp_source_api_admin_mcp_sources__source_id__put",
         "parameters": [
           {
@@ -17511,6 +17586,159 @@
           }
         },
         "summary": "Materialize Mcp Source",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-sources/{source_id}/oauth/client": {
+      "put": {
+        "description": "Manual OAuth client configuration \u2014 the escape hatch for an\nauthorization server without dynamic client registration (spec \u00a72).\n\nSame https + SSRF-safe validation as the discovered path, even though\nno outbound call happens here: these endpoint URLs get dialed for real\nat token exchange/refresh time, so a bad (internal/metadata) URL must\nbe rejected at configuration time, not silently accepted and only\ncaught when a real caller triggers a forward.",
+        "operationId": "set_oauth_client_config_api_admin_mcp_sources__source_id__oauth_client_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OAuthClientConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Oauth Client Config",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-sources/{source_id}/oauth/register": {
+      "post": {
+        "description": "RFC 9728 + RFC 8414 discovery, PKCE-S256 fail-closed check, RFC 7591\ndynamic client registration against the source's own authorization\nserver. Idempotent \u2014 a second call replaces the row, best-effort\nrevoking the OLD registration first (spec \u00a72 step 5).",
+        "operationId": "register_oauth_client_api_admin_mcp_sources__source_id__oauth_register_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OAuthRegisterRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Oauth Client",
         "tags": [
           "admin-mcp"
         ]

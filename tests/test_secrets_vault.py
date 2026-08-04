@@ -112,3 +112,47 @@ def test_repo_returns_none_on_decrypt_failure_after_key_rotation(monkeypatch):
     monkeypatch.setenv("AGNES_VAULT_KEY", key_b)
 
     assert repo.get("src_test") is None
+
+
+def test_malformed_vault_key_reads_as_absent_not_a_crash(monkeypatch):
+    """A bad AGNES_VAULT_KEY must degrade to "no secret", not raise.
+
+    ``_get_fernet()`` raises ``RuntimeError`` (not ``InvalidToken``) when the
+    env var is set to something that is not a valid Fernet key. That is
+    process-wide and fires on the FIRST read of any secret, so a read path
+    that lets it escape turns one typo into a 500 on every request touching a
+    secret. Only ``SystemSecretsRepository`` used to catch it.
+    """
+    key_a = Fernet.generate_key().decode()
+    monkeypatch.setenv("AGNES_VAULT_KEY", key_a)
+    conn = _conn_with_vault_table()
+    repo = SharedSecretsRepository(conn)
+    repo.upsert("src_test", "value")
+
+    _reset_ephemeral_key_for_tests()
+    monkeypatch.setenv("AGNES_VAULT_KEY", "not-a-fernet-key")
+
+    assert repo.get("src_test") is None
+    # `has` is a row-existence check and must stay truthful — the row IS there,
+    # it just cannot be read. Only the value degrades.
+    assert repo.has("src_test") is True
+
+
+def test_decrypt_optional_swallows_both_failure_modes(monkeypatch):
+    """The helper the OAuth repos share promises "never raises" — for both."""
+    from app.secrets_vault import decrypt_optional
+
+    key_a = Fernet.generate_key().decode()
+    monkeypatch.setenv("AGNES_VAULT_KEY", key_a)
+    token = encrypt_secret("refresh-token")
+    assert decrypt_optional(token) == "refresh-token"
+
+    # (1) rotated key -> InvalidToken
+    _reset_ephemeral_key_for_tests()
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    assert decrypt_optional(token) is None
+
+    # (2) malformed key -> RuntimeError out of _get_fernet()
+    _reset_ephemeral_key_for_tests()
+    monkeypatch.setenv("AGNES_VAULT_KEY", "@@ not base64 @@")
+    assert decrypt_optional(token) is None

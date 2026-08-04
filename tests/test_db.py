@@ -2162,3 +2162,40 @@ class TestCloseSingletonConnections:
         close_singleton_connections()
 
         assert calls == [1]
+
+
+def test_v109_oauth_tables_are_self_healed_on_a_future_version_db(tmp_path, monkeypatch):
+    """Guard for the `_SYSTEM_SCHEMA` declarations of the three v109
+    outbound-MCP OAuth tables: living only inside `_v108_to_v109` would leave
+    a DB stamped at v109+ that lost them unable to get them back, and every
+    OAuth path crashes on a missing relation (Devin Review on #1124).
+
+    Same shape as the class-level split-brain regression above, narrowed to
+    the tables this PR adds.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import duckdb as _duckdb
+
+    from src.db import SCHEMA_VERSION, _ensure_schema
+
+    expected = {"mcp_source_oauth_clients", "mcp_user_oauth_tokens", "mcp_oauth_flows"}
+    db_path = tmp_path / "state" / "system.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = _duckdb.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+            f"INSERT INTO schema_version (version) VALUES ({SCHEMA_VERSION + 1});"
+        )
+        _ensure_schema(conn)
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = ?",
+                ["main"],
+            ).fetchall()
+        }
+        missing = expected - tables
+        assert not missing, f"v109 OAuth tables missing from the self-heal pass: {sorted(missing)}"
+    finally:
+        conn.close()
