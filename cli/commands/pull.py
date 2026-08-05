@@ -187,6 +187,23 @@ def pull(
             raise typer.Exit(1)
         return
 
+    # A withheld name is exactly the kind of thing the SessionStart hook path
+    # must still report: that hook is what silently takes the name between
+    # sessions, so suppressing the notice there leaves the analyst with only
+    # the "Table with name <x> does not exist" this change set out to make
+    # diagnosable (#1129 review). Stderr, like the error path, which the
+    # canonical hook forwards.
+    withheld = list(getattr(result, "snapshot_views_blocked", []) or [])
+    if withheld:
+        shown = ", ".join(sorted(withheld)[:5])
+        more = f" (+{len(withheld) - 5} more)" if len(withheld) > 5 else ""
+        typer.echo(
+            f"Withheld {len(withheld)} snapshot name(s) that now belong to a table you can no\n"
+            f"longer read locally: {shown}{more}.\n"
+            "Re-create them under a different name (`agnes snapshot create <table> --as <name>`).",
+            err=True,
+        )
+
     if quiet:
         # Quiet mode is for the SessionStart hook — silent on success so
         # Claude Code's stdout stays clean. Errors still flow to stderr so
@@ -216,21 +233,6 @@ def pull(
         typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
 
-    # Without this the analyst just gets "Table with name <x> does not
-    # exist" from a later query and no clue the pull withheld the name on
-    # purpose — the same diagnosis gap this change set out to close
-    # (#1129 review). The command-UX standard asks a "not found" path to
-    # point at the next step.
-    withheld = list(getattr(result, "snapshot_views_blocked", []) or [])
-    if withheld:
-        shown = ", ".join(sorted(withheld)[:5])
-        more = f" (+{len(withheld) - 5} more)" if len(withheld) > 5 else ""
-        typer.echo(
-            f"Withheld {len(withheld)} snapshot name(s) that now belong to a table you can no\n"
-            f"longer read locally: {shown}{more}.\n"
-            "Re-create them under a different name (`agnes snapshot create <table> --as <name>`).",
-            err=True,
-        )
 
     # WF-4 (wave 2H) — provenance summary. Only printed once a
     # `signed_url` has actually been used (an instance with no object
