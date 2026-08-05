@@ -501,9 +501,17 @@ class DockerSandboxProvider:
             "mounts": self._mounts(workdir),
         }
         await self._client.up(name, spec)
-        # replay=True: the runner can emit `runner_ready` (or a whole first
-        # frame) in the milliseconds between container start and this attach.
-        return await self._attach(name, pid=1, replay=True)
+        try:
+            # replay=True: the runner can emit `runner_ready` (or a whole first
+            # frame) in the milliseconds between container start and this attach.
+            return await self._attach(name, pid=1, replay=True)
+        except BaseException:
+            # The container exists but no handle ever reaches ChatManager, so
+            # none of its teardown paths know this name — remove it here or a
+            # failed attach leaves a live sandbox eating the host-wide cap.
+            with contextlib.suppress(Exception):
+                await self._client.rm(name)
+            raise
 
     async def _attach(self, name: str, *, pid: int, replay: bool = False) -> DockerSandboxHandle:
         stream = await self._client.open_stream(name, replay=replay)

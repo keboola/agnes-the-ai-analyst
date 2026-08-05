@@ -281,6 +281,20 @@ def _chat_docker_rails_url_ok(chat_config) -> bool:
             url,
         )
         return False
+    if url.lower().startswith("https://"):
+        # Not a refusal — a public-CA cert verifies fine from the sandbox —
+        # but the common self-hosted shape (reverse proxy with a private-CA
+        # cert) fails every brokered call, and even a valid public origin
+        # routes sandbox↔Agnes traffic out through the proxy. docs/cloud-chat.md
+        # says to prefer the plain-HTTP internal address.
+        log.warning(
+            "provider=docker: the sandbox rails URL resolves to an https:// "
+            "origin (%s). If that certificate is from a private CA the "
+            "in-sandbox relay will reject it (no CA-bundle knob) and every "
+            "brokered call will fail — prefer AGNES_INTERNAL_URL with the "
+            "plain-HTTP internal address (e.g. http://app:8000)",
+            url,
+        )
     return True
 
 

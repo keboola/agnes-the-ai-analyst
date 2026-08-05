@@ -306,6 +306,25 @@ def test_spawn_stages_runner_py_into_the_session_dir(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_spawn_removes_the_container_when_the_attach_fails(tmp_path: Path):
+    """up() succeeded but no handle ever reaches ChatManager, so none of its
+    teardown paths know the container name — spawn must clean up its own
+    half-built sandbox or it lingers against the host-wide cap."""
+
+    async def _run():
+        from app.chat.sandbox_runner_client import SandboxRunnerUnavailable
+
+        client = _fake_client()
+        client.open_stream = AsyncMock(side_effect=SandboxRunnerUnavailable("sidecar restarted"))
+        prov = _provider(client)
+        with pytest.raises(SandboxRunnerUnavailable):
+            await prov.spawn(workdir=_session_dir(tmp_path), env=dict(ENV), argv=list(ARGV))
+        client.up.assert_awaited_once()
+        client.rm.assert_awaited_once_with(container_name("chat1"))
+
+    asyncio.run(_run())
+
+
 def test_spawn_refuses_without_an_image(tmp_path: Path):
     async def _run():
         prov = _provider(_fake_client(), image="")
