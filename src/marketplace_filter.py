@@ -311,7 +311,13 @@ def _bundle_files(bundle_dirs: list[Path]) -> list[tuple[str, Path]]:
     for src in bundle_dirs:
         if not src.is_dir():
             continue
+        bases = [src.resolve()]
         for f in sorted(p for p in src.rglob("*") if p.is_file()):
+            # F-1b: guard here rather than in each caller — _bundle_files feeds
+            # _compute_bundle_version, the ZIP packager, the git backend and the
+            # cowork packager, so one check covers all four.
+            if escapes_base(f, bases):
+                continue
             rel_parts = f.relative_to(src).parts
             if rel_parts and rel_parts[0] == _BUNDLE_EXCLUDE_DIR:
                 continue
@@ -624,8 +630,58 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def escapes_base(path: Path, bases: Iterable[Path]) -> bool:
+    """True if ``path`` is a symlink or resolves outside EVERY base in ``bases``.
+
+    Plugin content is curator-controlled. ``Path.rglob`` does not recurse into
+    symlinked directories, but it DOES yield a symlinked *file*, and
+    ``read_bytes()`` follows it — so a plugin containing ``leak.txt`` pointing at
+    an absolute path exfiltrates that file into the served ZIP / git tree even
+    when the plugin's own name is perfectly legitimate. ``cowork_packager`` has
+    guarded this since it shipped; the ZIP and git backends and this module's
+    ETag walk did not (2026-08-05 audit, F-1b).
+
+    Rejecting every symlink outright, rather than only out-of-base ones, is what
+    carries the defense: a symlinked file is refused no matter where it points.
+    The repo ships no symlinks anywhere, so nothing legitimate breaks. The base
+    comparison is the cheap second half, for a path that reaches outside without
+    being a symlink itself.
+
+    On bases, and the division of labour that makes this safe: callers pass the
+    RESOLVED content directory being walked, not a global root. A ``plugin_dir``
+    that is itself a symlink would re-anchor this check on the escaped target —
+    the classic defeat, which ``app/api/marketplace.py:_reject_unsafe_segment``
+    documents as audit L1 — but that case never reaches here, because
+    ``_contained_plugin_dir`` refuses to produce a ``plugin_dir`` that escapes
+    the marketplaces root. Layer A stops a symlinked directory; this is layer B
+    and stops symlinked files inside a legitimate one.
+
+    Deliberately NOT anchored on a config-derived global root. ``plugin_dir`` is
+    an absolute path the caller supplies; a global anchor silently drops every
+    file whenever the two disagree (bind-mounted ``/data``, a symlinked data dir,
+    any test or dev override), which turns a hardening measure into a
+    served-marketplace-goes-empty outage.
+    """
+    try:
+        if path.is_symlink():
+            return True
+        resolved = path.resolve()
+    except OSError:
+        return True
+    for base in bases:
+        try:
+            if resolved.is_relative_to(base.resolve()):
+                return False
+        except OSError:
+            continue
+    return True
+
+
 def _iter_files(root: Path) -> List[Path]:
-    return sorted(p for p in root.rglob("*") if p.is_file())
+    # Base resolved once — escapes_base runs per file and this is the ETag hot
+    # path (AGNES_MARKETPLACE_ETAG_TTL, default 120s).
+    bases = [root.resolve()]
+    return sorted(p for p in root.rglob("*") if p.is_file() and not escapes_base(p, bases))
 
 
 def compute_etag(plugins: Iterable[dict]) -> str:

@@ -264,14 +264,14 @@ def _sanitize_arcname(rel_posix: str) -> str:
 
 def _escapes(path: Path, bases: List[Path]) -> bool:
     """True if ``path`` is a symlink or resolves outside every allowed base —
-    used to block file exfiltration via hostile symlinks in plugin content."""
-    try:
-        if path.is_symlink():
-            return True
-        resolved = path.resolve()
-    except OSError:
-        return True
-    return not any(resolved.is_relative_to(b) for b in bases)
+    used to block file exfiltration via hostile symlinks in plugin content.
+
+    Delegates to ``marketplace_filter.escapes_base``, which the ZIP and git
+    backends and the ETag walk also use. This module had the only copy of the
+    rule until the 2026-08-05 audit (F-1b) found the other three walks
+    unguarded; keeping one implementation is what stops that recurring.
+    """
+    return marketplace_filter.escapes_base(path, bases)
 
 
 def _is_stripped(rel_parts: tuple) -> bool:

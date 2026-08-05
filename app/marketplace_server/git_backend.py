@@ -118,9 +118,8 @@ def file_set_for_user(
             # packager._collect_members for the equivalent ZIP path.
             from app.marketplace_server.packager import _bundle_plugin_json_bytes
             from src.marketplace_filter import _bundle_files
-            files[f"plugins/{prefix}/.claude-plugin/plugin.json"] = (
-                _bundle_plugin_json_bytes(plugin)
-            )
+
+            files[f"plugins/{prefix}/.claude-plugin/plugin.json"] = _bundle_plugin_json_bytes(plugin)
             for rel, abs_path in _bundle_files(plugin["bundle_dirs"]):
                 files[f"plugins/{prefix}/{rel}"] = abs_path.read_bytes()
             continue
@@ -128,13 +127,21 @@ def file_set_for_user(
         plugin_dir: Path = plugin["plugin_dir"]
         if plugin_dir is None or not plugin_dir.is_dir():
             continue
+        # F-1b: resolved once per plugin — see packager._collect_members.
+        plugin_bases = [plugin_dir.resolve()]
         for f in sorted(p for p in plugin_dir.rglob("*") if p.is_file()):
+            # F-1b: mirror the ZIP path — never read through a symlink in
+            # curator-controlled plugin content. A symlinked plugin_dir is
+            # stopped earlier, by marketplace_filter._contained_plugin_dir.
+            if marketplace_filter.escapes_base(f, plugin_bases):
+                continue
             rel_parts = f.relative_to(plugin_dir).parts
             # v32: same Agnes-only file stripping as the ZIP path —
             # `.agnes/**` and `marketplace-metadata.json` never enter the synth
             # Claude Code git tree. See app/marketplace_server/packager.py
             # for context.
             from src.marketplace_filter import is_agnes_only_path
+
             if is_agnes_only_path(rel_parts):
                 continue
             rel = f.relative_to(plugin_dir).as_posix()
@@ -145,6 +152,7 @@ def file_set_for_user(
             # plugin ("agents: Invalid input"). See packager._collect_members.
             if rel == ".claude-plugin/plugin.json":
                 from app.marketplace_server.packager import _sanitize_served_plugin_json
+
                 data = _sanitize_served_plugin_json(data, plugin_dir)
             files[arc] = data
     return files

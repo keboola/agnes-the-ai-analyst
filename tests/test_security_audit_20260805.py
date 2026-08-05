@@ -139,3 +139,101 @@ def test_f1_v2_skills_path_is_contained(tmp_path, monkeypatch):
     entries = v2._skills_for_plugin("acme", "../../../elsewhere")
 
     assert entries == [], f"escaped the marketplaces root: {entries!r}"
+
+
+# ── F-1b: hostile symlinks inside a legitimately-named plugin dir ──
+
+
+def test_f1b_escapes_base_flags_symlink_and_outside_paths(tmp_path):
+    from src.marketplace_filter import escapes_base
+
+    root = tmp_path / "marketplaces"
+    base = root / "acme" / "plugins" / "legit"
+    base.mkdir(parents=True)
+    secret = tmp_path / "system_secret.txt"
+    secret.write_text("SUPER-SECRET", encoding="utf-8")
+
+    plain = base / "README.md"
+    plain.write_text("hi", encoding="utf-8")
+    link = base / "evil.txt"
+    link.symlink_to(secret)
+
+    assert escapes_base(plain, [root]) is False
+    assert escapes_base(link, [root]) is True
+    assert escapes_base(secret, [root]) is True
+
+
+def test_f1b_escapes_base_accepts_any_of_several_bases(tmp_path):
+    """Multi-base: cowork_packager merges several source roots into one zip."""
+    from src.marketplace_filter import escapes_base
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    f = b / "SKILL.md"
+    f.write_text("hi", encoding="utf-8")
+
+    assert escapes_base(f, [a, b]) is False
+    assert escapes_base(f, [a]) is True
+
+
+def test_f1b_symlinked_plugin_dir_is_stopped_by_layer_a_not_layer_b(tmp_path):
+    """The two layers divide the work; neither covers the other's case alone.
+
+    Layer B (escapes_base) is anchored on the resolved plugin_dir, so it cannot
+    see a plugin_dir that IS a symlink — resolving re-anchors it on the target.
+    That case belongs to layer A (_contained_plugin_dir), which refuses to hand
+    out such a plugin_dir at all. Asserting both halves here keeps a future
+    refactor from dropping layer A on the assumption that layer B covers it.
+    """
+    from src.marketplace_filter import _contained_plugin_dir, escapes_base
+
+    root = tmp_path / "marketplaces"
+    (root / "acme" / "plugins").mkdir(parents=True)
+    outside = tmp_path / "state"
+    outside.mkdir()
+    (outside / "system_secret.txt").write_text("SUPER-SECRET", encoding="utf-8")
+    plugin_dir = root / "acme" / "plugins" / "sneaky"
+    plugin_dir.symlink_to(outside)
+
+    leaked = next(p for p in plugin_dir.rglob("*") if p.is_file())
+
+    # Layer B, anchored on the resolved dir, does NOT catch this.
+    assert escapes_base(leaked, [plugin_dir.resolve()]) is False
+    # Layer A does — the plugin_dir is never produced in the first place.
+    assert _contained_plugin_dir(root, "acme", "sneaky") is None
+
+
+def test_f1b_zip_packager_skips_symlinked_files(tmp_path, monkeypatch):
+    """A symlink in plugin content must not put out-of-tree bytes in the ZIP."""
+    from app.marketplace_server import packager
+
+    root = tmp_path / "marketplaces"
+    plugin_dir = root / "acme" / "plugins" / "legit"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "README.md").write_text("hi", encoding="utf-8")
+    secret = tmp_path / "system_secret.txt"
+    secret.write_text("SUPER-SECRET", encoding="utf-8")
+    (plugin_dir / "leak.txt").symlink_to(secret)
+
+    members = packager._collect_members(
+        [
+            {
+                "prefixed_name": "acme-legit",
+                "manifest_name": "legit",
+                "original_name": "legit",
+                "marketplace_slug": "acme",
+                "version": None,
+                "raw": {},
+                "plugin_dir": plugin_dir,
+            }
+        ],
+        "deadbeef",
+    )
+
+    arcs = [arc for arc, _ in members]
+    payloads = b"".join(data for _, data in members)
+    assert not any(a.endswith("leak.txt") for a in arcs)
+    assert b"SUPER-SECRET" not in payloads
+    assert any(a.endswith("README.md") for a in arcs)
