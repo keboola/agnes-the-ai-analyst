@@ -92,17 +92,22 @@ def test_run_kwargs_translate_into_the_expected_host_config():
     assert "networking_config" in args
 
 
-def test_attach_socket_supports_demuxed_streaming():
-    """`sandbox_stream` opens the raw hijacked socket (`attach_socket` with
-    stdout/stderr/stream/logs params — holding the socket directly is what
-    lets teardown unblock the reader thread) and demuxes it with docker-py's
-    own `frames_iter` + `demux_adaptor`; demux is what keeps the runner's
-    stdout JSONL separate from stderr diagnostics."""
+def test_attach_socket_exposes_the_held_response_for_buffered_reads():
+    """`sandbox_stream` opens the hijacked connection via `attach_socket`
+    (holding the socket directly is what lets teardown unblock the reader
+    thread) and reads frames through `sock._response.raw._fp.fp` — the
+    BufferedReader that http.client's header parse read ahead into; raw-socket
+    reads lose replayed frames sitting in that buffer. Pin the `params` kwarg
+    and docker-py's `_response` GC-guard assignment the buffered path rides."""
     from docker import APIClient
-    from docker.utils.socket import demux_adaptor, frames_iter  # noqa: F401 — presence is the assertion
 
     params = inspect.signature(APIClient.attach_socket).parameters
     assert "params" in params, "docker APIClient.attach_socket lost `params`"
+    src = inspect.getsource(APIClient._get_raw_response_socket)
+    assert "sock._response = response" in src, (
+        "docker-py no longer parks the HTTP response on the attach socket — "
+        "sandbox_stream's buffered-reader path depends on that reference"
+    )
 
 
 @pytest.mark.parametrize(

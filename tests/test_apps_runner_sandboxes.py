@@ -68,9 +68,11 @@ class FakeSandboxContainer:
         if params and params.get("stdin"):
             return self.sock
         # Output attach: hand back a REAL socket pre-loaded with the muxed
-        # frames — the handler's reader thread drives it through docker-py's
-        # own `frames_iter`, which select()s on a live fd before every recv.
+        # frames, mirroring docker-py's unix-transport shape — the response
+        # parked on the socket (`_response`, docker-py's GC guard) whose
+        # `raw._fp.fp` is the BufferedReader the handler must read from.
         import socket as socketlib
+        from types import SimpleNamespace
 
         writer, reader = socketlib.socketpair()
         payload = b""
@@ -81,7 +83,20 @@ class FakeSandboxContainer:
                 payload += _mux(2, err)
         writer.sendall(payload)
         writer.close()
-        return reader
+        fp = reader.makefile("rb")
+        if getattr(self, "buffer_all_frames_before_handoff", False):
+            # Simulate http.client's header-parse read-ahead: everything is
+            # in the BufferedReader's buffer, nothing left on the raw socket.
+            fp.peek(1)
+        # `fp.raw` is a SocketIO — the exact object docker-py hands back
+        # (`response.raw._fp.fp.raw`), and like the real one it accepts the
+        # parked-response attribute (a bare socket.socket has __slots__).
+        sio = fp.raw
+        sio._response = SimpleNamespace(
+            raw=SimpleNamespace(_fp=SimpleNamespace(fp=fp)),
+            close=fp.close,
+        )
+        return sio
 
     # --- files ---------------------------------------------------------
     def put_archive(self, path, data):
@@ -403,6 +418,22 @@ def test_stream_replays_only_when_asked(client):
 
     c.get(f"/sandboxes/{NAME}/stream", headers={"X-Runner-Token": "tok"}, params={"replay": "true"})
     assert cont.attach_params["logs"] == 1
+
+
+def test_stream_delivers_frames_already_buffered_by_the_header_parse(client):
+    """Replay frames routinely sit in the connection's BufferedReader before
+    the handler ever sees the socket — http.client's header parse reads ahead,
+    and with logs=1 the daemon writes the backlog right behind the headers.
+    Reading the raw socket instead of that buffer silently dropped them (the
+    daemon-test symptom: `runner_ready` never arrived after spawn)."""
+    c, fake, tmp = client
+    _up(c, tmp)
+    cont = fake.by_name[NAME]
+    cont.buffer_all_frames_before_handoff = True
+    r = c.get(f"/sandboxes/{NAME}/stream", headers={"X-Runner-Token": "tok"}, params={"replay": "true"})
+    assert r.status_code == 200
+    frames = [json.loads(line) for line in r.text.splitlines() if line.strip()]
+    assert [base64.b64decode(f["data"]) for f in frames] == [b'{"type":"runner_ready"}\n', b"stderr-line\n"]
 
 
 def test_stream_absent_container_is_404(client):

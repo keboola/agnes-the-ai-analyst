@@ -409,14 +409,57 @@ def _shutdown_attach_socket(sock) -> None:
     """Best-effort shutdown+close of an attach socket.
 
     ``shutdown`` (not just ``close``) is what reliably wakes a reader thread
-    blocked in ``recv`` on the other side of the hijacked connection.
+    blocked mid-``read`` on the other side of the hijacked connection; the
+    held HTTP response (see ``_attach_buffered_reader``) is closed in between
+    so its own destructor doesn't later trip over an already-closed file.
     """
     raw = getattr(sock, "_sock", None)
     if raw is not None and hasattr(raw, "shutdown"):
         with contextlib.suppress(Exception):
             raw.shutdown(_socket.SHUT_RDWR)
+    response = getattr(sock, "_response", None)
+    if response is not None:
+        with contextlib.suppress(Exception):
+            response.close()
     with contextlib.suppress(Exception):
         sock.close()
+
+
+def _attach_buffered_reader(sock):
+    """The buffered file object over an ``attach_socket`` connection, or
+    ``None`` when the transport doesn't expose one.
+
+    Reading the raw socket that ``attach_socket`` returns is WRONG for a
+    replay attach: http.client parses the response headers through a
+    ``BufferedReader`` whose read-ahead can pull the first stream bytes into
+    its buffer — with ``logs=1`` the daemon writes the backlog immediately
+    after the headers, so the replayed frames (e.g. the runner's
+    ``runner_ready``) routinely sit in that buffer and a raw-socket reader
+    never sees them. docker-py keeps the response alive on the socket as
+    ``sock._response`` (its own GC guard); its ``raw._fp.fp`` is that
+    ``BufferedReader`` — reading from it drains the buffer first, then the
+    socket, in order.
+    """
+    response = getattr(sock, "_response", None)
+    try:
+        return response.raw._fp.fp  # noqa: SLF001 — the same shape docker-py's CancellableStream digs
+    except AttributeError:
+        return None
+
+
+def _demuxed_frames(read):
+    """Docker's non-tty attach multiplexing over a blocking ``read(n)``:
+    yields ``(stream_id, payload)`` per frame, ends on EOF/short read."""
+    while True:
+        header = read(8)
+        if len(header) < 8:
+            return
+        n = int.from_bytes(header[4:8], "big")
+        payload = read(n) if n else b""
+        if payload:
+            yield header[0], payload
+        if n and len(payload) < n:
+            return
 
 
 @router.get("/{name}/stream")
@@ -451,10 +494,13 @@ async def sandbox_stream(
     """
     _guard(name, x_runner_token)
     container = _require_container(name)
-    # The raw hijacked socket (rather than `attach(stream=True)`'s generator):
-    # docker-py wraps the same socket either way, but holding it directly is
-    # what lets teardown unblock the reader thread with a shutdown().
+    # The raw hijacked connection (rather than `attach(stream=True)`'s
+    # generator): holding the socket directly is what lets teardown unblock
+    # the reader thread with a shutdown(). Frames are read through the
+    # connection's BufferedReader, never the raw socket — see
+    # _attach_buffered_reader for why raw reads lose replayed frames.
     sock = container.attach_socket(params={"stdout": 1, "stderr": 1, "stream": 1, "logs": 1 if replay else 0})
+    fp = _attach_buffered_reader(sock)
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=_STREAM_QUEUE_MAX)
@@ -474,19 +520,25 @@ async def sandbox_stream(
             except Exception:
                 return False
 
-    def _read_frames() -> None:
-        from docker.utils.socket import demux_adaptor, frames_iter
+    def _sock_read(n: int) -> bytes:
+        """Exact-n fallback read off the raw socket (non-unix transports,
+        where no buffered reader is exposed; header read-ahead loss does not
+        arise there because nothing pre-reads the hijacked stream)."""
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.read(n - len(buf)) if hasattr(sock, "read") else sock.recv(n - len(buf))
+            if not chunk:
+                return buf
+            buf += chunk
+        return buf
 
+    def _read_frames() -> None:
+        read = fp.read if fp is not None else _sock_read
         try:
-            for frame in frames_iter(sock, tty=False):
-                out, err = demux_adaptor(*frame)
-                if out and not _enqueue(
-                    json.dumps({"stream": "stdout", "data": base64.b64encode(out).decode()}) + "\n"
-                ):
-                    return
-                if err and not _enqueue(
-                    json.dumps({"stream": "stderr", "data": base64.b64encode(err).decode()}) + "\n"
-                ):
+            for stream_id, payload in _demuxed_frames(read):
+                stream_name = "stderr" if stream_id == 2 else "stdout"
+                line = json.dumps({"stream": stream_name, "data": base64.b64encode(payload).decode()}) + "\n"
+                if not _enqueue(line):
                     return
         except Exception:  # noqa: BLE001, S110 — container gone / daemon blip ends the stream
             pass
