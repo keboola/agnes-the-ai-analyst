@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional
@@ -44,6 +45,7 @@ import duckdb
 
 from app.auth.access import _user_group_ids
 from app.utils import get_marketplaces_dir, get_store_dir
+from src.marketplace import is_safe_plugin_name
 from src.repositories import (
     marketplace_plugins_repo,
     resource_grants_repo,
@@ -51,6 +53,31 @@ from src.repositories import (
     user_groups_repo,
     user_store_installs_repo,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _contained_plugin_dir(root: Path, slug: str, name: str) -> Optional[Path]:
+    """``root/slug/plugins/name``, or None when that escapes ``root``.
+
+    Layer 2 behind ``is_safe_plugin_name``'s ingest rejection — security playbook
+    §6 requires both. Rows written by an older Agnes version, or edited directly
+    in the DB, never passed the ingest check, and this is the last point before
+    the path reaches ``rglob`` + ``read_bytes`` in the ZIP and git packagers.
+    ``resolve()`` also collapses a symlinked ``plugins/<name>`` pointing out of
+    the tree, which the regex alone cannot see.
+
+    The name is used unstripped: rows in ``marketplace_plugins`` were already
+    stripped by ``_refresh_plugin_cache``, so the strict helper is correct here.
+    """
+    if not is_safe_plugin_name(name):
+        return None
+    candidate = root / slug / "plugins" / name
+    try:
+        candidate.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return candidate
 
 
 def required_plugin_keys(conn: duckdb.DuckDBPyConnection | None, user_id: str | None) -> set[tuple[str, str]]:
@@ -197,7 +224,14 @@ def resolve_allowed_plugins(conn: duckdb.DuckDBPyConnection, user: dict) -> List
         marketplace_id = row["marketplace_id"]
         name = row["name"]
         slug = marketplace_id  # registry.id IS the slug (see src/marketplace.py)
-        plugin_dir = root / slug / "plugins" / name
+        plugin_dir = _contained_plugin_dir(root, slug, name)
+        if plugin_dir is None:
+            logger.warning(
+                "marketplace %s: skipping granted plugin %r — name is not a contained path segment",
+                slug,
+                name,
+            )
+            continue
         result.append(
             {
                 "marketplace_id": marketplace_id,
@@ -384,7 +418,14 @@ def _entries_for_grant_keys(keys: frozenset[str]) -> List[dict]:
         name = row["name"]
         if f"{slug}/{name}" not in keys or row.get("admin_disabled"):
             continue
-        plugin_dir = root / slug / "plugins" / name
+        plugin_dir = _contained_plugin_dir(root, slug, name)
+        if plugin_dir is None:
+            logger.warning(
+                "marketplace %s: skipping granted plugin %r — name is not a contained path segment",
+                slug,
+                name,
+            )
+            continue
         out.append(
             {
                 "marketplace_id": slug,

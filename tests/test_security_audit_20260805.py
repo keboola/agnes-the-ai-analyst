@@ -71,3 +71,41 @@ def test_f1_read_plugins_drops_unsafe_names(tmp_path, monkeypatch):
     names = [p["name"] for p in mp.read_plugins("acme")]
 
     assert names == ["good-plugin", " padded-ok "]
+
+
+# ── F-1 layer 2: containment at the path-construction site ──
+
+
+def test_f1_contained_plugin_dir_rejects_escape(tmp_path):
+    """A row that bypassed ingest (older Agnes, hand-edited DB) still can't escape."""
+    from src.marketplace_filter import _contained_plugin_dir
+
+    root = tmp_path / "marketplaces"
+    (root / "acme" / "plugins").mkdir(parents=True)
+    (tmp_path / "state").mkdir()
+
+    assert _contained_plugin_dir(root, "acme", "../../../state") is None
+    assert _contained_plugin_dir(root, "acme", "..") is None
+    assert _contained_plugin_dir(root, "acme", "a/b") is None
+
+
+def test_f1_contained_plugin_dir_accepts_plain_name(tmp_path):
+    from src.marketplace_filter import _contained_plugin_dir
+
+    root = tmp_path / "marketplaces"
+    (root / "acme" / "plugins" / "legit").mkdir(parents=True)
+
+    assert _contained_plugin_dir(root, "acme", "legit") == root / "acme" / "plugins" / "legit"
+
+
+def test_f1_contained_plugin_dir_rejects_symlinked_segment(tmp_path):
+    """A `plugins/<name>` that is itself a symlink out of the root is contained."""
+    from src.marketplace_filter import _contained_plugin_dir
+
+    root = tmp_path / "marketplaces"
+    (root / "acme" / "plugins").mkdir(parents=True)
+    outside = tmp_path / "state"
+    outside.mkdir()
+    (root / "acme" / "plugins" / "sneaky").symlink_to(outside)
+
+    assert _contained_plugin_dir(root, "acme", "sneaky") is None
