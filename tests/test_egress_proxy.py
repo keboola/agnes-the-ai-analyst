@@ -468,3 +468,37 @@ def test_listen_address_never_crashes_the_sidecar(value, expected):
     from services.egress_proxy.proxy import _parse_listen
 
     assert _parse_listen(value) == expected
+
+
+def test_a_public_rails_host_is_not_forced_off_the_proxy():
+    """NO_PROXY takes PRECEDENCE over the proxy env, so listing a public rails
+    host there forces a direct connection the no-route-out network can never
+    make — and the operator cannot recover by allowlisting it. Only a dotless
+    (compose service / container) name is reachable directly."""
+    from app.chat.docker_provider import DockerSandboxProvider
+
+    p = DockerSandboxProvider(
+        image="agnes-chat-sandbox:x",
+        egress_mode="allowlist",
+        egress_proxy_url="http://agnes-egress-proxy:3128",
+        upload_runner=False,
+    )
+    internal = p._egress_env({"AGNES_SERVER": "http://app:8000"})["NO_PROXY"].split(",")
+    public = p._egress_env({"AGNES_SERVER": "https://agnes.example.com"})["NO_PROXY"].split(",")
+
+    assert "app" in internal
+    assert "agnes.example.com" not in public
+    assert "127.0.0.1" in public and "localhost" in public
+
+
+def test_a_public_rails_url_is_reported_at_startup(monkeypatch):
+    from app.chat.config import egress_compose_mismatches
+
+    monkeypatch.setenv("SERVER_URL", "https://agnes.example.com")
+    monkeypatch.delenv("AGNES_INTERNAL_URL", raising=False)
+    msgs = egress_compose_mismatches(_cfg())
+    assert any("agnes.example.com" in m for m in msgs), msgs
+
+    # ...and saying nothing once the internal override is set.
+    monkeypatch.setenv("AGNES_INTERNAL_URL", "http://app:8000")
+    assert egress_compose_mismatches(_cfg()) == []

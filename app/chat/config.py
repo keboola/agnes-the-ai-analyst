@@ -416,4 +416,21 @@ def egress_compose_mismatches(cfg: "ChatConfig") -> list[str]:
             f"chat.docker_egress_proxy_url is {cfg.docker_egress_proxy_url!r}, but compose names "
             f"the sidecar container agnes-egress-proxy ({_COMPOSE_EGRESS_PROXY_URL})"
         )
+    # The rails URL is the fourth face of the same assumption. `agnes_server_url()`
+    # prefers SERVER_URL — which most deployments set for OAuth — over
+    # AGNES_INTERNAL_URL, and a public host is not reachable from the
+    # no-route-out network the sandbox lives on in this mode.
+    rails = (os.environ.get("SERVER_URL") or "").strip()
+    if rails and not (os.environ.get("AGNES_INTERNAL_URL") or "").strip():
+        from urllib.parse import urlparse
+
+        host = urlparse(rails).hostname or ""
+        if "." in host:
+            out.append(
+                f"the sandbox rails URL resolves from SERVER_URL ({host}), which is not reachable "
+                "from the internal no-route-out network sandboxes use in this mode. Set "
+                "AGNES_INTERNAL_URL to a container-reachable address (e.g. http://app:8000); "
+                "otherwise every brokered call has to go through the egress proxy and the host "
+                "must be in EGRESS_ALLOW_HOSTS"
+            )
     return out

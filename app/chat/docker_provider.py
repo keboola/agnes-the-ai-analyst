@@ -378,7 +378,19 @@ class DockerSandboxProvider:
         server = (spawn_env or {}).get("AGNES_SERVER", "")
         if server:
             host = urlparse(server).hostname
-            if host and host not in no_proxy:
+            # Only bypass the proxy for a host the sandbox can actually reach
+            # directly — i.e. one on the shared internal network. NO_PROXY
+            # takes PRECEDENCE over the proxy env, so listing a public host
+            # here forces a direct connection that a no-route-out network can
+            # never make, and the operator cannot recover by allowlisting it.
+            # `agnes_server_url()` prefers SERVER_URL (public, set on most
+            # deployments for OAuth) over AGNES_INTERNAL_URL, so that is the
+            # common case, not an exotic one (Devin Review on #1148).
+            #
+            # A compose service / container name is dotless; a public rails URL
+            # is an FQDN. Anything with a dot goes THROUGH the proxy, where an
+            # operator can at least fix it by allowlisting the host.
+            if host and host not in no_proxy and "." not in host:
                 no_proxy.append(host)
         p = self._egress_proxy_url
         joined = ",".join(no_proxy)
