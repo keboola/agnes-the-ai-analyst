@@ -249,6 +249,18 @@ auth:
 #   # cookie jar to re-elevate with. See docs/RBAC.md.
 #   admin_default_elevation: "elevated"
 
+# --- Library & Store trust vocabulary (optional, opt-in) ---
+# Both default to false so a routine upgrade never changes what existing
+# instances render. Turn them on together to adopt the positive
+# Organization / Verified / Community provenance markers and the
+# admin-driven verification workflow. Env overrides:
+# AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST; store.verification_enabled is
+# yaml/admin-overlay only.
+# library:
+#   show_unverified_trust: true      # 'Community' marker on unverified Store items
+# store:
+#   verification_enabled: true       # "Request verification" + admin Verify workflow
+
 # --- Theme (optional) ---
 # Customize colors, fonts, and shape to match your brand.
 # All values are optional - defaults provide a clean blue theme.

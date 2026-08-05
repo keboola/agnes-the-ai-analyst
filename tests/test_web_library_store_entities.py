@@ -259,19 +259,19 @@ def _set_publisher_kind(entity_id: str, kind: str) -> None:
     )
 
 
-def test_unverified_community_marker_renders_by_default(seeded_app, monkeypatch):
-    """Default behavior: an unverified item SAYS it is unverified. Every Library
-    row now states its provenance positively — Organization, Verified, or
-    Community — rather than leaving the reader to infer the third from an
-    absence, which is indistinguishable from a row whose marker failed to
-    render."""
+def test_unverified_community_marker_absent_by_default(seeded_app, monkeypatch):
+    """Default behavior is upgrade parity: an unverified item is marked by the
+    ABSENCE of a marker, exactly as before the trust vocabulary existed, so a
+    routine upgrade never changes how existing rows read. Instances opt into
+    the positive Organization / Verified / Community statements via
+    `library.show_unverified_trust` (see the opt-in test below)."""
     monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
-    _entity(owner="admin", owner_name="admin", etype="skill", name="Default On Skill", status="approved")
+    _entity(owner="admin", owner_name="admin", etype="skill", name="Default Off Skill", status="approved")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
-    row = _row(text, "Default On Skill")
+    row = _row(text, "Default Off Skill")
     assert row, "approved skill must appear in library"
-    assert "ds-trust--community" in row
+    assert "ds-trust--community" not in row
 
 
 def test_unverified_chip_absent_when_flag_explicitly_off(seeded_app, monkeypatch):

@@ -110,6 +110,9 @@ class TestFeatureFlagsRegistry:
         by_name = {f.name: f for f in ic.FEATURE_FLAGS}
         assert by_name["chat"].default is False
         assert by_name["data_apps"].default is False
+        # Upgrade parity: the positive trust vocabulary is an opt-in — an
+        # existing instance must not grow Community markers out of an upgrade.
+        assert by_name["library_show_unverified_trust"].default is False
 
     def test_entries_carry_a_description(self):
         for flag in ic.FEATURE_FLAGS:

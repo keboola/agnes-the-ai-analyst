@@ -338,9 +338,10 @@ templates.env.globals["is_paper"] = _is_paper_theme
 
 def _show_unverified_trust() -> bool:
     """Whether the Community trust marker renders. Registered as a global for the
-    same reason as `is_paper` above, and for one more that matters here: this is
-    an OPT-OUT switch, so a template falling back to a literal default is unsafe
-    in a way an opt-in flag is not.
+    same reason as `is_paper` above, and for one more that matters here: an
+    instance-level switch resolved per template would let a stray literal
+    default override the operator's setting either way — when this flag was
+    briefly opt-out, exactly that happened.
 
     It briefly read `library_show_unverified_trust|default(true)` in
     `marketplace_item_detail.html`, to stop the marker vanishing on a route that
@@ -358,10 +359,10 @@ def _show_unverified_trust() -> bool:
             "library",
             "show_unverified_trust",
             env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-            default=True,
+            default=False,
         )
     except Exception:
-        return True
+        return False
 
 
 templates.env.globals["show_unverified_trust_enabled"] = _show_unverified_trust
@@ -3414,16 +3415,17 @@ async def library_page(
         # is compared against the facet's one legal value, so what reaches the
         # page's JS is a boolean, never caller text.
         library_stack_only=request.query_params.get("stack") == "in_stack",
-        # Default ON: an unverified Store item states so ("Community"), rather
-        # than being marked by the absence of a marker. Must stay in step with
-        # the FEATURE_FLAGS registry default — `feature_enabled` takes the
-        # CALLSITE default, so the registry entry is display metadata only
-        # (guarded by tests/test_feature_flags.py).
+        # Default OFF (upgrade parity): an unverified Store item is marked by
+        # the absence of a marker unless the instance opts into the positive
+        # trust vocabulary. Must stay in step with the FEATURE_FLAGS registry
+        # default — `feature_enabled` takes the CALLSITE default, so the
+        # registry entry is display metadata only (guarded by
+        # tests/test_feature_flags.py).
         show_unverified_trust=feature_enabled(
             "library",
             "show_unverified_trust",
             env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-            default=True,
+            default=False,
         ),
     )
     return templates.TemplateResponse(request, "library.html", ctx)
@@ -5201,7 +5203,7 @@ async def marketplace_flea_detail(
             "library",
             "show_unverified_trust",
             env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-            default=True,
+            default=False,
         ),
         quarantine_sub=quarantine_sub,
         edit_in_flight=edit_in_flight,

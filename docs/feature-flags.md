@@ -121,4 +121,4 @@ without grepping the codebase.
 | `chat` | `chat.enabled` | `AGNES_CHAT_ENABLED` | `false` | New feature — off by default. |
 | `chat_approvals` | `chat.approvals_enabled` | `AGNES_CHAT_APPROVALS_ENABLED` | `true` | Operator kill-switch for interactive approval prompts. Off denies ask-flagged tool calls instantly instead of waiting for a human. |
 | `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | New feature — off by default. |
-| `library_show_unverified_trust` | `library.show_unverified_trust` | `AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST` | `true` | 'Community' trust marker for unverified Store items in the Library. On by default, so every row states its provenance (Organization / Verified / Community); set `false` to mark an unverified item by the absence of a marker instead. |
+| `library_show_unverified_trust` | `library.show_unverified_trust` | `AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST` | `false` | 'Community' trust marker for unverified Store items in the Library. Off by default so an upgrade never changes how existing rows read; set `true` to state every row's provenance positively (Organization / Verified / Community). |

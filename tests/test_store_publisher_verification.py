@@ -500,9 +500,7 @@ def test_browse_merges_both_sources_with_exact_totals(fresh_db):
         conn.close()
         close_system_db()
 
-    r = _client().get(
-        "/api/marketplace/items?tab=browse&page_size=50", cookies={"access_token": anna_sess}
-    )
+    r = _client().get("/api/marketplace/items?tab=browse&page_size=50", cookies={"access_token": anna_sess})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["total"] == 2
@@ -554,14 +552,10 @@ def test_browse_verification_facet_excludes_curated(fresh_db):
 
     client = _client()
     cookies = {"access_token": anna_sess}
-    unverified = client.get(
-        "/api/marketplace/items?tab=browse&verification=unverified", cookies=cookies
-    )
+    unverified = client.get("/api/marketplace/items?tab=browse&verification=unverified", cookies=cookies)
     assert unverified.status_code == 200, unverified.text
     assert [i["id"] for i in unverified.json()["items"]] == ["flea-e1"]
-    verified = client.get(
-        "/api/marketplace/items?tab=browse&verification=verified", cookies=cookies
-    )
+    verified = client.get("/api/marketplace/items?tab=browse&verification=verified", cookies=cookies)
     assert verified.status_code == 200, verified.text
     assert verified.json()["total"] == 0
 
@@ -577,17 +571,15 @@ def test_browse_categories_endpoint_accepts_the_new_tab(fresh_db):
         conn.close()
         close_system_db()
 
-    r = _client().get(
-        "/api/marketplace/categories?tab=browse", cookies={"access_token": anna_sess}
-    )
+    r = _client().get("/api/marketplace/categories?tab=browse", cookies={"access_token": anna_sess})
     assert r.status_code == 200, r.text
     assert any(c["name"] == "Productivity" for c in r.json()["items"])
 
 
 def test_show_unverified_trust_global_respects_the_off_switch(monkeypatch):
-    """The Community marker's opt-out must hold on EVERY surface.
+    """The Community marker's instance switch must hold on EVERY surface.
 
-    `show_unverified_trust` is an opt-out, and it is resolved by a Jinja global
+    `show_unverified_trust` is resolved by a Jinja global
     (`app.web.router._show_unverified_trust`) rather than threaded through each
     route's context. That is deliberate: it briefly rode
     `library_show_unverified_trust|default(true)` in
@@ -605,10 +597,11 @@ def test_show_unverified_trust_global_respects_the_off_switch(monkeypatch):
     monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
     assert _show_unverified_trust()
 
-    # Absent config is the documented on-by-default, so every row states its
-    # provenance unless an operator opts out.
+    # Absent config is the documented off-by-default (upgrade parity): an
+    # existing instance keeps its look until an operator opts into the
+    # positive trust vocabulary.
     monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
-    assert _show_unverified_trust()
+    assert not _show_unverified_trust()
 
 
 def test_no_template_applies_a_jinja_default_to_the_unverified_trust_flag():

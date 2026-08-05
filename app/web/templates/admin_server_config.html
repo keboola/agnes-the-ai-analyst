@@ -473,7 +473,7 @@ const SECTION_META = {
   },
   library: {
     title: "Library",
-    help: "Analyst Library display options. show_unverified_trust surfaces the 'Community' marker beside the name of a user-authored Store item your organization hasn't verified — on by default, so every row states its provenance (Organization / Verified / Community). Turn it off to mark an unverified item by the absence of a marker instead.",
+    help: "Analyst Library display options. show_unverified_trust surfaces the 'Community' marker beside the name of a user-authored Store item your organization hasn't verified — off by default, so an upgrade never changes how existing rows read. Turn it on to state every row's provenance positively (Organization / Verified / Community).",
   },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
