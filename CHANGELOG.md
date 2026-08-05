@@ -43,6 +43,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+- The `resource_grants` SQLAlchemy model now declares migration 0013's
+  `ck_resource_grants_per_type_fk` check constraint. The constraint has
+  always existed in the DB; alembic 1.19.0 (2026-08-04) started comparing
+  check constraints in autogenerate, which surfaced the latent
+  model↔migration mismatch and broke `test_no_model_migration_drift` on
+  every branch (CI installs unpinned deps). Fixes #1168.
 - New dev-kit skill `agnes-wayfinder` (`.claude/skills/agnes-wayfinder/`) for efforts whose destination is known but whose route is still fogged in — the phase before `superpowers:writing-plans` has anything to plan. It charts a map (`docs/superpowers/maps/<effort>/map.md`) plus numbered decision tickets, resolved one per session until no decisions remain, then hands off to `writing-plans` → `/agnes-build`. Deliberately markdown-in-repo rather than GitHub issues: the *Issue economy* convention exists to stop exactly this kind of question-dumping into a public tracker, and a map under `docs/brainstorms/` would be gitignored and lost with its checkout. Explicit invocation only — if the steps can already be stated, the map is overhead. Adapted from Matt Pocock's `wayfinder` skill (MIT).
   The frontier query hides a ticket only on positive evidence of a live
   blocker. Everything it cannot interpret — an odd "no dependencies" marker,
