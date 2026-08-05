@@ -402,6 +402,13 @@ class DockerSandboxProvider:
             # and the read-only extras resolve while the workspace's
             # settings/hook files stay unreachable.
             #
+            # The marker above reads agent-writable state (/work), so a
+            # plain session whose agent swaps its `.claude` symlink for a
+            # real dir gets classified as a profile session on respawn.
+            # That mis-classification only ever REMOVES mounts (workspace
+            # root withheld) — never adds privilege — and a fresh chat
+            # starts from a clean prepare_session_dir, so it self-corrects.
+            #
             # The allowlist is NEVER inferred by scanning the session dir:
             # /work is agent-writable, so a symlink the previous run planted
             # (e.g. `snapshots` re-pointed at the workspace `.claude`) would

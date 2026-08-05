@@ -1633,13 +1633,16 @@ async function chatReadinessLoad() {
       apps_runner_token: "APPS_RUNNER_TOKEN",
       chat_docker_image: "chat.docker_image",
     };
-    // With chat enabled, hide rows that the active provider neither requires
-    // nor has set (an e2b operator doesn't care about the docker credential
-    // and vice versa); with chat disabled nothing is "required", so show
-    // everything as setup guidance.
+    // Rows that echo plain config rather than secrets: they always carry a
+    // value (built-in defaults), so "set" is meaningless for them — show them
+    // only when the active provider actually requires them. Secret rows stay
+    // visible whenever set, so "you still have an E2B key configured" reads
+    // on a docker instance and vice versa. With chat disabled nothing is
+    // "required", so everything renders as setup guidance.
+    const CHAT_CONFIG_ROWS = new Set(["e2b_template_id", "chat_docker_image"]);
     const rows = Object.entries(s.secrets || {})
-      .map(([key, v]) => [CHAT_SECRET_LABELS[key] || key, v])
-      .filter(([, v]) => !s.enabled || v.required || v.set);
+      .filter(([key, v]) => !s.enabled || v.required || (v.set && !CHAT_CONFIG_ROWS.has(key)))
+      .map(([key, v]) => [CHAT_SECRET_LABELS[key] || key, v]);
     const overall = !s.enabled
       ? '<span style="color: #888;">chat disabled in instance.yaml</span>'
       : (s.ready

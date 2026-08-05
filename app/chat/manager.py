@@ -3387,10 +3387,10 @@ class ChatManager:
 
         Only providers that manage host-local resources implement
         ``list_sandboxes`` (the docker provider lists containers by ownership
-        label); for everyone else this is a no-op. A gateway that crashed
-        mid-session leaves its containers running with nothing left to reap
-        them — the paused-TTL sweep only sees rows, not leftovers whose row is
-        already gone.
+        label); for everyone else this is a no-op. The population this exists
+        for is containers with NO surviving row — e.g. a session that was
+        deleted, or refs a crashed gateway never persisted — which the
+        paused-TTL sweep can never see (it walks rows, not containers).
 
         Three guards against reaping something legitimate:
 
@@ -3398,8 +3398,13 @@ class ChatManager:
           ``_spawn_runner`` returns before ``set_sandbox_ref`` persists the
           reference, so a brand-new container legitimately has no row yet;
         - a chat this process is currently serving is skipped;
-        - a sandbox whose session row still points at it is skipped (that is
-          exactly the paused-and-resumable case).
+        - a sandbox whose session row still points at it is skipped — that is
+          the resumable case, deliberately including a session that was ACTIVE
+          when its gateway died: the next attach adopts the still-running
+          container via ``_resume_from_row``. The accepted cost is that such a
+          container lingers if its user never returns (it never pauses, so the
+          paused-TTL sweep never sees it either); a stale-ref TTL is the known
+          follow-up if that shows up in practice.
 
         Returns the number of sandboxes destroyed. Never raises.
         """
