@@ -275,13 +275,24 @@ def sandbox_up(name: str, payload: dict = Body(...), x_runner_token: str | None 
     volumes = _validate_mounts(spec.get("mounts") or [])
 
     network = str(spec.get("network") or "")
-    if network and not client.networks.list(names=[network]):
-        net_kwargs: dict = {"driver": "bridge"}
-        if spec.get("internal_network"):
-            # `internal` bridges have no route off the host: the sandbox can
-            # only reach containers attached to the same network.
-            net_kwargs["internal"] = True
-        client.networks.create(network, **net_kwargs)
+    if network:
+        existing_nets = client.networks.list(names=[network])
+        if not existing_nets:
+            net_kwargs: dict = {"driver": "bridge"}
+            if spec.get("internal_network"):
+                # `internal` bridges have no route off the host: the sandbox
+                # can only reach containers attached to the same network.
+                net_kwargs["internal"] = True
+            client.networks.create(network, **net_kwargs)
+        elif spec.get("internal_network"):
+            # The isolation must hold when the network already exists too — a
+            # same-named non-internal bridge (pre-created by an operator, or
+            # left by an older version) would silently hand a no-egress
+            # sandbox full internet access. Fail closed; the operator removes
+            # or renames the conflicting network.
+            attrs = getattr(existing_nets[0], "attrs", None) or {}
+            if not attrs.get("Internal"):
+                raise HTTPException(status_code=400, detail="network_not_internal")
 
     old = _api()._container(name)
     if old is not None:

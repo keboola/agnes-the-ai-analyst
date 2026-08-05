@@ -163,7 +163,13 @@ class FakeDocker:
 
     def list(self, all=True, filters=None, names=None):
         if names is not None:
-            return [n for n in names if n in {net for net, _ in self.networks_created}]
+            from types import SimpleNamespace
+
+            return [
+                SimpleNamespace(name=n, attrs={"Internal": bool(kw.get("internal"))})
+                for n, kw in self.networks_created
+                if n in names
+            ]
         if filters and "label" in filters:
             want = filters["label"]
             want = [want] if isinstance(want, str) else list(want)
@@ -350,6 +356,27 @@ def test_up_internal_network_is_created_internal(client):
     assert created["agnes-chat-internal"]["internal"] is True
     _, kw = fake.run_calls[-1]
     assert kw["network"] == "agnes-chat-internal"
+
+
+def test_up_refuses_an_existing_non_internal_network_for_no_egress(client):
+    """docker_egress_mode: none must fail closed when a same-named network
+    already exists WITHOUT the internal flag (operator pre-created it, or an
+    older version left it) — silently joining it would hand a no-egress
+    sandbox full internet access."""
+    c, fake, tmp = client
+    fake.networks_created.append(("agnes-chat-internal", {"driver": "bridge"}))
+    r = _up(c, tmp, internal_network=True, network="agnes-chat-internal")
+    assert r.status_code == 400
+    assert r.json()["detail"] == "network_not_internal"
+
+
+def test_up_joins_an_existing_internal_network(client):
+    c, fake, tmp = client
+    fake.networks_created.append(("agnes-chat-internal", {"driver": "bridge", "internal": True}))
+    r = _up(c, tmp, internal_network=True, network="agnes-chat-internal")
+    assert r.status_code == 200
+    # Joined, not re-created.
+    assert len(fake.networks_created) == 1
 
 
 @pytest.mark.parametrize(

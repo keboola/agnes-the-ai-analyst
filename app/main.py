@@ -1530,6 +1530,22 @@ async def lifespan(app):
                 if app.state.chat_config.provider == "docker":
                     from app.chat.docker_provider import DockerSandboxProvider
 
+                    if _chat_coordination_backend() == "redis":
+                        # Not a refusal: single-host role-split (api/gateway/
+                        # worker on one daemon) is supported and looks the
+                        # same from here. What docs/cloud-chat.md rules out is
+                        # multi-HOST gateways — each host's daemon only sees
+                        # its own containers, so cross-gateway takeover cannot
+                        # destroy the other host's sandbox. Boot can't tell
+                        # the two apart; say it loudly and continue.
+                        logging.getLogger("app.main").warning(
+                            "provider=docker with coordination.backend=redis: "
+                            "multi-HOST gateways are unsupported with the docker "
+                            "provider (each host's daemon only sees its own "
+                            "containers; cross-gateway takeover cannot reach the "
+                            "other host's sandbox — see docs/cloud-chat.md "
+                            "Limitations). Single-host role-split is fine.",
+                        )
                     # No lifetime clamp: a local container has no platform cap,
                     # so chat.max_session_seconds (default 4 h) applies as
                     # configured and the idle/lifetime reapers enforce it.
