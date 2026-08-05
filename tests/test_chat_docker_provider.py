@@ -242,6 +242,38 @@ def test_profile_session_mounts_symlink_targets_not_the_workspace(tmp_path: Path
     asyncio.run(_run())
 
 
+def test_profile_session_ignores_agent_planted_symlinks(tmp_path: Path):
+    """/work is agent-writable, so the mount list must come from the fixed
+    allowlist WorkdirManager links — never from scanning the session dir. A
+    previous run that re-pointed `snapshots` at the workspace `.claude` (or
+    planted extra links) must not get those targets mounted on respawn."""
+
+    async def _run():
+        sdir = _session_dir(tmp_path)
+        ws = tmp_path / "users" / "a@b.com" / "workspace"
+        (ws / ".claude").mkdir()
+        (ws / "secrets").mkdir()
+        (ws / "scripts").mkdir()
+        # Profile marker.
+        (sdir / ".claude").mkdir()
+        (sdir / "CLAUDE.md").write_text("persona")
+        # Legitimate link WorkdirManager made:
+        (sdir / "scripts").symlink_to(ws / "scripts")
+        # Hostile links a previous sandbox run could have planted:
+        (sdir / "snapshots").symlink_to(ws / ".claude")  # allowlisted name, wrong target
+        (sdir / "evil").symlink_to(ws / "secrets")  # non-allowlisted name
+
+        client = _fake_client(FakeStream(hold=True))
+        prov = _provider(client)
+        handle = await prov.spawn(workdir=sdir, env=dict(ENV), argv=list(ARGV))
+        _, spec = client.up.await_args.args
+        sources = {m["source"] for m in spec["mounts"]}
+        assert sources == {str(sdir), str(ws / "scripts")}
+        await handle.kill(grace_sec=0.01)
+
+    asyncio.run(_run())
+
+
 def test_ephemeral_co_session_mounts_only_the_ephemeral_dir(tmp_path: Path):
     """SR-6: a co-drive session must never see a personal workspace — with
     bind mounts that invariant is structural (there is no second mount)."""

@@ -49,8 +49,21 @@ from app.chat.e2b_provider import SANDBOX_WORKDIR, _StreamReaderAdapter
 
 # Module-level so unit tests can ``patch("app.chat.docker_provider.SandboxRunnerClient")``.
 from app.chat.sandbox_runner_client import SandboxRunnerClient
+from app.chat.workdir import WORKSPACE_LINK_ENTRIES
 
 logger = logging.getLogger(__name__)
+
+#: Workspace entries a PROFILE session's sandbox may see, with their mount
+#: mode — a fixed allowlist derived from WorkdirManager's own link list
+#: (everything it links except the profile-owned ``.claude``/``CLAUDE.md``).
+#: ``snapshots`` stays writable (``agnes snapshot create`` lands there); the
+#: rest are read-only. Deliberately NOT discovered from the session dir —
+#: see the profile branch in ``DockerSandboxProvider._mounts``.
+_PROFILE_MOUNT_MODES = {
+    entry: ("rw" if entry == "snapshots" else "ro")
+    for entry in WORKSPACE_LINK_ENTRIES
+    if entry not in (".claude", "CLAUDE.md")
+}
 
 #: Container-name prefix; the sidecar refuses to address anything else.
 CONTAINER_NAME_PREFIX = "agnes-chatsbx-"
@@ -384,18 +397,28 @@ class DockerSandboxProvider:
             # private settings — mounting the whole workspace would hand it
             # the shared originals anyway (E2B kept this isolation
             # structurally: only the session dir was uploaded). Mount just
-            # the targets of the session dir's remaining data symlinks, so
+            # the fixed data entries WorkdirManager itself links, so
             # `snapshots` (writable — `agnes snapshot create` lands there)
             # and the read-only extras resolve while the workspace's
             # settings/hook files stay unreachable.
-            for entry in sorted(workdir.iterdir()):
-                if not entry.is_symlink():
+            #
+            # The allowlist is NEVER inferred by scanning the session dir:
+            # /work is agent-writable, so a symlink the previous run planted
+            # (e.g. `snapshots` re-pointed at the workspace `.claude`) would
+            # otherwise get itself mounted on the next respawn. Each entry is
+            # mounted only if its session-dir symlink still points exactly at
+            # the workspace path WorkdirManager linked.
+            for entry, mode in _PROFILE_MOUNT_MODES.items():
+                link = workdir / entry
+                expected = workspace / entry
+                if not link.is_symlink():
                     continue
-                target = entry.resolve()
-                if not str(target).startswith(str(workspace) + os.sep) and target != workspace:
+                try:
+                    if link.resolve() != expected.resolve() or not expected.exists():
+                        continue
+                except OSError:
                     continue
-                mode = "rw" if entry.name == "snapshots" else "ro"
-                mounts.append({"source": str(target), "target": str(target), "mode": mode})
+                mounts.append({"source": str(expected), "target": str(expected), "mode": mode})
             return mounts
         # Mounted at its own absolute path (not a fixed container path) so
         # the session dir's symlinks resolve without dereferencing.
