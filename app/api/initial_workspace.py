@@ -613,12 +613,16 @@ def _do_sync(conn: duckdb.DuckDBPyConnection, user_id: Optional[str]) -> dict:
     }
 
 
-def _install_prompt_renders_seed_file() -> bool:
-    """True when the install prompt is git-bound to the canonical seed
-    template path — the only configuration in which a `{token}` hit in
-    the synced seed actually reaches analysts. Conservative on a
-    meta-read failure: keep the hard error (a false block beats silently
-    shipping a token-embedding seed).
+_CANONICAL_INSTALL_TEMPLATE = "install-prompt/template.md.tmpl"
+
+
+def _install_prompt_bound_git_path() -> Optional[str]:
+    """Repo-relative seed path the install prompt actually renders, or
+    ``None`` when it renders no seed file (editor mode). ``bind-git``
+    accepts any repo-relative path, so the bound file is not always the
+    canonical template. Conservative on a meta-read failure: assume the
+    canonical path so its `{token}` hit stays a hard error (a false
+    block beats silently shipping a token-embedding seed).
     """
     try:
         from src.repositories import welcome_template_repo
@@ -626,11 +630,10 @@ def _install_prompt_renders_seed_file() -> bool:
         meta = welcome_template_repo().get_meta()
     except Exception:
         logger.exception("render dry-run: install prompt meta read failed")
-        return True
+        return _CANONICAL_INSTALL_TEMPLATE
     if meta.get("source_mode") != "git":
-        return False
-    bound = meta.get("git_path") or "install-prompt/template.md.tmpl"
-    return bound == "install-prompt/template.md.tmpl"
+        return None
+    return meta.get("git_path") or _CANONICAL_INSTALL_TEMPLATE
 
 
 def _compute_render_dry_run() -> dict:
@@ -655,8 +658,10 @@ def _compute_render_dry_run() -> dict:
         from src.connectors_manifest import load_manifest
         from src.initial_workspace import is_configured, resolve_seed_file
 
+        bound_git_path = _install_prompt_bound_git_path()
+
         # Scaffolding tier — IWT clone first, bundled fallback.
-        template = resolve_seed_file("install-prompt/template.md.tmpl")
+        template = resolve_seed_file(_CANONICAL_INSTALL_TEMPLATE)
         if template is not None:
             content, source = template
             summary["scaffolding_source"] = source
@@ -665,11 +670,13 @@ def _compute_render_dry_run() -> dict:
             # file, but a later `Sync now` can move an already-bound seed
             # onto content that embeds it. Rendered literally, the old
             # `{token}` heredoc would write the string `{token}` into every
-            # analyst's ~/.agnes/token and 401 every `agnes init`. Only a
-            # git-bound install prompt renders this file, though — for an
-            # editor-mode prompt or a bundled-fallback hit a legacy IWT
-            # template would hard-error unrelated syncs, so those degrade
-            # to a warning (the bind-git flip re-rejects `{token}` anyway).
+            # analyst's ~/.agnes/token and 401 every `agnes init`. Only an
+            # install prompt git-bound to THIS path renders this file,
+            # though — for an editor-mode prompt, a prompt bound to a
+            # different path (scanned separately below), or a
+            # bundled-fallback hit, a legacy IWT template would hard-error
+            # unrelated syncs, so those degrade to a warning (the bind-git
+            # flip re-rejects `{token}` anyway).
             if "{token}" in content:
                 msg = (
                     "install-prompt/template.md.tmpl references the retired "
@@ -678,7 +685,10 @@ def _compute_render_dry_run() -> dict:
                     "by the install guide and read via `agnes init "
                     "--token-file`)"
                 )
-                if source == "iwt" and _install_prompt_renders_seed_file():
+                if (
+                    source == "iwt"
+                    and bound_git_path == _CANONICAL_INSTALL_TEMPLATE
+                ):
                     summary["errors"].append(msg)
                     summary["ok"] = False
                 else:
@@ -697,6 +707,34 @@ def _compute_render_dry_run() -> dict:
                 "and bundled seed — install prompt will not render"
             )
             summary["ok"] = False
+
+        # A git-bound install prompt can point at ANY repo-relative path
+        # (bind-git doesn't restrict it to the canonical template) — the
+        # scan above never inspects such a file even though it is the one
+        # analysts actually get. Scan the bound file too, same escalation
+        # rule: hard error only for operator-synced (IWT) content.
+        if (
+            bound_git_path is not None
+            and bound_git_path != _CANONICAL_INSTALL_TEMPLATE
+        ):
+            bound_file = resolve_seed_file(bound_git_path)
+            if bound_file is not None and "{token}" in bound_file[0]:
+                msg = (
+                    f"{bound_git_path} (git-bound to the install prompt) "
+                    "references the retired `{token}` placeholder — the "
+                    "install prompt must not embed the access token (it is "
+                    "saved to ~/.agnes/token by the install guide and read "
+                    "via `agnes init --token-file`)"
+                )
+                if bound_file[1] == "iwt":
+                    summary["errors"].append(msg)
+                    summary["ok"] = False
+                else:
+                    summary["warnings"].append(
+                        msg
+                        + " (warning only: resolved from the bundled seed, "
+                        "not the operator's synced clone)"
+                    )
 
         # Manifest tier — same resolution, scoped to connector-*/SKILL.md.
         manifest = load_manifest()

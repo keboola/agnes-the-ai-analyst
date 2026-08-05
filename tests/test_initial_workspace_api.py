@@ -1034,6 +1034,64 @@ def test_dry_run_warns_on_token_placeholder_in_bundled_fallback(monkeypatch):
     assert any("{token}" in w for w in summary["warnings"]), summary["warnings"]
 
 
+def test_dry_run_errors_on_token_placeholder_in_non_canonical_bound_file(monkeypatch):
+    """bind-git accepts any repo-relative path — a prompt bound to a
+    non-canonical file renders THAT file, so the dry-run must scan it
+    too; a `{token}` hit there is the same hard error as the canonical
+    git-bound case."""
+    import src.initial_workspace as iw
+
+    from app.api import initial_workspace as api
+
+    def fake_resolve(rel):
+        if rel == "install-prompt/custom.md.tmpl":
+            return ("echo {token} > ~/.agnes/token", "iwt")
+        return ("clean canonical template", "iwt")
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    monkeypatch.setattr(
+        "src.repositories.welcome_template_repo",
+        lambda: _FakePromptMetaRepo(
+            {"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}
+        ),
+    )
+    summary = api._compute_render_dry_run()
+    assert summary["ok"] is False
+    assert any(
+        "install-prompt/custom.md.tmpl" in e and "{token}" in e
+        for e in summary["errors"]
+    ), summary["errors"]
+
+
+def test_dry_run_canonical_token_hit_downgrades_when_bound_elsewhere(monkeypatch):
+    """A legacy canonical template must not hard-error a sync when the
+    install prompt is git-bound to a different (clean) file — analysts
+    never see the canonical file in that configuration, so it stays a
+    warning-only probe."""
+    import src.initial_workspace as iw
+
+    from app.api import initial_workspace as api
+
+    def fake_resolve(rel):
+        if rel == "install-prompt/custom.md.tmpl":
+            return ("clean bound template", "iwt")
+        return ("echo {token} > ~/.agnes/token", "iwt")
+
+    monkeypatch.setattr("src.connectors_manifest.load_manifest", lambda: [])
+    monkeypatch.setattr(iw, "resolve_seed_file", fake_resolve)
+    monkeypatch.setattr(
+        "src.repositories.welcome_template_repo",
+        lambda: _FakePromptMetaRepo(
+            {"source_mode": "git", "git_path": "install-prompt/custom.md.tmpl"}
+        ),
+    )
+    summary = api._compute_render_dry_run()
+    assert summary["ok"] is True
+    assert summary["errors"] == []
+    assert any("{token}" in w for w in summary["warnings"]), summary["warnings"]
+
+
 def test_dry_run_warns_on_optional_connector_missing_body(monkeypatch):
     from app.api import initial_workspace as api
 
