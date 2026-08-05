@@ -290,8 +290,14 @@ class EgressProxy:
                 remaining -= len(chunk)
                 up_w.write(chunk)
             await up_w.drain()
-            if up_w.can_write_eof():
-                up_w.write_eof()
+            # Deliberately NOT write_eof() here. Simply never reading from the
+            # client again gives the same guarantee — nothing after this
+            # request can reach the upstream — without half-closing the socket.
+            # A TCP half-close after a request is legal but uncommon, and some
+            # origin servers and load balancers treat the FIN as an abort and
+            # close without answering (Devin Review on #1148). The upstream
+            # already knows where the request ends: Content-Length bounds the
+            # body and `Connection: close` tells it not to expect another.
             await _pipe(up_r, writer)
         finally:
             _close_all(up_w, writer)
