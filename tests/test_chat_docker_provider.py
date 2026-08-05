@@ -210,6 +210,38 @@ def test_spawn_falls_back_to_the_image_user_for_root_owned_dirs(tmp_path: Path, 
     asyncio.run(_run())
 
 
+def test_profile_session_mounts_symlink_targets_not_the_workspace(tmp_path: Path):
+    """A profile session's `.claude`/`CLAUDE.md` are COPIES (WorkdirManager
+    materializes them precisely so the profiled agent cannot write the shared
+    originals). Mounting the whole workspace would hand those originals back
+    read-write — E2B kept this isolation structurally by uploading only the
+    session dir. Only the data symlink targets may be mounted: snapshots
+    writable (`agnes snapshot create` lands there), the rest read-only."""
+
+    async def _run():
+        sdir = _session_dir(tmp_path)
+        ws = tmp_path / "users" / "a@b.com" / "workspace"
+        for name in ("snapshots", "scripts"):
+            (ws / name).mkdir()
+            (sdir / name).symlink_to(ws / name)
+        # The profile marker: a REAL .claude dir (copied), not a symlink.
+        (sdir / ".claude").mkdir()
+        (sdir / "CLAUDE.md").write_text("persona")
+
+        client = _fake_client(FakeStream(hold=True))
+        prov = _provider(client)
+        handle = await prov.spawn(workdir=sdir, env=dict(ENV), argv=list(ARGV))
+        _, spec = client.up.await_args.args
+        by_source = {m["source"]: m for m in spec["mounts"]}
+        assert str(ws) not in by_source, "the shared workspace root must not be mounted for a profile session"
+        assert by_source[str(ws / "snapshots")]["mode"] == "rw"
+        assert by_source[str(ws / "scripts")]["mode"] == "ro"
+        assert by_source[str(sdir)]["target"] == "/work"
+        await handle.kill(grace_sec=0.01)
+
+    asyncio.run(_run())
+
+
 def test_ephemeral_co_session_mounts_only_the_ephemeral_dir(tmp_path: Path):
     """SR-6: a co-drive session must never see a personal workspace — with
     bind mounts that invariant is structural (there is no second mount)."""

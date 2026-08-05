@@ -365,7 +365,7 @@ def test_up_rejects_unsafe_mount_sources(client, tmp_path, source):
 
 def test_up_rejects_too_many_mounts(client):
     c, _, tmp = client
-    mounts = [{"source": f"{tmp}/a{i}", "target": f"/m{i}", "mode": "rw"} for i in range(5)]
+    mounts = [{"source": f"{tmp}/a{i}", "target": f"/m{i}", "mode": "rw"} for i in range(7)]
     r = _up(c, tmp, mounts=mounts)
     assert r.status_code == 400
     assert r.json()["detail"] == "bad_mount"

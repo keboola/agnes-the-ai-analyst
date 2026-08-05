@@ -334,8 +334,13 @@ all deliberate:
   `${DATA_DIR}/users/<email>/workspace`. That includes agent-created
   `node_modules` / `.venv` directories, which the upload path used to filter out.
 - **Concurrent sessions of the same user share that workspace**
-  (`chat.concurrency_per_user`, default 3). Agent-profile sessions are
-  unaffected — they already copy `.claude`/`CLAUDE.md` instead of symlinking.
+  (`chat.concurrency_per_user`, default 3). Agent-profile sessions do NOT get
+  the shared workspace mount at all: their `.claude`/`CLAUDE.md` are private
+  copies, and mounting the workspace root would hand the profiled agent the
+  shared originals anyway — so only the targets of the session's data
+  symlinks are mounted (`snapshots` read-write, `scripts`/`scaffolds`/
+  `CLAUDE.local.md` read-only), preserving the isolation E2B provided
+  structurally by uploading nothing but the session dir.
 - **Co-drive sessions mount only their ephemeral directory** — no personal
   workspace is mounted at all, so "never persist back" holds structurally.
 

@@ -58,9 +58,12 @@ _SANDBOX_NAME_RE = re.compile(rf"^{re.escape(SANDBOX_NAME_PREFIX)}[A-Za-z0-9][A-
 OWNER_LABEL = "agnes.chat-sandbox"
 SESSION_LABEL = "agnes.chat-session"
 
-#: A chat sandbox needs exactly two binds (session dir + the user's workspace);
-#: anything beyond that is a malformed or hostile spec.
-_MAX_MOUNTS = 2
+#: A chat sandbox needs at most six binds: the session dir, plus EITHER the
+#: user's whole workspace (plain sessions) OR the individual data symlink
+#: targets a profile session is allowed to see (snapshots / scripts /
+#: scaffolds / CLAUDE.local.md — the settings originals stay unmounted).
+#: Anything beyond that is a malformed or hostile spec.
+_MAX_MOUNTS = 6
 _DENY_MOUNT_PREFIXES = ("/var/run", "/var/lib/docker", "/etc", "/proc", "/sys", "/dev", "/boot", "/root")
 
 #: Ceiling on a single ``op=read`` tar so a runaway file in the outputs dir
@@ -492,14 +495,26 @@ async def sandbox_stream(
     Reader errors end the stream (the response has already started, so there
     is no status code left to change).
     """
-    _guard(name, x_runner_token)
-    container = _require_container(name)
-    # The raw hijacked connection (rather than `attach(stream=True)`'s
-    # generator): holding the socket directly is what lets teardown unblock
-    # the reader thread with a shutdown(). Frames are read through the
-    # connection's BufferedReader, never the raw socket — see
-    # _attach_buffered_reader for why raw reads lose replayed frames.
-    sock = container.attach_socket(params={"stdout": 1, "stderr": 1, "stream": 1, "logs": 1 if replay else 0})
+    # Token + name checks are pure computation and stay inline; everything
+    # that talks to the daemon (client handshake, container lookup, the
+    # attach POST + hijack) runs on a worker thread — this handler is async
+    # (so its streaming side can live off the shared pool), and a blocking
+    # SDK call here would stall the sidecar's whole event loop, freezing
+    # `/apps/*` and every other request while the daemon answers.
+    _api()._check_token(x_runner_token)
+    if not _SANDBOX_NAME_RE.match(name or ""):
+        raise HTTPException(status_code=400, detail="bad_sandbox_name")
+
+    def _open_attach():
+        container = _require_container(name)
+        # The raw hijacked connection (rather than `attach(stream=True)`'s
+        # generator): holding the socket directly is what lets teardown
+        # unblock the reader thread with a shutdown(). Frames are read
+        # through the connection's BufferedReader, never the raw socket —
+        # see _attach_buffered_reader for why raw reads lose replayed frames.
+        return container.attach_socket(params={"stdout": 1, "stderr": 1, "stream": 1, "logs": 1 if replay else 0})
+
+    sock = await asyncio.to_thread(_open_attach)
     fp = _attach_buffered_reader(sock)
 
     loop = asyncio.get_running_loop()

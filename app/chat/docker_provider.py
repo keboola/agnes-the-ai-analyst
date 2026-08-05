@@ -376,10 +376,30 @@ class DockerSandboxProvider:
     def _mounts(self, workdir: Path) -> list[dict]:
         mounts = [{"source": str(workdir), "target": SANDBOX_WORKDIR, "mode": "rw"}]
         workspace = self._workspace_dir(workdir)
-        if workspace is not None:
-            # Mounted at its own absolute path (not a fixed container path) so
-            # the session dir's symlinks resolve without dereferencing.
-            mounts.append({"source": str(workspace), "target": str(workspace), "mode": "rw"})
+        if workspace is None:
+            return mounts
+        if not (workdir / ".claude").is_symlink() and (workdir / ".claude").is_dir():
+            # Profile session: WorkdirManager COPIED `.claude`/`CLAUDE.md`
+            # into the session dir precisely so the profiled agent works on
+            # private settings — mounting the whole workspace would hand it
+            # the shared originals anyway (E2B kept this isolation
+            # structurally: only the session dir was uploaded). Mount just
+            # the targets of the session dir's remaining data symlinks, so
+            # `snapshots` (writable — `agnes snapshot create` lands there)
+            # and the read-only extras resolve while the workspace's
+            # settings/hook files stay unreachable.
+            for entry in sorted(workdir.iterdir()):
+                if not entry.is_symlink():
+                    continue
+                target = entry.resolve()
+                if not str(target).startswith(str(workspace) + os.sep) and target != workspace:
+                    continue
+                mode = "rw" if entry.name == "snapshots" else "ro"
+                mounts.append({"source": str(target), "target": str(target), "mode": mode})
+            return mounts
+        # Mounted at its own absolute path (not a fixed container path) so
+        # the session dir's symlinks resolve without dereferencing.
+        mounts.append({"source": str(workspace), "target": str(workspace), "mode": "rw"})
         return mounts
 
     def _stage_runner(self, workdir: Path) -> None:
