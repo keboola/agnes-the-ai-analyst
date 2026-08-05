@@ -239,6 +239,7 @@ def _chat_harness_ok(chat_config) -> bool:
     )
     return False
 
+
 def _chat_docker_rails_url_ok(chat_config) -> bool:
     """Refuse ``chat.provider=docker`` without a container-reachable rails URL.
 
@@ -303,7 +304,11 @@ async def _chat_docker_sandbox_ok(chat_config) -> bool:
 
     image = getattr(chat_config, "docker_image", "") or ""
     try:
-        result = await SandboxRunnerClient().probe(image)
+        # Short deadline: this runs inline in the lifespan, and the client's
+        # 60 s default would stall the whole server start on a black-holing
+        # sidecar address — long enough to trip container health checks.
+        # 8 s matches the admin test-connections probe for the same sidecar.
+        result = await SandboxRunnerClient(timeout=8.0).probe(image)
     except Exception as exc:  # noqa: BLE001 — classify, never break the lifespan
         logging.getLogger("app.main").error(
             "chat.enabled=true with provider=docker but the apps-runner sidecar "
@@ -1557,8 +1562,7 @@ async def lifespan(app):
                     else "multi-worker/replica (coordination.backend=redis)"
                 )
                 _chat_sandbox_desc = (
-                    f"image={app.state.chat_config.docker_image}, "
-                    f"egress={app.state.chat_config.docker_egress_mode}"
+                    f"image={app.state.chat_config.docker_image}, egress={app.state.chat_config.docker_egress_mode}"
                     if app.state.chat_config.provider == "docker"
                     else f"template={app.state.chat_config.e2b_template_id}"
                 )

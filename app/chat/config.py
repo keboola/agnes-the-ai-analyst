@@ -253,7 +253,10 @@ def _parse_on_detach(raw: dict) -> str:
     if on_detach not in ("pause", "kill"):
         if on_detach:
             logger.warning("unknown chat.on_detach %r — falling back to 'pause'", on_detach)
-        if "e2b_kill_on_ws_disconnect" in raw and bool(raw["e2b_kill_on_ws_disconnect"]):
+        # Same parser as the ChatConfig echo of this key — plain truthiness
+        # here would read the string "no" as kill-enabled while the config
+        # surface reports it disabled.
+        if coerce_flag_value(raw.get("e2b_kill_on_ws_disconnect"), default=False):
             logger.warning("chat.e2b_kill_on_ws_disconnect is deprecated; use chat.on_detach: kill")
             on_detach = "kill"
         else:

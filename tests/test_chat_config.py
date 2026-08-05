@@ -140,6 +140,22 @@ def test_blank_numeric_and_bool_keys_fall_back_to_their_defaults(tmp_path: Path,
     assert "rate_messages_per_hour" in caplog.text
 
 
+def test_textual_kill_flag_drives_on_detach_and_echo_identically(tmp_path: Path):
+    """Both readers of the deprecated kill flag must share one parser: with
+    plain truthiness in _parse_on_detach, `"no"` was echoed as disabled while
+    still switching on_detach to kill."""
+    y = tmp_path / "instance.yaml"
+    y.write_text('chat:\n  enabled: true\n  e2b_kill_on_ws_disconnect: "no"\n')
+    cfg = load_chat_config(y)
+    assert cfg.e2b_kill_on_ws_disconnect is False
+    assert cfg.on_detach == "pause"
+
+    y.write_text('chat:\n  enabled: true\n  e2b_kill_on_ws_disconnect: "yes"\n')
+    cfg = load_chat_config(y)
+    assert cfg.e2b_kill_on_ws_disconnect is True
+    assert cfg.on_detach == "kill"
+
+
 def test_legacy_sandbox_uid_knob_is_dropped(tmp_path: Path):
     """The deprecated sandbox_uid / require_isolation keys are silently
     ignored — the ChatConfig dataclass no longer exposes them and the
