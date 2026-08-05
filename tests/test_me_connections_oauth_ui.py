@@ -466,3 +466,42 @@ def test_revoked_analyst_is_told_they_lost_access_not_that_tools_are_missing(see
     assert "No tools are enabled for this source yet" not in card
     # ...and no control that could only 403 (PUT my-secret is grant-gated).
     assert 'data-action="save"' not in card
+    # Every control whose endpoint calls _require_source_grant unconditionally
+    # is gone; the own-credential carve-out (Disconnect) is what keeps the card
+    # useful. This same dead-end was reported three times on this PR — once per
+    # control — so assert the whole set, not the one last pointed at.
+    assert 'data-action="oauth-connect"' not in card
+    assert 'data-action="test"' not in card
+    assert 'data-action="oauth-disconnect"' in card
+
+
+def test_try_again_link_is_withheld_when_the_retry_would_fail_again(seeded_app):
+    """`retry` was validated against the listed cards on the reasoning that
+    listed implies connectable. This PR broke that premise by listing
+    stored-but-ungranted sources, so a not_granted failure offered a "Try
+    again" that could only fail again."""
+    from src.db import get_system_db
+    from src.repositories import mcp_user_oauth_tokens_repo
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_oauth_retry",
+        name="src_oauth_retry",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_retry", "analyst1", "atok")
+
+    r = seeded_app["client"].get(
+        "/me/connections",
+        params={"connect_error": "not_granted", "retry": "src_oauth_retry"},
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+
+    assert r.status_code == 200
+    assert "Connect failed" in r.text
+    assert "/api/mcp/sources/src_oauth_retry/oauth/authorize" not in r.text

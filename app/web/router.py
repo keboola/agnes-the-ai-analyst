@@ -1175,6 +1175,14 @@ async def me_connections_page(
                 "stored": stored,
                 "has_tools": src["id"] in granted_ids,
                 "source_has_tools": src["id"] in sourced_ids,
+                # One definition for "this viewer has authority here", used by
+                # every control whose endpoint calls `_require_source_grant`
+                # unconditionally — Connect/Reconnect, Test, and the paste
+                # field + Save. Deciding that per control is what let the same
+                # dead-end bug be reported three separate times on this PR;
+                # Disconnect/Remove stay outside it because their own-credential
+                # carve-out means they work without a grant.
+                "can_act": src["id"] in granted_ids or caller_is_admin,
                 "updated_at": updated_at,
                 "expires_at": expires_at,
             }
@@ -1200,11 +1208,13 @@ async def me_connections_page(
             # Show the human name, not a UUID (UX round on #1130).
             connected_name = (src_row or {}).get("name") or connected
     # `retry` names the source a failed connect can be retried against —
-    # rendered as a one-click "Try again" link. Validated against the
-    # listed cards, so a crafted link can only ever point at a source the
-    # caller could legitimately connect anyway.
+    # rendered as a one-click "Try again" link. Validated against the cards
+    # the caller can actually authorize against, NOT merely the listed ones:
+    # since this page started showing a card for a stored-but-ungranted
+    # source, "listed" stopped implying "connectable", and retrying a
+    # not_granted failure would just fail again.
     retry = request.query_params.get("retry") or ""
-    if not error_code or retry not in {s["id"] for s in sources}:
+    if not error_code or retry not in {s["id"] for s in sources if s["can_act"]}:
         retry = ""
     ctx = _build_context(
         request,

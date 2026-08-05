@@ -96,10 +96,16 @@
 
     {% if s.auth_kind == "oauth" %}
     <div class="conn-row">
+      {# GET .../oauth/authorize calls _require_source_grant too, so on an
+         ungranted card this anchor only bounces back with
+         connect_error=not_granted. An explained dead end is still a dead
+         end (Devin Review on #1167). #}
+      {% if s.can_act %}
       <a class="btn btn-primary btn-sm" href="/api/mcp/sources/{{ s.id }}/oauth/authorize" data-action="oauth-connect">{% if s.stored %}Reconnect{% else %}Connect with {{ s.name }}{% endif %}</a>
+      {% endif %}
       {# Test forwards to the upstream and is grant-gated server-side — don't
          render a button that can only 403 (Devin Review on #1167). #}
-      {% if s.has_secret and (s.has_tools or is_admin) %}
+      {% if s.has_secret and s.can_act %}
       <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
       {% endif %}
       {# Disconnect keys off `stored`, not `has_secret` — a lapsed connection
@@ -115,11 +121,11 @@
          revoked card the paste field and Save could only ever produce a bare
          "Save failed (403)". Remove keeps rendering — the own-credential
          carve-out is what makes the card worth showing (Devin Review on #1167). #}
-      {% if s.has_tools or is_admin %}
+      {% if s.can_act %}
       <input type="password" autocomplete="off" placeholder="Paste your token" data-token />
       <button type="button" class="btn btn-primary btn-sm" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
       {% endif %}
-      {% if s.has_secret and (s.has_tools or is_admin) %}
+      {% if s.has_secret and s.can_act %}
       <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
       {% endif %}
       {% if s.has_secret %}
