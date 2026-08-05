@@ -30,6 +30,11 @@ class FakeSock:
         self.closed = True
 
 
+def _mux(stream_id: int, data: bytes) -> bytes:
+    """One frame of Docker's non-tty attach multiplexing (8-byte header)."""
+    return bytes([stream_id, 0, 0, 0]) + len(data).to_bytes(4, "big") + data
+
+
 class FakeSandboxContainer:
     def __init__(self, name, status="running", attrs=None):
         self.name, self.status = name, status
@@ -58,15 +63,25 @@ class FakeSandboxContainer:
         self.status = "running"
 
     # --- streams -------------------------------------------------------
-    def attach(self, **kw):
-        assert kw.get("demux") is True
-        assert kw.get("stream") is True
-        self.attach_kwargs = kw
-        return iter(self.attach_chunks)
-
     def attach_socket(self, params=None):
         self.attach_params = params
-        return self.sock
+        if params and params.get("stdin"):
+            return self.sock
+        # Output attach: hand back a REAL socket pre-loaded with the muxed
+        # frames — the handler's reader thread drives it through docker-py's
+        # own `frames_iter`, which select()s on a live fd before every recv.
+        import socket as socketlib
+
+        writer, reader = socketlib.socketpair()
+        payload = b""
+        for out, err in self.attach_chunks:
+            if out:
+                payload += _mux(1, out)
+            if err:
+                payload += _mux(2, err)
+        writer.sendall(payload)
+        writer.close()
+        return reader
 
     # --- files ---------------------------------------------------------
     def put_archive(self, path, data):
@@ -285,6 +300,10 @@ def test_up_runs_hardened_container(client):
     assert kw["cap_drop"] == ["ALL"]
     assert kw["security_opt"] == ["no-new-privileges:true"]
     assert kw["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+    # docker-init as PID 1: the runner spawns subprocesses constantly and
+    # Python won't reap re-parented grandchildren — without an init, zombies
+    # accumulate against the pids limit for the session's lifetime.
+    assert kw["init"] is True
     # A crashed runner must never be auto-restarted by Docker — the manager
     # owns respawn (crash_count / restore-context).
     assert "restart_policy" not in kw or kw["restart_policy"] is None
@@ -380,10 +399,10 @@ def test_stream_replays_only_when_asked(client):
     cont = fake.by_name[NAME]
 
     c.get(f"/sandboxes/{NAME}/stream", headers={"X-Runner-Token": "tok"})
-    assert cont.attach_kwargs["logs"] is False
+    assert cont.attach_params["logs"] == 0
 
     c.get(f"/sandboxes/{NAME}/stream", headers={"X-Runner-Token": "tok"}, params={"replay": "true"})
-    assert cont.attach_kwargs["logs"] is True
+    assert cont.attach_params["logs"] == 1
 
 
 def test_stream_absent_container_is_404(client):
@@ -437,7 +456,10 @@ def test_write_file_puts_a_tar_rooted_at_slash(client):
         assert tar.extractfile("tmp/agnes-cli/agnes.whl").read() == b"WHEEL"
 
 
-def test_read_file_returns_base64_content(client):
+def test_read_file_streams_raw_content(client):
+    """op=read answers with the member's raw bytes (streamed, not a base64
+    JSON envelope) so the sidecar never holds content × encoding copies in
+    memory — it runs under a small cgroup limit next to the data-app API."""
     c, fake, tmp = client
     _up(c, tmp)
     cont = fake.by_name[NAME]
@@ -448,7 +470,48 @@ def test_read_file_returns_base64_content(client):
         params={"path": "/work/outputs/report.csv", "op": "read"},
     )
     assert r.status_code == 200
-    assert base64.b64decode(r.json()["content_b64"]) == b"a,b\n1,2\n"
+    assert r.headers["content-type"].startswith("application/octet-stream")
+    assert r.content == b"a,b\n1,2\n"
+
+
+def test_read_file_past_the_ceiling_is_413(client, monkeypatch):
+    from services.apps_runner import sandbox_api
+
+    monkeypatch.setattr(sandbox_api, "_MAX_FILE_READ_BYTES", 64)
+    c, fake, tmp = client
+    _up(c, tmp)
+    cont = fake.by_name[NAME]
+    cont.archives["/work/outputs/huge.bin"] = _tar_bytes({"huge.bin": b"x" * 4096})
+    r = c.get(
+        f"/sandboxes/{NAME}/files",
+        headers={"X-Runner-Token": "tok"},
+        params={"path": "/work/outputs/huge.bin", "op": "read"},
+    )
+    assert r.status_code == 413
+    assert r.json()["detail"] == "file_too_large"
+
+
+def test_list_is_not_capped_by_the_read_ceiling(client, monkeypatch):
+    """A directory's archive is its whole recursive subtree; the listing
+    parses it as a stream, so a subtree bigger than the read cap must list
+    fine instead of 413-aborting the artifact harvest."""
+    from services.apps_runner import sandbox_api
+
+    monkeypatch.setattr(sandbox_api, "_MAX_FILE_READ_BYTES", 64)
+    c, fake, tmp = client
+    _up(c, tmp)
+    cont = fake.by_name[NAME]
+    cont.archives["/work/outputs"] = _tar_bytes(
+        {"outputs/big.bin": b"x" * 4096, "outputs/small.txt": b"y"},
+        dirs=("outputs/",),
+    )
+    r = c.get(
+        f"/sandboxes/{NAME}/files",
+        headers={"X-Runner-Token": "tok"},
+        params={"path": "/work/outputs", "op": "list"},
+    )
+    assert r.status_code == 200
+    assert {e["name"] for e in r.json()["entries"]} == {"big.bin", "small.txt"}
 
 
 def test_list_dir_returns_entries(client):
@@ -556,6 +619,29 @@ def test_list_sandboxes_filters_by_ownership_label(client):
     assert rows[0]["chat_id"] == "chat1"
     assert rows[0]["status"] == "running"
     assert rows[0]["age_seconds"] >= 0
+
+
+@pytest.mark.parametrize("digits", list(range(10)))
+def test_age_seconds_survives_every_rfc3339nano_fraction_length(digits):
+    """Go's RFC3339Nano trims trailing zeros, so `Created` carries anywhere
+    from 0 to 9 fractional digits. A previous normalizer borrowed offset
+    digits into short fractions (3–5 digits), parsed 0.0 forever, and the
+    orphan sweep then read that container as brand new on every tick."""
+    from services.apps_runner.sandbox_api import _age_seconds
+
+    frac = "" if digits == 0 else "." + "123456789"[:digits]
+    for suffix in ("Z", "+00:00"):
+        container = FakeSandboxContainer(NAME, attrs={"Created": f"2026-08-01T10:00:00{frac}{suffix}"})
+        assert _age_seconds(container) > 0.0, f"fraction {frac!r}{suffix} parsed as brand new"
+
+
+def test_age_seconds_unparseable_is_zero():
+    """0.0 is the fail-safe: the sweep skips young containers, so a parse
+    failure can never cause a reap."""
+    from services.apps_runner.sandbox_api import _age_seconds
+
+    assert _age_seconds(FakeSandboxContainer(NAME, attrs={"Created": "not-a-date"})) == 0.0
+    assert _age_seconds(FakeSandboxContainer(NAME, attrs={"State": {}})) == 0.0
 
 
 def test_probe_reports_daemon_and_image(client):

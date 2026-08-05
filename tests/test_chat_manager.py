@@ -2200,6 +2200,13 @@ def test_spawn_stages_wheel_and_context_for_a_bind_mounting_provider(manager: Ch
     assert SANDBOX_WHEEL_READY in staged, "the wheel-ready sentinel must be staged for every provider"
     assert SANDBOX_CONTEXT_RESTORE in staged
     assert "earlier answer" in str(staged[SANDBOX_CONTEXT_RESTORE])
+    # The context must land BEFORE the wheel-ready sentinel: that sentinel is
+    # the only pre-boot barrier a bind-mounting provider has (the workspace
+    # wait is skipped), and the runner reads the context strictly after its
+    # sentinel-gated install — staged later, a restarted session could start
+    # answering without its history.
+    paths = list(staged)
+    assert paths.index(SANDBOX_CONTEXT_RESTORE) < paths.index(SANDBOX_WHEEL_READY)
     # ...and only the workspace tarball stays behind the syncs_workspace gate.
     assert pushed == []
     assert captured["env"]["AGNES_WORKSPACE_SYNC_SENTINEL"] == ""
@@ -2208,7 +2215,9 @@ def test_spawn_stages_wheel_and_context_for_a_bind_mounting_provider(manager: Ch
 def test_spawn_stages_wheel_and_context_through_the_e2b_files_api(manager: ChatManager, tmp_path, monkeypatch):
     """E2B regression for the same split: with the REAL provider the wheel,
     its sentinel and the restore-context still land through
-    ``sandbox.files.write``, at the same paths, in the same order as before."""
+    ``sandbox.files.write``, at the same paths — restore-context first, so the
+    wheel's ``.ready`` sentinel guarantees it on every provider (under E2B the
+    trailing workspace-ready sentinel is a second barrier)."""
     monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
 
     from app.chat.e2b_provider import E2BProvider
@@ -2254,9 +2263,9 @@ def test_spawn_stages_wheel_and_context_through_the_e2b_files_api(manager: ChatM
     asyncio.run(_run())
 
     assert written == [
+        SANDBOX_CONTEXT_RESTORE,
         f"{SANDBOX_WHEEL_DIR}/{wheel.name}",
         SANDBOX_WHEEL_READY,
-        SANDBOX_CONTEXT_RESTORE,
         SANDBOX_WORKSPACE_READY,
     ]
 
@@ -3635,7 +3644,10 @@ def test_orphan_sweep_keeps_a_sandbox_its_row_still_points_at(manager: ChatManag
         assert await manager.reap_orphan_sandboxes() == 0
         assert destroyed == []
 
+    asyncio.run(_run())
 
+
+# ---------------------------------------------------------------------------
 # Approval-decision routing (review follow-ups on #1145)
 # ---------------------------------------------------------------------------
 
@@ -3672,6 +3684,8 @@ def test_orphan_sweep_skips_young_sandboxes(manager: ChatManager):
         )
         assert await manager.reap_orphan_sandboxes() == 0
         assert destroyed == []
+
+    asyncio.run(_run())
 
 
 def test_approval_decision_dropped_when_no_runner_and_no_owner(manager: ChatManager):
@@ -3712,6 +3726,8 @@ def test_orphan_sweep_skips_sessions_this_process_serves(manager: ChatManager):
         )
         assert await manager.reap_orphan_sandboxes() == 0
         assert destroyed == []
+
+    asyncio.run(_run())
 
 
 def test_approval_decision_forwarded_to_remote_owner(manager: ChatManager):
@@ -3947,6 +3963,8 @@ def test_orphan_sweep_is_a_noop_for_providers_without_listing(manager: ChatManag
 
     async def _run():
         assert await manager.reap_orphan_sandboxes() == 0
+
+    asyncio.run(_run())
 
 
 def test_pending_approvals_live_outside_the_turn_buffer(manager: ChatManager):

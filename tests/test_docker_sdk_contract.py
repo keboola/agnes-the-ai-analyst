@@ -41,7 +41,7 @@ def test_containers_run_accepts_the_create_kwargs_the_sandbox_spec_sets(kwarg):
 
 @pytest.mark.parametrize(
     "kwarg",
-    ["mem_limit", "nano_cpus", "pids_limit", "cap_drop", "security_opt", "extra_hosts"],
+    ["mem_limit", "nano_cpus", "pids_limit", "cap_drop", "security_opt", "extra_hosts", "init"],
 )
 def test_containers_run_accepts_the_hardening_kwargs(kwarg):
     """The D7 container hardening — dropping any of these silently would widen
@@ -92,20 +92,22 @@ def test_run_kwargs_translate_into_the_expected_host_config():
     assert "networking_config" in args
 
 
-def test_attach_supports_demuxed_streaming():
-    """`sandbox_stream` calls `container.attach(stdout=True, stderr=True,
-    stream=True, logs=False, demux=True)` — demux is what keeps the runner's
+def test_attach_socket_supports_demuxed_streaming():
+    """`sandbox_stream` opens the raw hijacked socket (`attach_socket` with
+    stdout/stderr/stream/logs params — holding the socket directly is what
+    lets teardown unblock the reader thread) and demuxes it with docker-py's
+    own `frames_iter` + `demux_adaptor`; demux is what keeps the runner's
     stdout JSONL separate from stderr diagnostics."""
     from docker import APIClient
+    from docker.utils.socket import demux_adaptor, frames_iter  # noqa: F401 — presence is the assertion
 
-    params = inspect.signature(APIClient.attach).parameters
-    for kwarg in ("stdout", "stderr", "stream", "logs", "demux"):
-        assert kwarg in params, f"docker APIClient.attach lost `{kwarg}`"
+    params = inspect.signature(APIClient.attach_socket).parameters
+    assert "params" in params, "docker APIClient.attach_socket lost `params`"
 
 
 @pytest.mark.parametrize(
     "method",
-    ["attach", "attach_socket", "put_archive", "get_archive", "pause", "unpause", "stop", "remove"],
+    ["attach_socket", "put_archive", "get_archive", "pause", "unpause", "stop", "remove"],
 )
 def test_container_keeps_the_methods_the_sandbox_api_calls(method):
     from docker.models.containers import Container

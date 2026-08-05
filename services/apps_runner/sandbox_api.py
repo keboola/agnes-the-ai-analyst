@@ -29,13 +29,18 @@ JSONL both ways, reattachable — is the same either way.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import functools
 import io
 import json
 import os
 import re
+import socket as _socket
 import tarfile
+import tempfile
+import threading
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
@@ -58,10 +63,21 @@ SESSION_LABEL = "agnes.chat-session"
 _MAX_MOUNTS = 2
 _DENY_MOUNT_PREFIXES = ("/var/run", "/var/lib/docker", "/etc", "/proc", "/sys", "/dev", "/boot", "/root")
 
-#: Defensive ceiling on a single ``op=read`` response so a runaway file in the
-#: outputs dir can't OOM the sidecar. Well above the artifact-harvest cap
-#: (``chat.agent_api_artifact_max_bytes``, 25 MB default) that gates real reads.
+#: Ceiling on a single ``op=read`` tar so a runaway file in the outputs dir
+#: can't exhaust the sidecar. Bounds the on-disk spool (the tar never sits in
+#: memory — this process runs under a small cgroup limit next to the data-app
+#: control plane), and stays above the artifact-harvest cap
+#: (``chat.agent_api_artifact_max_bytes``, 25 MB default) so harvest-sized
+#: reads always pass.
 _MAX_FILE_READ_BYTES = 64 * 1024 * 1024
+
+#: RAM threshold before an ``op=read`` spool spills to disk.
+_READ_SPOOL_RAM_BYTES = 8 * 1024 * 1024
+
+#: Frames buffered between an attach's reader thread and its HTTP response.
+#: When it fills, the reader blocks — kernel socket buffers then throttle the
+#: container's stdout exactly like the pre-thread design did.
+_STREAM_QUEUE_MAX = 1024
 
 
 def _api():
@@ -81,9 +97,25 @@ def _api():
 def _docker_errors(fn):
     """Delegate to ``api._docker_errors`` at call time (single source of truth
     for ImageNotFound → 400 / APIError → 502 mapping, no import-time cycle),
-    wrapping ``fn`` once on first use rather than on every request."""
+    wrapping ``fn`` once on first use rather than on every request.
+
+    The outer wrapper must match ``fn``'s sync/async nature — FastAPI decides
+    threadpool-vs-await from the registered callable, and a sync wrapper around
+    a coroutine function would hand Starlette an unawaited coroutine.
+    """
 
     wrapped = None
+
+    if asyncio.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def awrapper(*args, **kwargs):
+            nonlocal wrapped
+            if wrapped is None:
+                wrapped = _api()._docker_errors(fn)
+            return await wrapped(*args, **kwargs)
+
+        return awrapper
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
@@ -158,18 +190,19 @@ def _age_seconds(container) -> float:
 
     0.0 is the safe default: the orphan sweep skips young containers, so a
     parse failure can never make it reap a sandbox that is still being wired up.
+
+    ``fromisoformat`` on Python ≥3.11 (this repo's floor) accepts the whole
+    RFC3339Nano surface Docker emits — bare ``Z``, no fraction, or 1–9
+    fractional digits (Go trims trailing zeros) — so the raw value parses
+    directly. A hand-rolled fraction normalizer here previously corrupted
+    short fractions by borrowing digits from the UTC offset, which made the
+    sweep read such a container as brand new forever.
     """
     raw = str((container.attrs or {}).get("Created") or "")
     if not raw:
         return 0.0
     try:
-        cleaned = raw.replace("Z", "+00:00")
-        if "." in cleaned:
-            head, _, tail = cleaned.partition(".")
-            frac = "".join(ch for ch in tail if ch.isdigit())[:6]
-            offset = tail[len(frac) :].lstrip("0123456789")
-            cleaned = f"{head}.{frac}{offset}"
-        created = datetime.fromisoformat(cleaned)
+        created = datetime.fromisoformat(raw)
     except (ValueError, TypeError):
         return 0.0
     if created.tzinfo is None:
@@ -256,6 +289,12 @@ def sandbox_up(name: str, payload: dict = Body(...), x_runner_token: str | None 
         image,
         name=name,
         detach=True,
+        # docker-init (tini) as PID 1: the runner shells out constantly
+        # (agent Bash tool, `claude` CLI, pip) and Python does not reap
+        # re-parented grandchildren — without an init each orphaned child
+        # would linger as a zombie against the pids limit for the life of
+        # the session. (E2B doesn't need this: envd is the microVM's init.)
+        init=True,
         # Keeps the container's stdin open across attach/detach cycles so the
         # gateway can push `user_msg` / `ticket_push` frames at any time
         # (StdinOnce stays false — docker only closes stdin on detach when it
@@ -366,9 +405,23 @@ def list_sandboxes(x_runner_token: str | None = Header(default=None)):
 # ---------------------------------------------------------------------------
 
 
+def _shutdown_attach_socket(sock) -> None:
+    """Best-effort shutdown+close of an attach socket.
+
+    ``shutdown`` (not just ``close``) is what reliably wakes a reader thread
+    blocked in ``recv`` on the other side of the hijacked connection.
+    """
+    raw = getattr(sock, "_sock", None)
+    if raw is not None and hasattr(raw, "shutdown"):
+        with contextlib.suppress(Exception):
+            raw.shutdown(_socket.SHUT_RDWR)
+    with contextlib.suppress(Exception):
+        sock.close()
+
+
 @router.get("/{name}/stream")
 @_docker_errors
-def sandbox_stream(
+async def sandbox_stream(
     name: str,
     replay: bool = False,
     x_runner_token: str | None = Header(default=None),
@@ -384,22 +437,81 @@ def sandbox_stream(
     post-``unpause`` reattach it must stay off, or every frame since session
     start would be delivered a second time.
 
-    Iteration errors end the stream (the response has already started, so there
+    The attach socket is read on a DEDICATED thread, never the shared anyio
+    worker pool: a quiet chat session emits nothing for minutes, and Starlette
+    drives a sync generator with one pool token held across each blocking
+    ``next()`` — a handful of live attaches would starve every sync handler in
+    the process, including the ``/apps/*`` data-app control plane. Worse, a
+    dropped client leaves such a pool thread blocked in ``recv`` until the
+    container next speaks; here teardown shuts the socket down, which ends the
+    reader thread immediately.
+
+    Reader errors end the stream (the response has already started, so there
     is no status code left to change).
     """
     _guard(name, x_runner_token)
     container = _require_container(name)
-    chunks = container.attach(stdout=True, stderr=True, stream=True, logs=replay, demux=True)
+    # The raw hijacked socket (rather than `attach(stream=True)`'s generator):
+    # docker-py wraps the same socket either way, but holding it directly is
+    # what lets teardown unblock the reader thread with a shutdown().
+    sock = container.attach_socket(params={"stdout": 1, "stderr": 1, "stream": 1, "logs": 1 if replay else 0})
 
-    def _frames():
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=_STREAM_QUEUE_MAX)
+    stop = threading.Event()
+
+    def _enqueue(item: str | None) -> bool:
+        """Backpressured put from the reader thread, abortable via ``stop``."""
+        fut = asyncio.run_coroutine_threadsafe(queue.put(item), loop)
+        while True:
+            try:
+                fut.result(timeout=0.5)
+                return True
+            except TimeoutError:
+                if stop.is_set():
+                    fut.cancel()
+                    return False
+            except Exception:
+                return False
+
+    def _read_frames() -> None:
+        from docker.utils.socket import demux_adaptor, frames_iter
+
         try:
-            for out, err in chunks:
-                if out:
-                    yield json.dumps({"stream": "stdout", "data": base64.b64encode(out).decode()}) + "\n"
-                if err:
-                    yield json.dumps({"stream": "stderr", "data": base64.b64encode(err).decode()}) + "\n"
-        except Exception:  # noqa: BLE001 — container gone / daemon blip ends the stream
-            return
+            for frame in frames_iter(sock, tty=False):
+                out, err = demux_adaptor(*frame)
+                if out and not _enqueue(
+                    json.dumps({"stream": "stdout", "data": base64.b64encode(out).decode()}) + "\n"
+                ):
+                    return
+                if err and not _enqueue(
+                    json.dumps({"stream": "stderr", "data": base64.b64encode(err).decode()}) + "\n"
+                ):
+                    return
+        except Exception:  # noqa: BLE001, S110 — container gone / daemon blip ends the stream
+            pass
+        finally:
+            # Best-effort EOF sentinel; suppressed because the loop itself may
+            # already be gone on process shutdown.
+            with contextlib.suppress(Exception):
+                if not stop.is_set():
+                    _enqueue(None)
+
+    threading.Thread(target=_read_frames, name=f"chatsbx-attach-{name}", daemon=True).start()
+
+    async def _frames():
+        try:
+            while True:
+                line = await queue.get()
+                if line is None:
+                    return
+                yield line
+        finally:
+            # Runs on natural end AND on client disconnect (Starlette acloses
+            # the generator) — either way the reader thread must not outlive
+            # the response blocked in recv.
+            stop.set()
+            _shutdown_attach_socket(sock)
 
     return StreamingResponse(_frames(), media_type="application/x-ndjson")
 
@@ -461,6 +573,68 @@ def sandbox_write_file(name: str, payload: dict = Body(...), x_runner_token: str
     return {"status": "written", "bytes": len(data)}
 
 
+class _ChunkReader:
+    """Minimal read-only file object over ``get_archive``'s chunk iterator,
+    for streaming (``r|``) tarfile parses — nothing accumulates past one
+    chunk plus tarfile's own block buffer."""
+
+    def __init__(self, chunks) -> None:
+        self._chunks = iter(chunks)
+        self._buf = b""
+
+    def read(self, n: int = -1) -> bytes:
+        while n < 0 or len(self._buf) < n:
+            try:
+                self._buf += next(self._chunks)
+            except StopIteration:
+                break
+        if n < 0:
+            out, self._buf = self._buf, b""
+        else:
+            out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+
+
+def _stream_member_bytes(bits) -> StreamingResponse:
+    """``op=read``: spool the tar to a temp file, stream the member back raw.
+
+    The spool spills to disk past ``_READ_SPOOL_RAM_BYTES`` and is capped at
+    ``_MAX_FILE_READ_BYTES`` (→ 413), so the sidecar's peak memory stays a
+    chunk-sized constant regardless of file size — the previous in-memory
+    ``blob`` + tar copy + base64-JSON encoding held ~4× the file size at once,
+    enough for one large agent-written file to OOM the whole sidecar.
+    """
+    spool = tempfile.SpooledTemporaryFile(max_size=_READ_SPOOL_RAM_BYTES)
+    try:
+        total = 0
+        for chunk in bits:
+            total += len(chunk)
+            if total > _MAX_FILE_READ_BYTES:
+                raise HTTPException(status_code=413, detail="file_too_large")
+            spool.write(chunk)
+        spool.seek(0)
+        tar = tarfile.open(fileobj=spool)
+        member = next((m for m in tar if m.isfile()), None)
+        fh = tar.extractfile(member) if member is not None else None
+        if fh is None:
+            raise HTTPException(status_code=404, detail="not_found")
+    except BaseException:
+        spool.close()
+        raise
+
+    def _content():
+        try:
+            while True:
+                chunk = fh.read(512 * 1024)
+                if not chunk:
+                    return
+                yield chunk
+        finally:
+            spool.close()
+
+    return StreamingResponse(_content(), media_type="application/octet-stream")
+
+
 @router.get("/{name}/files")
 @_docker_errors
 def sandbox_read_files(
@@ -469,10 +643,17 @@ def sandbox_read_files(
     op: str = "list",
     x_runner_token: str | None = Header(default=None),
 ):
-    """``op=list`` → the directory's immediate entries; ``op=read`` → one file.
+    """``op=list`` → the directory's immediate entries; ``op=read`` → one
+    file's raw bytes (``application/octet-stream``).
 
     Both ride ``get_archive`` (a tar of the path) so no in-container exec is
-    needed — the sandbox stays a single-process container.
+    needed — the sandbox stays a single-process container. Neither buffers
+    the tar in memory (this process runs under a small cgroup limit next to
+    the data-app control plane): ``read`` spools to a size-capped temp file
+    and streams the member out; ``list`` parses the tar as a pure stream,
+    discarding file contents as they pass, so listing a directory holding
+    more data than the read cap works instead of aborting with 413 (a
+    directory's archive is its whole recursive subtree).
     """
     import docker.errors
 
@@ -484,23 +665,13 @@ def sandbox_read_files(
     except docker.errors.NotFound as exc:
         raise HTTPException(status_code=404, detail="not_found") from exc
 
-    blob = bytearray()
-    for chunk in bits:
-        blob.extend(chunk)
-        if len(blob) > _MAX_FILE_READ_BYTES:
-            raise HTTPException(status_code=413, detail="file_too_large")
+    if op == "read":
+        return _stream_member_bytes(bits)
 
     root = PurePosixPath(path).name
-    with tarfile.open(fileobj=io.BytesIO(bytes(blob))) as tar:
-        if op == "read":
-            for member in tar.getmembers():
-                if member.isfile():
-                    fh = tar.extractfile(member)
-                    content = fh.read() if fh is not None else b""
-                    return {"content_b64": base64.b64encode(content).decode()}
-            raise HTTPException(status_code=404, detail="not_found")
-        entries = []
-        for member in tar.getmembers():
+    entries = []
+    with tarfile.open(fileobj=_ChunkReader(bits), mode="r|") as tar:
+        for member in tar:
             parts = PurePosixPath(member.name).parts
             if not parts or parts[0] != root or len(parts) != 2:
                 continue

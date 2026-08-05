@@ -1620,12 +1620,26 @@ async function chatReadinessLoad() {
     const r = await fetch(CHAT_API + "/readiness", { credentials: "include" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const s = await r.json();
-    const rows = [
-      ["ANTHROPIC_API_KEY", s.secrets.anthropic_api_key],
-      ["E2B_API_KEY", s.secrets.e2b_api_key],
-      ["JWT_SECRET_KEY", s.secrets.jwt_secret_key],
-      ["e2b_template_id", s.secrets.e2b_template_id],
-    ];
+    // Friendly labels for the readiness keys the server reports. The rows are
+    // driven by the payload (not a fixed list) so provider-specific entries —
+    // e.g. the docker provider's APPS_RUNNER_TOKEN / chat.docker_image — show
+    // up the moment the server returns them; an unknown future key falls back
+    // to its raw name rather than being dropped.
+    const CHAT_SECRET_LABELS = {
+      anthropic_api_key: "ANTHROPIC_API_KEY",
+      e2b_api_key: "E2B_API_KEY",
+      jwt_secret_key: "JWT_SECRET_KEY",
+      e2b_template_id: "e2b_template_id",
+      apps_runner_token: "APPS_RUNNER_TOKEN",
+      chat_docker_image: "chat.docker_image",
+    };
+    // With chat enabled, hide rows that the active provider neither requires
+    // nor has set (an e2b operator doesn't care about the docker credential
+    // and vice versa); with chat disabled nothing is "required", so show
+    // everything as setup guidance.
+    const rows = Object.entries(s.secrets || {})
+      .map(([key, v]) => [CHAT_SECRET_LABELS[key] || key, v])
+      .filter(([, v]) => !s.enabled || v.required || v.set);
     const overall = !s.enabled
       ? '<span style="color: #888;">chat disabled in instance.yaml</span>'
       : (s.ready

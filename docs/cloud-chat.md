@@ -346,7 +346,7 @@ all deliberate:
 | Pause | microVM memory snapshot | `docker pause` (SIGSTOP) |
 | Survives a paused sandbox's process memory | yes | yes, while the daemon lives |
 | Survives a daemon restart / host reboot | yes | **no** |
-| Resume | reattach to the same process | unpause + reattach |
+| Resume | reattach to the same process | reattach, then unpause (attach first, so wake-up output isn't lost) |
 | On resume failure | fresh sandbox + restore-context | same |
 | Cost while paused | billing stops | container keeps its memory reservation |
 | Session lifetime cap | clamped to E2B's 1 h platform max | `chat.max_session_seconds` applies as configured (default 4 h) |
@@ -355,6 +355,26 @@ After a host reboot, the next attach to a paused session produces a *fresh*
 sandbox seeded with the restored-conversation transcript — the same path a
 crash respawn takes. No crash loop, no stuck session; the in-flight turn (if
 any) is lost.
+
+**Reattach gaps (v1, accepted).** Two bounded windows exist where runner
+output reaches only the container log, not the gateway:
+
+- *Gateway restart while the container keeps running.* The post-restart resume
+  reattaches without replay — there is no offset-tracking in the attach API,
+  so replaying would re-deliver every frame since session start. Whatever the
+  runner emitted while no gateway was attached (typically the tail of a turn
+  that was in flight when the gateway died) is not delivered or persisted.
+  A gateway restart drops E2B's SDK callbacks the same way; this is not a
+  regression against the E2B provider.
+- *Detach → pause.* `pause()` closes the attach before the daemon pauses the
+  container, so a frame emitted in that sub-second window is likewise only in
+  the container log.
+
+In both cases the session self-heals on the next message — the runner is idle
+and answers normally; what's lost is the rendering of the missed frames, not
+agent state. If this ever bites in practice, the known follow-up is
+replay-with-dedup (tail the container log with `since=` and drop
+already-delivered frames).
 
 ### Egress
 

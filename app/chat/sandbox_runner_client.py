@@ -161,8 +161,22 @@ class SandboxRunnerClient:
         )
 
     async def read_file(self, name: str, path: str) -> bytes:
-        body = await self._request("GET", f"/sandboxes/{name}/files", params={"path": path, "op": "read"})
-        return base64.b64decode(body.get("content_b64") or "")
+        """One file's raw bytes. Not ``_request``: the sidecar streams the
+        body as ``application/octet-stream`` (kept out of *its* memory — it
+        runs under a small cgroup limit), so this reads ``content`` off a
+        plain GET instead of decoding a base64 JSON envelope."""
+        try:
+            async with httpx.AsyncClient(transport=self._transport, timeout=self._timeout) as client:
+                r = await client.get(
+                    f"{self.base_url}/sandboxes/{name}/files",
+                    headers=self._headers(),
+                    params={"path": path, "op": "read"},
+                )
+        except httpx.TransportError as exc:
+            raise SandboxRunnerUnavailable(str(exc)) from exc
+        if r.status_code >= 400:
+            raise SandboxRunnerError(r.status_code, _detail(r))
+        return r.content
 
     async def list_files(self, name: str, path: str) -> list[dict]:
         body = await self._request("GET", f"/sandboxes/{name}/files", params={"path": path, "op": "list"})

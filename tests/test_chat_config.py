@@ -91,6 +91,23 @@ def test_unknown_docker_egress_mode_normalizes_to_open(tmp_path: Path, caplog):
     assert "docker_egress_mode" in caplog.text
 
 
+def test_blank_string_keys_fall_back_to_their_defaults(tmp_path: Path):
+    """A key written with nothing after it parses to YAML null; the naive
+    `str(raw.get(key, default))` then produced the string "None" — and for
+    docker_egress_mode the *valid-looking* mode "none", silently cutting the
+    sandbox off from the internet (the #1148 trap). Blank must mean default."""
+    y = tmp_path / "instance.yaml"
+    y.write_text(
+        "chat:\n  enabled: true\n  provider:\n  harness:\n  docker_egress_mode:\n  on_detach:\n  llm:\n    auth:\n"
+    )
+    cfg = load_chat_config(y)
+    assert cfg.provider == "e2b"
+    assert cfg.harness == "claude-code"
+    assert cfg.docker_egress_mode == "open"
+    assert cfg.on_detach == "pause"
+    assert cfg.llm_auth == "api_key"
+
+
 def test_legacy_sandbox_uid_knob_is_dropped(tmp_path: Path):
     """The deprecated sandbox_uid / require_isolation keys are silently
     ignored — the ChatConfig dataclass no longer exposes them and the

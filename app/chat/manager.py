@@ -1984,7 +1984,7 @@ class ChatManager:
         return _stage
 
     async def _stage_boot_files(self, handle, session: "ChatSession") -> None:
-        """Stage the agnes CLI wheel and the restore-context transcript.
+        """Stage the restore-context transcript and the agnes CLI wheel.
 
         Neither is workspace sync, so both run for EVERY provider — a
         ``syncs_workspace=True`` provider that skipped them would lose the
@@ -1992,26 +1992,24 @@ class ChatManager:
         ``.ready`` that never appears) and lose conversation history on every
         crash respawn.
 
-        Order matters: the wheel goes first because its ``.ready`` sentinel
-        unblocks the in-sandbox ``pip install``, which then runs CONCURRENTLY
-        with the (much slower) workspace push instead of queueing behind it;
-        the restore-context lands before that push so the workspace-ready
-        sentinel — which gates the agent-CLI boot — also guarantees this file.
-        Both are best-effort: a failure degrades the session (no CLI, no prior
-        context) but never blocks the spawn.
+        Order matters: the restore-context goes FIRST, before the wheel's
+        ``.ready`` sentinel. That sentinel is the only pre-boot barrier every
+        provider shares — a ``syncs_workspace=True`` provider skips the
+        workspace-ready wait entirely — and the runner reads the context file
+        strictly after its sentinel-gated install, so context-before-``.ready``
+        is what makes "a respawned runner sees its transcript" a
+        happens-before instead of a timing accident (under E2B the
+        workspace-ready sentinel used to provide that barrier; bind-mounting
+        providers have no later one). The context file is small, so the
+        in-sandbox ``pip install`` still overlaps the (much slower) workspace
+        push. Both stages are best-effort: a failure degrades the session (no
+        prior context, no CLI) but never blocks the spawn.
         """
         stage = self._file_stager(handle)
         if stage is None:
             return
         from app.chat.e2b_workspace_sync import SANDBOX_CONTEXT_RESTORE, stage_agnes_wheel
 
-        try:
-            await stage_agnes_wheel(stage)
-        except Exception:
-            logger.exception(
-                "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
-                session.id,
-            )
         # Restored-conversation transcript for a fresh sandbox of a chat that
         # already has history (crash respawn, post-restart spawn, takeover):
         # the runner appends it to the agent's system prompt at boot, restoring
@@ -2025,6 +2023,13 @@ class ChatManager:
         except Exception:
             logger.exception(
                 "restore-context upload failed for %s — respawned runner starts without prior context",
+                session.id,
+            )
+        try:
+            await stage_agnes_wheel(stage)
+        except Exception:
+            logger.exception(
+                "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
                 session.id,
             )
 

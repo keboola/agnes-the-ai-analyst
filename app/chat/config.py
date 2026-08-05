@@ -197,10 +197,27 @@ def _parse_slack_config(raw_chat: dict) -> SlackConfig:
     return SlackConfig(transport=transport)
 
 
+def _raw_str(raw: dict, key: str, default: str) -> str:
+    """``raw[key]`` as a string, treating an absent, blank, or null value as
+    ``default``.
+
+    A key written with nothing after it (``docker_egress_mode:``) parses to
+    YAML null; the naive ``str(raw.get(key, default))`` then yields ``"None"``
+    — or, lowercased, the *valid-looking* mode ``"none"``, silently cutting
+    the sandbox off from the internet (the same trap #1148 fixed for the
+    egress proxy's mode; it also bit ``provider``/``harness`` here, where a
+    blank key turned into the literal provider ``"None"`` and failed the boot
+    gate instead of meaning "use the default").
+    """
+    value = raw.get(key, default)
+    text = str(value).strip() if value is not None else ""
+    return text or default
+
+
 def _parse_docker_egress_mode(raw: dict) -> str:
     """``open`` | ``none``; anything else warns and falls back to ``open``
     (same normalize-don't-crash convention as ``_parse_on_detach``)."""
-    mode = str(raw.get("docker_egress_mode", "open")).strip().lower()
+    mode = _raw_str(raw, "docker_egress_mode", "open").lower()
     if mode not in ("open", "none"):
         logger.warning("unknown chat.docker_egress_mode %r — falling back to 'open'", mode)
         mode = "open"
@@ -208,7 +225,7 @@ def _parse_docker_egress_mode(raw: dict) -> str:
 
 
 def _parse_on_detach(raw: dict) -> str:
-    on_detach = str(raw.get("on_detach", "")).strip().lower()
+    on_detach = _raw_str(raw, "on_detach", "").lower()
     if on_detach not in ("pause", "kill"):
         if on_detach:
             logger.warning("unknown chat.on_detach %r — falling back to 'pause'", on_detach)
@@ -265,8 +282,8 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
     detach_linger_seconds = int(raw.get("detach_linger_seconds", 60))
     return ChatConfig(
         enabled=_resolve_chat_enabled(raw),
-        provider=str(raw.get("provider", "e2b")),
-        harness=str(raw.get("harness", "claude-code")),
+        provider=_raw_str(raw, "provider", "e2b"),
+        harness=_raw_str(raw, "harness", "claude-code"),
         concurrency_per_user=int(raw.get("concurrency_per_user", 3)),
         idle_ttl_seconds=int(raw.get("idle_ttl_seconds", 30 * 60)),
         per_tool_call_seconds=int(raw.get("per_tool_call_seconds", 90)),
@@ -298,7 +315,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         paused_ttl_seconds=int(raw.get("paused_ttl_seconds", 7 * 24 * 3600)),
         e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
         bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
-        llm_auth=str((raw.get("llm") or {}).get("auth", "api_key")).strip().lower() or "api_key",
+        llm_auth=_raw_str(raw.get("llm") or {}, "auth", "api_key").lower(),
         agent_api_utility_models=list(raw.get("agent_api_utility_models") or []),
         agent_api_budget_cache_ttl_s=int(raw.get("agent_api_budget_cache_ttl_s", 60)),
         agent_api_artifact_max_bytes=int(raw.get("agent_api_artifact_max_bytes", 25 * 1024 * 1024)),

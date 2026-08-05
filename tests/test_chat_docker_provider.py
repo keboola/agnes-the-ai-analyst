@@ -292,6 +292,27 @@ def test_spawn_cap_ignores_this_chat_own_leftover_container(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_spawn_cap_ignores_stopped_leftovers(tmp_path: Path):
+    """`docker_max_total_sandboxes` is documented as a ceiling on LIVE
+    sandboxes, but the sidecar lists with all=True (the orphan sweep needs
+    exited leftovers) — exited containers whose gateway died before removing
+    them must not eat capacity until spawns fail on an idle host."""
+
+    async def _run():
+        client = _fake_client()
+        client.list_sandboxes = AsyncMock(
+            return_value=[
+                {"name": "agnes-chatsbx-dead1", "chat_id": "d1", "status": "stopped"},
+                {"name": "agnes-chatsbx-live1", "chat_id": "l1", "status": "running"},
+            ]
+        )
+        prov = _provider(client, max_total_sandboxes=2)
+        await prov.spawn(workdir=_session_dir(tmp_path), env=dict(ENV), argv=list(ARGV))
+        client.up.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
 def test_egress_mode_none_uses_an_internal_network(tmp_path: Path):
     async def _run():
         client = _fake_client()
@@ -448,6 +469,56 @@ def test_pause_detaches_then_pauses_the_container(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_detach_cancels_the_pump_before_closing_the_stream(tmp_path: Path):
+    """httpx responses are not task-safe: by the time aclose() runs the pump
+    must be finished, not suspended mid-read on the same response — pause/kill
+    sit on ChatManager's critical path, where a BusyResourceError or a hung
+    aclose would wedge the whole reaper sweep."""
+
+    async def _run():
+        events: list[str] = []
+
+        class OrderedStream(FakeStream):
+            async def __aiter__(self):
+                try:
+                    await asyncio.Event().wait()  # a real attach only ends on container exit
+                except asyncio.CancelledError:
+                    events.append("reader_cancelled")
+                    raise
+                yield  # pragma: no cover — unreachable; makes this an async generator
+
+            async def aclose(self):
+                events.append("closed")
+                await super().aclose()
+
+        client = _fake_client(OrderedStream())
+        prov = _provider(client)
+        handle = await prov.spawn(workdir=_session_dir(tmp_path), env=dict(ENV), argv=list(ARGV))
+        await asyncio.sleep(0)  # let the pump task reach its first read
+        await prov.pause(handle)
+        assert events == ["reader_cancelled", "closed"]
+
+    asyncio.run(_run())
+
+
+def test_pump_releases_the_stream_when_the_container_exits_on_its_own(tmp_path: Path):
+    """The crash-respawn path replaces the handle without kill(), so the pump
+    itself must release the attach stream (and the AsyncClient it owns) when
+    the container exits — otherwise every crash respawn leaks one client."""
+
+    async def _run():
+        stream = FakeStream([("stdout", b"bye\n")])
+        client = _fake_client(stream)
+        client.status = AsyncMock(return_value={"container": "stopped", "exit_code": 3})
+        prov = _provider(client)
+        handle = await prov.spawn(workdir=_session_dir(tmp_path), env=dict(ENV), argv=list(ARGV))
+        assert await handle.wait() == 3
+        assert stream.closed is True
+        assert handle._stream is None
+
+    asyncio.run(_run())
+
+
 def test_pause_propagates_a_sidecar_failure(tmp_path: Path):
     """ChatManager reverts to ACTIVE and kills when pause fails — it must see
     the error rather than a silently un-paused sandbox."""
@@ -479,6 +550,54 @@ def test_resume_unpauses_and_reattaches(tmp_path: Path):
         assert handle.pid == 1
         assert await handle.stdout.readline() == b"back\n"
         await handle.kill(grace_sec=0.01)
+
+    asyncio.run(_run())
+
+
+def test_resume_attaches_before_unpausing(tmp_path: Path):
+    """The container executes again the instant it is unpaused, so the attach
+    must already be listening — the opposite order silently dropped whatever
+    the runner printed during the attach round trip (the same start-vs-attach
+    race spawn closes with replay=True)."""
+
+    async def _run():
+        calls: list[str] = []
+        client = _fake_client()
+        client.status = AsyncMock(return_value={"container": "paused", "exit_code": None})
+
+        async def _open_stream(name, *, replay=False):
+            calls.append("attach")
+            return FakeStream(hold=True)
+
+        async def _unpause(name):
+            calls.append("unpause")
+            return {"status": "running"}
+
+        client.open_stream = _open_stream
+        client.resume = _unpause
+        prov = _provider(client)
+        handle = await prov.resume(sandbox_id="agnes-chatsbx-x", runner_pid=1, env={})
+        assert calls == ["attach", "unpause"]
+        await handle.kill(grace_sec=0.01)
+
+    asyncio.run(_run())
+
+
+def test_resume_closes_the_attach_when_unpause_fails():
+    """The failure path hands control to ChatManager's fresh-spawn fallback —
+    the attach opened a moment earlier must not leak on the way out."""
+
+    async def _run():
+        from app.chat.sandbox_runner_client import SandboxRunnerError
+
+        stream = FakeStream(hold=True)
+        client = _fake_client(stream)
+        client.status = AsyncMock(return_value={"container": "paused", "exit_code": None})
+        client.resume = AsyncMock(side_effect=SandboxRunnerError(502, "docker_error"))
+        prov = _provider(client)
+        with pytest.raises(SandboxRunnerError):
+            await prov.resume(sandbox_id="agnes-chatsbx-x", runner_pid=1, env={})
+        assert stream.closed is True
 
     asyncio.run(_run())
 

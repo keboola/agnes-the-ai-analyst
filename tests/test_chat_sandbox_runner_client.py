@@ -116,14 +116,35 @@ def test_write_file_accepts_str_payload():
 
 
 def test_read_file_returns_bytes():
+    """The sidecar streams op=read as a raw octet body (no base64 JSON
+    envelope — it must never hold content × encoding copies in memory)."""
+
     def handler(request):
         assert request.url.params["op"] == "read"
         assert request.url.params["path"] == "/work/outputs/a.csv"
-        return httpx.Response(200, json={"content_b64": base64.b64encode(b"a,b\n").decode()})
+        assert request.headers["x-runner-token"] == "tok"
+        return httpx.Response(200, content=b"a,b\n", headers={"content-type": "application/octet-stream"})
 
     async def _run():
         data = await _client(handler).read_file("agnes-chatsbx-a-1", "/work/outputs/a.csv")
         assert data == b"a,b\n"
+
+    asyncio.run(_run())
+
+
+def test_read_file_maps_errors_like_request():
+    """The raw-bytes path keeps `_request`'s error contract: 4xx/5xx raise
+    SandboxRunnerError with the JSON detail."""
+    from app.chat.sandbox_runner_client import SandboxRunnerError
+
+    def handler(request):
+        return httpx.Response(413, json={"detail": "file_too_large"})
+
+    async def _run():
+        with pytest.raises(SandboxRunnerError) as exc_info:
+            await _client(handler).read_file("agnes-chatsbx-a-1", "/work/outputs/huge.bin")
+        assert exc_info.value.status_code == 413
+        assert exc_info.value.detail == "file_too_large"
 
     asyncio.run(_run())
 

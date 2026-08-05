@@ -194,6 +194,7 @@ class DockerSandboxHandle:
         self._pump_task = asyncio.create_task(self._pump())
 
     async def _pump(self) -> None:
+        cancelled = False
         try:
             async for stream, payload in self._stream:
                 if stream == "stderr":
@@ -201,28 +202,47 @@ class DockerSandboxHandle:
                 else:
                     self.stdout.feed(payload)
         except asyncio.CancelledError:
+            cancelled = True
             raise
         except Exception:
             logger.debug("sandbox %s attach stream failed", self.sandbox_id, exc_info=True)
         finally:
             # The attach only ends when the container exits (or the daemon
-            # drops us) — either way nothing more will arrive.
+            # drops us) — either way nothing more will arrive, and nothing
+            # else will ever release the stream's HTTP client: the manager's
+            # crash-respawn path replaces this handle without kill(), so a
+            # close left to _detach alone leaks one AsyncClient per respawn.
+            # On cancellation _detach owns the close instead — an await here
+            # would just be re-cancelled mid-cleanup.
+            if not cancelled:
+                stream, self._stream = self._stream, None
+                if stream is not None:
+                    with contextlib.suppress(Exception):
+                        await stream.aclose()
             self.stdout.feed_eof()
             self.stderr.feed_eof()
             self._exit_event.set()
 
     async def _detach(self) -> None:
-        """Close the attach without touching the container (pause / kill)."""
+        """Close the attach without touching the container (pause / kill).
+
+        Cancel the pump FIRST, close the stream after: the pump sits
+        suspended inside the response's byte iterator, and httpx responses
+        are not task-safe — ``aclose()`` under a concurrent reader is
+        undefined at the httpcore/anyio layer (worst case a hang or
+        ``BusyResourceError`` on the critical path of pause/kill). After the
+        await the pump is finished and the stream has exactly one owner.
+        """
         self._detached = True
-        stream, self._stream = self._stream, None
         task, self._pump_task = self._pump_task, None
-        if stream is not None:
-            with contextlib.suppress(Exception):
-                await stream.aclose()
         if task is not None:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            with contextlib.suppress(Exception):
+                await stream.aclose()
         self.stdout.feed_eof()
         self.stderr.feed_eof()
         self._exit_event.set()
@@ -396,7 +416,15 @@ class DockerSandboxProvider:
         name = container_name(chat_id)
 
         if self._max_total_sandboxes > 0:
-            existing = [row for row in await self._client.list_sandboxes() if row.get("name") != name]
+            # Count LIVE sandboxes only — the knob is documented as a ceiling
+            # on live ones. The sidecar lists with all=True (the orphan sweep
+            # needs exited leftovers), so exited-but-not-yet-reaped containers
+            # would otherwise eat capacity until spawns fail on an idle host.
+            existing = [
+                row
+                for row in await self._client.list_sandboxes()
+                if row.get("name") != name and row.get("status") != "stopped"
+            ]
             if len(existing) >= self._max_total_sandboxes:
                 raise RuntimeError(
                     f"docker_max_total_sandboxes reached ({len(existing)}/{self._max_total_sandboxes}) "
@@ -458,7 +486,16 @@ class DockerSandboxProvider:
         runner_pid: int,
         env: dict[str, str],
     ) -> DockerSandboxHandle:
-        """``docker unpause`` + reattach.
+        """Reattach + ``docker unpause``, in that order.
+
+        Attach FIRST: the container starts executing the instant it is
+        unpaused, so with the opposite order anything the runner printed
+        before the attach round trip completed was silently lost — the same
+        start-vs-attach race ``spawn()`` closes with ``replay=True``. Docker
+        attaches to a paused container just fine (the stream stays silent
+        until the unpause). Still no replay: the container's whole log buffer
+        is there, and re-sending it would re-deliver every frame since
+        session start.
 
         Raises on anything unexpected (container gone, stopped, daemon
         unreachable) — ChatManager's existing resume-failure fallback turns that
@@ -466,13 +503,19 @@ class DockerSandboxProvider:
         """
         status = await self._client.status(sandbox_id)
         state = status.get("container")
-        if state == "paused":
-            await self._client.resume(sandbox_id)
-        elif state != "running":
+        if state not in ("paused", "running"):
             raise RuntimeError(f"docker sandbox {sandbox_id} is {state!r} — cannot resume")
-        # No replay here: the container's whole log buffer is still there, and
-        # re-sending it would re-deliver every frame since session start.
-        return await self._attach(sandbox_id, pid=runner_pid)
+        handle = await self._attach(sandbox_id, pid=runner_pid)
+        if state == "paused":
+            try:
+                await self._client.resume(sandbox_id)
+            except BaseException:
+                # Don't leak the just-opened attach on the failure path — the
+                # caller falls back to a fresh spawn.
+                with contextlib.suppress(Exception):
+                    await handle._detach()
+                raise
+        return handle
 
     async def keepalive(self, handle: DockerSandboxHandle, *, timeout_seconds: int) -> None:
         """No-op: a local container has no external timeout to extend."""

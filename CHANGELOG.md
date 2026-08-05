@@ -17,7 +17,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 - The chat sandbox's `agnes` CLI wheel and restored-conversation transcript are now staged for every sandbox provider, not only for providers that also upload the workspace. Only the workspace tarball itself remains tied to that decision. E2B behavior is unchanged.
-- `/admin/chat/secrets/test` ("Test connections" in server config) reports the sandbox credential for the configured provider: the E2B key on an E2B instance, a Docker daemon + image probe on a self-hosted one, instead of a permanently failing E2B row.
+- `/admin/chat/secrets/test` ("Test connections" in server config) reports the sandbox credential for the configured provider: the E2B key on an E2B instance, a Docker daemon + image probe on a self-hosted one, instead of a permanently failing E2B row. The chat readiness list on the same page is provider-aware too — rows render from the server's readiness payload (`APPS_RUNNER_TOKEN`/`chat.docker_image` on a docker instance) instead of a fixed E2B-only set.
 
 ### Fixed
 - Two pages that shipped with no way to reach them from the UI. The agent
