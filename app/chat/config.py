@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from dataclasses import dataclass, field
@@ -90,8 +91,21 @@ class ChatConfig:
     # tools that fetch packages). ``none`` — an ``internal`` bridge where the
     # only reachable origin is whatever else is attached to it (stronger than
     # E2B's allowlist, but in-sandbox package installs stop working).
-    # Hostname-level allowlisting is not offered here; see docs/cloud-chat.md.
+    # ``allowlist`` — the internal bridge of ``none`` PLUS an egress-proxy
+    # sidecar (services/egress_proxy) dual-homed onto it: sandboxes get
+    # HTTP(S)_PROXY pointed at the proxy, which enforces
+    # ``docker_egress_allow_hosts`` with a post-resolution IP re-check
+    # (DNS-rebinding/metadata protection). Ignoring the proxy is not a
+    # bypass — the internal network has no other route out.
     docker_egress_mode: str = "open"
+    # Hostnames sandboxes may reach in ``allowlist`` mode (exact or
+    # ``*.suffix`` wildcards). Cloud metadata endpoints stay blocked even
+    # if listed. Empty = deny everything except the direct internal-network
+    # peers (Agnes server / broker relay via NO_PROXY).
+    docker_egress_allow_hosts: list[str] = field(default_factory=list)
+    # Where sandboxes find the egress proxy in ``allowlist`` mode — must be
+    # resolvable on the internal network (the compose service name).
+    docker_egress_proxy_url: str = "http://agnes-egress-proxy:3128"
     # Host-wide ceiling on live sandboxes, checked at spawn on top of
     # ``concurrency_per_user``.
     docker_max_total_sandboxes: int = 10
@@ -239,10 +253,11 @@ def _raw_float(raw: dict, key: str, default: float) -> float:
 
 
 def _parse_docker_egress_mode(raw: dict) -> str:
-    """``open`` | ``none``; anything else warns and falls back to ``open``
-    (same normalize-don't-crash convention as ``_parse_on_detach``)."""
+    """``open`` | ``none`` | ``allowlist``; anything else warns and falls
+    back to ``open`` (same normalize-don't-crash convention as
+    ``_parse_on_detach``)."""
     mode = _raw_str(raw, "docker_egress_mode", "open").lower()
-    if mode not in ("open", "none"):
+    if mode not in ("open", "none", "allowlist"):
         logger.warning("unknown chat.docker_egress_mode %r — falling back to 'open'", mode)
         mode = "open"
     return mode
@@ -332,6 +347,8 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         docker_cpus=_raw_float(raw, "docker_cpus", 1.0),
         docker_pids_limit=_raw_int(raw, "docker_pids_limit", 512),
         docker_egress_mode=_parse_docker_egress_mode(raw),
+        docker_egress_allow_hosts=[str(h) for h in (raw.get("docker_egress_allow_hosts") or [])],
+        docker_egress_proxy_url=_raw_str(raw, "docker_egress_proxy_url", "http://agnes-egress-proxy:3128"),
         docker_max_total_sandboxes=_raw_int(raw, "docker_max_total_sandboxes", 10),
         on_detach=_parse_on_detach(raw),
         detach_linger_seconds=detach_linger_seconds,
@@ -356,3 +373,93 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         agent_memory_pending_ttl_days=_raw_int(raw, "agent_memory_pending_ttl_days", 30),
         slack=_parse_slack_config(raw),
     )
+
+
+#: What `docker-compose.yml` pins for the egress-proxy sidecar. Allowlist
+#: mode only works when the app's config agrees with these.
+_COMPOSE_EGRESS_NETWORK = "agnes-apps"
+_COMPOSE_EGRESS_PROXY_URL = "http://agnes-egress-proxy:3128"
+
+
+def sandbox_can_reach_directly(host: str) -> bool:
+    """Is ``host`` reachable from a sandbox WITHOUT going through the proxy?
+
+    The single definition behind two decisions that must agree: which host
+    `_egress_env` puts in NO_PROXY, and which rails URL the boot check warns
+    about. They were written separately and immediately drifted — a "dotless
+    name" shortcut silently excluded `host.docker.internal`, the very address
+    `app/main.py` recommends for bare-host deployments (Devin Review on #1148).
+
+    Directly reachable means: a compose service / container name (dotless),
+    the Docker host alias, or a private/loopback IP literal. Everything else
+    is a public address the internal no-route-out bridge cannot reach at all,
+    so it must go through the proxy — where an operator can allowlist it.
+    """
+    h = (host or "").strip().lower().strip("[]")
+    if not h:
+        return False
+    if h in ("localhost", "host.docker.internal") or h.endswith(".docker.internal"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return "." not in h  # bare service/container name
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
+def egress_compose_mismatches(cfg: "ChatConfig") -> list[str]:
+    """Ways an allowlist-mode instance's config can disagree with compose.
+
+    Allowlist mode is split across two owners: the app decides which
+    sandboxes exist, while `docker-compose.yml` owns the proxy sidecar —
+    its hostname, its network, and the allowlist it actually enforces. The
+    `chat.*` keys for all three read like ordinary knobs, so turning any of
+    them produces a *silent* failure: the sandbox network has no route out
+    by design, so a proxy that is not on it, or is not told the same hosts,
+    denies everything with nothing in the logs pointing at the cause.
+
+    Collected in one place, and checked together, because these are three
+    faces of one assumption — that `chat.*` is authoritative for the
+    sidecar, when compose holds the enforcing copy (Devin Review on #1148).
+    """
+    if cfg.docker_egress_mode != "allowlist":
+        return []
+    out = []
+    if cfg.docker_egress_allow_hosts:
+        out.append(
+            "chat.docker_egress_allow_hosts is set, but the enforcing copy is the egress-proxy "
+            "sidecar's EGRESS_ALLOW_HOSTS environment variable — if the two disagree, sandboxes "
+            "are denied hosts you believe you allowed"
+        )
+    if cfg.docker_network != _COMPOSE_EGRESS_NETWORK:
+        out.append(
+            f"chat.docker_network is {cfg.docker_network!r}, so sandboxes join "
+            f"{cfg.docker_network}-internal, but docker-compose.yml puts the egress proxy on "
+            f"{_COMPOSE_EGRESS_NETWORK}-internal — the proxy will not be reachable and ALL egress "
+            f"will fail. Allowlist mode requires chat.docker_network: {_COMPOSE_EGRESS_NETWORK}"
+        )
+    if cfg.docker_egress_proxy_url != _COMPOSE_EGRESS_PROXY_URL:
+        out.append(
+            f"chat.docker_egress_proxy_url is {cfg.docker_egress_proxy_url!r}, but compose names "
+            f"the sidecar container agnes-egress-proxy ({_COMPOSE_EGRESS_PROXY_URL})"
+        )
+    # The rails URL is the fourth face of the same assumption. Judge the URL
+    # that actually WINS — agnes_server_url() prefers SERVER_URL over
+    # AGNES_INTERNAL_URL — not merely whether the override happens to be set.
+    # Gating on "is AGNES_INTERNAL_URL present" made this go quiet for an
+    # operator who followed its own advice while the public URL still won, so
+    # the check confirmed a fix that had no effect (Devin Review on #1148).
+    rails = (os.environ.get("SERVER_URL") or os.environ.get("AGNES_INTERNAL_URL") or "").strip()
+    if rails:
+        from urllib.parse import urlparse
+
+        host = urlparse(rails).hostname or ""
+        if host and not sandbox_can_reach_directly(host):
+            src = "SERVER_URL" if (os.environ.get("SERVER_URL") or "").strip() else "AGNES_INTERNAL_URL"
+            out.append(
+                f"the sandbox rails URL resolves from {src} to {host!r}, which the internal "
+                "no-route-out network cannot reach directly. SERVER_URL takes precedence, so "
+                "setting AGNES_INTERNAL_URL alone does NOT fix this — either unset SERVER_URL for "
+                "the chat rails or point it at a container-reachable address (e.g. http://app:8000)"
+            )
+    return out

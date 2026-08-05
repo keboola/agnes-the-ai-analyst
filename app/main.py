@@ -1556,8 +1556,17 @@ async def lifespan(app):
                         cpus=app.state.chat_config.docker_cpus,
                         pids_limit=app.state.chat_config.docker_pids_limit,
                         egress_mode=app.state.chat_config.docker_egress_mode,
+                        egress_proxy_url=app.state.chat_config.docker_egress_proxy_url,
                         max_total_sandboxes=app.state.chat_config.docker_max_total_sandboxes,
                     )
+                    # Allowlist mode fails silently and totally when the app's
+                    # config and the compose-owned proxy sidecar disagree, so
+                    # say which knob is wrong at startup instead of leaving an
+                    # operator to work back from "no egress at all".
+                    from app.chat.config import egress_compose_mismatches
+
+                    for _mismatch in egress_compose_mismatches(app.state.chat_config):
+                        logger.warning("chat egress: %s", _mismatch)
                 else:
                     from app.chat.e2b_provider import E2BProvider
 
