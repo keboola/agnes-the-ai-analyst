@@ -219,6 +219,13 @@ jobs:
           echo "JWT_SECRET_KEY=$(openssl rand -hex 32)" > .env
           docker compose up -d --wait --wait-timeout 60
 
+      - name: Pull the chat-sandbox stand-in image
+        # tests/test_chat_docker_provider_daemon.py skips itself when this
+        # image is absent — without the pull the daemon-backed sandbox tests
+        # silently never ran anywhere in CI (they skipped here too), which is
+        # how an attach-on-paused 409 regression once reached review unseen.
+        run: docker pull python:3.13-slim
+
       - name: Run Docker E2E tests
         run: pytest tests/ -v --tb=short -m docker --timeout=120
         env:

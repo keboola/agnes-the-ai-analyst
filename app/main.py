@@ -240,6 +240,109 @@ def _chat_harness_ok(chat_config) -> bool:
     return False
 
 
+def _chat_docker_rails_url_ok(chat_config) -> bool:
+    """Refuse ``chat.provider=docker`` without a container-reachable rails URL.
+
+    ``agnes_server_url()`` falls back to ``http://127.0.0.1:8000`` when neither
+    ``SERVER_URL`` nor ``AGNES_INTERNAL_URL`` is set. Inside a container's own
+    network namespace that address is the *sandbox*, not Agnes, so every
+    brokered call (the sandbox's only network dependency) would fail with a
+    connection error deep inside a user's chat. Never silently default around
+    it — fail at boot with the fix in the log line.
+
+    Returns True when chat is disabled or the provider is not ``docker``.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "docker":
+        return True
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    url = (os.environ.get("SERVER_URL") or os.environ.get("AGNES_INTERNAL_URL") or "").strip()
+    log = logging.getLogger("app.main")
+    if not url:
+        log.error(
+            "chat.enabled=true with provider=docker requires SERVER_URL or "
+            "AGNES_INTERNAL_URL to be set to a URL the sandbox container can "
+            "reach (e.g. AGNES_INTERNAL_URL=http://app:8000 under compose, or "
+            "http://host.docker.internal:8000 on a bare host); refusing to "
+            "spawn ChatManager",
+        )
+        return False
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    if host in ("127.0.0.1", "localhost", "::1", "0.0.0.0") or host.startswith("127."):
+        log.error(
+            "chat.enabled=true with provider=docker but the sandbox rails URL "
+            "is loopback (%s) — inside the sandbox's network namespace that is "
+            "the sandbox itself, not Agnes. Set AGNES_INTERNAL_URL to a "
+            "container-reachable address; refusing to spawn ChatManager",
+            url,
+        )
+        return False
+    if url.lower().startswith("https://"):
+        # Not a refusal — a public-CA cert verifies fine from the sandbox —
+        # but the common self-hosted shape (reverse proxy with a private-CA
+        # cert) fails every brokered call, and even a valid public origin
+        # routes sandbox↔Agnes traffic out through the proxy. docs/cloud-chat.md
+        # says to prefer the plain-HTTP internal address.
+        log.warning(
+            "provider=docker: the sandbox rails URL resolves to an https:// "
+            "origin (%s). If that certificate is from a private CA the "
+            "in-sandbox relay will reject it (no CA-bundle knob) and every "
+            "brokered call will fail — prefer AGNES_INTERNAL_URL with the "
+            "plain-HTTP internal address (e.g. http://app:8000)",
+            url,
+        )
+    return True
+
+
+async def _chat_docker_sandbox_ok(chat_config) -> bool:
+    """Refuse ``chat.provider=docker`` when the sandbox runner isn't usable.
+
+    Probes the apps-runner sidecar (the only process holding the Docker socket)
+    for daemon reachability + the configured image. A present-but-unbuilt setup
+    otherwise only surfaces at the first user's spawn.
+
+    Never raises: a transport failure is a refusal with an actionable log line,
+    mirroring the e2b gates' behavior.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "docker":
+        return True
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    from app.chat.sandbox_runner_client import SandboxRunnerClient
+
+    image = getattr(chat_config, "docker_image", "") or ""
+    try:
+        # Short deadline: this runs inline in the lifespan, and the client's
+        # 60 s default would stall the whole server start on a black-holing
+        # sidecar address — long enough to trip container health checks.
+        # 8 s matches the admin test-connections probe for the same sidecar.
+        result = await SandboxRunnerClient(timeout=8.0).probe(image)
+    except Exception as exc:  # noqa: BLE001 — classify, never break the lifespan
+        logging.getLogger("app.main").error(
+            "chat.enabled=true with provider=docker but the apps-runner sidecar "
+            "is unreachable (%s). Start it with `docker compose --profile apps up "
+            "-d apps-runner` (or `python -m services.apps_runner` on a bare host) "
+            "and set APPS_RUNNER_URL/APPS_RUNNER_TOKEN; refusing to spawn ChatManager",
+            exc,
+        )
+        return False
+    if not result.get("ok"):
+        logging.getLogger("app.main").error(
+            "chat.enabled=true with provider=docker but the sandbox runner is not "
+            "ready: %s. Build the image from app/initial_workspace_default/"
+            "docker-sandbox/ and set chat.docker_image; refusing to spawn ChatManager",
+            result.get("detail", "unknown"),
+        )
+        return False
+    return True
+
+
 class _SelectiveGZipMiddleware:
     """GZipMiddleware wrapper that skips a set of path prefixes.
 
@@ -1314,12 +1417,13 @@ async def lifespan(app):
             if not role_enabled(Role.GATEWAY):
                 logger.info("chat: disabled in this process (role split; gateway role owns chat)")
                 app.state.chat_manager = None
-            elif app.state.chat_config.provider != "e2b":
+            elif app.state.chat_config.provider not in ("e2b", "docker"):
                 logger.error(
-                    "chat.provider=%r is not supported — only 'e2b' is "
-                    "accepted in production (per Q7 owner decision, "
-                    "MockE2BProvider was dropped). Set chat.provider: e2b "
-                    "in instance.yaml or flip chat.enabled: false.",
+                    "chat.provider=%r is not supported — the accepted values are "
+                    "'e2b' (cloud microVMs) and 'docker' (self-hosted containers "
+                    "via the apps-runner sidecar; see docs/cloud-chat.md). There "
+                    "is deliberately no mock provider. Set chat.provider: e2b or "
+                    "docker in instance.yaml, or flip chat.enabled: false.",
                     app.state.chat_config.provider,
                 )
                 app.state.chat_manager = None
@@ -1361,10 +1465,16 @@ async def lifespan(app):
             elif not _chat_harness_ok(app.state.chat_config):
                 # Fatal already logged inside the helper.
                 app.state.chat_manager = None
+            elif not _chat_docker_rails_url_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
+            # Last of the gates: the only one that does network I/O.
+            elif not await _chat_docker_sandbox_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
             else:
                 from typing import Optional
                 from app.chat.workdir import WorkdirManager
-                from app.chat.e2b_provider import E2BProvider
                 from app.chat.manager import ChatManager, agnes_server_url
                 from app.version import APP_VERSION as _APP_VERSION_CHAT
 
@@ -1417,21 +1527,55 @@ async def lifespan(app):
                     render_workspace_prompt=_render_workspace_prompt,
                     marketplace_sha_debounce_seconds=app.state.chat_config.marketplace_sha_debounce_seconds,
                 )
-                # E2B sandboxes are capped at 1 hour (3600 s) by the platform.
-                # If chat.max_session_seconds is higher (default 4 h), clamp here
-                # so AsyncSandbox.create() doesn't 400. The idle reaper / per-tool
-                # caps still enforce shorter limits as configured; this just
-                # prevents the spawn call from failing fast on the upper bound.
-                E2B_SANDBOX_MAX_SECONDS = 3600
-                provider = E2BProvider(
-                    api_key=os.environ.get("E2B_API_KEY", ""),
-                    template_id=app.state.chat_config.e2b_template_id or "",
-                    sandbox_timeout_seconds=min(
-                        app.state.chat_config.max_session_seconds,
-                        E2B_SANDBOX_MAX_SECONDS,
-                    ),
-                    egress_allow_out=app.state.chat_config.egress_allow_out,
-                )
+                if app.state.chat_config.provider == "docker":
+                    from app.chat.docker_provider import DockerSandboxProvider
+
+                    if _chat_coordination_backend() == "redis":
+                        # Not a refusal: single-host role-split (api/gateway/
+                        # worker on one daemon) is supported and looks the
+                        # same from here. What docs/cloud-chat.md rules out is
+                        # multi-HOST gateways — each host's daemon only sees
+                        # its own containers, so cross-gateway takeover cannot
+                        # destroy the other host's sandbox. Boot can't tell
+                        # the two apart; say it loudly and continue.
+                        logging.getLogger("app.main").warning(
+                            "provider=docker with coordination.backend=redis: "
+                            "multi-HOST gateways are unsupported with the docker "
+                            "provider (each host's daemon only sees its own "
+                            "containers; cross-gateway takeover cannot reach the "
+                            "other host's sandbox — see docs/cloud-chat.md "
+                            "Limitations). Single-host role-split is fine.",
+                        )
+                    # No lifetime clamp: a local container has no platform cap,
+                    # so chat.max_session_seconds (default 4 h) applies as
+                    # configured and the idle/lifetime reapers enforce it.
+                    provider = DockerSandboxProvider(
+                        image=app.state.chat_config.docker_image,
+                        network=app.state.chat_config.docker_network,
+                        mem_limit=app.state.chat_config.docker_mem_limit,
+                        cpus=app.state.chat_config.docker_cpus,
+                        pids_limit=app.state.chat_config.docker_pids_limit,
+                        egress_mode=app.state.chat_config.docker_egress_mode,
+                        max_total_sandboxes=app.state.chat_config.docker_max_total_sandboxes,
+                    )
+                else:
+                    from app.chat.e2b_provider import E2BProvider
+
+                    # E2B sandboxes are capped at 1 hour (3600 s) by the platform.
+                    # If chat.max_session_seconds is higher (default 4 h), clamp here
+                    # so AsyncSandbox.create() doesn't 400. The idle reaper / per-tool
+                    # caps still enforce shorter limits as configured; this just
+                    # prevents the spawn call from failing fast on the upper bound.
+                    E2B_SANDBOX_MAX_SECONDS = 3600
+                    provider = E2BProvider(
+                        api_key=os.environ.get("E2B_API_KEY", ""),
+                        template_id=app.state.chat_config.e2b_template_id or "",
+                        sandbox_timeout_seconds=min(
+                            app.state.chat_config.max_session_seconds,
+                            E2B_SANDBOX_MAX_SECONDS,
+                        ),
+                        egress_allow_out=app.state.chat_config.egress_allow_out,
+                    )
                 mgr = ChatManager(
                     provider=provider,
                     workdir_mgr=workdir_mgr,
@@ -1447,11 +1591,17 @@ async def lifespan(app):
                     if int(os.environ.get("UVICORN_WORKERS", "1")) <= 1 and _chat_is_all_in_one()
                     else "multi-worker/replica (coordination.backend=redis)"
                 )
+                _chat_sandbox_desc = (
+                    f"image={app.state.chat_config.docker_image}, egress={app.state.chat_config.docker_egress_mode}"
+                    if app.state.chat_config.provider == "docker"
+                    else f"template={app.state.chat_config.e2b_template_id}"
+                )
                 logger.info(
-                    "chat.enabled: ChatManager started (provider=e2b, "
-                    "template=%s, idle_ttl=%ds, concurrency_per_user=%d, "
+                    "chat.enabled: ChatManager started (provider=%s, "
+                    "%s, idle_ttl=%ds, concurrency_per_user=%d, "
                     "topology=%s)",
-                    app.state.chat_config.e2b_template_id,
+                    app.state.chat_config.provider,
+                    _chat_sandbox_desc,
                     app.state.chat_config.idle_ttl_seconds,
                     app.state.chat_config.concurrency_per_user,
                     _chat_topology,
