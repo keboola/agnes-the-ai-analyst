@@ -106,7 +106,44 @@ class PullResult:
     stack_sync: object = None
 
 
-_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+# Dots are allowed: `app/api/admin.py` derives a table_id from an admin-supplied
+# display name via `.strip().lower().replace(" ", "_")`, which preserves dots, so
+# `orders.v2` is a legitimate registered id. `_safe_manifest_tables` rejects the
+# path-meaningful dot spellings (`.`, `..`, leading dot) separately — the regex
+# alone would admit them.
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
+
+
+def _safe_manifest_tables(raw: dict) -> tuple[dict, list[str]]:
+    """Split a manifest's ``tables`` dict into (kept, dropped_ids).
+
+    A table id from the manifest becomes BOTH a filesystem path segment
+    (``<tid>.parquet`` and its ``.verify.tmp`` sidecar under
+    ``<workspace>/server/parquet/``) and a DuckDB view identifier. This file
+    already gates collection ids, doc slugs and item ids through
+    ``_SAFE_ID_RE``; the manifest table id was the one that was missed
+    (2026-08-05 audit, F-4b).
+
+    Honest severity: the server is the analyst's own authenticated Agnes
+    instance, which already ships executable plugin content to this laptop via
+    the marketplace bundle — so this narrows a trust boundary rather than
+    closing an open door. It is a one-line gate either way.
+
+    Returns dropped ids rather than raising or collecting into
+    ``PullResult.errors``: ``cli/commands/pull.py`` turns a non-empty ``errors``
+    list into ``typer.Exit(1)``, including on the ``--quiet`` SessionStart hook
+    path, so one odd id would make every subsequent ``agnes pull`` fail.
+    """
+    kept: dict = {}
+    dropped: list[str] = []
+    for tid, info in (raw or {}).items():
+        # `.`/`..`/leading-dot pass the charset check but are path-meaningful.
+        if not isinstance(tid, str) or tid.startswith(".") or not _SAFE_ID_RE.match(tid):
+            dropped.append(tid)
+            continue
+        kept[tid] = info
+    return kept, dropped
+
 
 # #596 — hash-mismatch recovery in `_download_one`. A download whose bytes
 # don't match the manifest hash is treated as transient (corrupt mid-flight
@@ -467,9 +504,7 @@ def _override_server_env(server_url: str, token: str) -> Iterator[None]:
             os.environ["AGNES_TOKEN"] = prev_token
 
 
-def _diff_parts(
-    server_parts: list[dict], local_parts: dict, table_dir: Path
-) -> tuple[list[dict], set[str]]:
+def _diff_parts(server_parts: list[dict], local_parts: dict, table_dir: Path) -> tuple[list[dict], set[str]]:
     """Compute ``(fetch, prune)`` for a partitioned table.
 
     ``fetch`` = server part dicts whose local hash differs OR whose file is
@@ -480,9 +515,7 @@ def _diff_parts(
     """
     server_by_path = {p["path"]: p for p in server_parts}
     fetch = [
-        p
-        for path, p in server_by_path.items()
-        if local_parts.get(path) != p["hash"] or not (table_dir / path).exists()
+        p for path, p in server_by_path.items() if local_parts.get(path) != p["hash"] or not (table_dir / path).exists()
     ]
     on_disk: set[str] = set()
     if table_dir.is_dir():
@@ -625,7 +658,18 @@ def run_pull(
             result.duration_s = time.monotonic() - started
             return result
 
-        server_tables = manifest.get("tables", {}) or {}
+        server_tables, unsafe_tids = _safe_manifest_tables(manifest.get("tables", {}) or {})
+        if unsafe_tids:
+            # stderr, not result.errors: a non-empty errors list makes
+            # `agnes pull` exit 1 (cli/commands/pull.py), including on the
+            # --quiet SessionStart hook path. Visible, but not fatal.
+            import sys as _sys
+
+            print(
+                f"warning: skipped {len(unsafe_tids)} table(s) with an unsafe id: "
+                f"{', '.join(repr(t) for t in unsafe_tids[:5])}",
+                file=_sys.stderr,
+            )
         local_state = get_sync_state()
         local_tables = local_state.get("tables", {})
 
@@ -1446,7 +1490,9 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
                         continue
                     abs_path = str(entry.resolve()).replace("'", "''")
                     try:
-                        conn.execute(f"CREATE VIEW {quote_ident(view_name)} AS SELECT * FROM read_parquet('{abs_path}')")
+                        conn.execute(
+                            f"CREATE VIEW {quote_ident(view_name)} AS SELECT * FROM read_parquet('{abs_path}')"
+                        )
                     except duckdb.Error:
                         continue
     finally:
