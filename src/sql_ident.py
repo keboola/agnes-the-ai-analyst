@@ -1,10 +1,16 @@
 """SQL identifier quoting — one implementation for the whole codebase.
 
-Lived in ``src/profiler.py`` until the 2026-08-05 audit found ~40 sites across
-connectors, the CLI, the orchestrator and the migration scripts still building
-``f'"{name}"'`` by hand. A shared module (plus the ratchet guard in
-``tests/test_security_audit_20260805.py``) is what keeps that from coming back:
-a rule that lives inside one module gets re-invented outside it.
+Lived in ``src/profiler.py`` until the 2026-08-05 audit found dozens of sites
+across the connectors, the CLI, the orchestrator, the query API and the migration
+scripts still building ``f'"{name}"'`` by hand. A shared module (plus the ratchet
+guard in ``tests/test_security_audit_20260805.py``) is what keeps that from coming
+back: a rule that lives inside one module gets re-invented outside it.
+
+Not everything that looks like an identifier is one. ATTACH aliases (``kbc``,
+``bq``, the orchestrator's per-source alias) are catalog names supplied by this
+code, not values to quote — quoting them resolves the same in DuckDB but
+misrepresents what they are, and the first pass of that sweep got it wrong in
+exactly one place before review caught it.
 
 ``src.profiler`` re-exports ``quote_ident`` so existing importers keep working.
 """

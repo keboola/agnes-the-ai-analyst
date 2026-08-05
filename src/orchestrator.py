@@ -731,7 +731,7 @@ class SyncOrchestrator:
         table via a throwaway READ-ONLY connection opened directly on
         ``db_file`` (``SELECT * FROM "<table>"`` — the identical
         expression the legacy master view uses,
-        ``SELECT * FROM {source}."{table}"``) rather than ATTACHing the
+        ``SELECT * FROM <source>.<table>``) rather than ATTACHing the
         extract onto the long-lived DuckLake writer connection.
 
         That choice is deliberate, not cosmetic:
@@ -904,14 +904,19 @@ class SyncOrchestrator:
 
                 try:
                     if not schema_created:
-                        write_conn.execute(f'CREATE SCHEMA IF NOT EXISTS lake."{source_name}"')
+                        # `source_name` is a SCHEMA name inside the `lake`
+                        # catalog here, so it is quoted — unlike its other role
+                        # in this module as a bare ATTACH alias (`{source_name}.`
+                        # at :1006 and in _attach_and_create_views).
+                        write_conn.execute(f"CREATE SCHEMA IF NOT EXISTS lake.{quote_ident(source_name)}")
                         schema_created = True
                     write_conn.execute(
-                        f'CREATE OR REPLACE TABLE lake."{source_name}"."{table_name}" AS SELECT * FROM arrow_batches'
+                        f"CREATE OR REPLACE TABLE lake.{quote_ident(source_name)}.{quote_ident(table_name)} "
+                        f"AS SELECT * FROM arrow_batches"
                     )
                     write_conn.execute(
-                        f'CREATE OR REPLACE VIEW lake."main"."{table_name}" AS '
-                        f'SELECT * FROM lake."{source_name}"."{table_name}"'
+                        f'CREATE OR REPLACE VIEW lake."main".{quote_ident(table_name)} AS '
+                        f"SELECT * FROM lake.{quote_ident(source_name)}.{quote_ident(table_name)}"
                     )
                     tables.append(table_name)
                 except Exception as e:
@@ -1003,7 +1008,11 @@ class SyncOrchestrator:
                     continue
                 try:
                     write_conn.execute(
-                        f'CREATE OR REPLACE VIEW lake."main"."{name}" AS SELECT * FROM {source_name}."{name}"'
+                        # `source_name` stays BARE — here it is the ATTACH alias,
+                        # not a schema inside `lake`. See the CREATE SCHEMA above
+                        # for the other role.
+                        f'CREATE OR REPLACE VIEW lake."main".{quote_ident(name)} AS '
+                        f"SELECT * FROM {source_name}.{quote_ident(name)}"
                     )
                     created_remote_names.add(name)
                 except Exception as e:
@@ -1045,7 +1054,7 @@ class SyncOrchestrator:
             if view_name in expected_names or not _validate_identifier(view_name, "table_name"):
                 continue
             try:
-                write_conn.execute(f'DROP VIEW IF EXISTS lake."main"."{view_name}"')
+                write_conn.execute(f'DROP VIEW IF EXISTS lake."main".{quote_ident(view_name)}')
                 logger.info("DuckLake reconcile: dropped stale lake.main view %s", view_name)
             except Exception as e:
                 logger.warning("DuckLake reconcile: could not drop stale lake.main view %s: %s", view_name, e)
@@ -1138,7 +1147,14 @@ class SyncOrchestrator:
 
                 try:
                     conn.execute(
-                        f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM {quote_ident(source_name)}.{quote_ident(table_name)}"
+                        # `source_name` is the ATTACH alias and stays BARE, matching
+                        # every other use of it in this module (`ATTACH … AS
+                        # {source_name}`, `FROM {source_name}._meta`). Quoting it
+                        # resolves identically in DuckDB, but the sweep that
+                        # introduced quotes here was overreach — the alias is not
+                        # an identifier this module owns.
+                        f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS "
+                        f"SELECT * FROM {source_name}.{quote_ident(table_name)}"
                     )
                     tables.append(table_name)
                 except Exception as e:

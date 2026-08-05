@@ -1044,7 +1044,11 @@ def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], 
     if not (is_safe_quoted_identifier(bucket) and is_safe_quoted_identifier(source_table)):
         raise ValueError(f"unsafe bucket/source_table: {bucket!r}/{source_table!r}")
     safe_pq_lit = pq_path.replace("'", "''")
-    conn.execute(f'COPY (SELECT * FROM kbc."{bucket}"."{source_table}") TO \'{safe_pq_lit}\' (FORMAT PARQUET)')
+    # `kbc` is the ATTACH alias and stays bare; bucket/source_table are identifiers.
+    conn.execute(
+        f"COPY (SELECT * FROM kbc.{quote_ident(bucket)}.{quote_ident(source_table)}) "
+        f"TO '{safe_pq_lit}' (FORMAT PARQUET)"
+    )
 
 
 def _legacy_worker(tc_pq, keboola_url: str, keboola_token: str):

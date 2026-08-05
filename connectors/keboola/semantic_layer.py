@@ -1158,7 +1158,9 @@ def compose_join_sql(
     on_alias1, on_col1, on_alias2, on_col2 = parse_on_clause(on)  # type: ignore[misc]
     remapped_alias1 = "t" if on_alias1 == to_alias else "j"
     remapped_alias2 = "t" if on_alias2 == to_alias else "j"
-    remapped_on = f'{remapped_alias1}."{on_col1}" = {remapped_alias2}."{on_col2}"'
+    # Aliases (`t`/`j`) are literals chosen above and stay bare; the columns come
+    # from the parsed ON clause and are identifiers.
+    remapped_on = f"{remapped_alias1}.{quote_ident(on_col1)} = {remapped_alias2}.{quote_ident(on_col2)}"
 
     return f"SELECT {rewritten_expression} FROM {quote_ident(primary_table)} AS t LEFT JOIN {quote_ident(joined_table)} AS j ON {remapped_on}"
 

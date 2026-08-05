@@ -34,14 +34,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-- **`quote_ident` moved to `src/sql_ident.py` and every quoted SQL identifier in
-  the codebase now routes through it** — 43 sites across the connectors, the
-  orchestrator, the CLI and the DuckDB→Postgres migration tooling were still
-  building `f'"{name}"'` by hand. Two of them were already escaping correctly
-  inline and are converted only so the new ratchet guard has one shape to match.
-  `src.profiler` re-exports the function, so existing importers are unchanged.
-  A guard in `tests/test_security_audit_20260805.py` fails on any new
-  bare-quoted identifier; its allowlist is empty and must stay empty.
+- **`quote_ident` moved to `src/sql_ident.py`; 54 bare-quoted SQL identifiers now
+  route through it** — across the connectors, the orchestrator, the query API,
+  the CLI and the DuckDB→Postgres migration tooling, all still building
+  `f'"{name}"'` by hand. Two of them were already escaping correctly inline and
+  are converted only so the ratchet guard has one shape to match; none of the
+  conversions changes the emitted SQL for an identifier that passes the existing
+  validation gates. ATTACH aliases (`kbc`, `bq`, and the orchestrator's
+  per-source alias) are deliberately left unquoted — they are catalog names, not
+  identifiers this code owns. `src.profiler` re-exports the function, so existing
+  importers are unchanged.
+  A guard in `tests/test_security_audit_20260805.py` fails on any new bare-quoted
+  identifier, in both plain (`FROM "{t}"`) and qualified (`lake."{schema}"."{t}"`)
+  position; its allowlist is empty and must stay empty.
 - Test fixtures use `example.com` instead of a specific deployment's hostname,
   per the vendor-agnostic rule in `CLAUDE.md`.
 - `.gitignore` now ignores a `.venv` **symlink**, not just a directory. Parallel

@@ -330,7 +330,19 @@ def test_f2_scrub_runs_even_when_ref_validation_rejects_the_row(tmp_path, monkey
 # ── F-4: every quoted SQL identifier routes through quote_ident ──
 
 # Statement positions where a bare `"{var}"` is an IDENTIFIER, not a literal.
-_IDENT_POSITION_RE = r'(VIEW|TABLE|DESCRIBE|FROM|INTO)\s+\\?"\{'
+#
+# Two alternatives, and the second one is load-bearing:
+#   1. a keyword, optionally followed by a qualifier prefix — `FROM "{t}"`,
+#      `FROM lake."{t}"`
+#   2. ANY dot immediately before the quote — `lake."{schema}"."{table}"`,
+#      `{source_name}."{name}"`
+#
+# The first version of this guard had only alternative 1, so it could not see a
+# qualified name whose quoted part follows a dot. That blind spot sat in exactly
+# the multi-part-identifier class this sweep is about, and it made the guard's
+# own "allowlist is empty" claim true only by not looking. Caught in review, not
+# by the test — which is the point of writing it down here.
+_IDENT_POSITION_RE = r'(?:(?:VIEW|TABLE|DESCRIBE|FROM|INTO|JOIN)\s+[\w.]*|\.)\\?"\{'
 
 
 def test_f4_no_bare_quoted_identifier_interpolation():
