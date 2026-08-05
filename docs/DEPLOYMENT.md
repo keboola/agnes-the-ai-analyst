@@ -523,7 +523,12 @@ for the Caddy snippet to append to your reverse proxy.
   sidecar's API is unpublished (internal Compose network only),
   token-gated (`X-Runner-Token`), and narrow: it only ever runs the
   configured, allowlisted runtime image with fixed mounts, never an
-  arbitrary image or volume.
+  arbitrary image or volume. The same sidecar also serves the chat-sandbox
+  API (`/sandboxes/*`, used only when `chat.provider: docker` — see
+  [`cloud-chat.md`](cloud-chat.md#docker-provider-self-hosted)); it has its
+  own image allowlist (`CHAT_SANDBOX_IMAGE_PREFIX`), can address only
+  `agnes-chatsbx-*` containers, and validates every bind mount, so enabling
+  data apps does not widen what chat can do or vice versa.
 - Data access is **owner-inherited**: an app's REST calls run under a token
   scoped to the app owner's own grants (see spec §8). Granting someone
   access to view/open an *app* is therefore an act of publication — they see

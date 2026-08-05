@@ -129,19 +129,48 @@ def _docker_errors(fn):
     ``requests.exceptions.ConnectionError`` from the transport — becomes a
     502 ``docker_error: <message>``. ``HTTPException`` raised deliberately by
     the handler (401/400/404) passes through unchanged.
-    """
 
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
+    Async handlers (the chat-sandbox attach stream) get an async wrapper so
+    FastAPI still awaits them — a sync wrapper would return the coroutine
+    object instead of running it.
+    """
+    import asyncio
+
+    def _map(exc: Exception):
         import docker.errors
         import requests.exceptions
 
+        if isinstance(exc, docker.errors.ImageNotFound):
+            return HTTPException(status_code=400, detail="image_not_found")
+        if isinstance(
+            exc, (docker.errors.APIError, docker.errors.DockerException, requests.exceptions.ConnectionError)
+        ):
+            return HTTPException(status_code=502, detail=f"docker_error: {exc}")
+        return None
+
+    if asyncio.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def awrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as exc:
+                mapped = _map(exc)
+                if mapped is not None:
+                    raise mapped from exc
+                raise
+
+        return awrapper
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
-        except docker.errors.ImageNotFound as exc:
-            raise HTTPException(status_code=400, detail="image_not_found") from exc
-        except (docker.errors.APIError, docker.errors.DockerException, requests.exceptions.ConnectionError) as exc:
-            raise HTTPException(status_code=502, detail=f"docker_error: {exc}") from exc
+        except Exception as exc:
+            mapped = _map(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise
 
     return wrapper
 
@@ -269,3 +298,13 @@ def list_apps(x_runner_token: str | None = Header(default=None)):
         if c.name.startswith("agnes-dataapp-")
     ]
     return {"apps": rows}
+
+
+# The chat-sandbox half of the socket API (`/sandboxes/*`, used by the chat
+# gateway's DockerSandboxProvider). Imported at the bottom, after the helpers
+# above exist: sandbox_api reaches back into this module lazily for
+# `_docker`/`_check_token`/`_container`/`_resolve_host_path` so both halves
+# share one Docker seam (and one monkeypatch point in tests).
+from services.apps_runner.sandbox_api import router as _sandbox_router
+
+app.include_router(_sandbox_router)

@@ -158,6 +158,14 @@ services:
       # silent auth bypass.
       - APPS_RUNNER_TOKEN=${APPS_RUNNER_TOKEN:-}
       - APPS_RUNNER_IMAGE_PREFIX=${APPS_RUNNER_IMAGE_PREFIX:-keboolapublic.azurecr.io/data-app-python-js}
+      # Image-prefix allowlist for the chat-sandbox half of the API
+      # (/sandboxes/*, used when chat.provider=docker). Separate from the
+      # data-app prefix above: the two features run entirely different
+      # images. The sandbox image is operator-built — see
+      # app/initial_workspace_default/docker-sandbox/README.md — so the
+      # default matches the default chat.docker_image tag. Same fail-closed
+      # posture as the token: an empty prefix rejects every create.
+      - CHAT_SANDBOX_IMAGE_PREFIX=${CHAT_SANDBOX_IMAGE_PREFIX:-agnes-chat-sandbox}
     # The bind-mounted docker socket is owned by root:docker, and its gid
     # varies per host. The agnes image runs as the non-root uid 999 (USER
     # agnes in the Dockerfile), so the sidecar can only talk to the daemon if

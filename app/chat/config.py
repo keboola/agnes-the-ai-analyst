@@ -29,9 +29,10 @@ class SlackConfig:
 @dataclass(frozen=True)
 class ChatConfig:
     enabled: bool = False
-    # Sandbox provider id. ``e2b`` is the only production-supported
-    # value; future variants (mock_e2b for tests, sandbox-as-a-service
-    # alternatives) would extend the gate in ``app/main.py``.
+    # Sandbox provider id. ``e2b`` (cloud microVMs) and ``docker``
+    # (self-hosted containers, driven through the apps-runner sidecar)
+    # are the production-supported values; a further variant would
+    # extend the gate in ``app/main.py``.
     provider: str = "e2b"
     # Agent harness id — which engine drives the in-sandbox session
     # (app/chat/harness.py seam; validated against APPROVED_HARNESSES at
@@ -67,8 +68,33 @@ class ChatConfig:
     # directly once the broker is live — Anthropic traffic goes via the relay.
     egress_allow_out: list[str] = field(default_factory=list)
     # Per-spawn workspace push cap (Q1, 100 MB default). Files past this
-    # cap → WorkspaceTooLarge → user-facing error frame.
+    # cap → WorkspaceTooLarge → user-facing error frame. Irrelevant under
+    # ``provider: docker`` — that provider bind-mounts the workspace, so
+    # nothing is pushed and nothing is capped.
     e2b_workspace_max_bytes: int = 100 * 1024 * 1024
+    # --- Docker sandbox provider (``provider: docker``) ---------------------
+    # Operator-built sandbox image (see
+    # app/initial_workspace_default/docker-sandbox/). The apps-runner sidecar
+    # additionally enforces CHAT_SANDBOX_IMAGE_PREFIX, so a tag outside the
+    # allowlisted prefix is refused at create time.
+    docker_image: str = "agnes-chat-sandbox:latest"
+    # Docker network the sandbox joins. Must be one the Agnes app is also
+    # attached to, or AGNES_SERVER won't resolve from inside the container.
+    docker_network: str = "agnes-apps"
+    # Always-set resource bounds (a local sandbox contends with the gateway
+    # host, unlike an offloaded E2B microVM).
+    docker_mem_limit: str = "2g"
+    docker_cpus: float = 1.0
+    docker_pids_limit: int = 512
+    # ``open`` — normal bridge, internet reachable (parity with in-sandbox
+    # tools that fetch packages). ``none`` — an ``internal`` bridge where the
+    # only reachable origin is whatever else is attached to it (stronger than
+    # E2B's allowlist, but in-sandbox package installs stop working).
+    # Hostname-level allowlisting is not offered here; see docs/cloud-chat.md.
+    docker_egress_mode: str = "open"
+    # Host-wide ceiling on live sandboxes, checked at spawn on top of
+    # ``concurrency_per_user``.
+    docker_max_total_sandboxes: int = 10
     # Lifecycle when the last sink detaches: "pause" (E2B snapshot, resumable)
     # or "kill" (legacy cost-minimizing behavior).
     # Deprecated: use on_detach instead of e2b_kill_on_ws_disconnect.
@@ -171,12 +197,66 @@ def _parse_slack_config(raw_chat: dict) -> SlackConfig:
     return SlackConfig(transport=transport)
 
 
+def _raw_str(raw: dict, key: str, default: str) -> str:
+    """``raw[key]`` as a string, treating an absent, blank, or null value as
+    ``default``.
+
+    A key written with nothing after it (``docker_egress_mode:``) parses to
+    YAML null; the naive ``str(raw.get(key, default))`` then yields ``"None"``
+    — or, lowercased, the *valid-looking* mode ``"none"``, silently cutting
+    the sandbox off from the internet (the same trap #1148 fixed for the
+    egress proxy's mode; it also bit ``provider``/``harness`` here, where a
+    blank key turned into the literal provider ``"None"`` and failed the boot
+    gate instead of meaning "use the default").
+    """
+    value = raw.get(key, default)
+    text = str(value).strip() if value is not None else ""
+    return text or default
+
+
+def _raw_number(raw: dict, key: str, default, cast):
+    """Numeric sibling of :func:`_raw_str`: absent, blank, or null →
+    ``default``; a value that doesn't parse warns and falls back instead of
+    aborting the whole chat config load (``int(None)``/``float(None)`` used
+    to raise out of ``load_chat_config``, turning one blank key into chat
+    being disabled at boot)."""
+    value = raw.get(key, default)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return cast(default)
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        logger.warning("invalid chat.%s %r — falling back to %r", key, value, default)
+        return cast(default)
+
+
+def _raw_int(raw: dict, key: str, default: int) -> int:
+    return _raw_number(raw, key, default, int)
+
+
+def _raw_float(raw: dict, key: str, default: float) -> float:
+    return _raw_number(raw, key, default, float)
+
+
+def _parse_docker_egress_mode(raw: dict) -> str:
+    """``open`` | ``none``; anything else warns and falls back to ``open``
+    (same normalize-don't-crash convention as ``_parse_on_detach``)."""
+    mode = _raw_str(raw, "docker_egress_mode", "open").lower()
+    if mode not in ("open", "none"):
+        logger.warning("unknown chat.docker_egress_mode %r — falling back to 'open'", mode)
+        mode = "open"
+    return mode
+
+
 def _parse_on_detach(raw: dict) -> str:
-    on_detach = str(raw.get("on_detach", "")).strip().lower()
+    on_detach = _raw_str(raw, "on_detach", "").lower()
     if on_detach not in ("pause", "kill"):
         if on_detach:
             logger.warning("unknown chat.on_detach %r — falling back to 'pause'", on_detach)
-        if "e2b_kill_on_ws_disconnect" in raw and bool(raw["e2b_kill_on_ws_disconnect"]):
+        # Same parser as the ChatConfig echo of this key — plain truthiness
+        # here would read the string "no" as kill-enabled while the config
+        # surface reports it disabled.
+        if coerce_flag_value(raw.get("e2b_kill_on_ws_disconnect"), default=False):
             logger.warning("chat.e2b_kill_on_ws_disconnect is deprecated; use chat.on_detach: kill")
             on_detach = "kill"
         else:
@@ -226,46 +306,53 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         return ChatConfig(enabled=_resolve_chat_enabled({}), approvals_enabled=_resolve_chat_approvals({}))
     data = yaml.safe_load(instance_yaml.read_text()) or {}
     raw = data.get("chat", {}) or {}
-    detach_linger_seconds = int(raw.get("detach_linger_seconds", 60))
+    detach_linger_seconds = _raw_int(raw, "detach_linger_seconds", 60)
     return ChatConfig(
         enabled=_resolve_chat_enabled(raw),
-        provider=str(raw.get("provider", "e2b")),
-        harness=str(raw.get("harness", "claude-code")),
-        concurrency_per_user=int(raw.get("concurrency_per_user", 3)),
-        idle_ttl_seconds=int(raw.get("idle_ttl_seconds", 30 * 60)),
-        per_tool_call_seconds=int(raw.get("per_tool_call_seconds", 90)),
-        per_session_bq_scan_bytes=int(raw.get("per_session_bq_scan_bytes", 20 * 1024**3)),
-        daily_anthropic_spend_usd=float(raw.get("daily_anthropic_spend_usd", 20.0)),
-        max_session_seconds=int(raw.get("max_session_seconds", 4 * 3600)),
-        max_session_tokens=int(raw.get("max_session_tokens", 200_000)),
-        rate_messages_per_hour=int(raw.get("rate_messages_per_hour", 100)),
-        tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
-        approval_timeout_seconds=int(raw.get("approval_timeout_seconds", 300)),
+        provider=_raw_str(raw, "provider", "e2b"),
+        harness=_raw_str(raw, "harness", "claude-code"),
+        concurrency_per_user=_raw_int(raw, "concurrency_per_user", 3),
+        idle_ttl_seconds=_raw_int(raw, "idle_ttl_seconds", 30 * 60),
+        per_tool_call_seconds=_raw_int(raw, "per_tool_call_seconds", 90),
+        per_session_bq_scan_bytes=_raw_int(raw, "per_session_bq_scan_bytes", 20 * 1024**3),
+        daily_anthropic_spend_usd=_raw_float(raw, "daily_anthropic_spend_usd", 20.0),
+        max_session_seconds=_raw_int(raw, "max_session_seconds", 4 * 3600),
+        max_session_tokens=_raw_int(raw, "max_session_tokens", 200_000),
+        rate_messages_per_hour=_raw_int(raw, "rate_messages_per_hour", 100),
+        tool_calls_per_turn_budget=_raw_int(raw, "tool_calls_per_turn_budget", 50),
+        approval_timeout_seconds=_raw_int(raw, "approval_timeout_seconds", 300),
         approvals_enabled=_resolve_chat_approvals(raw),
-        marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
+        marketplace_sha_debounce_seconds=_raw_int(raw, "marketplace_sha_debounce_seconds", 5 * 60),
         e2b_template_id=raw.get("e2b_template_id") or None,
         egress_allow_out=list(raw.get("egress_allow_out") or []),
-        e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
+        e2b_workspace_max_bytes=_raw_int(raw, "e2b_workspace_max_bytes", 100 * 1024 * 1024),
+        docker_image=str(raw.get("docker_image") or "agnes-chat-sandbox:latest"),
+        docker_network=str(raw.get("docker_network") or "agnes-apps"),
+        docker_mem_limit=str(raw.get("docker_mem_limit") or "2g"),
+        docker_cpus=_raw_float(raw, "docker_cpus", 1.0),
+        docker_pids_limit=_raw_int(raw, "docker_pids_limit", 512),
+        docker_egress_mode=_parse_docker_egress_mode(raw),
+        docker_max_total_sandboxes=_raw_int(raw, "docker_max_total_sandboxes", 10),
         on_detach=_parse_on_detach(raw),
         detach_linger_seconds=detach_linger_seconds,
         # Falls back to detach_linger_seconds's own resolved value when the
         # operator's instance.yaml doesn't set idle_grace_seconds explicitly
         # — see ChatConfig.idle_grace_seconds's docstring.
-        idle_grace_seconds=int(raw.get("idle_grace_seconds", detach_linger_seconds)),
-        paused_ttl_seconds=int(raw.get("paused_ttl_seconds", 7 * 24 * 3600)),
-        e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
-        bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
-        llm_auth=str((raw.get("llm") or {}).get("auth", "api_key")).strip().lower() or "api_key",
+        idle_grace_seconds=_raw_int(raw, "idle_grace_seconds", detach_linger_seconds),
+        paused_ttl_seconds=_raw_int(raw, "paused_ttl_seconds", 7 * 24 * 3600),
+        e2b_kill_on_ws_disconnect=coerce_flag_value(raw.get("e2b_kill_on_ws_disconnect"), default=True),
+        bootstrap_marketplace=coerce_flag_value(raw.get("bootstrap_marketplace"), default=False),
+        llm_auth=_raw_str(raw.get("llm") or {}, "auth", "api_key").lower(),
         agent_api_utility_models=list(raw.get("agent_api_utility_models") or []),
-        agent_api_budget_cache_ttl_s=int(raw.get("agent_api_budget_cache_ttl_s", 60)),
-        agent_api_artifact_max_bytes=int(raw.get("agent_api_artifact_max_bytes", 25 * 1024 * 1024)),
-        agent_api_artifact_max_files=int(raw.get("agent_api_artifact_max_files", 20)),
-        agent_api_webhook_max_failures=int(raw.get("agent_api_webhook_max_failures", 5)),
-        agent_memory_max_chars=int(raw.get("agent_memory_max_chars", 2000)),
-        agent_memory_writes_per_hour=int(raw.get("agent_memory_writes_per_hour", 20)),
-        agent_memory_max_pending=int(raw.get("agent_memory_max_pending", 100)),
+        agent_api_budget_cache_ttl_s=_raw_int(raw, "agent_api_budget_cache_ttl_s", 60),
+        agent_api_artifact_max_bytes=_raw_int(raw, "agent_api_artifact_max_bytes", 25 * 1024 * 1024),
+        agent_api_artifact_max_files=_raw_int(raw, "agent_api_artifact_max_files", 20),
+        agent_api_webhook_max_failures=_raw_int(raw, "agent_api_webhook_max_failures", 5),
+        agent_memory_max_chars=_raw_int(raw, "agent_memory_max_chars", 2000),
+        agent_memory_writes_per_hour=_raw_int(raw, "agent_memory_writes_per_hour", 20),
+        agent_memory_max_pending=_raw_int(raw, "agent_memory_max_pending", 100),
         # Inert (see the field's own comment above) — parsed and stored for
         # forward-compat with the not-yet-built reaper, not read anywhere yet.
-        agent_memory_pending_ttl_days=int(raw.get("agent_memory_pending_ttl_days", 30)),
+        agent_memory_pending_ttl_days=_raw_int(raw, "agent_memory_pending_ttl_days", 30),
         slack=_parse_slack_config(raw),
     )

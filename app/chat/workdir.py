@@ -19,6 +19,19 @@ from app.chat.persistence import ChatRepository
 
 logger = logging.getLogger(__name__)
 
+#: Workspace entries ``prepare_session_dir`` symlinks into a session dir
+#: (``CLAUDE.local.md`` only when ``include_personal_override``). "scaffolds"
+#: carries the data-apps starter templates the agnes-data-apps-extras skill
+#: copies from (wave 3C) — without it the sandbox's /work has no scaffolds/
+#: and the skill's very first ``cp -R scaffolds/...`` step fails. Co-sessions
+#: deliberately get no workspace symlinks (see prepare_ephemeral_session_dir),
+#: so app scaffolding is a solo-session capability.
+#:
+#: The docker provider's profile-session mounts are derived from this SAME
+#: list (``app/chat/docker_provider.py``) — the allowlist of what a profiled
+#: sandbox may see must never be inferred from the agent-writable session dir.
+WORKSPACE_LINK_ENTRIES = (".claude", "CLAUDE.md", "snapshots", "scripts", "scaffolds", "CLAUDE.local.md")
+
 
 def _safe_email_dir(email: str) -> str:
     """Email → directory-safe slug. Lowercase, replace non-[a-z0-9_-.@] with '_'."""
@@ -200,13 +213,7 @@ class WorkdirManager:
         # claude-agent-sdk resolves .claude/{skills,plugins,agents,commands,hooks}
         # against the per-user workspace.
         ws = self.user_workspace(user_email)
-        # "scaffolds" carries the data-apps starter templates the
-        # agnes-data-apps-extras skill copies from (wave 3C) — without it the
-        # sandbox's /work has no scaffolds/ and the skill's very first
-        # `cp -R scaffolds/...` step fails. Co-sessions deliberately get no
-        # workspace symlinks (see prepare_ephemeral_session_dir), so app
-        # scaffolding is a solo-session capability.
-        entries = [".claude", "CLAUDE.md", "snapshots", "scripts", "scaffolds"]
+        entries = [e for e in WORKSPACE_LINK_ENTRIES if e != "CLAUDE.local.md"]
         if include_personal_override:
             entries.append("CLAUDE.local.md")
         # A profile owns .claude (copied, see below) and CLAUDE.md (persona) —
