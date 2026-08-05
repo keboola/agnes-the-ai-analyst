@@ -25,6 +25,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- Deflaked `test_state_rejects_tampered_signature`: flipping the final base64url
+  char of an itsdangerous signature silently decodes to the same bytes whenever
+  only the discarded padding bits differ (trailing `Y` vs `a` — ~6% of signing
+  timestamps), so the "tampered" state verified fine. The test now flips
+  full-data chars at three non-final signature positions.
+
 ### Security
 
 ## [0.78.2] - 2026-08-05
