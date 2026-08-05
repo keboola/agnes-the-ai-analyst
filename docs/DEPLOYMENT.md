@@ -179,6 +179,14 @@ Two ways to handle it, in order of preference:
    exposure rather than containing it. Default is `true` so an upgrade never
    breaks a client that still relies on it — check for the one-time warning in
    your logs before flipping it.
+
+   **Write `false`, `off`, `no`, or `0` — nothing else disables it.** Agnes's
+   flag parser treats every unrecognized string as truthy, so `disabled`,
+   `disable`, or `n` leave the fallback **on** with no error. That convention is
+   harmless for flags whose default is inert, but this one defaults to
+   permissive, so a typo silently keeps the exposure you were trying to remove.
+   Confirm the change took by reading the flag's `effective` value back from
+   `/admin/server-config` rather than trusting the save.
 2. **Keep it and redact.** If a client genuinely cannot set the header, add a
    proxy rule that drops or masks the `token` query parameter for
    `/api/mcp/*`, as above for the OAuth callback. Note this only covers *your*
