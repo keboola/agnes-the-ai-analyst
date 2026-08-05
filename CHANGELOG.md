@@ -22,6 +22,34 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.78.5] - 2026-08-05
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- **The MCP SSE `?token=` auth fallback can now be turned off.** The transport
+  accepts a bearer token as a query parameter for clients that cannot set an
+  `Authorization` header on a GET; when a client uses it, that long-lived PAT
+  lands in the access log of every intermediary on the path (CWE-598). The new
+  `mcp.allow_query_param_token` flag (`AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN`)
+  **defaults to `true`, so nothing changes on upgrade** — but an operator whose
+  clients all send the header can now eliminate the exposure outright instead of
+  relying on proxy log redaction. Every connection snippet Agnes hands out is
+  already header-based (the `?token=` snippet was removed in the 2026-07-24 audit
+  follow-up), so for most instances this is safe to turn off; the existing
+  one-time CWE-598 warning tells you whether anything is still using it.
+  `docs/DEPLOYMENT.md` covers both the flag and the proxy-redaction fallback for
+  instances that must keep it on.
+
 ## [0.78.4] - 2026-08-05
 
 ### Added
