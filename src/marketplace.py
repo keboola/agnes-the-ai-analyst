@@ -42,6 +42,11 @@ PLUGIN_MANIFEST_REL = Path(".claude-plugin") / "marketplace.json"
 _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
+# One filesystem-safe path segment. Used with `fullmatch` (see
+# `is_safe_plugin_name`) — no anchors here, so `$`'s trailing-newline
+# tolerance can't creep in.
+_SAFE_PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+
 
 class MarketplaceNotFound(Exception):
     """Raised when a marketplace id is not present in the registry."""
@@ -49,6 +54,37 @@ class MarketplaceNotFound(Exception):
 
 def is_valid_slug(slug: str) -> bool:
     return bool(_SLUG_RE.match(slug or ""))
+
+
+def is_safe_plugin_name(name: object) -> bool:
+    """True iff ``name`` is EXACTLY one filesystem-safe path segment.
+
+    A plugin ``name`` comes from a registered marketplace's
+    ``.claude-plugin/marketplace.json`` — curator- and supply-chain-controlled,
+    so adversarial. It is used verbatim as the ``plugins/<name>`` segment under
+    ``${DATA_DIR}/marketplaces/<slug>/``, and that directory is walked and read
+    wholesale into the served ZIP / git tree. A ``/`` or ``..`` escapes the
+    marketplaces root and turns the PAT-gated marketplace endpoints into an
+    arbitrary-file-read primitive.
+
+    Deliberately does NOT strip. The serve-time callers
+    (``app/api/marketplace.py``, ``src/marketplace_asset_mirror.py``) match the
+    raw segment and then use that same raw value to build a path; stripping here
+    would silently widen those checks. Callers whose value IS stripped downstream
+    (``read_plugins`` → ``_refresh_plugin_cache``) strip before calling.
+
+    ``fullmatch``, not ``match``: ``$`` also matches before a trailing newline,
+    so ``match`` would accept ``"acme\\n"``.
+
+    Security playbook §6 mandates BOTH layers — reject here at ingest so a bad
+    row never reaches the DB, and contain at use in
+    ``marketplace_filter._contained_plugin_dir``.
+    """
+    if not isinstance(name, str):
+        return False
+    if name in ("..", "."):
+        return False
+    return bool(_SAFE_PLUGIN_NAME_RE.fullmatch(name))
 
 
 def is_full_sha(ref: str) -> bool:
@@ -243,7 +279,24 @@ def read_plugins(slug: str) -> List[Dict[str, Any]]:
     plugins = data.get("plugins") if isinstance(data, dict) else None
     if not isinstance(plugins, list):
         return []
-    return [p for p in plugins if isinstance(p, dict) and p.get("name")]
+    out: List[Dict[str, Any]] = []
+    for p in plugins:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name")
+        if not name:
+            continue
+        # Validate the STRIPPED form: _refresh_plugin_cache strips before writing
+        # the row, so that is the value that later becomes a path segment.
+        if not is_safe_plugin_name(str(name).strip()):
+            logger.warning(
+                "marketplace %s: dropping plugin with unsafe name %r (not a single path segment)",
+                slug,
+                name,
+            )
+            continue
+        out.append(p)
+    return out
 
 
 def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
