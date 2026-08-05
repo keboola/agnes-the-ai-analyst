@@ -93,7 +93,11 @@ def status():
         typer.echo(f"could not determine status (status: {home.status_code})", err=True)
         raise typer.Exit(2)
     body_text = home.text or ""
-    if "Step 1 &amp; Step 2 done" in body_text or "Mark me as offboarded" in body_text:
+    # Anchor on the offboard button's element id, not its label: the
+    # label phrase also appears inside the generated install prompt
+    # (expired-token recovery copy), which the NOT-onboarded /home embeds
+    # for the step-5 preview — a text marker would false-positive there.
+    if 'id="offboard-btn"' in body_text:
         typer.echo("onboarded: True")
     else:
         typer.echo("onboarded: False")
