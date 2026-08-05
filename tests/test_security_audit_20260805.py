@@ -109,3 +109,33 @@ def test_f1_contained_plugin_dir_rejects_symlinked_segment(tmp_path):
     (root / "acme" / "plugins" / "sneaky").symlink_to(outside)
 
     assert _contained_plugin_dir(root, "acme", "sneaky") is None
+
+
+# ── F-1: third path — the v2 skills endpoint ──
+
+
+def test_f1_v2_skills_path_is_contained(tmp_path, monkeypatch):
+    """_skills_for_plugin must not read SKILL.md from outside the marketplaces root.
+
+    This is the third construction of `<root>/<slug>/plugins/<name>` in the
+    codebase; the audit found the two in marketplace_filter and missed this one.
+    Its output is returned in an HTTP response body, so an escape here discloses
+    file contents directly.
+    """
+    import app.api.v2_marketplace as v2
+
+    root = tmp_path / "marketplaces"
+    (root / "acme" / "plugins").mkdir(parents=True)
+    # A SKILL.md that lives OUTSIDE the marketplaces root.
+    outside = tmp_path / "elsewhere" / "skills" / "leak"
+    outside.mkdir(parents=True)
+    (outside / "SKILL.md").write_text("---\nname: leak\n---\nSECRET-BODY\n", encoding="utf-8")
+
+    monkeypatch.setattr(v2, "get_marketplaces_dir", lambda: root)
+
+    # Three `..` to climb plugins -> acme -> marketplaces -> tmp_path. Two would
+    # land on <root>/elsewhere, which does not exist, and the test would pass
+    # for the wrong reason.
+    entries = v2._skills_for_plugin("acme", "../../../elsewhere")
+
+    assert entries == [], f"escaped the marketplaces root: {entries!r}"

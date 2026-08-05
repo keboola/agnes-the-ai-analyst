@@ -10,8 +10,10 @@ Returns every SKILL.md the caller is RBAC-authorised to read, with the
 frontmatter stripped from the body so the plain instruction text lands in
 the MCP response. One call, flat list — no follow-up fetches needed.
 """
+
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -21,8 +23,11 @@ from pydantic import BaseModel
 from app.auth.access import _user_group_ids, is_user_admin
 from app.auth.dependencies import get_current_user
 from app.utils import get_marketplaces_dir
+from src.marketplace_filter import _contained_plugin_dir
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.repositories import marketplace_plugins_repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v2/marketplace", tags=["marketplace-v2"])
 
@@ -43,14 +48,26 @@ class SkillsResponse(BaseModel):
 
 def _body(text: str) -> str:
     m = _FRONTMATTER_RE.match(text)
-    return text[m.end():].lstrip("\n") if m else text
+    return text[m.end() :].lstrip("\n") if m else text
 
 
 def _skills_for_plugin(
     marketplace_id: str,
     plugin_name: str,
 ) -> List[SkillEntry]:
-    plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
+    # Third construction of `<root>/<slug>/plugins/<name>` in the codebase — and
+    # the only one whose output (SKILL.md bodies) goes straight into an HTTP
+    # response, so an escape here discloses file contents directly. Shares the
+    # containment helper with marketplace_filter's two sites rather than
+    # rebuilding the path raw (2026-08-05 audit, F-1).
+    plugin_root = _contained_plugin_dir(Path(get_marketplaces_dir()), marketplace_id, plugin_name)
+    if plugin_root is None:
+        logger.warning(
+            "v2 skills: skipping plugin %r in marketplace %r — name is not a contained path segment",
+            plugin_name,
+            marketplace_id,
+        )
+        return []
     skills_dir = plugin_root / "skills"
     if not skills_dir.is_dir():
         return []
@@ -66,15 +83,17 @@ def _skills_for_plugin(
         except OSError:
             continue
         fm = _parse_frontmatter(text)
-        out.append(SkillEntry(
-            marketplace_id=marketplace_id,
-            plugin_name=plugin_name,
-            skill_name=skill_dir.name,
-            name=fm.get("name") or skill_dir.name,
-            description=fm.get("description"),
-            invocation=fm.get("invocation"),
-            body=_body(text),
-        ))
+        out.append(
+            SkillEntry(
+                marketplace_id=marketplace_id,
+                plugin_name=plugin_name,
+                skill_name=skill_dir.name,
+                name=fm.get("name") or skill_dir.name,
+                description=fm.get("description"),
+                invocation=fm.get("invocation"),
+                body=_body(text),
+            )
+        )
     return out
 
 
@@ -92,11 +111,7 @@ def _accessible_plugins(user: Dict[str, Any]) -> List[Dict[str, Any]]:
         # their skills must not be served into Claude's context. The non-admin
         # path below already filters them via list_with_filters' admin_disabled
         # clause.
-        return [
-            p
-            for p in marketplace_plugins_repo().list_all()
-            if not p.get("admin_disabled")
-        ]
+        return [p for p in marketplace_plugins_repo().list_all() if not p.get("admin_disabled")]
     group_ids = _user_group_ids(user["id"]) or set()
     items, _ = marketplace_plugins_repo().list_with_filters(
         group_ids=group_ids,
@@ -119,7 +134,5 @@ async def list_skills(
     plugins = _accessible_plugins(user)
     skills: List[SkillEntry] = []
     for plugin in plugins:
-        skills.extend(
-            _skills_for_plugin(plugin["marketplace_id"], plugin["name"])
-        )
+        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
     return SkillsResponse(skills=skills)
