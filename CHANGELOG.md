@@ -20,6 +20,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `/admin/chat/secrets/test` ("Test connections" in server config) reports the sandbox credential for the configured provider: the E2B key on an E2B instance, a Docker daemon + image probe on a self-hosted one, instead of a permanently failing E2B row. The chat readiness list on the same page is provider-aware too — rows render from the server's readiness payload (`APPS_RUNNER_TOKEN`/`chat.docker_image` on a docker instance) instead of a fixed E2B-only set.
 
 ### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.78.2] - 2026-08-05
+
+### Added
+
+### Changed
+
+- `/me/connections` UX after the first real OAuth rollout: the page now
+  also lists per_user sources you have a stored connection for and (for
+  admins) freshly registered sources with no tools yet — with a "no tools
+  enabled yet" note linking admins to the source's admin page, distinct from
+  the "you no longer have access" note a viewer whose grants were withdrawn
+  gets on a source that does have tools — instead of
+  silently hiding the card mid-bootstrap; the success banner names the
+  source instead of printing its UUID; retryable connect failures render a
+  one-click "Try again" link back into the authorize flow; and the card
+  meta line explains the credential in plain words instead of
+  "http · per-user credential".
+
+### Fixed
 - Two pages that shipped with no way to reach them from the UI. The agent
   builder (`/agents`) now has a **My agents** entry in the user dropdown —
   a per-user resource list, so it sits next to *My connections* rather than in

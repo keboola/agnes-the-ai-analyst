@@ -1121,10 +1121,20 @@ async def me_connections_page(
     from src.repositories import mcp_sources_repo, mcp_user_oauth_tokens_repo, per_user_secrets_repo
 
     granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    # Caller-relative (`granted_ids`) and source-level (`sourced_ids`) are two
+    # different questions, and the card needs both: "this source has no tools
+    # yet" is a property of the source, while "no tools are granted to me" is a
+    # property of the viewer. They coincide for an admin, which is how the
+    # conflation survived — for a revoked non-admin, whose card this PR
+    # deliberately keeps visible, it told them the source was unfinished rather
+    # than that they had lost access (Devin Review on #1167).
+    from src.repositories import tool_registry_repo
+    from src.repositories.tool_registry import PASSTHROUGH
+
+    sourced_ids = {t["source_id"] for t in tool_registry_repo().list_by_mode(PASSTHROUGH, enabled_only=True)}
+    caller_is_admin = is_user_admin(user["id"], conn)
     sources = []
     for src in mcp_sources_repo().list_all(enabled_only=True):
-        if src["id"] not in granted_ids:
-            continue
         if (src.get("scope") or "shared").lower() != "per_user":
             continue
         is_oauth = (src.get("auth_method") or "").lower() == "oauth"
@@ -1147,6 +1157,13 @@ async def me_connections_page(
             stored = has_secret
             updated_at = per_user_secrets_repo().get_updated_at(src["id"], user["id"])
             expires_at = None
+        # Visibility: granted tools, OR the caller's own stored credential
+        # (a connection you made must never be invisible — you need Test /
+        # Disconnect), OR admin (the register → connect → introspect
+        # bootstrap happens before any tools exist; hiding the source made
+        # a fresh connect look like nothing happened — UX round on #1130).
+        if src["id"] not in granted_ids and not stored and not caller_is_admin:
+            continue
         sources.append(
             {
                 "id": src["id"],
@@ -1156,6 +1173,16 @@ async def me_connections_page(
                 "auth_kind": "oauth" if is_oauth else "secret",
                 "has_secret": has_secret,
                 "stored": stored,
+                "has_tools": src["id"] in granted_ids,
+                "source_has_tools": src["id"] in sourced_ids,
+                # One definition for "this viewer has authority here", used by
+                # every control whose endpoint calls `_require_source_grant`
+                # unconditionally — Connect/Reconnect, Test, and the paste
+                # field + Save. Deciding that per control is what let the same
+                # dead-end bug be reported three separate times on this PR;
+                # Disconnect/Remove stay outside it because their own-credential
+                # carve-out means they work without a grant.
+                "can_act": src["id"] in granted_ids or caller_is_admin,
                 "updated_at": updated_at,
                 "expires_at": expires_at,
             }
@@ -1172,17 +1199,34 @@ async def me_connections_page(
 
     error_code = request.query_params.get("connect_error") or ""
     connected = request.query_params.get("connected") or ""
-    if connected and mcp_user_oauth_tokens_repo().get(connected, user["id"]) is None:
-        connected = ""
+    connected_name = ""
+    if connected:
+        if mcp_user_oauth_tokens_repo().get(connected, user["id"]) is None:
+            connected = ""
+        else:
+            src_row = mcp_sources_repo().get(connected)
+            # Show the human name, not a UUID (UX round on #1130).
+            connected_name = (src_row or {}).get("name") or connected
+    # `retry` names the source a failed connect can be retried against —
+    # rendered as a one-click "Try again" link. Validated against the cards
+    # the caller can actually authorize against, NOT merely the listed ones:
+    # since this page started showing a card for a stored-but-ungranted
+    # source, "listed" stopped implying "connectable", and retrying a
+    # not_granted failure would just fail again.
+    retry = request.query_params.get("retry") or ""
+    if not error_code or retry not in {s["id"] for s in sources if s["can_act"]}:
+        retry = ""
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
-        is_admin=is_user_admin(user["id"], conn),
+        is_admin=caller_is_admin,
         connect_sources=sources,
         highlight_source=request.query_params.get("source") or "",
         connected_source=connected,
+        connected_name=connected_name,
         connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
+        retry_source=retry,
     )
     return templates.TemplateResponse(request, "me_connections.html", ctx)
 

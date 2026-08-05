@@ -118,14 +118,23 @@ def _get_source_or_404(source_id: str) -> Dict[str, Any]:
     return src
 
 
-def _err_redirect(code: str) -> RedirectResponse:
+def _err_redirect(code: str, retry_source_id: Optional[str] = None) -> RedirectResponse:
     """Land the browser back on /me/connections with a short error CODE from
     :data:`CONNECT_ERROR_MESSAGES` — never free text (the page maps the code
     to a fixed message), never a raw 500/400 page, and never token/code
-    material in the query string (spec §3/§6)."""
+    material in the query string (spec §3/§6).
+
+    ``retry_source_id`` (when the failing source is known) lets the page
+    render a one-click "Try again" link — the page re-validates the id
+    against the caller's own connectable sources before rendering, so the
+    parameter can't point anyone at a source they couldn't reach anyway
+    (UX round on #1130)."""
     if code not in CONNECT_ERROR_MESSAGES:
         code = "connect_failed"  # renders CONNECT_ERROR_FALLBACK on the page
-    return RedirectResponse(url=f"/me/connections?connect_error={quote(code)}", status_code=303)
+    url = f"/me/connections?connect_error={quote(code)}"
+    if retry_source_id:
+        url += f"&retry={quote(retry_source_id)}"
+    return RedirectResponse(url=url, status_code=303)
 
 
 @router.get("/sources/{source_id}/oauth/authorize")
@@ -181,11 +190,11 @@ async def authorize_oauth_connect(
     try:
         check_rate_limit(f"oauth-authorize:{source_id}", user["id"], _AUTHORIZE_RATE_LIMIT_PM)
     except RateLimited:
-        return _err_redirect("rate_limited")
+        return _err_redirect("rate_limited", retry_source_id=source_id)
 
     client_row = mcp_source_oauth_clients_repo().get(source_id)
     if client_row is None:
-        return _err_redirect("client_registration_missing")
+        return _err_redirect("client_registration_missing", retry_source_id=source_id)
 
     flows_repo = mcp_oauth_flows_repo()
     flows_repo.sweep_expired()  # opportunistic housekeeping, not load-bearing
@@ -195,14 +204,14 @@ async def authorize_oauth_connect(
     try:
         flows_repo.create(nonce, source_id, user["id"], verifier)
     except VaultKeyNotConfiguredError:
-        return _err_redirect("vault_key_not_configured")
+        return _err_redirect("vault_key_not_configured", retry_source_id=source_id)
 
     try:
         redirect_uri = _oauth_redirect_uri()
     except HTTPException:
         # public_url unset raises HTTPException(409) — same friendly landing
         # as the callback's sibling branch.
-        return _err_redirect("public_url_unset")
+        return _err_redirect("public_url_unset", retry_source_id=source_id)
 
     state = sign_connect_state(source_id, user["id"], nonce)
     params: Dict[str, str] = {
@@ -288,7 +297,7 @@ async def oauth_connect_callback(
     # who double-clicks "authorize") gets None and a generic error.
     flow = mcp_oauth_flows_repo().consume(state_data["nonce"])
     if flow is None:
-        return _err_redirect("flow_used_or_expired")
+        return _err_redirect("flow_used_or_expired", retry_source_id=state_data["source_id"])
 
     # Login-CSRF + mix-up guard: the signed state, the DB-backed flow row,
     # and the CURRENT session must all agree on who/what this flow is for.
@@ -317,7 +326,7 @@ async def oauth_connect_callback(
 
     client_row = mcp_source_oauth_clients_repo().get(source_id)
     if client_row is None:
-        return _err_redirect("client_registration_missing")
+        return _err_redirect("client_registration_missing", retry_source_id=source_id)
 
     from app.api.admin_mcp import _oauth_redirect_uri
 
@@ -327,7 +336,7 @@ async def oauth_connect_callback(
         # public_url unset raises HTTPException(409) — on the browser-facing
         # callback EVERY failure mode must land back on /me/connections, not
         # a raw error page (Devin Review on #1130).
-        return _err_redirect("public_url_unset")
+        return _err_redirect("public_url_unset", retry_source_id=source_id)
 
     try:
         async with build_oauth_http_client() as http_client:
@@ -345,7 +354,7 @@ async def oauth_connect_callback(
         # httpx transport failures into this subclass, so catching bare
         # httpx.HTTPError here would be dead code (Devin Review on #1130).
         logger.warning("mcp oauth token exchange transport error for source=%s: %s", source_id, _exc_summary(exc))
-        return _err_redirect("as_unreachable")
+        return _err_redirect("as_unreachable", retry_source_id=source_id)
     except OAuthTokenError as exc:
         # Operator-facing detail goes to the server log ONLY. The browser
         # redirect gets a fixed message: the exception text can carry the
@@ -353,13 +362,13 @@ async def oauth_connect_callback(
         # externally controlled content that must not be replayed into a
         # user-facing query string (RBAC review on PR 2).
         logger.warning("mcp oauth token exchange failed for source=%s: %s", source_id, _exc_summary(exc))
-        return _err_redirect("token_exchange_failed")
+        return _err_redirect("token_exchange_failed", retry_source_id=source_id)
     except SSRFRejected as exc:
         # The token endpoint resolved to a blocked address (DNS changed since
         # registration, or a misconfigured manual entry) — still a friendly
         # landing, not a raw 500 (Devin Review on #1130).
         logger.warning("mcp oauth token exchange SSRF-rejected for source=%s: %s", source_id, _exc_summary(exc))
-        return _err_redirect("as_address_rejected")
+        return _err_redirect("as_address_rejected", retry_source_id=source_id)
 
     expires_at = None
     if token_set.expires_in:
@@ -374,7 +383,7 @@ async def oauth_connect_callback(
             scopes=token_set.scopes,
         )
     except VaultKeyNotConfiguredError:
-        return _err_redirect("vault_key_not_configured")
+        return _err_redirect("vault_key_not_configured", retry_source_id=source_id)
 
     _audit(user["id"], "mcp_oauth.connect", f"mcp_source:{source_id}")
     return RedirectResponse(url=f"/me/connections?connected={quote(source_id)}", status_code=303)
@@ -403,6 +412,14 @@ async def disconnect_oauth(
     deny_principal(user)
     src = _get_source_or_404(source_id)
     _require_oauth_source(src)
-    _require_source_grant(source_id, user)
+    try:
+        _require_source_grant(source_id, user)
+    except HTTPException:
+        # Deleting YOUR OWN stored credential must not require a live tool
+        # grant: a user whose access was revoked still sees their connection
+        # card and must be able to clean it up — no upstream call, no data
+        # beyond their own row (Devin Review on #1167).
+        if mcp_user_oauth_tokens_repo().get(source_id, user["id"]) is None:
+            raise
     mcp_user_oauth_tokens_repo().delete(source_id, user["id"])
     _audit(user["id"], "mcp_oauth.disconnect", f"mcp_source:{source_id}")

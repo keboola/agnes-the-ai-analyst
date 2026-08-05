@@ -124,7 +124,13 @@ async def delete_my_secret(
     deny_principal(user)
     if not mcp_sources_repo().get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    _require_source_grant(source_id, user)
+    try:
+        _require_source_grant(source_id, user)
+    except HTTPException:
+        # Same own-credential carve-out as the oauth disconnect: removing
+        # your own stored secret needs no live grant (Devin Review on #1167).
+        if not per_user_secrets_repo().has(source_id, user["id"]):
+            raise
     per_user_secrets_repo().delete(source_id, user["id"])
 
 
