@@ -9,8 +9,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 from src.duckdb_conn import _open_duckdb
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +71,11 @@ def init_extract(output_dir: str | Path) -> None:
             if hive_parquets:
                 glob_path = str(table_dir / "month=*" / "*.parquet")
                 conn.execute(
-                    f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                    f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS "
                     f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true)"
                 )
                 try:
-                    rows = conn.execute(f'SELECT count(*) FROM "{table_name}"').fetchone()[0]
+                    rows = conn.execute(f"SELECT count(*) FROM {quote_ident(table_name)}").fetchone()[0]
                     size_bytes = sum(f.stat().st_size for f in hive_parquets)
                 except Exception:
                     pass
@@ -114,7 +114,7 @@ def update_meta(output_dir: str | Path, table_name: str) -> None:
                 glob_path = str(table_dir / "month=*" / "*.parquet")
                 # Recreate view to pick up new/changed hive partition dirs
                 conn.execute(
-                    f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                    f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS "
                     f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true)"
                 )
                 rows = conn.execute(

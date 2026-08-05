@@ -325,3 +325,77 @@ def test_f2_scrub_runs_even_when_ref_validation_rejects_the_row(tmp_path, monkey
         mp._sync_spec({"id": "acme", "url": "https://example.com/acme.git", "ref": "bad..ref"})
 
     assert "SECRET123" not in (repo / ".git" / "config").read_text(encoding="utf-8")
+
+
+# ── F-4: every quoted SQL identifier routes through quote_ident ──
+
+# Statement positions where a bare `"{var}"` is an IDENTIFIER, not a literal.
+_IDENT_POSITION_RE = r'(VIEW|TABLE|DESCRIBE|FROM|INTO)\s+\\?"\{'
+
+
+def test_f4_no_bare_quoted_identifier_interpolation():
+    """Ratchet: the allowlist is empty and must stay empty.
+
+    ``-P``, not ``-E``. git grep's ``-E`` is POSIX ERE, where ``\\s`` degrades to
+    a literal ``s`` — the ``-E`` form of this pattern matches NOTHING and the
+    test would pass vacuously forever. That is not hypothetical: it is how this
+    guard was first written during the 2026-08-05 audit follow-up, and it was
+    caught in review rather than by the test.
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "grep", "-nP", _IDENT_POSITION_RE, "--", "*.py"],
+        capture_output=True,
+        text=True,
+    )
+    # git grep emits repo-relative paths with NO leading slash, so a
+    # `"/tests/" not in ln` filter would never fire.
+    hits = [ln for ln in proc.stdout.splitlines() if ln and not ln.startswith("tests/")]
+
+    assert hits == [], "bare-quoted SQL identifier(s) — route through quote_ident:\n" + "\n".join(hits)
+
+
+def test_f4_quote_ident_reexported_from_profiler():
+    """Existing `from src.profiler import quote_ident` importers keep working."""
+    from src.profiler import quote_ident as from_profiler
+    from src.sql_ident import quote_ident as canonical
+
+    assert from_profiler is canonical
+    assert canonical('a") AS x, (SELECT 1) AS "b') == '"a"") AS x, (SELECT 1) AS ""b"'
+
+
+# ── F-4b: server-supplied manifest ids are path segments AND SQL identifiers ──
+
+
+def test_f4b_safe_id_re_rejects_traversal_and_injection():
+    from cli.lib.pull import _SAFE_ID_RE
+
+    assert _SAFE_ID_RE.match("orders_v2")
+    assert _SAFE_ID_RE.match("orders.v2")  # dots are legitimate — admin-derived ids carry them
+    assert not _SAFE_ID_RE.match("../../.ssh/authorized_keys")
+    assert not _SAFE_ID_RE.match('x" AS y, (SELECT 1) AS "z')
+    assert not _SAFE_ID_RE.match("a/b")
+
+
+def test_f4b_pull_skips_unsafe_manifest_table_ids():
+    """An unsafe id is dropped, and the drop must NOT become a pull error.
+
+    cli/commands/pull.py raises typer.Exit(1) on a non-empty result.errors —
+    including from the --quiet SessionStart hook path — so collecting these
+    would turn one odd id into a permanently red `agnes pull`.
+    """
+    from cli.lib.pull import _safe_manifest_tables
+
+    kept, dropped = _safe_manifest_tables(
+        {
+            "orders": {"hash": "a"},
+            "orders.v2": {"hash": "b"},
+            "../../../etc/passwd": {"hash": "c"},
+            "..": {"hash": "d"},
+            'x" AS y': {"hash": "e"},
+        }
+    )
+
+    assert sorted(kept) == ["orders", "orders.v2"]
+    assert sorted(dropped) == sorted(["../../../etc/passwd", "..", 'x" AS y'])

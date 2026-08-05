@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 import duckdb
 
@@ -14,6 +14,7 @@ from src.identifier_validation import (
     validate_identifier,
     validate_quoted_identifier,
 )
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -264,9 +265,9 @@ def materialize_query(
         BQ branch returns, so ``app/api/sync.py:_run_materialized_pass``
         downstream code stays uniform.
     """
-    import re
     import hashlib
     import json
+    import re
 
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_id):
         raise ValueError(f"unsafe table_id for materialize: {table_id!r}")
@@ -353,6 +354,7 @@ def materialize_query(
     # tempfiles off the overlayfs (e.g. onto the data disk) — see
     # storage_api.get_temp_root for the rationale.
     import tempfile
+
     from connectors.keboola.storage_api import get_temp_root, warn_if_scratch_survived
 
     _tmp_ctx = tempfile.TemporaryDirectory(
@@ -765,7 +767,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     continue
                 if use_extension and bucket:
                     conn.execute(
-                        f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM kbc."{bucket}"."{source_table}"'
+                        f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM kbc.{quote_ident(bucket)}.{quote_ident(source_table)}"
                     )
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, 0, 0, ?, 'remote')",
@@ -821,7 +823,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     rows = incr_result["rows"]
                     size = pq_path.stat().st_size if pq_path.exists() else 0
                     conn.execute(
-                        f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{safe_pq_lit}')"
+                        f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM read_parquet('{safe_pq_lit}')"
                     )
                     conn.execute(
                         "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
@@ -858,7 +860,9 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     glob_lit = str(partition_dir / "*.parquet").replace("'", "''")
                     rows = part_result["rows"]
                     size = sum(p.stat().st_size for p in partition_dir.glob("*.parquet"))
-                    conn.execute(f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{glob_lit}')")
+                    conn.execute(
+                        f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM read_parquet('{glob_lit}')"
+                    )
                     conn.execute(
                         "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
                         [table_name, tc.get("description", ""), rows, size, now],
@@ -1023,7 +1027,7 @@ def _register_local_meta(
     safe_pq_lit = pq_path.replace("'", "''")
     rows = conn.execute(f"SELECT count(*) FROM read_parquet('{safe_pq_lit}')").fetchone()[0]
     size = os.path.getsize(pq_path)
-    conn.execute(f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{safe_pq_lit}')")
+    conn.execute(f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM read_parquet('{safe_pq_lit}')")
     conn.execute(
         "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
         [table_name, tc.get("description", ""), rows, size, extracted_at],
@@ -1088,6 +1092,7 @@ def _extract_via_legacy(
     column to VARCHAR.
     """
     import tempfile
+
     from connectors.keboola.client import KeboolaClient
     from connectors.keboola.parquet_io import csv_to_parquet
     from connectors.keboola.storage_api import (

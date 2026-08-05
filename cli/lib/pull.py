@@ -42,6 +42,7 @@ import httpx
 
 from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
+from src.sql_ident import quote_ident
 
 
 @dataclass
@@ -790,9 +791,9 @@ def run_pull(
         use_textual_fallback = show_progress and to_download and not _sys.stderr.isatty()
         if show_progress and to_download and not use_textual_fallback:
             from rich.progress import (
-                Progress,
                 BarColumn,
                 DownloadColumn,
+                Progress,
                 TextColumn,
                 TimeRemainingColumn,
                 TransferSpeedColumn,
@@ -1381,6 +1382,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
     `parquet_dir` is missing.
     """
     import duckdb  # noqa: F401  (kept for the duckdb.Error path below)
+
     from src.duckdb_conn import _open_duckdb
 
     db_path = workspace / "user" / "duckdb" / "analytics.duckdb"
@@ -1430,7 +1432,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
                     glob_lit = str((entry / "**" / "*.parquet").resolve()).replace("'", "''")
                     try:
                         conn.execute(
-                            f'CREATE VIEW "{view_name}" AS SELECT * FROM '
+                            f"CREATE VIEW {quote_ident(view_name)} AS SELECT * FROM "
                             f"read_parquet('{glob_lit}', union_by_name=true, hive_partitioning=true)"
                         )
                     except duckdb.Error:
@@ -1444,7 +1446,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
                         continue
                     abs_path = str(entry.resolve()).replace("'", "''")
                     try:
-                        conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+                        conn.execute(f"CREATE VIEW {quote_ident(view_name)} AS SELECT * FROM read_parquet('{abs_path}')")
                     except duckdb.Error:
                         continue
     finally:

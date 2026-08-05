@@ -16,6 +16,8 @@ import os
 import re
 from typing import Any, Optional
 
+from src.sql_ident import quote_ident
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,8 +150,9 @@ def has_embedded_sql_comment(expression: str) -> bool:
     metric expressions carry a trailing `--` comment as a free-text author
     note (e.g. flagging a table that doesn't exist in this project, or a
     WHERE condition the author never actually applied to the formula).
-    Composing `SELECT {expression} FROM "{table}" AS t` naively appends the
-    FROM clause AFTER such an expression — SQL then treats everything from
+    Composing a `SELECT <expression> FROM <table> AS t` statement naively
+    appends the FROM clause AFTER such an expression — SQL then treats
+    everything from
     `--` onward (including the appended FROM clause) as part of the
     comment, silently dropping it and breaking the query. Confirmed live:
     DuckDB raises a binder error ("FROM clause is missing") rather than
@@ -192,7 +195,7 @@ def compose_sql(expression: str, table_name: str) -> str:
     compose; a trailing `--` comment would swallow the appended FROM clause.
     `build_metric_row` performs both checks before calling this.
     """
-    return f'SELECT {expression} FROM "{table_name}" AS t'
+    return f"SELECT {expression} FROM {quote_ident(table_name)} AS t"
 
 
 def merge_constraints(metric_name: str, constraints: list[dict]) -> dict | None:
@@ -634,9 +637,9 @@ def _sync_one_source(
 
     import requests
 
-    from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
-    from src.repositories import table_registry_repo, metric_repo, column_metadata_repo, glossary_repo
+    from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
+    from src.repositories import column_metadata_repo, glossary_repo, metric_repo, table_registry_repo
 
     scope_refs: set = set(prune_scope_refs) if prune_scope_refs is not None else {source_ref}
 
@@ -1157,7 +1160,7 @@ def compose_join_sql(
     remapped_alias2 = "t" if on_alias2 == to_alias else "j"
     remapped_on = f'{remapped_alias1}."{on_col1}" = {remapped_alias2}."{on_col2}"'
 
-    return f'SELECT {rewritten_expression} FROM "{primary_table}" AS t LEFT JOIN "{joined_table}" AS j ON {remapped_on}'
+    return f"SELECT {rewritten_expression} FROM {quote_ident(primary_table)} AS t LEFT JOIN {quote_ident(joined_table)} AS j ON {remapped_on}"
 
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")

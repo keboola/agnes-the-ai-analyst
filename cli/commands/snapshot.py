@@ -1,29 +1,30 @@
 """`agnes snapshot list/create/refresh/drop/prune` (spec §4.2)."""
 
 from __future__ import annotations
+
 import hashlib
-import os
 import json as json_lib
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import httpx
 import pyarrow.parquet as pq
-
-from src.duckdb_conn import _open_duckdb
 import typer
 
 from cli.snapshot_meta import (
+    SnapshotMeta,
+    delete_snapshot,
     list_snapshots,
     read_meta,
-    write_meta,
-    delete_snapshot,
     snapshot_lock,
     sweep_expired_snapshots,
-    SnapshotMeta,
+    write_meta,
 )
-from cli.v2_client import api_post_arrow, api_post_json, V2ClientError
+from cli.v2_client import V2ClientError, api_post_arrow, api_post_json
+from src.duckdb_conn import _open_duckdb
+from src.sql_ident import quote_ident
 
 snapshot_app = typer.Typer(help="Manage local snapshots")
 
@@ -565,7 +566,7 @@ def _create_snapshot(
         conn = _open_duckdb(str(local_db))
         try:
             safe_path = str(parquet_path).replace("'", "''")
-            conn.execute(f"CREATE OR REPLACE VIEW \"{name}\" AS SELECT * FROM read_parquet('{safe_path}')")
+            conn.execute(f"CREATE OR REPLACE VIEW {quote_ident(name)} AS SELECT * FROM read_parquet('{safe_path}')")
         finally:
             conn.close()
 

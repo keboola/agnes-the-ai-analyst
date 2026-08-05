@@ -24,17 +24,17 @@ named tools. For now the REST endpoint is the source of truth.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth.dependencies import _get_db, get_current_user
-from app.resource_types import ResourceType
 from src.db import get_analytics_db
 from src.rbac import can_access_table
 from src.repositories import table_registry_repo
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def _column_names(analytics_conn: duckdb.DuckDBPyConnection, table_view_name: st
     than 500-ing on a missing view.
     """
     try:
-        rows = analytics_conn.execute(f'DESCRIBE "{table_view_name}"').fetchall()
+        rows = analytics_conn.execute(f"DESCRIBE {quote_ident(table_view_name)}").fetchall()
         return [r[0] for r in rows]
     except Exception:
         return []
@@ -164,7 +164,7 @@ def _build_select(
         params.append(val)
 
     where_clause = " WHERE " + " AND ".join(where_parts) if where_parts else ""
-    sql = f'SELECT * FROM "{view_name}"{where_clause} LIMIT {int(limit)}'
+    sql = f"SELECT * FROM {quote_ident(view_name)}{where_clause} LIMIT {int(limit)}"
     return sql, params
 
 
