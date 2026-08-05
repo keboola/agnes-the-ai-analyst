@@ -628,6 +628,12 @@ def run_pull(
         server_tables = manifest.get("tables", {}) or {}
         local_state = get_sync_state()
         local_tables = local_state.get("tables", {})
+        # Which ids resolved LOCALLY as of the previous pull, captured before
+        # the prune below mutates the dict. This is the only honest answer to
+        # "could a snapshot under this name shadow real local rows?" — and it
+        # has to be read here, because the prune pops exactly the entries we
+        # need (#1129 review).
+        previously_local = set(local_tables)
 
         # #506 — make the legacy flat `server/parquet/` tree obey the stack.
         #
@@ -1044,15 +1050,6 @@ def run_pull(
         # working — but it makes the sentence above ("the view rebuild would
         # resurrect it") true of the server copy and false of the name.
         #
-        # Derived from the CURRENT authorization state, deliberately NOT from
-        # what this run happened to prune: the prune loops only see parquets
-        # that still exist, so they fire once and never again. A prune-derived
-        # set would withhold the name on the pull that removes the file and
-        # release it on every pull after that, which is worse than not fixing
-        # it — the behaviour would depend on how many times you had pulled.
-        blocked_snapshot_names = _blocked_snapshot_names(
-            server_tables, authorized_names, server_only_names
-        )
         if parquet_dir.exists() and (authorized_names is not None or server_only_names):
             for pq_file in sorted(parquet_dir.glob("*.parquet")):
                 stem = pq_file.stem
@@ -1077,6 +1074,23 @@ def run_pull(
                 shutil.rmtree(tdir, ignore_errors=True)
                 local_tables.pop(tid, None)
                 result.tables_removed += 1
+
+        # Computed AFTER the prune, so "still resolves locally" is the truth and
+        # not a prediction — and persisted, because the signal it is derived
+        # from does not survive: the prune pops the very sync_state rows that
+        # say an id used to be local. A set recomputed from scratch each run
+        # would withhold the name on the pull that removes the parquet and
+        # release it on every pull after, which is how a snapshot ends up
+        # answering for a table the analyst can no longer read (#1129 review).
+        blocked_snapshot_names = _blocked_snapshot_names(
+            server_tables,
+            authorized_names,
+            server_only_names,
+            previously_local=previously_local,
+            still_local=set(local_tables),
+            remembered=set(local_state.get("snapshot_blocked") or []),
+        )
+        local_state["snapshot_blocked"] = sorted(blocked_snapshot_names)
 
         # 4c. K3 (#798) — knowledge artifacts: same download/verify/promote/
         # prune lifecycle as parquets, filtered by the manifest's own
@@ -1400,39 +1414,54 @@ def _blocked_snapshot_names(
     server_tables: dict,
     authorized_names: "set[str] | None",
     server_only_names: "set[str]",
+    *,
+    previously_local: "set[str]",
+    still_local: "set[str]",
+    remembered: "set[str]",
 ) -> "set[str]":
-    """Names a snapshot view must NOT take on this pull.
+    """Names a snapshot view must NOT take, remembered across pulls.
 
-    Only ids whose LOCAL resolution was actually revoked belong here. The
-    prune makes a de-authorized or ``server_only`` id unresolvable by deleting
-    its parquet, which frees the name — and ``_register_snapshot_views`` would
-    then hand it to ``user/snapshots/<table_id>.parquet`` (what ``agnes
-    snapshot create`` writes with no ``--as``), so a query for that table would
-    answer from stale snapshot rows instead of erroring.
+    ``agnes snapshot create <table>`` with no ``--as`` writes
+    ``user/snapshots/<table_id>.parquet``. Once the server copy of that table
+    stops resolving locally, the bare id is free again, and
+    ``_register_snapshot_views`` would hand it to that file — so a query for
+    the table answers from a snapshot taken while it was still readable,
+    instead of erroring.
 
-    A ``query_mode='remote'`` table is deliberately NOT swept in: the download
-    loop skips it, so it never had a parquet here, its name was never locally
-    resolvable, and there are no stale rows to serve. Including it broke the
-    opposite way — ``authorized_names`` carries data-package names only
-    (``_build_direct_tables_section`` always returns ``[]``) while
-    ``server_tables`` lists every accessible table, so EVERY remote id was
-    withheld, permanently disabling the snapshot-then-query flow CLAUDE.md
-    documents as the primary path for large remote tables (#1129 review).
+    Three rules, and each exists because of a way the obvious version is wrong:
 
-    Derived from the CURRENT authorization state, deliberately NOT from what
-    this run happened to prune: the prune loops only see parquets that still
-    exist, so they fire once and never again. A prune-derived set would
-    withhold the name on the pull that removes the file and release it on
-    every pull after — behaviour depending on how many times you had pulled.
+    * **Only ids that actually resolved locally.** ``authorized_names`` holds
+      the analyst's data-package tables only, while ``server_tables`` lists
+      everything they can see — for an admin, ``get_accessible_tables``
+      resolves to ``None`` and that is the whole instance. Judging by "in the
+      manifest but not in my packages" therefore withheld every table outside
+      the caller's own stack, killing admins' snapshots on every pull. An id
+      that was never downloaded has no local rows to shadow.
+
+    * **Ids that vanished from the manifest count too.** Full revocation
+      removes the row entirely, so a rule that only iterates ``server_tables``
+      never sees the strongest case — while the prune still deletes its
+      parquet and frees the name.
+
+    * **Remembered, not recomputed.** The evidence that an id used to be local
+      is its ``sync_state`` row, and the prune deletes that row. A set derived
+      fresh each run would block the name on the pull that removes the file and
+      release it on the next one, which is worse than not fixing it: whether
+      stale rows answer would depend on how many times you had pulled. So the
+      decision is persisted and carried forward.
+
+    An id is released once it resolves locally again (re-authorized and
+    re-downloaded): the registered table owns the name at that point, and
+    keeping it blocked would withhold a name nothing is competing for.
     """
-    blocked = set(server_only_names)
-    if authorized_names is not None:
-        blocked |= {
-            tid
-            for tid, info in server_tables.items()
-            if tid not in authorized_names and (info.get("query_mode") or "local") != "remote"
-        }
-    return blocked
+    newly_revoked = {
+        tid
+        for tid in previously_local
+        if tid in server_only_names
+        or tid not in server_tables
+        or (authorized_names is not None and tid not in authorized_names)
+    }
+    return (remembered | newly_revoked) - still_local
 
 
 def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set[str] | None = None) -> list[str]:

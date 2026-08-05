@@ -324,10 +324,60 @@ def test_no_blocked_names_keeps_the_previous_behaviour(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _blocked(server_tables, authorized, server_only=frozenset()):
+def _blocked(
+    server_tables,
+    authorized,
+    server_only=frozenset(),
+    *,
+    previously_local=None,
+    still_local=frozenset(),
+    remembered=frozenset(),
+):
     from cli.lib.pull import _blocked_snapshot_names
 
-    return _blocked_snapshot_names(server_tables, authorized, set(server_only))
+    # Default: everything the manifest lists used to be local, which is the
+    # ordinary analyst case (their package tables are what got downloaded).
+    if previously_local is None:
+        previously_local = set(server_tables)
+    return _blocked_snapshot_names(
+        server_tables,
+        authorized,
+        set(server_only),
+        previously_local=set(previously_local),
+        still_local=set(still_local),
+        remembered=set(remembered),
+    )
+
+
+def test_an_id_that_was_never_local_is_never_withheld():
+    """The over-reach that mattered in practice: for an admin the manifest
+    lists the whole instance while `authorized_names` holds only their own
+    stack, so judging by "listed but not mine" killed a snapshot named after
+    any table outside it — on every pull."""
+    server_tables = {"orders": {"query_mode": "local"}, "someone_elses": {"query_mode": "local"}}
+    assert _blocked(server_tables, authorized=set(), previously_local={"orders"}) == {"orders"}
+
+
+def test_a_table_that_vanished_from_the_manifest_is_withheld():
+    """Full revocation drops the row entirely, so a rule that only walks
+    `server_tables` misses the strongest case — while the prune still deletes
+    the parquet and frees the name."""
+    assert _blocked({}, authorized=set(), previously_local={"gone"}) == {"gone"}
+
+
+def test_a_withheld_name_is_remembered_after_the_prune():
+    """The evidence (`sync_state` row) is gone by the next pull, so a set
+    recomputed from scratch would release the name — and the snapshot would
+    start answering for a table the analyst can no longer read."""
+    # Pull N+1: nothing was local at the start, nothing pruned now.
+    assert _blocked({}, authorized=set(), previously_local=set(), remembered={"gone"}) == {"gone"}
+
+
+def test_a_name_is_released_once_the_table_is_local_again():
+    """Re-authorized and re-downloaded: the registered table owns the name, so
+    keeping it blocked withholds a name nothing competes for."""
+    server_tables = {"orders": {"query_mode": "local"}}
+    assert _blocked(server_tables, authorized={"orders"}, remembered={"orders"}, still_local={"orders"}) == set()
 
 
 def test_a_remote_table_id_is_never_withheld():
@@ -340,8 +390,10 @@ def test_a_remote_table_id_is_never_withheld():
         "web_sessions": {"query_mode": "remote"},
         "orders": {"query_mode": "local"},
     }
-    # analyst's packages grant neither
-    assert _blocked(server_tables, authorized=set()) == {"orders"}
+    # The download loop skips remote rows, so only `orders` was ever local —
+    # which is why the general "was it ever local?" rule subsumes the
+    # remote-mode special case rather than needing one.
+    assert _blocked(server_tables, authorized=set(), previously_local={"orders"}) == {"orders"}
 
 
 def test_a_deauthorized_local_table_id_is_still_withheld():
