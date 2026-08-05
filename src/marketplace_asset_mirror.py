@@ -59,6 +59,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from src.marketplace import is_safe_plugin_name as _is_safe_plugin_name
 from src.marketplace_asset_validation import (
     DOC_EXTENSIONS,
     IMAGE_EXTENSIONS,
@@ -83,14 +84,13 @@ logger = logging.getLogger(__name__)
 # ``.claude-plugin/marketplace.json`` — curator/supply-chain controlled, treated
 # as adversarial. It flows into the on-disk relpath, so ``../`` (or a name that
 # is literally ``..``) would escape the per-slug cache dir when bytes are
-# written. Mirror the strict serve-time rule in ``app/api/marketplace.py``
-# (``_SAFE_SEGMENT_RE`` + explicit ``..`` reject) BEFORE building any path.
-_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
-def _is_safe_plugin_name(plugin_name: str) -> bool:
-    """True iff ``plugin_name`` is a single safe path segment (no traversal)."""
-    return isinstance(plugin_name, str) and plugin_name not in ("..", ".") and bool(_SAFE_SEGMENT_RE.match(plugin_name))
+# written. Validate BEFORE building any path.
+#
+# The rule itself lives in ``src.marketplace`` so the ingest check
+# (``read_plugins``), the serve-time check (``app/api/marketplace.py``), the path
+# containment (``marketplace_filter._contained_plugin_dir``) and this mirror
+# cannot drift apart — the 2026-08-05 audit found exactly that drift: this module
+# had the rule and ``marketplace_filter`` did not.
 
 
 # Hardcoded operational caps. The plan deferred making these configurable —
