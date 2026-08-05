@@ -31,7 +31,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `/me/connections` UX after the first real OAuth rollout: the page now
   also lists per_user sources you have a stored connection for and (for
   admins) freshly registered sources with no tools yet — with a "no tools
-  enabled yet" note linking admins to the source's admin page — instead of
+  enabled yet" note linking admins to the source's admin page, distinct from
+  the "you no longer have access" note a viewer whose grants were withdrawn
+  gets on a source that does have tools — instead of
   silently hiding the card mid-bootstrap; the success banner names the
   source instead of printing its UUID; retryable connect failures render a
   one-click "Try again" link back into the authorize flow; and the card

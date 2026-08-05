@@ -78,13 +78,20 @@
 
     {% if s.hint_html %}<div class="conn-hint">{{ s.hint_html | safe }}</div>{% endif %}
 
-    {% if not s.has_tools %}
+    {% if not s.source_has_tools %}
     {# The register → connect → introspect bootstrap: the source is visible
        (you can connect/disconnect) but has no granted tools yet, so chat
        can't use it. Tell the user instead of silently hiding the card
        (UX round on #1130). #}
     <div class="conn-hint">No tools are enabled for this source yet{% if is_admin %} —
       <a href="/admin/mcp-sources/{{ s.id }}">open the admin page</a> to introspect and grant them{% endif %}.</div>
+    {% elif not s.has_tools %}
+    {# Source HAS enabled tools, you just have none granted — the revoked-access
+       case whose card this page deliberately keeps visible so the credential
+       stays removable. Saying "no tools yet" here sent people to an admin to
+       chase tools that were already enabled (Devin Review on #1167). #}
+    <div class="conn-hint">You no longer have access to this source's tools. Your stored
+      credential is kept here so you can remove it; ask an admin to restore access.</div>
     {% endif %}
 
     {% if s.auth_kind == "oauth" %}
@@ -104,8 +111,14 @@
     {% if s.expires_at %}<div class="conn-updated">Token expires {{ s.expires_at }}</div>{% endif %}
     {% else %}
     <div class="conn-row">
+      {# Same rule as Test below: `PUT .../my-secret` is grant-gated, so on a
+         revoked card the paste field and Save could only ever produce a bare
+         "Save failed (403)". Remove keeps rendering — the own-credential
+         carve-out is what makes the card worth showing (Devin Review on #1167). #}
+      {% if s.has_tools or is_admin %}
       <input type="password" autocomplete="off" placeholder="Paste your token" data-token />
       <button type="button" class="btn btn-primary btn-sm" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
+      {% endif %}
       {% if s.has_secret and (s.has_tools or is_admin) %}
       <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
       {% endif %}

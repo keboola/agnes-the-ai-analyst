@@ -1121,6 +1121,17 @@ async def me_connections_page(
     from src.repositories import mcp_sources_repo, mcp_user_oauth_tokens_repo, per_user_secrets_repo
 
     granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    # Caller-relative (`granted_ids`) and source-level (`sourced_ids`) are two
+    # different questions, and the card needs both: "this source has no tools
+    # yet" is a property of the source, while "no tools are granted to me" is a
+    # property of the viewer. They coincide for an admin, which is how the
+    # conflation survived — for a revoked non-admin, whose card this PR
+    # deliberately keeps visible, it told them the source was unfinished rather
+    # than that they had lost access (Devin Review on #1167).
+    from src.repositories import tool_registry_repo
+    from src.repositories.tool_registry import PASSTHROUGH
+
+    sourced_ids = {t["source_id"] for t in tool_registry_repo().list_by_mode(PASSTHROUGH, enabled_only=True)}
     caller_is_admin = is_user_admin(user["id"], conn)
     sources = []
     for src in mcp_sources_repo().list_all(enabled_only=True):
@@ -1163,6 +1174,7 @@ async def me_connections_page(
                 "has_secret": has_secret,
                 "stored": stored,
                 "has_tools": src["id"] in granted_ids,
+                "source_has_tools": src["id"] in sourced_ids,
                 "updated_at": updated_at,
                 "expires_at": expires_at,
             }

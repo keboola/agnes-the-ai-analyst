@@ -414,3 +414,55 @@ def test_me_connections_connected_banner_only_names_visible_sources(seeded_app):
     )
     assert r.status_code == 200
     assert "definitely-not-a-source" not in r.text
+
+
+def test_revoked_analyst_is_told_they_lost_access_not_that_tools_are_missing(seeded_app):
+    """"This source has no tools yet" and "no tools are granted to me" are
+    different facts. They coincide for an admin, which hid the bug: a revoked
+    analyst — whose card this page deliberately keeps visible — was told the
+    source was unfinished and sent to chase an admin about tools that were
+    already enabled (Devin Review on #1167).
+    """
+    from src.db import get_system_db
+    from src.repositories import mcp_user_oauth_tokens_repo
+    from src.repositories.mcp_sources import MCPSourceRepository
+    from src.repositories.tool_registry import PASSTHROUGH, ToolRegistryRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_oauth_lost",
+        name="src_oauth_lost",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    tools = ToolRegistryRepository(conn)
+    tools.upsert(
+        tool_id="src_oauth_lost.lookup",
+        source_id="src_oauth_lost",
+        original_name="lookup",
+        exposed_name="lookup",
+        mode=PASSTHROUGH,
+        description="enabled, but granted to a group the analyst is not in",
+    )
+    # Granted to a group with no members — the source HAS enabled tools, the
+    # analyst just has none of them.
+    grp = UserGroupsRepository(conn).create(name="grant-src_oauth_lost", description=None)
+    tools.add_grant("src_oauth_lost.lookup", grp["id"])
+    conn.close()
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_lost", "analyst1", "atok")
+
+    r = seeded_app["client"].get(
+        "/me/connections",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+
+    assert r.status_code == 200
+    card = r.text[r.text.index('id="source-src_oauth_lost"') :]
+    card = card[: card.find('id="source-', 1)] if 'id="source-' in card[1:] else card
+    assert "You no longer have access to this source's tools" in card
+    assert "No tools are enabled for this source yet" not in card
+    # ...and no control that could only 403 (PUT my-secret is grant-gated).
+    assert 'data-action="save"' not in card
