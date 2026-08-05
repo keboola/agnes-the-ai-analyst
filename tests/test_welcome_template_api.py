@@ -103,6 +103,23 @@ def test_put_rejects_undefined_placeholder(seeded_app):
     assert "emial" in r.json()["detail"] or "undefined" in r.json()["detail"].lower()
 
 
+def test_put_rejects_retired_token_placeholder(seeded_app):
+    """The legacy editor writes the same repository that backs the
+    install prompt kind — it must enforce the same retired-`{token}`
+    rejection as /api/admin/prompts, or it is a bypass of that guard."""
+    c = seeded_app["client"]
+    admin = _auth(seeded_app["admin_token"])
+
+    r = c.put(
+        "/api/admin/welcome-template",
+        json={"content": "Personal access token: {token}"},
+        headers=admin,
+    )
+    assert r.status_code == 400
+    assert "{token}" in r.text
+    assert "~/.agnes/token" in r.text
+
+
 def test_admin_preview_renders_html(seeded_app):
     """Preview endpoint renders supplied HTML content without persisting."""
     c = seeded_app["client"]

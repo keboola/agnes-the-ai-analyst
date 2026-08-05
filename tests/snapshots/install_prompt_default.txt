@@ -146,7 +146,10 @@ solving it.
    hooks/statusLine/commands are re-applied on top. Then skip to step 4.
    (If `agnes update` fails on auth because your saved token expired:
    the saved credential lives in ~/.config/agnes/token.json. Re-run
-   step 4 on {server_url}/home to save a fresh token, then run
+   step 4 on {server_url}/home to save a fresh token — /home hides
+   the install guide (and its step 4) once onboarding completes, so
+   press its "Mark me as offboarded" button at the bottom to bring
+   the guide back — then run
    `agnes init --force --server-url "{server_url}" --token-file ~/.agnes/token --workspace .`
    — the --force is what makes init re-read the fresh token file;
    plain `agnes init` refuses once `.claude/init-complete` exists.)

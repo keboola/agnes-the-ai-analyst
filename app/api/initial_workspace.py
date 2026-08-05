@@ -613,6 +613,26 @@ def _do_sync(conn: duckdb.DuckDBPyConnection, user_id: Optional[str]) -> dict:
     }
 
 
+def _install_prompt_renders_seed_file() -> bool:
+    """True when the install prompt is git-bound to the canonical seed
+    template path — the only configuration in which a `{token}` hit in
+    the synced seed actually reaches analysts. Conservative on a
+    meta-read failure: keep the hard error (a false block beats silently
+    shipping a token-embedding seed).
+    """
+    try:
+        from src.repositories import welcome_template_repo
+
+        meta = welcome_template_repo().get_meta()
+    except Exception:
+        logger.exception("render dry-run: install prompt meta read failed")
+        return True
+    if meta.get("source_mode") != "git":
+        return False
+    bound = meta.get("git_path") or "install-prompt/template.md.tmpl"
+    return bound == "install-prompt/template.md.tmpl"
+
+
 def _compute_render_dry_run() -> dict:
     """Validate the freshly-synced seed by exercising the manifest scan +
     install-prompt renderer. Returns a structured summary the admin UI
@@ -645,16 +665,28 @@ def _compute_render_dry_run() -> dict:
             # file, but a later `Sync now` can move an already-bound seed
             # onto content that embeds it. Rendered literally, the old
             # `{token}` heredoc would write the string `{token}` into every
-            # analyst's ~/.agnes/token and 401 every `agnes init`.
+            # analyst's ~/.agnes/token and 401 every `agnes init`. Only a
+            # git-bound install prompt renders this file, though — for an
+            # editor-mode prompt or a bundled-fallback hit a legacy IWT
+            # template would hard-error unrelated syncs, so those degrade
+            # to a warning (the bind-git flip re-rejects `{token}` anyway).
             if "{token}" in content:
-                summary["errors"].append(
+                msg = (
                     "install-prompt/template.md.tmpl references the retired "
                     "`{token}` placeholder — the install prompt must not "
                     "embed the access token (it is saved to ~/.agnes/token "
                     "by the install guide and read via `agnes init "
                     "--token-file`)"
                 )
-                summary["ok"] = False
+                if source == "iwt" and _install_prompt_renders_seed_file():
+                    summary["errors"].append(msg)
+                    summary["ok"] = False
+                else:
+                    summary["warnings"].append(
+                        msg
+                        + " (warning only: the install prompt does not "
+                        "currently render this file)"
+                    )
         elif is_configured():
             # IWT configured but neither tier has the file — that's the
             # bundled fallback below, but only if the bundle survived

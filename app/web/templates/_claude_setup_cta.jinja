@@ -386,6 +386,10 @@
     async function deliverTokenCommand(btn, errEl, origText, command) {
         try {
             await copyToClipboard(command);
+            // A Retry lands here without passing launchClaudeWithToken's
+            // entry reset — clear the stale "clipboard blocked" error (and
+            // its reveal-token button) once the copy has succeeded.
+            if (errEl) { errEl.style.display = 'none'; errEl.innerHTML = ''; }
             btn.textContent = 'Copied! Paste into your terminal';
             btn.classList.add('copied');
             setTimeout(function () {
