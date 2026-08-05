@@ -70,6 +70,19 @@ def vault_key_configured() -> bool:
         return False
 
 
+def can_store_secrets() -> bool:
+    """True iff :func:`encrypt_secret` will accept a write right now.
+
+    Exactly the predicate ``encrypt_secret`` guards on — a configured key, OR
+    local-dev mode where the ephemeral fallback is deliberately allowed. Callers
+    that want to reject a doomed write BEFORE doing something irreversible must
+    use this rather than :func:`vault_key_configured`, which is the narrower
+    "is a real key configured" question and answers ``False`` in local dev where
+    the write would in fact succeed (Devin Review on #1124).
+    """
+    return vault_key_configured() or _is_local_dev_mode()
+
+
 def _get_fernet() -> Fernet:
     """Return a Fernet instance built from ``$AGNES_VAULT_KEY``, or an
     ephemeral key when the env var is absent.
@@ -131,6 +144,57 @@ def decrypt_secret(token: bytes) -> str:
     return _get_fernet().decrypt(token).decode("utf-8")
 
 
+def decrypt_optional(token: object, *, context: str = "secret", hint: str = "") -> Optional[str]:
+    """Decrypt a possibly-``None``/possibly-junk Fernet token column.
+
+    Shared by every repo that stores an encrypted secret column (client
+    secrets, refresh tokens, PKCE verifiers, the shared / per-user /
+    connection secrets, and the system secrets) — factors out the
+    bytes-coercion + decrypt-failure-swallow logic that used to be
+    hand-duplicated in each. Returns ``None`` for a NULL column or an
+    unreadable value — never raises.
+
+    "Unreadable" covers BOTH failure modes, not just the obvious one:
+
+    * ``InvalidToken`` — the ciphertext doesn't authenticate under the
+      current key (rotated key, or a value written under the ephemeral
+      fallback before a restart). Per-value.
+    * ``RuntimeError`` — ``AGNES_VAULT_KEY`` is set but is not a valid
+      Fernet key (:func:`_get_fernet`). Process-wide: it fires on the FIRST
+      read, for every value, so letting it escape turns a typo in one env
+      var into a 500 on every request that touches a secret instead of the
+      actionable "not connected / not configured" the callers already
+      handle.
+
+    That second catch is what makes the fold total. ``SystemSecretsRepository``
+    was the one repo excluded from it, on the grounds that its wider catch did
+    not belong in a shared path — but the shared path now has it, so the
+    exception lost its reason and the repo joins the rest.
+
+    ``context`` identifies the column in the WARNING log (convention:
+    ``"<table>.<column>[<key>]"``); ``hint`` appends the caller's
+    degradation note ("Falling back to env-var lookup.") so an operator
+    reading the log knows what happens next.
+
+    Only accepts bytes-like input — callers whose column is TEXT (Fernet
+    tokens are URL-safe base64, so a text column is legitimate) encode
+    before calling.
+    """
+    if token is None:
+        return None
+    if not isinstance(token, (bytes, bytearray, memoryview)):
+        return None
+    try:
+        return decrypt_secret(bytes(token))
+    except (InvalidToken, RuntimeError):
+        logger.warning(
+            "%s failed to decrypt — vault key rotated or malformed?%s",
+            context,
+            f" {hint}" if hint else "",
+        )
+        return None
+
+
 def _reset_ephemeral_key_for_tests() -> None:
     """Test-only: reset the module-level ephemeral key so each test that
     relies on the unset-env-var fallback starts from a fresh state."""
@@ -174,17 +238,11 @@ class SharedSecretsRepository:
         ).fetchone()
         if row is None:
             return None
-        token = row[0]
-        if not isinstance(token, (bytes, bytearray)):
-            return None
-        try:
-            return decrypt_secret(bytes(token))
-        except InvalidToken:
-            logger.warning(
-                "mcp_secrets row for %s failed to decrypt — vault key rotated? Falling back to env-var lookup.",
-                source_id,
-            )
-            return None
+        return decrypt_optional(
+            row[0],
+            context=f"mcp_secrets.secret_value_enc[{source_id}]",
+            hint="Falling back to env-var lookup.",
+        )
 
     def delete(self, source_id: str) -> None:
         self.conn.execute("DELETE FROM mcp_secrets WHERE source_id = ?", [source_id])
@@ -231,17 +289,11 @@ class SystemSecretsRepository:
         ).fetchone()
         if row is None:
             return None
-        token = row[0]
-        if not isinstance(token, (bytes, bytearray)):
-            return None
-        try:
-            return decrypt_secret(bytes(token))
-        except (InvalidToken, RuntimeError):
-            logger.warning(
-                "system_secrets row for %s failed to decrypt — vault key rotated or malformed? Treating as unset.",
-                name,
-            )
-            return None
+        return decrypt_optional(
+            row[0],
+            context=f"system_secrets.secret_value_enc[{name}]",
+            hint="Treating as unset.",
+        )
 
     def delete(self, name: str) -> None:
         self.conn.execute("DELETE FROM system_secrets WHERE name = ?", [name])
@@ -309,19 +361,11 @@ class PerUserSecretsRepository:
         ).fetchone()
         if row is None:
             return None
-        token = row[0]
-        if not isinstance(token, (bytes, bytearray)):
-            return None
-        try:
-            return decrypt_secret(bytes(token))
-        except InvalidToken:
-            logger.warning(
-                "mcp_user_secrets row (%s, %s) failed to decrypt — vault key rotated? "
-                "Falling back to shared vault / env-var.",
-                source_id,
-                user_id,
-            )
-            return None
+        return decrypt_optional(
+            row[0],
+            context=f"mcp_user_secrets.secret_value_enc[{source_id}/{user_id}]",
+            hint="Falling back to shared vault / env-var.",
+        )
 
     def delete(self, source_id: str, user_id: str) -> None:
         self.conn.execute(
@@ -392,15 +436,13 @@ class ConnectionSecretsRepository:
         if not row:
             return None
         token = row[0]
-        # Defensive bytes/str handling, matching the PG sibling and the other
-        # vault repos (SharedSecretsRepository / PerUserSecretsRepository): the
-        # ciphertext column is TEXT so DuckDB returns str, but guard anyway.
-        token = token.encode() if isinstance(token, str) else bytes(token)
-        try:
-            return decrypt_secret(token)
-        except InvalidToken:
-            logger.warning("connection secret for %s unreadable (key rotated?)", connection_id)
-            return None
+        # The str→bytes coercion stays at the callsite: ``ciphertext`` is a TEXT
+        # column (a Fernet token is URL-safe base64), so DuckDB returns str,
+        # which ``decrypt_optional`` treats as "not a token" and would read as
+        # absent. Matches the PG sibling.
+        if isinstance(token, str):
+            token = token.encode()
+        return decrypt_optional(token, context=f"connection_secrets.ciphertext[{connection_id}]")
 
     def delete(self, connection_id: str) -> None:
         self.conn.execute("DELETE FROM connection_secrets WHERE connection_id = ?", [connection_id])

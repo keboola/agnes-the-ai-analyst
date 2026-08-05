@@ -93,8 +93,12 @@ def _craft_review_or_raise(
     model: str,
 ) -> List["LintFinding"]:
     prompt = build_craft_review_prompt(entity, skill_md, candidates)
-    extractor = AnthropicExtractor(api_key=api_key, model=model)
     try:
+        # Constructed inside the error boundary: the SDK import is deferred
+        # to first use, so client construction must translate to
+        # CraftUnavailable like any other LLM failure — craft_review()'s
+        # Never-raises contract depends on it.
+        extractor = AnthropicExtractor(api_key=api_key, model=model)
         result = extractor.extract_json(
             prompt=prompt,
             system=CRAFT_REVIEW_PROMPT,

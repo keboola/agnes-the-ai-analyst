@@ -32,6 +32,7 @@ Deploying, configuring, and running an Agnes instance.
 - [`CONFIGURATION.md`](CONFIGURATION.md) — `instance.yaml`, env vars, per-instance options
 - [`state-dir.md`](state-dir.md) — persistent data layout (`data` + `state` tiers, mount layouts, migration)
 - [`runbooks/wal-recovery.md`](runbooks/wal-recovery.md) — incident runbook: recovering `system.duckdb` from a WAL-replay failure
+- [`../SECURITY.md`](../SECURITY.md) — threat model, trust boundaries, known limitations, operator security checklist
 - [`RBAC.md`](RBAC.md) — access control: groups, members, resource grants
 - [`auth-google-oauth.md`](auth-google-oauth.md) — Google OAuth setup + operator gotchas
 - [`auth-groups.md`](auth-groups.md) — Google Workspace group sync

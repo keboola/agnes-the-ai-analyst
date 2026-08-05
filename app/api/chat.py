@@ -467,6 +467,14 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str, last_seq: int = 0)
                         )
                 elif kind == "cancel":
                     await mgr.cancel(chat_id_v)
+                elif kind == "approval_decision":
+                    rid = frame.get("request_id")
+                    dec = frame.get("decision")
+                    if isinstance(rid, str) and rid and dec in ("allow", "allow_session", "deny"):
+                        try:
+                            await mgr.deliver_approval_decision(chat_id_v, rid, dec, sender_email=user_email)
+                        except SessionNotFound:
+                            pass
         except WebSocketDisconnect:
             return
 
@@ -556,6 +564,17 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str, last_seq: int = 0
                         )
                 elif kind == "cancel":
                     await mgr.cancel(session_id)
+                elif kind == "approval_decision":
+                    # Co-drive participants may approve: they can already
+                    # steer the session (arbitrary user messages), so this
+                    # is no escalation. Same validation as ws_stream.
+                    rid = frame.get("request_id")
+                    dec = frame.get("decision")
+                    if isinstance(rid, str) and rid and dec in ("allow", "allow_session", "deny"):
+                        try:
+                            await mgr.deliver_approval_decision(session_id, rid, dec, sender_email=participant_email)
+                        except SessionNotFound:
+                            pass
         except WebSocketDisconnect:
             return
 

@@ -7,8 +7,7 @@ for reliable JSON extraction. Includes retry logic for transient errors.
 import json
 import logging
 import time
-
-import anthropic
+from typing import Any
 
 from .exceptions import (
     LLMAuthError,
@@ -19,6 +18,21 @@ from .exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str) -> Any:
+    # The anthropic SDK import pulls its full type tree (hundreds of modules,
+    # seconds of cold-import wall time), and this module sits on the app.main
+    # import path via store_guardrails — so the SDK is imported inside the
+    # methods that talk to the API, not at module import. This hook keeps
+    # `connectors.llm.anthropic_provider.anthropic` resolvable for
+    # mock.patch targets.
+    if name == "anthropic":
+        import anthropic
+
+        return anthropic
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -64,6 +78,8 @@ class AnthropicExtractor:
             api_key: Anthropic API key.
             model: Model identifier (e.g., "claude-haiku-4-5-20251001").
         """
+        import anthropic  # deferred — see module __getattr__
+
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
 
@@ -109,8 +125,12 @@ class AnthropicExtractor:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 return self._attempt_extraction(
-                    prompt, current_max_tokens, json_schema, schema_name,
-                    attempt, system=system,
+                    prompt,
+                    current_max_tokens,
+                    json_schema,
+                    schema_name,
+                    attempt,
+                    system=system,
                 )
             except LLMAuthError:
                 raise
@@ -122,15 +142,15 @@ class AnthropicExtractor:
                 # a doubled budget — capped — instead of giving up.
                 # Other format errors (bad JSON, schema mismatch) won't
                 # benefit from more tokens, so re-raise immediately.
-                if (str(e).startswith("Response truncated")
-                        and truncation_retries < MAX_TRUNCATION_RETRIES):
+                if str(e).startswith("Response truncated") and truncation_retries < MAX_TRUNCATION_RETRIES:
                     truncation_retries += 1
                     current_max_tokens *= TRUNCATION_BUDGET_MULTIPLIER
                     logger.warning(
-                        "Response truncated on attempt %d for model %s, "
-                        "retrying with max_tokens=%d (%dx initial)",
-                        attempt, self._model, current_max_tokens,
-                        TRUNCATION_BUDGET_MULTIPLIER ** truncation_retries,
+                        "Response truncated on attempt %d for model %s, retrying with max_tokens=%d (%dx initial)",
+                        attempt,
+                        self._model,
+                        current_max_tokens,
+                        TRUNCATION_BUDGET_MULTIPLIER**truncation_retries,
                     )
                     continue
                 raise
@@ -139,9 +159,11 @@ class AnthropicExtractor:
                 if attempt < MAX_RETRIES:
                     delay = INITIAL_BACKOFF_SECONDS * (BACKOFF_MULTIPLIER ** (attempt - 1))
                     logger.warning(
-                        "Transient error on attempt %d/%d for model %s, "
-                        "retrying in %ds: %s",
-                        attempt, MAX_RETRIES, self._model, delay,
+                        "Transient error on attempt %d/%d for model %s, retrying in %ds: %s",
+                        attempt,
+                        MAX_RETRIES,
+                        self._model,
+                        delay,
                         type(e).__name__,
                     )
                     time.sleep(delay)
@@ -160,8 +182,13 @@ class AnthropicExtractor:
         """Single extraction attempt against the Anthropic API."""
         logger.info(
             "Anthropic extraction attempt %d/%d, model=%s, schema=%s",
-            attempt, MAX_RETRIES, self._model, schema_name,
+            attempt,
+            MAX_RETRIES,
+            self._model,
+            schema_name,
         )
+
+        import anthropic  # deferred — see module __getattr__
 
         from src.observability import trace_generation
 
@@ -188,21 +215,15 @@ class AnthropicExtractor:
         except anthropic.RateLimitError as e:
             raise LLMRateLimitError("Anthropic rate limited") from e
         except (anthropic.APITimeoutError, anthropic.APIConnectionError) as e:
-            raise LLMTimeoutError(
-                f"Anthropic connection error ({type(e).__name__})"
-            ) from e
+            raise LLMTimeoutError(f"Anthropic connection error ({type(e).__name__})") from e
 
         # Check for truncation - raise and let outer retry loop handle it
         if response.stop_reason == "max_tokens":
-            raise LLMFormatError(
-                f"Response truncated (max_tokens) for schema {schema_name}"
-            )
+            raise LLMFormatError(f"Response truncated (max_tokens) for schema {schema_name}")
 
         # Check for refusal
         if response.stop_reason == "end_turn" and not response.content:
-            raise LLMRefusalError(
-                f"Model refused to generate response for schema {schema_name}"
-            )
+            raise LLMRefusalError(f"Model refused to generate response for schema {schema_name}")
 
         # Parse JSON from response
         try:
@@ -210,6 +231,5 @@ class AnthropicExtractor:
             return json.loads(text)
         except (json.JSONDecodeError, IndexError, AttributeError) as e:
             raise LLMFormatError(
-                f"Failed to parse Anthropic response as JSON for "
-                f"schema {schema_name} ({type(e).__name__})"
+                f"Failed to parse Anthropic response as JSON for schema {schema_name} ({type(e).__name__})"
             ) from e

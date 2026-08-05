@@ -124,6 +124,7 @@
     <div class="contrib-result-actions">
       {{ ds.button('Open in Agnes →', variant='primary', href=result.detail_url) }}
       <form method="post" action="/admin/contribute-skill/{{ result.plugin_name }}/delete" style="margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {{ ds.button('Remove this skill', variant='secondary', type='submit') }}
       </form>
     </div>
@@ -134,6 +135,7 @@
   {% endif %}
 
   <form class="contrib-card" method="post" action="/admin/contribute-skill">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <h2>Skill source</h2>
     <p class="help">
       The full <code>SKILL.md</code>, including the <code>--- name: … ---</code>

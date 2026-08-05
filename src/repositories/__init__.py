@@ -118,6 +118,10 @@ __all__ = [
     "system_secrets_repo",
     "tool_registry_repo",
     "setup_tokens_repo",
+    # Outbound MCP OAuth data layer (v109)
+    "mcp_source_oauth_clients_repo",
+    "mcp_user_oauth_tokens_repo",
+    "mcp_oauth_flows_repo",
     # Source connections
     "source_connections_repo",
     "connection_secrets_repo",
@@ -424,6 +428,19 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "setup_tokens": {
         DUCKDB: ("src.repositories.setup_tokens", "SetupTokenRepository"),
         PG: ("src.repositories.setup_tokens_pg", "SetupTokenPgRepository"),
+    },
+    # Outbound MCP OAuth data layer (v109)
+    "mcp_source_oauth_clients": {
+        DUCKDB: ("src.repositories.mcp_source_oauth_clients", "MCPSourceOAuthClientRepository"),
+        PG: ("src.repositories.mcp_source_oauth_clients_pg", "MCPSourceOAuthClientPgRepository"),
+    },
+    "mcp_user_oauth_tokens": {
+        DUCKDB: ("src.repositories.mcp_user_oauth_tokens", "MCPUserOAuthTokenRepository"),
+        PG: ("src.repositories.mcp_user_oauth_tokens_pg", "MCPUserOAuthTokenPgRepository"),
+    },
+    "mcp_oauth_flows": {
+        DUCKDB: ("src.repositories.mcp_oauth_flows", "MCPOAuthFlowRepository"),
+        PG: ("src.repositories.mcp_oauth_flows_pg", "MCPOAuthFlowPgRepository"),
     },
     # source connections
     "source_connections": {
@@ -750,6 +767,19 @@ def tool_registry_repo() -> Any:
 
 def setup_tokens_repo() -> Any:
     return _build("setup_tokens")
+
+
+# Outbound MCP OAuth data layer (v109)
+def mcp_source_oauth_clients_repo() -> Any:
+    return _build("mcp_source_oauth_clients")
+
+
+def mcp_user_oauth_tokens_repo() -> Any:
+    return _build("mcp_user_oauth_tokens")
+
+
+def mcp_oauth_flows_repo() -> Any:
+    return _build("mcp_oauth_flows")
 
 
 # cloud chat

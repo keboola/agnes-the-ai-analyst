@@ -249,6 +249,7 @@ class TestMeSmoke:
         "GET /api/me/home-stats",
         "GET /api/me/effective-access",
         "POST /api/me/onboarded",
+        "POST /api/me/elevation",
     }
 
     def test_me_home_stats(self, seeded_app_both):
@@ -263,6 +264,24 @@ class TestMeSmoke:
     def test_me_onboarded(self, seeded_app_both):
         r = seeded_app_both["client"].post("/api/me/onboarded", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 204)
+
+    def test_me_elevation_toggle(self, seeded_app_both):
+        c = seeded_app_both["client"]
+        r = c.post(
+            "/api/me/elevation",
+            json={"paused": True},
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        assert r.json()["paused"] is True
+        # resume so later smoke classes see god-mode admin behavior
+        r = c.post(
+            "/api/me/elevation",
+            json={"paused": False},
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        c.cookies.delete("agnes_elevation")
 
 
 # ---------------------------------------------------------------------------
@@ -2048,10 +2067,19 @@ KNOWN_UNTESTED = {
     "POST /api/admin/mcp-sources/{source_id}/classify",
     "POST /api/admin/mcp-sources/{source_id}/introspect",
     "POST /api/admin/mcp-sources/{source_id}/materialize",
+    "POST /api/admin/mcp-sources/{source_id}/oauth/register",
     "POST /api/admin/mcp-sources/{source_id}/test",
+    # OAuth connect flow (spec 2026-07-30 §3) — behaviorally covered in
+    # tests/test_mcp_oauth_connect.py (25 cases incl. both backends' repos
+    # via the factory); the PG smoke sweep can't drive the browser redirect
+    # dance parameter-free.
+    "GET /api/mcp/sources/{source_id}/oauth/authorize",
+    "GET /api/mcp/oauth-client/callback",
+    "DELETE /api/mcp/sources/{source_id}/oauth/connection",
     "POST /api/admin/mcp-tools",
     "POST /api/admin/mcp-tools/{tool_id}/grants",
     "PUT /api/admin/mcp-sources/{source_id}",
+    "PUT /api/admin/mcp-sources/{source_id}/oauth/client",
     "PUT /api/admin/mcp-sources/{source_id}/secret",
     "PUT /api/admin/mcp-tools/{tool_id}",
     # Admin memory domains — complex admin feature

@@ -361,6 +361,17 @@
           { label: 'Memory mining (my consent)',  hint: 'privacy',      href: '/me/memory-mining' },
           { label: 'Marketplace',                 hint: 'user',         href: '/marketplace' },
           { label: 'Activity (mine)',             hint: 'user',         href: '/me/activity' },
+          { label: 'My agents',                   hint: 'user',         href: '/agents' },
+          { label: 'AI Connector',                hint: 'user',         href: '/me/ai-connector' },
+          { label: 'Connect editor (token)',      hint: 'user',         href: '/mcp-connect' },
+          {# /news is linked from /home's "What's new" strip, which only
+             renders when a version is published AND the instance resolves
+             home_route to /home — on the /dashboard default the page had no
+             non-admin entry point at all. #}
+          {# Label is "News", not the page's "What's new" heading copy —
+             tests/test_web_news_page.py asserts that phrase is absent from
+             /home when no version is published. #}
+          { label: 'News',                        hint: 'user',         href: '/news' },
         ];
 
         let overlay = null;

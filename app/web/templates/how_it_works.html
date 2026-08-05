@@ -182,6 +182,10 @@
 .aic-oneclick.copied { background: var(--ds-primary-dark, var(--ds-primary)); }
 .aic-oneclick:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; }
 .aic-oneclick-note { font-size: 12.5px; color: var(--ds-text-muted); margin: 8px 0 0; }
+/* Neutral pointer to the token fallback (/mcp-connect) — deliberately muted,
+   not a callout: warning colours would over-signal an ordinary alternative
+   path. */
+.aic-token-fallback { font-size: 13px; color: var(--ds-text-muted); margin: 14px 0 0; }
 .aic-oneclick-error { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--ds-accent-warn-line, var(--ds-border)); border-left-width: 3px; border-radius: 8px; background: var(--ds-accent-warn-bg, var(--ds-surface-dim)); color: var(--ds-accent-warn-ink, var(--ds-text-primary)); font-size: 13px; }
 
 /* Collapsible preview / manual aside — shared summary affordance */
@@ -1037,6 +1041,15 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         </div>
       </div>
 
+    {# Token fallback — OAuth above is the happy path; clients that can't do
+       the browser sign-in (or locked-down setups) need a static PAT instead,
+       which is what /mcp-connect issues. This is that page's ONLY inbound
+       link — it lives here, next to the job it belongs to. Guarded by
+       tests/test_web_nav_agents.py. #}
+    <p class="aic-token-fallback">
+      Client can't complete the browser sign-in?
+      <a href="/mcp-connect">Connect it with a token instead &rarr;</a>
+    </p>
     </div>{# /.aic-card — connector URL + tool tabs #}
     </div>{# /.aic-mode-panel[mcp] #}
 

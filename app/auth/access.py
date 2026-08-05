@@ -23,7 +23,9 @@ Two FastAPI dependencies cover the API surface:
 The resolver is intentionally cache-less: every authorization check does one
 or two DuckDB queries. DuckDB is in-process, so a per-request DB hit costs
 sub-millisecond — the upstream session.internal_roles cache + dual-path
-fallback solved a problem we don't have.
+fallback solved a problem we don't have. (The god-mode observability layer
+below keeps its own short-lived caches, but they only dedupe log lines — the
+access decision itself stays cache-less.)
 """
 
 from __future__ import annotations
@@ -149,6 +151,110 @@ def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None
     return admin_id in _user_group_ids(user_id, conn=conn)
 
 
+# ---------------------------------------------------------------------------
+# God-mode observability
+# ---------------------------------------------------------------------------
+# When the Admin short-circuit in ``can_access`` grants a resource the admin
+# holds no explicit group grant for, emit one deduplicated log line. Pure
+# observability — never changes the decision — but it is the data that shows
+# which surfaces actually rely on god-mode before any future narrowing.
+# Best-effort in-process dedup (same pattern as ``_google_resync_last``); a
+# benign race at worst duplicates a line.
+#
+# NOTE on ``resource_type == 'table'``: "explicit grant" here means a direct
+# ``resource_grants`` row, but analyst table visibility actually flows through
+# data packages / the stack (``src/rbac.py``), which this check does not
+# consult. So an admin who would ALSO reach a table via a granted package is
+# still counted as a god-mode hit — table bypass counts are an UPPER BOUND
+# (over-counts reliance, the safe direction for "which surfaces need god-mode"
+# data). (review note on #1143.)
+_god_mode_logged: "dict[tuple[str, str, str], float]" = {}
+_GOD_MODE_LOG_COOLDOWN_SECONDS = 900
+_GOD_MODE_CACHE_MAX = 4096
+
+# Short-TTL memoization of the per-(user, resource_type) grant set, so a
+# list-style endpoint that checks N distinct resource_ids in a tight loop
+# pays ONE grant query, not N — the observability lookup must not add a
+# per-item DB round trip to the auth hot path (review finding on #1143).
+_god_mode_grants: "dict[tuple[str, str], tuple[float, frozenset[str]]]" = {}
+_GOD_MODE_GRANTS_TTL_SECONDS = 5.0
+
+
+def _god_mode_allowed_ids(
+    user_id: str,
+    resource_type: str,
+    now: float,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> frozenset:
+    # Only memoize the production path (conn is None → global repo factory,
+    # one stable backend per process). When an explicit conn is passed (test
+    # isolation, or a caller pinning a specific handle) the cache key can't
+    # capture which backend/handle produced the set, so a memo could return a
+    # result resolved against a different connection within the TTL — skip the
+    # cache entirely and read fresh (review finding on #1143).
+    if conn is not None:
+        return _allowed_ids_for_user(user_id, resource_type, conn=conn)
+    key = (user_id, resource_type)
+    cached = _god_mode_grants.get(key)
+    if cached is not None and (now - cached[0]) < _GOD_MODE_GRANTS_TTL_SECONDS:
+        return cached[1]
+    ids = _allowed_ids_for_user(user_id, resource_type, conn=conn)
+    if len(_god_mode_grants) >= _GOD_MODE_CACHE_MAX:
+        _god_mode_grants.clear()
+    _god_mode_grants[key] = (now, ids)
+    return ids
+
+
+def _note_god_mode_hit(
+    user_id: str,
+    resource_type: str,
+    resource_id: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> None:
+    # The ENTIRE body is guarded: observability must never break
+    # authorization. This runs on FastAPI's thread pool (require_* deps are
+    # plain ``def``), so the lock-free dedup cache can race — e.g. the
+    # eviction sweep iterating while another thread inserts raises
+    # RuntimeError — and any such failure must degrade to a lost log line,
+    # never to an exception out of ``can_access``.
+    try:
+        key = (user_id, resource_type, resource_id)
+        # monotonic, matching _google_resync_last above: a wall-clock jump
+        # (NTP step) must not widen or collapse a dedup window.
+        now = time.monotonic()
+        last = _god_mode_logged.get(key)
+        if last is not None and (now - last) < _GOD_MODE_LOG_COOLDOWN_SECONDS:
+            return
+        # Do the grant lookup BEFORE marking the key as seen — if it raises
+        # (transient DB blip), the key stays unrecorded so the NEXT request
+        # retries instead of the cooldown swallowing this audit line for the
+        # whole window (review finding on #1143).
+        explicit = resource_id in _god_mode_allowed_ids(user_id, resource_type, now, conn=conn)
+        if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
+            cutoff = now - _GOD_MODE_LOG_COOLDOWN_SECONDS
+            for k in [k for k, t in list(_god_mode_logged.items()) if t < cutoff]:
+                _god_mode_logged.pop(k, None)
+            if len(_god_mode_logged) >= _GOD_MODE_CACHE_MAX:
+                # pathological churn: reset rather than grow without bound
+                _god_mode_logged.clear()
+        _god_mode_logged[key] = now
+        if not explicit:
+            logger.info(
+                "god_mode_bypass: admin %s accessed %s:%s with no explicit group grant",
+                user_id,
+                resource_type,
+                resource_id,
+            )
+    except Exception:
+        logger.warning(
+            "god_mode_bypass: observability failed for %s %s:%s",
+            user_id,
+            resource_type,
+            resource_id,
+            exc_info=True,
+        )
+
+
 def can_access(
     user_id: str,
     resource_type: str,
@@ -156,6 +262,10 @@ def can_access(
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> bool:
     """Generic access check. Admin short-circuits; otherwise group JOIN.
+
+    God-mode hits on resources the admin has no explicit grant for are
+    logged (deduplicated) via :func:`_note_god_mode_hit` — observability
+    only, the decision is unchanged.
 
     Internal data-source tables (``agnes_sessions``/``_usage``/``_audit``) are
     implicitly granted to every authenticated user. Security there is
@@ -176,7 +286,13 @@ def can_access(
     group_ids = _user_group_ids(user_id, conn=conn)
     admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn=conn)
     if admin_id is not None and admin_id in group_ids:
-        return True
+        from app.auth.elevation import elevation_paused
+
+        if not elevation_paused(user_id):
+            _note_god_mode_hit(user_id, resource_type, resource_id, conn=conn)
+            return True
+        # Elevation paused (consent gate): fall through to the explicit
+        # group-grant path — the admin sees exactly what their grants say.
 
     if not group_ids:
         return False
@@ -366,6 +482,16 @@ def require_admin(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
+        )
+    from app.auth.elevation import elevation_paused
+
+    if elevation_paused():
+        # Consent gate: the caller IS an admin but has paused their own
+        # elevation for this browser. Distinct detail so clients can offer
+        # a "re-enable admin mode" action instead of a generic 403.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin_elevation_paused",
         )
     return user
 

@@ -5,7 +5,7 @@ after upstream's connect_hint/glossary/jobs/usage-fix/data_apps/corpus_files_pat
 migrations claimed v92..v97 first.
 
 Revision ID: 0045_user_journey_state_v98
-Revises: 0055_dataapps_linked_v108
+Revises: 0056_mcp_oauth_sources_v109
 """
 
 import sqlalchemy as sa
@@ -13,7 +13,12 @@ from alembic import op
 
 revision: str = "0045_user_journey_state_v98"
 down_revision: str = (
-    "0055_dataapps_linked_v108"  # restacked onto main head (PG parity gap: main lacks user_journey_state)
+    # Restacked onto main's head a second time: main's 0056 (mcp oauth
+    # sources, DuckDB v109) also chained onto 0055, and two children of the
+    # same node give alembic two heads. The paper-theme chain now stacks
+    # AFTER main's, mirroring the merged DuckDB ladder (109 oauth → 110
+    # file_corpora.origin → … → 114 pkg publisher).
+    "0056_mcp_oauth_sources_v109"
 )
 branch_labels = None
 depends_on = None

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import json
 import logging
 import os
@@ -13,7 +15,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.chat import agent_profile, inbound, routing
+# `runner` is imported for the stdin-protocol constants it defines (the
+# UNATTENDED approval decision) — it is stdlib-only at import time and does
+# not import back into this module.
+from app.chat import agent_profile, inbound, routing, runner
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.frame_seq import stamp_frame
@@ -103,6 +108,13 @@ _DAILY_TOKENS_SEED_LEASE_TTL_SEC = 15
 # (the reaper runs every 60s — see `_idle_reaper_loop`), not minutes.
 _PAUSED_SWEEP_LEASE_NAME = "paused-sandbox-sweep"
 _PAUSED_SWEEP_LEASE_TTL_SEC = 90
+
+# Grace window before the orphan sweep (`reap_orphan_sandboxes`) will consider
+# a provider-side sandbox unowned. `_spawn_runner` returns before
+# `set_sandbox_ref` persists the reference, so a just-created sandbox has no
+# row for a short moment — 120s is far beyond that window while still reaping
+# a crashed gateway's leftovers on the following tick.
+_ORPHAN_SWEEP_MIN_AGE_SEC = 120
 
 # Session routing lease (wave-2F task 1 — see app/chat/routing.py). Claimed
 # for `chat:{chat_id}` when a session becomes live in this process's
@@ -233,6 +245,14 @@ class LiveSession:
     # late-seated sinks and persisted as an interrupted message on forced
     # death. Cleared when the turn's assistant_message lands.
     turn_buffer: list[dict] = field(default_factory=list)
+    #: Approval cards raised but not yet answered, keyed by request_id.
+    #: Deliberately NOT in turn_buffer: that is a per-turn replay buffer
+    #: with a seq watermark, and a pending approval outlives its turn
+    #: (the tool stays suspended until a human answers or the gate times
+    #: out). Holding it there pinned the watermark to an old moment and
+    #: made a reconnect skip everything said since (review on #1145).
+    #: Cleared on respawn: the request_id belongs to the dead runner.
+    pending_approvals: dict = field(default_factory=dict)
     turn_in_flight: bool = False
     # Linger task: fires _linger_then_pause after the last sink detaches.
     linger_task: Optional[asyncio.Task] = None
@@ -316,6 +336,19 @@ class LiveSession:
     # trades that for a narrow at-most-once window across an ownership
     # change — see _inbound_consumer_loop's seeding comment.
     inbound_last_seq: int = 0
+
+
+def _approval_attended(live: "LiveSession") -> bool:
+    """True when some attached sink can actually answer an approval request.
+
+    Attendance is a property of the sinks attached RIGHT NOW, not of the
+    session's origin surface and not of the moment a request was raised — so
+    it is derived here on every read rather than trusted from a frame's stamp.
+    The web WebSocket wrapper is the only transport that both draws the card
+    and carries a decision back; everything else is push-only until it
+    implements both halves.
+    """
+    return any(getattr(e.sink, "supports_approvals", False) for e in live.sinks)
 
 
 class ChatManager:
@@ -874,6 +907,10 @@ class ChatManager:
         the full mechanism. Either way this method only ever calls
         ``send_json``/relies on duck typing, so it's unaffected either
         way."""
+        # Unanswered approval cards replay alongside the turn buffer: they
+        # are separate state precisely because they outlive the turn, so
+        # they must be re-sent explicitly rather than ridden along.
+        await self._replay_pending_approvals_to(live, ws)
         for frame in list(live.turn_buffer):
             await ws.send_json(frame)
         if is_primary:
@@ -1031,6 +1068,50 @@ class ChatManager:
 
     # --- detach / linger / pause --------------------------------------------
 
+    async def _replay_pending_approvals_to(self, live: "LiveSession", sink) -> None:
+        """Send every still-unanswered approval card to a newly seated sink.
+
+        One rule for all three attach paths — ``_seat_sink``, ``add_sink`` and
+        ``_ensure_slack_sink``. The last one appends straight into
+        ``live.sinks`` and so missed the replay entirely: a Slack bridge
+        rebuilt on the cross-gateway forwarded-message path stayed silent about
+        a card already pending, and ``_renotify_unattended_approvals`` skipped
+        it too because the stored frame's ``attended`` was already latched
+        False (Devin Review on #1157).
+
+        ``attended`` is re-derived rather than replayed: the stamp records who
+        was attached when the request was RAISED, which is not a claim about
+        who is attached now.
+        """
+        attended = _approval_attended(live)
+        for frame in list(live.pending_approvals.values()):
+            with contextlib.suppress(Exception):
+                await sink.send_json({**frame, "attended": attended})
+
+    async def _renotify_unattended_approvals(self, live: "LiveSession") -> None:
+        """Re-derive attendance for every pending card and nudge if it lapsed.
+
+        The post-broadcast correction only covers the pump iteration that
+        raised the request. A browser that leaves LATER — a clean detach, or a
+        dead sink pruned by some subsequent broadcast — while the card is still
+        pending would otherwise leave nobody holding it and nobody told: the
+        same stall this branch exists to prevent, in a wider window
+        (Devin Review on #1157). Idempotent: a card already marked unattended
+        is not re-posted, and the Slack bridge dedupes by request_id anyway.
+        """
+        if not live.pending_approvals or _approval_attended(live):
+            return
+        for frame in list(live.pending_approvals.values()):
+            if frame.get("attended") is False:
+                continue
+            frame["attended"] = False
+            for entry in list(live.sinks):
+                poster = getattr(entry.sink, "_post_approval_request", None)
+                if poster is not None:
+                    with contextlib.suppress(Exception):
+                        await poster(frame)
+            await self._resolve_if_unattended(live, frame)
+
     async def detach_sink(self, chat_id: str, ws) -> None:
         """Remove ws from the session's sink list. When the last sink leaves,
         trigger the on_detach policy (linger→pause or kill)."""
@@ -1038,6 +1119,8 @@ class ChatManager:
         if live is None:
             return
         live.sinks = [e for e in live.sinks if e.sink is not ws]
+        # The card holder may have just left; tell whoever is still listening.
+        await self._renotify_unattended_approvals(live)
         if not live.sinks:
             self._on_all_sinks_gone(live)
 
@@ -1079,10 +1162,18 @@ class ChatManager:
         # without this guard the loop would spin forever and the entry
         # in `_live` would leak (the reaper skips DEAD sessions).
         # Devin Review BUG_0001 follow-up from #605.
+        # Backs off: an ordinary turn clears in milliseconds, but a turn
+        # suspended on a pending approval holds `turn_in_flight` for the whole
+        # approval timeout (default 300s) — 6000 wakeups at the old flat 20 Hz
+        # for a session nobody is watching (review finding on #1145). Whether
+        # such a turn should keep the sandbox warm at all is the separate
+        # question of making approvals follow the attached client.
+        delay = 0.05
         while live.turn_in_flight:
             if live.state != SessionState.ACTIVE:
                 return
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 1.0)
         # Tier 1 grace window (docs/brainstorms/2026-07-23-chat-e2b-architecture-
         # comparison.md §5): keeps the sandbox warm for idle_grace_seconds after
         # the last sink detaches so a within-window follow-up (a new attach()
@@ -1129,7 +1220,7 @@ class ChatManager:
             live.state = SessionState.ACTIVE  # let kill() handle teardown + partial-save
             await self.kill(live.chat_id, reason="pause_failed")
             return
-        live.handle = None
+        await self._install_runner(live, None)
         self._repo.set_sandbox_paused_at(live.chat_id, datetime.now(timezone.utc))
 
     def _is_current_protocol(self, session: "ChatSession") -> bool:
@@ -1224,7 +1315,7 @@ class ChatManager:
                 self._repo.clear_sandbox_ref(live.chat_id)
                 await self._respawn_fresh(live)
                 return
-            live.handle = handle
+            await self._install_runner(live, handle)
             live.state = SessionState.ACTIVE
             live.active_since = _t.monotonic()
             # AC-G-resume-fresh: rotate tickets on every resume — the paused
@@ -1383,7 +1474,7 @@ class ChatManager:
                 except Exception:
                     logger.warning("destroy fallback for orphaned respawn sandbox %s failed", new_handle.sandbox_id)
             return
-        live.handle = new_handle
+        await self._install_runner(live, new_handle)
         live.state = SessionState.ACTIVE
         live.active_since = _t.monotonic()
         self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
@@ -1622,6 +1713,9 @@ class ChatManager:
         # Snapshot first to avoid racing the pump task.
         for frame in list(live.turn_buffer):
             await sink.send_json(frame)
+        # …and any approval card still waiting for an answer (separate
+        # state: it outlives the turn it was raised in).
+        await self._replay_pending_approvals_to(live, sink)
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
         # Sent directly to this one sink (not _broadcast), so it needs its
         # own stamp (wave-2F task 2). The history-replay frames above are
@@ -1781,6 +1875,19 @@ class ChatManager:
             "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
             "AGNES_PER_TOOL_CALL_SECONDS": str(self._config.per_tool_call_seconds),
             "AGNES_TOOL_CALLS_PER_TURN": str(self._config.tool_calls_per_turn_budget),
+            # ApprovalGate window for a pending approval_request (runner
+            # denies the suspended tool call on expiry).
+            "AGNES_APPROVAL_TIMEOUT_SECONDS": str(self._config.approval_timeout_seconds),
+            # Which agent engine drives the session (app/chat/harness.py
+            # seam; boot-validated against APPROVED_HARNESSES).
+            "AGNES_HARNESS": getattr(self._config, "harness", "claude-code"),
+            # The gate is armed on every surface now — this stays only as the
+            # operator kill-switch `docs/cloud-chat.md` documents. The runner
+            # reads it from its own environment, and the sandbox environment is
+            # exactly this dict (the host's is not merged in), so dropping the
+            # entry would have left the switch unsettable anywhere while the
+            # docs still advertised it (Devin Review on #1157).
+            "AGNES_APPROVALS": "on" if self._config.approvals_enabled else "off",
             # Opt-in: bootstrap the user's marketplace plugins into the sandbox
             # at spawn and load them via setting_sources. Off by default (adds
             # per-spawn latency; only useful once the marketplace ships real
@@ -1824,53 +1931,22 @@ class ChatManager:
         # ``app.chat.runner`` module inside the sandbox.
         argv = ["python3", "/work/runner.py", "--session-id", session.id]
         handle = await self._provider.spawn(workdir=session_dir, env=env, argv=argv)
-        # The provider may declare ``syncs_workspace = True`` (workspace
-        # is mounted, no sync needed). For E2B we hold the workspace
-        # locally and push it after spawn — Q1's full-push strategy.
+        # Provider-mediated file staging — runs for EVERY provider, including
+        # the ones that mount the workspace themselves.
+        await self._stage_boot_files(handle, session)
+        # Only the workspace tarball is actually workspace sync: a provider
+        # that declares ``syncs_workspace = True`` bind-mounts it instead. For
+        # E2B we hold the workspace locally and push it after spawn — Q1's
+        # full-push strategy.
         if not getattr(self._provider, "syncs_workspace", False):
             from app.chat.e2b_workspace_sync import (
-                SANDBOX_CONTEXT_RESTORE,
                 WorkspaceTooLarge,
-                upload_agnes_wheel,
                 upload_workspace,
             )
 
             max_bytes = getattr(self._config, "e2b_workspace_max_bytes", 100 * 1024 * 1024)
             sandbox = getattr(handle, "_sandbox", None)
             if sandbox is not None:
-                # Ship the agnes CLI wheel FIRST — it's a single small write,
-                # and its ``.ready`` sentinel unblocks the runner's in-sandbox
-                # ``pip install`` so that install runs CONCURRENTLY with the
-                # (much slower) workspace push below instead of queueing
-                # behind it. Best-effort: a missing wheel leaves the CLI
-                # absent but never blocks the session, so unlike the
-                # workspace push it does not tear the sandbox down.
-                try:
-                    await upload_agnes_wheel(sandbox)
-                except Exception:
-                    logger.exception(
-                        "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
-                        session.id,
-                    )
-                # Restored-conversation transcript for a fresh sandbox of a
-                # chat that already has history (crash respawn, post-restart
-                # spawn, takeover): the runner appends it to the agent's
-                # system prompt at boot, restoring FULL context — user AND
-                # assistant turns — where the old stdin replay carried only
-                # the last 3 user messages (and ran one LLM turn per message).
-                # Best-effort: a failed upload degrades to a context-free
-                # fresh session, never a blocked spawn. Must land before the
-                # workspace push so the workspace-ready sentinel (which gates
-                # the agent-CLI boot) also guarantees this file.
-                try:
-                    context_md = self._build_restore_context(session)
-                    if context_md:
-                        await sandbox.files.write(SANDBOX_CONTEXT_RESTORE, context_md)
-                except Exception:
-                    logger.exception(
-                        "restore-context upload failed for %s — respawned runner starts without prior context",
-                        session.id,
-                    )
                 try:
                     # Finishes by writing SANDBOX_WORKSPACE_READY, which the
                     # runner waits on before spawning the agent CLI (the CLI
@@ -1887,6 +1963,75 @@ class ChatManager:
                         logger.exception("kill after upload-refusal failed")
                     raise
         return handle
+
+    def _file_stager(self, handle):
+        """An ``async (path, data) -> None`` staging callable for ``handle``,
+        or ``None`` when this provider cannot stage files.
+
+        Capability is declared by an async ``stage_file`` on the provider
+        (``E2BProvider`` writes through the SDK file API, the docker provider
+        through the apps-runner sidecar). The ``iscoroutinefunction`` check —
+        rather than a bare ``getattr`` — is what makes a duck-typed test double
+        (whose every attribute exists and is truthy) opt out cleanly.
+        """
+        stage = getattr(self._provider, "stage_file", None)
+        if not inspect.iscoroutinefunction(stage):
+            return None
+
+        async def _stage(path: str, data) -> None:
+            await stage(handle, path, data)
+
+        return _stage
+
+    async def _stage_boot_files(self, handle, session: "ChatSession") -> None:
+        """Stage the restore-context transcript and the agnes CLI wheel.
+
+        Neither is workspace sync, so both run for EVERY provider — a
+        ``syncs_workspace=True`` provider that skipped them would lose the
+        `agnes` CLI (the runner then blocks its full 60 s wheel wait on a
+        ``.ready`` that never appears) and lose conversation history on every
+        crash respawn.
+
+        Order matters: the restore-context goes FIRST, before the wheel's
+        ``.ready`` sentinel. That sentinel is the only pre-boot barrier every
+        provider shares — a ``syncs_workspace=True`` provider skips the
+        workspace-ready wait entirely — and the runner reads the context file
+        strictly after its sentinel-gated install, so context-before-``.ready``
+        is what makes "a respawned runner sees its transcript" a
+        happens-before instead of a timing accident (under E2B the
+        workspace-ready sentinel used to provide that barrier; bind-mounting
+        providers have no later one). The context file is small, so the
+        in-sandbox ``pip install`` still overlaps the (much slower) workspace
+        push. Both stages are best-effort: a failure degrades the session (no
+        prior context, no CLI) but never blocks the spawn.
+        """
+        stage = self._file_stager(handle)
+        if stage is None:
+            return
+        from app.chat.e2b_workspace_sync import SANDBOX_CONTEXT_RESTORE, stage_agnes_wheel
+
+        # Restored-conversation transcript for a fresh sandbox of a chat that
+        # already has history (crash respawn, post-restart spawn, takeover):
+        # the runner appends it to the agent's system prompt at boot, restoring
+        # FULL context — user AND assistant turns — where the old stdin replay
+        # carried only the last 3 user messages (and ran one LLM turn per
+        # message).
+        try:
+            context_md = self._build_restore_context(session)
+            if context_md:
+                await stage(SANDBOX_CONTEXT_RESTORE, context_md)
+        except Exception:
+            logger.exception(
+                "restore-context upload failed for %s — respawned runner starts without prior context",
+                session.id,
+            )
+        try:
+            await stage_agnes_wheel(stage)
+        except Exception:
+            logger.exception(
+                "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
+                session.id,
+            )
 
     async def _push_ticket_frame(self, live: "LiveSession") -> None:
         """Mint fresh main+mcp+data_apps broker tickets and push them to the
@@ -1926,14 +2071,53 @@ class ChatManager:
             except json.JSONDecodeError:
                 continue
             live.last_activity = datetime.now(timezone.utc)
+            if frame.get("type") == "approval_request":
+                # Stamped BEFORE the fan-out so every sink sees the same
+                # envelope (frame_seq contract) and a push-only sink can tell
+                # whether someone is already looking at a card: the Slack
+                # bridge posts its "approve this on the web" nudge only when
+                # nobody is.
+                frame["attended"] = _approval_attended(live)
             await self._broadcast(live, frame)
             ftype = frame.get("type")
             # Accumulate in-flight turn frames for mid-turn replay and partial
             # save. tool_result MUST ride along: a reconnect mid-turn replays
             # this buffer, and tool_calls replayed without their results left
-            # every tool block stuck on "running…" after a refresh.
+            # every tool block stuck on "running…" after a refresh. Approval
+            # frames ride too so a refresh mid-approval re-renders the pending
+            # card (request + any resolution, reconciled client-side by
+            # request_id).
             if ftype in ("token", "tool_call", "tool_result"):
                 live.turn_buffer.append(frame)
+            elif ftype == "approval_request":
+                rid = frame.get("request_id")
+                if rid:
+                    live.pending_approvals[rid] = frame
+            elif ftype == "approval_resolved":
+                live.pending_approvals.pop(frame.get("request_id"), None)
+            if ftype == "approval_request":
+                # `attended` is stamped BEFORE the fan-out (the frame_seq
+                # contract wants one envelope for every sink), but _broadcast
+                # is also where a dead sink is discovered: a browser that
+                # dropped without a clean close — sleeping laptop, lost mobile
+                # network — is still in live.sinks at stamp time, so the
+                # request went out marked attended, the Slack nudge stayed
+                # quiet, and the very same fan-out then pruned the sink. The
+                # command stalled for the full timeout with nothing said
+                # anywhere. Re-derive afterwards and correct the record
+                # (Devin Review on #1157).
+                if frame.get("attended") and not _approval_attended(live):
+                    frame["attended"] = False
+                    rid = frame.get("request_id")
+                    if rid:
+                        live.pending_approvals[rid] = frame
+                    for entry in list(live.sinks):
+                        poster = getattr(entry.sink, "_post_approval_request", None)
+                        if poster is not None:
+                            with contextlib.suppress(Exception):
+                                await poster(frame)
+                if not frame.get("attended"):
+                    await self._resolve_if_unattended(live, frame)
             if ftype == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
@@ -2031,6 +2215,11 @@ class ChatManager:
         # outlives its audience until the idle reaper notices.
         if dead and not live.sinks and live.state == SessionState.ACTIVE:
             self._on_all_sinks_gone(live)
+        if dead:
+            # The sweep may have removed the only client that could answer a
+            # card raised on an EARLIER frame — the same lapse detach_sink
+            # covers, arriving through the other door.
+            await self._renotify_unattended_approvals(live)
 
     @staticmethod
     async def _safe_close(sink) -> None:
@@ -2122,7 +2311,7 @@ class ChatManager:
             if session is None:
                 return
             new_handle = await self._spawn_runner(session, session_dir)
-            live.handle = new_handle
+            await self._install_runner(live, new_handle)
             live.state = SessionState.ACTIVE
             # Refresh the persisted refs or a later pause/resume cycle would
             # try to reconnect the DEAD sandbox and lose the agent context.
@@ -2219,7 +2408,169 @@ class ChatManager:
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
 
-    def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
+    async def deliver_approval_decision(
+        self,
+        chat_id: str,
+        request_id: str,
+        decision: str,
+        *,
+        sender_email: Optional[str] = None,
+    ) -> None:
+        """Route a user's approval decision to ``chat_id``'s runner.
+
+        Owner path: one ``approval_decision`` stdin frame (no turn-state
+        bookkeeping — the turn is already in flight, suspended inside the
+        runner's ApprovalGate). Non-owner path: ride the inbound control
+        stream (``command="approval"``) so the owning gateway's consumer
+        delivers it — same mechanism as remote kill/cancel. Unknown or
+        invalid decisions harden to "deny". Audited either way.
+        """
+        if decision not in ("allow", "allow_session", "deny"):
+            decision = "deny"
+        write_audit(
+            user_email=sender_email or "",
+            action="chat.approval_decision",
+            details={"session_id": chat_id, "request_id": request_id, "decision": decision},
+        )
+        live = self._live.get(chat_id)
+        if live is not None and live.handle is not None:
+            await self._deliver_local_approval(live, request_id, decision)
+            return
+        # No local runner. Forward over the inbound control stream ONLY if
+        # another gateway positively owns the session (mirror the kill/cancel
+        # + send_user_message owner check). Otherwise the session is dead or
+        # finished and its pending approval died with it — drop with a log
+        # rather than writing a junk queue entry that, if coordination is
+        # down, would raise out and knock the caller's WS offline (review
+        # finding on #1145).
+        try:
+            owner = await asyncio.to_thread(routing.owner_of, chat_id)
+        except Exception:
+            owner = None
+        if owner is not None and owner != routing.this_gateway_id():
+            try:
+                await inbound.publish_control(
+                    chat_id,
+                    "approval",
+                    extra={"request_id": request_id, "decision": decision, "sender": sender_email or ""},
+                )
+            except inbound.InboundPublishFailed:
+                # Same posture as the cross-gateway kill path below: a
+                # coordination hiccup must not escape into the caller's
+                # WebSocket reader loop and drop their chat. The decision is
+                # lost, but the runner's ApprovalGate has its own timeout
+                # and resolves to deny, so the turn still finishes
+                # (review finding on #1145).
+                logger.warning(
+                    "cross-gateway approval decision for %s could not be published (owner %s); "
+                    "the pending request will fall through to the gate's own timeout",
+                    chat_id,
+                    owner,
+                )
+            return
+        logger.info(
+            "approval decision for %s dropped — no live runner and no other gateway owns it",
+            chat_id,
+        )
+
+    async def _install_runner(self, live: "LiveSession", handle) -> None:
+        """Point the session at a new runner process (or at none).
+
+        Always retires ``pending_approvals``: a request_id belongs to the
+        process that raised it, and a fresh gate drops unknown ids silently,
+        so a card that outlives its runner has buttons that do nothing. Every
+        handle swap goes through here — putting the clear on the crash path
+        alone is what left the resume-failure respawn broken (review finding
+        on #1145).
+
+        Retiring means BROADCASTING a resolution, not just forgetting: the
+        original request also sits in the durable ``chat-out`` replay stream,
+        so a client reconnecting with an old ``last_seq`` receives it again
+        no matter what this dict holds. Publishing the death lets every
+        consumer reconcile by request_id, instead of each replay path having
+        to learn to suppress it (review finding on #1145).
+        """
+        live.handle = handle
+        retired = list(live.pending_approvals)
+        live.pending_approvals.clear()
+        for request_id in retired:
+            await self._broadcast(
+                live,
+                {
+                    "type": "approval_resolved",
+                    "request_id": request_id,
+                    "decision": "cancelled",
+                    "reason": "the sandbox restarted before this was answered",
+                },
+            )
+
+    async def _resolve_if_unattended(self, live: "LiveSession", frame: dict) -> None:
+        """Answer an ``approval_request`` that nobody can ever answer.
+
+        Called only for a request no attached sink can respond to (``frame
+        ["attended"]`` is False). The runner's gate is armed on every
+        surface; whether a human can actually respond is a property of the
+        SINKS attached right now, not of the surface the session was started
+        on — a Slack-origin session opened through "Continue on web" has a
+        card-capable client, and a web session whose browser is closed does
+        not. So the decision lives here, at the fan-out, rather than in a
+        spawn-time env var.
+
+        Two cases remain:
+
+        - A capable sink could still arrive: leave the request pending for
+          the gate's full ``chat.approval_timeout_seconds``. This is what
+          makes Slack's "Continue on web" button work — the request rides
+          ``live.pending_approvals``, so a browser attaching mid-approval
+          replays the pending card and can answer it. Waiting is strictly more
+          useful than a fast deny here: the user is a click away, and the
+          gate's timeout is the backstop either way.
+        - None can ever attach — ``Surface.API``, where a ``HeadlessSink``/
+          ``StreamingSink`` is seated by construction and the caller is a
+          program blocked on an HTTP response, not a person who can open a
+          browser: resolve immediately as
+          :data:`~app.chat.runner.UNATTENDED` so the one-shot path keeps its
+          fast, actionable deny instead of stalling for the full timeout.
+        """
+        if live.surface != Surface.API.value:
+            return
+        request_id = str(frame.get("request_id", ""))
+        if not request_id or live.handle is None:
+            return
+        logger.info(
+            "approval request %s on %s auto-denied — agent-API session has no client that can answer",
+            request_id,
+            live.chat_id,
+        )
+        write_audit(
+            user_email=live.user_email,
+            action="chat.approval_decision",
+            details={"session_id": live.chat_id, "request_id": request_id, "decision": runner.UNATTENDED},
+        )
+        await self._deliver_local_approval(live, request_id, runner.UNATTENDED)
+
+    async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
+        payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"
+        try:
+            async with live._stdin_lock:
+                live.handle.stdin.write(payload.encode("utf-8"))
+                await live.handle.stdin.drain()
+        except Exception:
+            # Same posture as the cross-gateway forward: this runs on the
+            # WebSocket reader path, so a sandbox that died or was paused
+            # between rendering the card and the click must cost the answer,
+            # not the user's chat window. The gate's own timeout resolves the
+            # pending request either way (review finding on #1145).
+            logger.warning(
+                "approval decision for %s could not be written to the sandbox; "
+                "the pending request will fall through to the gate's own timeout",
+                live.chat_id,
+                exc_info=True,
+            )
+            return
+        live.last_activity = datetime.now(timezone.utc)
+
+    async def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
         """Make sure ``live`` has a ``SlackSinkBridge`` for the Slack
         channel in ``slack_origin`` (``{"channel": ..., "thread_ts": ...}``),
         creating and seating one if missing.
@@ -2231,13 +2582,21 @@ class ChatManager:
         (services.slack_bot.events), so without this the runner's replies
         for a Slack-surfaced session silently stop reaching Slack.
 
-        ``web_base`` comes from ``SERVER_URL`` (the deployment's public
-        URL) — falling back to no Continue-on-web button when unset, which
-        matches SlackSinkBridge's own empty-``web_base`` behavior. Import
+        ``web_base`` comes from :func:`app.instance_config.get_public_url` —
+        the same resolution (``PUBLIC_URL`` env > ``server.public_url`` in
+        instance.yaml) the ordinary Slack DM/mention path uses via
+        ``app.state.public_url``. This path used to read ``SERVER_URL``
+        directly, so a deployment configuring only ``server.public_url`` got a
+        Continue-on-web button everywhere EXCEPT here (Devin Review on #1157);
+        ``SERVER_URL`` stays as a fallback so deployments setting only it keep
+        working. Unset still degrades to no button, matching
+        SlackSinkBridge's own empty-``web_base`` behavior. Import
         is lazy + guarded so a deployment without the Slack extras
         installed degrades to a logged skip, never a crash in the consumer
         loop. Best-effort by design: idempotent per (session, channel).
         """
+        from app.instance_config import get_public_url
+
         channel = (slack_origin or {}).get("channel") or ""
         if not channel:
             return
@@ -2254,10 +2613,16 @@ class ChatManager:
             thread_ts=(slack_origin or {}).get("thread_ts") or "",
             chat_id=live.chat_id,
             owner=live.user_email,
-            web_base=os.environ.get("SERVER_URL", "").rstrip("/"),
+            web_base=(get_public_url() or os.environ.get("SERVER_URL", "").rstrip("/")),
         )
         live.sinks.append(SinkEntry(participant_email=live.user_email, sink=sink))
         logger.info("re-established Slack sink for %s (channel %s) on forwarded message", live.chat_id, channel)
+        # This path appends straight into live.sinks rather than going through
+        # _seat_sink/add_sink, so the replay has to be explicit here. Awaited,
+        # not fired off: a bare create_task has no strong reference and a GC
+        # cycle can collect it mid-flight — the same latent bug already fixed
+        # once in this runner's stdin reader.
+        await self._replay_pending_approvals_to(live, sink)
 
     async def _forward_inbound_message(
         self, chat_id: str, text: str, *, sender_email: Optional[str], slack_origin: Optional[dict] = None
@@ -2377,6 +2742,23 @@ class ChatManager:
                                 await self.cancel(chat_id)
                             except Exception:
                                 logger.exception("inbound consumer: remote cancel failed for %s", chat_id)
+                        elif command == "approval":
+                            # Approval decision forwarded from a non-owning
+                            # gateway. Deliver straight to the local runner's
+                            # stdin; if the session died meanwhile the pending
+                            # request died with it — drop with a log, never
+                            # re-publish (that would loop).
+                            if live.handle is not None:
+                                try:
+                                    await self._deliver_local_approval(
+                                        live,
+                                        str(entry.get("request_id", "")),
+                                        str(entry.get("decision", "deny")),
+                                    )
+                                except Exception:
+                                    logger.exception("inbound consumer: approval delivery failed for %s", chat_id)
+                            else:
+                                logger.info("inbound consumer: dropping approval for %s (no live runner)", chat_id)
                         else:
                             logger.warning(
                                 "inbound consumer: unknown control command %r for %s (seq %s) — skipped",
@@ -2405,7 +2787,7 @@ class ChatManager:
                         # has somewhere to land on Slack (a takeover builds
                         # LiveSession with sinks=[], and the non-owning
                         # webhook handler never attaches one).
-                        self._ensure_slack_sink(live, slack_origin)
+                        await self._ensure_slack_sink(live, slack_origin)
                     try:
                         await self._deliver_local_user_message(live, text)
                     except Exception:
@@ -2610,7 +2992,7 @@ class ChatManager:
             except Exception:
                 logger.exception("_respawn_co_runner: kill old handle failed")
         new_handle = await self._spawn_runner(session, session_dir)
-        live.handle = new_handle
+        await self._install_runner(live, new_handle)
         live.state = SessionState.ACTIVE
         # Same stale-ref hazard as the crash-respawn path: persist the new
         # sandbox identity for later pause/resume.
@@ -3000,7 +3382,83 @@ class ChatManager:
         if self._idle_task is None or self._idle_task.done():
             self._idle_task = asyncio.create_task(self._idle_reaper_loop())
 
+    async def reap_orphan_sandboxes(self) -> int:
+        """Destroy provider sandboxes that no live or persisted session owns.
+
+        Only providers that manage host-local resources implement
+        ``list_sandboxes`` (the docker provider lists containers by ownership
+        label); for everyone else this is a no-op. The population this exists
+        for is containers with NO surviving row — e.g. a session that was
+        deleted, or refs a crashed gateway never persisted — which the
+        paused-TTL sweep can never see (it walks rows, not containers).
+
+        Three guards against reaping something legitimate:
+
+        - a sandbox younger than ``_ORPHAN_SWEEP_MIN_AGE_SEC`` is skipped —
+          ``_spawn_runner`` returns before ``set_sandbox_ref`` persists the
+          reference, so a brand-new container legitimately has no row yet;
+        - a chat this process is currently serving is skipped;
+        - a sandbox whose session row still points at it is skipped — that is
+          the resumable case, deliberately including a session that was ACTIVE
+          when its gateway died: the next attach adopts the still-running
+          container via ``_resume_from_row``. The accepted cost is that such a
+          container lingers if its user never returns (it never pauses, so the
+          paused-TTL sweep never sees it either); a stale-ref TTL is the known
+          follow-up if that shows up in practice.
+
+        Returns the number of sandboxes destroyed. Never raises.
+        """
+        lister = getattr(self._provider, "list_sandboxes", None)
+        if not inspect.iscoroutinefunction(lister):
+            return 0
+        try:
+            rows = await lister()
+        except Exception:
+            logger.debug("orphan sandbox sweep: provider listing failed", exc_info=True)
+            return 0
+        reaped = 0
+        for row in rows or []:
+            name = str(row.get("name") or "")
+            if not name:
+                continue
+            chat_id = str(row.get("chat_id") or "")
+            try:
+                age = float(row.get("age_seconds") or 0.0)
+            except (TypeError, ValueError):
+                age = 0.0
+            if age < _ORPHAN_SWEEP_MIN_AGE_SEC:
+                continue
+            if chat_id and chat_id in self._live:
+                continue
+            try:
+                session = self._repo.get_session(chat_id) if chat_id else None
+            except Exception:
+                logger.debug("orphan sandbox sweep: row lookup failed for %s", chat_id, exc_info=True)
+                continue
+            if session is not None and session.sandbox_id == name:
+                continue
+            try:
+                await self._provider.destroy(sandbox_id=name)
+            except Exception:
+                logger.debug("orphan sandbox sweep: destroy failed for %s", name, exc_info=True)
+                continue
+            reaped += 1
+            logger.info(
+                "orphan sandbox sweep: destroyed %s (chat_id=%r has no live or persisted owner)",
+                name,
+                chat_id,
+            )
+        return reaped
+
     async def _idle_reaper_loop(self) -> None:
+        # Startup reconciliation: containers a crashed predecessor left behind
+        # are orphaned the moment this process starts, not 60 s later.
+        try:
+            await self.reap_orphan_sandboxes()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("startup orphan sandbox sweep failed; continuing")
         while True:
             await asyncio.sleep(60)
             # #867: never let a single failed sweep kill the reaper task. Before
@@ -3142,6 +3600,13 @@ class ChatManager:
             acquired_sweep_lease = False
         if acquired_sweep_lease:
             try:
+                # Same lease, same tick: the orphan sweep also reads shared
+                # state (the provider's own container list), so exactly one
+                # replica should drive it per tick.
+                try:
+                    await self.reap_orphan_sandboxes()
+                except Exception:
+                    logger.exception("reaper: orphan sandbox sweep failed; continuing")
                 paused_cutoff = now - timedelta(seconds=self._config.paused_ttl_seconds)
                 # #867: a failing list_paused_sessions (DB hiccup) must skip
                 # this cycle's sweep, not propagate out and kill the reaper.

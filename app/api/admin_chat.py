@@ -20,6 +20,7 @@ from app.chat.readiness import (
     get_llm_runtime_diagnostic,
     secret_status,
     test_anthropic_key,
+    test_docker_sandbox,
     test_e2b_key,
     test_wif_credentials,
 )
@@ -177,16 +178,25 @@ async def test_chat_secrets(request: Request, _admin: dict = Depends(require_adm
     uses: the static key in ``api_key`` mode, or the workload-identity federation
     (mint a token + confirm the API accepts it) in ``workload_identity`` mode —
     so the admin "test connection" surface works in both modes.
+
+    The sandbox slot is provider-aware: ``e2b_api_key`` on an E2B deployment,
+    ``docker_sandbox`` (sidecar + daemon + image, via the apps-runner probe) on
+    a self-hosted one. Only the relevant one is returned — a docker instance has
+    no E2B account, and a red row for a credential it will never use is noise,
+    not a signal.
     """
-    llm_auth = getattr(getattr(request.app.state, "chat_config", None), "llm_auth", "api_key")
+    chat_config = getattr(request.app.state, "chat_config", None)
+    llm_auth = getattr(chat_config, "llm_auth", "api_key")
     if llm_auth == "workload_identity":
         anthropic_probe = await test_wif_credentials()
     else:
         anthropic_probe = await test_anthropic_key()
-    return {
-        "e2b_api_key": await test_e2b_key(),
-        "anthropic_api_key": anthropic_probe,
-    }
+    result: dict = {"anthropic_api_key": anthropic_probe}
+    if getattr(chat_config, "provider", "e2b") == "docker":
+        result["docker_sandbox"] = await test_docker_sandbox(getattr(chat_config, "docker_image", ""))
+    else:
+        result["e2b_api_key"] = await test_e2b_key()
+    return result
 
 
 @router.delete("/{chat_id}", status_code=204)

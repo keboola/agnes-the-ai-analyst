@@ -282,6 +282,18 @@
             ],
             "title": "Revoked At"
           },
+          "surface": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "all",
+            "title": "Surface"
+          },
           "user_email": {
             "anyOf": [
               {
@@ -377,6 +389,53 @@
           }
         },
         "title": "AgentCreate",
+        "type": "object"
+      },
+      "AgentResponseRequest": {
+        "properties": {
+          "background": {
+            "default": false,
+            "title": "Background",
+            "type": "boolean"
+          },
+          "input": {
+            "title": "Input",
+            "type": "string"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
+          "response_format": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Format"
+          },
+          "timeout_s": {
+            "default": 120,
+            "title": "Timeout S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input"
+        ],
+        "title": "AgentResponseRequest",
         "type": "object"
       },
       "AgentUpdate": {
@@ -689,8 +748,24 @@
         "title": "BindGitRequest",
         "type": "object"
       },
+      "Body_admin_contribute_skill_delete_admin_contribute_skill__name__delete_post": {
+        "properties": {
+          "csrf_token": {
+            "default": "",
+            "title": "Csrf Token",
+            "type": "string"
+          }
+        },
+        "title": "Body_admin_contribute_skill_delete_admin_contribute_skill__name__delete_post",
+        "type": "object"
+      },
       "Body_admin_contribute_skill_submit_admin_contribute_skill_post": {
         "properties": {
+          "csrf_token": {
+            "default": "",
+            "title": "Csrf Token",
+            "type": "string"
+          },
           "grant_group": {
             "default": "Admin",
             "title": "Grant Group",
@@ -761,6 +836,11 @@
       },
       "Body_create_entity_api_store_entities_post": {
         "properties": {
+          "access": {
+            "default": "everyone",
+            "title": "Access",
+            "type": "string"
+          },
           "category": {
             "anyOf": [
               {
@@ -1056,6 +1136,22 @@
           }
         },
         "title": "Body_setup_request_auth_password_setup_request_post",
+        "type": "object"
+      },
+      "Body_slack_bind_confirm_slack_bind_post": {
+        "properties": {
+          "code": {
+            "default": "",
+            "title": "Code",
+            "type": "string"
+          },
+          "csrf_token": {
+            "default": "",
+            "title": "Csrf Token",
+            "type": "string"
+          }
+        },
+        "title": "Body_slack_bind_confirm_slack_bind_post",
         "type": "object"
       },
       "Body_update_entity_api_store_entities__entity_id__put": {
@@ -1812,6 +1908,99 @@
         "title": "ConsentBody",
         "type": "object"
       },
+      "CreateAgentRequest": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "system_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Prompt"
+          },
+          "token_budget_monthly": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Budget Monthly"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "title": "CreateAgentRequest",
+        "type": "object"
+      },
+      "CreateAgentSessionBody": {
+        "description": "Empty today \u2014 no prompt is sent at creation time (that's the first\n`POST .../messages` call). A distinct model (rather than accepting no\nbody) leaves room to grow (e.g. an initial `title`) without a breaking\nchange to the request shape.",
+        "properties": {},
+        "title": "CreateAgentSessionBody",
+        "type": "object"
+      },
+      "CreateAgentTokenRequest": {
+        "properties": {
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 90,
+            "title": "Expires In Days"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CreateAgentTokenRequest",
+        "type": "object"
+      },
       "CreateCollectionRequest": {
         "properties": {
           "description": {
@@ -2168,6 +2357,17 @@
         "title": "CreateDataPackageRequest",
         "type": "object"
       },
+      "CreateDraftRequest": {
+        "properties": {
+          "branch": {
+            "default": "init",
+            "title": "Branch",
+            "type": "string"
+          }
+        },
+        "title": "CreateDraftRequest",
+        "type": "object"
+      },
       "CreateFromMarkdownBody": {
         "description": "JSON contract for markdown-first publishing (studio Skill Builder /\nAgent Builder).",
         "properties": {
@@ -2207,9 +2407,25 @@
             "title": "Dry Run",
             "type": "boolean"
           },
+          "include_llm": {
+            "default": false,
+            "title": "Include Llm",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "precheck_verdict_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precheck Verdict Token"
           },
           "skill_md": {
             "title": "Skill Md",
@@ -2835,6 +3051,11 @@
             "title": "Scope",
             "type": "string"
           },
+          "surface": {
+            "default": "all",
+            "title": "Surface",
+            "type": "string"
+          },
           "ttl_seconds": {
             "anyOf": [
               {
@@ -3040,6 +3261,33 @@
         "title": "CreateUserRequest",
         "type": "object"
       },
+      "CreateWebhookRequest": {
+        "properties": {
+          "events": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Events"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "CreateWebhookRequest",
+        "type": "object"
+      },
       "CuratedPlugin": {
         "properties": {
           "description": {
@@ -3138,6 +3386,17 @@
       },
       "DeployRequest": {
         "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
           "sha": {
             "anyOf": [
               {
@@ -3182,6 +3441,21 @@
         "title": "DeployScriptRequest",
         "type": "object"
       },
+      "DisplayNameRequest": {
+        "properties": {
+          "name": {
+            "description": "New display name (max 120 chars).",
+            "maxLength": 120,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "DisplayNameRequest",
+        "type": "object"
+      },
       "DocEntry": {
         "description": "One doc file shipped alongside a Store entity. URL points at the\nserving endpoint (``/api/store/entities/<id>/docs/<filename>``).",
         "properties": {
@@ -3221,6 +3495,11 @@
             ],
             "title": "Lint"
           },
+          "llm_error": {
+            "default": false,
+            "title": "Llm Error",
+            "type": "boolean"
+          },
           "llm_findings": {
             "anyOf": [
               {
@@ -3232,6 +3511,17 @@
               }
             ],
             "title": "Llm Findings"
+          },
+          "llm_safe": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Safe"
           },
           "would_publish": {
             "title": "Would Publish",
@@ -3319,6 +3609,19 @@
           "items"
         ],
         "title": "EffectiveAccessResponse",
+        "type": "object"
+      },
+      "ElevationRequest": {
+        "properties": {
+          "paused": {
+            "title": "Paused",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "paused"
+        ],
+        "title": "ElevationRequest",
         "type": "object"
       },
       "EnqueueJobRequest": {
@@ -3582,6 +3885,22 @@
       },
       "HasSecretResponse": {
         "properties": {
+          "auth_kind": {
+            "default": "secret",
+            "title": "Auth Kind",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
           "has_secret": {
             "title": "Has Secret",
             "type": "boolean"
@@ -4568,6 +4887,22 @@
             ],
             "title": "Photo Url"
           },
+          "publisher_kind": {
+            "default": "user",
+            "title": "Publisher Kind",
+            "type": "string"
+          },
+          "publisher_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher Name"
+          },
           "source": {
             "enum": [
               "curated",
@@ -4610,6 +4945,11 @@
               "plugin"
             ],
             "title": "Type",
+            "type": "string"
+          },
+          "verification_state": {
+            "default": "none",
+            "title": "Verification State",
             "type": "string"
           },
           "version": {
@@ -4808,6 +5148,11 @@
       },
       "MaterializeRequest": {
         "properties": {
+          "lister": {
+            "default": false,
+            "title": "Lister",
+            "type": "boolean"
+          },
           "tool_id": {
             "anyOf": [
               {
@@ -4917,6 +5262,19 @@
           "source"
         ],
         "title": "MemberResponse",
+        "type": "object"
+      },
+      "MemoryActionRequest": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "MemoryActionRequest",
         "type": "object"
       },
       "MetricCreate": {
@@ -5208,6 +5566,81 @@
         "title": "NewsBody",
         "type": "object"
       },
+      "OAuthClientConfigRequest": {
+        "description": "Body for ``PUT \u2026/oauth/client`` \u2014 the manual escape hatch for an AS\nwithout dynamic client registration.\n\n``issuer`` is optional: when omitted it defaults to the\n``authorization_endpoint``'s origin \u2014 the schema's ``issuer`` column is\nNOT NULL but the spec's manual-config shape doesn't call out a separate\nissuer field, so this keeps the escape hatch a 4-field form in the\ncommon case (same-origin AS) while still accepting an explicit value\nwhen the issuer differs from the endpoint host.",
+        "properties": {
+          "authorization_endpoint": {
+            "title": "Authorization Endpoint",
+            "type": "string"
+          },
+          "client_id": {
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Secret"
+          },
+          "issuer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          },
+          "token_endpoint": {
+            "title": "Token Endpoint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "authorization_endpoint",
+          "token_endpoint"
+        ],
+        "title": "OAuthClientConfigRequest",
+        "type": "object"
+      },
+      "OAuthRegisterRequest": {
+        "description": "Body for ``POST \u2026/oauth/register`` \u2014 RFC 7591 dynamic registration.\n\nEverything else (issuer, endpoints, PKCE support) is discovered live\nfrom the source's own ``url``; ``scopes`` is the one admin override the\nspec calls out (default empty \u2014 AS/resource defaults apply).",
+        "properties": {
+          "scopes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "title": "OAuthRegisterRequest",
+        "type": "object"
+      },
       "OkResponse": {
         "properties": {
           "ok": {
@@ -5457,6 +5890,19 @@
           "is_personal"
         ],
         "title": "PersonalFlagRequest",
+        "type": "object"
+      },
+      "PinSessionBody": {
+        "properties": {
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pinned"
+        ],
+        "title": "PinSessionBody",
         "type": "object"
       },
       "PluginDetailResponse": {
@@ -6151,6 +6597,23 @@
         "title": "PromptPutRequest",
         "type": "object"
       },
+      "PublisherUpdateRequest": {
+        "properties": {
+          "publisher_kind": {
+            "enum": [
+              "organization",
+              "user"
+            ],
+            "title": "Publisher Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "publisher_kind"
+        ],
+        "title": "PublisherUpdateRequest",
+        "type": "object"
+      },
       "PullConfirmRequest": {
         "description": "Per-type aggregate the CLI submits after every pull finishes.\n\nPairs with the ``sync.pull_started`` event emitted by GET /manifest\nso admin telemetry can compute pull-success rates + duration\ndistributions. Optional fields fall back to zero counts \u2014 older CLI\nversions that don't track a section emit nothing for it.",
         "properties": {
@@ -6639,6 +7102,67 @@
         "title": "RegisterTableRequest",
         "type": "object"
       },
+      "RememberBody": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "RememberBody",
+        "type": "object"
+      },
+      "RenameSessionBody": {
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "RenameSessionBody",
+        "type": "object"
+      },
+      "RescopeSurfaceResponse": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "surface": {
+            "title": "Surface",
+            "type": "string"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "email",
+          "surface",
+          "expires_at"
+        ],
+        "title": "RescopeSurfaceResponse",
+        "type": "object"
+      },
       "ResolveBody": {
         "properties": {
           "note": {
@@ -6796,17 +7320,22 @@
         "title": "SampleInteraction",
         "type": "object"
       },
-      "SecretBody": {
+      "ScopeItem": {
         "properties": {
-          "value": {
-            "title": "Value",
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_type": {
+            "title": "Item Type",
             "type": "string"
           }
         },
         "required": [
-          "value"
+          "item_type",
+          "item_id"
         ],
-        "title": "SecretBody",
+        "title": "ScopeItem",
         "type": "object"
       },
       "SecretsRequest": {
@@ -6821,6 +7350,31 @@
           }
         },
         "title": "SecretsRequest",
+        "type": "object"
+      },
+      "SendSessionMessageBody": {
+        "properties": {
+          "input": {
+            "title": "Input",
+            "type": "string"
+          },
+          "response_format": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Format"
+          }
+        },
+        "required": [
+          "input"
+        ],
+        "title": "SendSessionMessageBody",
         "type": "object"
       },
       "ServerConfigUpdateRequest": {
@@ -6845,6 +7399,17 @@
         "title": "ServerConfigUpdateRequest",
         "type": "object"
       },
+      "SetDescriptionRequest": {
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "title": "SetDescriptionRequest",
+        "type": "object"
+      },
       "SetPasswordRequest": {
         "properties": {
           "password": {
@@ -6856,6 +7421,20 @@
           "password"
         ],
         "title": "SetPasswordRequest",
+        "type": "object"
+      },
+      "SetScopeRequest": {
+        "properties": {
+          "items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ScopeItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "SetScopeRequest",
         "type": "object"
       },
       "SetSharesRequest": {
@@ -7173,6 +7752,22 @@
             ],
             "title": "Photo Url"
           },
+          "publisher_kind": {
+            "default": "user",
+            "title": "Publisher Kind",
+            "type": "string"
+          },
+          "publisher_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher Name"
+          },
           "rating": {
             "anyOf": [
               {
@@ -7230,6 +7825,33 @@
               }
             ],
             "title": "Updated At"
+          },
+          "verification_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Note"
+          },
+          "verification_state": {
+            "default": "none",
+            "title": "Verification State",
+            "type": "string"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
           },
           "version": {
             "title": "Version",
@@ -7776,6 +8398,18 @@
               }
             ],
             "title": "Revoked At"
+          },
+          "surface": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "all",
+            "title": "Surface"
           }
         },
         "required": [
@@ -7839,6 +8473,133 @@
           "role"
         ],
         "title": "TokenResponse",
+        "type": "object"
+      },
+      "UpdateAgentRequest": {
+        "properties": {
+          "connections_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connections Mode"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "memory_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Mode"
+          },
+          "memory_write_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Write Mode"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "plugins_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugins Mode"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug"
+          },
+          "system_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Prompt"
+          },
+          "tables_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables Mode"
+          },
+          "token_budget_monthly": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Budget Monthly"
+          }
+        },
+        "title": "UpdateAgentRequest",
         "type": "object"
       },
       "UpdateConnectionBody": {
@@ -9184,6 +9945,35 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VerificationUpdateRequest": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "verification_state": {
+            "enum": [
+              "verified",
+              "changes_requested",
+              "none"
+            ],
+            "title": "Verification State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verification_state"
+        ],
+        "title": "VerificationUpdateRequest",
+        "type": "object"
+      },
       "VerifyRequest": {
         "properties": {
           "code": {
@@ -9290,6 +10080,37 @@
           "expires_at"
         ],
         "title": "_TokenResponse",
+        "type": "object"
+      },
+      "app__api__admin_mcp__SecretBody": {
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "SecretBody",
+        "type": "object"
+      },
+      "app__api__admin_source_connections__SecretBody": {
+        "properties": {
+          "kind": {
+            "default": "storage",
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "SecretBody",
         "type": "object"
       },
       "app__api__claude_md__TemplateGetResponse": {
@@ -9553,7 +10374,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.76.28"
+    "version": "0.78.5"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10063,7 +10884,7 @@
     },
     "/admin/chat/secrets/test": {
       "post": {
-        "description": "Live-probe the currently-configured credentials. Per-key ``{ok, detail}``.\n\nThe ``anthropic_api_key`` slot probes whatever the LLM auth mode actually\nuses: the static key in ``api_key`` mode, or the workload-identity federation\n(mint a token + confirm the API accepts it) in ``workload_identity`` mode \u2014\nso the admin \"test connection\" surface works in both modes.",
+        "description": "Live-probe the currently-configured credentials. Per-key ``{ok, detail}``.\n\nThe ``anthropic_api_key`` slot probes whatever the LLM auth mode actually\nuses: the static key in ``api_key`` mode, or the workload-identity federation\n(mint a token + confirm the API accepts it) in ``workload_identity`` mode \u2014\nso the admin \"test connection\" surface works in both modes.\n\nThe sandbox slot is provider-aware: ``e2b_api_key`` on an E2B deployment,\n``docker_sandbox`` (sidecar + daemon + image, via the apps-runner probe) on\na self-hosted one. Only the relevant one is returned \u2014 a docker instance has\nno E2B account, and a red row for a credential it will never use is noise,\nnot a signal.",
         "operationId": "test_chat_secrets_admin_chat_secrets_test_post",
         "parameters": [
           {
@@ -10421,6 +11242,15 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_admin_contribute_skill_delete_admin_contribute_skill__name__delete_post"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -10930,6 +11760,56 @@
         ]
       }
     },
+    "/admin/linked-apps": {
+      "get": {
+        "description": "Guided admin flow for linking externally-hosted (Keboola) data apps:\npick an MCP source \u2192 materialize its data-app lister \u2192 select the ingested\napps and grant them to a group. Wires existing admin APIs (mcp-sources,\nmcp-tools, materialize, data-apps ?kind=linked, access/grants) \u2014 no new\ncontrol-plane surface beyond the page itself.",
+        "operationId": "admin_linked_apps_page_admin_linked_apps_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Linked Apps Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/admin/marketplaces": {
       "get": {
         "description": "Admin page for marketplace git repositories (register / sync / delete).",
@@ -11296,6 +12176,56 @@
         ]
       }
     },
+    "/admin/semantic-layer": {
+      "get": {
+        "description": "Per-source breakdown for the Keboola semantic-layer sync (#853/#920/\n#953, task 7): one row per connection enumerated by\n``_enumerate_master_sources()`` (master-token Keboola projects), each\nwith its own metric/glossary counts and the last sync's per-source\nresult. NULL ``source_ref`` rows (legacy, pre-provenance) fold into the\ndefault connection's row since that's the only connection legacy rows\ncan belong to. Rows whose ``source_ref`` no longer matches any\nenumerated source (connection deleted/rotated away) surface separately\nas \"orphaned\" rather than silently vanishing.\n\nMaster tokens are never put into the template context \u2014 only\nname/id/stack_url leave ``_enumerate_master_sources()``.",
+        "operationId": "admin_semantic_layer_page_admin_semantic_layer_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Semantic Layer Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/admin/server-config": {
       "get": {
         "description": "Server configuration editor \u2014 instance.yaml fields grouped by section.\n\nShell-only page. The form is populated client-side from\nGET /api/admin/server-config (which redacts secrets) and submitted\nsection-by-section to POST /api/admin/server-config. Auth/server\nsections require an explicit confirmation dialog before save (see\n``_DANGER_SECTIONS`` in the API). Saves trigger the \"restart required\"\nbanner \u2014 hot-reload is out of scope for #91.",
@@ -11459,6 +12389,56 @@
           }
         },
         "summary": "Admin Session Detail",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/admin/store": {
+      "get": {
+        "description": "Moderation & Trust \u2014 one admin surface for entity verification,\nsubmission review, and marketplace curation.\n\nLists Store entities awaiting verification (``verification_state='requested'``)\nwith a direct link to each entity's detail page, where the Verify /\nRequest changes / Archive / Override actions live. The pre-publish\nsubmission queue and marketplace curation are surfaced as links (count +\njump-off), not rebuilt here. ``/admin/store`` is the natural parent of the\n``/admin/store/submissions`` review queue.",
+        "operationId": "admin_moderation_hub_page_admin_store_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Moderation Hub Page",
         "tags": [
           "web"
         ]
@@ -12498,6 +13478,22 @@
           },
           {
             "in": "query",
+            "name": "result_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Result Class"
+            }
+          },
+          {
+            "in": "query",
             "name": "q",
             "required": false,
             "schema": {
@@ -12510,6 +13506,32 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_self_reads",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Self Reads",
+              "type": "boolean"
             }
           },
           {
@@ -17070,7 +18092,7 @@
         ]
       },
       "put": {
-        "description": "Partial update. Audit row carries before/after for the changed fields.",
+        "description": "Partial update. Audit row carries before/after for the changed fields.\n\n**Changing ``url`` on an http/sse source discards every stored credential\nfor it** \u2014 the shared vault secret, all per-user secrets, and (when the\nsource is OAuth) its client registration, user tokens and in-flight flows.\nThis is irreversible and happens without a separate confirmation, because\na credential must never be forwarded to a host that did not issue it, and\na path-only edit can still be a different protected resource. Users\nre-connect afterwards. The audit row records ``credentials_purged`` so the\neffect is traceable after the fact.\n\nFlipping a ``stdio`` source to http/sse purges too: it makes an already\nstored ``url`` live for the first time. Editing ``url`` on a row that stays\n``stdio`` does not \u2014 there the secret goes into the subprocess environment\nand the url is never read.",
         "operationId": "update_mcp_source_api_admin_mcp_sources__source_id__put",
         "parameters": [
           {
@@ -17347,6 +18369,159 @@
         ]
       }
     },
+    "/api/admin/mcp-sources/{source_id}/oauth/client": {
+      "put": {
+        "description": "Manual OAuth client configuration \u2014 the escape hatch for an\nauthorization server without dynamic client registration (spec \u00a72).\n\nSame https + SSRF-safe validation as the discovered path, even though\nno outbound call happens here: these endpoint URLs get dialed for real\nat token exchange/refresh time, so a bad (internal/metadata) URL must\nbe rejected at configuration time, not silently accepted and only\ncaught when a real caller triggers a forward.",
+        "operationId": "set_oauth_client_config_api_admin_mcp_sources__source_id__oauth_client_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OAuthClientConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Oauth Client Config",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-sources/{source_id}/oauth/register": {
+      "post": {
+        "description": "RFC 9728 + RFC 8414 discovery, PKCE-S256 fail-closed check, RFC 7591\ndynamic client registration against the source's own authorization\nserver. Idempotent \u2014 a second call replaces the row, best-effort\nrevoking the OLD registration first (spec \u00a72 step 5).",
+        "operationId": "register_oauth_client_api_admin_mcp_sources__source_id__oauth_register_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/OAuthRegisterRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Oauth Client",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
     "/api/admin/mcp-sources/{source_id}/secret": {
       "delete": {
         "description": "Drop the vault row for ``source_id``. Source then falls back to\nits ``auth_secret_env`` env-var, or to anonymous if neither is set.",
@@ -17438,7 +18613,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SecretBody"
+                "$ref": "#/components/schemas/app__api__admin_mcp__SecretBody"
               }
             }
           },
@@ -19751,7 +20926,7 @@
     },
     "/api/admin/observability/facets": {
       "get": {
-        "description": "Return the distinct facet values present in `audit_log` for the\nselected window, each with a count. The UI uses these to populate the\nfilter dropdowns \u2014 so an admin sees only users/actions that actually\nexist, not a free-text guess.\n\nCounts are capped at 50 per facet (largest first). 50 is comfortable in\na dropdown; tighter windows usually have <20 anyway.",
+        "description": "Return the distinct facet values present in `audit_log` for the\nselected window, each with a count \u2014 under the SAME filters the\ntimeline uses, so dropdown counts always describe rows the table can\nactually show. `include_self_reads` defaults to False: the Activity\nCenter's own `activity.read` audit rows are hidden unless asked for.\n\nCounts are capped at 50 per facet (largest first). 50 is comfortable in\na dropdown; tighter windows usually have <20 anyway.",
         "operationId": "facets_api_admin_observability_facets_get",
         "parameters": [
           {
@@ -19764,6 +20939,128 @@
               "minimum": 1,
               "title": "Since Minutes",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action_prefix",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action Prefix"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resource_prefix",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resource Prefix"
+            }
+          },
+          {
+            "in": "query",
+            "name": "result_pattern",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Result Pattern"
+            }
+          },
+          {
+            "in": "query",
+            "name": "result_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Result Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_self_reads",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Self Reads",
+              "type": "boolean"
             }
           },
           {
@@ -19817,7 +21114,7 @@
     },
     "/api/admin/observability/kpis": {
       "get": {
-        "description": "Four KPIs for the top-bar cards: events, active users, error rate, p95.",
+        "description": "KPIs for the top-bar cards \u2014 same filter surface as the timeline, so\nthe cards and the table can never tell different stories. `active_users`\ncounts people (scheduler/system actors excluded); `errors` counts\nresult_class='error'; `duration_coverage` says what fraction of rows\ncarry a measured duration (feeds the p95 card's honesty sub-label).",
         "operationId": "kpis_api_admin_observability_kpis_get",
         "parameters": [
           {
@@ -19830,6 +21127,128 @@
               "minimum": 1,
               "title": "Since Minutes",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action_prefix",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action Prefix"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resource_prefix",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resource Prefix"
+            }
+          },
+          {
+            "in": "query",
+            "name": "result_pattern",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Result Pattern"
+            }
+          },
+          {
+            "in": "query",
+            "name": "result_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Result Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_self_reads",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Self Reads",
+              "type": "boolean"
             }
           },
           {
@@ -22428,6 +23847,17 @@
             }
           },
           {
+            "in": "query",
+            "name": "anchor",
+            "required": false,
+            "schema": {
+              "default": "uploaded",
+              "pattern": "^(started|uploaded)$",
+              "title": "Anchor",
+              "type": "string"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -22548,6 +23978,17 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "anchor",
+            "required": false,
+            "schema": {
+              "default": "uploaded",
+              "pattern": "^(started|uploaded)$",
+              "title": "Anchor",
+              "type": "string"
             }
           },
           {
@@ -23278,7 +24719,7 @@
     },
     "/api/admin/source-connections/{connection_id}/secret": {
       "delete": {
-        "description": "Clear the vault secret for a connection (idempotent).",
+        "description": "Clear the vault secret for a connection (idempotent).\n\n``kind`` is a query param: ``storage`` (default) or ``master``.",
         "operationId": "delete_connection_secret_api_admin_source_connections__connection_id__secret_delete",
         "parameters": [
           {
@@ -23287,6 +24728,16 @@
             "required": true,
             "schema": {
               "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "default": "storage",
+              "title": "Kind",
               "type": "string"
             }
           },
@@ -23334,7 +24785,7 @@
         ]
       },
       "put": {
-        "description": "Store (or rotate) the vault secret for a connection token.\n\n409 if AGNES_VAULT_KEY is not configured on the server.",
+        "description": "Store (or rotate) the vault secret for a connection token.\n\n``kind=\"storage\"`` (default): the plain Storage API token used for pulls.\n``kind=\"master\"``: a *separate* slot for a Keboola master (owner) Storage\nAPI token, required by the semantic-layer sync (Metastore API rejects\nnon-master tokens). 400 if the connection isn't ``source_type=\"keboola\"``,\nor if the token fails a live ``verify_token`` preflight (not a master\ntoken). 502 if the Storage API preflight call itself fails.\n\n409 if AGNES_VAULT_KEY is not configured on the server.",
         "operationId": "set_connection_secret_api_admin_source_connections__connection_id__secret_put",
         "parameters": [
           {
@@ -23367,7 +24818,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SecretBody"
+                "$ref": "#/components/schemas/app__api__admin_source_connections__SecretBody"
               }
             }
           },
@@ -26397,7 +27848,7 @@
     },
     "/api/agents/{agent_id}": {
       "delete": {
-        "description": "Soft-delete an agent the caller owns, and drop its grants.\n\nGrants are removed too, so a later agent can never inherit a dangling\ngrant through id reuse and /admin/access shows no orphan rows.",
+        "description": "Soft-delete an agent the caller owns, and drop its grants.\n\nGrants are removed too, so a later agent can never inherit a dangling\ngrant through id reuse and /admin/access shows no orphan rows.\n\nThe seeded default agent is exempt: it is infrastructure every web chat\nsession is attributed to (``app/api/chat.py::_default_agent_id``), not a\nuser artifact, so deleting it would make the agent vanish from the Library\nand silently reappear on the next chat. `/api/v1/agents` refuses this for\nthe same reason (``agents_admin.py::delete_agent``).",
         "operationId": "delete_agent_api_agents__agent_id__delete",
         "parameters": [
           {
@@ -26732,6 +28183,32 @@
           }
         },
         "summary": "Anthropic Proxy Subpath",
+        "tags": [
+          "broker"
+        ]
+      }
+    },
+    "/api/broker/data-apps": {
+      "post": {
+        "description": "Replay a sandboxed authoring agent's request under the ticket identity,\nconfined to the `/api/data-apps` control-plane surface.\n\nTwin of `agnes-api`/`agnes-mcp`: same ticket-scope + in-process ASGI\nreplay pattern, gated on the `data_apps` scope. The extra path-prefix\ncheck keeps a data_apps-scoped ticket from reaching any other `/api/*`\nroute even though `_replay` itself would happily dispatch there (its own\ngate only blocks admin-mutation routes).\n\nThe confinement check MUST decide on the same canonicalized path\n`_replay`/ASGITransport actually dispatches on \u2014 a raw-string\n``.startswith()`` check on the agent-supplied path diverges from the\nreal dispatch target exactly like the admin-route gate's pre-#849 bug:\n``{\"path\": \"/api/data-apps/../catalog\"}`` passes a literal prefix check\nbut resolves (via `_normalize_broker_path`, the same canonicalizer\n`_replay` uses) to `/api/catalog` \u2014 a real, non-admin, out-of-prefix\nroute. So canonicalize FIRST, gate on the canonicalized path, and hand\nthe SAME canonical path to `_replay` (never the raw agent-supplied\nstring) so the gate and the dispatch cannot diverge.\n\nBeyond the prefix check, any canonicalized path that still contains a\nliteral ``..`` segment is rejected outright \u2014 httpx's dot-segment\ncollapse (which `_normalize_broker_path` relies on) only resolves\n*literal* ``..`` at URL-construction time; a percent-encoded segment\n(``%2e%2e``, ``..%2f``) survives decoding as a literal ``..`` string\nthat still starts with ``/api/data-apps/`` without being collapsed. No\nlegitimate `/api/data-apps/*` call ever needs a `..` segment, so this is\npure defense-in-depth against relying on \"it happens to 404\".",
+        "operationId": "data_apps_broker_api_broker_data_apps_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          }
+        },
+        "summary": "Data Apps Broker",
         "tags": [
           "broker"
         ]
@@ -27347,6 +28824,79 @@
         ]
       }
     },
+    "/api/chat/sessions/{chat_id}/pin": {
+      "put": {
+        "description": "Pin or unpin a conversation in the caller's history panel.\n\nOwnership-gated the same way as archive/messages: 404 (never 403) when the\nsession doesn't exist or belongs to someone else, so the endpoint can't be\nused to probe for other users' session ids. Idempotent \u2014 pinning an already\npinned session just re-stamps ``pinned_at``, which re-orders it to the front\nof the Pinned group.",
+        "operationId": "set_session_pinned_api_chat_sessions__chat_id__pin_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinSessionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Session Pinned",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/sessions/{chat_id}/ticket": {
       "post": {
         "description": "Mint a fresh WS ticket for an EXISTING session.\n\nPOST /api/chat/sessions creates a new session every time. When the user\nclicks an old conversation in the sidebar after their WS dropped, the\nfrontend needs a way to re-attach to the SAME chat_id (so history\ncontext continues, message threading is preserved) rather than start\na new one. This endpoint is that path: 404 if the session doesn't\nexist or belongs to someone else, otherwise the same ticket+url shape\nthat ``create_session`` returns.",
@@ -27405,6 +28955,79 @@
           }
         },
         "summary": "Reissue Ticket",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/chat/sessions/{chat_id}/title": {
+      "put": {
+        "description": "Rename a conversation from the history panel's row menu.\n\n``set_title`` already existed for the Haiku auto-title path; this is the\nuser-driven route to the same column. Ownership-gated like the sibling\nper-session routes (404, never 403).\n\nThe title is stripped and length-capped here rather than in the repo: the\nauto-title path is a trusted internal caller, this one is user input. An\nall-whitespace title is a 400 rather than a silent no-op \u2014 the row would\notherwise render as \"Untitled chat\" with no explanation.",
+        "operationId": "rename_session_api_chat_sessions__chat_id__title_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameSessionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Session",
         "tags": [
           "chat"
         ]
@@ -28462,6 +30085,150 @@
         ]
       }
     },
+    "/api/collections/{collection_id}/files/{file_id}/preview": {
+      "get": {
+        "description": "What to show for this file, and how \u2014 the modal's single fetch.\n\nReturns a `kind` the client renders directly:\n\n* ``image`` / ``pdf`` \u2014 fetch ``raw_url`` and let the browser draw it.\n* ``text`` \u2014 ``text`` holds the preview (source for textual uploads, the\n  ingested text for formats whose bytes aren't readable), ``truncated``\n  says a glance is all this is.\n* ``none`` \u2014 nothing to show yet; ``reason`` says why, in the words the\n  modal shows the caller.\n\nDeliberately one endpoint for every format: the client should not have to\nknow which extensions are streamable, which are text and which are only\npreviewable once ingestion has run.",
+        "operationId": "preview_file_api_collections__collection_id__files__file_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview File",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
+    "/api/collections/{collection_id}/files/{file_id}/raw": {
+      "get": {
+        "description": "Stream a browser-renderable file inline (images + PDF only).\n\nServes ONLY the closed ``_PREVIEW_INLINE_MEDIA`` set, with the media type\ntaken from that map rather than from anything the uploader controls, plus\n``nosniff`` so a mislabelled body can't be re-interpreted as HTML. Any\nother extension is 415 with a pointer at the text preview \u2014 this endpoint\nis a viewer, not a download route.",
+        "operationId": "raw_file_api_collections__collection_id__files__file_id__raw_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Raw File",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
     "/api/collections/{collection_id}/files/{file_id}/reingest": {
       "post": {
         "description": "Re-run ingestion for one file (after a fix, a new extractor, or a\npre-status-honesty backfill).\n\nPurges the file's derived artifacts first \u2014 the derived table_registry\nrow/parquet for tabular files (chunks are cleared by the ingest itself,\nwhich is idempotent) \u2014 then resets the row to ``pending`` and re-runs\n``ingest_file``. Returns 202 with the pending row.\n\nWorker-role process (single-box ``all``) \u2192 purge runs inline, then\n``ingest_file`` is scheduled as a FastAPI BackgroundTask \u2014 unchanged from\nbefore this endpoint existed on role-split deployments, since purge always\ncompletes first.\n\nProcess WITHOUT the worker role (role-split ``api`` replica) \u2192 purge and\nre-ingest must run as ONE ordered unit on the worker plane, not decoupled:\nan enqueued purge job racing an in-process ``ingest_file`` BackgroundTask\ncould have the purge land *after* the re-ingest completes and delete the\nfreshly rebuilt table (same deterministic ``table_id``). So a single\n``collections-purge`` job is enqueued with ``reingest_after_purge=True``;\nthe worker handler purges, then calls ``ingest_file`` \u2014 always in that\norder, in one job.",
@@ -28651,6 +30418,38 @@
         "operationId": "list_data_apps_api_data_apps_get",
         "parameters": [
           {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -28816,7 +30615,7 @@
     },
     "/api/data-apps/{slug}": {
       "delete": {
-        "description": "Runner stop + service-token revoke + registry row delete.\n\n204 No Content, no body (project convention \u2014 see\n``tests/test_api_design_rules.py::test_delete_returns_204``). The git\nrepo directory under ``${DATA_DIR}/apps/git/<slug>.git`` is\nintentionally left on disk \u2014 deletion is a registry-only operation;\nthat fact is recorded in the audit log params, not the response body.\nThe RUNTIME config dir (``${DATA_DIR}/apps/<slug>``, holding the\n``config.json`` apps-runner wrote \u2014 see ``_resolve_host_path`` in\n``services/apps_runner/api.py``) is different: it carries the\nnow-revoked service JWT in plaintext, so it's removed best-effort as\nhygiene rather than kept like the git repo.",
+        "description": "Runner stop + service-token revoke + registry row delete.\n\n204 No Content, no body (project convention \u2014 see\n``tests/test_api_design_rules.py::test_delete_returns_204``). The git\nrepo directory under ``${DATA_DIR}/apps/git/<slug>.git`` is\nintentionally left on disk \u2014 deletion is a registry-only operation;\nthat fact is recorded in the audit log params, not the response body.\nThe RUNTIME config dir (``${DATA_DIR}/apps/<slug>``, holding the\n``config.json`` apps-runner wrote \u2014 see ``_resolve_host_path`` in\n``services/apps_runner/api.py``) is different: it carries the\nnow-revoked service JWT in plaintext, so it's removed best-effort as\nhygiene rather than kept like the git repo.\n\nCascades to any live drafts: a prod app's drafts share its git repo and\nreference its id as ``parent_app_id``, so deleting the parent without\ntearing them down first would leave orphaned draft rows/branches/\ncontainers behind. Each draft is torn down via the same\n``_teardown_draft`` helper ``delete_draft`` uses, BEFORE this app's own\nteardown. (Drafts can't themselves have drafts \u2014 ``create_draft``\nrejects ``parent_is_draft`` \u2014 so this loop is a no-op when ``row`` is\nitself a draft \u2014 which can't happen anyway, see below.)\n\nA draft ``slug`` is rejected outright (400 ``use_draft_delete_route``)\nrather than falling through to this function's own teardown below,\nwhich \u2014 unlike ``_teardown_draft`` \u2014 never deletes the draft's branch\non the PARENT's repo; going through here would silently orphan it.\n``DELETE /{slug}/drafts/{draft_slug}`` is the only path that tears a\ndraft down correctly.",
         "operationId": "delete_data_app_api_data_apps__slug__delete",
         "parameters": [
           {
@@ -28930,6 +30729,77 @@
         "tags": [
           "data-apps"
         ]
+      },
+      "patch": {
+        "description": "Set the admin description override on a managed (sync-owned) app.\n\nLinked apps are org resources whose ``description`` is refreshed by the\ningest sync; this override lets an owner/Admin pin a human-authored\ndescription the sync won't clobber. Only ``managed`` rows accept it \u2014\nhosted apps edit their description via the normal create/update flow.",
+        "operationId": "set_data_app_description_api_data_apps__slug__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetDescriptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Data App Description",
+        "tags": [
+          "data-apps"
+        ]
       }
     },
     "/api/data-apps/{slug}/deploy": {
@@ -29004,6 +30874,208 @@
         ]
       }
     },
+    "/api/data-apps/{slug}/drafts": {
+      "post": {
+        "description": "Create a draft copy of the prod app ``slug`` on ``payload.branch``.\n\nThe draft row (Task 1's ``create_draft``) is a full ``data_apps`` row\nwith ``is_draft=True`` and ``parent_app_id`` pointing at the prod app \u2014\nit is deployed/stopped/deleted like any other app, just excluded from\nthe default list (Task 6). ``ensure_branch`` (Task 2) creates the\nbranch on the *prod* app's git repo (drafts don't get their own repo \u2014\nthey're a ref + a registry row layered on top of the parent's); the\ngit credential handed back is likewise minted against the parent\n(``_mint_git_credential(parent)``), since that's the repo the branch \u2014\nand thus any push \u2014 actually lives in.\n\nOrdering is deliberate: the registry row is inserted BEFORE the git\nbranch is created. Doing it the other way round would leave an orphaned\nbranch on the parent's repo whenever ``create_draft`` hits a slug\ncollision (409 ``slug_exists``) \u2014 a git side effect with no\ncorresponding row, invisible to any registry-driven cleanup. With the\nrow created first, a slug collision has no git side effect at all; if\n``ensure_branch`` then fails (409 ``parent_has_no_main``), the\njust-inserted row is deleted so a failed create-draft call never leaves\na dangling draft behind either.",
+        "operationId": "create_draft_api_data_apps__slug__drafts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Draft",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}/drafts/{draft_slug}": {
+      "delete": {
+        "description": "Tear down a single draft: owner/Admin of the PARENT app; 400\n``not_a_draft`` if ``draft_slug`` isn't a draft of ``slug`` (including\n``draft_slug == slug`` itself); 404 if ``draft_slug`` doesn't exist at\nall. Mirrors ``delete_data_app``'s teardown via the shared\n``_teardown_draft`` helper \u2014 container stop, token revoke, branch\ndelete, row delete, config-dir cleanup.",
+        "operationId": "delete_draft_api_data_apps__slug__drafts__draft_slug__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "draft_slug",
+            "required": true,
+            "schema": {
+              "title": "Draft Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Draft",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}/git-credential": {
+      "post": {
+        "operationId": "mint_git_credential_api_data_apps__slug__git_credential_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mint Git Credential",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
     "/api/data-apps/{slug}/logs": {
       "get": {
         "operationId": "get_data_app_logs_api_data_apps__slug__logs_get",
@@ -29071,6 +31143,69 @@
           }
         },
         "summary": "Get Data App Logs",
+        "tags": [
+          "data-apps"
+        ]
+      }
+    },
+    "/api/data-apps/{slug}/preview-grant": {
+      "post": {
+        "description": "Mint a short-TTL `data-app-preview:<slug>` cookie for the in-chat\npreview iframe (wave 3C, spec \u00a77 / Q4).\n\nChat-surface-internal: this is what `agnes_data_app_preview`'s live-URL\ncall hits server-side to hand the iframe a same-origin cookie so it can\nload `/apps/<slug>/` without a cross-origin login. Any caller who can\nalready *view* the app (owner, Admin, or a group grant \u2014 same predicate\nas `GET /{slug}`) may request one; unlike `git-credential`, this is not\nowner/Admin-only, since a granted viewer previewing a draft is a normal\npart of the review loop. No REST/CLI analogue is expected \u2014 see\n`_EXEMPT` in `tests/test_documentation_api_triple_surface.py`.",
+        "operationId": "create_preview_grant_api_data_apps__slug__preview_grant_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Preview Grant",
         "tags": [
           "data-apps"
         ]
@@ -29429,6 +31564,22 @@
             "schema": {
               "title": "Table Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "part",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Part"
             }
           },
           {
@@ -30370,7 +32521,7 @@
     },
     "/api/knowledge/search": {
       "get": {
-        "description": "One query across documents, the knowledge base, and the table catalog.\n\nResults are typed (``chunk | knowledge | table``); table hits carry a\npivot hint (query via SQL) instead of rows. Everything is filtered to the\ncaller's grants, fail-closed per source.\n\n``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:\n``lexical_only`` means the embeddings extra is absent and document chunks\nwere ranked without semantic scoring (#898). Knowledge and table hits are\nlexical by design and unaffected.",
+        "description": "One query across documents, the knowledge base, and the table catalog.\n\nResults are typed (``chunk | knowledge | table | metric | glossary``); table hits carry a\npivot hint (query via SQL) instead of rows. Everything is filtered to the\ncaller's grants, fail-closed per source.\n\n``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:\n``lexical_only`` means the embeddings extra is absent and document chunks\nwere ranked without semantic scoring (#898). Knowledge and table hits are\nlexical by design and unaffected.",
         "operationId": "knowledge_search_api_knowledge_search_get",
         "parameters": [
           {
@@ -30448,7 +32599,7 @@
     },
     "/api/marketplace/categories": {
       "get": {
-        "description": "Per-tab category list with non-zero counts.\n\nSource of categories: union of ``STORE_CATEGORIES`` and any non-empty\n``marketplace_plugins.category`` values in the caller's RBAC scope.\nCategories with zero matching items are omitted (the frontend hides\nthem this way).",
+        "description": "Per-tab category list with non-zero counts.\n\nSource of categories: union of ``STORE_CATEGORIES`` and any non-empty\n``marketplace_plugins.category`` values in the caller's RBAC scope.\nCategories with zero matching items are omitted (the frontend hides\nthem this way).\n\n``browse`` (v104, the unified shelf) sums BOTH sources so the category rail\nannotates the same result set the grid renders.",
         "operationId": "list_categories_api_marketplace_categories_get",
         "parameters": [
           {
@@ -30458,6 +32609,7 @@
             "schema": {
               "default": "curated",
               "enum": [
+                "browse",
                 "curated",
                 "flea",
                 "my"
@@ -31382,12 +33534,54 @@
             "schema": {
               "default": "curated",
               "enum": [
+                "browse",
                 "curated",
                 "flea",
                 "my"
               ],
               "title": "Tab",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "publisher",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "organization",
+                    "me",
+                    "other_users"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Publisher"
+            }
+          },
+          {
+            "in": "query",
+            "name": "verification",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "verified",
+                    "unverified"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Verification"
             }
           },
           {
@@ -32322,6 +34516,124 @@
         ]
       }
     },
+    "/api/mcp/oauth-client/callback": {
+      "get": {
+        "description": "Authorization-code redemption \u2014 the upstream AS redirects the user's\nbrowser here after they authorize (or decline).\n\nA browser landing page, not a JSON API: every failure mode redirects\nback to ``/me/connections?connect_error=\u2026`` with a short, redacted\nmessage rather than raising a raw 4xx/5xx (spec \u00a73). ``deny_principal``\nstill applies \u2014 this route requires the caller's normal authenticated\nweb session (cookie or bearer), never a restricted principal.",
+        "operationId": "oauth_connect_callback_api_mcp_oauth_client_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error_description",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error Description"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Connect Callback",
+        "tags": [
+          "mcp-oauth-connect"
+        ]
+      }
+    },
     "/api/mcp/passthrough/tools": {
       "get": {
         "description": "List passthrough MCP tools visible to the caller.\n\nUsed by the stdio MCP server (``agnes mcp``) at startup so analyst\nworkspaces dynamically gain access to upstream MCP tools their admin\nhas curated and granted to their groups.",
@@ -32384,7 +34696,7 @@
     },
     "/api/mcp/passthrough/tools/{tool_id}/call": {
       "post": {
-        "description": "Forward a tool call to the upstream MCP source and return its content.\n\nRBAC: admin short-circuit; otherwise the caller must be in a group\nlisted in ``tool_grants`` for this tool.",
+        "description": "Forward a tool call to the upstream MCP source and return its content.\n\nRBAC: admin short-circuit; otherwise the caller must be in a group\nlisted in ``tool_grants`` for this tool. An agent-session caller (V1d)\nruns on its owner's grants minus the admin short-circuit, and only on the\nMCP sources in its ``connection`` scope \u2014 enforced HERE, at the call seam,\nnot merely by omission from ``/tools``.",
         "operationId": "invoke_passthrough_tool_api_mcp_passthrough_tools__tool_id__call_post",
         "parameters": [
           {
@@ -32590,7 +34902,7 @@
         ]
       },
       "get": {
-        "description": "Return ``has_secret: bool`` for the caller + the source's scope so\na UI can show \"Connect your <source>\" or \"Connected\".",
+        "description": "Return ``has_secret: bool`` for the caller + the source's scope so\na UI can show \"Connect your <source>\" or \"Connected\".\n\n``auth_method='oauth'`` sources report against ``mcp_user_oauth_tokens``\ninstead of the vault-backed ``mcp_user_secrets`` table \u2014 same response\nshape, ``auth_kind`` tells the caller which credential kind it's\nreading (spec \u00a73/\u00a75).",
         "operationId": "get_my_secret_status_api_mcp_sources__source_id__my_secret_get",
         "parameters": [
           {
@@ -32784,6 +35096,191 @@
         ]
       }
     },
+    "/api/mcp/sources/{source_id}/oauth/authorize": {
+      "get": {
+        "description": "Kick off the browser authorization-code + PKCE flow for ``source_id``.\n\n``deny_principal`` \u2014 connect is human-only, an agent/co-session token\nmust never mint a token for its owner without the owner's live browser\ninteraction. ``_require_source_grant`` \u2014 an ungranted caller must not be\nable to park a token for a source they cannot use. Responds ``302`` to\nthe upstream authorization endpoint built from the stored\n``mcp_source_oauth_clients`` row (never from request data).",
+        "operationId": "authorize_oauth_connect_api_mcp_sources__source_id__oauth_authorize_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Authorize Oauth Connect",
+        "tags": [
+          "mcp-oauth-connect"
+        ]
+      }
+    },
+    "/api/mcp/sources/{source_id}/oauth/connection": {
+      "delete": {
+        "description": "Drop the caller's OAuth connection for ``source_id``.\n\n``deny_principal`` + ``_require_source_grant`` \u2014 same human-only,\ngrant-gated contract as authorize. Best-effort RFC 7009 revocation is\ndeferred to spec \u00a77 PR 3: schema v109 does not persist a\n``revocation_endpoint`` for the stored authorization server (only\n``authorization_endpoint``/``token_endpoint`` \u2014 see the design doc's \u00a71\ntable), so there is no endpoint to safely call without guessing a URL\nshape. This mirrors ``\u2026/my-secret`` DELETE, which also only ever drops\nthe local credential row (the upstream token still needs to be revoked\nby the user in the upstream system if they want it fully dead).",
+        "operationId": "disconnect_oauth_api_mcp_sources__source_id__oauth_connection_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Oauth",
+        "tags": [
+          "mcp-oauth-connect"
+        ]
+      }
+    },
+    "/api/me/display-name": {
+      "patch": {
+        "description": "Update the calling user's display name.\n\nAuth: any authenticated user; the update is scoped to their own row.\nEmail stays unchanged \u2014 it is the identity key from the auth provider\nand may only change through the provider's own flow.\n\nGoogle Workspace sync only sets ``name`` at account *creation* (first\nsign-in), not on subsequent logins or group-sync runs, so a manually-\nset name is never overwritten by the sync process.\n\nReturns ``{\"status\": \"ok\", \"name\": \"<new name>\"}`` on success.",
+        "operationId": "patch_display_name_api_me_display_name_patch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisplayNameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Display Name",
+        "tags": [
+          "me"
+        ]
+      }
+    },
     "/api/me/effective-access": {
       "get": {
         "description": "Same payload as /api/admin/users/{id}/effective-access but scoped to\nthe calling user. Drives the /me/profile page's read-only access summary \u2014\nso non-admin callers can self-audit without elevation. Admins get the\nsame explicit grant breakdown as everyone else (no short-circuit) so\nthe profile page audits the actual grant graph; runtime authorization\nstill gives Admin god-mode regardless of this list.",
@@ -32835,6 +35332,70 @@
           }
         },
         "summary": "My Effective Access",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/elevation": {
+      "post": {
+        "description": "Pause or resume the calling admin's own god-mode for this browser.\n\nBrowser-session-scoped by design (a cookie the elevation middleware\nreads; the CLI has no cookie jar), so it deliberately has no CLI/MCP\nsibling. Gated on RAW Admin membership \u2014 NOT ``require_admin`` \u2014\nbecause a paused admin must be able to re-elevate (require_admin\nwould 403 them into a locked-out loop). The cookie only ever reduces\nprivilege; see ``app/auth/elevation.py``.\n\nCSRF posture: rides the platform-wide SameSite=Lax + JSON-body\nprotection (a cross-site form POST can neither carry the Lax cookie\nnor produce a JSON body). No double-submit token, consistent with the\nrest of ``/api/me`` and the documented platform CSRF posture.",
+        "operationId": "post_elevation_api_me_elevation_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElevationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Elevation",
         "tags": [
           "me"
         ]
@@ -34529,7 +37090,7 @@
     },
     "/api/memory/admin/pending": {
       "get": {
-        "description": "Get pending items queue for admin review.",
+        "description": "Get pending items queue for admin review.\n\n``search`` narrows by title/content substring (same ``repo.search``\nbacking the main list endpoint, pinned to ``status='pending'``) so an\nadmin can find specific items inside a large review queue without\npaging through it.",
         "operationId": "admin_pending_api_memory_admin_pending_get",
         "parameters": [
           {
@@ -34546,6 +37107,22 @@
                 }
               ],
               "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
             }
           },
           {
@@ -37965,6 +40542,42 @@
             }
           },
           {
+            "description": "Publisher facet: 'organization' | 'me' | 'other_users'. 'me'/'other_users' are a per-request split of user-published items against the caller.",
+            "in": "query",
+            "name": "publisher",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Publisher facet: 'organization' | 'me' | 'other_users'. 'me'/'other_users' are a per-request split of user-published items against the caller.",
+              "title": "Publisher"
+            }
+          },
+          {
+            "description": "Verification facet: 'verified' | 'unverified'. 'unverified' is the union of the non-positive states \u2014 a filter value only, never a label rendered on a card.",
+            "in": "query",
+            "name": "verification",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Verification facet: 'verified' | 'unverified'. 'unverified' is the union of the non-positive states \u2014 a filter value only, never a label rendered on a card.",
+              "title": "Verification"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -38794,6 +41407,81 @@
         ]
       }
     },
+    "/api/store/entities/{entity_id}/publisher": {
+      "put": {
+        "description": "Publish an entity as the organization, or hand it back to its author.\n\nAdmin-only, and deliberately an explicit action rather than something\nderived from the owner's Admin-group membership: membership is mutable and\nre-synced from the identity provider, so a derived value would silently\nreclassify already-published skills when an author changes groups.",
+        "operationId": "set_entity_publisher_api_store_entities__entity_id__publisher_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublisherUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreEntityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Entity Publisher",
+        "tags": [
+          "store"
+        ]
+      }
+    },
     "/api/store/entities/{entity_id}/rate": {
       "post": {
         "description": "Cast / change / clear the caller's thumbs up/down vote on an entity.\n\n``vote``: ``1`` = up, ``-1`` = down, ``0`` = clear the caller's vote.\nOne vote per (entity, user): re-voting replaces the prior value in place.\nReturns the updated ``{up, down, my_vote}`` aggregate.",
@@ -38927,6 +41615,146 @@
           }
         },
         "summary": "Get Entity Status",
+        "tags": [
+          "store"
+        ]
+      }
+    },
+    "/api/store/entities/{entity_id}/verification": {
+      "put": {
+        "description": "Admin verdict: Verify \u00b7 Request changes \u00b7 Remove verification.\n\nReturns 409 on an organization-published entity \u2014 it already carries the\nstronger claim, so a checkmark on top would invent a fourth trust tier.",
+        "operationId": "set_entity_verification_api_store_entities__entity_id__verification_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerificationUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreEntityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Entity Verification",
+        "tags": [
+          "store"
+        ]
+      }
+    },
+    "/api/store/entities/{entity_id}/verification/request": {
+      "post": {
+        "description": "Author asks the org to look at their shared item.\n\nOnly the owner may ask, and only for something other people can actually\nsee: a private item needs no verification because nobody else can discover\nit. Idempotent \u2014 asking twice leaves the state at 'requested'.",
+        "operationId": "request_entity_verification_api_store_entities__entity_id__verification_request_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreEntityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Entity Verification",
         "tags": [
           "store"
         ]
@@ -40997,6 +43825,1668 @@
         "summary": "Set Password",
         "tags": [
           "users"
+        ]
+      }
+    },
+    "/api/v1/agents": {
+      "get": {
+        "operationId": "list_agents_api_v1_agents_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agents",
+        "tags": [
+          "agents"
+        ]
+      },
+      "post": {
+        "operationId": "create_agent_api_v1_agents_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/agents/{agent_id}": {
+      "delete": {
+        "operationId": "delete_agent_api_v1_agents__agent_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent",
+        "tags": [
+          "agents"
+        ]
+      },
+      "get": {
+        "operationId": "get_agent_api_v1_agents__agent_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent",
+        "tags": [
+          "agents"
+        ]
+      },
+      "put": {
+        "operationId": "update_agent_api_v1_agents__agent_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/agents/{agent_id}/memories": {
+      "get": {
+        "operationId": "list_agent_memories_api_v1_agents__agent_id__memories_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agent Memories",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/agents/{agent_id}/memories/{memory_id}": {
+      "delete": {
+        "operationId": "delete_agent_memory_api_v1_agents__agent_id__memories__memory_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent Memory",
+        "tags": [
+          "agents"
+        ]
+      },
+      "patch": {
+        "operationId": "update_agent_memory_api_v1_agents__agent_id__memories__memory_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Agent Memory",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/agents/{agent_id}/scope": {
+      "put": {
+        "operationId": "set_agent_scope_api_v1_agents__agent_id__scope_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetScopeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Agent Scope",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/agents/{agent_id}/tokens": {
+      "post": {
+        "operationId": "create_agent_token_api_v1_agents__agent_id__tokens_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent Token",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/responses": {
+      "post": {
+        "operationId": "create_agent_response_api_v1_agents__slug__responses_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentResponseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Agent Response Api V1 Agents  Slug  Responses Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent Response",
+        "tags": [
+          "agent-runtime"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/sessions": {
+      "post": {
+        "operationId": "create_agent_session_api_v1_agents__slug__sessions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentSessionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Agent Session Api V1 Agents  Slug  Sessions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent Session",
+        "tags": [
+          "agent-sessions"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/usage": {
+      "get": {
+        "description": "Per-agent monthly token usage against its budget (Task 8, `agnes\nagent usage` / MCP `agent_usage`).\n\n`period` defaults to the current UTC month (`YYYY-MM`); an explicitly\npassed value that doesn't match that shape is `400\n{\"code\": \"invalid_period\"}`. Same owner/agent-PAT auth as every other\n`/api/v1/agents/{slug}/...` runtime route.\n\nThe usage-shaped fields (`input_tokens`/`output_tokens`/\n`cache_read_tokens`/`cache_creation_tokens`) mirror Anthropic's own\nusage object. `total_tokens` is `input + output + cache_creation`\n(EXCLUDING `cache_read_tokens`, which is informational only) \u2014 the\nexact quantity `app.api.broker_agent_policy.check_budget` compares\nagainst `token_budget_monthly`, so `budget_remaining` (`budget_limit -\ntotal_tokens`, floored at 0, `None` for an unbounded agent) lines up\nwith when a call against this agent would actually start 429ing with\n`budget_exhausted`.\n\nFlushes the broker's batched usage ledger first (best-effort \u2014 see\n`usage_accumulator_flush`) so a just-finished call's rows aren't\nmissing from the sum, same as the `/responses` sync path does before\nbuilding its own `usage` field.",
+        "operationId": "get_agent_usage_api_v1_agents__slug__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Period"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Agent Usage Api V1 Agents  Slug  Usage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Usage",
+        "tags": [
+          "agent-runtime"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/webhooks": {
+      "get": {
+        "operationId": "list_webhooks_api_v1_agents__slug__webhooks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Webhooks Api V1 Agents  Slug  Webhooks Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Webhooks",
+        "tags": [
+          "agent-webhooks"
+        ]
+      },
+      "post": {
+        "operationId": "create_webhook_api_v1_agents__slug__webhooks_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Webhook Api V1 Agents  Slug  Webhooks Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Webhook",
+        "tags": [
+          "agent-webhooks"
+        ]
+      }
+    },
+    "/api/v1/agents/{slug}/webhooks/{webhook_id}": {
+      "delete": {
+        "operationId": "delete_webhook_api_v1_agents__slug__webhooks__webhook_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "webhook_id",
+            "required": true,
+            "schema": {
+              "title": "Webhook Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Webhook",
+        "tags": [
+          "agent-webhooks"
+        ]
+      }
+    },
+    "/api/v1/jobs/{job_id}": {
+      "get": {
+        "description": "Owner-scoped job read. 404 (not 403) when the job exists but belongs\nto someone else \u2014 existence is not leaked to a non-owner, matching the\nposture `app/api/agents_admin.py` documents for `{id}` routes.\n\nDefense-in-depth (mirrors `require_agent_runtime_principal`'s binding\non the responses endpoint): when the presented credential is an agent\nPAT, ALSO 404 unless the job's own payload `agent_id` matches the PAT's\n`agent_id` claim \u2014 an owner's agent-A PAT must not be able to read a job\nthat was created against agent B, even though both jobs belong to the\nsame owner user.",
+        "operationId": "get_agent_job_api_v1_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Agent Job Api V1 Jobs  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Job",
+        "tags": [
+          "agent-runtime"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}": {
+      "delete": {
+        "operationId": "delete_session_api_v1_sessions__session_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Session",
+        "tags": [
+          "agent-sessions"
+        ]
+      },
+      "get": {
+        "operationId": "get_session_api_v1_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Session Api V1 Sessions  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session",
+        "tags": [
+          "agent-sessions"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}/artifacts": {
+      "get": {
+        "description": "Cursor-envelope listing of every artifact harvested for this session.\n\nNot actually paginated today \u2014 a session's artifact count is bounded by\n`agent_api_artifact_max_files` (20 by default, C3) per harvest call, so\na single page always covers it \u2014 but the response shape matches the\nproject's standard cursor envelope (`command-ux.md`) so a future caller\ndoesn't have to special-case this endpoint if/when true pagination is\nadded.",
+        "operationId": "list_session_artifacts_api_v1_sessions__session_id__artifacts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Session Artifacts Api V1 Sessions  Session Id  Artifacts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Session Artifacts",
+        "tags": [
+          "agent-sessions"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}/artifacts/{artifact_id}": {
+      "get": {
+        "description": "Download one artifact. `404` for both an unknown id and an id that\nbelongs to a different session \u2014 same non-leaking posture\n`require_session_principal` already applies at the session level (a\ncross-agent PAT never even resolves a `principal` to get this far).",
+        "operationId": "download_session_artifact_api_v1_sessions__session_id__artifacts__artifact_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opt-in: 307-redirect to a short-TTL presigned object-store URL instead of streaming through this authenticated endpoint. Tradeoff: the presigned URL is usable by anyone who obtains it (e.g. via a proxy log or browser history) for up to the TTL, with no further Agnes auth check. Default (false) streams the bytes through this endpoint's own auth instead.",
+            "in": "query",
+            "name": "redirect",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Opt-in: 307-redirect to a short-TTL presigned object-store URL instead of streaming through this authenticated endpoint. Tradeoff: the presigned URL is usable by anyone who obtains it (e.g. via a proxy log or browser history) for up to the TTL, with no further Agnes auth check. Default (false) streams the bytes through this endpoint's own auth instead.",
+              "title": "Redirect",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Session Artifact",
+        "tags": [
+          "agent-sessions"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}/cancel": {
+      "post": {
+        "operationId": "cancel_session_api_v1_sessions__session_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Session Api V1 Sessions  Session Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Session",
+        "tags": [
+          "agent-sessions"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}/memories": {
+      "post": {
+        "operationId": "remember_api_v1_sessions__session_id__memories_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RememberBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Remember Api V1 Sessions  Session Id  Memories Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remember",
+        "tags": [
+          "agent-memory"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}/messages": {
+      "post": {
+        "operationId": "post_session_message_api_v1_sessions__session_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendSessionMessageBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Session Message",
+        "tags": [
+          "agent-sessions"
         ]
       }
     },
@@ -43127,6 +47617,56 @@
         ]
       }
     },
+    "/cli/auth/rescope-surface": {
+      "post": {
+        "description": "Mint a fresh ``surface='all'`` PAT for an ADMIN caller (v106).\n\nThe `agnes init` exchange deliberately mints ``surface='stack'`` PATs\n(workspace read surface = the owner's stack, admins included). This is\nthe explicit opt-up behind ``agnes init --as-admin``: the CLI calls it\nwith its freshly-saved stack PAT and persists the returned full-surface\ntoken instead. Requirements, both re-checked server-side per request:\n\n- Admin-group membership NOW \u2014 ``Depends(require_admin)`` (which also\n  hard-denies agent/co-session principals before any admin lookup). A\n  later demotion doesn't matter: enforcement in ``src/rbac.py``\n  requires admin AND surface=all at every read, so a demoted owner's\n  'all' PAT reads as stack anyway.\n- A PAT credential (not a session JWT) \u2014 this is a CLI-only surface,\n  mirroring the exchange endpoint; checked below via the\n  ``token_type`` stamp from ``get_current_user``.\n\nThe caller's current PAT is left untouched (revoking it here would\nyank credentials out from under the very `agnes init` run that is\nstill using it; both tokens are the same user, listed side by side in\n/auth/tokens with their surface).",
+        "operationId": "rescope_surface_cli_auth_rescope_surface_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RescopeSurfaceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rescope Surface",
+        "tags": [
+          "cli-auth"
+        ]
+      }
+    },
     "/cli/auth/start": {
       "get": {
         "description": "Render the authorize-CLI confirmation page (or bounce through login).",
@@ -43684,6 +48224,56 @@
           }
         },
         "summary": "Home Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/how-it-works": {
+      "get": {
+        "description": "The single orientation page: what {brand} is, what it knows for you,\nwhere you can use it, how to connect each surface, and where your data\ngoes \u2014 one scroll with a sticky table of contents.\n\nConsolidates what used to be split across /home's \"Four places, one\nworkspace\" + first-session narrative and the standalone AI Connector\npage. The connector content is not summarized here, it LIVES here\n(``#connect`` / ``#cli`` / ``#reference``), so there is exactly one\nsource of truth for \"how do I connect\" \u2014 the two pages had already\ndrifted (\"four places\" vs. six tool tabs). ``#connect`` is one section\nwith two large tabs, the MCP connector and the CLI; ``#cli`` is the\nanchor of the second tab, which the page's script opens on arrival.\n``/me/ai-connector`` and its legacy aliases redirect to ``#connect``.\n\nAny authenticated user; nothing on the page is admin-gated.",
+        "operationId": "how_it_works_page_how_it_works_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "How It Works Page",
         "tags": [
           "web"
         ]
@@ -44965,26 +49555,8 @@
     },
     "/me/ai-connector": {
       "get": {
-        "description": "User-facing AI Connector page: OAuth connector URL, plugin packages, and available tools.",
-        "operationId": "me_cowork_page_me_ai_connector_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
+        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
+        "operationId": "me_mcp_redirect_me_ai_connector_get",
         "responses": {
           "200": {
             "content": {
@@ -44995,19 +49567,9 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
-        "summary": "Me Cowork Page",
+        "summary": "Me Mcp Redirect",
         "tags": [
           "web"
         ]
@@ -45015,7 +49577,7 @@
     },
     "/me/connections": {
       "get": {
-        "description": "Self-service page: connect / replace / test / remove your own credential\nfor the per_user MCP sources you are granted. Any authenticated user.",
+        "description": "Self-service page: connect / replace / test / remove your own credential\nfor the per_user MCP sources you are granted. Any authenticated user.\n\n``auth_method='oauth'`` sources (2026-07-30 outbound MCP OAuth sources\nspec \u00a73) report against ``mcp_user_oauth_tokens`` instead of the\nvault-backed per-user secrets table \u2014 same card, a Connect/Disconnect\nbutton in place of the paste-field (template branches on\n``s.auth_kind``).",
         "operationId": "me_connections_page_me_connections_get",
         "parameters": [
           {
@@ -45065,7 +49627,7 @@
     },
     "/me/cowork": {
       "get": {
-        "description": "Legacy redirects \u2014 /me/mcp and /me/cowork \u2192 /me/ai-connector.",
+        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
         "operationId": "me_mcp_redirect_me_cowork_get",
         "responses": {
           "200": {
@@ -45087,7 +49649,7 @@
     },
     "/me/mcp": {
       "get": {
-        "description": "Legacy redirects \u2014 /me/mcp and /me/cowork \u2192 /me/ai-connector.",
+        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
         "operationId": "me_mcp_redirect_me_mcp_get",
         "responses": {
           "200": {
@@ -45209,7 +49771,7 @@
     },
     "/me/profile/refetch-groups": {
       "post": {
-        "description": "Re-issue ``fetch_user_groups`` for the current user and return a\ndry-run diff against the cached ``user_group_members`` snapshot,\nwriting nothing. Gated behind AGNES_DEBUG_AUTH \u2014 a dry-run admin\ndebug action, not user-facing content.",
+        "description": "Re-issue ``fetch_user_groups`` for the current user and return a\ndry-run diff against the cached ``user_group_members`` snapshot,\nwriting nothing. Gated behind AGNES_DEBUG_AUTH \u2014 a dry-run admin\ndebug action, not user-facing content.\n\nRequires the ``X-CSRF-Token`` header to match the ``web_csrf`` cookie\nissued by the profile page (F2 double-submit; the cookie fallback in the\nauth layer means even JSON POSTs are not automatically CSRF-exempt).",
         "operationId": "me_profile_refetch_groups_me_profile_refetch_groups_post",
         "parameters": [
           {
@@ -45605,7 +50167,7 @@
     },
     "/skills": {
       "get": {
-        "description": "Skills \u2014 the caller's authored skills, plus a builder to create more.\n\nThe index counterpart to the Skill Builder: a self-contained surface with\ntwo in-page views (mirrors ``/agents``). The LIST view fetches the caller's\nown skills client-side from ``GET /api/store/entities?type=skill&owner=\u2026``\n(which returns their whole catalogue, including entries still in review),\nand the BUILDER view is a section-based authoring form that publishes to\n``POST /api/store/entities/from-markdown`` \u2014 the same endpoint the studio\nSkill Builder uses, so quota, guardrails, and the store review pipeline all\napply identically. Category options come from the shared store taxonomy.",
+        "description": "Builder \u2014 one authoring surface for skills, plugins and shareable agents.\n\nFormerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,\nthen a type-adapted BUILDER that keeps one shell (identity, access,\nnumbered sections, live preview, advisory check) and swaps only the\ncontent section and its validation.\n\nMarkdown types (skill, agent) publish to\n``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles\nand publish to the multipart ``POST /api/store/entities``. Both honour the\nbuilder's private/everyone ``access`` choice, and both run the same quota,\nguardrail and review pipeline. Category options come from the shared store\ntaxonomy.\n\nThe route keeps its ``/skills`` path: it is the target of the Marketplace\n\"submit\" CTA, the ``?from=skills`` detail back-link and the tour anchors.\n``?type=skill|plugin|agent`` deep-links past the picker.",
         "operationId": "skills_page_skills_get",
         "parameters": [
           {
@@ -45655,7 +50217,7 @@
     },
     "/slack/bind": {
       "get": {
-        "description": "One-click Slack identity binding \u2014 the magic-link Agnes DMs an unbound\nuser. Opening ``/slack/bind?code=<code>`` while signed in to Agnes redeems\nthe code server-side and stamps ``users.slack_user_id`` (no copy-paste).\n\nThe code in the URL is inert on its own: this route is auth-gated, so the\nbind only completes for the signed-in Agnes account \u2014 proving the same\nperson controls both the Slack identity (the code was DM'd to them) and the\nAgnes account (they're logged in). An unauthenticated visitor is bounced to\nsign-in and lands back here afterwards (``next=``).",
+        "description": "Render the Slack-identity binding CONFIRMATION page (no state change).\n\nSecurity audit F2: the actual bind used to happen on this GET, gated only by\na ``SameSite=Lax`` auth cookie \u2014 a classic CSRF sink. An attacker who owns a\nSlack identity could DM the bot for a code, then send a logged-in victim\n``/slack/bind?code=<attacker_code>``; the top-level GET rode the victim's\ncookie and bound the ATTACKER's Slack to the VICTIM's Agnes account\n(cross-user impersonation). This GET now only shows a confirm button that\nPOSTs back with a per-request double-submit CSRF token; the redeem lives in\n:func:`slack_bind_confirm`.\n\nAn unauthenticated visitor is bounced to sign-in and lands back here (``next=``).",
         "operationId": "slack_bind_slack_bind_get",
         "parameters": [
           {
@@ -45708,6 +50270,63 @@
           }
         },
         "summary": "Slack Bind",
+        "tags": [
+          "web"
+        ]
+      },
+      "post": {
+        "description": "Redeem a Slack binding code \u2014 the only state-changing bind path (F2).\n\nRequires a valid double-submit CSRF token (form field must equal the\n``slack_bind_csrf`` cookie set by the GET confirmation page). Auth-gated so\nthe bind completes only for the signed-in Agnes account.",
+        "operationId": "slack_bind_confirm_slack_bind_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_slack_bind_confirm_slack_bind_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Slack Bind Confirm",
         "tags": [
           "web"
         ]

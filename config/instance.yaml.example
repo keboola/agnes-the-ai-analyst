@@ -237,6 +237,18 @@ auth:
 #   # AGNES_SSRF_ALLOWED_HOSTS.
 #   ssrf_allowed_hosts: []
 
+# --- Access control (optional) ---
+# access:
+#   # Default admin elevation for BROWSER sessions that have not chosen:
+#   # "elevated" (historical behavior — the Admin group short-circuits
+#   # every access check) or "paused" (consent-first: admins browse with
+#   # only their explicit group grants until they enable admin mode on
+#   # /profile). A per-browser choice via POST /api/me/elevation always
+#   # wins over this default. Bearer-authenticated automation (agnes CLI,
+#   # PATs, service tokens) is never subject to this default — it has no
+#   # cookie jar to re-elevate with. See docs/RBAC.md.
+#   admin_default_elevation: "elevated"
+
 # --- Theme (optional) ---
 # Customize colors, fonts, and shape to match your brand.
 # All values are optional - defaults provide a clean blue theme.
@@ -669,8 +681,14 @@ materialize:
 # docs/cloud-chat.md for the operator walkthrough.
 chat:
   enabled: false
-  # Only 'e2b' is accepted in production (per Q7 owner decision —
-  # the MockE2BProvider variant was dropped).
+  # Sandbox provider:
+  #   e2b    — cloud microVMs (needs an E2B account + a built template).
+  #   docker — self-hosted containers on the local Docker daemon, created
+  #            through the apps-runner sidecar (compose profile `apps`).
+  #            No E2B account; the workspace is bind-mounted instead of
+  #            uploaded, so there is no 100 MB cap. See docs/cloud-chat.md
+  #            → "Docker provider (self-hosted)".
+  # There is deliberately no mock provider.
   provider: e2b
   # E2B template id returned by `e2b template build` inside
   # app/initial_workspace_default/e2b-template/. Required when
@@ -678,12 +696,50 @@ chat:
   # e2b_template_id: "agnes-chat"
   # Per-spawn workspace push cap. Files past this cap → user-facing
   # workspace_too_large error. 100 MB default keeps spawn latency in
-  # the 3-5 s range.
+  # the 3-5 s range. (provider=e2b only — docker bind-mounts.)
   e2b_workspace_max_bytes: 104857600
+  # --- provider: docker -------------------------------------------------
+  # Operator-built sandbox image (docker build -t agnes-chat-sandbox:latest
+  # app/initial_workspace_default/docker-sandbox). The sidecar additionally
+  # enforces CHAT_SANDBOX_IMAGE_PREFIX, so a tag outside that prefix is
+  # refused at create time.
+  # docker_image: "agnes-chat-sandbox:latest"
+  # Docker network the sandbox joins. Must be one the Agnes app is also on,
+  # or AGNES_SERVER won't resolve from inside the container.
+  # docker_network: "agnes-apps"
+  # Per-sandbox resource bounds — always applied (a local sandbox competes
+  # with the gateway for host resources, unlike an E2B microVM).
+  # docker_mem_limit: "2g"
+  # docker_cpus: 1.0
+  # docker_pids_limit: 512
+  # open — normal bridge, internet reachable (in-sandbox `pip install` etc.
+  #        keep working; weaker than E2B's hostname allowlist).
+  # none — internal-only network: the sandbox reaches nothing but the
+  #        containers on that network (stronger than E2B; breaks in-sandbox
+  #        package installs).
+  # allowlist — the internal network of `none` PLUS the egress-proxy sidecar
+  #        (compose profile `chat-docker-egress`): sandboxes get HTTP(S)_PROXY
+  #        pointed at it and may reach only docker_egress_allow_hosts, each
+  #        connection re-checked post-DNS against link-local/metadata/private
+  #        ranges (DNS-rebinding protection). Ignoring the proxy is not a
+  #        bypass — the internal network has no other route out.
+  # docker_egress_mode: open
+  # Hostnames reachable in allowlist mode (exact or *.suffix wildcards).
+  # Cloud metadata endpoints stay blocked even if listed.
+  # docker_egress_allow_hosts: [pypi.org, "*.pypi.org", files.pythonhosted.org]
+  # Where sandboxes find the proxy (compose service name on the internal net).
+  # docker_egress_proxy_url: "http://agnes-egress-proxy:3128"
+  # Host-wide ceiling on live sandboxes, on top of concurrency_per_user.
+  # docker_max_total_sandboxes: 10
   # Kill the sandbox the moment the WS disconnects rather than
   # waiting for the idle reaper. Cuts billable sandbox-minutes on
   # UI close.
   e2b_kill_on_ws_disconnect: true
+  # Agent harness driving the in-sandbox session. "claude-code" is the
+  # only approved engine today; the id exists as the extension seam
+  # (app/chat/harness.py) so an alternative can plug in behind the same
+  # frame protocol. Unknown values refuse chat at boot.
+  harness: "claude-code"
   concurrency_per_user: 3
   idle_ttl_seconds: 1800              # 30 min
   per_tool_call_seconds: 90
@@ -693,6 +749,10 @@ chat:
   max_session_tokens: 200000
   rate_messages_per_hour: 100
   tool_calls_per_turn_budget: 50
+  # How long the in-runner approval gate waits for the user to answer an
+  # approval card (workspace-hook "ask" verdicts) before denying the
+  # suspended tool call.
+  approval_timeout_seconds: 300
   marketplace_sha_debounce_seconds: 300
   # How the chat broker authenticates to Anthropic:
   #   api_key           (default) — use the static ANTHROPIC_API_KEY.

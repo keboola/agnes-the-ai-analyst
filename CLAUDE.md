@@ -399,6 +399,7 @@ the right tool:
 
 | Need | Use | How |
 |---|---|---|
+| Chart a large, foggy effort — destination known, too many decisions open to write a plan | `agnes-wayfinder` | a map + numbered decision tickets as markdown under `docs/superpowers/maps/<effort>/`; resolve one per session (`research` excepted) until the route is clear, then hand off to `superpowers:writing-plans` → `/agnes-build`. Explicit invocation only; if you can already state the steps, skip it. |
 | Verify a change before claiming it's done | `verify-agnes-change` | cheapest-first loop: `scripts/verify_syncmap.py` (instant, the sync-map rows no test guards) → the guards your diff touches → full suite → `/agnes-review`. Fix and re-run each gate until it passes. |
 | Review a change before merge | `/agnes-review` | scope-gated review **team** (rules / architecture / rbac / parity — only the in-scope subset fires) + `agnes-review-consolidator` → one advisory report (`file:line` + severity, ≤15 findings). Read-only working tree; optional comment-only PR post. |
 | Implement a whole plan in parallel | `/agnes-build` | decomposes a plan into independent tasks (sync-map coupling), builds each in its own git worktree via `agnes-builder`, integrates (migration serialized last), then runs `/agnes-review`. |
@@ -417,7 +418,8 @@ the right tool:
 **Skills** (`.claude/skills/`): knowledge — `agnes-orchestrator`, `agnes-rbac`,
 `agnes-connectors`, `agnes-release-process`; implementation playbooks —
 `agnes-conventions` (`SKILL.md` + `references/{connector,repo-parity,migration,endpoint-rbac,web-page}.md`);
-verification — `verify-agnes-change` (the pre-merge loop).
+verification — `verify-agnes-change` (the pre-merge loop); planning —
+`agnes-wayfinder` (the pre-plan map, for efforts too foggy to plan yet).
 Read the relevant one before editing that part of the codebase.
 
 **Invariants & guards:** the change-safety **sync-map** lives in `CONTRIBUTING.md`

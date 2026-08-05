@@ -88,6 +88,20 @@ const _previewToolCallIds = new Map();
 // isn't stamped) are simply skipped either way — "a client that ignores
 // seq works exactly as today" still holds for those.
 let lastSeenSeqByChat = new Map();
+// Frame types whose handlers are idempotent (keyed by request_id) and
+// which therefore must survive the seq-dedup guard on a reconnect replay.
+const REPLAYABLE_FRAME_TYPES = new Set(["approval_request", "approval_resolved"]);
+// Approval cards the user has not answered yet, keyed by request_id. Same
+// reason the server keeps them outside its turn buffer: a pending approval
+// is not part of the transcript, so it must be re-rendered after ANY redraw
+// of the transcript — a full_refresh reloads history asynchronously and
+// wipes #chat-messages, which could otherwise erase a card that had just
+// been replayed onto the socket (review finding on #1145).
+const pendingApprovalFrames = new Map();
+// Ids the user has already answered. A replayed request must not resurrect
+// one: the durable replay stream re-sends the original request frame, and
+// after a transcript wipe there is no DOM card left to dedup against.
+const answeredApprovalIds = new Set();
 
 // §5.3 Co-presence: the current user's email for per-message sender attribution.
 // Sourced from <body data-user-email="..."> set by the server-rendered template.
@@ -688,6 +702,13 @@ async function loadAndRenderHistory(chatId) {
       if (m.role === "user") lastUserText = m.content || "";
     }
   }
+  // Re-draw any approval still waiting for an answer. The wipe above is a
+  // transcript redraw, and a pending card is not transcript — without this
+  // a full_refresh racing a replayed card erases it and the blocked command
+  // has no way out but the timeout denial (review finding on #1145).
+  for (const frame of pendingApprovalFrames.values()) {
+    renderApprovalRequest(frame);
+  }
 }
 
 /** Open (or resume) a chat session.
@@ -701,6 +722,14 @@ async function loadAndRenderHistory(chatId) {
  */
 async function openSession(chatId, wsUrlOverride) {
   if (ws) { ws.close(); ws = null; }
+  // Unanswered cards belong to the conversation that raised them: this map
+  // is re-drawn after every transcript reload, so carrying it across a
+  // switch painted one conversation's card into another, where its buttons
+  // did nothing (review finding on #1145). The server replays the pending
+  // cards for whichever session we attach to, so dropping them here loses
+  // nothing.
+  pendingApprovalFrames.clear();
+  answeredApprovalIds.clear();
   currentChatId = chatId;
   markActiveSidebar(chatId);
   // Sidebar cache holds the title — look it up so the header reads
@@ -770,10 +799,19 @@ function handleFrame(frame) {
   // not a bug signal.
   if (currentChatId && typeof frame.seq === "number") {
     const seen = lastSeenSeqByChat.get(currentChatId);
-    if (seen !== undefined && frame.seq <= seen) {
+    const alreadySeen = seen !== undefined && frame.seq <= seen;
+    // Approval frames are exempt: a reconnect wipes and re-draws the
+    // conversation, so dropping the re-sent request would leave the user
+    // with no Allow/Deny buttons and the command stalled until the gate's
+    // own timeout denies it. Both handlers are keyed by request_id and
+    // already no-op on a card that exists / is gone, so re-delivery cannot
+    // double-render (review finding on #1145).
+    if (alreadySeen && !REPLAYABLE_FRAME_TYPES.has(frame.type)) {
       return;
     }
-    lastSeenSeqByChat.set(currentChatId, frame.seq);
+    if (!alreadySeen) {
+      lastSeenSeqByChat.set(currentChatId, frame.seq);
+    }
   }
   switch (frame.type) {
     case "ready":
@@ -846,6 +884,12 @@ function handleFrame(frame) {
       break;
     case "session_renamed":
       applySessionRename(frame);
+      break;
+    case "approval_request":
+      renderApprovalRequest(frame);
+      break;
+    case "approval_resolved":
+      resolveApprovalCard(frame);
       break;
     // The three terminal frames all disarm the long-run notification nudge —
     // a turn that has stopped is no longer worth offering to be pinged about.
@@ -1496,6 +1540,108 @@ function _summarizeArgs(args) {
     parts.push(`${k}=${text.length > 30 ? text.slice(0, 28) + "…" : text}`);
   }
   return parts.join(", ");
+}
+
+function renderApprovalRequest(frame) {
+  if (!frame.request_id) return;
+  // Answered stays answered — check BEFORE arming the pending map, or a
+  // replayed request re-arms a card the user already dealt with and it
+  // comes back looking like it still needs a decision.
+  if (answeredApprovalIds.has(frame.request_id)) return;
+  // Replay dedup: a mid-turn reconnect re-delivers the request frame.
+  if (document.querySelector(`[data-approval-id="${CSS.escape(frame.request_id)}"]`)) return;
+  pendingApprovalFrames.set(frame.request_id, frame);
+  clearThinkingPlaceholder();
+  const wrap = document.createElement("section");
+  wrap.className = "cloud-chat-tool cloud-chat-approval is-running";
+  wrap.dataset.approvalId = frame.request_id;
+
+  const head = document.createElement("div");
+  head.className = "cloud-chat-tool-head";
+  const icon = document.createElement("span");
+  icon.className = "cloud-chat-tool-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "\u{1F6E1}️";
+  head.appendChild(icon);
+  const name = document.createElement("span");
+  name.className = "cloud-chat-tool-name";
+  name.textContent = "Approval required";
+  head.appendChild(name);
+  const summary = document.createElement("span");
+  summary.className = "cloud-chat-tool-summary";
+  summary.textContent = frame.reason || "";
+  head.appendChild(summary);
+  wrap.appendChild(head);
+
+  if (frame.command) {
+    const pre = document.createElement("pre");
+    pre.className = "cloud-chat-approval-cmd";
+    const code = document.createElement("code");
+    code.textContent = frame.command;
+    pre.appendChild(code);
+    wrap.appendChild(pre);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "cloud-chat-approval-actions";
+  const mkBtn = (label, decision, cls) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `cloud-chat-approval-btn ${cls}`;
+    b.textContent = label;
+    b.onclick = () => {
+      // Only disable the buttons once the decision is actually on the wire.
+      // If the socket is down/reconnecting, ws?.send() would silently no-op
+      // while the buttons still greyed out — the card would freeze with
+      // nothing sent, and the pending approval would sit until it times out.
+      // Keep them clickable and tell the user to retry (review finding #1145).
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setStatus("Not connected — reconnecting. Try the approval again in a moment.", "warn");
+        return;
+      }
+      ws.send(
+        JSON.stringify({ type: "approval_decision", request_id: frame.request_id, decision })
+      );
+      actions.querySelectorAll("button").forEach((x) => {
+        x.disabled = true;
+      });
+    };
+    return b;
+  };
+  actions.appendChild(mkBtn("Allow once", "allow", "is-allow"));
+  actions.appendChild(mkBtn("Allow for session", "allow_session", "is-allow"));
+  actions.appendChild(mkBtn("Deny", "deny", "is-deny"));
+  wrap.appendChild(actions);
+
+  $("chat-messages").appendChild(wrap);
+  maybeScrollToBottom();
+}
+
+function resolveApprovalCard(frame) {
+  if (frame.request_id) {
+    pendingApprovalFrames.delete(frame.request_id);
+    answeredApprovalIds.add(frame.request_id);
+  }
+  const el = frame.request_id
+    ? document.querySelector(`[data-approval-id="${CSS.escape(frame.request_id)}"]`)
+    : null;
+  if (!el) return;
+  el.classList.remove("is-running");
+  const labels = {
+    allow: "Allowed once",
+    allow_session: "Allowed for session",
+    deny: "Denied",
+    timeout: "Timed out",
+  };
+  const allowed = frame.decision === "allow" || frame.decision === "allow_session";
+  const actions = el.querySelector(".cloud-chat-approval-actions");
+  if (actions) {
+    actions.textContent = "";
+    const badge = document.createElement("span");
+    badge.className = "cloud-chat-approval-outcome " + (allowed ? "is-allow" : "is-deny");
+    badge.textContent = labels[frame.decision] || frame.decision || "resolved";
+    actions.appendChild(badge);
+  }
 }
 
 function renderToolCallStart(frame) {

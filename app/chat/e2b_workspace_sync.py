@@ -243,9 +243,15 @@ SANDBOX_WHEEL_DIR = "/tmp/agnes-cli"
 SANDBOX_WHEEL_READY = f"{SANDBOX_WHEEL_DIR}/.ready"
 
 
-async def upload_agnes_wheel(sandbox) -> str | None:
+async def stage_agnes_wheel(stage) -> str | None:
     """Stage the server's pre-built agnes CLI wheel in the sandbox so the
     runner can ``pip install`` it at boot. Returns the sandbox-side wheel path.
+
+    ``stage`` is an ``async (path, data) -> None`` callable the *provider*
+    supplies (``SandboxProvider.stage_file``) — E2B writes through the SDK's
+    file API, the docker provider through the apps-runner sidecar. Provider-
+    agnostic because the wheel is not workspace sync: every provider needs it,
+    including the ones that mount the workspace themselves.
 
     Always writes the ``.ready`` sentinel last (even when no wheel is found) so
     the runner's bounded wait terminates promptly instead of timing out.
@@ -281,14 +287,20 @@ async def upload_agnes_wheel(sandbox) -> str | None:
             os.environ.get("AGNES_CLI_DIST_DIR", "/app/dist"),
         )
         # Still signal the runner so it doesn't block on the wait.
-        await sandbox.files.write(SANDBOX_WHEEL_READY, b"")
+        await stage(SANDBOX_WHEEL_READY, b"")
         return None
     dest = f"{SANDBOX_WHEEL_DIR}/{wheel.name}"
     data = wheel.read_bytes()
-    await sandbox.files.write(dest, data)
-    await sandbox.files.write(SANDBOX_WHEEL_READY, b"")
+    await stage(dest, data)
+    await stage(SANDBOX_WHEEL_READY, b"")
     logger.info("uploaded agnes wheel %s (%d bytes) to %s", wheel.name, len(data), dest)
     return dest
+
+
+async def upload_agnes_wheel(sandbox) -> str | None:
+    """E2B-shaped wrapper over :func:`stage_agnes_wheel` — same calls, same
+    order, for callers that hold a sandbox object rather than a provider."""
+    return await stage_agnes_wheel(lambda path, data: sandbox.files.write(path, data))
 
 
 def _entry_type(e) -> str:

@@ -19,6 +19,22 @@ import time
 
 import pytest
 
+from app.api import health_probes
+
+
+@pytest.fixture(autouse=True)
+def _reset_drain_deadline():
+    """Keep the process-global shutdown-drain budget out of these tests.
+
+    Tests here cancel `worker_loop` while it polls, and a cancellation that
+    lands mid-DB-call is exactly what the drain reacts to. Without this
+    reset one test could leave an armed (or spent) deadline behind and make
+    a later drain assertion depend on how long the rest of the file took.
+    """
+    health_probes._drain_deadline = None
+    yield
+    health_probes._drain_deadline = None
+
 
 @pytest.fixture
 def worker_db(tmp_path, monkeypatch):
@@ -460,11 +476,12 @@ def test_shutdown_drain_timeout_cancels_abandoned_heartbeat(worker_db, monkeypat
     captured: dict[str, object] = {}
     real_drain = runtime._drain_in_flight
 
-    async def _capturing_drain(in_flight, worker_id):
+    async def _capturing_drain(in_flight, worker_id, **kwargs):
         # Snapshot the in-flight entries (there's exactly one) before the
         # real drain runs, then let it do its normal timeout/cancel work.
+        # **kwargs passes through worker_loop's shared shutdown budget.
         captured["entries"] = dict(in_flight)
-        await real_drain(in_flight, worker_id)
+        await real_drain(in_flight, worker_id, **kwargs)
 
     monkeypatch.setattr(runtime, "_drain_in_flight", _capturing_drain)
 
@@ -932,3 +949,52 @@ def test_worker_loop_no_handler_records_failure_metric(worker_db, monkeypatch):
 
     after = _metric_value("agnes_job_failures_total", kind="other", reason="no-registered-handler")
     assert after == before + 1.0
+
+
+def test_cancelled_worker_poll_waits_for_inflight_claim(worker_db, monkeypatch):
+    """Regression: cancelling ``worker_loop`` must drain an in-flight
+    poll-path DB call (``claim_next``) instead of abandoning its thread.
+
+    Same abandoned-thread-vs-``close_system_db()`` race as ``canary_loop``'s
+    (see tests/test_health_probes.py): the bounded shutdown drain covers
+    handler futures, but the lane slots' own ``claim_next``/``reap_exhausted``
+    threads used to be orphaned mid-statement on cancellation, letting the
+    lifespan close the DuckDB singleton under an active write.
+    """
+    import app.worker.runtime as runtime_mod
+    from app.worker.registry import LIGHT_LANE, JobKind, register_kind
+    from app.worker.runtime import worker_loop
+
+    register_kind(JobKind(name="poll_drain_kind", handler=lambda payload: None, lane=LIGHT_LANE))
+
+    claim_started = threading.Event()
+    release_claim = threading.Event()
+    claim_finished = threading.Event()
+
+    class BlockingRepo:
+        def claim_next(self, **kwargs):
+            claim_started.set()
+            release_claim.wait(timeout=10)
+            claim_finished.set()
+            return None
+
+        def reap_exhausted(self, *a, **k):
+            return 0
+
+    monkeypatch.setattr(runtime_mod, "_jobs_repo", lambda: BlockingRepo())
+
+    async def drive() -> None:
+        task = asyncio.create_task(worker_loop(worker_id="test-worker", poll_interval_s=0.05))
+        assert await asyncio.to_thread(claim_started.wait, 5), "claim_next never started"
+        task.cancel()
+        asyncio.get_running_loop().call_later(0.2, release_claim.set)
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        finished_before_return = claim_finished.is_set()
+        release_claim.set()  # never leave the thread blocked, whatever the outcome
+        assert finished_before_return, (
+            "cancelled worker_loop returned while a claim_next thread was still running "
+            "(lifespan would proceed to close the DB under the in-flight statement)"
+        )
+
+    asyncio.run(drive())
