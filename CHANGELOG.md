@@ -98,6 +98,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- The `resource_grants` SQLAlchemy model now declares migration 0013's
+  `ck_resource_grants_per_type_fk` check constraint. The constraint has
+  always existed in the DB; alembic 1.19.0 (2026-08-04) started comparing
+  check constraints in autogenerate, which surfaced the latent
+  model↔migration mismatch and broke `test_no_model_migration_drift` on
+  every branch (CI installs unpinned deps). Fixes #1168.
+
 ### Security
 - `aiohttp` floor raised to `>=3.14.3`, clearing three upstream advisories:
   an out-of-bounds heap read in the C HTTP response parser's error path
