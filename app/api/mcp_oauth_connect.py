@@ -412,6 +412,14 @@ async def disconnect_oauth(
     deny_principal(user)
     src = _get_source_or_404(source_id)
     _require_oauth_source(src)
-    _require_source_grant(source_id, user)
+    try:
+        _require_source_grant(source_id, user)
+    except HTTPException:
+        # Deleting YOUR OWN stored credential must not require a live tool
+        # grant: a user whose access was revoked still sees their connection
+        # card and must be able to clean it up — no upstream call, no data
+        # beyond their own row (Devin Review on #1167).
+        if mcp_user_oauth_tokens_repo().get(source_id, user["id"]) is None:
+            raise
     mcp_user_oauth_tokens_repo().delete(source_id, user["id"])
     _audit(user["id"], "mcp_oauth.disconnect", f"mcp_source:{source_id}")

@@ -184,6 +184,61 @@ def test_me_connections_analyst_sees_own_connection_even_without_grants(seeded_a
     assert "No tools are enabled for this source yet" in r.text
 
 
+def test_disconnect_works_without_a_live_grant(seeded_app):
+    """Deleting YOUR OWN stored credential needs no tool grant — a revoked
+    user's card must not dead-end on Disconnect (Devin Review on #1167)."""
+    from src.db import get_system_db
+    from src.repositories import mcp_user_oauth_tokens_repo
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_oauth_revoked",
+        name="src_oauth_revoked",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_revoked", "analyst1", "atok")
+    hdr = {"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    r = seeded_app["client"].delete("/api/mcp/sources/src_oauth_revoked/oauth/connection", headers=hdr)
+    assert r.status_code == 204, r.text
+    assert mcp_user_oauth_tokens_repo().get("src_oauth_revoked", "analyst1") is None
+    # …but with no stored row either, the grant gate still applies.
+    r2 = seeded_app["client"].delete("/api/mcp/sources/src_oauth_revoked/oauth/connection", headers=hdr)
+    assert r2.status_code == 403
+
+
+def test_revoked_card_hides_test_but_keeps_disconnect(seeded_app):
+    """A stored-but-ungranted card renders Disconnect (works grant-free)
+    but not Test (grant-gated upstream call that could only 403)."""
+    from src.db import get_system_db
+    from src.repositories import mcp_user_oauth_tokens_repo
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_oauth_norights",
+        name="src_oauth_norights",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_norights", "analyst1", "atok")
+    r = seeded_app["client"].get(
+        "/me/connections",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    section = r.text.split('id="source-src_oauth_norights"')[1].split('class="conn-card"')[0]
+    assert 'data-action="oauth-disconnect"' in section
+    assert 'data-action="test"' not in section
+
+
 def test_me_connections_analyst_does_not_see_ungranted_unconnected_source(seeded_app):
     """Without granted tools AND without an own connection, a non-admin
     still doesn't see the source — nothing they could do with it."""
