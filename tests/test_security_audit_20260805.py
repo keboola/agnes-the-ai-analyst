@@ -237,3 +237,91 @@ def test_f1b_zip_packager_skips_symlinked_files(tmp_path, monkeypatch):
     assert not any(a.endswith("leak.txt") for a in arcs)
     assert b"SUPER-SECRET" not in payloads
     assert any(a.endswith("README.md") for a in arcs)
+
+
+# ── F-2: the marketplace sync PAT must never hit argv or .git/config ──
+
+
+def test_f2_no_authenticated_url_helper_remains():
+    """The credential-in-URL builder is gone, not merely unused."""
+    import src.marketplace as mp
+
+    assert not hasattr(mp, "_authenticated_url")
+
+
+def test_f2_git_env_carries_token_and_helper():
+    from src.marketplace import _CREDENTIAL_HELPER, _git_env
+
+    env = _git_env("SECRET123")
+
+    assert env["AGNES_TOKEN"] == "SECRET123"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert "AGNES_TOKEN" in _CREDENTIAL_HELPER
+    assert "SECRET123" not in _CREDENTIAL_HELPER
+    # No token → no AGNES_TOKEN leaked into the child env at all.
+    assert "AGNES_TOKEN" not in _git_env(None)
+
+
+def test_f2_scrub_strips_credentials_from_existing_config(tmp_path):
+    """Instances that synced before the fix get their .git/config cleaned."""
+    import subprocess
+
+    from src.marketplace import _scrub_credentialed_remote
+
+    repo = tmp_path / "acme"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "remote",
+            "add",
+            "origin",
+            "https://x-access-token:SECRET123@example.com/acme.git",
+        ],
+        check=True,
+    )
+    assert "SECRET123" in (repo / ".git" / "config").read_text(encoding="utf-8")
+
+    _scrub_credentialed_remote(repo, "https://example.com/acme.git")
+
+    config = (repo / ".git" / "config").read_text(encoding="utf-8")
+    assert "SECRET123" not in config
+    assert "https://example.com/acme.git" in config
+
+
+def test_f2_scrub_runs_even_when_ref_validation_rejects_the_row(tmp_path, monkeypatch):
+    """A row with a malformed ref still gets its pre-fix credential scrubbed.
+
+    The ValueError is raised before the sync body, so a scrub placed inside that
+    body would never run for such a row — leaving the PAT on disk until an admin
+    noticed. Ordering matters here, hence the test.
+    """
+    import subprocess
+
+    import src.marketplace as mp
+
+    root = tmp_path / "marketplaces"
+    repo = root / "acme"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "remote",
+            "add",
+            "origin",
+            "https://x-access-token:SECRET123@example.com/acme.git",
+        ],
+        check=True,
+    )
+    monkeypatch.setattr(mp, "get_marketplaces_dir", lambda: root)
+
+    with pytest.raises(ValueError):
+        mp._sync_spec({"id": "acme", "url": "https://example.com/acme.git", "ref": "bad..ref"})
+
+    assert "SECRET123" not in (repo / ".git" / "config").read_text(encoding="utf-8")
