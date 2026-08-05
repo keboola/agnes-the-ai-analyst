@@ -480,6 +480,8 @@ def test_callback_token_exchange_failure_redirects_with_error(seeded_app, monkey
     assert "invalid_grant" not in location
     assert "code+already+used" not in location and "code%20already%20used" not in location
     assert "connect_error=token_exchange_failed" in location
+    # Retryable failure with a known source → the page gets a Try-again hook.
+    assert "retry=src_oauth_cb_exfail" in location
 
 
 def test_callback_unreachable_as_redirects_with_unreachable_error(seeded_app, monkeypatch):

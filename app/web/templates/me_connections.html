@@ -49,10 +49,12 @@
 {% block page %}
 <div class="conn-page" data-highlight="{{ highlight_source }}">
   {% if connected_source %}
-    <div class="conn-banner conn-banner--ok">Connected {{ connected_source }}.</div>
+    <div class="conn-banner conn-banner--ok">Connected <strong>{{ connected_name or connected_source }}</strong> — Agnes can now call it as you.</div>
   {% endif %}
   {% if connect_error %}
-    <div class="conn-banner conn-banner--error">Connect failed: {{ connect_error }}</div>
+    <div class="conn-banner conn-banner--error">Connect failed: {{ connect_error }}.
+      {% if retry_source %}<a href="/api/mcp/sources/{{ retry_source }}/oauth/authorize">Try again</a>{% endif %}
+    </div>
   {% endif %}
   {% if not connect_sources %}
     <p class="conn-empty">You have no per-user MCP sources to connect. When an admin grants you a source that authenticates per person, it appears here.</p>
@@ -63,7 +65,7 @@
     <div class="conn-card__head">
       <div>
         <div class="conn-card__name">{{ s.name }}</div>
-        <div class="conn-card__meta">{{ s.transport }} · per-user credential</div>
+        <div class="conn-card__meta">{% if s.auth_kind == "oauth" %}Sign in with your own account — Agnes calls this source as you{% else %}Uses your personal token — Agnes calls this source as you{% endif %}</div>
       </div>
       {% if s.has_secret %}
         <span class="conn-pill conn-pill--on">Connected</span>
@@ -76,10 +78,34 @@
 
     {% if s.hint_html %}<div class="conn-hint">{{ s.hint_html | safe }}</div>{% endif %}
 
+    {% if not s.source_has_tools %}
+    {# The register → connect → introspect bootstrap: the source is visible
+       (you can connect/disconnect) but has no granted tools yet, so chat
+       can't use it. Tell the user instead of silently hiding the card
+       (UX round on #1130). #}
+    <div class="conn-hint">No tools are enabled for this source yet{% if is_admin %} —
+      <a href="/admin/mcp-sources/{{ s.id }}">open the admin page</a> to introspect and grant them{% endif %}.</div>
+    {% elif not s.has_tools %}
+    {# Source HAS enabled tools, you just have none granted — the revoked-access
+       case whose card this page deliberately keeps visible so the credential
+       stays removable. Saying "no tools yet" here sent people to an admin to
+       chase tools that were already enabled (Devin Review on #1167). #}
+    <div class="conn-hint">You no longer have access to this source's tools. Your stored
+      credential is kept here so you can remove it; ask an admin to restore access.</div>
+    {% endif %}
+
     {% if s.auth_kind == "oauth" %}
     <div class="conn-row">
+      {# GET .../oauth/authorize calls _require_source_grant too, so on an
+         ungranted card this anchor only bounces back with
+         connect_error=not_granted. An explained dead end is still a dead
+         end (Devin Review on #1167). #}
+      {% if s.can_act %}
       <a class="btn btn-primary btn-sm" href="/api/mcp/sources/{{ s.id }}/oauth/authorize" data-action="oauth-connect">{% if s.stored %}Reconnect{% else %}Connect with {{ s.name }}{% endif %}</a>
-      {% if s.has_secret %}
+      {% endif %}
+      {# Test forwards to the upstream and is grant-gated server-side — don't
+         render a button that can only 403 (Devin Review on #1167). #}
+      {% if s.has_secret and s.can_act %}
       <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
       {% endif %}
       {# Disconnect keys off `stored`, not `has_secret` — a lapsed connection
@@ -91,10 +117,18 @@
     {% if s.expires_at %}<div class="conn-updated">Token expires {{ s.expires_at }}</div>{% endif %}
     {% else %}
     <div class="conn-row">
+      {# Same rule as Test below: `PUT .../my-secret` is grant-gated, so on a
+         revoked card the paste field and Save could only ever produce a bare
+         "Save failed (403)". Remove keeps rendering — the own-credential
+         carve-out is what makes the card worth showing (Devin Review on #1167). #}
+      {% if s.can_act %}
       <input type="password" autocomplete="off" placeholder="Paste your token" data-token />
       <button type="button" class="btn btn-primary btn-sm" data-action="save">{% if s.has_secret %}Replace token{% else %}Connect{% endif %}</button>
-      {% if s.has_secret %}
+      {% endif %}
+      {% if s.has_secret and s.can_act %}
       <button type="button" class="btn btn-secondary btn-sm" data-action="test">Test</button>
+      {% endif %}
+      {% if s.has_secret %}
       <button type="button" class="btn btn-danger btn-sm" data-action="remove">Remove</button>
       {% endif %}
     </div>
