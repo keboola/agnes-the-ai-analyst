@@ -67,7 +67,10 @@ _EXIT_MARKETPLACE_DRIFT = 20
 # command. Reads the PAT from $AGNES_TOKEN — set in the subprocess env only,
 # never on the command line — and emits the credential protocol's two
 # key=value lines on stdout.
-_CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
+# Same username as the server-side twin. This copy only ever talks to Agnes's
+# own marketplace endpoint, which ignores it, but keeping the two identical
+# means neither can be "fixed" in isolation later (Devin Review on #1180).
+_CREDENTIAL_HELPER = '!f() { printf "username=x-access-token\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
 # Hang-guards for network git calls. Without GIT_TERMINAL_PROMPT=0, an auth

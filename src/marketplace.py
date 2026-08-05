@@ -120,7 +120,12 @@ def is_valid_ref(ref: str) -> bool:
 # ${DATA_DIR}/marketplaces/<slug>/.git/config — on BOTH the clone and the
 # `remote set-url` update path — from where it survives into every backup and
 # volume snapshot. Security playbook §7.
-_CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
+# The username is pinned to `x-access-token`, the value the URL-embedded form
+# this replaced also sent. Most hosts ignore it for token auth, but GitHub App
+# installation tokens are documented as requiring exactly this — and this copy
+# talks to arbitrary curator-supplied upstreams, so a bare `x` would have been
+# a silent upgrade regression for that credential class (Devin Review on #1180).
+_CREDENTIAL_HELPER = '!f() { printf "username=x-access-token\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
 def _git_env(token: Optional[str] = None) -> dict:

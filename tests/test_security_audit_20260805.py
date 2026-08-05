@@ -141,6 +141,36 @@ def test_f1_v2_skills_path_is_contained(tmp_path, monkeypatch):
     assert entries == [], f"escaped the marketplaces root: {entries!r}"
 
 
+def test_f1c_v2_skills_does_not_follow_symlinks(tmp_path, monkeypatch):
+    """The plugin dir is legitimately named and inside the root, so the
+    containment check above passes — but a symlinked skill dir or SKILL.md
+    still reaches outside. The packagers exclude symlinks; this endpoint puts
+    the bytes straight into an HTTP response, so it is the worst place to
+    follow one (Devin Review on #1180).
+    """
+    import app.api.v2_marketplace as v2
+
+    root = tmp_path / "marketplaces"
+    plugin = root / "acme" / "plugins" / "widget"
+    (plugin / "skills").mkdir(parents=True)
+    secret_dir = tmp_path / "elsewhere" / "leak"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "SKILL.md").write_text("---\nname: leak\n---\nSECRET-BODY\n", encoding="utf-8")
+
+    # (a) the skill DIRECTORY is a symlink out of the tree
+    (plugin / "skills" / "viadir").symlink_to(secret_dir, target_is_directory=True)
+    # (b) a real skill dir whose SKILL.md is a symlink out of the tree
+    real = plugin / "skills" / "viafile"
+    real.mkdir()
+    (real / "SKILL.md").symlink_to(secret_dir / "SKILL.md")
+
+    monkeypatch.setattr(v2, "get_marketplaces_dir", lambda: root)
+
+    entries = v2._skills_for_plugin("acme", "widget")
+
+    assert entries == [], f"followed a symlink out of the plugin: {entries!r}"
+
+
 # ── F-1b: hostile symlinks inside a legitimately-named plugin dir ──
 
 
