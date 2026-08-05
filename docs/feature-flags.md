@@ -121,3 +121,4 @@ without grepping the codebase.
 | `chat` | `chat.enabled` | `AGNES_CHAT_ENABLED` | `false` | New feature — off by default. |
 | `chat_approvals` | `chat.approvals_enabled` | `AGNES_CHAT_APPROVALS_ENABLED` | `true` | Operator kill-switch for interactive approval prompts. Off denies ask-flagged tool calls instantly instead of waiting for a human. |
 | `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | New feature — off by default. |
+| `mcp_query_param_token` | `mcp.allow_query_param_token` | `AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN` | `true` | Grandfathered on. Accepts the MCP bearer token as `?token=` on SSE GET for header-incapable clients; the token then appears in every request log (CWE-598). Turn off when all MCP clients send the `Authorization` header. |
