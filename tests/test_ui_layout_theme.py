@@ -661,9 +661,7 @@ class TestRailChatHistory:
         marker = 'id="new-token-btn"'
         assert marker in resp.text
         handler = resp.text[resp.text.index(marker) - 400 : resp.text.index(marker) + 400]
-        assert "preventDefault()" in handler, (
-            "New token must cancel the <summary> default action, not only bubbling"
-        )
+        assert "preventDefault()" in handler, "New token must cancel the <summary> default action, not only bubbling"
         assert "stopPropagation()" in handler
 
     def test_profile_menu_can_restart_onboarding(self, web_client, admin_cookie, monkeypatch):
@@ -1496,9 +1494,7 @@ class TestPaperThemeAssets:
         emits nothing rather than an unstyled marker.
         """
         for sel in self._selectors("app/web/static/css/trustmark.css"):
-            assert '[data-theme="paper"]' in sel, (
-                f"trustmark.css selector not scoped to paper theme: {sel!r}"
-            )
+            assert '[data-theme="paper"]' in sel, f"trustmark.css selector not scoped to paper theme: {sel!r}"
 
     def test_keyframe_stops_are_not_mistaken_for_selectors(self):
         """Guard on the guard: without the @keyframes strip, a stop like
@@ -1661,3 +1657,109 @@ class TestResourceColourTokens:
         assert "--ds-kind-library: #0a5aa8;" in globals_, "default collection hue changed"
         assert "--ds-kind-skill: #0e7c57;" in globals_, "default skill hue changed"
         assert "--ds-kind-memory: #523410;" in globals_, "default memory hue changed"
+
+
+class TestDefaultContentParity:
+    """Topnav keeps the pre-redesign PAGES, not just the chrome.
+
+    The catalog already does this (classic ``catalog.html`` on topnav,
+    ``catalog_unified.html`` under rail); these tests extend the same
+    contract to the other surfaces the redesign rewrote in place, so a
+    default instance's upgrade changes nothing it renders:
+
+    - ``/library``: the legacy "Your collections" page vs the unified Library
+    - ``/marketplace``: the two-shelf Curated/Flea page vs one Browse shelf
+    - ``/chat``: no composer "+" upload menu, no journey checklist, no
+      conversation row menu, no auto-launched tour outside the rail layout
+    """
+
+    def test_topnav_library_is_the_legacy_collections_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/library", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "Your collections" in resp.text, "topnav /library must stay the legacy collections page"
+        assert 'id="lib-search"' not in resp.text, "unified Library toolbar leaked into topnav"
+
+    def test_rail_library_is_the_unified_library(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/library", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="lib-search"' in resp.text
+        assert "Your collections" not in resp.text
+
+    def test_topnav_marketplace_keeps_the_curated_and_flea_shelves(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/marketplace", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'data-tab="flea"' in resp.text, "topnav /marketplace must keep the Curated/Flea tab split"
+        assert "data-count-browse" not in resp.text, "unified Browse shelf leaked into topnav"
+
+    def test_rail_marketplace_is_one_browse_shelf(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/marketplace", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "data-count-browse" in resp.text
+        assert 'data-tab="flea"' not in resp.text
+
+    def _chat(self, web_client, admin_cookie):
+        """GET /chat with chat enabled AND explicitly granted to the Admin
+        group — ``can_chat`` (the rail card's gate) deliberately reads the
+        explicit grant, not god-mode."""
+        import uuid
+
+        from src.db import get_system_db
+
+        web_client.app.state.chat_config = SimpleNamespace(enabled=True)
+        conn = get_system_db()
+        try:
+            gid = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()[0]
+            already = conn.execute(
+                "SELECT 1 FROM resource_grants WHERE group_id = ? AND resource_type = 'chat'", [gid]
+            ).fetchone()
+            if not already:
+                conn.execute(
+                    "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
+                    "requirement, assigned_at, assigned_by) "
+                    "VALUES (?, ?, 'chat', 'chat', 'available', CURRENT_TIMESTAMP, 'test')",
+                    [str(uuid.uuid4()), gid],
+                )
+        finally:
+            conn.close()
+        return web_client.get("/chat", cookies=admin_cookie)
+
+    def test_topnav_chat_has_no_upload_menu_journey_or_row_menu(self, web_client, admin_cookie, monkeypatch):
+        """The redesign's chat additions are rail-only. A topnav instance's
+        composer, sidebar and conversation rows read exactly as before."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = self._chat(web_client, admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="chat-plus-menu"' not in resp.text, "composer + upload menu leaked into topnav"
+        assert 'id="chat-journey"' not in resp.text, "journey checklist leaked into topnav"
+        assert "chat_row_menu.js" not in resp.text, "conversation row menu leaked into topnav"
+
+    def test_rail_chat_keeps_upload_menu_journey_and_row_menu(self, web_client, admin_cookie, monkeypatch):
+        """Under rail the additions stay: the composer "+" menu and the row
+        menu in the page, the journey checklist as the rail's own
+        ``railGetStarted`` card (chat.html's ``#chat-journey`` div is the
+        TOPNAV sidebar's slot — rail never renders it)."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = self._chat(web_client, admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="chat-plus-menu"' in resp.text
+        assert 'id="railGetStarted"' in resp.text
+        assert "chat_row_menu.js" in resp.text
+
+    def test_chat_onboarding_module_is_rail_gated(self):
+        """chat.js statically imports chat_onboarding.js, so the module loads
+        on every chrome — the gate has to live in its behavior. Pin the seam:
+        the module reads ``data-ui-layout`` off the root element and its boot
+        path early-returns off the rail, so topnav gets no journey fetch, no
+        greeting bubbles, and no auto-launched coach-mark tour."""
+        from pathlib import Path
+
+        src = Path("app/web/static/js/chat_onboarding.js").read_text()
+        assert "dataset.uiLayout" in src, "chat_onboarding.js must read the chrome layout"
+        assert "IS_RAIL" in src, "chat_onboarding.js must gate its boot on the rail layout"

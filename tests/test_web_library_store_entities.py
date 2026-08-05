@@ -32,6 +32,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _rail_layout(monkeypatch):
+    """This file exercises the RAIL redesign's unified /library. Topnav keeps
+    the legacy collections page (the /catalog pattern) — guarded by
+    tests/test_ui_layout_theme.py::TestDefaultContentParity."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+
+
+@pytest.fixture(autouse=True)
 def _paper_theme(monkeypatch):
     """Trust markers are opt-in to the paper theme (css/trustmark.css is scoped
     to it, and `mark()` renders nothing without `paper=True`), so the assertions

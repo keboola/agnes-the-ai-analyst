@@ -29,6 +29,16 @@
 // step you cannot complete by looking at anything (`stack_setup_done` lands
 // when a package is actually subscribed) ahead of the one the tour completes
 // for you — so finishing the tour ticked step 3 and left step 2 pending.
+// Chrome gate. The chat-driven onboarding layer (greeting, gap resolver,
+// journey checklist, auto-launched coach-mark tour, long-run notify nudge)
+// ships with the rail redesign; the default topnav chat must read exactly as
+// it did before it (tests/test_ui_layout_theme.py::TestDefaultContentParity).
+// chat.js imports this module statically on every chrome, so the gate lives
+// here rather than in a script tag: off the rail both boot paths return
+// before any journey state loads, and every note*/onUserMessage helper
+// already no-ops off the `ready`/`chatMode` flags that boot would have set.
+const IS_RAIL = document.documentElement.dataset.uiLayout === "rail";
+
 const STEP_KEYS = [
   "first_asked",
   "explored_stack",
@@ -1054,6 +1064,7 @@ function escapeAttr(s) {
 
 // ── public API ───────────────────────────────────────────────────────────────
 export async function initChatOnboarding(h) {
+  if (!IS_RAIL) return;
   hooks = h;
   chatMode = true;
   // Before the await: the profile menu's "Start over onboarding" must work from
@@ -1077,6 +1088,7 @@ export async function initChatOnboarding(h) {
 // the "?" replay is omitted (chatMode stays false). Safe to call when there is
 // no #chat-journey (no-op via renderJourneyPanel's guard).
 export async function mountJourneyPanel() {
+  if (!IS_RAIL) return;
   wireRestartOnboardingMenuItem();
   wireRefreshListener();
   if (ready) {

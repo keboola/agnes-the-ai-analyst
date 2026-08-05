@@ -1,6 +1,7 @@
 """Web UI routes for Collections — /library and /library/{slug}."""
 
 from __future__ import annotations
+import pytest
 
 import io
 
@@ -10,6 +11,14 @@ _LIB_GLYPH = "M9 7h6l4 4v9"  # two overlapping sheets — a collection (detail h
 # In the Library's Files TABLE a collection wears a folder glyph instead: there
 # it sits beside loose files and takes drops, so it reads as the container it is.
 _FOLDER_GLYPH = "M4 7.5A1.5 1.5 0 0 1 5.5 6"
+
+
+@pytest.fixture(autouse=True)
+def _rail_layout(monkeypatch):
+    """This file exercises the RAIL redesign's unified /library. Topnav keeps
+    the legacy collections page (the /catalog pattern) — guarded by
+    tests/test_ui_layout_theme.py::TestDefaultContentParity."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
 
 
 def _auth(token: str) -> dict:

@@ -10,8 +10,17 @@ stack-awareness on /artefacts.
 """
 
 from __future__ import annotations
+import pytest
 
 import io
+
+
+@pytest.fixture(autouse=True)
+def _rail_layout(monkeypatch):
+    """This file exercises the RAIL redesign's surfaces (one-shelf marketplace /
+    unified Library). Topnav keeps the pre-redesign pages (the /catalog
+    pattern) — guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
 
 
 def _auth(token: str) -> dict:

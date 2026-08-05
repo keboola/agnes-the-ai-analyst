@@ -2466,6 +2466,7 @@ def _library_row_base(
 async def library_page(
     request: Request,
     user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Library — everything the caller has: artefacts, skills, and agents.
 
@@ -2505,7 +2506,32 @@ async def library_page(
     Rendering is server-side; the toolbar (search, ownership segments, Type +
     Source facets, sort, and the table ⇄ grid switch) is client-side over
     those rows.
+
+    TOPNAV keeps the pre-redesign page: the unified Library above is part of
+    the rail redesign, and a default instance's /library must keep rendering
+    the legacy "Your collections" page byte-for-byte (the /catalog pattern —
+    classic template on topnav, redesigned one under rail; guarded by
+    tests/test_ui_layout_theme.py::TestDefaultContentParity). The legacy
+    branch below is main's pre-merge handler verbatim.
     """
+    if get_ui_layout() != "rail":
+        from src.rbac import get_accessible_ids
+
+        from app.resource_types import ResourceType
+
+        is_admin = is_user_admin(user["id"], conn)
+        accessible_ids = get_accessible_ids(user, ResourceType.COLLECTION.value, conn)  # None => admin/all
+        allowed = None if accessible_ids is None else set(accessible_ids)
+        cf_repo = corpus_files_repo()
+        cards = []
+        for col in file_corpora_repo().list():
+            if not is_admin and allowed is not None and col["id"] not in allowed:
+                continue
+            files = cf_repo.list_for_corpus(col["id"])
+            cards.append({**col, "file_count": len(files)})
+        ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collections=cards)
+        return templates.TemplateResponse(request, "library_legacy.html", ctx)
+
     from app.resource_types import ResourceType
     from app.services.artefact_access import (
         VISIBILITY_LABELS,
@@ -5122,7 +5148,13 @@ async def marketplace_listing(
         # verification vocabulary at all (see get_store_verification_enabled).
         store_verification_enabled=get_store_verification_enabled(),
     )
-    return templates.TemplateResponse(request, "marketplace.html", ctx)
+    # The one-Browse-shelf reshape (Curated/Flea tabs merged) is part of the
+    # rail redesign; topnav keeps the pre-merge two-shelf page byte-for-byte
+    # (the /catalog pattern — guarded by tests/test_ui_layout_theme.py::
+    # TestDefaultContentParity). Same context either way: the legacy template
+    # reads a subset of it.
+    tmpl = "marketplace.html" if get_ui_layout() == "rail" else "marketplace_legacy.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.get("/marketplace/flea/{entity_id}", response_class=HTMLResponse)

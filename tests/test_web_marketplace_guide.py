@@ -17,6 +17,14 @@ import pytest
 from tests._template_assertions import assert_element, ElementNotFound
 
 
+@pytest.fixture(autouse=True)
+def _rail_layout(monkeypatch):
+    """This file exercises the RAIL redesign's surfaces (one-shelf marketplace /
+    unified Library). Topnav keeps the pre-redesign pages (the /catalog
+    pattern) — guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+
+
 @pytest.fixture
 def fresh_db(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
@@ -158,7 +166,7 @@ def test_marketplace_guide_flea_page(fresh_db):
         assert_element(body, "div", class_="guide-fastpath")
 
 
-def test_marketplace_shelves_collapsed_into_publisher_facet(fresh_db):
+def test_marketplace_shelves_collapsed_into_publisher_facet(fresh_db, monkeypatch):
     """v104: one Browse shelf, and provenance is a facet.
 
     The Curated / Flea tabs and a Publisher facet asked the same question with
@@ -192,11 +200,11 @@ def test_marketplace_shelves_collapsed_into_publisher_facet(fresh_db):
     assert 'id="mp-scope-curated"' not in body
     assert 'id="mp-scope-flea"' not in body
 
-    # v113: verification is opt-in per instance but now defaults to ON, because
-    # the Library states all three trust levels positively (Organization /
-    # Verified / Community) instead of marking only the ABSENCE of verification.
-    # The facet therefore renders by default; what must never render is a
-    # NEGATIVE label, which is what the old default-off reasoning was protecting
-    # against — "Not verified" on every row says nothing about any of them.
+    # Verification is opt-in per instance (default OFF for upgrade parity —
+    # see get_store_verification_enabled). With it enabled the facet renders;
+    # what must never render is a NEGATIVE label — "Not verified" on every row
+    # says nothing about any of them.
+    monkeypatch.setattr("app.instance_config.get_store_verification_enabled", lambda: True)
+    body = _client().get("/marketplace", cookies={"access_token": sess}).text
     assert 'data-verification="verified"' in body
     assert "Not verified" not in body

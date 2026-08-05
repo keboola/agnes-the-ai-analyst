@@ -13,8 +13,17 @@ Drag-and-drop is `POST /api/collections/{src}/files/{fid}/move`.
 """
 
 from __future__ import annotations
+import pytest
 
 import io
+
+
+@pytest.fixture(autouse=True)
+def _rail_layout(monkeypatch):
+    """This file exercises the RAIL redesign's unified /library. Topnav keeps
+    the legacy collections page (the /catalog pattern) — guarded by
+    tests/test_ui_layout_theme.py::TestDefaultContentParity."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
 
 
 def _auth(token: str) -> dict:
