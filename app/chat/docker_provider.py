@@ -49,6 +49,7 @@ from urllib.parse import urlparse
 from app.chat.e2b_provider import SANDBOX_WORKDIR, _StreamReaderAdapter
 
 # Module-level so unit tests can ``patch("app.chat.docker_provider.SandboxRunnerClient")``.
+from app.chat.config import sandbox_can_reach_directly
 from app.chat.sandbox_runner_client import SandboxRunnerClient
 from app.chat.workdir import WORKSPACE_LINK_ENTRIES
 
@@ -387,10 +388,10 @@ class DockerSandboxProvider:
             # deployments for OAuth) over AGNES_INTERNAL_URL, so that is the
             # common case, not an exotic one (Devin Review on #1148).
             #
-            # A compose service / container name is dotless; a public rails URL
-            # is an FQDN. Anything with a dot goes THROUGH the proxy, where an
-            # operator can at least fix it by allowlisting the host.
-            if host and host not in no_proxy and "." not in host:
+            # "Directly reachable" is defined once in app/chat/config.py and
+            # shared with the boot check, so the two cannot drift: a dotless
+            # service name, the docker host alias, or a private IP literal.
+            if host and host not in no_proxy and sandbox_can_reach_directly(host):
                 no_proxy.append(host)
         p = self._egress_proxy_url
         joined = ",".join(no_proxy)

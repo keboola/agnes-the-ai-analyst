@@ -490,6 +490,15 @@ def test_a_public_rails_host_is_not_forced_off_the_proxy():
     assert "agnes.example.com" not in public
     assert "127.0.0.1" in public and "localhost" in public
 
+    # ...and a dotted-but-internal address must NOT be pushed onto the proxy:
+    # app/main.py recommends host.docker.internal for bare-host deployments,
+    # and the proxy would deny it (unlisted, and its resolved address is
+    # private, which the post-DNS re-check blocks even if listed).
+    host_alias = p._egress_env({"AGNES_SERVER": "http://host.docker.internal:8000"})["NO_PROXY"]
+    assert "host.docker.internal" in host_alias.split(",")
+    raw_ip = p._egress_env({"AGNES_SERVER": "http://172.17.0.2:8000"})["NO_PROXY"]
+    assert "172.17.0.2" in raw_ip.split(",")
+
 
 def test_a_public_rails_url_is_reported_at_startup(monkeypatch):
     from app.chat.config import egress_compose_mismatches
@@ -499,6 +508,13 @@ def test_a_public_rails_url_is_reported_at_startup(monkeypatch):
     msgs = egress_compose_mismatches(_cfg())
     assert any("agnes.example.com" in m for m in msgs), msgs
 
-    # ...and saying nothing once the internal override is set.
+    # Setting the override alone must NOT silence it — SERVER_URL still wins,
+    # so a check that went quiet here would confirm a fix that does nothing.
     monkeypatch.setenv("AGNES_INTERNAL_URL", "http://app:8000")
+    assert any("agnes.example.com" in m for m in egress_compose_mismatches(_cfg()))
+
+    # Quiet only once what actually wins is reachable.
+    monkeypatch.delenv("SERVER_URL", raising=False)
+    assert egress_compose_mismatches(_cfg()) == []
+    monkeypatch.setenv("SERVER_URL", "http://host.docker.internal:8000")
     assert egress_compose_mismatches(_cfg()) == []

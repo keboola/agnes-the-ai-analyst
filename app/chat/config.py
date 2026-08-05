@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from dataclasses import dataclass, field
@@ -380,6 +381,32 @@ _COMPOSE_EGRESS_NETWORK = "agnes-apps"
 _COMPOSE_EGRESS_PROXY_URL = "http://agnes-egress-proxy:3128"
 
 
+def sandbox_can_reach_directly(host: str) -> bool:
+    """Is ``host`` reachable from a sandbox WITHOUT going through the proxy?
+
+    The single definition behind two decisions that must agree: which host
+    `_egress_env` puts in NO_PROXY, and which rails URL the boot check warns
+    about. They were written separately and immediately drifted — a "dotless
+    name" shortcut silently excluded `host.docker.internal`, the very address
+    `app/main.py` recommends for bare-host deployments (Devin Review on #1148).
+
+    Directly reachable means: a compose service / container name (dotless),
+    the Docker host alias, or a private/loopback IP literal. Everything else
+    is a public address the internal no-route-out bridge cannot reach at all,
+    so it must go through the proxy — where an operator can allowlist it.
+    """
+    h = (host or "").strip().lower().strip("[]")
+    if not h:
+        return False
+    if h in ("localhost", "host.docker.internal") or h.endswith(".docker.internal"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return "." not in h  # bare service/container name
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
 def egress_compose_mismatches(cfg: "ChatConfig") -> list[str]:
     """Ways an allowlist-mode instance's config can disagree with compose.
 
@@ -416,21 +443,23 @@ def egress_compose_mismatches(cfg: "ChatConfig") -> list[str]:
             f"chat.docker_egress_proxy_url is {cfg.docker_egress_proxy_url!r}, but compose names "
             f"the sidecar container agnes-egress-proxy ({_COMPOSE_EGRESS_PROXY_URL})"
         )
-    # The rails URL is the fourth face of the same assumption. `agnes_server_url()`
-    # prefers SERVER_URL — which most deployments set for OAuth — over
-    # AGNES_INTERNAL_URL, and a public host is not reachable from the
-    # no-route-out network the sandbox lives on in this mode.
-    rails = (os.environ.get("SERVER_URL") or "").strip()
-    if rails and not (os.environ.get("AGNES_INTERNAL_URL") or "").strip():
+    # The rails URL is the fourth face of the same assumption. Judge the URL
+    # that actually WINS — agnes_server_url() prefers SERVER_URL over
+    # AGNES_INTERNAL_URL — not merely whether the override happens to be set.
+    # Gating on "is AGNES_INTERNAL_URL present" made this go quiet for an
+    # operator who followed its own advice while the public URL still won, so
+    # the check confirmed a fix that had no effect (Devin Review on #1148).
+    rails = (os.environ.get("SERVER_URL") or os.environ.get("AGNES_INTERNAL_URL") or "").strip()
+    if rails:
         from urllib.parse import urlparse
 
         host = urlparse(rails).hostname or ""
-        if "." in host:
+        if host and not sandbox_can_reach_directly(host):
+            src = "SERVER_URL" if (os.environ.get("SERVER_URL") or "").strip() else "AGNES_INTERNAL_URL"
             out.append(
-                f"the sandbox rails URL resolves from SERVER_URL ({host}), which is not reachable "
-                "from the internal no-route-out network sandboxes use in this mode. Set "
-                "AGNES_INTERNAL_URL to a container-reachable address (e.g. http://app:8000); "
-                "otherwise every brokered call has to go through the egress proxy and the host "
-                "must be in EGRESS_ALLOW_HOSTS"
+                f"the sandbox rails URL resolves from {src} to {host!r}, which the internal "
+                "no-route-out network cannot reach directly. SERVER_URL takes precedence, so "
+                "setting AGNES_INTERNAL_URL alone does NOT fix this — either unset SERVER_URL for "
+                "the chat rails or point it at a container-reachable address (e.g. http://app:8000)"
             )
     return out
