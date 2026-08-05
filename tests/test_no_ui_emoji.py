@@ -32,6 +32,13 @@ ALLOWLIST: set[str] = set()
 
 
 def _in_scope(rel: str) -> bool:
+    # *_legacy.html are frozen byte-for-byte copies of the pre-redesign pages,
+    # kept so a default topnav instance renders exactly what it rendered before
+    # the redesign (tests/test_ui_layout_theme.py::TestDefaultContentParity).
+    # They may not drift — including cosmetic emoji sweeps — and they retire
+    # together with the topnav chrome. The ban governs the living templates.
+    if rel.endswith("_legacy.html"):
+        return False
     return rel not in ALLOWLIST
 
 
