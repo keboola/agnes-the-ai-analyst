@@ -20,5 +20,9 @@ services:
   # build it, find no Dockerfile, and abort the whole stack's boot.
   apps-runner:
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
+  # egress-proxy (compose profile `chat-docker-egress`) — same source-less
+  # prod-VM reasoning as apps-runner above.
+  egress-proxy:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   # corporate-memory and session-collector were dropped in #176 —
   # the scheduler container drives them via /api/admin/run-* endpoints.
