@@ -22,6 +22,43 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.78.4] - 2026-08-05
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+- **`quote_ident` moved to `src/sql_ident.py` and every quoted SQL identifier in
+  the codebase now routes through it** — 43 sites across the connectors, the
+  orchestrator, the CLI and the DuckDB→Postgres migration tooling were still
+  building `f'"{name}"'` by hand. Two of them were already escaping correctly
+  inline and are converted only so the new ratchet guard has one shape to match.
+  `src.profiler` re-exports the function, so existing importers are unchanged.
+  A guard in `tests/test_security_audit_20260805.py` fails on any new
+  bare-quoted identifier; its allowlist is empty and must stay empty.
+- Test fixtures use `example.com` instead of a specific deployment's hostname,
+  per the vendor-agnostic rule in `CLAUDE.md`.
+- `.gitignore` now ignores a `.venv` **symlink**, not just a directory. Parallel
+  worktrees symlink the main checkout's venv (`scripts/dev/worktree-spawn.sh`),
+  and a trailing-slash pattern matches directories only — so every such worktree
+  carried an untracked `.venv`.
+
+### Security
+
+- **`agnes pull` validates table ids from the server manifest.** A manifest table
+  id becomes both a filesystem path segment (`<id>.parquet` plus its sidecar) and
+  a DuckDB view identifier on the analyst's machine. The same `_SAFE_ID_RE` gate
+  already covered collection ids, doc slugs and item ids in that module; the
+  table id was missed. Unsafe ids are skipped with a warning on stderr rather
+  than collected as errors, so one bad id cannot make every subsequent pull exit
+  non-zero — including from the SessionStart hook.
+
 ## [0.78.3] - 2026-08-05
 
 ### Added
