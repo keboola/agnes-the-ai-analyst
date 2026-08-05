@@ -509,13 +509,16 @@ class TestRailOptIn:
         assert resp.status_code == 200
         assert 'data-theme="paper"' in resp.text
 
-    def test_paper_keeps_keboola_credit_and_orb(self, web_client, admin_cookie, monkeypatch):
-        """The default-safety gate must not kill the redesign's own footer:
-        under paper the Keboola credit + orb favicon still render."""
+    def test_paper_footer_is_config_driven_and_keeps_the_orb(self, web_client, admin_cookie, monkeypatch):
+        """The redesign carries no vendor branding: the paper footer renders the
+        same config-driven copyright as every other chrome (an instance puts its
+        own name there via INSTANCE_COPYRIGHT), while the orb favicon — a
+        neutral product mark — stays redesign-only."""
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert "<b>Keboola</b>" in resp.text
+        assert "AI Harness" in resp.text
+        assert "<b>Keboola</b>" not in resp.text
         assert "img/agnes-orb.png" in resp.text
 
 
