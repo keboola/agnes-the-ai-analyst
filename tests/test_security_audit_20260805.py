@@ -355,3 +355,26 @@ def test_f2_scrub_runs_even_when_ref_validation_rejects_the_row(tmp_path, monkey
         mp._sync_spec({"id": "acme", "url": "https://example.com/acme.git", "ref": "bad..ref"})
 
     assert "SECRET123" not in (repo / ".git" / "config").read_text(encoding="utf-8")
+
+
+def test_f2b_origin_refusal_never_echoes_a_credential():
+    """The refusal path reports the origin URL, and the value it reports is
+    exactly what this release removes: a remote with an embedded PAT. Redacting
+    against the *currently resolved* token is not enough — by then the env var
+    may be unset or the PAT rotated, making redaction a no-op and persisting the
+    secret into `marketplace_registry.last_error`, which the admin UI renders
+    (Devin Review on #1180).
+    """
+    from src.marketplace import _strip_userinfo
+
+    creds = "https://x-access-token:ghp_SUPERSECRET@github.com/acme/repo.git"
+    out = _strip_userinfo(creds)
+    assert "ghp_SUPERSECRET" not in out
+    assert "x-access-token" not in out
+    assert out == "https://github.com/acme/repo.git", out
+
+    # Still useful: the host survives, so the operator can see WHERE it points.
+    assert _strip_userinfo("https://user:pw@host:8443/a/b") == "https://host:8443/a/b"
+    # And harmless shapes pass through untouched.
+    assert _strip_userinfo("https://github.com/acme/repo.git") == "https://github.com/acme/repo.git"
+    assert _strip_userinfo("not a url") == "not a url"

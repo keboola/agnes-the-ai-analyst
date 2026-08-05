@@ -169,6 +169,26 @@ def _credential_args(repo_url: str, token: Optional[str]) -> List[str]:
     ]
 
 
+def _strip_userinfo(url: str) -> str:
+    """``url`` with any ``user:pass@`` removed, structurally.
+
+    Not token-dependent, unlike ``_redact``: the value we most need to sanitise
+    is a remote that still embeds a PAT from before this release, and the token
+    we would redact against may be rotated or unset by then — leaving redaction
+    a no-op and putting the credential somewhere durable. Callers persist error
+    text into ``marketplace_registry.last_error``, which the admin UI renders
+    (Devin Review on #1180).
+    """
+    try:
+        parts = urlparse(url)
+    except ValueError:
+        return "<unparseable url>"
+    if not parts.hostname:
+        return url
+    netloc = parts.hostname + (f":{parts.port}" if parts.port else "")
+    return f"{parts.scheme}://{netloc}{parts.path}" if parts.scheme else f"{netloc}{parts.path}"
+
+
 def _redact(s: str, token: str) -> str:
     return s.replace(token, "***") if token and s else s
 
@@ -340,8 +360,8 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
             current = _run_git(["config", "--get", "remote.origin.url"], cwd=target).stdout.strip()
             if current != url:
                 raise RuntimeError(
-                    f"git {action} refused: origin is {_redact(current, token)!r}, not the configured "
-                    f"{_redact(url, token)!r} — could not re-point the checkout, so a fetch here would "
+                    f"git {action} refused: origin is {_strip_userinfo(current)!r}, not the configured "
+                    f"{_strip_userinfo(url)!r} — could not re-point the checkout, so a fetch here would "
                     "silently pull from the wrong remote"
                 )
             if pinned_sha:
