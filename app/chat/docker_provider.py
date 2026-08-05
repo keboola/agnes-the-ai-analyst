@@ -486,16 +486,18 @@ class DockerSandboxProvider:
         runner_pid: int,
         env: dict[str, str],
     ) -> DockerSandboxHandle:
-        """Reattach + ``docker unpause``, in that order.
+        """``docker unpause`` + reattach.
 
-        Attach FIRST: the container starts executing the instant it is
-        unpaused, so with the opposite order anything the runner printed
-        before the attach round trip completed was silently lost — the same
-        start-vs-attach race ``spawn()`` closes with ``replay=True``. Docker
-        attaches to a paused container just fine (the stream stays silent
-        until the unpause). Still no replay: the container's whole log buffer
-        is there, and re-sending it would re-deliver every frame since
-        session start.
+        The order is forced: the daemon refuses ``POST /containers/{id}/attach``
+        on a paused container (409 "unpause the container before attach"), so
+        attaching first — which would close the wake-up race the way
+        ``spawn()``'s ``replay=True`` closes the start race — is not possible
+        at any layer. The sub-second unpause→attach window is an accepted v1
+        reattach gap (documented with the others in docs/cloud-chat.md); an
+        idle runner emits nothing spontaneously, so it only matters for a
+        session paused mid-turn. No replay on the reattach: the container's
+        whole log buffer is still there, and re-sending it would re-deliver
+        every frame since session start.
 
         Raises on anything unexpected (container gone, stopped, daemon
         unreachable) — ChatManager's existing resume-failure fallback turns that
@@ -503,19 +505,11 @@ class DockerSandboxProvider:
         """
         status = await self._client.status(sandbox_id)
         state = status.get("container")
-        if state not in ("paused", "running"):
-            raise RuntimeError(f"docker sandbox {sandbox_id} is {state!r} — cannot resume")
-        handle = await self._attach(sandbox_id, pid=runner_pid)
         if state == "paused":
-            try:
-                await self._client.resume(sandbox_id)
-            except BaseException:
-                # Don't leak the just-opened attach on the failure path — the
-                # caller falls back to a fresh spawn.
-                with contextlib.suppress(Exception):
-                    await handle._detach()
-                raise
-        return handle
+            await self._client.resume(sandbox_id)
+        elif state != "running":
+            raise RuntimeError(f"docker sandbox {sandbox_id} is {state!r} — cannot resume")
+        return await self._attach(sandbox_id, pid=runner_pid)
 
     async def keepalive(self, handle: DockerSandboxHandle, *, timeout_seconds: int) -> None:
         """No-op: a local container has no external timeout to extend."""

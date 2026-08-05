@@ -554,11 +554,13 @@ def test_resume_unpauses_and_reattaches(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_resume_attaches_before_unpausing(tmp_path: Path):
-    """The container executes again the instant it is unpaused, so the attach
-    must already be listening — the opposite order silently dropped whatever
-    the runner printed during the attach round trip (the same start-vs-attach
-    race spawn closes with replay=True)."""
+def test_resume_unpauses_before_attaching(tmp_path: Path):
+    """The order is forced by the daemon: attach on a paused container is
+    refused with 409 ("unpause the container before attach"), so unpause must
+    come first — the sub-second wake-up window before the attach completes is
+    an accepted, documented reattach gap. Pinned here so a future
+    "attach-first to save wake-up output" rewrite (tried once, dead on the
+    daemon's 409) doesn't come back without addressing that."""
 
     async def _run():
         calls: list[str] = []
@@ -577,27 +579,27 @@ def test_resume_attaches_before_unpausing(tmp_path: Path):
         client.resume = _unpause
         prov = _provider(client)
         handle = await prov.resume(sandbox_id="agnes-chatsbx-x", runner_pid=1, env={})
-        assert calls == ["attach", "unpause"]
+        assert calls == ["unpause", "attach"]
         await handle.kill(grace_sec=0.01)
 
     asyncio.run(_run())
 
 
-def test_resume_closes_the_attach_when_unpause_fails():
-    """The failure path hands control to ChatManager's fresh-spawn fallback —
-    the attach opened a moment earlier must not leak on the way out."""
+def test_resume_propagates_an_attach_failure_after_unpause():
+    """An attach failure after a successful unpause still raises out of
+    resume() — ChatManager's fallback then destroys the (now running)
+    container and respawns fresh; nothing is opened that could leak."""
 
     async def _run():
         from app.chat.sandbox_runner_client import SandboxRunnerError
 
-        stream = FakeStream(hold=True)
-        client = _fake_client(stream)
+        client = _fake_client()
         client.status = AsyncMock(return_value={"container": "paused", "exit_code": None})
-        client.resume = AsyncMock(side_effect=SandboxRunnerError(502, "docker_error"))
+        client.open_stream = AsyncMock(side_effect=SandboxRunnerError(502, "docker_error"))
         prov = _provider(client)
         with pytest.raises(SandboxRunnerError):
             await prov.resume(sandbox_id="agnes-chatsbx-x", runner_pid=1, env={})
-        assert stream.closed is True
+        client.resume.assert_awaited_once_with("agnes-chatsbx-x")
 
     asyncio.run(_run())
 

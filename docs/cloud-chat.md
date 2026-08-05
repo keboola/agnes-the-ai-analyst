@@ -346,7 +346,7 @@ all deliberate:
 | Pause | microVM memory snapshot | `docker pause` (SIGSTOP) |
 | Survives a paused sandbox's process memory | yes | yes, while the daemon lives |
 | Survives a daemon restart / host reboot | yes | **no** |
-| Resume | reattach to the same process | reattach, then unpause (attach first, so wake-up output isn't lost) |
+| Resume | reattach to the same process | unpause + reattach (the daemon refuses attach on a paused container, so the order is forced) |
 | On resume failure | fresh sandbox + restore-context | same |
 | Cost while paused | billing stops | container keeps its memory reservation |
 | Session lifetime cap | clamped to E2B's 1 h platform max | `chat.max_session_seconds` applies as configured (default 4 h) |
@@ -356,7 +356,7 @@ sandbox seeded with the restored-conversation transcript — the same path a
 crash respawn takes. No crash loop, no stuck session; the in-flight turn (if
 any) is lost.
 
-**Reattach gaps (v1, accepted).** Two bounded windows exist where runner
+**Reattach gaps (v1, accepted).** Three bounded windows exist where runner
 output reaches only the container log, not the gateway:
 
 - *Gateway restart while the container keeps running.* The post-restart resume
@@ -369,6 +369,11 @@ output reaches only the container log, not the gateway:
 - *Detach → pause.* `pause()` closes the attach before the daemon pauses the
   container, so a frame emitted in that sub-second window is likewise only in
   the container log.
+- *Unpause → reattach.* The mirror image on wake-up. The order cannot be
+  inverted: the daemon refuses `attach` on a paused container (409, "unpause
+  the container before attach"), so the attach necessarily opens a beat after
+  execution resumes. An idle runner emits nothing spontaneously — the window
+  only matters for a session that was paused mid-turn.
 
 In both cases the session self-heals on the next message — the runner is idle
 and answers normally; what's lost is the rendering of the missed frames, not
