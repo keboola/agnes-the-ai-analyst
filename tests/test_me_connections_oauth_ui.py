@@ -127,7 +127,138 @@ def test_me_connections_page_shows_connected_banner(seeded_app):
         headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
     )
     assert r.status_code == 200
-    assert "Connected src_oauth_ui" in r.text
+    assert "Connected <strong>src_oauth_ui</strong>" in r.text
+
+
+def test_me_connections_admin_sees_ungranted_source_with_bootstrap_note(seeded_app):
+    """The register → connect → introspect bootstrap: an admin must see a
+    freshly registered per_user source on /me/connections even before any
+    tools exist, with a note linking to the admin page (UX round on #1130)."""
+    from src.db import get_system_db
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_oauth_boot",
+        name="src_oauth_boot",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+    r = seeded_app["client"].get(
+        "/me/connections",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+    )
+    assert r.status_code == 200
+    assert 'id="source-src_oauth_boot"' in r.text
+    assert "No tools are enabled for this source yet" in r.text
+    assert "/admin/mcp-sources/src_oauth_boot" in r.text
+
+
+def test_me_connections_analyst_sees_own_connection_even_without_grants(seeded_app):
+    """A connection you made must never be invisible — the card (with
+    Disconnect) shows even when no tools are granted to you."""
+    from src.db import get_system_db
+    from src.repositories import mcp_user_oauth_tokens_repo
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_oauth_mine",
+        name="src_oauth_mine",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_mine", "analyst1", "atok")
+    r = seeded_app["client"].get(
+        "/me/connections",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    assert 'id="source-src_oauth_mine"' in r.text
+    assert "No tools are enabled for this source yet" in r.text
+
+
+def test_me_connections_analyst_does_not_see_ungranted_unconnected_source(seeded_app):
+    """Without granted tools AND without an own connection, a non-admin
+    still doesn't see the source — nothing they could do with it."""
+    from src.db import get_system_db
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_oauth_hidden",
+        name="src_oauth_hidden",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+    r = seeded_app["client"].get(
+        "/me/connections",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    assert "src_oauth_hidden" not in r.text
+
+
+def test_me_connections_connected_banner_uses_source_name(seeded_app):
+    """The success banner names the source, not its UUID (UX round on #1130)."""
+    from src.db import get_system_db
+    from src.repositories import mcp_user_oauth_tokens_repo
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="11111111-2222-3333-4444-555555555555",
+        name="Keboola (EU)",
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+    mcp_user_oauth_tokens_repo().upsert("11111111-2222-3333-4444-555555555555", "analyst1", "atok")
+    r = seeded_app["client"].get(
+        "/me/connections",
+        params={"connected": "11111111-2222-3333-4444-555555555555"},
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    assert "Connected <strong>Keboola (EU)</strong>" in r.text
+
+
+def test_me_connections_error_banner_offers_retry_link(seeded_app):
+    """?connect_error with a valid &retry= renders a one-click Try again
+    link to the authorize endpoint; an id the caller cannot see renders no
+    link (crafted-link safety)."""
+    from src.repositories import mcp_user_oauth_tokens_repo
+
+    _seed_oauth_source(source_id="src_oauth_retry")
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_retry", "analyst1", "atok")
+    hdr = {"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    r = seeded_app["client"].get(
+        "/me/connections",
+        params={"connect_error": "token_exchange_failed", "retry": "src_oauth_retry"},
+        headers=hdr,
+    )
+    assert r.status_code == 200
+    assert "/api/mcp/sources/src_oauth_retry/oauth/authorize" in r.text
+    assert "Try again" in r.text
+
+    r2 = seeded_app["client"].get(
+        "/me/connections",
+        params={"connect_error": "token_exchange_failed", "retry": "not-my-source"},
+        headers=hdr,
+    )
+    assert r2.status_code == 200
+    assert "not-my-source" not in r2.text
 
 
 def test_me_connections_connected_banner_shows_for_source_without_tools(seeded_app):
@@ -156,7 +287,7 @@ def test_me_connections_connected_banner_shows_for_source_without_tools(seeded_a
         headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
     )
     assert r.status_code == 200
-    assert "Connected src_oauth_fresh" in r.text
+    assert "Connected <strong>src_oauth_fresh</strong>" in r.text
 
 
 def test_me_connections_lapsed_connection_still_offers_disconnect(seeded_app):

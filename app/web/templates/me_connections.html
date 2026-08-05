@@ -49,10 +49,12 @@
 {% block page %}
 <div class="conn-page" data-highlight="{{ highlight_source }}">
   {% if connected_source %}
-    <div class="conn-banner conn-banner--ok">Connected {{ connected_source }}.</div>
+    <div class="conn-banner conn-banner--ok">Connected <strong>{{ connected_name or connected_source }}</strong> — Agnes can now call it as you.</div>
   {% endif %}
   {% if connect_error %}
-    <div class="conn-banner conn-banner--error">Connect failed: {{ connect_error }}</div>
+    <div class="conn-banner conn-banner--error">Connect failed: {{ connect_error }}.
+      {% if retry_source %}<a href="/api/mcp/sources/{{ retry_source }}/oauth/authorize">Try again</a>{% endif %}
+    </div>
   {% endif %}
   {% if not connect_sources %}
     <p class="conn-empty">You have no per-user MCP sources to connect. When an admin grants you a source that authenticates per person, it appears here.</p>
@@ -63,7 +65,7 @@
     <div class="conn-card__head">
       <div>
         <div class="conn-card__name">{{ s.name }}</div>
-        <div class="conn-card__meta">{{ s.transport }} · per-user credential</div>
+        <div class="conn-card__meta">{% if s.auth_kind == "oauth" %}Sign in with your own account — Agnes calls this source as you{% else %}Uses your personal token — Agnes calls this source as you{% endif %}</div>
       </div>
       {% if s.has_secret %}
         <span class="conn-pill conn-pill--on">Connected</span>
@@ -75,6 +77,15 @@
     </div>
 
     {% if s.hint_html %}<div class="conn-hint">{{ s.hint_html | safe }}</div>{% endif %}
+
+    {% if not s.has_tools %}
+    {# The register → connect → introspect bootstrap: the source is visible
+       (you can connect/disconnect) but has no granted tools yet, so chat
+       can't use it. Tell the user instead of silently hiding the card
+       (UX round on #1130). #}
+    <div class="conn-hint">No tools are enabled for this source yet{% if is_admin %} —
+      <a href="/admin/mcp-sources/{{ s.id }}">open the admin page</a> to introspect and grant them{% endif %}.</div>
+    {% endif %}
 
     {% if s.auth_kind == "oauth" %}
     <div class="conn-row">

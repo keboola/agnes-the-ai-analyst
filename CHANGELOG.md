@@ -14,6 +14,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- `/me/connections` UX after the first real OAuth rollout: the page now
+  also lists per_user sources you have a stored connection for and (for
+  admins) freshly registered sources with no tools yet — with a "no tools
+  enabled yet" note linking admins to the source's admin page — instead of
+  silently hiding the card mid-bootstrap; the success banner names the
+  source instead of printing its UUID; retryable connect failures render a
+  one-click "Try again" link back into the authorize flow; and the card
+  meta line explains the credential in plain words instead of
+  "http · per-user credential".
+
 ### Fixed
 - Two pages that shipped with no way to reach them from the UI. The agent
   builder (`/agents`) now has a **My agents** entry in the user dropdown —

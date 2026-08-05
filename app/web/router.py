@@ -1121,10 +1121,9 @@ async def me_connections_page(
     from src.repositories import mcp_sources_repo, mcp_user_oauth_tokens_repo, per_user_secrets_repo
 
     granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    caller_is_admin = is_user_admin(user["id"], conn)
     sources = []
     for src in mcp_sources_repo().list_all(enabled_only=True):
-        if src["id"] not in granted_ids:
-            continue
         if (src.get("scope") or "shared").lower() != "per_user":
             continue
         is_oauth = (src.get("auth_method") or "").lower() == "oauth"
@@ -1147,6 +1146,13 @@ async def me_connections_page(
             stored = has_secret
             updated_at = per_user_secrets_repo().get_updated_at(src["id"], user["id"])
             expires_at = None
+        # Visibility: granted tools, OR the caller's own stored credential
+        # (a connection you made must never be invisible — you need Test /
+        # Disconnect), OR admin (the register → connect → introspect
+        # bootstrap happens before any tools exist; hiding the source made
+        # a fresh connect look like nothing happened — UX round on #1130).
+        if src["id"] not in granted_ids and not stored and not caller_is_admin:
+            continue
         sources.append(
             {
                 "id": src["id"],
@@ -1156,6 +1162,7 @@ async def me_connections_page(
                 "auth_kind": "oauth" if is_oauth else "secret",
                 "has_secret": has_secret,
                 "stored": stored,
+                "has_tools": src["id"] in granted_ids,
                 "updated_at": updated_at,
                 "expires_at": expires_at,
             }
@@ -1172,17 +1179,32 @@ async def me_connections_page(
 
     error_code = request.query_params.get("connect_error") or ""
     connected = request.query_params.get("connected") or ""
-    if connected and mcp_user_oauth_tokens_repo().get(connected, user["id"]) is None:
-        connected = ""
+    connected_name = ""
+    if connected:
+        if mcp_user_oauth_tokens_repo().get(connected, user["id"]) is None:
+            connected = ""
+        else:
+            src_row = mcp_sources_repo().get(connected)
+            # Show the human name, not a UUID (UX round on #1130).
+            connected_name = (src_row or {}).get("name") or connected
+    # `retry` names the source a failed connect can be retried against —
+    # rendered as a one-click "Try again" link. Validated against the
+    # listed cards, so a crafted link can only ever point at a source the
+    # caller could legitimately connect anyway.
+    retry = request.query_params.get("retry") or ""
+    if not error_code or retry not in {s["id"] for s in sources}:
+        retry = ""
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
-        is_admin=is_user_admin(user["id"], conn),
+        is_admin=caller_is_admin,
         connect_sources=sources,
         highlight_source=request.query_params.get("source") or "",
         connected_source=connected,
+        connected_name=connected_name,
         connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
+        retry_source=retry,
     )
     return templates.TemplateResponse(request, "me_connections.html", ctx)
 
