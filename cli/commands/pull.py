@@ -167,6 +167,7 @@ def pull(
                     "tables_removed": result.tables_removed,
                     "parquets_total": result.parquets_total,
                     "rules_count": result.rules_count,
+                    "snapshot_views_blocked": list(getattr(result, "snapshot_views_blocked", []) or []),
                     # WF-4 (wave 2H) — provenance counters. `getattr` with a
                     # 0 default keeps this endpoint tolerant of duck-typed
                     # `PullResult` stand-ins in tests that predate these
@@ -214,6 +215,22 @@ def pull(
     else:
         typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
+
+    # Without this the analyst just gets "Table with name <x> does not
+    # exist" from a later query and no clue the pull withheld the name on
+    # purpose — the same diagnosis gap this change set out to close
+    # (#1129 review). The command-UX standard asks a "not found" path to
+    # point at the next step.
+    withheld = list(getattr(result, "snapshot_views_blocked", []) or [])
+    if withheld:
+        shown = ", ".join(sorted(withheld)[:5])
+        more = f" (+{len(withheld) - 5} more)" if len(withheld) > 5 else ""
+        typer.echo(
+            f"Withheld {len(withheld)} snapshot name(s) that now belong to a table you can no\n"
+            f"longer read locally: {shown}{more}.\n"
+            "Re-create them under a different name (`agnes snapshot create <table> --as <name>`).",
+            err=True,
+        )
 
     # WF-4 (wave 2H) — provenance summary. Only printed once a
     # `signed_url` has actually been used (an instance with no object

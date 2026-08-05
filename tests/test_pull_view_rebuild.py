@@ -317,3 +317,61 @@ def test_no_blocked_names_keeps_the_previous_behaviour(tmp_path):
         assert conn.execute("SELECT count(*) FROM account").fetchone()[0] == 9
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# which names get withheld in the first place (#1129 review)
+# ---------------------------------------------------------------------------
+
+
+def _blocked(server_tables, authorized, server_only=frozenset()):
+    from cli.lib.pull import _blocked_snapshot_names
+
+    return _blocked_snapshot_names(server_tables, authorized, set(server_only))
+
+
+def test_a_remote_table_id_is_never_withheld():
+    """`agnes snapshot create <remote_id>` with no `--as` names the snapshot
+    after its source table — the flow CLAUDE.md documents as the primary path
+    for large remote tables. `authorized_names` carries data-package names
+    only, so a naive "not authorized" sweep withheld EVERY remote id and broke
+    that flow permanently on the next pull."""
+    server_tables = {
+        "web_sessions": {"query_mode": "remote"},
+        "orders": {"query_mode": "local"},
+    }
+    # analyst's packages grant neither
+    assert _blocked(server_tables, authorized=set()) == {"orders"}
+
+
+def test_a_deauthorized_local_table_id_is_still_withheld():
+    """The original fix must survive: a local table that left the analyst's
+    stack had its parquet pruned, so the name would otherwise resolve to stale
+    snapshot rows."""
+    server_tables = {"orders": {"query_mode": "local"}}
+    assert _blocked(server_tables, authorized=set()) == {"orders"}
+
+
+def test_materialized_tables_behave_like_local():
+    server_tables = {"kpi_daily": {"query_mode": "materialized"}}
+    assert _blocked(server_tables, authorized=set()) == {"kpi_daily"}
+
+
+def test_a_missing_query_mode_defaults_to_local():
+    """Pre-v49 manifests omit the key; treating the default as remote would
+    silently stop withholding de-authorized ids."""
+    assert _blocked({"orders": {}}, authorized=set()) == {"orders"}
+
+
+def test_server_only_is_withheld_whatever_its_query_mode():
+    """server_only means the parquet must leave the laptop, so the name really
+    did stop resolving — including for a remote-mode row."""
+    server_tables = {"big": {"query_mode": "remote", "server_only": True}}
+    assert _blocked(server_tables, authorized={"big"}, server_only={"big"}) == {"big"}
+
+
+def test_no_authorization_filter_withholds_nothing_extra():
+    """`authorized_names is None` — a pre-v49 server sends no package data, so
+    there is nothing to judge de-authorization against."""
+    server_tables = {"orders": {"query_mode": "local"}}
+    assert _blocked(server_tables, authorized=None) == set()

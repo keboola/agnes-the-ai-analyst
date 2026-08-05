@@ -471,9 +471,7 @@ def _override_server_env(server_url: str, token: str) -> Iterator[None]:
             os.environ["AGNES_TOKEN"] = prev_token
 
 
-def _diff_parts(
-    server_parts: list[dict], local_parts: dict, table_dir: Path
-) -> tuple[list[dict], set[str]]:
+def _diff_parts(server_parts: list[dict], local_parts: dict, table_dir: Path) -> tuple[list[dict], set[str]]:
     """Compute ``(fetch, prune)`` for a partitioned table.
 
     ``fetch`` = server part dicts whose local hash differs OR whose file is
@@ -484,9 +482,7 @@ def _diff_parts(
     """
     server_by_path = {p["path"]: p for p in server_parts}
     fetch = [
-        p
-        for path, p in server_by_path.items()
-        if local_parts.get(path) != p["hash"] or not (table_dir / path).exists()
+        p for path, p in server_by_path.items() if local_parts.get(path) != p["hash"] or not (table_dir / path).exists()
     ]
     on_disk: set[str] = set()
     if table_dir.is_dir():
@@ -1054,9 +1050,9 @@ def run_pull(
         # set would withhold the name on the pull that removes the file and
         # release it on every pull after that, which is worse than not fixing
         # it — the behaviour would depend on how many times you had pulled.
-        blocked_snapshot_names = set(server_only_names)
-        if authorized_names is not None:
-            blocked_snapshot_names |= {tid for tid in server_tables if tid not in authorized_names}
+        blocked_snapshot_names = _blocked_snapshot_names(
+            server_tables, authorized_names, server_only_names
+        )
         if parquet_dir.exists() and (authorized_names is not None or server_only_names):
             for pq_file in sorted(parquet_dir.glob("*.parquet")):
                 stem = pq_file.stem
@@ -1400,9 +1396,46 @@ def _is_valid_parquet(path: Path) -> bool:
         return False
 
 
-def _rebuild_duckdb_views(
-    workspace: Path, parquet_dir: Path, blocked_names: set[str] | None = None
-) -> list[str]:
+def _blocked_snapshot_names(
+    server_tables: dict,
+    authorized_names: "set[str] | None",
+    server_only_names: "set[str]",
+) -> "set[str]":
+    """Names a snapshot view must NOT take on this pull.
+
+    Only ids whose LOCAL resolution was actually revoked belong here. The
+    prune makes a de-authorized or ``server_only`` id unresolvable by deleting
+    its parquet, which frees the name — and ``_register_snapshot_views`` would
+    then hand it to ``user/snapshots/<table_id>.parquet`` (what ``agnes
+    snapshot create`` writes with no ``--as``), so a query for that table would
+    answer from stale snapshot rows instead of erroring.
+
+    A ``query_mode='remote'`` table is deliberately NOT swept in: the download
+    loop skips it, so it never had a parquet here, its name was never locally
+    resolvable, and there are no stale rows to serve. Including it broke the
+    opposite way — ``authorized_names`` carries data-package names only
+    (``_build_direct_tables_section`` always returns ``[]``) while
+    ``server_tables`` lists every accessible table, so EVERY remote id was
+    withheld, permanently disabling the snapshot-then-query flow CLAUDE.md
+    documents as the primary path for large remote tables (#1129 review).
+
+    Derived from the CURRENT authorization state, deliberately NOT from what
+    this run happened to prune: the prune loops only see parquets that still
+    exist, so they fire once and never again. A prune-derived set would
+    withhold the name on the pull that removes the file and release it on
+    every pull after — behaviour depending on how many times you had pulled.
+    """
+    blocked = set(server_only_names)
+    if authorized_names is not None:
+        blocked |= {
+            tid
+            for tid, info in server_tables.items()
+            if tid not in authorized_names and (info.get("query_mode") or "local") != "remote"
+        }
+    return blocked
+
+
+def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set[str] | None = None) -> list[str]:
     """Recreate DuckDB views from downloaded parquets. Preserve user tables.
 
     The DuckDB file at `<workspace>/user/duckdb/analytics.duckdb` is
