@@ -22,6 +22,53 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.78.3] - 2026-08-05
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- **Marketplace plugin names are validated as single path segments.** A plugin
+  `name` in a registered marketplace's `.claude-plugin/marketplace.json` is used
+  verbatim as the `plugins/<name>` directory segment, and that directory is read
+  wholesale into the served `marketplace.zip` / `marketplace.git` tree. Names are
+  now rejected at manifest ingest (`read_plugins`) and every constructed path is
+  contained to the marketplaces root — the two layers the security playbook §6
+  requires, and which the sibling asset-mirror path already had. Three call sites
+  build that path (`src/marketplace_filter.py` ×2 and the v2 skills endpoint,
+  whose output goes straight into an HTTP response body); all three now share one
+  rule, `src.marketplace.is_safe_plugin_name`, so they cannot drift apart again.
+- **Symlinked files in plugin content are no longer packaged.** The ZIP backend,
+  the git backend, the ETag walk and the Store-bundle walk all traversed plugin
+  directories with a bare `rglob` and read through symlinks; the cowork packager
+  had guarded this since it shipped. All now share
+  `marketplace_filter.escapes_base`. A plugin directory that is itself a symlink
+  is stopped by the containment layer above, before any walk begins.
+- **The marketplace sync credential no longer touches argv or disk.** Server-side
+  sync built `https://x-access-token:<PAT>@host/…` and handed it to `git clone` /
+  `git remote set-url`, exposing the token in `/proc/<pid>/cmdline` and writing it
+  in plaintext into `${DATA_DIR}/marketplaces/<slug>/.git/config`, where it
+  persisted into backups and volume snapshots. The initial-workspace template sync
+  used the same helper and had the same exposure. Both now pass the token through
+  a per-invocation, **host-scoped** `credential.helper` reading `$AGNES_TOKEN`
+  from the subprocess environment (security playbook §7);
+  `agnes refresh-marketplace` gains the same host scoping, so a redirect can no
+  longer draw the workspace PAT to a third-party host. **Existing `.git/config`
+  files are scrubbed automatically on the next sync** — including for rows whose
+  sync currently fails validation. Operators who consider the token exposed
+  should rotate it.
+- Hardened `plugin.json` component-key resolution in the ZIP packager: a
+  curator-supplied path is now contained to the plugin directory instead of being
+  joined and walked as given.
+
 ## [0.78.2] - 2026-08-05
 
 ### Added
