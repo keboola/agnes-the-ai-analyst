@@ -28,10 +28,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   wholesale into the served `marketplace.zip` / `marketplace.git` tree. Names are
   now rejected at manifest ingest (`read_plugins`) and every constructed path is
   contained to the marketplaces root — the two layers the security playbook §6
-  requires, and which the sibling asset-mirror path already had. Three call sites
-  build that path (`src/marketplace_filter.py` ×2 and the v2 skills endpoint,
-  whose output goes straight into an HTTP response body); all three now share one
-  rule, `src.marketplace.is_safe_plugin_name`, so they cannot drift apart again.
+  requires, and which the sibling asset-mirror path already had. Every call site
+  that builds that path now shares one rule (`src.marketplace.is_safe_plugin_name`,
+  applied via `_reject_unsafe_segment`) so they cannot drift apart again — the two
+  in `src/marketplace_filter.py`, the v2 skills endpoint whose output goes straight
+  into an HTTP response body, and the curated detail / skill-detail / agent-detail
+  endpoints plus their shared parent-fields helper, which relied on `_safe_join`
+  re-anchoring on an already-escaped plugin root.
 - **Symlinked files in plugin content are no longer packaged.** The ZIP backend,
   the git backend, the ETag walk and the Store-bundle walk all traversed plugin
   directories with a bare `rglob` and read through symlinks; the cowork packager

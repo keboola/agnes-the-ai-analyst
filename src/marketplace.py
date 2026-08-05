@@ -317,7 +317,21 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
                 clone_args += [url, str(target)]
                 _run_git(clone_args, url=url, token=token)
         else:
-            # `remote set-url` already ran above, credential-free.
+            # `remote set-url` ran above — but best-effort, so it may have been
+            # skipped by a stale .git/config.lock, a read-only config after a
+            # volume restore, or a missing `origin`. Everything below fetches
+            # from `origin`, so an unverified assumption here means the sync can
+            # report success against the PREVIOUS repository — or against an
+            # origin that still embeds a PAT, defeating the very scrub this
+            # release advertises. Confirm it, and fail loudly if not
+            # (Devin Review on #1180).
+            current = _run_git(["remote", "get-url", "origin"], cwd=target).stdout.strip()
+            if current != url:
+                raise RuntimeError(
+                    f"git {action} refused: origin is {_redact(current, token)!r}, not the configured "
+                    f"{_redact(url, token)!r} — could not re-point the checkout, so a fetch here would "
+                    "silently pull from the wrong remote"
+                )
             if pinned_sha:
                 _checkout_pinned_sha(target, pinned_sha, url=url, token=token)
             else:

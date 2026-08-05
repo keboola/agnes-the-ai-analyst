@@ -52,7 +52,13 @@ FIXED_ENCODING = b"UTF-8"
 # dirs/versions but NOT the packaging logic — so a code change like the
 # plugin.json sanitization would otherwise keep serving a stale cached repo
 # after deploy. Folding this version into the cache key forces a rebuild.
-_TREE_FORMAT_VERSION = 2
+#   v3: symlinked files dropped from the walk, and the curator-supplied
+#       component path contained to the plugin dir in _sanitize_served_plugin_json
+#       / _dir_has_real_files. The symlink half shifts the etag too, but the
+#       containment half touches no hashed byte — so without this bump a repo
+#       cached before the deploy keeps being served under the old rules
+#       (Devin Review on #1180).
+_TREE_FORMAT_VERSION = 3
 
 
 def cache_dir() -> Path:
