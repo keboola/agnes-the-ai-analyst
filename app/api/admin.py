@@ -1237,7 +1237,7 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
 
     out = []
     for flag in FEATURE_FLAGS:
-        if flag.name == "chat":
+        if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)
         else:
             effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
@@ -1259,25 +1259,35 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
     return out
 
 
+#: Registry flags whose runtime value comes from ``load_chat_config`` rather
+#: than ``feature_enabled``, mapped to the ChatConfig attribute holding it.
+#: They need their own view because the two read DIFFERENT sources — the chat
+#: config parses the writable overlay only, ``feature_enabled`` the merged
+#: static+overlay — so resolving them the ordinary way lets the panel report a
+#: value the running chat gate does not use (Devin Review on #1146/#1157).
+_CHAT_RUNTIME_FLAGS = {"chat": "enabled", "chat_approvals": "approvals_enabled"}
+
+
 def _chat_flag_runtime_view(flag) -> tuple:
-    """(effective, source) for the ``chat`` flag, resolved from the same
-    overlay-only yaml source the runtime uses (see ``_feature_flags_inventory``
-    docstring). ``load_chat_config`` already applies the ``AGNES_CHAT_ENABLED``
-    env override, so ``effective`` matches what a restart would produce; the
-    source label probes the overlay file for an explicit ``chat.enabled`` key.
+    """(effective, source) for a flag the chat runtime resolves itself.
+
+    ``load_chat_config`` already applies the flag's env override, so
+    ``effective`` matches what a restart would produce; the source label probes
+    the overlay file for the explicit key.
     """
     import yaml
 
     from app.chat.config import load_chat_config
     from app.secrets import _state_dir
 
+    key = _CHAT_RUNTIME_FLAGS[flag.name]
     overlay_path = _state_dir() / "instance.yaml"
-    effective = load_chat_config(overlay_path).enabled
+    effective = getattr(load_chat_config(overlay_path), key)
     if os.environ.get(flag.env_var) is not None:
         return effective, "env"
     try:
         raw = yaml.safe_load(overlay_path.read_text()) or {}
-        has_key = "enabled" in ((raw.get("chat") or {}) if isinstance(raw, dict) else {})
+        has_key = key in ((raw.get("chat") or {}) if isinstance(raw, dict) else {})
     except Exception:
         has_key = False
     return effective, ("config" if has_key else "default")

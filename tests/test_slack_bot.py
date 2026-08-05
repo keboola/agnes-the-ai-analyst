@@ -5,7 +5,6 @@ exist in src/db.py.  The real equivalents are:
   - ``duckdb.connect(":memory:")``   to open an in-memory connection
   - ``_ensure_schema(conn)``         to migrate it to the current version
 """
-from pathlib import Path
 
 import duckdb
 import pytest
@@ -27,9 +26,7 @@ def _shared_slack_db(monkeypatch):
     binding lookup/redeem on the (default DuckDB) backend."""
     shared = duckdb.connect(":memory:")
     _ensure_schema(shared)
-    monkeypatch.setattr(
-        "tests.test_slack_bot.get_system_db", lambda: shared, raising=False
-    )
+    monkeypatch.setattr("tests.test_slack_bot.get_system_db", lambda: shared, raising=False)
     monkeypatch.setattr("src.repositories.get_system_db", lambda: shared)
     yield shared
 
@@ -57,18 +54,21 @@ def test_redeem_rejects_bad_code(conn):
 
 def test_redeem_rejects_expired(conn, monkeypatch):
     import services.slack_bot.binding as b
+
     monkeypatch.setattr(b, "_CODE_TTL_SECONDS", -1)
     code = issue_verification_code(conn, slack_user_id="U123")
     assert redeem_verification_code(conn, user_email="u@x", code=code) is False
 
 
 class _RepoStub:
-    def __init__(self, conn): self._conn = conn
+    def __init__(self, conn):
+        self._conn = conn
 
     def get_slack_thread_session(self, slack_channel_id, slack_thread_ts):
         """Minimal impl: look up a chat_sessions row by channel+thread_ts."""
         from app.chat.types import ChatSession, Surface
         from datetime import datetime
+
         row = self._conn.execute(
             "SELECT id, user_email, surface, slack_channel_id, slack_thread_ts, "
             "title, started_at, last_message_at, message_count, archived "
@@ -80,11 +80,15 @@ class _RepoStub:
         if not row:
             return None
         return ChatSession(
-            id=row[0], user_email=row[1],
+            id=row[0],
+            user_email=row[1],
             surface=Surface(row[2]),
-            slack_channel_id=row[3], slack_thread_ts=row[4],
-            title=row[5], started_at=row[6] or datetime.now(),
-            last_message_at=row[7], message_count=row[8] or 0,
+            slack_channel_id=row[3],
+            slack_thread_ts=row[4],
+            title=row[5],
+            started_at=row[6] or datetime.now(),
+            last_message_at=row[7],
+            message_count=row[8] or 0,
             archived=bool(row[9]),
         )
 
@@ -92,6 +96,7 @@ class _RepoStub:
 # ---------------------------------------------------------------------------
 # SlackSinkBridge unit tests (architect finding #4)
 # ---------------------------------------------------------------------------
+
 
 def test_slack_sink_forwards_assistant_message(monkeypatch):
     """assistant_message frames hit send_thread_reply with the content body."""
@@ -114,6 +119,93 @@ def test_slack_sink_forwards_assistant_message(monkeypatch):
 
     asyncio.run(_run())
     assert sent == [("D1", "1.1", "hello")]
+
+
+def test_slack_sink_nudges_to_the_web_for_an_unattended_approval(monkeypatch):
+    """Slack renders no approve/deny card, so an unattended approval_request
+    posts the reason plus the Continue-on-web button — otherwise the turn
+    just stalls silently until the gate times out. The matching
+    approval_resolved closes the loop."""
+    import asyncio
+    from services.slack_bot import sink as sink_mod
+
+    with_blocks: list[tuple[str, list]] = []
+    plain: list[str] = []
+
+    async def fake_blocks(ch, ts, text, blocks):
+        with_blocks.append((text, blocks))
+        return "9.9"
+
+    async def fake_send(ch, ts, text):
+        plain.append(text)
+
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_blocks)
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(
+            channel="D1", thread_ts="1.1", chat_id="chat_1", web_base="https://agnes.example.com"
+        )
+        await bridge.send_json(
+            {
+                "type": "approval_request",
+                "request_id": "appr-1",
+                "command": "agnes admin user delete bob@x ``` <https://evil.test|click here>",
+                "reason": "admin mutation",
+                "attended": False,
+            }
+        )
+        await bridge.send_json({"type": "approval_resolved", "request_id": "appr-1", "decision": "allow"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert len(with_blocks) == 1
+    text, blocks = with_blocks[0]
+    assert "agnes admin user delete bob@x" in text and "admin mutation" in text
+    # The agent-authored command cannot close the code fence and turn the
+    # rest of the nudge into live mrkdwn.
+    assert text.count("```") == 2
+    assert blocks[-1]["elements"][0]["url"] == "https://agnes.example.com/chat?session=chat_1"
+    assert plain == ["_(approved)_"]
+
+
+def test_slack_sink_stays_quiet_when_a_web_client_holds_the_card(monkeypatch):
+    """`attended` means a browser is already showing the approve/deny
+    buttons — nagging the Slack thread would be noise, and the resolution
+    then stays silent too."""
+    import asyncio
+    from services.slack_bot import sink as sink_mod
+
+    posts: list[str] = []
+
+    async def fake_send(ch, ts, text):
+        posts.append(text)
+
+    async def fake_blocks(ch, ts, text, blocks):
+        posts.append(text)
+        return "9.9"
+
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_blocks)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(channel="D1", thread_ts="1.1", chat_id="chat_1", web_base="https://x.test")
+        await bridge.send_json({"type": "approval_request", "request_id": "appr-2", "attended": True})
+        await bridge.send_json({"type": "approval_resolved", "request_id": "appr-2", "decision": "deny"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert posts == []
+
+
+def test_slack_sink_is_not_an_approval_client():
+    """The bridge must never be counted as a sink that can answer an
+    approval — it is push-only, so ChatManager has to keep looking for a
+    web client (or auto-deny an agent-API session)."""
+    from services.slack_bot import sink as sink_mod
+
+    bridge = sink_mod.SlackSinkBridge(channel="D1", thread_ts="1.1")
+    assert getattr(bridge, "supports_approvals", False) is False
 
 
 def test_slack_sink_forwards_error_and_cancelled(monkeypatch):
@@ -146,6 +238,7 @@ def test_slack_sink_forwards_error_and_cancelled(monkeypatch):
 # _handle_dm tests — verification code + assistant-back pump
 # ---------------------------------------------------------------------------
 
+
 def _build_slack_app_state():
     """Build an app-shaped object with .state.chat_repo + .state.chat_manager.
 
@@ -162,9 +255,7 @@ def _build_slack_app_state():
 
     conn = get_system_db()
     _ensure_schema(conn)
-    conn.execute(
-        "INSERT INTO users(id, email, name) VALUES ('uid1', 'bob@example.com', 'Bob')"
-    )
+    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid1', 'bob@example.com', 'Bob')")
     repo = ChatRepository(conn)
 
     created_sessions: list[ChatSession] = []
@@ -211,9 +302,7 @@ def _build_slack_app_state():
         _sent=sent_msgs,
     )
 
-    state = SimpleNamespace(
-        chat_repo=repo, chat_manager=mgr, public_url="https://agnes.example.com"
-    )
+    state = SimpleNamespace(chat_repo=repo, chat_manager=mgr, public_url="https://agnes.example.com")
     app = SimpleNamespace(state=state)
     return app, repo, mgr, conn
 
@@ -241,18 +330,19 @@ def test_slack_dm_unbound_user_gets_verification_code(monkeypatch):
     _ensure_table(conn)
 
     event = {
-        "type": "message", "channel_type": "im", "channel": "D2",
-        "user": "U999", "ts": "2.2", "text": "hello",
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D2",
+        "user": "U999",
+        "ts": "2.2",
+        "text": "hello",
     }
 
     asyncio.run(ev.dispatch_event(app, event))
 
     assert sent, "bot must reply to the unbound user"
     # Bot now replies with a one-click /slack/bind?code= magic link.
-    assert any(
-        re.search(r"/slack/bind\?code=\d{6}", text)
-        for _ch, _ts, text in sent
-    ), sent
+    assert any(re.search(r"/slack/bind\?code=\d{6}", text) for _ch, _ts, text in sent), sent
 
 
 def test_slack_dm_bound_user_attaches_sink_and_sends(monkeypatch):
@@ -272,6 +362,7 @@ def test_slack_dm_bound_user_attaches_sink_and_sends(monkeypatch):
     # plumbing, not the gate, so grant access. (Default-deny is covered by
     # test_chat_api::test_chat_requires_rbac_grant.)
     import app.auth.access as _access
+
     monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
 
     app, _repo, mgr, conn = _build_slack_app_state()
@@ -280,13 +371,15 @@ def test_slack_dm_bound_user_attaches_sink_and_sends(monkeypatch):
     from services.slack_bot.binding import _ensure_table
 
     _ensure_table(conn)
-    conn.execute(
-        "UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'"
-    )
+    conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
 
     event = {
-        "type": "message", "channel_type": "im", "channel": "D1",
-        "user": "U123", "ts": "1.1", "text": "hello agnes",
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D1",
+        "user": "U123",
+        "ts": "1.1",
+        "text": "hello agnes",
     }
 
     asyncio.run(ev.dispatch_event(app, event))
@@ -299,6 +392,7 @@ def test_slack_dm_bound_user_attaches_sink_and_sends(monkeypatch):
     # The bridge is the second tuple element — it should be a
     # SlackSinkBridge instance.
     from services.slack_bot.sink import SlackSinkBridge
+
     assert isinstance(mgr._attached[0][1], SlackSinkBridge)
     assert mgr._sent == [("sess-1", "hello agnes")]
 
@@ -319,27 +413,32 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
 
     monkeypatch.setattr(ev, "send_thread_reply", fake_send)
     monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+
     # Now that _handle_dm wires chat_id, the sink uses post_thread_reply_with_blocks
     # for the first assistant turn. Capture those too.
     async def fake_post_blocks(ch, ts, text, blocks):
         sent.append((ch, ts, text))
         return "msg-1"
+
     monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
     # Grant chat access — see note in the sibling bound-user test.
     import app.auth.access as _access
+
     monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
 
     app, _repo, _mgr, conn = _build_slack_app_state()
     from services.slack_bot.binding import _ensure_table
 
     _ensure_table(conn)
-    conn.execute(
-        "UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'"
-    )
+    conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
 
     event = {
-        "type": "message", "channel_type": "im", "channel": "D1",
-        "user": "U123", "ts": "1.1", "text": "hello agnes",
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D1",
+        "user": "U123",
+        "ts": "1.1",
+        "text": "hello agnes",
     }
 
     async def _run():
@@ -350,15 +449,13 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
 
     asyncio.run(_run())
 
-    assert any(
-        text == "echo: hello agnes" and ch == "D1"
-        for ch, _ts, text in sent
-    ), sent
+    assert any(text == "echo: hello agnes" and ch == "D1" for ch, _ts, text in sent), sent
 
 
 class TestSinkBridgeChatId:
     def test_chat_id_stored_and_optional(self):
         from services.slack_bot.sink import SlackSinkBridge
+
         b1 = SlackSinkBridge(channel="C1", thread_ts="111.0", chat_id="sess_1")
         assert b1._chat_id == "sess_1"
         b2 = SlackSinkBridge(channel="C1", thread_ts="111.0")
@@ -369,15 +466,23 @@ class TestResolveBotUserId:
     def test_returns_user_id_on_ok(self, monkeypatch):
         import asyncio
         import services.slack_bot.identity as ident
+
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
 
         class _Resp:
-            def json(self): return {"ok": True, "user_id": "U07BOT"}
+            def json(self):
+                return {"ok": True, "user_id": "U07BOT"}
 
         class _FakeClient:
-            def __init__(self, *a, **k): pass
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): return False
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
             async def post(self, url, headers=None):
                 assert url.endswith("/auth.test")
                 return _Resp()
@@ -388,16 +493,25 @@ class TestResolveBotUserId:
     def test_returns_none_on_not_ok(self, monkeypatch):
         import asyncio
         import services.slack_bot.identity as ident
+
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
 
         class _Resp:
-            def json(self): return {"ok": False, "error": "invalid_auth"}
+            def json(self):
+                return {"ok": False, "error": "invalid_auth"}
 
         class _FakeClient:
-            def __init__(self, *a, **k): pass
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): return False
-            async def post(self, url, headers=None): return _Resp()
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None):
+                return _Resp()
 
         monkeypatch.setattr(ident.httpx, "AsyncClient", _FakeClient)
         assert asyncio.run(ident.resolve_bot_user_id()) is None
@@ -405,6 +519,7 @@ class TestResolveBotUserId:
     def test_returns_none_without_token(self, monkeypatch):
         import asyncio
         import services.slack_bot.identity as ident
+
         monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
         assert asyncio.run(ident.resolve_bot_user_id()) is None
 
@@ -421,9 +536,15 @@ class TestSendEphemeralToUser:
             pass
 
         class _FakeClient:
-            def __init__(self, *a, **k): pass
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): return False
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
             async def post(self, url, headers=None, json=None):
                 captured["url"] = url
                 captured["headers"] = headers
@@ -439,6 +560,7 @@ class TestSendEphemeralToUser:
     def test_no_token_is_noop(self, monkeypatch):
         import asyncio
         import services.slack_bot.sender as sender_mod
+
         monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
         # Must not raise even though no HTTP client is patched.
         asyncio.run(sender_mod.send_ephemeral_to_user("C1", "U1", "nope"))
@@ -447,33 +569,37 @@ class TestSendEphemeralToUser:
 class TestStripBotMention:
     def test_strips_leading_mention(self):
         from services.slack_bot.events import _strip_bot_mention
+
         assert _strip_bot_mention("<@U07BOT> what is revenue?", "U07BOT") == "what is revenue?"
 
     def test_strips_mid_text_mention(self):
         from services.slack_bot.events import _strip_bot_mention
+
         assert _strip_bot_mention("hey <@U07BOT> hello", "U07BOT") == "hey  hello".strip()
 
     def test_no_bot_id_returns_trimmed(self):
         from services.slack_bot.events import _strip_bot_mention
+
         assert _strip_bot_mention("  hello  ", None) == "hello"
 
     def test_handles_angle_with_label(self):
         from services.slack_bot.events import _strip_bot_mention
+
         assert _strip_bot_mention("<@U07BOT|agnes> hi", "U07BOT") == "hi"
 
 
 class TestChannelAllowlist:
     def _everyone_gid(self, conn):
-        return conn.execute(
-            "SELECT id FROM user_groups WHERE name = 'Everyone'"
-        ).fetchone()[0]
+        return conn.execute("SELECT id FROM user_groups WHERE name = 'Everyone'").fetchone()[0]
 
     def test_default_deny(self, conn):
         from services.slack_bot.binding import is_channel_allowlisted
+
         assert is_channel_allowlisted(conn, "C_NEW") is False
 
     def test_true_after_everyone_grant(self, conn):
         from services.slack_bot.binding import is_channel_allowlisted
+
         gid = self._everyone_gid(conn)
         conn.execute(
             "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
@@ -486,9 +612,8 @@ class TestChannelAllowlist:
         """A grant to the Admin group (not Everyone) must NOT allowlist —
         proves we do not use can_access (no admin short-circuit)."""
         from services.slack_bot.binding import is_channel_allowlisted
-        admin_gid = conn.execute(
-            "SELECT id FROM user_groups WHERE name = 'Admin'"
-        ).fetchone()[0]
+
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()[0]
         conn.execute(
             "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
             "VALUES ('rg_admin', ?, 'slack_channel', 'C_ADMIN')",
@@ -499,6 +624,7 @@ class TestChannelAllowlist:
 
 class _FakeApp:
     """Mimics the bits of `app` _handle_mention touches."""
+
     class _State:
         pass
 
@@ -523,6 +649,7 @@ class _FakeMgr:
     async def create_session(self, **kw):
         from app.chat.types import ChatSession, Surface
         from datetime import datetime
+
         sess = ChatSession(
             id="sess_new",
             user_email=kw["user_email"],
@@ -552,9 +679,11 @@ class _FakeMgr:
 def test_mention_bot_loop_guard_returns_silently(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
+
     posts = []
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: posts.append(a))
-    conn = get_system_db(); _ensure_schema(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"bot_id": "B1", "channel": "C1", "ts": "1.0", "user": "U07BOT"}))
@@ -564,9 +693,11 @@ def test_mention_bot_loop_guard_returns_silently(monkeypatch):
 def test_mention_self_user_loop_guard_returns_silently(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
+
     posts = []
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: posts.append(a))
-    conn = get_system_db(); _ensure_schema(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"channel": "C1", "ts": "1.0", "user": "U07BOT", "text": "<@U07BOT> hi"}))
@@ -577,10 +708,16 @@ def test_mention_not_allowlisted_ephemeral_deny(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
     from services.slack_bot.binding import _ensure_table
+
     posts = []
-    async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
+
+    async def _fake_ep(ch, u, txt):
+        posts.append((ch, u, txt))
+
     monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
-    conn = get_system_db(); _ensure_schema(conn); _ensure_table(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _ensure_table(conn)
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"channel": "C_X", "ts": "1.0", "user": "U1", "text": "<@U07BOT> hi"}))
@@ -592,14 +729,22 @@ def test_mention_unbound_user_gets_code(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
     from services.slack_bot.binding import _ensure_table
+
     posts = []
-    async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
+
+    async def _fake_ep(ch, u, txt):
+        posts.append((ch, u, txt))
+
     monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
-    conn = get_system_db(); _ensure_schema(conn); _ensure_table(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
+    _ensure_table(conn)
     gid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
     conn.execute(
         "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
-        "VALUES ('rg1', ?, 'slack_channel', 'C_OK')", [gid])
+        "VALUES ('rg1', ?, 'slack_channel', 'C_OK')",
+        [gid],
+    )
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "1.0", "user": "U_NEW", "text": "<@U07BOT> hi"}))
@@ -611,6 +756,7 @@ def _seed_bound_chat_user(conn, *, email="u@x", slack_id="U_OK"):
     """Seed a user bound to slack_id, in Everyone, with a CHAT grant.
     Primes the lazy users.slack_user_id column first (binding._ensure_table)."""
     from services.slack_bot.binding import _ensure_table
+
     _ensure_table(conn)  # adds users.slack_user_id if missing
     uid = f"uid_{slack_id}"
     conn.execute("DELETE FROM users WHERE email = ?", [email])
@@ -625,22 +771,27 @@ def _seed_bound_chat_user(conn, *, email="u@x", slack_id="U_OK"):
     )
     conn.execute(
         "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
-        "VALUES ('rg_chat', ?, 'chat', 'chat') ON CONFLICT DO NOTHING", [egid])
+        "VALUES ('rg_chat', ?, 'chat', 'chat') ON CONFLICT DO NOTHING",
+        [egid],
+    )
     return uid
 
 
 def _allow_channel(conn, channel="C_OK"):
     egid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
     conn.execute(
-        "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
-        "VALUES ('rg_ch', ?, 'slack_channel', ?)", [egid, channel])
+        "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) VALUES ('rg_ch', ?, 'slack_channel', ?)",
+        [egid, channel],
+    )
 
 
 def test_mention_happy_path_creates_thread_and_sends(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
+
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
-    conn = get_system_db(); _ensure_schema(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
     mgr = _FakeMgr()
@@ -663,10 +814,15 @@ def test_mention_happy_path_creates_thread_and_sends(monkeypatch):
 def test_mention_ownership_reject_ephemeral(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
+
     posts = []
-    async def _fake_ep(ch, u, txt): posts.append(txt)
+
+    async def _fake_ep(ch, u, txt):
+        posts.append(txt)
+
     monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
-    conn = get_system_db(); _ensure_schema(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
     _seed_bound_chat_user(conn, email="owner@x", slack_id="U_OWNER")
     _seed_bound_chat_user(conn, email="other@x", slack_id="U_OTHER")
     _allow_channel(conn)
@@ -691,8 +847,10 @@ def test_mention_same_thread_reuses_session(monkeypatch):
     only enforces the owner check.)"""
     import asyncio
     import services.slack_bot.events as ev
+
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
-    conn = get_system_db(); _ensure_schema(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
     # existing session owned by the SAME user (column is started_at)
@@ -719,8 +877,10 @@ def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):
     background tasks.)"""
     import asyncio
     import services.slack_bot.events as ev
+
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
-    conn = get_system_db(); _ensure_schema(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
 
@@ -739,6 +899,7 @@ def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):
             ev._handle_mention(app, {"channel": "C_OK", "ts": "9.4", "user": "U_OK", "text": "<@U07BOT> q"}),
             timeout=2.0,
         )
+
     asyncio.run(_run())
     assert mgr.sent  # handler reached step 9 despite attach blocking
 
@@ -755,18 +916,26 @@ def test_slack_app_mention_dispatches(monkeypatch):
     import services.slack_bot.events as ev
 
     posts = []
-    async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
+
+    async def _fake_ep(ch, u, txt):
+        posts.append((ch, u, txt))
+
     monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
 
-    conn = get_system_db(); _ensure_schema(conn)
+    conn = get_system_db()
+    _ensure_schema(conn)
     from services.slack_bot.binding import _ensure_table
+
     _ensure_table(conn)
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
 
     event = {
-        "type": "app_mention", "channel": "C1", "thread_ts": "1.1",
-        "user": "U999", "text": "<@U07BOT> hello",
+        "type": "app_mention",
+        "channel": "C1",
+        "thread_ts": "1.1",
+        "user": "U999",
+        "text": "<@U07BOT> hello",
     }
 
     asyncio.run(ev.dispatch_event(app=app, event=event))
@@ -791,6 +960,7 @@ def test_slack_dm_posts_starting_up_when_session_never_lives(monkeypatch):
 
     monkeypatch.setattr(ev, "send_thread_reply", fake_send)
     import app.auth.access as _access
+
     monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
 
     app, _repo, mgr, conn = _build_slack_app_state()
@@ -806,10 +976,42 @@ def test_slack_dm_posts_starting_up_when_session_never_lives(monkeypatch):
     conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
 
     event = {
-        "type": "message", "channel_type": "im", "channel": "D1",
-        "user": "U123", "ts": "1.1", "text": "hello agnes",
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D1",
+        "user": "U123",
+        "ts": "1.1",
+        "text": "hello agnes",
     }
     asyncio.run(ev.dispatch_event(app, event))
 
     assert mgr._sent == [], "must not inject the turn when the session never became live"
     assert any("starting up" in t for _ch, _ts, t in sent), sent
+
+
+def test_the_nudge_does_not_promise_a_web_link_it_cannot_build(monkeypatch):
+    """`continue_on_web_block` returns None without a configured public URL, so
+    the nudge fell back to a plain reply still telling the user to "open the
+    chat on the web" — an instruction they cannot act on, followed by the full
+    approval timeout. Before this branch a Slack-origin ask was denied
+    instantly, so that wording is a regression for that deployment shape
+    (Devin Review on #1157)."""
+    import asyncio
+
+    from services.slack_bot.sink import SlackSinkBridge
+
+    sent = []
+
+    async def _fake_reply(channel, thread_ts, text):
+        sent.append(text)
+
+    import services.slack_bot.sink as sink_mod
+
+    monkeypatch.setattr(sink_mod, "send_thread_reply", _fake_reply)
+
+    bridge = SlackSinkBridge(channel="C1", thread_ts="1.0", chat_id="chat_x", owner="u@x", web_base="")
+    asyncio.run(bridge._post_approval_request({"request_id": "a1", "command": "rm -rf /tmp/x", "reason": "why"}))
+
+    assert sent, "no reply was posted"
+    assert "open the chat on the web" not in sent[0].lower(), "promised a link it cannot build"
+    assert "PUBLIC_URL" in sent[0], "should name the knob that actually feeds this bridge"

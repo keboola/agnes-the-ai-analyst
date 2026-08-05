@@ -194,6 +194,16 @@ def _stash_user(request: Optional[Request], user: dict) -> dict:
     the auth dependency. Tolerant of ``None`` requests (background paths
     that call this helper from non-HTTP contexts).
     """
+    # Tell the elevation gate whose pause this request carries: the
+    # middleware stamps the flag before authentication and cannot know the
+    # caller, and can_access is also asked about OTHER users (Devin Review
+    # on #1146).
+    try:
+        from app.auth.elevation import set_caller_for_request
+
+        set_caller_for_request(str(user.get("id")) if user else None)
+    except Exception:
+        pass
     if request is not None:
         try:
             request.state.user = user

@@ -67,3 +67,27 @@ def test_upsert_get_has_delete_roundtrip(repo):
     assert repo.get("c1") == "tok-secret-2"
     repo.delete("c1")
     assert repo.has("c1") is False
+
+
+def test_get_returns_none_on_decrypt_failure(repo, monkeypatch, caplog):
+    """Vault key rotated → ``get()`` reads as absent (never raises) on either
+    backend, and the WARNING names the column. Both repos read through
+    ``app.secrets_vault.decrypt_optional``; the ``ciphertext`` column is TEXT,
+    so the repos encode before handing the token over — a regression there
+    would silently turn every readable secret into ``None``, which this test
+    catches via the positive round-trip above plus the log assertion here."""
+    import logging
+
+    from cryptography.fernet import Fernet
+
+    repo.upsert("c-rot", "encrypted-under-key-a")
+    assert repo.get("c-rot") == "encrypted-under-key-a"
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode("ascii"))
+    with caplog.at_level(logging.WARNING, logger="app.secrets_vault"):
+        assert repo.get("c-rot") is None
+    # Row survives — only unreadable.
+    assert repo.has("c-rot") is True
+    assert "connection_secrets.ciphertext[c-rot]" in caplog.text, (
+        f"decrypt warning does not identify the column: {caplog.text!r}"
+    )

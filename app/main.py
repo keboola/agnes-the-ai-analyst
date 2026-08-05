@@ -217,6 +217,29 @@ def _chat_e2b_template_id_ok(chat_config) -> bool:
     return False
 
 
+def _chat_harness_ok(chat_config) -> bool:
+    """Refuse an explicitly configured ``chat.harness`` outside the
+    ``APPROVED_HARNESSES`` allowlist (app/chat/harness.py seam).
+
+    Explicit-invalid refuses at boot; the runner separately degrades an
+    *inherited* unknown id to the default (version-skew tolerance).
+    """
+    if not chat_config.enabled:
+        return True
+    from app.chat.harness import APPROVED_HARNESSES
+
+    harness = getattr(chat_config, "harness", "claude-code")
+    if harness in APPROVED_HARNESSES:
+        return True
+    logging.getLogger("app.main").error(
+        "chat.harness=%r is not an approved harness (approved: %s); "
+        "refusing to spawn ChatManager. Fix chat.harness in instance.yaml.",
+        harness,
+        ", ".join(APPROVED_HARNESSES),
+    )
+    return False
+
+
 class _SelectiveGZipMiddleware:
     """GZipMiddleware wrapper that skips a set of path prefixes.
 
@@ -299,6 +322,7 @@ from app.api.admin_source_connections import router as source_connections_admin_
 from app.api.mcp_passthrough import router as mcp_passthrough_router
 from app.api.mcp_per_table import router as mcp_per_table_router
 from app.api.mcp_user_secrets import router as mcp_user_secrets_router
+from app.api.mcp_oauth_connect import router as mcp_oauth_connect_router
 from app.api.memory_domains import router as memory_domains_router
 from app.api.knowledge_digests import router as knowledge_digests_router
 from app.api.recipes import (
@@ -1334,6 +1358,9 @@ async def lifespan(app):
             elif not _chat_e2b_template_id_ok(app.state.chat_config):
                 # Fatal already logged inside the helper.
                 app.state.chat_manager = None
+            elif not _chat_harness_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
             else:
                 from typing import Optional
                 from app.chat.workdir import WorkdirManager
@@ -1722,6 +1749,33 @@ def create_app() -> FastAPI:
         # request.app.debug).
         debug=False,
     )
+
+    @app.middleware("http")
+    async def _admin_elevation(request, call_next):
+        # Admin elevation consent gate (app/auth/elevation.py): stamp the
+        # request-scoped paused/elevated flag from the cookie (or instance
+        # default) before any authorization runs, reset after. Only ever
+        # REDUCES privilege — see the module docstring.
+        from app.auth.elevation import (
+            ELEVATION_COOKIE,
+            reset_for_request,
+            resolve_from_cookie,
+            set_paused_for_request,
+        )
+
+        token = set_paused_for_request(
+            resolve_from_cookie(
+                request.cookies.get(ELEVATION_COOKIE),
+                # Bearer callers (CLI/PAT/service tokens) have no cookie jar
+                # to re-elevate with — the instance-wide default must not
+                # apply to them (an explicit paused cookie still would).
+                bearer_auth=request.headers.get("authorization", "").lower().startswith("bearer "),
+            )
+        )
+        try:
+            return await call_next(request)
+        finally:
+            reset_for_request(token)
 
     @app.middleware("http")
     async def _add_version_headers(request, call_next):
@@ -2213,6 +2267,7 @@ def create_app() -> FastAPI:
     app.include_router(source_connections_admin_router)
     app.include_router(mcp_passthrough_router)
     app.include_router(mcp_user_secrets_router)
+    app.include_router(mcp_oauth_connect_router)
     app.include_router(mcp_per_table_router)
     app.include_router(memory_domains_router)
     app.include_router(knowledge_digests_router)

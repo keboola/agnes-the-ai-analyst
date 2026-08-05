@@ -294,6 +294,8 @@ def parity_env(seeded_app, monkeypatch):
             "cli.commands.stack",
             "cli.commands.admin",
             "cli.commands.admin_jobs",
+            "cli.commands.admin_mcp",
+            "cli.commands.mcp",
         ],
         client=client,
         token=admin_token,
@@ -1268,3 +1270,206 @@ def _admin_auth_swap(parity_env, token: str):
     finally:
         for k, v in orig.items():
             setattr(_stack_mod, k, v)
+
+
+# ---------------------------------------------------------------------------
+# MCP source OAuth client provisioning (register + manual config)
+# ---------------------------------------------------------------------------
+
+
+def _oauth_parity_env(monkeypatch):
+    """Vault key + no-network DNS stub shared by the OAuth parity cases."""
+    import ipaddress
+    import socket as socket_mod
+
+    from cryptography.fernet import Fernet
+
+    from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    _reset_ephemeral_key_for_tests()
+
+    real_getaddrinfo = socket_mod.getaddrinfo
+
+    def _fake(host, *args, **kwargs):
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return [(socket_mod.AF_INET, socket_mod.SOCK_STREAM, 0, "", ("93.184.216.34", 0))]
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr("src.net.ssrf_safe_client.socket.getaddrinfo", _fake)
+
+
+def _seed_oauth_parity_source(source_id):
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id=source_id,
+        name=source_id,
+        transport="http",
+        url="https://mcp.example.com/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    conn.close()
+
+
+def _snapshot_oauth_client_row(source_id):
+    conn = get_system_db()
+    rows = _snapshot_table(
+        conn,
+        "SELECT source_id, client_id, issuer, authorization_endpoint, token_endpoint"
+        " FROM mcp_source_oauth_clients WHERE source_id = ?",
+        [source_id],
+    )
+    conn.close()
+    return rows
+
+
+def _drop_oauth_client_row(source_id):
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    mcp_source_oauth_clients_repo().delete(source_id)
+
+
+class TestMcpSourceOAuthManualClientParity:
+    """``PUT /api/admin/mcp-sources/{id}/oauth/client`` ↔
+    ``agnes admin mcp source oauth-client``."""
+
+    def test_manual_client_parity(self, parity_env, monkeypatch):
+        _oauth_parity_env(monkeypatch)
+        sid = "src_par_oauth_manual"
+        _seed_oauth_parity_source(sid)
+        body = {
+            "client_id": "manual-cid",
+            "authorization_endpoint": "https://as.example.com/authorize",
+            "token_endpoint": "https://as.example.com/token",
+        }
+
+        r = parity_env["client"].put(
+            f"/api/admin/mcp-sources/{sid}/oauth/client",
+            json=body,
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+        delta_api = _snapshot_oauth_client_row(sid)
+
+        _drop_oauth_client_row(sid)
+
+        parity_env["run_cli"](
+            [
+                "admin",
+                "mcp",
+                "source",
+                "oauth-client",
+                sid,
+                "--client-id",
+                "manual-cid",
+                "--authorization-endpoint",
+                "https://as.example.com/authorize",
+                "--token-endpoint",
+                "https://as.example.com/token",
+                "--public-client",
+            ]
+        )
+        delta_cli = _snapshot_oauth_client_row(sid)
+
+        assert delta_api == delta_cli
+        assert len(delta_cli) == 1 and delta_cli[0][1] == "manual-cid"
+
+
+class TestMcpSourceOAuthRegisterParity:
+    """``POST /api/admin/mcp-sources/{id}/oauth/register`` ↔
+    ``agnes admin mcp source oauth-register`` (discovery/DCR mocked at the
+    ``connectors.mcp.oauth_client`` seam, same as the endpoint tests)."""
+
+    def _patch_discovery(self, monkeypatch):
+        import connectors.mcp.oauth_client as oc
+
+        as_metadata = {
+            "issuer": "https://as.example.com",
+            "authorization_endpoint": "https://as.example.com/authorize",
+            "token_endpoint": "https://as.example.com/token",
+            "registration_endpoint": "https://as.example.com/register",
+            "code_challenge_methods_supported": ["S256"],
+        }
+
+        async def _fake_discover_pr(source_url, *, client):
+            return {"authorization_servers": ["https://as.example.com"]}
+
+        async def _fake_discover_as(issuer, *, client):
+            return as_metadata
+
+        async def _fake_register(meta, *, redirect_uri, client, scopes=None, client_name="Agnes"):
+            return oc.RegisteredOAuthClient(
+                issuer=meta["issuer"],
+                client_id="parity-client-id",
+                client_secret="parity-secret",
+                registration_access_token="parity-rat",
+                authorization_endpoint=meta["authorization_endpoint"],
+                token_endpoint=meta["token_endpoint"],
+                registration_endpoint=meta["registration_endpoint"],
+                scopes=scopes,
+            )
+
+        async def _fake_revoke(*, registration_endpoint, client_id, registration_access_token, client):
+            return None
+
+        monkeypatch.setattr(oc, "discover_protected_resource_metadata", _fake_discover_pr)
+        monkeypatch.setattr(oc, "discover_as_metadata", _fake_discover_as)
+        monkeypatch.setattr(oc, "register_dynamic_client", _fake_register)
+        monkeypatch.setattr(oc, "best_effort_revoke_registration", _fake_revoke)
+
+    def test_register_parity(self, parity_env, monkeypatch):
+        _oauth_parity_env(monkeypatch)
+        monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+        self._patch_discovery(monkeypatch)
+        sid = "src_par_oauth_reg"
+        _seed_oauth_parity_source(sid)
+
+        r = parity_env["client"].post(
+            f"/api/admin/mcp-sources/{sid}/oauth/register",
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+        delta_api = _snapshot_oauth_client_row(sid)
+
+        _drop_oauth_client_row(sid)
+
+        parity_env["run_cli"](["admin", "mcp", "source", "oauth-register", sid])
+        delta_cli = _snapshot_oauth_client_row(sid)
+
+        assert delta_api == delta_cli
+        assert len(delta_cli) == 1 and delta_cli[0][1] == "parity-client-id"
+
+
+class TestMcpOAuthDisconnectParity:
+    """``DELETE /api/mcp/sources/{id}/oauth/connection`` ↔
+    ``agnes mcp disconnect`` (2026-07-30 outbound MCP OAuth sources spec §3,
+    PR 2). Admin short-circuits the grant gate, so no tool/grant seeding is
+    needed — only the source row and the token row under test."""
+
+    def test_disconnect_parity(self, parity_env, monkeypatch):
+        from src.repositories import mcp_user_oauth_tokens_repo
+
+        _oauth_parity_env(monkeypatch)
+        sid = "src_par_oauth_disc"
+        _seed_oauth_parity_source(sid)
+        tokens = mcp_user_oauth_tokens_repo()
+
+        tokens.upsert(sid, "admin1", "atok", refresh_token="rtok")
+        r = parity_env["client"].delete(
+            f"/api/mcp/sources/{sid}/oauth/connection",
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 204, r.text
+        delta_api = tokens.has(sid, "admin1")
+        assert delta_api is False
+
+        tokens.upsert(sid, "admin1", "atok2", refresh_token="rtok2")
+        parity_env["run_cli"](["mcp", "disconnect", sid, "--yes"])
+        delta_cli = tokens.has(sid, "admin1")
+
+        assert delta_api == delta_cli is False

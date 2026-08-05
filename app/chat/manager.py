@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -13,7 +14,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.chat import agent_profile, inbound, routing
+# `runner` is imported for the stdin-protocol constants it defines (the
+# UNATTENDED approval decision) — it is stdlib-only at import time and does
+# not import back into this module.
+from app.chat import agent_profile, inbound, routing, runner
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.frame_seq import stamp_frame
@@ -324,6 +328,19 @@ class LiveSession:
     # trades that for a narrow at-most-once window across an ownership
     # change — see _inbound_consumer_loop's seeding comment.
     inbound_last_seq: int = 0
+
+
+def _approval_attended(live: "LiveSession") -> bool:
+    """True when some attached sink can actually answer an approval request.
+
+    Attendance is a property of the sinks attached RIGHT NOW, not of the
+    session's origin surface and not of the moment a request was raised — so
+    it is derived here on every read rather than trusted from a frame's stamp.
+    The web WebSocket wrapper is the only transport that both draws the card
+    and carries a decision back; everything else is push-only until it
+    implements both halves.
+    """
+    return any(getattr(e.sink, "supports_approvals", False) for e in live.sinks)
 
 
 class ChatManager:
@@ -885,8 +902,7 @@ class ChatManager:
         # Unanswered approval cards replay alongside the turn buffer: they
         # are separate state precisely because they outlive the turn, so
         # they must be re-sent explicitly rather than ridden along.
-        for frame in list(live.pending_approvals.values()):
-            await ws.send_json(frame)
+        await self._replay_pending_approvals_to(live, ws)
         for frame in list(live.turn_buffer):
             await ws.send_json(frame)
         if is_primary:
@@ -1044,6 +1060,50 @@ class ChatManager:
 
     # --- detach / linger / pause --------------------------------------------
 
+    async def _replay_pending_approvals_to(self, live: "LiveSession", sink) -> None:
+        """Send every still-unanswered approval card to a newly seated sink.
+
+        One rule for all three attach paths — ``_seat_sink``, ``add_sink`` and
+        ``_ensure_slack_sink``. The last one appends straight into
+        ``live.sinks`` and so missed the replay entirely: a Slack bridge
+        rebuilt on the cross-gateway forwarded-message path stayed silent about
+        a card already pending, and ``_renotify_unattended_approvals`` skipped
+        it too because the stored frame's ``attended`` was already latched
+        False (Devin Review on #1157).
+
+        ``attended`` is re-derived rather than replayed: the stamp records who
+        was attached when the request was RAISED, which is not a claim about
+        who is attached now.
+        """
+        attended = _approval_attended(live)
+        for frame in list(live.pending_approvals.values()):
+            with contextlib.suppress(Exception):
+                await sink.send_json({**frame, "attended": attended})
+
+    async def _renotify_unattended_approvals(self, live: "LiveSession") -> None:
+        """Re-derive attendance for every pending card and nudge if it lapsed.
+
+        The post-broadcast correction only covers the pump iteration that
+        raised the request. A browser that leaves LATER — a clean detach, or a
+        dead sink pruned by some subsequent broadcast — while the card is still
+        pending would otherwise leave nobody holding it and nobody told: the
+        same stall this branch exists to prevent, in a wider window
+        (Devin Review on #1157). Idempotent: a card already marked unattended
+        is not re-posted, and the Slack bridge dedupes by request_id anyway.
+        """
+        if not live.pending_approvals or _approval_attended(live):
+            return
+        for frame in list(live.pending_approvals.values()):
+            if frame.get("attended") is False:
+                continue
+            frame["attended"] = False
+            for entry in list(live.sinks):
+                poster = getattr(entry.sink, "_post_approval_request", None)
+                if poster is not None:
+                    with contextlib.suppress(Exception):
+                        await poster(frame)
+            await self._resolve_if_unattended(live, frame)
+
     async def detach_sink(self, chat_id: str, ws) -> None:
         """Remove ws from the session's sink list. When the last sink leaves,
         trigger the on_detach policy (linger→pause or kill)."""
@@ -1051,6 +1111,8 @@ class ChatManager:
         if live is None:
             return
         live.sinks = [e for e in live.sinks if e.sink is not ws]
+        # The card holder may have just left; tell whoever is still listening.
+        await self._renotify_unattended_approvals(live)
         if not live.sinks:
             self._on_all_sinks_gone(live)
 
@@ -1645,8 +1707,7 @@ class ChatManager:
             await sink.send_json(frame)
         # …and any approval card still waiting for an answer (separate
         # state: it outlives the turn it was raised in).
-        for frame in list(live.pending_approvals.values()):
-            await sink.send_json(frame)
+        await self._replay_pending_approvals_to(live, sink)
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
         # Sent directly to this one sink (not _broadcast), so it needs its
         # own stamp (wave-2F task 2). The history-replay frames above are
@@ -1809,13 +1870,16 @@ class ChatManager:
             # ApprovalGate window for a pending approval_request (runner
             # denies the suspended tool call on expiry).
             "AGNES_APPROVAL_TIMEOUT_SECONDS": str(self._config.approval_timeout_seconds),
-            # Interactive approval cards render only on the web surface. On
-            # non-interactive surfaces (agent-API one-shot, Slack — no card
-            # yet) an `ask` verdict has nobody to answer it, so switch the
-            # gate off there: it denies immediately with an actionable
-            # message instead of freezing for the full approval timeout
-            # (review finding on #1145).
-            "AGNES_APPROVALS": "on" if session.surface == Surface.WEB.value else "off",
+            # Which agent engine drives the session (app/chat/harness.py
+            # seam; boot-validated against APPROVED_HARNESSES).
+            "AGNES_HARNESS": getattr(self._config, "harness", "claude-code"),
+            # The gate is armed on every surface now — this stays only as the
+            # operator kill-switch `docs/cloud-chat.md` documents. The runner
+            # reads it from its own environment, and the sandbox environment is
+            # exactly this dict (the host's is not merged in), so dropping the
+            # entry would have left the switch unsettable anywhere while the
+            # docs still advertised it (Devin Review on #1157).
+            "AGNES_APPROVALS": "on" if self._config.approvals_enabled else "off",
             # Opt-in: bootstrap the user's marketplace plugins into the sandbox
             # at spawn and load them via setting_sources. Off by default (adds
             # per-spawn latency; only useful once the marketplace ships real
@@ -1961,6 +2025,13 @@ class ChatManager:
             except json.JSONDecodeError:
                 continue
             live.last_activity = datetime.now(timezone.utc)
+            if frame.get("type") == "approval_request":
+                # Stamped BEFORE the fan-out so every sink sees the same
+                # envelope (frame_seq contract) and a push-only sink can tell
+                # whether someone is already looking at a card: the Slack
+                # bridge posts its "approve this on the web" nudge only when
+                # nobody is.
+                frame["attended"] = _approval_attended(live)
             await self._broadcast(live, frame)
             ftype = frame.get("type")
             # Accumulate in-flight turn frames for mid-turn replay and partial
@@ -1978,6 +2049,29 @@ class ChatManager:
                     live.pending_approvals[rid] = frame
             elif ftype == "approval_resolved":
                 live.pending_approvals.pop(frame.get("request_id"), None)
+            if ftype == "approval_request":
+                # `attended` is stamped BEFORE the fan-out (the frame_seq
+                # contract wants one envelope for every sink), but _broadcast
+                # is also where a dead sink is discovered: a browser that
+                # dropped without a clean close — sleeping laptop, lost mobile
+                # network — is still in live.sinks at stamp time, so the
+                # request went out marked attended, the Slack nudge stayed
+                # quiet, and the very same fan-out then pruned the sink. The
+                # command stalled for the full timeout with nothing said
+                # anywhere. Re-derive afterwards and correct the record
+                # (Devin Review on #1157).
+                if frame.get("attended") and not _approval_attended(live):
+                    frame["attended"] = False
+                    rid = frame.get("request_id")
+                    if rid:
+                        live.pending_approvals[rid] = frame
+                    for entry in list(live.sinks):
+                        poster = getattr(entry.sink, "_post_approval_request", None)
+                        if poster is not None:
+                            with contextlib.suppress(Exception):
+                                await poster(frame)
+                if not frame.get("attended"):
+                    await self._resolve_if_unattended(live, frame)
             if ftype == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
@@ -2075,6 +2169,11 @@ class ChatManager:
         # outlives its audience until the idle reaper notices.
         if dead and not live.sinks and live.state == SessionState.ACTIVE:
             self._on_all_sinks_gone(live)
+        if dead:
+            # The sweep may have removed the only client that could answer a
+            # card raised on an EARLIER frame — the same lapse detach_sink
+            # covers, arriving through the other door.
+            await self._renotify_unattended_approvals(live)
 
     @staticmethod
     async def _safe_close(sink) -> None:
@@ -2359,6 +2458,51 @@ class ChatManager:
                 },
             )
 
+    async def _resolve_if_unattended(self, live: "LiveSession", frame: dict) -> None:
+        """Answer an ``approval_request`` that nobody can ever answer.
+
+        Called only for a request no attached sink can respond to (``frame
+        ["attended"]`` is False). The runner's gate is armed on every
+        surface; whether a human can actually respond is a property of the
+        SINKS attached right now, not of the surface the session was started
+        on — a Slack-origin session opened through "Continue on web" has a
+        card-capable client, and a web session whose browser is closed does
+        not. So the decision lives here, at the fan-out, rather than in a
+        spawn-time env var.
+
+        Two cases remain:
+
+        - A capable sink could still arrive: leave the request pending for
+          the gate's full ``chat.approval_timeout_seconds``. This is what
+          makes Slack's "Continue on web" button work — the request rides
+          ``live.pending_approvals``, so a browser attaching mid-approval
+          replays the pending card and can answer it. Waiting is strictly more
+          useful than a fast deny here: the user is a click away, and the
+          gate's timeout is the backstop either way.
+        - None can ever attach — ``Surface.API``, where a ``HeadlessSink``/
+          ``StreamingSink`` is seated by construction and the caller is a
+          program blocked on an HTTP response, not a person who can open a
+          browser: resolve immediately as
+          :data:`~app.chat.runner.UNATTENDED` so the one-shot path keeps its
+          fast, actionable deny instead of stalling for the full timeout.
+        """
+        if live.surface != Surface.API.value:
+            return
+        request_id = str(frame.get("request_id", ""))
+        if not request_id or live.handle is None:
+            return
+        logger.info(
+            "approval request %s on %s auto-denied — agent-API session has no client that can answer",
+            request_id,
+            live.chat_id,
+        )
+        write_audit(
+            user_email=live.user_email,
+            action="chat.approval_decision",
+            details={"session_id": live.chat_id, "request_id": request_id, "decision": runner.UNATTENDED},
+        )
+        await self._deliver_local_approval(live, request_id, runner.UNATTENDED)
+
     async def _deliver_local_approval(self, live: "LiveSession", request_id: str, decision: str) -> None:
         payload = json.dumps({"type": "approval_decision", "request_id": request_id, "decision": decision}) + "\n"
         try:
@@ -2380,7 +2524,7 @@ class ChatManager:
             return
         live.last_activity = datetime.now(timezone.utc)
 
-    def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
+    async def _ensure_slack_sink(self, live: "LiveSession", slack_origin: dict) -> None:
         """Make sure ``live`` has a ``SlackSinkBridge`` for the Slack
         channel in ``slack_origin`` (``{"channel": ..., "thread_ts": ...}``),
         creating and seating one if missing.
@@ -2392,13 +2536,21 @@ class ChatManager:
         (services.slack_bot.events), so without this the runner's replies
         for a Slack-surfaced session silently stop reaching Slack.
 
-        ``web_base`` comes from ``SERVER_URL`` (the deployment's public
-        URL) — falling back to no Continue-on-web button when unset, which
-        matches SlackSinkBridge's own empty-``web_base`` behavior. Import
+        ``web_base`` comes from :func:`app.instance_config.get_public_url` —
+        the same resolution (``PUBLIC_URL`` env > ``server.public_url`` in
+        instance.yaml) the ordinary Slack DM/mention path uses via
+        ``app.state.public_url``. This path used to read ``SERVER_URL``
+        directly, so a deployment configuring only ``server.public_url`` got a
+        Continue-on-web button everywhere EXCEPT here (Devin Review on #1157);
+        ``SERVER_URL`` stays as a fallback so deployments setting only it keep
+        working. Unset still degrades to no button, matching
+        SlackSinkBridge's own empty-``web_base`` behavior. Import
         is lazy + guarded so a deployment without the Slack extras
         installed degrades to a logged skip, never a crash in the consumer
         loop. Best-effort by design: idempotent per (session, channel).
         """
+        from app.instance_config import get_public_url
+
         channel = (slack_origin or {}).get("channel") or ""
         if not channel:
             return
@@ -2415,10 +2567,16 @@ class ChatManager:
             thread_ts=(slack_origin or {}).get("thread_ts") or "",
             chat_id=live.chat_id,
             owner=live.user_email,
-            web_base=os.environ.get("SERVER_URL", "").rstrip("/"),
+            web_base=(get_public_url() or os.environ.get("SERVER_URL", "").rstrip("/")),
         )
         live.sinks.append(SinkEntry(participant_email=live.user_email, sink=sink))
         logger.info("re-established Slack sink for %s (channel %s) on forwarded message", live.chat_id, channel)
+        # This path appends straight into live.sinks rather than going through
+        # _seat_sink/add_sink, so the replay has to be explicit here. Awaited,
+        # not fired off: a bare create_task has no strong reference and a GC
+        # cycle can collect it mid-flight — the same latent bug already fixed
+        # once in this runner's stdin reader.
+        await self._replay_pending_approvals_to(live, sink)
 
     async def _forward_inbound_message(
         self, chat_id: str, text: str, *, sender_email: Optional[str], slack_origin: Optional[dict] = None
@@ -2583,7 +2741,7 @@ class ChatManager:
                         # has somewhere to land on Slack (a takeover builds
                         # LiveSession with sinks=[], and the non-owning
                         # webhook handler never attaches one).
-                        self._ensure_slack_sink(live, slack_origin)
+                        await self._ensure_slack_sink(live, slack_origin)
                     try:
                         await self._deliver_local_user_message(live, text)
                     except Exception:

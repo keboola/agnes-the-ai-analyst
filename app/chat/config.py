@@ -33,6 +33,10 @@ class ChatConfig:
     # value; future variants (mock_e2b for tests, sandbox-as-a-service
     # alternatives) would extend the gate in ``app/main.py``.
     provider: str = "e2b"
+    # Agent harness id — which engine drives the in-sandbox session
+    # (app/chat/harness.py seam; validated against APPROVED_HARNESSES at
+    # boot). ``claude-code`` is the only production harness today.
+    harness: str = "claude-code"
     concurrency_per_user: int = 3
     idle_ttl_seconds: int = 30 * 60
     per_tool_call_seconds: int = 90
@@ -45,6 +49,12 @@ class ChatConfig:
     # How long the runner's ApprovalGate waits for the user to answer an
     # approval_request before denying the suspended tool call.
     approval_timeout_seconds: int = 300
+    # Operator kill-switch. The gate is armed on every surface and whether a
+    # request CAN be answered is decided per request from the attached sinks,
+    # so this is not a routing knob — it is the escape hatch for a deployment
+    # that would rather run unasked than have tool calls wait. False makes the
+    # gate deny instantly with an actionable message.
+    approvals_enabled: bool = True
     marketplace_sha_debounce_seconds: int = 5 * 60
     # E2B template id (``agnes-chat`` for the default operator build per
     # Q2 — single mutable ``:latest`` tag). Required when
@@ -174,6 +184,23 @@ def _parse_on_detach(raw: dict) -> str:
     return on_detach
 
 
+def _resolve_chat_approvals(raw: dict) -> bool:
+    """``chat.approvals_enabled`` resolution, mirroring
+    :func:`_resolve_chat_enabled`: ``AGNES_CHAT_APPROVALS_ENABLED`` env > the
+    ``approvals_enabled`` key in the parsed ``chat:`` block > ``True``.
+
+    Reading only the YAML would have made the env var the registry and
+    ``docs/feature-flags.md`` advertise do nothing, and — worse — left
+    ``/admin/server-config`` reporting a value the running system does not
+    honour, because the admin panel resolves flags through ``feature_enabled``
+    (env first) while the gate reads this config (Devin Review on #1157).
+    """
+    env = os.environ.get("AGNES_CHAT_APPROVALS_ENABLED")
+    if env is not None:
+        return coerce_flag_value(env, default=True)
+    return coerce_flag_value(raw.get("approvals_enabled"), default=True)
+
+
 def _resolve_chat_enabled(raw: dict) -> bool:
     """``chat.enabled`` resolution: ``AGNES_CHAT_ENABLED`` env (new, additive
     — #1022 feature-flag canonicalization) > the ``enabled`` key in the
@@ -196,13 +223,14 @@ def _resolve_chat_enabled(raw: dict) -> bool:
 
 def load_chat_config(instance_yaml: Path) -> ChatConfig:
     if not instance_yaml.exists():
-        return ChatConfig(enabled=_resolve_chat_enabled({}))
+        return ChatConfig(enabled=_resolve_chat_enabled({}), approvals_enabled=_resolve_chat_approvals({}))
     data = yaml.safe_load(instance_yaml.read_text()) or {}
     raw = data.get("chat", {}) or {}
     detach_linger_seconds = int(raw.get("detach_linger_seconds", 60))
     return ChatConfig(
         enabled=_resolve_chat_enabled(raw),
         provider=str(raw.get("provider", "e2b")),
+        harness=str(raw.get("harness", "claude-code")),
         concurrency_per_user=int(raw.get("concurrency_per_user", 3)),
         idle_ttl_seconds=int(raw.get("idle_ttl_seconds", 30 * 60)),
         per_tool_call_seconds=int(raw.get("per_tool_call_seconds", 90)),
@@ -213,6 +241,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         rate_messages_per_hour=int(raw.get("rate_messages_per_hour", 100)),
         tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
         approval_timeout_seconds=int(raw.get("approval_timeout_seconds", 300)),
+        approvals_enabled=_resolve_chat_approvals(raw),
         marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
         e2b_template_id=raw.get("e2b_template_id") or None,
         egress_allow_out=list(raw.get("egress_allow_out") or []),

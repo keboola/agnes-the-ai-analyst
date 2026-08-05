@@ -249,6 +249,16 @@ FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
         description="Flea-market upload LLM security-review pipeline. Grandfathered on by default.",
     ),
     FeatureFlag(
+        name="chat_approvals",
+        config_keys=("chat", "approvals_enabled"),
+        env_var="AGNES_CHAT_APPROVALS_ENABLED",
+        default=True,
+        description=(
+            "Interactive approval prompts for ask-flagged chat tool calls. Off makes the "
+            "sandbox gate deny instantly instead of waiting for a human."
+        ),
+    ),
+    FeatureFlag(
         name="chat",
         config_keys=("chat", "enabled"),
         env_var="AGNES_CHAT_ENABLED",

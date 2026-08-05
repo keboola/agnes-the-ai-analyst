@@ -1087,6 +1087,12 @@ async def mcp_connect_page(
 
     Any authenticated user (not admin-only) can reach this page.
     """
+    # Entry points: the AI Connector page (`/me/ai-connector`) links here as the
+    # token fallback to its OAuth flow, plus a Cmd/Ctrl-K palette entry. It is
+    # deliberately NOT a nav item — "connect an AI client" is one job and
+    # `/me/ai-connector` owns it. Both links are guarded by
+    # `tests/test_web_nav_agents.py`; don't drop them. (Comment, not docstring:
+    # FastAPI copies docstrings into the OpenAPI description.)
     ctx = _build_context(
         request,
         user=user,
@@ -1103,17 +1109,60 @@ async def me_connections_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Self-service page: connect / replace / test / remove your own credential
-    for the per_user MCP sources you are granted. Any authenticated user."""
+    for the per_user MCP sources you are granted. Any authenticated user.
+
+    ``auth_method='oauth'`` sources (2026-07-30 outbound MCP OAuth sources
+    spec §3) report against ``mcp_user_oauth_tokens`` instead of the
+    vault-backed per-user secrets table — same card, a Connect/Disconnect
+    button in place of the paste-field (template branches on
+    ``s.auth_kind``)."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.markdown_render import render_safe
-    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+    from src.repositories import mcp_sources_repo, mcp_user_oauth_tokens_repo, per_user_secrets_repo
 
     granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    # Caller-relative (`granted_ids`) and source-level (`sourced_ids`) are two
+    # different questions, and the card needs both: "this source has no tools
+    # yet" is a property of the source, while "no tools are granted to me" is a
+    # property of the viewer. They coincide for an admin, which is how the
+    # conflation survived — for a revoked non-admin, whose card this PR
+    # deliberately keeps visible, it told them the source was unfinished rather
+    # than that they had lost access (Devin Review on #1167).
+    from src.repositories import tool_registry_repo
+    from src.repositories.tool_registry import PASSTHROUGH
+
+    sourced_ids = {t["source_id"] for t in tool_registry_repo().list_by_mode(PASSTHROUGH, enabled_only=True)}
+    caller_is_admin = is_user_admin(user["id"], conn)
     sources = []
     for src in mcp_sources_repo().list_all(enabled_only=True):
-        if src["id"] not in granted_ids:
-            continue
         if (src.get("scope") or "shared").lower() != "per_user":
+            continue
+        is_oauth = (src.get("auth_method") or "").lower() == "oauth"
+        if is_oauth:
+            from app.api.mcp_policy import oauth_connection_usable
+
+            token_row = mcp_user_oauth_tokens_repo().get(src["id"], user["id"])
+            # Same validity rule the server enforces at call time — a lapsed,
+            # unrenewable token must show Connect, not a green Connected pill
+            # (Devin Review on #1130).
+            has_secret = oauth_connection_usable(src["id"], user["id"])
+            # `stored` diverges from `has_secret` exactly for a lapsed,
+            # unrenewable token: not usable, but the row still exists and the
+            # user must be able to Disconnect it (Devin Review on #1130).
+            stored = token_row is not None
+            updated_at = token_row["updated_at"].isoformat() if token_row and token_row.get("updated_at") else None
+            expires_at = token_row["expires_at"].isoformat() if token_row and token_row.get("expires_at") else None
+        else:
+            has_secret = per_user_secrets_repo().has(src["id"], user["id"])
+            stored = has_secret
+            updated_at = per_user_secrets_repo().get_updated_at(src["id"], user["id"])
+            expires_at = None
+        # Visibility: granted tools, OR the caller's own stored credential
+        # (a connection you made must never be invisible — you need Test /
+        # Disconnect), OR admin (the register → connect → introspect
+        # bootstrap happens before any tools exist; hiding the source made
+        # a fresh connect look like nothing happened — UX round on #1130).
+        if src["id"] not in granted_ids and not stored and not caller_is_admin:
             continue
         sources.append(
             {
@@ -1121,17 +1170,63 @@ async def me_connections_page(
                 "name": src["name"],
                 "transport": src.get("transport"),
                 "hint_html": render_safe(src.get("connect_hint")),
-                "has_secret": per_user_secrets_repo().has(src["id"], user["id"]),
-                "updated_at": per_user_secrets_repo().get_updated_at(src["id"], user["id"]),
+                "auth_kind": "oauth" if is_oauth else "secret",
+                "has_secret": has_secret,
+                "stored": stored,
+                "has_tools": src["id"] in granted_ids,
+                "source_has_tools": src["id"] in sourced_ids,
+                # One definition for "this viewer has authority here", used by
+                # every control whose endpoint calls `_require_source_grant`
+                # unconditionally — Connect/Reconnect, Test, and the paste
+                # field + Save. Deciding that per control is what let the same
+                # dead-end bug be reported three separate times on this PR;
+                # Disconnect/Remove stay outside it because their own-credential
+                # carve-out means they work without a grant.
+                "can_act": src["id"] in granted_ids or caller_is_admin,
+                "updated_at": updated_at,
+                "expires_at": expires_at,
             }
         )
+    # Both banners render only fixed text: connect_error arrives as a short
+    # code mapped through CONNECT_ERROR_MESSAGES (unknown → generic fallback),
+    # and connected only renders when the caller really has a stored OAuth
+    # connection for that id — a crafted link can never put its own words in
+    # an Agnes banner. Checked against the token row, NOT this page's
+    # tool-derived source list: a freshly registered source has no tools yet
+    # and the admin's post-connect banner must still show (Devin Review on
+    # #1130).
+    from app.api.mcp_oauth_connect import CONNECT_ERROR_FALLBACK, CONNECT_ERROR_MESSAGES
+
+    error_code = request.query_params.get("connect_error") or ""
+    connected = request.query_params.get("connected") or ""
+    connected_name = ""
+    if connected:
+        if mcp_user_oauth_tokens_repo().get(connected, user["id"]) is None:
+            connected = ""
+        else:
+            src_row = mcp_sources_repo().get(connected)
+            # Show the human name, not a UUID (UX round on #1130).
+            connected_name = (src_row or {}).get("name") or connected
+    # `retry` names the source a failed connect can be retried against —
+    # rendered as a one-click "Try again" link. Validated against the cards
+    # the caller can actually authorize against, NOT merely the listed ones:
+    # since this page started showing a card for a stored-but-ungranted
+    # source, "listed" stopped implying "connectable", and retrying a
+    # not_granted failure would just fail again.
+    retry = request.query_params.get("retry") or ""
+    if not error_code or retry not in {s["id"] for s in sources if s["can_act"]}:
+        retry = ""
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
-        is_admin=is_user_admin(user["id"], conn),
+        is_admin=caller_is_admin,
         connect_sources=sources,
         highlight_source=request.query_params.get("source") or "",
+        connected_source=connected,
+        connected_name=connected_name,
+        connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
+        retry_source=retry,
     )
     return templates.TemplateResponse(request, "me_connections.html", ctx)
 
@@ -4294,11 +4389,14 @@ async def profile_page(
     # troubleshooting partial sends it back as the X-CSRF-Token header.
     csrf_token = _get_or_mint_web_csrf(request)
 
+    from app.auth.elevation import elevation_paused
+
     ctx = _build_context(
         request,
         user=user,
         memberships=memberships,
         is_admin=is_user_admin(user["id"], conn),
+        elevation_paused=elevation_paused(),
         user_record=user_record_safe,
         claims=_decoded_claims(raw_token),
         token_fingerprint=_token_fingerprint(raw_token),
