@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.79.0] - 2026-08-05
+
+### Added
+
 - Cloud chat runs without an E2B account: `chat.provider: docker` spawns each session in a local Docker container instead of a cloud microVM, so a self-hosted instance no longer loses chat entirely for want of E2B keys. Same feature set — web chat, Slack, the agent API, headless runs and artifact harvest are unchanged. Docker access stays behind the `apps-runner` sidecar (still the only process holding the socket) over a new token-gated `/sandboxes/*` API; the gateway never touches `/var/run/docker.sock`. The per-session workspace is **bind-mounted** rather than uploaded, which removes the 100 MB `chat.e2b_workspace_max_bytes` cap and the per-spawn tarball, and makes files the agent writes persist on the host — note that concurrent sessions of the same user therefore share one workspace, and agent-created `node_modules`/`.venv` now survive the session; co-drive sessions still mount only their ephemeral directory. Pause maps to `docker pause` (memory survives while the daemon does, not across a host reboot — the next attach then produces a fresh sandbox with restored conversation context). Sandboxes run non-root with `cap_drop: ALL`, `no-new-privileges`, pids/memory/CPU limits, a capped allowlist of mounts and an image-prefix allowlist; no secret enters the container env. Agent-profile sessions never get the shared workspace mount — only their data symlink targets (snapshots writable, the rest read-only), so a profiled agent cannot rewrite the user's shared settings/hook files. New keys: `chat.docker_image`, `docker_network`, `docker_mem_limit`, `docker_cpus`, `docker_pids_limit`, `docker_egress_mode` (`open` | `none`; hostname-level allowlisting is E2B-only), `docker_max_total_sandboxes`. Requires the operator-built sandbox image (`app/initial_workspace_default/docker-sandbox/`), the `apps` compose profile, and `AGNES_INTERNAL_URL`/`SERVER_URL` pointing at a container-reachable address — boot gates refuse to start chat with actionable log lines otherwise. Operator walkthrough, including an honest E2B-vs-Docker comparison: `docs/cloud-chat.md`.
 
 ### Changed
@@ -41,6 +55,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+- Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). The re-check reduces every spelling of an address to one set of rules first — IPv4-mapped (`::ffff:169.254.169.254`), 6to4 and Teredo answers are unwrapped to the IPv4 address a dual-stack host would actually reach, and the unspecified address (`0.0.0.0`, `::`), multicast and reserved ranges are refused outright. Ignoring the proxy env is not a bypass — the internal network has no other route. Docker never reconciles the `internal` flag on a network that already exists, so a sandbox start refuses with `network_not_internal` rather than silently running without that layer if a same-named non-internal bridge is left over; remove it and it is recreated correctly. Plain-HTTP proxying authorizes every request rather than only the first on a connection — proxy clients pool per-proxy, not per-destination, so keep-alive is not offered upstream and a request's body is forwarded by its declared length (chunked request bodies are refused, having no length to bound the forward by). Closes the "hostname-level allowlisting is E2B-only" gap.
 
 - `agnes update` now removes a leftover `~/.agnes/token` once an authenticated step in the same run proved the saved credential works — on the reconcile path nothing ever consumed the bootstrap file, so a re-running analyst kept a live plaintext 90-day credential on disk indefinitely. When no step authenticates (offline, expired credential), the file is kept on purpose: it is the input for the `agnes init --force --token-file` recovery. Complementary tightening in `agnes init --token-file`: an ABSENT file still falls back to the saved credential (consumed-by-earlier-init is benign), but a file that exists and cannot be read is again a hard error — silently proceeding would authenticate with a possibly-expired saved credential and blame the server.
 - Review follow-ups on the token handoff: the bundled reference install-prompt template (`src/_bundled_seed/install-prompt/template.md.tmpl`) no longer references `{token}` — it mirrors the built-in prompt's token-free shape (guard on `~/.agnes/token`, `agnes init --token-file`) — and saving an install-prompt override that still carries `{token}` is now rejected at save time with guidance (the renderer stopped substituting it, so such an override would emit the literal string and break every install). The Windows Step 4 command now launches Claude only after the token write succeeded; the clipboard-blocked Retry re-attempts only the clipboard write instead of minting a fresh 90-day token per click, and the reveal fallback's modal now steers the command to the terminal (pasting it into the Claude Code chat would record the token in the transcript).

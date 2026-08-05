@@ -197,7 +197,11 @@ def up(slug: str, payload: dict = Body(...), x_runner_token: str | None = Header
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "config.json").write_text(json.dumps(config_json, indent=2))
     client = _docker()
-    if not client.networks.list(names=[spec["network"]]):
+    # Exact name only: Docker's `name` filter is a SUBSTRING match, so asking
+    # for `agnes-apps` also matches `agnes-apps-internal` and the network the
+    # app actually needs would never be created — every run then fails on an
+    # unknown network. Same hazard the sandbox path hit (Devin Review on #1148).
+    if not [n for n in client.networks.list(names=[spec["network"]]) if getattr(n, "name", n) == spec["network"]]:
         client.networks.create(spec["network"], driver="bridge")
     _ensure_cache_volume(client, spec)
     old = _container(spec["name"])

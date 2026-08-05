@@ -137,6 +137,15 @@ class FakeImages:
         return object()
 
 
+class FakeNetwork:
+    """Stands in for a docker network object — `attrs` is what the real
+    SDK exposes, and `Internal` is the flag the sidecar has to check."""
+
+    def __init__(self, name, kw):
+        self.name = name
+        self.attrs = {"Internal": bool(kw.get("internal"))}
+
+
 class FakeDocker:
     def __init__(self):
         self.run_calls = []
@@ -165,10 +174,13 @@ class FakeDocker:
         if names is not None:
             from types import SimpleNamespace
 
+            # Docker's `name` filter matches on any PART of the name, so the
+            # fake has to as well, or it cannot catch the bug where a request
+            # for `agnes-apps` silently resolves to `agnes-apps-internal`.
             return [
                 SimpleNamespace(name=n, attrs={"Internal": bool(kw.get("internal"))})
                 for n, kw in self.networks_created
-                if n in names
+                if any(w in n for w in names)
             ]
         if filters and "label" in filters:
             want = filters["label"]
@@ -368,6 +380,25 @@ def test_up_refuses_an_existing_non_internal_network_for_no_egress(client):
     r = _up(c, tmp, internal_network=True, network="agnes-chat-internal")
     assert r.status_code == 400
     assert r.json()["detail"] == "network_not_internal"
+
+
+def test_up_does_not_mistake_a_substring_named_network_for_the_real_one(client):
+    """`docker network ls --filter name=X` matches substrings.
+
+    A host that has run allowlist mode has `agnes-apps-internal`; asking
+    for `agnes-apps` used to match it, so the network was never created
+    (every spawn then 502s) and the Internal check ran against a network
+    the sandbox never joins.
+    """
+    c, fake, tmp = client
+    fake.networks_created.append(("agnes-apps-internal", {"driver": "bridge", "internal": True}))
+
+    r = _up(c, tmp, network="agnes-apps")
+
+    assert r.status_code == 200
+    assert ("agnes-apps", {"driver": "bridge"}) in [
+        (n, {"driver": kw.get("driver")}) for n, kw in fake.networks_created
+    ]
 
 
 def test_up_joins_an_existing_internal_network(client):
