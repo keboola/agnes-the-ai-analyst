@@ -263,7 +263,13 @@ def test_refresh_marketplace_uses_fetch_plus_reset_not_pull(
 
     fetch = git_calls[0]
     assert "-c" in fetch.cmd
-    assert fetch.cmd[fetch.cmd.index("-c") + 1].startswith("credential.helper=")
+    fetch_helpers = [
+        fetch.cmd[i + 1] for i, a in enumerate(fetch.cmd) if a == "-c"
+    ]
+    assert fetch_helpers[0] == "credential.helper=", "chain reset must be first"
+    assert fetch_helpers[-1].startswith("credential.helper=!"), (
+        "env-based helper must be the last -c entry"
+    )
     assert "fetch" in fetch.cmd and "origin" in fetch.cmd
     for arg in fetch.cmd:
         assert with_token not in arg
@@ -709,7 +715,13 @@ def test_bootstrap_with_no_existing_clone_clones_and_registers(
     )
     # The PAT must NOT be on argv anywhere.
     assert not any(with_token in arg for arg in clone.cmd), f"PAT leaked to argv: {clone.cmd}"
-    assert clone.cmd[clone.cmd.index("-c") + 1].startswith("credential.helper=")
+    clone_helpers = [
+        clone.cmd[i + 1] for i, a in enumerate(clone.cmd) if a == "-c"
+    ]
+    assert clone_helpers[0] == "credential.helper=", "chain reset must be first"
+    assert clone_helpers[-1].startswith("credential.helper=!"), (
+        "env-based helper must be the last -c entry"
+    )
     assert clone.env.get("AGNES_TOKEN") == with_token
     assert str(clone_target) in clone.cmd
 
@@ -1035,7 +1047,13 @@ def test_check_runs_git_ls_remote_not_fetch(
     # Same credential helper wiring as the default mode — PAT in env, not argv.
     ls_remote = ls_remote_calls[0]
     assert "-c" in ls_remote.cmd
-    assert ls_remote.cmd[ls_remote.cmd.index("-c") + 1].startswith("credential.helper=")
+    ls_remote_helpers = [
+        ls_remote.cmd[i + 1] for i, a in enumerate(ls_remote.cmd) if a == "-c"
+    ]
+    assert ls_remote_helpers[0] == "credential.helper=", "chain reset must be first"
+    assert ls_remote_helpers[-1].startswith("credential.helper=!"), (
+        "env-based helper must be the last -c entry"
+    )
     assert ls_remote.env.get("AGNES_TOKEN") == with_token
 
     # No `git fetch` — that's the slow path we replaced.

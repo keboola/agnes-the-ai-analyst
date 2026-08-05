@@ -36,9 +36,9 @@ First, a quick check: run `test -s ~/.agnes/token`.
     is NOT enough — the CLI may be installed globally while this
     machine has never signed in.
   - If it is missing on a fresh install, stop here — tell the user
-    to open {server_url}/home and run step 4 ("Launch Claude — it
-    saves your login token to ~/.agnes/token first"), then paste
-    this script again.
+    to open {server_url}/home and run step 4 (the step that saves
+    your login token to ~/.agnes/token — its exact title differs
+    per instance), then paste this script again.
 
 If a step fails with an unfamiliar error, paste the exact error back and
 stop. If the failure is a TLS error, look for the cause — corporate

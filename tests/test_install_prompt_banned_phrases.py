@@ -9,8 +9,10 @@ de-escalated wording so it doesn't regress.
 Tier 1 (builder-owned scaffolding in `app/web/setup_instructions.py`) is
 enforced unconditionally. Tier 2/3 (the bundled seed's install-prompt
 template + connector SKILL.md bodies) is vendored content out of this
-module's scope — those checks `pytest.skip` and list any hits until the
-seed repo does its own pass, then start enforcing automatically.
+module's scope — those checks skip only the pinned known-dirty baseline
+below and FAIL on any phrase beyond it, so the guard ratchets toward
+full enforcement as the seed repo's de-escalation pass gets re-mirrored
+(an empty baseline means unconditional enforcement).
 
 Banned-phrase / required-fact lists are shared with
 `scripts/dev/check_prompt.py` via `scripts/dev/prompt_phrases.py` so the
@@ -81,45 +83,94 @@ def _scan_bundled_seed_file(rel_path: str) -> list[str]:
     return [phrase for phrase in BANNED_PHRASES if phrase in text]
 
 
+# Known-dirty ratchet (pinned 2026-08-05): phrases present in the vendored
+# seed today. Anything NEW fails immediately; entries drop out as the seed
+# repo's de-escalation pass lands and gets re-mirrored into
+# `src/_bundled_seed/`, and once a baseline is empty the corresponding
+# test enforces the full banned list unconditionally (the skip branch
+# never fires on a clean seed).
+_TIER2_KNOWN_DIRTY: frozenset[str] = frozenset(
+    {
+        "--silent",
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+        "PROCEED SILENTLY",
+        "REFUSE",
+        "Treat empty/Enter",
+        "http.sslVerify",
+        "verbatim",
+    }
+)
+
+_TIER3_KNOWN_DIRTY: dict[str, frozenset[str]] = {
+    "connector-asana": frozenset(
+        {
+            "NODE_TLS_REJECT_UNAUTHORIZED",
+            "Treat empty/Enter",
+            "http.sslVerify",
+            "verbatim",
+        }
+    ),
+    "connector-atlassian": frozenset(
+        {
+            "NODE_TLS_REJECT_UNAUTHORIZED",
+            "http.sslVerify",
+            "verbatim",
+        }
+    ),
+}
+
+
 def test_bundled_install_prompt_template_tier2():
-    """Tier 2: the bundled install-prompt template is vendored content
-    (out of this PR's scope). Skip with the findings listed until the
-    seed repo does its own de-escalation pass; once clean this starts
-    enforcing automatically.
+    """Tier 2: the bundled install-prompt template is a verbatim mirror of
+    the seed repo. Known-dirty phrases (pinned above) skip until the
+    seed's own de-escalation pass is re-mirrored; any phrase BEYOND the
+    baseline fails right away, so the guard cannot regress silently.
     """
-    hits = _scan_bundled_seed_file("install-prompt/template.md.tmpl")
+    hits = set(_scan_bundled_seed_file("install-prompt/template.md.tmpl"))
+    new = hits - _TIER2_KNOWN_DIRTY
+    assert not new, (
+        "bundled install-prompt/template.md.tmpl gained banned phrase(s) "
+        f"beyond the recorded known-dirty baseline: {sorted(new)}"
+    )
     if hits:
         import pytest
 
         pytest.skip(
-            "bundled install-prompt/template.md.tmpl still has banned "
-            f"phrase(s), pending the seed repo's own de-escalation pass: {hits}"
+            "bundled install-prompt/template.md.tmpl still has known-dirty "
+            f"phrase(s), pending the seed repo re-mirror: {sorted(hits)}"
         )
 
 
 def test_bundled_connector_skills_tier3():
-    """Tier 3: bundled connector SKILL.md bodies are vendored content
-    (out of this PR's scope, guarded by the bundled-seed CI check). Skip
-    with the findings listed per-file until the seed repo does its own
-    de-escalation pass; once clean this starts enforcing automatically.
+    """Tier 3: bundled connector SKILL.md bodies — same ratchet as tier
+    2, per file. Files without a baseline entry (new connectors) are
+    fully enforced from the start.
     """
     import pytest
 
     from src.connectors_manifest import bundled_seed_path
 
     root = bundled_seed_path() / "workspace" / ".claude" / "skills"
-    findings: dict[str, list[str]] = {}
+    known: dict[str, list[str]] = {}
+    new: dict[str, list[str]] = {}
     for skill_dir in sorted(root.glob("connector-*")):
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.is_file():
             continue
         text = skill_md.read_text(encoding="utf-8")
-        hits = [phrase for phrase in BANNED_PHRASES if phrase in text]
-        if hits:
-            findings[skill_dir.name] = hits
+        hits = {phrase for phrase in BANNED_PHRASES if phrase in text}
+        baseline = _TIER3_KNOWN_DIRTY.get(skill_dir.name, frozenset())
+        if hits - baseline:
+            new[skill_dir.name] = sorted(hits - baseline)
+        if hits & baseline:
+            known[skill_dir.name] = sorted(hits & baseline)
 
-    if findings:
+    assert not new, (
+        "bundled connector SKILL.md file(s) gained banned phrase(s) beyond "
+        f"the recorded known-dirty baseline: {new}"
+    )
+    if known:
         pytest.skip(
-            "bundled connector SKILL.md file(s) still have banned phrase(s), "
-            f"pending the seed repo's own de-escalation pass: {findings}"
+            "bundled connector SKILL.md file(s) still have known-dirty "
+            f"phrase(s), pending the seed repo re-mirror: {known}"
         )
