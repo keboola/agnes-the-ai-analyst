@@ -6,12 +6,14 @@ Mirrors the DuckDB shapes in ``src/db.py``:
   - ``user_group_members``  (lines 454-461)
   - ``resource_grants``     (lines 470-478)
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -75,9 +77,7 @@ class UserGroupMember(Base):
     __tablename__ = "user_group_members"
 
     user_id: Mapped[str] = mapped_column(String, nullable=False)
-    group_id: Mapped[str] = mapped_column(
-        String, ForeignKey("user_groups.id"), nullable=False
-    )
+    group_id: Mapped[str] = mapped_column(String, ForeignKey("user_groups.id"), nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -149,9 +149,7 @@ class ResourceGrant(Base):
     __tablename__ = "resource_grants"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    group_id: Mapped[str] = mapped_column(
-        String, ForeignKey("user_groups.id"), nullable=False
-    )
+    group_id: Mapped[str] = mapped_column(String, ForeignKey("user_groups.id"), nullable=False)
     resource_type: Mapped[str] = mapped_column(String, nullable=False)
     # Legacy polymorphic column — kept for backwards-compatible app queries.
     # For the 5 typed ResourceTypes the per-type FK column below also carries
@@ -206,6 +204,57 @@ class ResourceGrant(Base):
             "resource_type",
             "resource_id",
             name="uq_resource_grants_group_type_id",
+        ),
+        # Mirror of migration 0013's polymorphic invariant. The constraint has
+        # lived in the DB since that migration; alembic <1.19 never compared
+        # check constraints so its absence here went unnoticed — alembic
+        # 1.19.0 (2026-08-04) started flagging it as model↔migration drift
+        # (issue #1168).
+        CheckConstraint(
+            """
+        (resource_type = 'table'
+            AND resource_id_table           IS NOT NULL
+            AND resource_id_data_package    IS NULL
+            AND resource_id_memory_domain   IS NULL
+            AND resource_id_memory_item     IS NULL
+            AND resource_id_recipe          IS NULL)
+        OR
+        (resource_type = 'data_package'
+            AND resource_id_table           IS NULL
+            AND resource_id_data_package    IS NOT NULL
+            AND resource_id_memory_domain   IS NULL
+            AND resource_id_memory_item     IS NULL
+            AND resource_id_recipe          IS NULL)
+        OR
+        (resource_type = 'memory_domain'
+            AND resource_id_table           IS NULL
+            AND resource_id_data_package    IS NULL
+            AND resource_id_memory_domain   IS NOT NULL
+            AND resource_id_memory_item     IS NULL
+            AND resource_id_recipe          IS NULL)
+        OR
+        (resource_type = 'memory_item'
+            AND resource_id_table           IS NULL
+            AND resource_id_data_package    IS NULL
+            AND resource_id_memory_domain   IS NULL
+            AND resource_id_memory_item     IS NOT NULL
+            AND resource_id_recipe          IS NULL)
+        OR
+        (resource_type = 'recipe'
+            AND resource_id_table           IS NULL
+            AND resource_id_data_package    IS NULL
+            AND resource_id_memory_domain   IS NULL
+            AND resource_id_memory_item     IS NULL
+            AND resource_id_recipe          IS NOT NULL)
+        OR
+        (resource_type NOT IN ('table', 'data_package', 'memory_domain', 'memory_item', 'recipe')
+            AND resource_id_table           IS NULL
+            AND resource_id_data_package    IS NULL
+            AND resource_id_memory_domain   IS NULL
+            AND resource_id_memory_item     IS NULL
+            AND resource_id_recipe          IS NULL)
+        """,
+            name="ck_resource_grants_per_type_fk",
         ),
         Index("ix_resource_grants_group_id", "group_id"),
         Index("ix_resource_grants_resource_type", "resource_type"),
