@@ -325,7 +325,14 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
             # origin that still embeds a PAT, defeating the very scrub this
             # release advertises. Confirm it, and fail loudly if not
             # (Devin Review on #1180).
-            current = _run_git(["remote", "get-url", "origin"], cwd=target).stdout.strip()
+            # `config --get`, NOT `remote get-url`: the latter expands
+            # `url.<base>.insteadOf` rules (documented behaviour), so on a host
+            # with a corporate-mirror rewrite it returns the rewritten URL while
+            # `set-url` stored the original — a guaranteed mismatch that would
+            # abort every sync on those deployments, even though the fetch would
+            # have gone to the right place. We wrote the raw value, so we compare
+            # the raw value (Devin Review on #1180).
+            current = _run_git(["config", "--get", "remote.origin.url"], cwd=target).stdout.strip()
             if current != url:
                 raise RuntimeError(
                     f"git {action} refused: origin is {_redact(current, token)!r}, not the configured "
