@@ -259,3 +259,26 @@ def test_sanitize_applied_after_render(conn):
     assert "<script>" not in out
     assert "evil" not in out
     assert "<p>safe content</p>" in out
+
+
+def test_a_stored_override_with_the_retired_token_placeholder_is_ignored(conn, caplog):
+    """The save-time guards only inspect NEW writes. An override saved before
+    the PAT handoff moved to `--token-file` still carries `{token}`, and Jinja2
+    leaves a single-brace token alone — so it would render literally and the
+    user would save the string `{token}` as their credential. Stored content is
+    never re-validated, so the render seam is where this has to be caught
+    (Devin Review on #1139).
+    """
+    WelcomeTemplateRepository(conn).set(
+        "mkdir -p ~/.agnes && cat > ~/.agnes/token <<'AGNES_PAT'\n{token}\nAGNES_PAT\n",
+        updated_by="admin@example.com",
+    )
+
+    out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
+
+    assert "{token}" not in out, "served an override that writes a literal placeholder as the credential"
+    # Fell back to the live default, which is the bash bootstrap script.
+    assert "agnes" in out
+    assert any("retired" in r.message.lower() or "retired" in str(r.msg).lower() for r in caplog.records), (
+        "the operator gets no log line explaining why their override was ignored"
+    )
