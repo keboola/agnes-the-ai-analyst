@@ -445,3 +445,26 @@ def test_every_compose_coupled_knob_is_reported_together():
         )
     )
     assert len(msgs) == 3  # one per knob, not first-one-wins
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("0.0.0.0:3128", ("0.0.0.0", 3128)),
+        ("1.2.3.4:80", ("1.2.3.4", 80)),
+        ("[::]:8080", ("::", 8080)),
+        # No usable port — must fall back, never raise. Compose restarts the
+        # sidecar unless-stopped, so a ValueError here is a crash-loop, and in
+        # allowlist mode a dead proxy means every sandbox loses all egress.
+        ("0.0.0.0", ("0.0.0.0", 3128)),
+        ("::", ("::", 3128)),
+        ("[::1]", ("::1", 3128)),
+        ("host:abc", ("host", 3128)),
+        ("127.0.0.1:99999", ("127.0.0.1", 3128)),
+        ("", ("0.0.0.0", 3128)),
+    ],
+)
+def test_listen_address_never_crashes_the_sidecar(value, expected):
+    from services.egress_proxy.proxy import _parse_listen
+
+    assert _parse_listen(value) == expected

@@ -325,17 +325,55 @@ async def serve(
     return server
 
 
+DEFAULT_PORT = 3128
+
+
+def _parse_listen(value: str) -> tuple[str, int]:
+    """``EGRESS_LISTEN`` → ``(host, port)``, never raising.
+
+    Splitting on the last colon and calling ``int()`` on the tail turns a
+    perfectly reasonable value into a crash: ``"0.0.0.0"`` yields the port
+    ``"0.0.0.0"``, and a bare IPv6 literal like ``"::"`` yields host ``":"``.
+    Compose restarts the sidecar ``unless-stopped``, so that is a crash-loop —
+    and in allowlist mode a dead proxy means every sandbox loses all egress,
+    explained only by a stack trace (Devin Review on #1148).
+
+    Accepts ``host:port``, ``[v6]:port``, and a bare host of either family,
+    falling back to the default port with a warning rather than dying.
+    """
+    v = (value or "").strip()
+    if not v:
+        return "0.0.0.0", DEFAULT_PORT
+    if v.startswith("["):  # [::1]:3128 or bare [::1]
+        host, _, rest = v.partition("]")
+        host = host[1:]
+        port_s = rest.lstrip(":")
+    elif v.count(":") > 1:  # bare IPv6 literal — no port to take
+        return v, DEFAULT_PORT
+    else:
+        host, _, port_s = v.rpartition(":")
+        if not host:  # no colon at all → the whole value is the host
+            host, port_s = v, ""
+    try:
+        port = int(port_s)
+        if not 0 < port < 65536:
+            raise ValueError(port_s)
+    except ValueError:
+        logger.warning("EGRESS_LISTEN %r has no usable port — falling back to %d", value, DEFAULT_PORT)
+        port = DEFAULT_PORT
+    return host or "0.0.0.0", port
+
+
 def main() -> None:
     import os
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     allow = [h.strip() for h in os.environ.get("EGRESS_ALLOW_HOSTS", "").split(",") if h.strip()]
-    listen = os.environ.get("EGRESS_LISTEN", "0.0.0.0:3128")
-    lhost, _, lport = listen.rpartition(":")
+    lhost, lport = _parse_listen(os.environ.get("EGRESS_LISTEN", "0.0.0.0:3128"))
     block_private = os.environ.get("EGRESS_BLOCK_PRIVATE", "1").lower() not in ("0", "false")
 
     async def _run() -> None:
-        server = await serve(allow, host=lhost or "0.0.0.0", port=int(lport), block_private=block_private)
+        server = await serve(allow, host=lhost, port=lport, block_private=block_private)
         async with server:
             await server.serve_forever()
 
