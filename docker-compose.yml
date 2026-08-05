@@ -245,6 +245,12 @@ services:
       # - "tls <email>"    → Let's Encrypt auto-issue
       # - "tls internal"   → Caddy-managed self-signed
       - CADDY_TLS
+      # Legacy hostname to 301 onto ${DOMAIN} during a domain migration (see
+      # the Caddyfile's second site block). Passed through WITHOUT a default
+      # on purpose: Caddy's `{$DOMAIN_ALIAS:localhost:8081}` fallback applies
+      # only when the variable is unset, and an empty-but-set value would
+      # substitute an empty site address and fail config parsing.
+      - DOMAIN_ALIAS
     depends_on:
       app:
         condition: service_healthy

@@ -51,6 +51,12 @@ variable "prod_instance" {
     upgrade_schedule = optional(string, "*/5 * * * *")
     tls_mode         = optional(string, "caddy")
     domain           = optional(string, "")
+    # Hostname being migrated AWAY from. When set, Caddy serves it alongside
+    # `domain` and 301s every request onto `domain` (see the Caddyfile's
+    # second site block), so old bookmarks / `agnes` CLI configs / MCP
+    # connector URLs keep resolving through a domain cutover instead of
+    # failing the TLS handshake. Clear it once the old DNS record is retired.
+    domain_alias = optional(string, "")
     # Container memory caps written to /opt/agnes/.env and read by
     # docker-compose.yml (mem_limit: $${AGNES_APP_MEM_LIMIT:-4g}). Defaults
     # match the compose defaults; raise on a larger VM together with the
@@ -93,6 +99,11 @@ variable "dev_instances" {
     image_tag    = optional(string, "dev")
     tls_mode     = optional(string, "none")
     domain       = optional(string, "")
+    # Legacy hostname to 301 onto `domain` during a domain migration. Same
+    # semantics as prod_instance.domain_alias — see there. MUST be declared on
+    # this object type: Terraform silently drops attributes absent from the
+    # type, so a bare entry in a caller's list would never reach the module.
+    domain_alias = optional(string, "")
     # Role label used by per-VM OAuth secret naming
     # (var.oauth_secret_name_template `{role}` placeholder), VM tagging in
     # downstream cron/log filters, and dev_defaults selection. Defaults to

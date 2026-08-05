@@ -144,3 +144,51 @@
 		file_server
 	}
 }
+
+# Legacy-domain redirect, for the window of a domain migration. Set
+# DOMAIN_ALIAS to a hostname you are moving AWAY from: Caddy then serves that
+# name too (its own cert) and answers every request with a 301 to the same
+# path on DOMAIN. Without it the old name fails the TLS handshake the moment
+# DOMAIN changes — old bookmarks, `agnes` CLI configs pointing at `server`,
+# and MCP connector URLs all break with a certificate error rather than
+# landing on the new address. Drop the variable once the old DNS record is
+# retired.
+#
+# Why a second site block and not `DOMAIN="new.example.com, old.example.com"`:
+# Caddyfile env substitution is token-level, so a comma list inside ONE
+# variable is parsed as a single malformed address, not two site addresses.
+#
+# The default is deliberately `127.0.0.1:8081` — a port docker-compose never
+# publishes, so an unconfigured deployment gets an inert block. Two properties
+# of that default are load-bearing:
+#   - NON-PUBLIC. Any resolvable name would make every Agnes deployment
+#     attempt an ACME issuance for it on each start.
+#   - a different HOSTNAME from the primary site's own `localhost` default,
+#     not merely a different port. Sharing a hostname across two site blocks
+#     with different certificate settings is a hard config error — "hostname
+#     appears in more than one automation policy, making certificate
+#     management ambiguous" — and Caddy then refuses to start at all, which
+#     on a DOMAIN-less lab deployment means no server rather than no alias.
+{$DOMAIN_ALIAS:127.0.0.1:8081} {
+	# NO `tls` directive here, deliberately — do not "fix" this by mirroring
+	# the primary site's {$CADDY_TLS}. An explicit `tls <email>` pins an ACME
+	# issuer for the site, which overrides Caddy's per-name issuer choice: the
+	# inert localhost default then loops forever on
+	#   [localhost] Obtain: subject 'localhost' does not qualify for a public
+	#   certificate ... retrying_in 60
+	# on EVERY deployment that never set DOMAIN_ALIAS (verified live against
+	# caddy:2-alpine; the same run without the directive logs `certificate
+	# obtained successfully, issuer: local`). Left implicit, automatic HTTPS
+	# picks the right issuer per name — internal for the localhost default,
+	# public ACME for a real alias hostname. The alias's ACME account carries
+	# no contact email (CADDY_TLS's email belongs to the primary site's
+	# policy); that costs only expiry notices on a cert that exists for the
+	# length of a migration. A corporate-PKI deployment (CADDY_TLS unset,
+	# certs on disk) that sets DOMAIN_ALIAS should instead put both names on
+	# one SAN cert — this block would try public ACME for the legacy name.
+
+	# 301, not 302: this is a permanent move, and the redirect is what
+	# teaches clients (and their caches) the new origin. {uri} carries path
+	# + query through unchanged.
+	redir https://{$DOMAIN:localhost}{uri} permanent
+}
