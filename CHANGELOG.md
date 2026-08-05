@@ -14,6 +14,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.78.2] - 2026-08-05
+
+### Added
+
+### Changed
+
 - `/me/connections` UX after the first real OAuth rollout: the page now
   also lists per_user sources you have a stored connection for and (for
   admins) freshly registered sources with no tools yet — with a "no tools
