@@ -214,6 +214,30 @@ def _raw_str(raw: dict, key: str, default: str) -> str:
     return text or default
 
 
+def _raw_number(raw: dict, key: str, default, cast):
+    """Numeric sibling of :func:`_raw_str`: absent, blank, or null →
+    ``default``; a value that doesn't parse warns and falls back instead of
+    aborting the whole chat config load (``int(None)``/``float(None)`` used
+    to raise out of ``load_chat_config``, turning one blank key into chat
+    being disabled at boot)."""
+    value = raw.get(key, default)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return cast(default)
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        logger.warning("invalid chat.%s %r — falling back to %r", key, value, default)
+        return cast(default)
+
+
+def _raw_int(raw: dict, key: str, default: int) -> int:
+    return _raw_number(raw, key, default, int)
+
+
+def _raw_float(raw: dict, key: str, default: float) -> float:
+    return _raw_number(raw, key, default, float)
+
+
 def _parse_docker_egress_mode(raw: dict) -> str:
     """``open`` | ``none``; anything else warns and falls back to ``open``
     (same normalize-don't-crash convention as ``_parse_on_detach``)."""
@@ -279,53 +303,53 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         return ChatConfig(enabled=_resolve_chat_enabled({}), approvals_enabled=_resolve_chat_approvals({}))
     data = yaml.safe_load(instance_yaml.read_text()) or {}
     raw = data.get("chat", {}) or {}
-    detach_linger_seconds = int(raw.get("detach_linger_seconds", 60))
+    detach_linger_seconds = _raw_int(raw, "detach_linger_seconds", 60)
     return ChatConfig(
         enabled=_resolve_chat_enabled(raw),
         provider=_raw_str(raw, "provider", "e2b"),
         harness=_raw_str(raw, "harness", "claude-code"),
-        concurrency_per_user=int(raw.get("concurrency_per_user", 3)),
-        idle_ttl_seconds=int(raw.get("idle_ttl_seconds", 30 * 60)),
-        per_tool_call_seconds=int(raw.get("per_tool_call_seconds", 90)),
-        per_session_bq_scan_bytes=int(raw.get("per_session_bq_scan_bytes", 20 * 1024**3)),
-        daily_anthropic_spend_usd=float(raw.get("daily_anthropic_spend_usd", 20.0)),
-        max_session_seconds=int(raw.get("max_session_seconds", 4 * 3600)),
-        max_session_tokens=int(raw.get("max_session_tokens", 200_000)),
-        rate_messages_per_hour=int(raw.get("rate_messages_per_hour", 100)),
-        tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
-        approval_timeout_seconds=int(raw.get("approval_timeout_seconds", 300)),
+        concurrency_per_user=_raw_int(raw, "concurrency_per_user", 3),
+        idle_ttl_seconds=_raw_int(raw, "idle_ttl_seconds", 30 * 60),
+        per_tool_call_seconds=_raw_int(raw, "per_tool_call_seconds", 90),
+        per_session_bq_scan_bytes=_raw_int(raw, "per_session_bq_scan_bytes", 20 * 1024**3),
+        daily_anthropic_spend_usd=_raw_float(raw, "daily_anthropic_spend_usd", 20.0),
+        max_session_seconds=_raw_int(raw, "max_session_seconds", 4 * 3600),
+        max_session_tokens=_raw_int(raw, "max_session_tokens", 200_000),
+        rate_messages_per_hour=_raw_int(raw, "rate_messages_per_hour", 100),
+        tool_calls_per_turn_budget=_raw_int(raw, "tool_calls_per_turn_budget", 50),
+        approval_timeout_seconds=_raw_int(raw, "approval_timeout_seconds", 300),
         approvals_enabled=_resolve_chat_approvals(raw),
-        marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
+        marketplace_sha_debounce_seconds=_raw_int(raw, "marketplace_sha_debounce_seconds", 5 * 60),
         e2b_template_id=raw.get("e2b_template_id") or None,
         egress_allow_out=list(raw.get("egress_allow_out") or []),
-        e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
+        e2b_workspace_max_bytes=_raw_int(raw, "e2b_workspace_max_bytes", 100 * 1024 * 1024),
         docker_image=str(raw.get("docker_image") or "agnes-chat-sandbox:latest"),
         docker_network=str(raw.get("docker_network") or "agnes-apps"),
         docker_mem_limit=str(raw.get("docker_mem_limit") or "2g"),
-        docker_cpus=float(raw.get("docker_cpus", 1.0)),
-        docker_pids_limit=int(raw.get("docker_pids_limit", 512)),
+        docker_cpus=_raw_float(raw, "docker_cpus", 1.0),
+        docker_pids_limit=_raw_int(raw, "docker_pids_limit", 512),
         docker_egress_mode=_parse_docker_egress_mode(raw),
-        docker_max_total_sandboxes=int(raw.get("docker_max_total_sandboxes", 10)),
+        docker_max_total_sandboxes=_raw_int(raw, "docker_max_total_sandboxes", 10),
         on_detach=_parse_on_detach(raw),
         detach_linger_seconds=detach_linger_seconds,
         # Falls back to detach_linger_seconds's own resolved value when the
         # operator's instance.yaml doesn't set idle_grace_seconds explicitly
         # — see ChatConfig.idle_grace_seconds's docstring.
-        idle_grace_seconds=int(raw.get("idle_grace_seconds", detach_linger_seconds)),
-        paused_ttl_seconds=int(raw.get("paused_ttl_seconds", 7 * 24 * 3600)),
-        e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
-        bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
+        idle_grace_seconds=_raw_int(raw, "idle_grace_seconds", detach_linger_seconds),
+        paused_ttl_seconds=_raw_int(raw, "paused_ttl_seconds", 7 * 24 * 3600),
+        e2b_kill_on_ws_disconnect=coerce_flag_value(raw.get("e2b_kill_on_ws_disconnect"), default=True),
+        bootstrap_marketplace=coerce_flag_value(raw.get("bootstrap_marketplace"), default=False),
         llm_auth=_raw_str(raw.get("llm") or {}, "auth", "api_key").lower(),
         agent_api_utility_models=list(raw.get("agent_api_utility_models") or []),
-        agent_api_budget_cache_ttl_s=int(raw.get("agent_api_budget_cache_ttl_s", 60)),
-        agent_api_artifact_max_bytes=int(raw.get("agent_api_artifact_max_bytes", 25 * 1024 * 1024)),
-        agent_api_artifact_max_files=int(raw.get("agent_api_artifact_max_files", 20)),
-        agent_api_webhook_max_failures=int(raw.get("agent_api_webhook_max_failures", 5)),
-        agent_memory_max_chars=int(raw.get("agent_memory_max_chars", 2000)),
-        agent_memory_writes_per_hour=int(raw.get("agent_memory_writes_per_hour", 20)),
-        agent_memory_max_pending=int(raw.get("agent_memory_max_pending", 100)),
+        agent_api_budget_cache_ttl_s=_raw_int(raw, "agent_api_budget_cache_ttl_s", 60),
+        agent_api_artifact_max_bytes=_raw_int(raw, "agent_api_artifact_max_bytes", 25 * 1024 * 1024),
+        agent_api_artifact_max_files=_raw_int(raw, "agent_api_artifact_max_files", 20),
+        agent_api_webhook_max_failures=_raw_int(raw, "agent_api_webhook_max_failures", 5),
+        agent_memory_max_chars=_raw_int(raw, "agent_memory_max_chars", 2000),
+        agent_memory_writes_per_hour=_raw_int(raw, "agent_memory_writes_per_hour", 20),
+        agent_memory_max_pending=_raw_int(raw, "agent_memory_max_pending", 100),
         # Inert (see the field's own comment above) — parsed and stored for
         # forward-compat with the not-yet-built reaper, not read anywhere yet.
-        agent_memory_pending_ttl_days=int(raw.get("agent_memory_pending_ttl_days", 30)),
+        agent_memory_pending_ttl_days=_raw_int(raw, "agent_memory_pending_ttl_days", 30),
         slack=_parse_slack_config(raw),
     )

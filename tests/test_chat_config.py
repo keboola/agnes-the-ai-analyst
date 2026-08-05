@@ -108,6 +108,38 @@ def test_blank_string_keys_fall_back_to_their_defaults(tmp_path: Path):
     assert cfg.llm_auth == "api_key"
 
 
+def test_blank_numeric_and_bool_keys_fall_back_to_their_defaults(tmp_path: Path, caplog):
+    """The numeric variant of the same trap: `int(raw.get(key, default))` on a
+    key written with no value raised `int(None)` out of load_chat_config,
+    turning one blank line into chat being disabled at boot; `bool(None)`
+    silently flipped e2b_kill_on_ws_disconnect to False. Garbage values warn
+    and fall back rather than aborting the load."""
+    y = tmp_path / "instance.yaml"
+    y.write_text(
+        "chat:\n"
+        "  enabled: true\n"
+        "  docker_cpus:\n"
+        "  docker_pids_limit:\n"
+        "  docker_max_total_sandboxes:\n"
+        "  concurrency_per_user:\n"
+        "  detach_linger_seconds:\n"
+        "  e2b_kill_on_ws_disconnect:\n"
+        "  bootstrap_marketplace:\n"
+        "  rate_messages_per_hour: not-a-number\n"
+    )
+    cfg = load_chat_config(y)
+    assert cfg.docker_cpus == 1.0
+    assert cfg.docker_pids_limit == 512
+    assert cfg.docker_max_total_sandboxes == 10
+    assert cfg.concurrency_per_user == 3
+    assert cfg.detach_linger_seconds == 60
+    assert cfg.idle_grace_seconds == 60
+    assert cfg.e2b_kill_on_ws_disconnect is True
+    assert cfg.bootstrap_marketplace is False
+    assert cfg.rate_messages_per_hour == 100
+    assert "rate_messages_per_hour" in caplog.text
+
+
 def test_legacy_sandbox_uid_knob_is_dropped(tmp_path: Path):
     """The deprecated sandbox_uid / require_isolation keys are silently
     ignored — the ChatConfig dataclass no longer exposes them and the
