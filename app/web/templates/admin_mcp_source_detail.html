@@ -237,6 +237,7 @@
         <select id="edit-auth-method">
           <option value="">none</option>
           <option value="bearer">bearer (env var)</option>
+          <option value="oauth">oauth (per-user browser connect)</option>
           <option value="header">custom header</option>
         </select>
 
@@ -282,27 +283,43 @@
 
   <!-- Your connection card — per_user sources only. Same my-secret API the
        /me/connections page uses, surfaced inline so an admin can register,
-       connect their own token, and introspect without leaving this page. -->
+       connect their own token, and introspect without leaving this page.
+       auth_method='oauth' sources (2026-07-30 outbound MCP OAuth sources
+       spec §3) swap the paste-field for a Connect/Disconnect pair — the
+       Test button is shared (POST …/my-secret/test resolves either
+       credential kind server-side). -->
   <div class="src-card" id="my-connection-card" hidden>
     <div class="src-card-head">
       <h3>Your connection</h3>
       <span id="myconn-status" style="font-size: 12px; color: var(--text-secondary, #6b7280);">…</span>
     </div>
     <div class="src-card-body">
-      <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
+      <p id="myconn-desc-secret" style="margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
         This source is <strong>per_user</strong>-scoped: every analyst connects
         their own credential (yours is what Introspect / Test connection run
         under). Analysts do this on <a href="/me/connections">My connections</a>;
         as an admin you can connect yours right here. Write-only — the value is
         never shown back.
       </p>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <p id="myconn-desc-oauth" style="display:none; margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
+        This source is <strong>per_user</strong>-scoped and OAuth-authenticated:
+        every analyst authorizes their own account in their browser (yours is
+        what Introspect / Test connection run under). Analysts do this on
+        <a href="/me/connections">My connections</a>; as an admin you can
+        connect yours right here.
+      </p>
+      <div id="myconn-secret-controls" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         <input id="myconn-token" type="password" autocomplete="new-password"
                placeholder="Paste your personal token for this source"
                style="flex:1; min-width:240px; padding:8px 11px; border:1px solid var(--border, #e5e7eb); border-radius:6px; font-size:13px; box-sizing:border-box;">
         {{ ds.button('Save', variant='primary', id='myconn-save-btn') }}
         {{ ds.button('Test', variant='secondary', id='myconn-test-btn') }}
         {{ ds.button('Disconnect', variant='danger', id='myconn-clear-btn') }}
+      </div>
+      <div id="myconn-oauth-controls" style="display:none; gap:8px; align-items:center; flex-wrap:wrap;">
+        <a id="myconn-oauth-connect-link" class="btn btn-primary btn-sm" href="#">Connect your account</a>
+        {{ ds.button('Test', variant='secondary', id='myconn-oauth-test-btn') }}
+        {{ ds.button('Disconnect', variant='danger', id='myconn-oauth-disconnect-btn') }}
       </div>
       <div id="myconn-result" class="test-result"></div>
     </div>
@@ -633,23 +650,60 @@ function showMyConnResult(msg, kind) {
   out.textContent = msg;
 }
 
+function isOauthSource() {
+  return !!source && (source.auth_method || "") === "oauth";
+}
+
 async function renderMyConnection() {
   const card = document.getElementById("my-connection-card");
   if (!card || !source) return;
   const isPerUser = (source.scope || "shared") === "per_user";
   card.hidden = !isPerUser;
   if (!isPerUser) return;
+
+  const oauth = isOauthSource();
+  document.getElementById("myconn-desc-secret").style.display = oauth ? "none" : "block";
+  document.getElementById("myconn-desc-oauth").style.display = oauth ? "block" : "none";
+  document.getElementById("myconn-secret-controls").style.display = oauth ? "none" : "flex";
+  document.getElementById("myconn-oauth-controls").style.display = oauth ? "flex" : "none";
+  if (oauth) {
+    document.getElementById("myconn-oauth-connect-link").href =
+      `/api/mcp/sources/${encodeURIComponent(SOURCE_ID)}/oauth/authorize`;
+  }
+
   const el = document.getElementById("myconn-status");
   try {
     const r = await fetch(MYCONN_API, { credentials: "include" });
     if (!r.ok) throw new Error(r.statusText);
     const st = await r.json();
     if (st.has_secret) {
-      el.textContent = "🔗 Connected" + (st.updated_at ? ` (since ${st.updated_at.slice(0, 10)})` : "");
+      const expiry = st.expires_at ? `, expires ${st.expires_at.slice(0, 10)}` : "";
+      el.textContent = "🔗 Connected" + (st.updated_at ? ` (since ${st.updated_at.slice(0, 10)})` : "") + expiry;
       el.style.color = "#166534";
+      const link = document.getElementById("myconn-oauth-connect-link");
+      if (link) link.textContent = "Reconnect";
+      const disc = document.getElementById("myconn-oauth-disconnect-btn");
+      if (disc) disc.style.display = "";
+    } else if (st.updated_at) {
+      // Stored but no longer usable (expired with no refresh path): still
+      // offer Disconnect so the dead row can be removed (Devin Review on
+      // #1130).
+      el.textContent = "Connection expired — reconnect or disconnect";
+      el.style.color = "#b45309";
+      const link = document.getElementById("myconn-oauth-connect-link");
+      if (link) link.textContent = "Reconnect";
+      const disc = document.getElementById("myconn-oauth-disconnect-btn");
+      if (disc) disc.style.display = "";
     } else {
       el.textContent = "Not connected — Introspect will run without your credential";
       el.style.color = "#b45309";
+      // Reset the label too — after a disconnect this branch re-renders and
+      // "Reconnect" would linger on a source with no connection (Devin
+      // Review on #1130).
+      const link = document.getElementById("myconn-oauth-connect-link");
+      if (link) link.textContent = "Connect";
+      const disc = document.getElementById("myconn-oauth-disconnect-btn");
+      if (disc) disc.style.display = "none";
     }
   } catch (_) {
     el.textContent = "Status unavailable";
@@ -686,8 +740,8 @@ document.getElementById("myconn-save-btn").addEventListener("click", async () =>
   }
 });
 
-document.getElementById("myconn-test-btn").addEventListener("click", async () => {
-  const btn = document.getElementById("myconn-test-btn");
+async function runMyConnTest(btnId) {
+  const btn = document.getElementById(btnId);
   document.getElementById("myconn-result").className = "test-result";
   btn.disabled = true;
   try {
@@ -703,7 +757,13 @@ document.getElementById("myconn-test-btn").addEventListener("click", async () =>
   } finally {
     btn.disabled = false;
   }
-});
+}
+
+// Same server-side endpoint resolves either credential kind (step 3 of the
+// 2026-07-30 outbound MCP OAuth sources spec) — one test path, two buttons
+// (only one visible at a time per renderMyConnection()'s toggle).
+document.getElementById("myconn-test-btn").addEventListener("click", () => runMyConnTest("myconn-test-btn"));
+document.getElementById("myconn-oauth-test-btn").addEventListener("click", () => runMyConnTest("myconn-oauth-test-btn"));
 
 document.getElementById("myconn-clear-btn").addEventListener("click", async () => {
   const btn = document.getElementById("myconn-clear-btn");
@@ -711,6 +771,30 @@ document.getElementById("myconn-clear-btn").addEventListener("click", async () =
   btn.disabled = true;
   try {
     const r = await fetch(MYCONN_API, { method: "DELETE", credentials: "include" });
+    if (r.status === 204 || r.ok) {
+      toast("Disconnected", "success");
+      await renderMyConnection();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      showMyConnResult("Failed: " + detail, "err");
+    }
+  } catch (e) {
+    showMyConnResult("Failed: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("myconn-oauth-disconnect-btn").addEventListener("click", async () => {
+  if (!confirm("Disconnect your OAuth connection for this source?")) return;
+  const btn = document.getElementById("myconn-oauth-disconnect-btn");
+  document.getElementById("myconn-result").className = "test-result";
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/mcp/sources/${encodeURIComponent(SOURCE_ID)}/oauth/connection`, {
+      method: "DELETE", credentials: "include",
+    });
     if (r.status === 204 || r.ok) {
       toast("Disconnected", "success");
       await renderMyConnection();

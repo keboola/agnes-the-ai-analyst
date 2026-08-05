@@ -49,13 +49,15 @@ Per the owner decision on Q2, this template uses the mutable
 
 ## What is *not* in the template
 
-- **No firewall / iptables rules.** Per Q4 the operator chose
-  ops-simplicity over network-layer defense-in-depth. Egress allowlist
-  enforcement lives only in the PreToolUse hook bundled with the
-  default workspace template
-  (`.claude/hooks/pre_tool_use.py`). A prompt injection that rewrites
-  the hook can therefore reach arbitrary hosts. Re-introduce E2B
-  network policy here if the threat model changes.
+- **No firewall / iptables rules *in the image* — and none are needed.**
+  Egress is enforced by the E2B platform, not from inside the sandbox:
+  `E2BProvider.spawn` passes
+  `network={"allow_out": …, "deny_out": [ALL_TRAFFIC]}`, so everything
+  outside `chat.egress_allow_out` is blocked at the VM level. The
+  PreToolUse hook bundled with the default workspace template
+  (`.claude/hooks/pre_tool_use.py`) is defense-in-depth only; the
+  VM-level deny-list survives an agent rewriting or deleting it. (This
+  supersedes the original Q4 decision, which relied on the hook alone.)
 - **No runner code.** `app/chat/runner.py` is uploaded by Agnes at
   sandbox spawn via `files.write` — change the runner code without
   rebuilding the template.

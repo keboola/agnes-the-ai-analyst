@@ -20,10 +20,336 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `/admin/chat/secrets/test` ("Test connections" in server config) reports the sandbox credential for the configured provider: the E2B key on an E2B instance, a Docker daemon + image probe on a self-hosted one, instead of a permanently failing E2B row.
 
 ### Fixed
+- Two pages that shipped with no way to reach them from the UI. The agent
+  builder (`/agents`) now has a **My agents** entry in the user dropdown —
+  a per-user resource list, so it sits next to *My connections* rather than in
+  the primary nav or the admin menu — and the token-based editor setup page
+  (`/mcp-connect`) is linked from the AI Connector page as the fallback for
+  clients that can't complete the browser sign-in. Both also gained Cmd/Ctrl-K
+  palette entries, and `tests/test_web_nav_agents.py` guards the links so the
+  pages can't go unreachable again (same bug class as #919's
+  `/me/connections`). The **News** page (`/news`) joins the palette too:
+  its only link was /home's news strip, which needs both a published version
+  and an instance whose `home_route` is `/home`, so on the `/dashboard` default
+  non-admins had no way in. The new-web-page playbook now carries a "wire an
+  inbound link" step — a route alone is not a shipped page.
+  `/news` gets a dropdown entry too: its other two entry points are both
+  conditional — /home's "What's new" strip needs a published version AND
+  `home_route == '/home'`, and the command palette initializes only when the
+  admin menu is in the DOM — so on the `/dashboard` default a non-admin could
+  not reach it at all.
+
 
 ### Removed
 
 ### Internal
+- New dev-kit skill `agnes-wayfinder` (`.claude/skills/agnes-wayfinder/`) for efforts whose destination is known but whose route is still fogged in — the phase before `superpowers:writing-plans` has anything to plan. It charts a map (`docs/superpowers/maps/<effort>/map.md`) plus numbered decision tickets, resolved one per session until no decisions remain, then hands off to `writing-plans` → `/agnes-build`. Deliberately markdown-in-repo rather than GitHub issues: the *Issue economy* convention exists to stop exactly this kind of question-dumping into a public tracker, and a map under `docs/brainstorms/` would be gitignored and lost with its checkout. Explicit invocation only — if the steps can already be stated, the map is overhead. Adapted from Matt Pocock's `wayfinder` skill (MIT).
+  The frontier query hides a ticket only on positive evidence of a live
+  blocker. Everything it cannot interpret — an odd "no dependencies" marker,
+  an unpadded reference, a reference to a ticket that does not exist, an
+  unrecognised status on either the ticket OR its blocker, a dependency cycle —
+  surfaces the ticket
+  instead of dropping it; `claimed`
+  counts as unfinished, and a ticket ruled past the destination takes a
+  terminal `out-of-scope` status that both leaves the queue and settles
+  anything waiting on it. Five variants of one mistake: something
+  unrecognised defaulted to "blocked", so a question left the work list while
+  the effort read as finished. The exit step also keeps `issues/` rather than
+  deleting it — the map is an index whose decisions link into the tickets, so
+  removing them discarded the only full copy of the reasoning.
+
+
+- Vault repositories now share one decrypt path: `SharedSecretsRepository`,
+  `PerUserSecretsRepository`, `ConnectionSecretsRepository` and
+  `SystemSecretsRepository` (DuckDB and Postgres alike) fold their inline
+  decrypt-failure blocks onto the `app.secrets_vault.decrypt_optional` helper.
+  Behavior is unchanged — a NULL or unreadable column still reads as absent
+  instead of raising — but the warning now names the column that failed
+  (`<table>.<column>[<key>]`) and keeps the caller's "falling back to …" note
+  via a new `hint` argument. `SystemSecretsRepository` was going to stay
+  outside the fold, on the grounds that its wider catch (the `RuntimeError` a
+  malformed `AGNES_VAULT_KEY` raises) did not belong in a shared path; the
+  helper has since gained that catch for every caller, so the exception lost
+  its reason and the last hand-rolled copy goes with it. Cross-engine contract
+  tests assert the decrypt-failure path on both backends.
+
+### Security
+
+## [0.78.1] - 2026-08-04
+
+### Added
+- MCP OAuth sources, phase 2 — the per-user browser connect flow: `GET
+  /api/mcp/sources/{id}/oauth/authorize` (signed, single-use PKCE state;
+  grant- and rate-limit-gated) redirects the analyst's browser to the
+  upstream authorization server; `GET /api/mcp/oauth-client/callback`
+  redeems the code (login-CSRF + mix-up defenses, RFC 9700-aligned) and
+  lands back on `/me/connections`; `DELETE
+  /api/mcp/sources/{id}/oauth/connection` disconnects. `/me/connections`
+  and the admin source-detail "Your connection" panel swap the paste-a-token
+  flow for Connect/Disconnect buttons on `auth_method='oauth'` sources;
+  `GET .../my-secret` gains `auth_kind`/`expires_at`. New CLI verbs `agnes
+  mcp connect <source>` (opens the browser, polls until connected) and
+  `agnes mcp disconnect <source>`. The single-use authorization code and
+  signed state are now redacted from the server's own access log for the
+  callback path — operators should apply the same redaction in their
+  TLS-terminating reverse proxy's access log (see `docs/DEPLOYMENT.md`).
+
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+- `aiohttp` floor raised to `>=3.14.3`, clearing three upstream advisories:
+  an out-of-bounds heap read in the C HTTP response parser's error path
+  (high, GHSA-cq5v-8q36-5273), HTTP request smuggling via a WebSocket upgrade
+  (GHSA-mfx4-hv73-q22v), and a WebSocket client accepting compressed frames
+  without a negotiated extension (GHSA-mq44-7p77-q5h7). The two WebSocket ones
+  reach the `slack-socket` extra directly — the Socket Mode client is an
+  aiohttp WebSocket client — which is why the floor moves rather than only the
+  lock: a fresh install must not be able to resolve back to a vulnerable
+  release. A `telegram` extra now declares aiohttp too — `services/telegram_bot/bot.py` imports it at module scope, so that service only ever started because the shipped image installs `[slack-socket]` alongside; an operator installing `[server]` and running only the Telegram bot hit ImportError. aiohttp joins the `dev` extra too, so `tests/test_telegram_bot.py` actually executes in CI instead of skipping through its guarded import — the ImportError the extra prevents was previously untested.
+
+
+## [0.78.0] - 2026-08-04
+
+### Added
+
+- Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
+  behavior yet): schema v109 adds `mcp_source_oauth_clients`,
+  `mcp_user_oauth_tokens`, and `mcp_oauth_flows` (both migration ladders),
+  with dual-backend repositories and Fernet-encrypted token columns.
+  `auth_method='oauth'` is accepted on `mcp_sources` but validated to require
+  an http/sse transport and `scope='per_user'` — at the repository AND admin
+  API layers, including partial updates.
+  Service half (still no user-facing connect UI — that's PR 2): a shared
+  SSRF-safe HTTP client (`src/net/ssrf_safe_client.py`, extracted from the
+  marketplace asset mirror) backs a new outbound OAuth client
+  (`connectors/mcp/oauth_client.py`) doing RFC 9728 protected-resource
+  discovery, RFC 8414 AS metadata discovery, PKCE-S256 fail-closed dynamic
+  client registration (RFC 7591), and authorization-code token
+  exchange/refresh. `connectors/mcp/client.py` resolves and transparently
+  refreshes a caller's OAuth token (single-flight via an in-process lock
+  plus a coordination-backend lease, so multi-process deployments never
+  double-refresh); `enforce_per_user_credential` and the admin connect
+  probes now recognize oauth sources the same way they recognize
+  secret-backed per_user sources. New admin endpoints
+  `POST …/mcp-sources/{id}/oauth/register` (discovery + DCR, idempotent) and
+  `PUT …/mcp-sources/{id}/oauth/client` (manual client config) plus CLI
+  verbs `agnes admin mcp source oauth-register` / `oauth-client`. The stored
+  client secret is write-only (never echoed back), so `PUT …/oauth/client`
+  treats an omitted `client_secret` as "leave it alone" and an explicit `""`
+  as a deliberate clear. Per-user tokens are dropped whenever the
+  registration they were issued against stops being the one Agnes refreshes
+  with — source deletion, a re-registration that changed `client_id`,
+  flipping `auth_method` off `oauth`, or repointing the source's `url` at a
+  different upstream (whose AS did not mint those tokens); that purge runs
+  before the row is repointed, so a mid-sequence failure cannot leave live
+  credentials aimed at a host that never issued them. Design:
+  `docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md`.
+
+- MCP: new `tool_docs(tool_name)` tool on both MCP surfaces (HTTP foundation + CLI stdio) returning a tool's full reference documentation on demand.
+
+- **`SECURITY.md` — public threat model and vulnerability-reporting process.** States the deployment/trust model (single-org per instance; the agent sandbox is never trusted to make authorization decisions), documents the controls that carry the most weight (the secret broker keeping credential material out of the sandbox, live per-request agent scope intersection, server-side data-access checks on every read surface, VM-level sandbox egress, the untrusted-input controls, the Fernet secret vault), and lists known limitations honestly — unscreened prompt injection, `bypassPermissions` inside the sandbox, admin god-mode, non-revocable 30-day session cookies, `SameSite`-only CSRF, coarse data-app isolation, non-tamper-evident audit, unencrypted data at rest, and the unsigned-artifact/unpinned-marketplace supply chain. Closes with an operator security checklist. Linked from `README.md` and `docs/README.md`; reports go through GitHub private vulnerability reporting.
+
+### Changed
+- **Editing an MCP source's `url` now discards every stored credential for
+  that source, not just the OAuth ones.** The shared vault secret and every
+  analyst's per-user secret are dropped alongside the OAuth client
+  registration, tokens and in-flight flows, because all of them are forwarded
+  as `Authorization` headers by the same seam that reads the freshly written
+  url — a credential must never reach a host that did not issue it. Any
+  difference counts, including a path-only edit or an added trailing slash: a
+  different path can be a different protected resource. This is irreversible
+  and is not separately confirmed, so an admin fixing a typo in a `bearer`
+  source's url will have to re-enter its secret and their analysts will have
+  to re-connect. It applies only where the url is live — on a `stdio` source
+  the secret is injected into the subprocess environment and the url is never
+  read, so editing it there changes nothing. Conversely, flipping a `stdio`
+  source to http/sse purges even with the url untouched: that edit makes an
+  already stored url live for the first time. The purge runs before the row is
+  repointed, and the audit row records `credentials_purged` plus `purged_kinds`
+  — naming which of the two independent purges ran, since flipping
+  `auth_method` off `oauth` destroys every analyst's tokens and the client
+  registration without any url change at all — so the effect is traceable
+  afterwards. An explicit JSON `null` for a non-nullable field (`name`,
+  `scope`, `enabled`) means "leave unchanged" rather than being written
+  through: `name` in particular reached the write as NULL, after the purge,
+  and surfaced as a misleading `name_exists` 409 — credentials destroyed and
+  the edit refused. The nullable fields keep their existing meaning, where
+  `null` is the only way to clear them and the admin UI sends it deliberately.
+
+- MCP: tool descriptions in `tools/list` now carry only the docstring's first paragraph plus a `tool_docs` pointer — the listing drops from ~9.6k to ~2k tokens; full docs moved behind `tool_docs`. A test ratchet caps every wire description at 500 chars.
+- **MCP tool parameter schemas tightened.** `stack_browse`/`stack_subscribe`/`stack_unsubscribe` (`resource_type`), `admin_analytics_migrate` (`to`), `data_apps_list` (`kind`) and `data_app_deploy` (`mode`) declare their valid values as `Literal[…]`, so the constraint reaches `tools/list` as a JSON-schema enum instead of living only in the `Args:` prose the trimmed description drops; `store_rate` (`vote`) uses a bounded `int` rather than a literal union, because a literal would stop accepting the string `"1"` that models commonly emit for numbers. Applied on both MCP surfaces, so the HTTP and stdio copies of a tool keep advertising the same contract.
+- MCP: `query` and `describe` (plus CLI `query_local`) refuse responses whose serialized size exceeds `AGNES_MCP_MAX_OUTPUT_CHARS` (default 100 000; `0` disables) with actionable narrowing guidance, instead of returning megabyte payloads into the model's context. Row-level `limit`/`truncated` semantics are unchanged.
+
+- **`docs/cloud-chat.md`: corrected a stale claim that chat-sandbox egress is fail-open at the network layer.** Egress has since been enforced at the VM level (`deny_out=[ALL_TRAFFIC]` plus the `chat.egress_allow_out` allowlist); the in-sandbox `PreToolUse` hook is defense-in-depth only. The doc now says so and marks the original decision as superseded.
+
+### Fixed
+- Repointing an OAuth source's endpoints no longer keeps the previous
+  provider's client secret. Retention of the stored secret and registration
+  access token was keyed on `client_id` alone while the token purge compared
+  the whole `(issuer, authorization_endpoint, token_endpoint, client_id)`
+  identity, so a PUT that moved a source to a different authorization server
+  while re-typing the same client name purged every analyst's tokens yet left
+  the old provider's secret on the row — where client auth sends it as HTTP
+  Basic to the new token endpoint, and the retained registration token is
+  bearer-sent to the new provider too. Both halves now use the one identity
+  predicate, on the DCR path as well as the manual one.
+
+- `agnes admin mcp source oauth-client` gains `--keep-secret`, and the two
+  commands that read secret material from stdin now say so first. The endpoint
+  has three secret states — replace, clear, leave alone — but the CLI exposed
+  only the first two, so editing the endpoints or scopes of an existing
+  confidential client fell into an unprompted blocking read that is
+  indistinguishable from a hang. The notice goes to stderr and only when stdin
+  is a terminal, so the piped form (`printf %s "$SECRET" | agnes …`) stays
+  byte-clean; `--keep-secret` skips the read entirely and omits the field,
+  which is what the server reads as "keep". Passing it together with
+  `--public-client` is refused rather than silently picking one.
+
+- Dynamic client registration takes the authorization server's answer as
+  authoritative on two more fields it was ignoring (RFC 7591 §3.2.1). A
+  registration the AS records as `client_secret_basic` while issuing no
+  `client_secret` is now refused at registration time with an actionable
+  message: client authentication is selected by secret presence, so such a
+  client would have sent none at all and every token exchange and refresh
+  would have failed `invalid_client` with nothing pointing at why. The mirror
+  case — a registration the AS records as public that nonetheless returns a
+  secret — has that secret dropped, with a warning, since Basic auth to a
+  public client fails the same way. Together the two make a stored secret
+  present exactly when the AS registered the client as confidential, which is
+  what makes selecting client auth on presence correct at all. And the
+  `scope` the AS grants is stored in place of the one requested — recording
+  the request would put a scope the client does not hold into the stored row,
+  and from there into the authorize URL.
+
+- An OAuth client re-save no longer discards a registration access token the
+  current vault key cannot open. The repositories decrypt that column with the
+  same helper that reports `None` for a NULL column, so "no token" and "token
+  we can no longer read" were indistinguishable — an ordinary re-save after a
+  key rotation wrote NULL over still-valid ciphertext and permanently disabled
+  deregistering the client upstream, leaving a dangling registration at the
+  authorization server. Both backends now expose
+  `registration_access_token_present` alongside `client_secret_present`, and a
+  `KEEP_STORED` sentinel preserves the column instead of round-tripping a
+  decrypted value through it. Covered by the cross-engine contract test.
+
+- OAuth MCP refresh survives a response that omits `expires_in`, backs off
+  after a failed attempt, and never repoints a client row ahead of purging the
+  tokens it strands. `expires_in` is RECOMMENDED rather than required (RFC
+  6749 §5.1), and writing its absence over a known expiry was terminal: a NULL
+  expiry reads as "non-expiring, never refresh" to the renewal path and as
+  "connected" to the fail-closed check, so the token was never renewed again
+  and never prompted a re-connect — the source just returned opaque upstream
+  401s once it lapsed. The previously observed lifetime is now carried
+  forward. A refresh that fails for any reason other than a revoked grant puts
+  that `(source, user)` pair in a short cooldown, so a wedged authorization
+  server is no longer re-hit on every forwarded call (design spec §4). Both
+  OAuth client-write endpoints purge stranded per-user tokens and in-flight
+  flows before writing the new registration, matching the source `url`
+  repoint: the refresh path reads the endpoints and client secret straight off
+  that row, so purge-last could leave it addressing a new authorization server
+  while the old server's refresh tokens were still on file. A refresh failure
+  that is not an OAuth protocol error — an SSRF rejection when a token
+  endpoint later resolves to a blocked address — is caught on the same path
+  rather than escaping and failing the whole call without recording a
+  back-off. Protected-resource discovery no longer gives up when a *probed*
+  well-known URL answers 200 with a non-JSON body: a host that serves a
+  catch-all HTML page for unknown paths aborted discovery at the first
+  candidate, skipping the second and the `401`-challenge fallback — the very
+  path such a host needs. A junk body at the `resource_metadata` URL the
+  server explicitly advertised is still a hard, actionable error — as is a 200
+  JSON object that is not RFC 9728 metadata, such as the `{"error": …}`
+  envelope an API gateway returns for unknown paths, which used to be accepted
+  as the document and then surfaced as "carries no 'authorization_servers'",
+  pointing the admin at the document rather than at the missing discovery.
+  Proactive refresh no longer fires on every single call against an
+  authorization server that issues short-lived tokens: the 60-second early
+  refresh window is clamped to half the token's own lifetime, so a token valid
+  for less than that is not already due the moment it is written.
+
+- A malformed `AGNES_VAULT_KEY` no longer 500s every request that reads a
+  secret. `_get_fernet()` raises `RuntimeError` when the env var is set but is
+  not a valid Fernet key, and only `SystemSecretsRepository` caught it — the
+  shared, per-user and connection secret repos (both backends) caught
+  `InvalidToken` alone, so a typo in one env var surfaced as an internal error
+  on every MCP call, admin probe and connect page instead of the "not
+  configured / not connected" the callers already handle. All read paths, and
+  the `decrypt_optional` helper the OAuth repos share, now swallow both. The
+  distinction matters because the two failures differ in blast radius: an
+  unreadable value is per-row, a bad key is process-wide and fires on the
+  first read.
+
+- Chat runner: fixed a latent task-GC bug — the stdin reader task was created without a strong reference, so a garbage-collection cycle during a long-running turn could silently kill inbound frame routing (Stop/cancel and credential `ticket_push` frames stopped arriving).
+
+- Streamable-MCP OAuth token revocation (RFC 7009) no longer rejects public PKCE clients: a client registered via RFC 7591 dynamic registration with `token_endpoint_auth_method: "none"` (what Claude Code, VS Code, and claude.ai register as) posting `token=…&client_id=…` to `/api/mcp/http/revoke` was answered 400 `client_secret: Field required` by the MCP SDK's request model (a required-but-nullable field — still broken upstream as of mcp 2.0.0), so issued tokens could not be invalidated and lived out their full TTL. The revocation route now validates the form with a truly-optional `client_secret`; confidential clients are unaffected (a stored secret is still enforced by client authentication, and a missing/wrong secret is rejected 401 with the token left intact). OAuth discovery documents additionally advertise `none` in `revocation_endpoint_auth_methods_supported`.
+- Graceful-shutdown race that could hang the process (and tests, as a 60s pytest-timeout inside `TestClient.__exit__`): cancelling the readiness write-canary — and the periodic state-DB CHECKPOINT tick — abandoned an in-flight worker-thread DB call (`asyncio.to_thread` cancellation semantics), letting the lifespan close the DuckDB singletons while the write was still executing; DuckDB could then wedge inside `conn.execute` and event-loop teardown deadlocked joining the executor thread (also visible as `close_system_db: CHECKPOINT failed: there are other write transactions active`). Both loops now drain the in-flight call on cancellation (`to_thread_drain_on_cancel` in `app/api/health_probes.py`) before shutdown proceeds to close the DB. The worker runtime's poll-path DB calls (`claim_next`/`reap_exhausted`/`heartbeat`/`complete`/`fail`) had the same exposure and drain the same way, and `worker_loop`'s defensive shutdown re-cancel now skips children already processing a cancellation so it cannot interrupt their drain and re-orphan the thread. The drain itself is bounded by `AGNES_DRAIN_TIMEOUT_S` (default 45s) so a genuinely hung statement — lock contention, a partitioned Postgres — degrades to the previous abandon-and-log behavior instead of a shutdown that never completes. Its default drops to 10s — these are single statements, unlike the worker's handler drain (`AGNES_WORKER_DRAIN_TIMEOUT_S`, 45s) which waits on arbitrary job work — so the two independent budgets still sum to under the 60s stop_grace_period. The budget is shared across the whole shutdown rather than granted per call: the lifespan cancels the checkpoint loop, the canary loop and the worker loop in sequence (and the worker drains a heartbeat per in-flight job), so per-call bounds would stack and overrun that grace period — the SIGKILL the bound exists to avoid. It is armed by the lifespan at shutdown, not by whichever drain happens first, so the worker's routine per-job heartbeat cancellation cannot start the clock during normal operation and leave a later real shutdown with no budget at all. The defensive re-cancel sweep that deliberately skips a task already processing a cancellation is bounded too, so a task that lost its cancellation cannot hang shutdown indefinitely; failures from those tasks are still collected and logged, and a straggler past the bound is named. The worker's straggler wait and its in-flight job drain share one shutdown budget rather than each taking a full one, so the two cannot sum past the container's grace period.
+
+### Removed
+
+### Internal
+- AgentHarness seam: harness selection is an explicit extension point (`app/chat/harness.py` + `chat.harness` config knob + runner-side registry). `claude-code` stays the only approved engine — behavior is unchanged — but an alternative agent engine can now plug in behind the same frame protocol; an explicitly configured unknown harness refuses chat at boot, while a version-skewed sandbox degrades an inherited unknown id to the default.
+
+- Duplicate MCP source names surface as 409 on both backends — Postgres raises
+  the unique violation as a SQLAlchemy `IntegrityError`, which fell through to
+  a 500. It matters more now that the credential purge runs before the write:
+  the losing side of a rename race would have reported an internal error for a
+  request that had already dropped the source's credentials.
+
+- `make update-openapi-snapshot` generates to a temp file and moves it into
+  place, and runs the project venv's interpreter rather than whatever `python`
+  is on PATH. The shell truncates a `>` target before the command runs, so a
+  generator that failed to import left the committed snapshot empty — which
+  the freshness check then reported as the entire API having been removed.
+
+- Re-registering an OAuth MCP source no longer discards a client secret or
+  registration access token the authorization server did not re-issue. RFC
+  7591 requires neither on a deduped registration, so an AS that answers a
+  second DCR with the same `client_id` and omits them used to have both
+  wiped — silently disabling upstream deregistration and demoting a
+  confidential registration to a public one. A different `client_id` still
+  replaces both wholesale.
+
+- `mcp_sources` field validation (transport/command/url/scope plus the oauth
+  coupling rule) is defined once in `src/repositories/mcp_sources.py` and
+  called by both backends' `upsert` and by the admin update endpoint, which
+  previously restated only part of it.
+
+- The committed OpenAPI snapshot (`tests/snapshots/openapi.json`) is now enforced for freshness and has been regenerated. The existing guard was a one-directional ratchet — it fired only when a path or method *disappeared* — so added routes and in-place operation changes rotted the snapshot silently while CI stayed green: the file had drifted to 468 paths against the app's 509 (41 missing, including `/agents`, `/api/data-apps*`, and `/admin/studio`), with a further 22 paths stale in place (for example the `/admin/contribute-skill/{name}/delete` form POST was recorded with no request body). A new `test_snapshot_is_fresh` compares the whole document and fails with the added/removed/changed paths plus the `make update-openapi-snapshot` remedy. `info.version` is normalized out of the comparison: it resolves from installed package metadata, so comparing it would red every release-cut PR without ever catching an API change.
+
+### Security
+- Admin elevation consent gate: admins can pause their own god-mode per browser (`POST /api/me/elevation`, toggle on `/profile`) — while paused, access checks fall through to explicit group grants and admin endpoints refuse with `admin_elevation_paused`. Default unchanged (`access.admin_default_elevation: "elevated"`); set `"paused"` for consent-first instances. Pause/resume actions are audited. The pause belongs to the admin who set it: `can_access` is also asked about OTHER users — a co-drive invite checks the invitee — so the request carries whose pause it is, and one admin pausing no longer answers a question about a colleague from their own state. The profile copy and `docs/RBAC.md` now state the scope exactly rather than promising more than the gate delivers: it sits in `can_access` and `require_admin`, so surfaces reading Admin membership directly (the table catalog) and WebSocket routes (the stamping middleware is http-only) stay elevated — both fail toward historical behavior and neither can grant a non-admin anything.
+
+- Cloud chat approval gate: the workspace PreToolUse hook's `ask` verdicts are now enforced end-to-end. Under `bypassPermissions` the CLI silently executed `ask`-flagged commands (verified empirically — `agnes admin …` mutations ran with no confirmation); the runner's new in-process `ApprovalGate` suspends the tool call, web chat renders an Allow once / Allow for session / Deny card (co-drive participants included, decisions audited), and timeout (`chat.approval_timeout_seconds`, default 300 s), Stop, or a non-interactive surface all resolve to deny. The turn's idle watchdog no longer counts the time a user spends deciding: it polls in slices and restarts the budget while an approval is outstanding, so a tool approved late in the window is not aborted moments later as "stuck". It also keeps the in-flight stream read shielded across those polls — cancelling an `__anext__` closes the underlying async generator, so the previous retry-after-timeout would have ended the turn silently on exactly the approvals this feature introduces. The gate also accepts the nested `hookSpecificOutput` verdict shape the Claude Code spec allows, not only the flat one the bundled hook emits, and logs when a hook returns JSON carrying no recognizable decision — otherwise an operator override written against the spec would have its `ask`/`deny` rules silently ignored. The wedged-turn drain is bounded as a whole rather than per message, so a hung agent cannot hold the chat before the next message is served. Forwarding a decision to another replica no longer lets a coordination failure escape into the caller's WebSocket loop and drop their chat — it is logged like the cross-gateway kill path already does, and the gate's own timeout still finishes the turn. A pending approval card also survives a reconnect: the frame-dedup guard exempts approval frames, whose handlers are keyed by `request_id` and already no-op on re-delivery, so a brief disconnect no longer leaves the user without Allow/Deny buttons and the command stalled until the gate times out. On an SDK whose `HookMatcher` takes no `timeout` the hook is still registered, with the gate disabled: a disabled gate denies instantly, so there is no wait for a CLI-side hook timeout to cut short — whereas skipping registration would leave nothing to deny and `ask` verdicts would run unasked. When the SDK cannot register a PreToolUse hook at all (no `hooks` field, no `HookMatcher`) approvals genuinely cannot be enforced; that is logged as such rather than described as failing closed. Delivering a decision to a sandbox that has since died is logged rather than allowed to escape into the caller's WebSocket loop. Unanswered cards are tracked as their own session state rather than as turn-replay frames — a pending approval outlives the turn it was raised in — so they survive both a reconnect and the caller typing meanwhile, without pinning the replay watermark and making a reconnect skip everything said since. They are dropped whenever the session's runner process is swapped — every handle swap goes through one helper, so a resume-failure respawn cannot leave a card whose request id the fresh gate would silently drop. The web client mirrors the same separation: pending cards are re-drawn after any transcript reload, so a `full_refresh` racing a replayed card cannot erase it, and dropped when switching conversations so one conversation's card cannot appear in another; an id the user already answered is remembered, so a replay cannot resurrect it as if it still needed a decision. Approval request ids are globally unique rather than pid-plus-counter, which a respawned sandbox could reissue — the client dedups cards by id, so such a prompt was never drawn and its command hung to the timeout. A cancelled approval (Stop, turn teardown) announces `approval_resolved(cancelled)` before unwinding, so the card is retired rather than reappearing on every reconnect with dead buttons, and no longer leaks its future into the gate's pending map, which had left `awaiting_approval()` true for the rest of the session and silently disabled the stuck-tool watchdog.
+- Cloud chat approvals are no longer gated on the surface a session was STARTED on. A chat begun in Slack and opened through the "Continue on web" button refused every `ask`-flagged command — the gate was switched off once at spawn from `session.surface`, so the browser that could render the approve/deny card was never consulted. The gate is now armed on every surface and the "can anyone answer this?" question is asked per request, at the manager's frame fan-out, from the sinks attached at that moment: the web WebSocket declares `supports_approvals` (it is the only transport that both draws the card and carries a decision back), and any other sink is assumed unable to approve until it implements both halves. With no such sink attached the request stays pending for the full `chat.approval_timeout_seconds` rather than failing fast, because one can still arrive — a browser attaching mid-approval replays the pending card out of the turn buffer and answers it normally, which is exactly the Slack "Continue on web" path. Slack draws no buttons of its own, so the bridge now posts the command, the reason, and the Continue-on-web link when nobody is holding the card (and the outcome afterwards), instead of leaving the thread to stall silently. Agent-API sessions keep the fast deny: a one-shot run has a headless sink by construction and a program, not a person, waiting on the HTTP response, so its approval requests resolve immediately with a message saying why and what to do instead. Whether a request can be answered is re-derived from the attached sinks on every read rather than trusted from the stamp it was raised with: a browser that dropped without a clean close is still listed at stamp time, so the request went out marked attended, the Slack nudge stayed quiet, and the very same fan-out then pruned the dead sink — the command stalled for the full timeout with nothing said anywhere. Replaying a pending card to a newly attached client re-derives it too, so a Slack bridge seated after a browser does not nag about a card someone is already holding. Attendance is also re-derived when a client LEAVES — a clean detach or a dead sink swept on a later broadcast — so a browser that walks away mid-approval does not leave the card unheld and unannounced. All three attach paths — including the Slack bridge rebuilt on the cross-gateway forwarded-message path, which appends straight into the sink list — replay pending cards through one helper, so a client seated mid-approval always learns about it. On a deployment with no public web URL configured the Slack nudge no longer tells the user to "open the chat on the web" — there is no link to build and no way for them to answer, so it says the request will be denied at timeout and names the setting an operator must fix. The bridge rebuilt on the cross-gateway path also resolves its public URL the documented way (`PUBLIC_URL` env > `server.public_url`) instead of reading `SERVER_URL` alone, so a deployment configuring only the yaml key no longer gets a Continue-on-web button everywhere except there. The operator kill-switch is now the `chat_approvals` feature flag (`chat.approvals_enabled`, overridable with `AGNES_CHAT_APPROVALS_ENABLED` — the env var wins, and `/admin/server-config` reports it through the same runtime view `chat.enabled` already needed — `load_chat_config` parses the writable overlay while `feature_enabled` reads the merged config, so resolving it the ordinary way would have shown a value the gate does not use): the runner has always honoured `AGNES_APPROVALS=off`, but the sandbox environment is exactly the dict the manager builds, so with the surface-based entry gone there was nowhere left to set it.
+- `SECURITY.md` gains a **Supported versions** section: Agnes is pre-1.0 and released continuously, security fixes ship in the next release (`:stable` plus the matching `v0.X.Y` tag) and older releases get no backports, so self-hosted operators should track `:stable`.
+- The remaining state-changing HTML form POSTs — `/admin/contribute-skill`, its per-plugin delete action, and `/me/profile/refetch-groups` — now require a double-submit CSRF token (a `web_csrf` cookie matching a hidden form field, or the `X-CSRF-Token` header for the profile page's JS call) instead of relying on `SameSite=Lax` alone, matching the protection the Slack-bind pair already had. The hosting pages issue the token; a rejected POST returns 400 (forms) or 403 (JSON) without performing the action, and does not re-issue the cookie to a caller that already holds one — since the cookie is `SameSite=Strict`, a cross-site POST arrives without it, and unconditionally setting it there would let any site rotate a signed-in admin's token and break their other open tabs. Token comparison is UTF-8-bytes-based (including the pre-existing Slack-bind check): the str overload of `compare_digest` raises on non-ASCII input, so a crafted token previously produced a 500 instead of a clean rejection.
+- The workspace-prompt (CLAUDE.md) renderer and the admin save-validation/preview endpoints now render admin-authored template content through the shared sandboxed Jinja2 environment (`make_prompt_env`) instead of a bare `jinja2.Environment`, closing an SSTI defense-in-depth gap; the guard test that scans prompt-render modules for bare environments now covers both modules.
+- The bundled analyst-workspace `settings.json` registers its Bash `PreToolUse` guard hook in the nested `hooks: [{type, command}]` shape Claude Code actually loads — the previous flat shape silently registered nothing, so the sandbox guard script never ran. The hook is also invoked through an explicit `python3` rather than relying on its executable bit: the bundled path copies with `shutil.copy2` and keeps the mode, but the Initial-Workspace-Template zip path rewrites entries and drops it, so a workspace provisioned that way would have failed the now-loaded hook with permission denied. New tests pin the registration shape, the hook path, and the interpreter invocation.
+- nodejs-dashboard data-app scaffold: `vite` bumped `^5.3.3` → `^6.4.3` (clears three upstream dependency advisories: `server.fs.deny` bypass, optimized-deps `.map` path traversal, and launch-editor NTLMv2 hash disclosure) and `@vitejs/plugin-react` `^4.3.1` → `^4.7.0` to match. The scaffold now declares an `engines.node` range matching vite 6's own floor — the default `data_apps.runtime_image` ships Node 24 and is unaffected, but an operator who pins an older Node image now gets a clear failure from npm instead of a confusing build error.
+- Chat sandbox PreToolUse hook enforces org floor command rules: outright deny for `mkfs` and fork bombs, explicit user confirmation for recursive force delete (`rm -rf`), `git push --force`, destructive SQL (`DROP`/`TRUNCATE`), and piping a download into a shell. Commands are scanned per shell segment (`;`, `&&`, `||`, `&`, `|`, newlines), so chaining no longer hides a segment from the workspace-delete, enumeration and egress checks. The head of each segment is basenamed (`/bin/rm` is judged as `rm`) and known wrappers are stripped using per-wrapper flag/positional tables, so an absolute path or a `doas`/`chroot`-style prefix no longer slips past a name match; the whole-command rules additionally run over quote-normalized text, so bash's adjacent-string concatenation (`"DR""OP TABLE x"`) cannot hide them. The hook remains **defense-in-depth only** — it is fail-open, inspects Bash alone, is a workspace file the agent could rewrite, and its wrapper list is an allowlist; shell-string forms (`sh -c`, `su -c`, `eval`, command substitution) are explicitly out of its scope. VM-level egress enforcement stays the real boundary (see `docs/cloud-chat.md`). Shell grammar words (`then`, `do`, `else`, …) and redirections are stripped before the command is identified, so a refused action wrapped in an `if`/`for`/`while` block or an environment dump written to a file is still seen. Parentheses are treated as grouping rather than as separators, and heredoc bodies are skipped as the data they are, so a command computing its arguments inline is still checked and an ordinary file write is not refused for what its text says.
+- Admin god-mode observability: when the Admin short-circuit in `can_access` grants a resource the admin holds no explicit group grant for, a deduplicated `god_mode_bypass` log line records who reached what. Observability only — access decisions are unchanged; the data shows which surfaces actually rely on god-mode before any future narrowing.
+
+## [0.77.33] - 2026-08-03
+
+### Added
+
+### Changed
+
+### Fixed
+
+- A failure constructing the LLM client (e.g. the now lazily-imported SDK missing from the environment) is handled like any other LLM failure instead of escaping the error boundary at each of its three call sites: the store-guardrails security review records `status='review_error'` (with the admin retry path) rather than pinning the submission at `pending_llm`, the skill-lint craft review degrades per its documented `CraftUnavailable` contract, and the admin telemetry-ask endpoint returns its documented `502 LLM call failed` instead of an unhandled 500.
+
+### Removed
+
+### Internal
+
+- Deferred the `anthropic`/`openai` SDK imports in `connectors/llm` to first API use; a module-level `__getattr__` keeps `<provider>.anthropic`/`<provider>.openai` resolvable for existing mock-patch targets. The two SDK type trees (hundreds of modules, 15–94 s wall on a cold filesystem cache) rode along with every `import app.main` via the store-guardrails chain and intermittently pushed `tests/test_api_design_rules.py` past its 60 s pytest-timeout; `import src.store_guardrails.runner` now pulls zero SDK modules (~10 s → ~0.07 s warm).
 
 ### Security
 

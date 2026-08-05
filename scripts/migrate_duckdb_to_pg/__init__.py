@@ -123,6 +123,10 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     # v96 agent profiles + agent-as-API — composite PKs.
     "agent_scope": ["agent_id", "item_type", "item_id"],
     "idempotency_keys": ["key", "owner_user_id", "agent_id"],
+    # v109 outbound MCP OAuth data layer — non-`id` primary keys.
+    "mcp_source_oauth_clients": ["source_id"],
+    "mcp_user_oauth_tokens": ["source_id", "user_id"],
+    "mcp_oauth_flows": ["nonce"],
 }
 
 

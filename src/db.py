@@ -48,7 +48,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 108
+SCHEMA_VERSION = 109
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1719,6 +1719,42 @@ CREATE TABLE IF NOT EXISTS agent_memories (
     created_at        TIMESTAMP DEFAULT current_timestamp,
     activated_at      TIMESTAMP,
     archived_at       TIMESTAMP
+);
+
+-- v109: outbound MCP OAuth sources (spec
+-- docs/superpowers/specs/2026-07-30-mcp-oauth-sources-design.md). Same DDL as
+-- _v108_to_v109 so the split-brain self-heal can recreate them; the migration
+-- keeps IF NOT EXISTS so both paths coexist. No secondary indexes (ART-index
+-- incident — see _v94_to_v95).
+CREATE TABLE IF NOT EXISTS mcp_source_oauth_clients (
+    source_id                     VARCHAR PRIMARY KEY,
+    issuer                        VARCHAR NOT NULL,
+    client_id                     VARCHAR NOT NULL,
+    client_secret_enc             BLOB,
+    registration_access_token_enc BLOB,
+    authorization_endpoint        VARCHAR NOT NULL,
+    token_endpoint                VARCHAR NOT NULL,
+    scopes                        VARCHAR,
+    created_at                    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    updated_at                    TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+CREATE TABLE IF NOT EXISTS mcp_user_oauth_tokens (
+    source_id         VARCHAR NOT NULL,
+    user_id            VARCHAR NOT NULL,
+    access_token_enc   BLOB NOT NULL,
+    refresh_token_enc  BLOB,
+    expires_at         TIMESTAMP,
+    scopes             VARCHAR,
+    created_at         TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    updated_at         TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (source_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS mcp_oauth_flows (
+    nonce              VARCHAR PRIMARY KEY,
+    source_id          VARCHAR NOT NULL,
+    user_id            VARCHAR NOT NULL,
+    pkce_verifier_enc  BLOB NOT NULL,
+    created_at         TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 """
     + _DATA_APPS_CREATE_SQL
@@ -6954,6 +6990,67 @@ def _v107_to_v108(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 108")
 
 
+def _v108_to_v109(conn: duckdb.DuckDBPyConnection) -> None:
+    """v108→v109: outbound MCP OAuth data-layer foundation (2026-07-30 spec,
+    PR 1 / phase 1 — no runtime behavior yet).
+
+    Three new tables, all additive ``CREATE TABLE IF NOT EXISTS`` (no-op on
+    fresh installs, safe on upgrade):
+
+    - ``mcp_source_oauth_clients`` — one row per OAuth ``mcp_sources`` row:
+      Agnes's own dynamic client registration (RFC 7591) at the upstream
+      authorization server. Named distinctly from the inbound issuer's
+      ``oauth_clients`` table (mirror-image concept, opposite direction).
+    - ``mcp_user_oauth_tokens`` — per ``(source_id, user_id)`` access/refresh
+      token pair. Kept separate from ``mcp_user_secrets``: different
+      lifecycle (server-side refresh mutates rows) and deletion semantics
+      (best-effort revoke-at-AS).
+    - ``mcp_oauth_flows`` — in-flight authorize-flow state (PKCE verifier +
+      nonce), DB-backed so multi-replica Postgres deployments need no sticky
+      sessions.
+
+    Every ``*_enc`` column is a Fernet ciphertext blob, same vault key as
+    ``mcp_secrets``/``mcp_user_secrets`` (``app.secrets_vault``).
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_source_oauth_clients (
+            source_id                     VARCHAR PRIMARY KEY,
+            issuer                        VARCHAR NOT NULL,
+            client_id                     VARCHAR NOT NULL,
+            client_secret_enc             BLOB,
+            registration_access_token_enc BLOB,
+            authorization_endpoint        VARCHAR NOT NULL,
+            token_endpoint                VARCHAR NOT NULL,
+            scopes                        VARCHAR,
+            created_at                    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at                    TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_user_oauth_tokens (
+            source_id         VARCHAR NOT NULL,
+            user_id            VARCHAR NOT NULL,
+            access_token_enc   BLOB NOT NULL,
+            refresh_token_enc  BLOB,
+            expires_at         TIMESTAMP,
+            scopes             VARCHAR,
+            created_at         TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at         TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (source_id, user_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_oauth_flows (
+            nonce              VARCHAR PRIMARY KEY,
+            source_id          VARCHAR NOT NULL,
+            user_id            VARCHAR NOT NULL,
+            pkce_verifier_enc  BLOB NOT NULL,
+            created_at         TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 109")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -7392,6 +7489,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # managed/description_override) — declared in _SYSTEM_SCHEMA on
             # fresh installs; no-op here.
             _v107_to_v108(conn)
+            # v108→v109: outbound MCP OAuth data-layer foundation —
+            # mcp_source_oauth_clients / mcp_user_oauth_tokens /
+            # mcp_oauth_flows. CREATE TABLE IF NOT EXISTS — no-op here
+            # since the tables aren't in _SYSTEM_SCHEMA (fresh installs get
+            # them from this same call).
+            _v108_to_v109(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7661,6 +7764,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v106_to_v107(conn)
             if current < 108:
                 _v107_to_v108(conn)
+            if current < 109:
+                _v108_to_v109(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

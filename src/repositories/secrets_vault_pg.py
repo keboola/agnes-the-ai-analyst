@@ -20,10 +20,9 @@ import logging
 from typing import Optional
 
 import sqlalchemy as sa
-from cryptography.fernet import InvalidToken
 from sqlalchemy.engine import Engine
 
-from app.secrets_vault import decrypt_secret, encrypt_secret
+from app.secrets_vault import decrypt_optional, encrypt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -66,17 +65,11 @@ class SharedSecretsPgRepository:
             ).fetchone()
         if row is None:
             return None
-        token = row[0]
-        if not isinstance(token, (bytes, bytearray, memoryview)):
-            return None
-        try:
-            return decrypt_secret(bytes(token))
-        except InvalidToken:
-            logger.warning(
-                "mcp_secrets row for %s failed to decrypt — vault key rotated? Falling back to env-var lookup.",
-                source_id,
-            )
-            return None
+        return decrypt_optional(
+            row[0],
+            context=f"mcp_secrets.secret_value_enc[{source_id}]",
+            hint="Falling back to env-var lookup.",
+        )
 
     def delete(self, source_id: str) -> None:
         with self._engine.begin() as conn:
@@ -126,17 +119,11 @@ class SystemSecretsPgRepository:
             ).fetchone()
         if row is None:
             return None
-        token = row[0]
-        if not isinstance(token, (bytes, bytearray, memoryview)):
-            return None
-        try:
-            return decrypt_secret(bytes(token))
-        except (InvalidToken, RuntimeError):
-            logger.warning(
-                "system_secrets row for %s failed to decrypt — vault key rotated or malformed? Treating as unset.",
-                name,
-            )
-            return None
+        return decrypt_optional(
+            row[0],
+            context=f"system_secrets.secret_value_enc[{name}]",
+            hint="Treating as unset.",
+        )
 
     def delete(self, name: str) -> None:
         with self._engine.begin() as conn:
@@ -207,19 +194,11 @@ class PerUserSecretsPgRepository:
             ).fetchone()
         if row is None:
             return None
-        token = row[0]
-        if not isinstance(token, (bytes, bytearray, memoryview)):
-            return None
-        try:
-            return decrypt_secret(bytes(token))
-        except InvalidToken:
-            logger.warning(
-                "mcp_user_secrets row (%s, %s) failed to decrypt — vault key "
-                "rotated? Falling back to shared vault / env-var.",
-                source_id,
-                user_id,
-            )
-            return None
+        return decrypt_optional(
+            row[0],
+            context=f"mcp_user_secrets.secret_value_enc[{source_id}/{user_id}]",
+            hint="Falling back to shared vault / env-var.",
+        )
 
     def delete(self, source_id: str, user_id: str) -> None:
         with self._engine.begin() as conn:
@@ -297,19 +276,13 @@ class ConnectionSecretsPgRepository:
         if row is None:
             return None
         token = row[0]
-        if not isinstance(token, (bytes, bytearray, memoryview)):
-            # stored as text (Fernet token is URL-safe base64)
-            token = token.encode() if isinstance(token, str) else bytes(token)
-        else:
-            token = bytes(token)
-        try:
-            return decrypt_secret(token)
-        except InvalidToken:
-            logger.warning(
-                "connection_secrets row for %s failed to decrypt — vault key rotated?",
-                connection_id,
-            )
-            return None
+        # The str→bytes coercion stays at the callsite: ``ciphertext`` is a TEXT
+        # column (a Fernet token is URL-safe base64), so the driver returns str,
+        # which ``decrypt_optional`` treats as "not a token" and would read as
+        # absent. Matches the DuckDB sibling.
+        if isinstance(token, str):
+            token = token.encode()
+        return decrypt_optional(token, context=f"connection_secrets.ciphertext[{connection_id}]")
 
     def delete(self, connection_id: str) -> None:
         with self._engine.begin() as conn:
