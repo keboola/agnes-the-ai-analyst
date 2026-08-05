@@ -464,6 +464,28 @@ def test_destroy_kills_sandbox_by_id_without_resuming():
     asyncio.run(_run())
 
 
+def test_stage_file_writes_through_the_sandbox_files_api(tmp_path: Path):
+    """`stage_file` is the provider-mediated staging seam ChatManager uses for
+    the agnes CLI wheel and the restore-context transcript (files every
+    provider needs, workspace sync or not). For E2B it must stay exactly the
+    `sandbox.files.write` call the manager used to make itself."""
+
+    async def _run():
+        fake_sb = _make_fake_sandbox()
+        fake_handle = _make_fake_handle()
+        fake_sb.commands.run = AsyncMock(return_value=fake_handle)
+
+        with patch("app.chat.e2b_provider.AsyncSandbox") as MockSandbox:
+            MockSandbox.create = AsyncMock(return_value=fake_sb)
+            prov = E2BProvider(api_key="k", template_id="t", upload_runner=False)
+            handle = await prov.spawn(workdir=tmp_path, env={}, argv=["true"])
+
+            await prov.stage_file(handle, "/tmp/agnes-context.md", "# ctx")
+            fake_sb.files.write.assert_awaited_with("/tmp/agnes-context.md", "# ctx")
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Task 2: VM-level egress allowlist (network.allow_out)
 # ---------------------------------------------------------------------------
@@ -568,7 +590,7 @@ def test_e2b_pause_resume_real():
         # Spawn via the real provider against the already-created sandbox would
         # duplicate; instead exercise the provider's spawn path on a fresh
         # sandbox to test the full code path.
-        from app.chat.e2b_provider import _StreamReaderAdapter, _StreamWriterAdapter, E2BSandboxHandle
+        from app.chat.e2b_provider import E2BSandboxHandle, _StreamReaderAdapter, _StreamWriterAdapter
 
         pre_stdout = _StreamReaderAdapter()
         pre_stderr = _StreamReaderAdapter()

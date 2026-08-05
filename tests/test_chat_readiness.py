@@ -13,11 +13,10 @@ import duckdb
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.db import _ensure_schema
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.chat import readiness
-
+from src.db import _ensure_schema
 
 TEST_ADMIN = {"id": "admin1", "email": "admin@test.com", "is_admin": True}
 
@@ -80,6 +79,110 @@ def test_secret_status_e2b_not_required_for_other_provider(monkeypatch):
     assert "e2b_api_key" not in s["missing"]
 
 
+def _docker_cfg(**kw):
+    base = dict(enabled=True, provider="docker", docker_image="agnes-chat-sandbox:latest")
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_secret_status_docker_rows_required_only_for_the_docker_provider(monkeypatch):
+    """A docker deployment needs the sidecar token and an image, and needs no
+    E2B account at all — the readiness surface must say exactly that."""
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    monkeypatch.delenv("APPS_RUNNER_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
+    monkeypatch.setenv("JWT_SECRET_KEY", "x" * 40)
+
+    s = readiness.secret_status(_docker_cfg())
+    assert s["secrets"]["e2b_api_key"]["required"] is False
+    assert s["secrets"]["apps_runner_token"]["required"] is True
+    assert s["secrets"]["apps_runner_token"]["set"] is False
+    assert s["secrets"]["chat_docker_image"]["required"] is True
+    assert s["secrets"]["chat_docker_image"]["set"] is True
+    assert "apps_runner_token" in s["missing"]
+    assert s["ready"] is False
+
+    e2b = readiness.secret_status(_cfg())
+    assert e2b["secrets"]["apps_runner_token"]["required"] is False
+    assert e2b["secrets"]["chat_docker_image"]["required"] is False
+
+
+def test_secret_status_docker_ready_when_token_and_image_present(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
+    monkeypatch.setenv("JWT_SECRET_KEY", "x" * 40)
+    monkeypatch.setenv("APPS_RUNNER_TOKEN", "runner-token")
+    s = readiness.secret_status(_docker_cfg())
+    assert s["missing"] == []
+    assert s["ready"] is True
+    assert "runner-token" not in str(s)
+
+
+def test_secret_status_docker_flags_a_missing_image(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
+    monkeypatch.setenv("JWT_SECRET_KEY", "x" * 40)
+    monkeypatch.setenv("APPS_RUNNER_TOKEN", "runner-token")
+    s = readiness.secret_status(_docker_cfg(docker_image=""))
+    assert "chat_docker_image" in s["missing"]
+
+
+# ---------------------------------------------------------------------------
+# Live probes — docker sandbox runner
+# ---------------------------------------------------------------------------
+
+
+def test_test_docker_sandbox_ok(monkeypatch):
+    import asyncio
+
+    class _OkClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def probe(self, image=""):
+            assert image == "agnes-chat-sandbox:1"
+            return {"ok": True, "daemon": True, "image": True, "detail": "docker sandbox runner ready"}
+
+    monkeypatch.setattr("app.chat.sandbox_runner_client.SandboxRunnerClient", _OkClient)
+    r = asyncio.run(readiness.test_docker_sandbox("agnes-chat-sandbox:1"))
+    assert r == {"ok": True, "detail": "docker sandbox runner ready"}
+
+
+def test_test_docker_sandbox_reports_a_missing_image(monkeypatch):
+    import asyncio
+
+    class _MissingImage:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def probe(self, image=""):
+            return {"ok": False, "daemon": True, "image": False, "detail": f"sandbox image {image} not present"}
+
+    monkeypatch.setattr("app.chat.sandbox_runner_client.SandboxRunnerClient", _MissingImage)
+    r = asyncio.run(readiness.test_docker_sandbox("agnes-chat-sandbox:9"))
+    assert r["ok"] is False
+    assert "agnes-chat-sandbox:9" in r["detail"]
+
+
+def test_test_docker_sandbox_classifies_an_unreachable_sidecar(monkeypatch):
+    """A sidecar that isn't running must read as a clear operator message, not
+    an exception out of the admin endpoint."""
+    import asyncio
+
+    class _Boom:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def probe(self, image=""):
+            from app.chat.sandbox_runner_client import SandboxRunnerUnavailable
+
+            raise SandboxRunnerUnavailable("connection refused")
+
+    monkeypatch.setattr("app.chat.sandbox_runner_client.SandboxRunnerClient", _Boom)
+    r = asyncio.run(readiness.test_docker_sandbox("img:1"))
+    assert r["ok"] is False
+    assert "apps-runner" in r["detail"]
+    assert "connection refused" in r["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Live probes — E2B
 # ---------------------------------------------------------------------------
@@ -114,6 +217,7 @@ class _FakePaginator:
 
 def test_test_e2b_key_valid(monkeypatch):
     import asyncio
+
     import e2b
 
     def _fake_list(*a, **k):  # sync factory, NOT a coroutine
@@ -126,6 +230,7 @@ def test_test_e2b_key_valid(monkeypatch):
 
 def test_test_e2b_key_auth_failure_classified(monkeypatch):
     import asyncio
+
     import e2b
 
     class _AuthErr(Exception):
@@ -159,6 +264,7 @@ def test_test_anthropic_key_missing(monkeypatch):
 
 def test_test_anthropic_key_valid(monkeypatch):
     import asyncio
+
     import anthropic
 
     class _Msgs:
@@ -176,6 +282,7 @@ def test_test_anthropic_key_valid(monkeypatch):
 
 def test_test_anthropic_key_auth_failure_classified(monkeypatch):
     import asyncio
+
     import anthropic
 
     class _AuthErr(Exception):

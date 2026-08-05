@@ -1,10 +1,13 @@
 """Cloud-chat readiness — secret presence + live key validation.
 
 The chat feature depends on server-env secrets:
-  - ``ANTHROPIC_API_KEY`` — the agent (and auto-title) call Claude with it.
-  - ``E2B_API_KEY``       — the sandbox provider spawns microVMs with it
-                            (only when ``provider='e2b'``).
-  - ``JWT_SECRET_KEY``    — desktop / WS auth tokens are signed with it.
+  - ``ANTHROPIC_API_KEY``  — the agent (and auto-title) call Claude with it.
+  - ``E2B_API_KEY``        — the sandbox provider spawns microVMs with it
+                             (only when ``provider='e2b'``).
+  - ``APPS_RUNNER_TOKEN``  — authenticates the gateway to the apps-runner
+                             sidecar that owns the Docker socket (only when
+                             ``provider='docker'``).
+  - ``JWT_SECRET_KEY``     — desktop / WS auth tokens are signed with it.
 
 The startup gates in ``app/main.py`` refuse to build ``ChatManager`` when any
 required secret is missing (chat then 503s). This module surfaces that state
@@ -23,6 +26,7 @@ from typing import Any, Optional
 ENV_ANTHROPIC = "ANTHROPIC_API_KEY"
 ENV_E2B = "E2B_API_KEY"
 ENV_JWT = "JWT_SECRET_KEY"
+ENV_APPS_RUNNER_TOKEN = "APPS_RUNNER_TOKEN"
 
 # Machine-readable LLM-failure reasons. Shared by the admin "test connection"
 # probe and the runtime broker forward path so both classify an auth/credit/
@@ -50,6 +54,7 @@ def secret_status(chat_config: Any) -> dict:
     enabled = bool(getattr(chat_config, "enabled", False))
     provider = getattr(chat_config, "provider", "e2b") or "e2b"
     e2b_needed = enabled and provider == "e2b"
+    docker_needed = enabled and provider == "docker"
     # In workload_identity mode there is intentionally NO static ANTHROPIC_API_KEY
     # — don't flag it as a missing secret in the admin UI.
     llm_auth = getattr(chat_config, "llm_auth", "api_key")
@@ -65,6 +70,13 @@ def secret_status(chat_config: Any) -> dict:
         "e2b_template_id": {
             "set": bool(getattr(chat_config, "e2b_template_id", None)),
             "required": e2b_needed,
+        },
+        # Docker provider: the sidecar credential (a real secret) plus the
+        # sandbox image tag. Neither is needed on an e2b deployment.
+        "apps_runner_token": {"set": _is_set(ENV_APPS_RUNNER_TOKEN), "required": docker_needed},
+        "chat_docker_image": {
+            "set": bool(getattr(chat_config, "docker_image", None)),
+            "required": docker_needed,
         },
     }
     missing = sorted(k for k, v in secrets.items() if v["required"] and not v["set"])
@@ -204,6 +216,32 @@ async def test_e2b_key(api_key: Optional[str] = None, *, timeout: float = 8.0) -
     except Exception as exc:  # noqa: BLE001 — classify, never raise to the admin
         return {"ok": False, "detail": _classify(exc)}
     return {"ok": True, "detail": "E2B API key valid"}
+
+
+async def test_docker_sandbox(image: Optional[str] = None, *, timeout: float = 8.0) -> dict:
+    """Probe the docker chat-sandbox runner. The sibling of ``test_e2b_key``.
+
+    One round trip to the apps-runner sidecar's ``/sandboxes/probe`` — the
+    gateway never talks to the Docker socket itself — which answers whether the
+    daemon is reachable and the configured image is present. Returns
+    ``{ok, detail}`` and never raises: an unreachable sidecar is the most
+    common misconfiguration and must read as an actionable message, not a 500
+    out of the admin endpoint.
+    """
+    from app.chat.sandbox_runner_client import SandboxRunnerClient
+
+    try:
+        result = await SandboxRunnerClient(timeout=timeout).probe(image or "")
+    except Exception as exc:  # noqa: BLE001 — classify, never raise to the admin
+        return {
+            "ok": False,
+            "detail": (
+                f"apps-runner sidecar unreachable ({exc}) — start it with "
+                "`docker compose --profile apps up -d apps-runner` and check "
+                "APPS_RUNNER_URL / APPS_RUNNER_TOKEN"
+            ),
+        }
+    return {"ok": bool(result.get("ok")), "detail": str(result.get("detail") or "")}
 
 
 def _test_anthropic_sync(key: str, timeout: float) -> dict:

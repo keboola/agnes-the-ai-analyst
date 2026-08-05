@@ -438,3 +438,13 @@ class E2BProvider:
             await AsyncSandbox.kill(sandbox_id, api_key=self._api_key)
         except Exception:
             logger.exception("destroy: sandbox kill failed for %s", sandbox_id)
+
+    async def stage_file(self, handle: E2BSandboxHandle, path: str, data: bytes | str) -> None:
+        """Write one file into the sandbox (agnes CLI wheel, restore-context).
+
+        The provider-mediated staging seam ``ChatManager`` uses for the files
+        every provider needs regardless of who owns workspace sync — see
+        ``ChatManager._stage_boot_files``. Same ``sandbox.files.write`` call the
+        manager used to make directly through ``handle._sandbox``.
+        """
+        await handle._sandbox.files.write(path, data)
