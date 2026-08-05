@@ -385,6 +385,13 @@
                 {# ── About you ── #}
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
+                {# News — same #1159 reasoning as the topnav dropdown: /news
+                   needs a NON-admin entry point on every chrome, and the rail
+                   has no other one (the /home "What's new" strip and the
+                   command palette are both conditional). Mirrors the topnav
+                   `_app_header.html` row; label "News", not the page's
+                   "What's new" heading (tests/test_web_news_page.py). #}
+                <a class="app-user-menu-item {% if _path.startswith('/news') %}is-active{% endif %}" role="menuitem" href="/news">News</a>
 
                 {# ── Get your bearings ──────────────────────────────────────
                    Two items, one job, hence their own group behind a separator.

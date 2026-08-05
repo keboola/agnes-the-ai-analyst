@@ -10,50 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-### Changed
-- **Skill builder and plugin upload wizard: LLM pre-check gate before save/upload**: when an LLM guardrail provider is configured (`get_guardrails_enabled() and get_guardrails_llm_provider_ready()`), "Save to Library" (skill builder) and "Finish" (plugin wizard) now run a synchronous pre-check before any DB write. A "Reviewing with AI…" status appears during the check (up to ~30 s). If the LLM passes, the real save/upload proceeds as before and redirects to the entity page or Library. If the LLM fails, the user stays on the builder/wizard with a plain-English error extracted from the verdict, so they can edit and retry — previously the entity was held at `pending_llm` and became invisible to the submitter. When no LLM guardrail is active (guardrails off or provider not configured), both flows are unchanged. `POST /api/store/entities/from-markdown` gains an `include_llm` flag on the `dry_run` path that runs `llm_review.review_bundle` synchronously and returns `guardrails_active`, `llm_safe`, and `llm_findings` alongside the existing `inline`/`lint` response.
-- **`/me/profile` and `/me/activity` join the redesign — they were the last two personal pages still on the retired chrome.** Both floated a blue gradient hero card over the grey app canvas and titled every block in uppercase micro-caps; no other redesigned surface speaks either vocabulary. Both now use the builder's language (`skills.html` / `agents.html`): the `base_index.html` shell (one unbroken `--ds-surface`, no grey gutters between cards), an identity-led head band (52px initials avatar, `--ds-agnes` eyebrow, 24px title, 15px lede), and section cards whose anatomy is a 1:1 port of `.sk-sec` / `.ag-sec` — 26px round badge, 15px sentence-case title, 12.5px sub, right-aligned summary, hairline-separated body. Profile drops its "Account" card entirely: the display-name editor now sits on the name it edits, in the head, and the account read-out moved to a sticky 320px aside built from the builder's own `.sk-pv-row` key/value anatomy (mirroring `minmax(0,1fr) 320px`), which also stops a 1400px shell carrying one narrow column. Group rows swap the monospace `via admin · added <timestamp>` for plain English, and the effective-access rows adopt the categorical `--ds-kind-*` sticker palette instead of the brand primary. The section card is extracted to a **shared** sheet (`css/section_card.css`, `.dsec`) rather than copied per page, so the two surfaces cannot drift. The legacy `.profile-page` / `.section-card` / `.account-grid` rules stay in `style-custom.css` untouched — `how_it_works.html`, `admin_user_detail.html` and `admin_mcp_tool_grants.html` still use them.
-- **Every section on `/me/profile` is collapsible and starts collapsed, via `<details>` rather than a JS toggle.** Native collapsing is keyboard- and screen-reader-correct for free, and it means the one section that *has* to be a `<details>` (Session & troubleshooting) is the same component as the rest — the builder ends up maintaining two head anatomies for want of this. Collapsed-by-default only works because **every head answers its own question**: the group count, the resource count, `Not set up` / `Connected`, and a tokens summary that leads with whatever needs attention (`1 expiring` over `3 tokens`) — so the whole account fits on one screen and you open only what you came for. The two public deep links keep working: a small hash handler opens whichever section the URL fragment names *or contains*, on load and on `hashchange`, so `/me/profile#notifications` (the in-chat nudge and the onboarding checklist both send people there) and `#tokens` still land open instead of on a closed drawer. `+ New token` sits in the collapsed head and cancels the disclosure, so minting a token never needs the section expanded. It takes BOTH `preventDefault()` and `stopPropagation()`: the former is the one that matters, because a `<details>` toggle is the `<summary>`'s default activation behaviour rather than a listener, so stopping propagation alone left the section collapsing on every press. On `/me/activity` the sections stay open where the card *is* the tab's content — a tab click is already a disclosure, and a tab whose only card is shut answers the click with nothing — and the two secondary breakdowns on Token usage (`By model`, `Top sessions`) start collapsed under the headline card.
-- **The Personal Authentication Tokens filter row becomes the shared `.fbar` toolbar** (`css/filter_toolbar.css`) — the same component `/library` and `/stack` render — instead of a third page-local vocabulary. It was three rows of chrome above a list that is usually 0–3 rows long: `STATUS` and `SORT BY` as uppercase micro-cap labels over two rows of loose pills, with `Clear filters` stranded on a third. Beyond consistency the swap buys four things. Status is now ONE segmented control carrying **per-status counts**, so an empty filter is visible before it is clicked (and a zero-count option is disabled rather than a dead end). Sort is one select carrying key *and* direction (`Newest first`, `Expiring soonest`, …), so the order is legible at rest — the old chips hid direction behind a click-to-toggle arrow that only appeared once the key was already active. `Clear filters` moved into a `.fbar-chips` row beside the removable refinement chips it clears, and exists only while there is something to clear. And the section gains a **name/prefix search** it never had — the prefix matters because that is the handle a log line or CI secret actually shows. Sorting also stops leading with absences: a token with no expiry is no longer "expiring soonest", and one never used is no longer "recently used" — both are pinned to the bottom in either direction, so what needs attention is always on top.
-- **`/me/activity` is reachable by any signed-in user, so its sub-headings stop being inline-styled uppercase `<h3 style=…>`.** The Token usage tab splits into three named cards (`Last 30 days` · `By model` · `Top sessions`) because they answer three different questions; the pipeline-column legend moves from page-introduction body copy into a note inside the card whose columns it explains; wide tables scroll inside their own card instead of widening the page; and the 30-bar daily chart is capped so it reads as a trend rather than as a hero graphic at the full band width. The troubleshooting partial's fixed greys move to `--ds-*` tokens (they read as disabled text on the paper canvas and vanished in dark); the terminal-style dump keeps its fixed dark pair deliberately, per the design system's one "night" carve-out.
-- **Neither page links `/stack` any more.** The Stack page is not a destination in this IA (it was demoted out of the rail), so "My stack" is reached through the Library's own `In stack only` toggle — the profile aside links `/library?stack=in_stack`, which arrives with that toggle already pressed, over a superset of the same `StackResolver.browse()` rows. `/stack` itself is unchanged and still renders.
-- **"How Agnes works" moves out of the rail's nav ladder into the account menu, and the prominent path to it moves to where newcomers actually are.** It was a full `.rail-i` row — same 34px ladder, 18px icon and accent-tinted active state as Library / Agents / Admin — for a page you open once or twice, so it read as a fourth destination; and it sat directly above the (much louder) onboarding card, stacking two "learn this product" objects on top of each other. Nav weight should track how often a row is needed, and here the right amount was no row: it is now an item in the rail's account menu, grouped behind its own separator with **Start over onboarding**, which was already sitting there and is the same kind of thing — an orientation action, not a fact about the caller. Personal items (Profile, My activity) keep the group above it; Logout stays last. This costs the column no height, never retires the way the onboarding card does at 5/5, and — living in `.rail-foot`, outside `.rail-collapsible` — stays reachable in the ≤1024px bar with the nav closed. It remains outside the `can_chat` gate (unlike its group neighbour): a caller with no chat grant needs the orientation more than anyone. Two intermediate placements were tried and rejected: a quieter `.rail-meta` row in the foot (still a row, and orphaned between the setup card and the account) and a `?` icon beside the wordmark (the brand lockup is an identity element, not a control surface — a help glyph there reads as an annotation on the product name). The original objection to the account menu — a product explainer buried in a popover is undiscoverable — is answered separately: the rail chat dashboard's empty state now carries a **"New here? See how Agnes works"** line under the composer next to the Stack status line, below the input because directly over it is the moment of intent (the same reason #1108's "Browse metrics & glossary" button was retired from there), and not in the hero, whose single "Connect your tools" CTA keeps its own action. That line is the labelled first-run path; the menu item is the find-it-again one. It lives inside `#chat-empty-extras`, so it retires with the rest of the dashboard the moment a conversation starts.
-- **One trust vocabulary everywhere, and the last derived trust claim becomes stored** (schema **v113**, `data_packages.publisher_kind`): the same three claims were spelled four different ways, and two of them read from different data — `.lib-trustmark` (3 icons, Library table + grid), `.item-detail .trust-chip` (2 text chips, store-item detail, **no Community at all**, so a row and its own detail page disagreed about the third level), `.cc-trust` (2 icon chips, catalog/marketplace cards), and the amber **CURATED** badge on a data-package hero. All four now render from one macro (`macros/_trustmark.html`) and one sheet (`css/trustmark.css`), off one stored `publisher_kind` / `verification_state` pair, in two forms: **icon** where a word would compete for a fixed column's width (table cell, card head) and **icon + word** in a detail hero, which has the room the 152px table column never did. `CURATED` is gone as a concept: it was computed on every render from *"is the creator currently in the Admin group"* — a fact about the person, not the package, so an admin leaving the Admin group silently un-curated everything they had ever created, and nobody could set or correct it. That is the exact derivation `store_entities.publisher_kind` was introduced to avoid, and both copies of it (`app/api/data_packages.py::_badges_for` and a second in `router.py`, which is how they could disagree) are deleted. `new` stays derived — it genuinely is a function of the clock, which is the line: derive what follows from data on the row, store what somebody decided. **Migration preserves the visible state rather than the mechanism:** `_v112_to_v113` (+ Alembic `0060_pkg_publisher_v113`) freezes whatever the derivation said at upgrade time, so an existing admin-created package keeps reading as Organization instead of silently dropping to Community; the DuckDB step resolves Admin membership through the repository factory (a hand-written JOIN got this wrong on Postgres once already, which is why `_badges_for` routed through the factory), and creation now writes `'organization'` explicitly, since that endpoint is `require_admin`-gated and so the claim was true by construction anyway. Two deliberate per-surface differences, both because the marker must not assert a process an entity type does not have: a **data package** shows Organization or nothing (there is no reviewer for a package to earn a Verified from), and a **catalog card** never shows Community (a shelf is mostly other people's unverified work, so it would mark nearly every card and distinguish nothing — the Library is where per-row provenance is the point). `publisher_kind` is clamped to the closed enum by both repos and both read paths, so no template can compare a NULL to `'organization'` and silently render the wrong marker. Guarded by 12 new cross-engine contract assertions in `tests/db_pg/test_data_packages_contract.py`.
-- **The trust markers explain themselves instantly instead of after the OS delay**: all three rode the native `title` attribute, whose show delay is OS-controlled and typically 600ms+. That is the wrong carrier for these in particular — the marker is a 14px glyph nobody can read on sight, so the tooltip is not a nicety on top of a label, it *is* the label, and waiting most of a second for it makes the whole indicator feel broken (the reported symptom was "no tooltip", not "a slow one"). They now use the page's existing fast tooltip (`[data-tip]` + `.lib-tip`), which was already built for the Sharing badges and already solves the harder half of the problem: the bubble is a fixed-position element appended to `<body>`, so it is not clipped by the ancestors that would otherwise eat it — `.lib-table td` is `overflow: hidden` in the table, and a grid card is `overflow: hidden`, which is exactly where a CSS `::after` bubble would have been cut off at the card edge. A new `data-tip-instant` opt-out drops the shared 120ms anti-flicker delay for these markers only: that delay exists for WIDE targets (a Sharing badge is most of a column, so a pointer crossing the table sweeps several and each would blink), and a 14px glyph is too small to cross by accident, so it bought nothing here. `title` is dropped rather than kept alongside — two bubbles for one glyph, the slow one arriving on top of the fast one, is worse than either. `aria-label` is unchanged and remains the accessible name, so the sentence still reaches a screen reader and nothing here is colour- or shape-only. The markers already followed the name into the grid cards (cloned from the row), and because the tooltip is delegated on `[data-tip]` the clones inherit the fast behaviour with no extra wiring.
-- **Every Library row states its provenance, and it does so by default** — `library.show_unverified_trust` and `store.verification_enabled` both flip to **on**: the trust axis was built so that only *positive* claims render, on the reasoning that an instance with no reviewer verifies nothing, so a negative marker would print on every card and read as a warning about the whole catalogue. That reasoning holds while the third level is expressed as an *absence*, and stops holding once it is expressed as a *statement*: "Community" is true of an item nobody has reviewed whether or not the instance has a reviewer, and an absent marker is indistinguishable from a marker that failed to render — which is the state a user actually hit, adding a skill, sharing it with everyone, and finding nothing on the row to say what it was. So all three levels now mark the name (**Organization** / **Verified** / **Community**), and a reader never has to infer a trust level from a blank. The two flags flip **together and not separately**: with verification disabled there is no admin Verify action (`_require_verification_enabled` 404s both endpoints), so turning the Community marker on alone would have stranded every user-authored item at Community permanently with no way to move it — the marker would have been describing the instance's configuration rather than the item. Both remain opt-out per instance: `library.show_unverified_trust: false` restores the silent default (unverified == no marker), and `store.verification_enabled: false` withdraws the whole vocabulary as before. **The markers themselves are paper-only, so the default look does NOT change.** `css/trustmark.css` is scoped `html[data-theme="paper"]` like every other redesign sheet, and `mark()` in `macros/_trustmark.html` takes `paper=False` — so an ungated callsite renders nothing rather than an unstyled marker. A default blue/topnav instance keeps the exact spelling each surface already had: `.cc-trust` chips on catalog cards, the amber `Curated` badge on package cards and detail heroes, `.trust-chip` on a store-item detail, and no markers at all on Library rows. What changed for blue is only the SOURCE — those legacy visuals now read the stored `publisher_kind` instead of the creator's current Admin-group membership, and `_v112_to_v113` backfills the column from exactly that derivation, so the visible state carries over at upgrade while the mechanism that silently un-curated a package stays dead. Guarded two ways: `tests/test_ui_layout_theme.py::test_trustmark_css_rules_are_scoped_to_theme` for the sheet, and `test_default_theme_renders_no_trust_markers_on_populated_rows` for the markup — the latter seeds all three trust levels with the flag on, because the same assertion against an empty Library passes vacuously. **What existing instances do gain:** admins get the Verify / Request-changes actions and authors get the Request-verification button, since `store.verification_enabled` now defaults on.
-- **One shape for every button** (new `--ds-radius-btn: 9px` token): the product shipped two different primary buttons. A detail page's `+ Add to my stack` was fully round (`--ds-radius-pill`, inherited from the paper skin's `.btn` rule), while the Library toolbar's `+ Add` — the same action, one page away — was a 9px rounded rectangle, because a toolbar CTA stands beside a search field and a filter button and cannot be pill-shaped without reading as a foreign component. Two spellings of one button is a bug in the vocabulary, so the pill loses the argument: **every labelled button now wears `--ds-radius-btn`**, matched to the toolbar/input radius it sits next to (`.cc-btn`, `.fbar__search input`, `.fbar-filter__btn`). Fully-round is now the badge language — category tags, status chips, counters, avatars, dots and circular icon-only buttons — which is what makes it legible as a badge in the first place. **One carve-out:** the two connect-banner CTAs (`.cbn-cta` on the "same knowledge, everywhere" bar, `.klb-cta` on the Knowledge Layer hero) stay fully round under every theme. Those two surfaces are the product-model pitch rather than page chrome — they carry their own gradient fill, their own illustration and the emerald brand green while the app primary is sky — so the pill is what separates "this is marketing" from "this is a button on your page", and squaring them down made them read as ordinary page CTAs sitting in a banner. Paper-theme only for the buttons that changed (the paper skin's `.btn` rule and `detail-page.css`); `.cc-btn` is retokenized at its existing value, so `blue`/`navy`/`dark` instances are byte-for-byte identical.
-- **Library table: the Stack control is a tint, not an outline**: `Add to Stack` was a bordered primary-tinted button while `In Stack` beside it was borderless, so the actions column drew a faint second grid down the table, competing with the row rules for structure — and "one of these is boxed and the other isn't" was never the difference worth seeing. `Add to Stack` is now borderless on the primary tint exactly as `In Stack` is borderless on the success tint (and its remove-on-hover state on the danger tint), so the three states differ by colour, icon and words alone. Geometry is untouched — same height, padding and slot width — so the in-place swap still moves nothing.
-- **Store upload wizard**: shows a cross-navigation flash toast ("Uploaded — review in progress.") on the entity detail page after a successful upload — written to `sessionStorage` before the redirect and drained by `app.js` `init()` on the next load; removes dead `.banner.success` CSS that was never reachable (success path always redirected).
-- **Contribute skill page**: action buttons (`Publish to Agnes`, `Paste from clipboard`, `Remove this skill`) now use `ds.button()` instead of bespoke `.contrib-btn-primary`/`.contrib-btn-ghost` classes, keeping them visually consistent with the rest of the design system; clipboard-denied error now uses `appToast` instead of overwriting the button label (which would overflow a canonical short-label button).
-- **One detail page for every resource type** (paper only — `blue`/`navy`/`dark` and the topnav chrome are byte-for-byte unchanged, guarded by `tests/test_ui_layout_theme.py::TestSharedDetailLayout::test_default_instance_gets_neither_shell_nor_badge`): the shared entity-detail scaffold (`macros/_detail.html`) had no paper rules at all, so it rendered exactly as authored — a saturated per-kind gradient slab, a frosted-glass panel nested inside it, and every section below in its own bordered card. A plugin was a violet slab and a skill a green one, which read as two unrelated products rather than two entries in the same library; three stacked surfaces deep, the header alone spent ~260px before the first line of content. Data packages, Skills, Plugins, Uploads, Files, Collections, Agents, Memory domains and Recipes now render through **one editorial layout**, and differ only in their accent colour, glyph and metadata. The header sits on the page ground: no fill, no container, no shadow — a soft radial wash of the resource accent in one corner, a whisper of dot texture in the other (the wave flourish is gone), a tinted 48px glyph tile, a 30px title, a **resource-type badge** naming the type in words beside it, one compact metadata row, and a hairline where it ends. Below it a **two-column shell** with a **sticky right rail**: content on the left, and on the right the answers to "what is this, who owns it, is it shared, is it on my laptop" — the lookups that were previously cards in the reading flow. Sections stop being cards entirely (whitespace and a hairline instead of a border and a fill), which is what removes the card-inside-card nesting a table or accordion used to sit in. **One filled action per header**, with the secondary ones moved into a new overflow menu (a `<details>`, so it opens and closes with no JavaScript): `Ask Agnes` — which under paper is the *same* sky as the brand and so competed for the identical glance — becomes an outlined control in the assistant's colour, and fills only when it is the page's sole action. Eleven new reusable macros (`cols_open` / `aside_open` / `side_open` / `side_rows` / `owner` / `stats` / `status` / `timeline` / `related` / `menu` / `empty`) are the building blocks every page composes from, so a new resource type inherits the layout rather than re-authoring it. Tables, lists, upload zones and status pills across the migrated pages come onto one rhythm — roomy rows, hairline separators, no outer frame, a wash on hover — and every transition is under 200ms with a `prefers-reduced-motion` opt-out. The layout ships as its own sheet (`static/css/detail-page.css`), every selector scoped `html[data-theme="paper"]` (the `html` prefix on purpose: the pages' own `<style>` blocks load from `head_extra`, i.e. after this sheet, and would otherwise win); the two hand-written marketplace heroes are covered explicitly, since every piece of ink in them was authored white-on-gradient and would have been invisible on a light header. **Migration is opt-in per template**, via `{% import "macros/_detail.html" as detail with context %}` — a plain import leaves `detail.redesign` false and the macros emit the legacy markup, so an unmigrated page is untouched. **Follow-up polish:** the header's ambient layers are gone entirely — a radial accent wash and a dot grid both read as a smudge behind the title on a warm canvas rather than as texture, so the accent now appears only where it means something (glyph tile, type badge, section glyphs) and the tile itself gains a real gradient + inset highlight to carry it. A section no longer inherits the card skin's hover, which was lifting an invisible box 2px and dropping a shadow under nothing. The data-package accordion stops being a stack of bordered cards: hairline rows, a real rotating chevron instead of a `▸` glyph, and two lines per row so the DESCRIPTION gets the width instead of being the thing that ellipses — with the sync date trimmed to a date (nobody reads a package page to learn a table synced at 14:21:49) and the size right-aligned into its own column. Query-mode badges go neutral, because the hardcoded green/blue/violet trio put the *Skill* violet and a near-brand blue on a storage detail; only `remote` keeps a tint (info, not a resource hue) since it is the one mode with a cost consequence. A gotcha becomes a note with a leading rule, and only the KEY one keeps an amber fill. The `Columns` table on a table page joins the same rhythm, and its column names lose the grey `code` pills that turned the first column into a stack of chips. Finally the header carries only the action a reader would TAKE: "Always downloaded (required)" was a 230px disabled button stating a status the rail already states in full — and squeezing the title until the badges wrapped — so it is gone, and "Remove local copy" moves into the overflow menu. Rails drop their `Type` row for the same reason: the badge beside the title already says it.
-- **Library: a sharing badge's colour now means "you can change this", and nothing else**: the chip's hue used to encode the visibility *value* — grey `Private`, blue `Workspace` — with a third violet hue (`--ds-readonly-*`) laid over the top for items shared with you. Value and editability don't correlate, so the colour was actively misleading: a grey `Private` badge on your own upload was one click from changing, while a coloured `Workspace` badge on someone else's item could not be changed at all — two rows in the same colour offering opposite affordances. Colour is now keyed off editability alone: **blue** on the badge that opens the dialog that changes access, **grey** on everything that cannot be changed — both items shared with you (a plain badge, `cursor: help`) and a store entity's access, which follows from its review state and whose badge opens a dialog that only *explains* the model, so it keeps its chevron and pointer but gives up the blue. The value is still fully stated, just not in the hue: every chip carries its own word (`Private` / `Workspace` / `Shared with you` / `In review`) and its own glyph (padlock when private, share node otherwise), so nothing is colour-only in either direction. The grid cards follow the identical rule and now state it **at rest** rather than only on hover, so switching view never recolours a state; the violet read-only trio is no longer used by either view (the tokens themselves are untouched). Guarded by a rewritten `tests/test_web_library_files_folders.py::test_sharing_badge_colour_means_changeable_not_visibility`, which asserts no visibility *value* carries a colour rule.
-- **Library: the Type column is retired, and a file's row says its format instead**: the table's Type column repeated the section the row was already drawn under — the list is GROUPED by type, which is also why the column could never sort — and for a collection it said nothing at all, rendering as a permanently empty cell that held 128px of a fixed four-column grid. It is gone, and the one thing it carried that the grouping does not is now on the name's second line: a **file states its FORMAT** ("PNG", "SVG", "MD") where every file used to print the same boilerplate sentence ("A private file — searchable by your agents."), so a line that no two rows differed on now carries the fact a filename may not reveal. Nested child files, which had no description and so showed a blank second line, gain the same format line. A collection keeps its file count there, and every other kind (skill, plugin, memory domain) keeps its real description. The 128px goes to Name, the only column that ever wanted more. The type's *words* still ride the row as `data-type-label` — the grid cards have no column headers and still name the kind on their metadata line, and a card is projected from its row — and the two in-place file⇄collection transitions write the same second line the server would have rendered, off a new `data-file-format`. One visible change in card view: an artefact with no description of its own now shows a blank description line there (as a collection always has) rather than the retired boilerplate.
-- **Library: a hovered row uses the same grey as a hovered sidebar item**: row hover was a 4% wash mixed from the text ink; it is now `--ds-surface-dim`, the token the rail's own `--rail-hover-bg` resolves to. Pointing at a row in the list and pointing at a destination in the sidebar are the same gesture and should not answer in two different greys. Collection rows keep their section-accent hover ramp — their resting state is already an accent tint, so a grey hover would read as losing it.
-- **Library: row cells centre on the row instead of hugging its top**: a Library row is two lines in its Name cell and one in each of the others, so the owner, the sharing badge and the Stack button each lined up with the *title* and none with the row — ~10px above its middle. The page had asked for `vertical-align: middle` all along, but the shared table primitive sets `vertical-align: top` through `:is(.data-table, …) tbody td`, which outranks a bare `.lib-table td` rule, so the declaration had never applied to a single body cell; it now matches that specificity and binds. The dead `padding: 9px 14px` that shared the rule is dropped rather than repaired — the primitive's 8/16 is what every row has actually been rendering, and "fixing" it would have re-spaced the whole table as a side effect of an alignment change.
-- **Library: every trust claim now rides the item's name, and the Owner column holds only a name**: following the community marker, the `Verified` chip becomes an icon marker on the title line too (shield-check, success ink — the one earned claim on the row, and the only place colour is spent there, so a verified row can be picked out of a scan). The grey `Organization` chip becomes an icon marker on the title line as well (a new shared `building` glyph, neutral secondary ink — the strongest claim on the row, but granted by who published rather than earned by review, so it does not take the colour Verified spends). It restates what the Owner cell says in words ("Your organization", set from `publisher_kind`), and that repetition is accepted deliberately: the alternative is one of the three trust levels expressing itself in a different column from the other two, and a trust axis with a hole in it is harder to read than one that repeats itself. The Owner cell keeps its name, and its flex wrapper and wrap rule are gone with the retired text chips. **The community marker no longer misdescribes your own uploads:** its sentence claimed the item was "shared by other users", which is false on the skill you published yourself, so an owner sees "Community item — yours, and not verified by your organization." instead — same glyph, same meaning ("nobody has verified this"), one honest sentence each. The three markers are mutually exclusive; Organization and Verified are ungated, and the community marker's `library.show_unverified_trust` now defaults **on** (see the trust-axis bullet above).
-- **Library: the community marker moves to the item's name and becomes an icon**: the amber **Community** chip sat in the Owner column beside the owner's name, where it made a statement about the *item* read as a statement about the *person* — and cost a chip's worth of a fixed 152px column on every unverified row to say in a word what a glyph says. It is now an icon-only indicator (a new shared `users` glyph, two figures) on the title line, immediately right of the item name, in muted ink rather than amber: it marks provenance, not a problem, and amber next to a name reads as a warning about the row. Hovering it (or reaching it with a screen reader) gives the full sentence — "Community item — shared by other users and not verified by your organization." — as both the `title` and the accessible name, so the marker is never colour- or shape-only. The Owner column is now the owner's name plus, where they apply, the two *positive* claims it always carried (**Organization**, **Verified**); the retired amber chip's CSS goes with it. The indicator follows the name into the grid cards too (cloned from the row, so the two views cannot disagree), where the chip had never appeared at all. This changed the marker's form, not when an instance shows one; the default itself changed separately (see the trust-axis bullet above). Guarded by `tests/test_web_library_store_entities.py` (including a new placement test asserting the marker precedes the Owner cell).
-- **Library: the page's caveats are one block under the header again**: the "Data apps — coming soon" banner moves from the foot of the page (below the inventory, where a reader met it only after scrolling past everything) up into the page head, directly under the "The same knowledge, everywhere" connect banner, and is joined there by a second note in the same component — an amber **Library content is still being prepared** ("some items and information may be incomplete or change while we finish loading them"). The two are distinguished by vocabulary rather than shape: warn for the caveat about the inventory the reader is about to trust, info blue for the roadmap note about a kind that is not in the list at all — so the head closes on one recognizable block of asides instead of two unrelated-looking panels. The warn variant's leading rule and glyph take `--ds-warn-ink` rather than the pale hairline `--ds-warn-line`, which would be near-invisible as a 3px rule on the warn fill in the light themes. Both notes render for a stocked Library and an empty one alike. **The amber note is a deliberate, temporary product statement, and it knowingly reverses an earlier decision** — `test_library_title_carries_no_setup_caveat` previously banned this copy from the page outright, on the reasoning that a standing condition asking nothing of the reader earns no permanent marker. That reasoning is kept where it still applies (the caveat may never be a `.pnote` panel or a pill beside the `h1`, both still asserted) and dropped where it cannot tell a heading ornament from a note in the asides stack. It is gated on nothing and shown to everyone on purpose, while the content backlog is being filled; `library_prep_warning()` and its single call site come out once the inventory is complete.
-- **Owner/admin actions on a store entity are a named strip, and destructive ones stop shouting** (paper only): `.owner-actions` was a bare right-aligned flex row floating between the hero and the first section — three unparented pills, two of them destructive (`Archive`, `Hard delete`) and exactly as loud as `Edit`, with nothing saying what the row was. It becomes a strip labelled **Manage**, closed off by a hairline above it rather than boxed — the sections around it no longer have boxes either, so a bordered bar would have been the only card left on the page — and the destructive pair is demoted to quiet controls that commit to danger on hover, so the colour arrives with the intent rather than with the page. The label is markup (real text, not CSS content) hidden by default, so every non-paper instance keeps the bare row it has today.
-- **The semantic layer gets a home instead of three doors** — metrics and glossary terms were reachable from a button on the chat empty state, a text link beside the Library's `+ Add`, and a CTA on `/catalog`: three entry points, none of which owned the thing, and each of them a bare link that could not say how many definitions there were or let you search them. They now **close the Library page** as a Definitions block under the inventory, carrying their two counts and a door into each tab. Deliberately **not rows in the list**: metrics and glossary terms are the one thing there that nobody owns, shares, installs, drops or edits, so modelled as inventory they had to blank all four of the table's columns at once — Owner said "Your workspace", Sharing said "Workspace" but refused to change, Stack said "In Stack" but locked, Actions was empty — and four special-cased columns is the list saying the object is not one of its rows. A data package looks similar but differs where it counts: access to it *varies per caller*, which is what makes it "what I have", whereas everyone has the whole glossary unconditionally. The block is **searchable by its contents**, which is what keeps it useful rather than decorative: it carries every metric name, display name and synonym plus every glossary term in a search index, so typing `MRR` or `active account` into "Search library…" — the query that otherwise returns *nothing* and reads as "Agnes has never heard of it" — gets the answer "“mrr” is one of your organization's definitions" from the one block on the page that knows the word. Names only, never the definition bodies: the index ships on every page load, and matching on prose would surface the block for words that merely appear inside some definition. The metric side is RBAC-filtered exactly as `/catalog/semantics` filters it, so nobody finds a metric they could not open; the glossary is deliberately ungated there (business vocabulary, not data). Absent entirely when no semantic layer is configured — a block reading "0 metrics · 0 glossary terms" describes the setup, not the content. **No nav item, in either chrome**: this is reference material consulted a handful of times, and permanent chrome is the wrong price for that. Looking a term up also now **finishes in the header search** — a glossary or metric hit renders its definition as a second line under the name (the API has carried the text all along), so the panel answers "what do we mean by active account?" instead of linking to a page you then scan. In **chat**, a `glossary_search` call stops rendering as a raw tool id and reads as "Checked your organization's glossary", linking to the definition — the one tool call that is provenance for the answer rather than plumbing behind it. The two orphan links are **removed**: the chat empty state offers no browse detour at the moment of intent (the composer is directly below it), and the Library header link is superseded by the block. Citing the *specific* definition an answer used, rather than noting that one was consulted, is [#1134](https://github.com/keboola/agnes-the-ai-analyst/issues/1134).
-
-### Fixed
-- **Library: a curated plugin's Stack pill follows the subscription, not the grant — so it stops contradicting every other surface about the same plugin.** Plugins are the one granted kind whose membership is not automatic: Model B (v28+) has `resolve_user_marketplace` serve `subscriptions ∪ required-tier grants`, so a plugin granted at the `available` tier and never subscribed is genuinely absent from the caller's served set — its skills and commands are not loaded in their Claude Code. The Library rendered plugin rows through the auto-membership model that data packages and memory domains legitimately have (`_add_shared_row` hardcodes `stack_state="in_stack"`), so every *eligible* plugin claimed membership; since the redesign also made every granted row LOCKED, the row additionally removed the one affordance that could have corrected the state. The result was three surfaces disagreeing about one fact: `/library` said a locked "In Stack", `/marketplace` offered "Add", and an agent asked "what plugins do I have?" answered "not installed" from `marketplace_search` — the last of which was the *correct* answer. Plugin rows now derive their state from `_curated_stack_sets`, the same helper `GET /api/marketplace/items` computes its `installed` flag from, and render all three real states: eligible-but-unsubscribed is **addable** (POST/DELETE on `/api/marketplace/curated/{mid}/{plugin}/install`, which the kind-agnostic toggle already handles), a self-made subscription is **removable**, and only `is_system` or required-tier grants **lock** — precisely the two cases `curated_uninstall` answers 409 to, so the lock now promises exactly what the API enforces. Plugin rows also pass their real grant tier through, so the Optional/Required facet slices them the way it slices data packages. A cross-surface guard test pins the Library and `/api/marketplace/items` to the same answer.
-- **Chat 500s on instances that rode this branch before the main merge.** A database that climbed the branch's *old* step numbering arrives already stamped past the version numbers main's steps now occupy, so those steps are skipped forever — `schema_version` sits at the head and `/api/health` reports `db_schema: ok` while the columns they add are simply absent. `chat_sessions.agent_id` is the painful one: every chat read and write names it, so `GET`/`POST /api/chat/sessions` both fail with `Binder Error: Table "s" does not have a column named "agent_id"`, the session list never loads, no conversation can be started, and the reaper logs the same error every cycle. `_heal_legacy_agents_table` already repaired the `agents` *table* for this exact stranding; `_heal_stranded_ladder_columns` now closes the rest of the gap — `chat_sessions.agent_id` and `personal_access_tokens.agent_id` (v101), `sync_state.parts` (v100), and the `data_apps` draft (v99) + linked (v108) columns. Stamp-independent and idempotent like its siblings: it checks `information_schema` rather than trusting the version, so it is a no-op on cleanly-migrated and fresh installs, and it runs only on the DuckDB state backend (Postgres tracks Alembic revision ids and cannot be stranded this way). `personal_access_tokens.surface` is repaired alongside it: every PAT mint names that column, including the CLI sign-in exchange, so healing chat without it would have left the operator locked out of the CLI on the same database. The heal also CHECKPOINTs afterwards — the post-migration checkpoint sits inside `if current < SCHEMA_VERSION` and a stranded DB is stamped AT the head, so on precisely these instances it never ran and the repair's `ALTER TABLE ... ADD COLUMN` statements would have stayed in the WAL, which is the shape that can leave `system.duckdb` unrecoverable on a cross-version replay after an abrupt restart. The repair covers `usage_session_summary.uploaded_at`, `file_corpora.origin` and `chat_sessions.pinned_at` as well, and a guard now derives the whole comparison from the ladder: any future step in the renumbered window that adds a column no heal repairs fails the suite by name. The hand-kept list had already drifted twice, each time shipping a repair that fixed one screen and left another broken.
-- **`/me/profile` no longer scrolls sideways below ~980px.** Two independent causes, both the same class of bug — a layout that could not give way. The single-column grid rule used a bare `1fr` (`minmax(auto, 1fr)`), so the track refused to shrink below its content's min-content width and the column blew out of the grid; and the token cards demanded a fixed `200px` usage column with no wrap, which is what supplied that min-content width. The grid now uses `minmax(0, 1fr)` in both rules and the card wraps on a shrinkable basis. Separately, the group and effective-access rows wrap and nothing in them is unshrinkable: every part can be arbitrarily long (a Workspace group name is an email address, a resource id is user-authored, one resource can arrive via several groups), and the group chip ellipsises rather than wrapping into what would read as two chips — the full value stays on its `title`. The tokens status control scrolls inside its own track on a phone instead of widening the page, and the shared section head becomes two rows below 560px so a head carrying an action button no longer squeezes its title onto three lines in the gutter beside it.
-- **`/me/profile`'s only `<h1>` announced as "Jamie Rivera Edit".** The inline name editor's button and input were *inside* the heading — valid phrasing content, but they join its accessible name. The `<h1>` now holds the name and nothing else, with the editor as its sibling.
-- **`.fbar-chip[hidden]` is explicit in the shared filter toolbar.** The component sets `display: inline-flex` on the chip, an author rule that would otherwise be at the mercy of how a given engine weights the UA `[hidden]` rule — fine for the callers that build chips dynamically, wrong for one that renders a fixed set and toggles `hidden` per filter (the tokens toolbar).
-- **Library grid: the sharing control on a card looks like a control, and every surface calls a sharing state the same thing.** Two bugs with one root — a signal carried on a channel that was already busy. (1) On a card the control stated "you can change this" in its INK (primary blue, 12px/400, no container, no chevron, 20px tall) — but blue is already that card's ambient hover colour (`.fbar-card:hover` turns the title primary, `:focus-within` draws a primary ring), so the cue meant to say *control* was the cue the card spends on *the pointer is here*; beside a filled semibold `Add to stack` pill it read as coloured metadata, and its entire hover response was `#0284c7` → `#0369a1`, invisible at that size and quieter than the card-level hover it had to stand out from. Changeability now rides FORM: a bordered 26px chip with the chevron the table badge always had (the card silently dropped it) where the state can be changed, bare text where it cannot — so box-vs-no-box survives a 40-card scan, the control clears WCAG 2.2 SC 2.5.8 (20px did not, and the adjacent 26px pill denied it the spacing exemption), and it is no longer colour-alone (WCAG 1.4.1). Outlined rather than filled like the table's badge on purpose: that chip owns a column, this one shares a 40px bar with the primary action, and a second tint just doubles the blue — the footer now reads filled = the action, outlined = a state you can change, bare text = a state you cannot. (2) The card kept its own vocabulary ("Only you" / "Specific groups" / "Everyone") against the table's ("Private" / "Shared" / "Workspace"), so most rows named their own state differently depending on the view; because that map knew only the three scope keys, a skill *pending review* — correctly "In review" on its row — printed "Only you" on its card, which is not a wording difference but a false statement about the item. There is now ONE set of words, owned by `app/services/artefact_access.py :: VISIBILITY_LABELS` (**Private** / **Specific groups** / **Everyone**), with both client-side maps deleted and the card printing the server's label verbatim, so review states arrive without being enumerated client-side. **Everyone** replaces **Workspace** everywhere it faced a user (Library, My Stack's Source column, the skill builder's preview): `workspace` is the internal enum key, the product calls that scope the *organization* in every sentence it writes, and it was the odd one grammatically — "Private" and "Specific groups" answer *who can see this*, "Workspace" named a container. Two further fixes fall out: a read-only row no longer overwrites its scope with "Shared with you" (which understated a workspace-published item as though someone had picked you, and erased "In review" on your own pending skill) — that phrase is now used only where the server genuinely cannot resolve a scope, which is what a grant-derived row already reports; and saving a share change now refreshes the row's `data-sharing`, which the Sharing column sorts on and the card prints, so neither goes stale without a reload.
-- **Builder: a refused save is a short work list next to the fields it faults, not a paragraph that shoves the buttons down the page** — every message the builder produced shared one `.sk-result` span, and that span sat *inside* the action row with `flex: 1 1 100%`. So the one message that is genuinely long — the store's multi-issue rejection — claimed its own full-width row, re-flowed the header, and moved **Save to Library** out from under the pointer that had just pressed it. What it printed was worse than where it printed: the same "description is too short" fires at both component and submission level, so the reader got it **twice**, and the submission-level copy carries advice for the ZIP-upload path ("Do not add a `.claude-plugin/plugin.json` to the ZIP") that a person typing Markdown into a textarea cannot act on — about 300 characters of right-aligned red prose, un-dismissable, for two actual defects. Feedback now rides **two channels, split by whether the reader has to act**. *Receipts* (draft saved, file loaded, check finished, item created) go to the app-wide toast — out of layout entirely, announced `aria-live="polite"`, dismissable, auto-expiring. *Problems* stay on the page as a `role="alert"` list **below** the action row, so the row it grows under never moves: one row per defect, deduped on field+code, each naming the field that owns it with a **Take me there** jump — and the same fault is restated **on that field**, which is where it gets fixed. Alert and field split the text rather than repeating it: the alert carries the verdict ("Skill content is too short (minimum 200 characters).") and the field carries the whole hint. Advisory `quality` warnings are no longer dressed up as blockers (they never blocked — `status: 'warn'` is their ceiling); they belong to the Check panel. Rows retire as the author answers them and the count is derived, so the header can't claim "2 things to fix" over one row. Progress moved onto the control that started the work (**Saving…** / **Checking…**), so no status text can grow in that row again. The success case had **no confirmation at all** — the builder navigated away and left the Library to imply it worked; the receipt now survives the redirect (`agnes.flash.toast`) and names which door the item went through: private lands immediately, "everyone" waits on the automated review. Guarded by `tests/test_web_studio.py::test_builder_splits_receipts_from_problems`.
-- **The shared toast primitive is announced, dismissable, and no longer renders empty for half its callers**: `window.appToast` read `opts.msg` only, but eight existing call sites (`me_memory_mining.js`, `admin_store_lint.js`, `studio.js`, `studio_suggestions.js`) pass a **bare string** — every one of those produced a visible, empty toast. It now accepts both shapes. The container gains `role="status"` + `aria-live="polite"` (toasts were silent to screen readers), each toast gains a keyboard-reachable ✕ (click-anywhere-to-dismiss was the only affordance, discoverable solely as a `cursor: pointer`), the timer pauses on hover so a sentence-long receipt can't expire mid-read, the stack is capped at four so a repeated action can't paper over the page, and the entrance animation honours `prefers-reduced-motion`.
-- **Chat: the composer's placeholder sits on the pill's centre line, not 1.2px above it**: the rail composer is a 56px pill whose leading `+` and circular send button are flex-centred to the exact pixel, so the one element that missed the centre line was the thing the eye actually reads. The textarea inherits `min-height: 40px` from the shared `.cloud-chat-input` rule, but at `line-height: 1.4` on 14px type a single line is only 19.6px, and with the base rule's 9px padding the box came to 37.6px of content in a 40px frame — a textarea drops all of that 2.4px slack *below* its last line box, so the placeholder (and the first line you type) rendered 1.2px high while everything beside it was centred. Retokenized as an exact fit under rail: a 20px line plus 2×10px padding *is* the 40px min-height, so there is no slack left to distribute. Integer values, so nothing lands on a subpixel, and `autosizeComposer()` still steps cleanly at 40 / 60 / 80px as the box grows. Rail-scoped: the topnav composer is `rows="2"`, where the intrinsic two-line height already exceeds the 40px floor and no slack exists to mis-centre — its metrics are unchanged.
-- **Library: an "In Stack" row you cannot remove now looks like one**: the lock on the Stack pill was keyed on the grant *tier* (`requirement == 'required'`) rather than on whether the caller can actually drop the membership. But every group grant is undroppable — the grant *is* the membership (auto-membership in `StackResolver.browse()`); subscribing only decides whether `agnes pull` keeps a local copy. So an *optional* grant rendered the success-tinted check that a **removable** pill wears at rest — pixel-identical to a control that turns into "Remove from Stack" on hover, differing only in a tooltip — and the only way to discover it wasn't one was to hover it and watch nothing happen. Optional grants now carry the same lock glyph as required ones, in both the table and the grid card, with a tooltip that names who can remove it ("Granted to your group — only an admin can remove it from your Stack."). The tier still differs where it's legible: that tooltip, and the Optional/Required facet where it is actually filterable. `.lib-instack--required` is renamed `.lib-instack--locked` after the property it now encodes. A locked pill wears the **same grey as the read-only Sharing badge** beside it rather than an informational blue — one colour per row for "you cannot change this", instead of a third tint competing with the primary and success pills for meaning on the one control that has no action to offer. It takes that badge's border along with its fill, because the row's own hover background *is* `--ds-surface-dim`: borderless, the chip dissolved into the row at exactly the moment someone pointed at it. And it explains itself through the page's fast tooltip (`data-tip`, ~120ms) instead of the native `title`, whose OS-controlled 600ms+ delay meant the sentence about who *can* remove it arrived after the pointer had moved on; the two Stack **buttons** stay on `title`, since their hover already swaps the label to say what a click does. Guarded by `tests/test_web_library.py::test_library_available_grant_reads_in_stack_and_offers_no_toggle`.
-- **Chat: the conversation "⋮" menu is the same dropdown as every other dropdown in the app**: the row menu (Pin/Unpin · Rename · Delete) was the only menu built off the legacy `--radius-*` / `--text-*` size ladder — a 168px panel with 6px corners, a heavy `--ds-shadow-lg`, and 12px labels on 4px rows — while the other three menus in the app (the detail-page overflow menu, the Library move menu, the filter menu) had long since agreed on one look. Next to them it read as a different component from a different product: harder corners, a darker drop, and type a step and a half smaller than the rows it sat over. It now wears the shared spec verbatim — 208px wide, 6px padding on a 12px radius with `--ds-shadow-md`, rows at 13.5px on an 8px radius — and each action gains the muted 15px leading glyph the house menus label their rows with (pushpin, pencil, bin; the bin turns danger-ink with its label). **The `P` / `R` / `D` accelerator hints are gone**, along with the bindings behind them: they keyed off `event.key`, i.e. the character the keyboard *layout* produces, so on any non-Latin layout the same physical keys emit different characters and the shortcut silently did nothing — the panel was advertising three bindings it could not honour, in a column of muted text no other menu in the app carries. Layout-independent keyboard support is untouched (arrows, Home/End, Escape back to the trigger). Under `paper` the panel also picks up that theme's short menu rise, matching `.detail-menu__panel`, with a `prefers-reduced-motion` opt-out; the entrance is transform-only, so the JS that positions and clamps the panel is untouched. Both hosts (chat.js on `/chat`, rail_history.js everywhere else) draw from the one shared component, so neither can drift. Guarded by `tests/test_chat_pin_conversations.py::test_panel_wears_the_house_dropdown_look`, which asserts the metrics in the row-menu sheet **and** in `detail-page.css` so a change to either side fails.
-- **Chat: a highlighted code block is readable, and no longer draws a stray frame around its own contents**: every fenced block in a chat answer painted a *light*-theme syntax palette onto the dark code surface — the vendored `highlight.min.css` is GitHub **Light**, whose token colours are chosen for a white page. On `--ds-code-bg` a string (`#032f62`) landed at **1.2:1** and a number/operator/attribute (`#005cc5`) at **1.7:1**, i.e. invisible rather than merely dim; keywords (2.5:1) and function names (1.8:1) were barely better, so the parts of a snippet the highlighting exists to distinguish were the parts that disappeared. Rather than swap the vendored sheet for a dark one (which would hardcode a second palette outside the token system), each hljs token family is remapped in `chat.css` onto a new `--ds-code-*` set in `design-tokens.css`, verified in the browser at **≥5.5:1 for every family in both themes** (blue `#0c1224` and paper `#1c1b1a`), with the block's plain ink at 14.6:1. The same blocks also drew a 1px light rectangle inside themselves: `style-custom.css` gives every bare `code` a `--border` box, and the chat block's reset covered `background` / `padding` / `color` but not `border`, so the frame rode along on the `<code>` inside the dark `<pre>` — the block itself owns the chrome, so it is cleared. Affects both themes and both chromes; the token set is declared once and inherited, since both code surfaces are near-black.
-- **The chat dashboard's Stack line links to the Library, not to a page the rail retired**: "Agnes is using N knowledge sources and M capabilities from your Stack" — the status strip under the composer in the rail empty state — sent both of its counts to `/stack`, a surface that is no longer a rail destination (#1088), so following the line landed the caller on a page with no nav entry and no active state, off the IA they had been navigating. Both links (and the "add more sources and capabilities to your Stack" note in the empty suggested-actions card) now go to `/library?stack=in_stack`: a new deep link that arrives with the Library's **In stack only** toggle already pressed, narrowing the united inventory to exactly what the line counts. The Library is the right destination rather than a redirect target of convenience — data packages and memory domains on it come from the *same* `StackResolver.browse()` read the Stack page used, so this is the same content under the chrome that has a nav entry for it. The deep link flips the toolbar's own control instead of reaching into the filter engine's state, so the pressed state, the item count, the per-band tallies and the no-results view can't drift from what a human press produces; it also opens the bands the filter left with rows, since the bands are folded by default and a screen of closed bands is a poor answer to "what is Agnes using?". Neither the applied filter nor the opened bands are persisted — like `?section=`, it is a hand-off for this arrival, not a preference the caller set. Any value of `stack=` other than the facet's one legal value is simply off, so the param is not a free-text hook into the page's JS, and an instance where the toggle doesn't render (everything, or nothing, is in the Stack — where the filter would change nothing) lands on the page as rendered. Rail-layout only: the status line exists nowhere else, and `/stack` itself stays a live route. Guarded by `tests/test_web_chat_empty_state.py` + `tests/test_web_library_toolbar.py`.
-- **Rail chrome: the open Admin tree is one column of text, not two stepped ones** (spacing only — no row, fill, hairline or flyout geometry moves): the seven area labels started 8px left of every `.rail-i` label above them (x=44 vs x=52), so opening `Admin` stepped the column left and the eye had two left edges to track in a 240px rail. The indent moves onto the row's own left padding, which lands the labels on the `.rail-i` offset exactly; the rows' boxes, the hairline guide and the caret column stay where they were, so the indent now belongs to the text rather than to the hover fill. The `has-active` dot is positioned in that padding instead of sitting in the flex flow — as a flex child it displaced its own label ~10px, making the one row marked as containing the current page the one row whose text left the column (x=54). `Admin` itself is untouched: it is a `.rail-i` and was already at x=52 with its gear icon to its left, so the fix is that its children join it rather than that it moves away from `Library` / `Agents` / `How Agnes works`.
-- **Rail chrome: the Admin flyouts are reachable by mouse again**: every Admin destination (`Activity Center`, `Users & Access`, `Data Packages`, `Sources`, `Agent Experience`, `Documentation`, `Server`) was effectively mouse-unreachable under the `rail` layout — the panel opens 14px to the right of its row, and moving the pointer toward it crossed a dead strip where hover was lost, so the panel vanished mid-journey and the only ways in were the keyboard or typing the URL. The hover bridge meant to cover that gap existed but never worked: it was a `.rail-admin-flyout::before` at `left: -16px`, i.e. outside the panel's padding box, and the panel's `overflow-y: auto` (which it needs for `max-height` scrolling) forces the used value of `overflow-x` to `auto` as well, clipping the bridge away — hit-testing the mid-gap pixels landed on `.rail`, outside `.rail-admin-sub`, in both breakpoints. The bridge moves onto `.rail-admin-sub` (which has no `overflow` of its own, so it escapes), gated on the same hover/focus-within condition that reveals the panel so the strip never overlays page content at rest, and sits at `z-index: 60` — below the panel it leads to, above the content it has to cross. It spans the panel's full vertical reach rather than just the row's height, so a diagonal move toward a tall panel's top item stays inside the hover region too; panel and bridge read that height from one new `--rail-admin-flyout-max-h` so they cannot drift apart. Affects the `rail` layout only (`data-ui-layout="rail"`, opt-in) and is theme-independent — it reproduced identically under `paper` and `blue`.
-- **A collection's browser tab no longer names a surface that doesn't exist**: under the rail chrome, `library_detail.html` titled its tab "<name> — Artefacts", though the rail nav, the page's own back-link and every other reference say **Library**. The `/artefacts` surface was renamed to Library and took over the route — as the template's own back-link comment explains — and this title block was left behind. Both chromes now say Library.
-
 ### Added
 - **The skill builder's merged save path gets automated coverage** (`tests/test_web_skill_builder_save_path.py`). `doSave()` is a hand-merge of two independently-landed designs — the LLM pre-check gate (pre-check → `commitSave` → review banner → status polling) and this branch's two feedback channels (`busy()` on the button for progress, `setProblems()` for refusals) — and the merge deleted `setResult()`, which the gate called six times, so a naive resolution threw `ReferenceError` on every save. Two layers: a contract layer asserting the wiring invariants (no surviving `setResult` call, `inFlight` in the Save button's disabled condition, `.catch(fail)` on both save paths, the `done(); done = busy(...)` relabel ordering, the gate/banner/poll still present, reviewer text escaped before it reaches `innerHTML`); and an executable layer that lifts the refusal mapping (`problemsFrom` and its pure helpers) out of the inline IIFE and runs it under `node`, asserting a structured guardrail rejection becomes one row per problem attributed to the owning field, that advisory `quality` warnings are never listed as blockers, and that a static-security finding names the reason and file without ever echoing the matched line. Each assertion was mutation-checked — reintroducing the corresponding defect makes it fail. The live round trip (pressing Save, watching the banner poll to a terminal state) remains manual: the builder's JS is an inline IIFE with no export hook, so the executable layer reaches its pure functions but not `doSave` itself.
 - **Drop one file on another to make a collection out of both**: the Library could move a file *into* a collection by drag-and-drop, but had no way to create one out of items already on the page — collections only came into being through the upload dialog, so grouping two files you had uploaded separately meant uploading them again. Dropping a file onto another **file** now proposes one: the row under the pointer says **New collection** (a hint and an outline distinct from a collection's "Drop here", because a folder absorbs the file while a file pairs with it into something that doesn't exist yet), and the drop opens a dialog with a name prefilled from the pair and a checklist of the files going in — pre-ticked with the two you dropped, with every other loose file on screen offered so three or four can be grouped in one go. It proposes rather than commits because creating the collection **moves** both files out of the single-file collections they currently are, which is more than a drag should decide on its own; the dialog says so, and warns when one of the files is shared (the new collection starts private). The same dialog is the keyboard route, reached from the drag grip's menu as **New collection…** — the drop is pointer-only, and a gesture with no keyboard equivalent is not a feature everyone has. Pairing is gated on owning both files: a file merely shared *with* you can still be moved, but pairing would consume its owner's collection. No new endpoint — it is `POST /api/collections` plus one `…/files/{id}/move` per file, and `move` already tidies away each single-file collection it empties. Unlike a move, it does not reconcile the table in place: the result is a new entity with its own URL, sharing and stack state, so it lands through the existing `/library?new=<id>` hand-off, which re-renders the list server-side and flashes the new collection. Guarded by `tests/test_web_library_files_folders.py`.
@@ -84,7 +40,34 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Agnes offers to ping you when a run is taking a while**: notification channels were reachable *only* from `/me/profile` — the page you visit to look a setting up **after** you already know it exists. Nobody goes looking for notifications before a run has finished while they were in another tab, so discovery was effectively zero. Agnes now offers the channel herself, in the thread, once a turn has been running for **45 s**: one card, same surface treatment as the gap-resolver card, which completes the Telegram link **inline** (`/start` instructions, code field, `POST /api/telegram/verify`) rather than sending you to a settings page mid-run. It is deliberately **not** a sixth onboarding step — a new `user_journey` column defaults `FALSE`, which would un-retire the completed "Set up Agnes" rail card for every already-onboarded user and re-nag exactly the people who finished, and each added step costs completion on the four that decide whether Agnes works at all. Instead the existing `use_anywhere` step is reframed from "Use Agnes from other AI tools" to **"Use Agnes outside this tab"** and carries a secondary link to `/me/profile#notifications` — where you *ask* from and where Agnes *reaches* you are the same idea, and the settings page stays the canonical home rather than gaining a second implementation. The offer is shown at most once per page load, "Not now" is remembered, the link state is re-read at offer time (you may have linked in another tab), and a timer that comes due on a backgrounded tab waits for the tab to come back — a card rendered into a hidden tab is a card scrolled past unread. Every terminal frame (`done` / `error` / `cancelled`) and both pre-send bails disarm it, so a turn that died at the door never produces an offer 45 s later. Guarded by `tests/test_chat_notify_nudge.py`.
 
+- **Skills surface — an index for your authored skills + a redesigned builder (rail layout, WIP)**: a new **Skills** page (`/skills`, reached from the left-rail Studio dropdown's **Skill builder** entry, now a real link flagged **WIP**) modelled on `/agents`. It has two in-page views: a **LIST** of the skills you've authored — real store data fetched from `GET /api/store/entities?type=skill&owner=<self>` (so entries still in review show too), each card carrying a status pill (Live / In review / Needs attention), category tag, and install count, linking to its store detail page — and a **BUILDER** that reuses the Agent builder's visual language: numbered sections (Identity · Instructions) beside a live preview card, an advisory **Check** (dry-run lint) that never blocks, and **Publish to store** wired to `POST /api/store/entities/from-markdown` (the same endpoint the studio Skill Builder uses, so quota, guardrails, and the review pipeline apply identically). Client-side name validation mirrors the store's `^[a-z][a-z0-9-]{0,63}$` contract, and structured store guardrail errors (e.g. body-too-short) are flattened into a readable line. The rail item picks up the active-state highlight on `/skills`; only the Corporate Memory builder remains a "Maybe?" placeholder. The existing studio Skill Builder (`/admin/studio/skill`) is unchanged and still reachable from the Studio index. Rail-layout only.
+
 ### Changed
+- **Skill builder and plugin upload wizard: LLM pre-check gate before save/upload**: when an LLM guardrail provider is configured (`get_guardrails_enabled() and get_guardrails_llm_provider_ready()`), "Save to Library" (skill builder) and "Finish" (plugin wizard) now run a synchronous pre-check before any DB write. A "Reviewing with AI…" status appears during the check (up to ~30 s). If the LLM passes, the real save/upload proceeds as before and redirects to the entity page or Library. If the LLM fails, the user stays on the builder/wizard with a plain-English error extracted from the verdict, so they can edit and retry — previously the entity was held at `pending_llm` and became invisible to the submitter. When no LLM guardrail is active (guardrails off or provider not configured), both flows are unchanged. `POST /api/store/entities/from-markdown` gains an `include_llm` flag on the `dry_run` path that runs `llm_review.review_bundle` synchronously and returns `guardrails_active`, `llm_safe`, and `llm_findings` alongside the existing `inline`/`lint` response.
+- **`/me/profile` and `/me/activity` join the redesign — they were the last two personal pages still on the retired chrome.** Both floated a blue gradient hero card over the grey app canvas and titled every block in uppercase micro-caps; no other redesigned surface speaks either vocabulary. Both now use the builder's language (`skills.html` / `agents.html`): the `base_index.html` shell (one unbroken `--ds-surface`, no grey gutters between cards), an identity-led head band (52px initials avatar, `--ds-agnes` eyebrow, 24px title, 15px lede), and section cards whose anatomy is a 1:1 port of `.sk-sec` / `.ag-sec` — 26px round badge, 15px sentence-case title, 12.5px sub, right-aligned summary, hairline-separated body. Profile drops its "Account" card entirely: the display-name editor now sits on the name it edits, in the head, and the account read-out moved to a sticky 320px aside built from the builder's own `.sk-pv-row` key/value anatomy (mirroring `minmax(0,1fr) 320px`), which also stops a 1400px shell carrying one narrow column. Group rows swap the monospace `via admin · added <timestamp>` for plain English, and the effective-access rows adopt the categorical `--ds-kind-*` sticker palette instead of the brand primary. The section card is extracted to a **shared** sheet (`css/section_card.css`, `.dsec`) rather than copied per page, so the two surfaces cannot drift. The legacy `.profile-page` / `.section-card` / `.account-grid` rules stay in `style-custom.css` untouched — `how_it_works.html`, `admin_user_detail.html` and `admin_mcp_tool_grants.html` still use them.
+- **Every section on `/me/profile` is collapsible and starts collapsed, via `<details>` rather than a JS toggle.** Native collapsing is keyboard- and screen-reader-correct for free, and it means the one section that *has* to be a `<details>` (Session & troubleshooting) is the same component as the rest — the builder ends up maintaining two head anatomies for want of this. Collapsed-by-default only works because **every head answers its own question**: the group count, the resource count, `Not set up` / `Connected`, and a tokens summary that leads with whatever needs attention (`1 expiring` over `3 tokens`) — so the whole account fits on one screen and you open only what you came for. The two public deep links keep working: a small hash handler opens whichever section the URL fragment names *or contains*, on load and on `hashchange`, so `/me/profile#notifications` (the in-chat nudge and the onboarding checklist both send people there) and `#tokens` still land open instead of on a closed drawer. `+ New token` sits in the collapsed head and cancels the disclosure, so minting a token never needs the section expanded. It takes BOTH `preventDefault()` and `stopPropagation()`: the former is the one that matters, because a `<details>` toggle is the `<summary>`'s default activation behaviour rather than a listener, so stopping propagation alone left the section collapsing on every press. On `/me/activity` the sections stay open where the card *is* the tab's content — a tab click is already a disclosure, and a tab whose only card is shut answers the click with nothing — and the two secondary breakdowns on Token usage (`By model`, `Top sessions`) start collapsed under the headline card.
+- **The Personal Authentication Tokens filter row becomes the shared `.fbar` toolbar** (`css/filter_toolbar.css`) — the same component `/library` and `/stack` render — instead of a third page-local vocabulary. It was three rows of chrome above a list that is usually 0–3 rows long: `STATUS` and `SORT BY` as uppercase micro-cap labels over two rows of loose pills, with `Clear filters` stranded on a third. Beyond consistency the swap buys four things. Status is now ONE segmented control carrying **per-status counts**, so an empty filter is visible before it is clicked (and a zero-count option is disabled rather than a dead end). Sort is one select carrying key *and* direction (`Newest first`, `Expiring soonest`, …), so the order is legible at rest — the old chips hid direction behind a click-to-toggle arrow that only appeared once the key was already active. `Clear filters` moved into a `.fbar-chips` row beside the removable refinement chips it clears, and exists only while there is something to clear. And the section gains a **name/prefix search** it never had — the prefix matters because that is the handle a log line or CI secret actually shows. Sorting also stops leading with absences: a token with no expiry is no longer "expiring soonest", and one never used is no longer "recently used" — both are pinned to the bottom in either direction, so what needs attention is always on top.
+- **`/me/activity` is reachable by any signed-in user, so its sub-headings stop being inline-styled uppercase `<h3 style=…>`.** The Token usage tab splits into three named cards (`Last 30 days` · `By model` · `Top sessions`) because they answer three different questions; the pipeline-column legend moves from page-introduction body copy into a note inside the card whose columns it explains; wide tables scroll inside their own card instead of widening the page; and the 30-bar daily chart is capped so it reads as a trend rather than as a hero graphic at the full band width. The troubleshooting partial's fixed greys move to `--ds-*` tokens (they read as disabled text on the paper canvas and vanished in dark); the terminal-style dump keeps its fixed dark pair deliberately, per the design system's one "night" carve-out.
+- **Neither page links `/stack` any more.** The Stack page is not a destination in this IA (it was demoted out of the rail), so "My stack" is reached through the Library's own `In stack only` toggle — the profile aside links `/library?stack=in_stack`, which arrives with that toggle already pressed, over a superset of the same `StackResolver.browse()` rows. `/stack` itself is unchanged and still renders.
+- **"How Agnes works" moves out of the rail's nav ladder into the account menu, and the prominent path to it moves to where newcomers actually are.** It was a full `.rail-i` row — same 34px ladder, 18px icon and accent-tinted active state as Library / Agents / Admin — for a page you open once or twice, so it read as a fourth destination; and it sat directly above the (much louder) onboarding card, stacking two "learn this product" objects on top of each other. Nav weight should track how often a row is needed, and here the right amount was no row: it is now an item in the rail's account menu, grouped behind its own separator with **Start over onboarding**, which was already sitting there and is the same kind of thing — an orientation action, not a fact about the caller. Personal items (Profile, My activity) keep the group above it; Logout stays last. This costs the column no height, never retires the way the onboarding card does at 5/5, and — living in `.rail-foot`, outside `.rail-collapsible` — stays reachable in the ≤1024px bar with the nav closed. It remains outside the `can_chat` gate (unlike its group neighbour): a caller with no chat grant needs the orientation more than anyone. Two intermediate placements were tried and rejected: a quieter `.rail-meta` row in the foot (still a row, and orphaned between the setup card and the account) and a `?` icon beside the wordmark (the brand lockup is an identity element, not a control surface — a help glyph there reads as an annotation on the product name). The original objection to the account menu — a product explainer buried in a popover is undiscoverable — is answered separately: the rail chat dashboard's empty state now carries a **"New here? See how Agnes works"** line under the composer next to the Stack status line, below the input because directly over it is the moment of intent (the same reason #1108's "Browse metrics & glossary" button was retired from there), and not in the hero, whose single "Connect your tools" CTA keeps its own action. That line is the labelled first-run path; the menu item is the find-it-again one. It lives inside `#chat-empty-extras`, so it retires with the rest of the dashboard the moment a conversation starts.
+- **One trust vocabulary everywhere, and the last derived trust claim becomes stored** (schema **v113**, `data_packages.publisher_kind`): the same three claims were spelled four different ways, and two of them read from different data — `.lib-trustmark` (3 icons, Library table + grid), `.item-detail .trust-chip` (2 text chips, store-item detail, **no Community at all**, so a row and its own detail page disagreed about the third level), `.cc-trust` (2 icon chips, catalog/marketplace cards), and the amber **CURATED** badge on a data-package hero. All four now render from one macro (`macros/_trustmark.html`) and one sheet (`css/trustmark.css`), off one stored `publisher_kind` / `verification_state` pair, in two forms: **icon** where a word would compete for a fixed column's width (table cell, card head) and **icon + word** in a detail hero, which has the room the 152px table column never did. `CURATED` is gone as a concept: it was computed on every render from *"is the creator currently in the Admin group"* — a fact about the person, not the package, so an admin leaving the Admin group silently un-curated everything they had ever created, and nobody could set or correct it. That is the exact derivation `store_entities.publisher_kind` was introduced to avoid, and both copies of it (`app/api/data_packages.py::_badges_for` and a second in `router.py`, which is how they could disagree) are deleted. `new` stays derived — it genuinely is a function of the clock, which is the line: derive what follows from data on the row, store what somebody decided. **Migration preserves the visible state rather than the mechanism:** `_v112_to_v113` (+ Alembic `0060_pkg_publisher_v113`) freezes whatever the derivation said at upgrade time, so an existing admin-created package keeps reading as Organization instead of silently dropping to Community; the DuckDB step resolves Admin membership through the repository factory (a hand-written JOIN got this wrong on Postgres once already, which is why `_badges_for` routed through the factory), and creation now writes `'organization'` explicitly, since that endpoint is `require_admin`-gated and so the claim was true by construction anyway. Two deliberate per-surface differences, both because the marker must not assert a process an entity type does not have: a **data package** shows Organization or nothing (there is no reviewer for a package to earn a Verified from), and a **catalog card** never shows Community (a shelf is mostly other people's unverified work, so it would mark nearly every card and distinguish nothing — the Library is where per-row provenance is the point). `publisher_kind` is clamped to the closed enum by both repos and both read paths, so no template can compare a NULL to `'organization'` and silently render the wrong marker. Guarded by 12 new cross-engine contract assertions in `tests/db_pg/test_data_packages_contract.py`.
+- **The trust markers explain themselves instantly instead of after the OS delay**: all three rode the native `title` attribute, whose show delay is OS-controlled and typically 600ms+. That is the wrong carrier for these in particular — the marker is a 14px glyph nobody can read on sight, so the tooltip is not a nicety on top of a label, it *is* the label, and waiting most of a second for it makes the whole indicator feel broken (the reported symptom was "no tooltip", not "a slow one"). They now use the page's existing fast tooltip (`[data-tip]` + `.lib-tip`), which was already built for the Sharing badges and already solves the harder half of the problem: the bubble is a fixed-position element appended to `<body>`, so it is not clipped by the ancestors that would otherwise eat it — `.lib-table td` is `overflow: hidden` in the table, and a grid card is `overflow: hidden`, which is exactly where a CSS `::after` bubble would have been cut off at the card edge. A new `data-tip-instant` opt-out drops the shared 120ms anti-flicker delay for these markers only: that delay exists for WIDE targets (a Sharing badge is most of a column, so a pointer crossing the table sweeps several and each would blink), and a 14px glyph is too small to cross by accident, so it bought nothing here. `title` is dropped rather than kept alongside — two bubbles for one glyph, the slow one arriving on top of the fast one, is worse than either. `aria-label` is unchanged and remains the accessible name, so the sentence still reaches a screen reader and nothing here is colour- or shape-only. The markers already followed the name into the grid cards (cloned from the row), and because the tooltip is delegated on `[data-tip]` the clones inherit the fast behaviour with no extra wiring.
+- **Every Library row states its provenance, and it does so by default** — `library.show_unverified_trust` and `store.verification_enabled` both flip to **on**: the trust axis was built so that only *positive* claims render, on the reasoning that an instance with no reviewer verifies nothing, so a negative marker would print on every card and read as a warning about the whole catalogue. That reasoning holds while the third level is expressed as an *absence*, and stops holding once it is expressed as a *statement*: "Community" is true of an item nobody has reviewed whether or not the instance has a reviewer, and an absent marker is indistinguishable from a marker that failed to render — which is the state a user actually hit, adding a skill, sharing it with everyone, and finding nothing on the row to say what it was. So all three levels now mark the name (**Organization** / **Verified** / **Community**), and a reader never has to infer a trust level from a blank. The two flags flip **together and not separately**: with verification disabled there is no admin Verify action (`_require_verification_enabled` 404s both endpoints), so turning the Community marker on alone would have stranded every user-authored item at Community permanently with no way to move it — the marker would have been describing the instance's configuration rather than the item. Both remain opt-out per instance: `library.show_unverified_trust: false` restores the silent default (unverified == no marker), and `store.verification_enabled: false` withdraws the whole vocabulary as before. **The markers themselves are paper-only, so the default look does NOT change.** `css/trustmark.css` is scoped `html[data-theme="paper"]` like every other redesign sheet, and `mark()` in `macros/_trustmark.html` takes `paper=False` — so an ungated callsite renders nothing rather than an unstyled marker. A default blue/topnav instance keeps the exact spelling each surface already had: `.cc-trust` chips on catalog cards, the amber `Curated` badge on package cards and detail heroes, `.trust-chip` on a store-item detail, and no markers at all on Library rows. What changed for blue is only the SOURCE — those legacy visuals now read the stored `publisher_kind` instead of the creator's current Admin-group membership, and `_v112_to_v113` backfills the column from exactly that derivation, so the visible state carries over at upgrade while the mechanism that silently un-curated a package stays dead. Guarded two ways: `tests/test_ui_layout_theme.py::test_trustmark_css_rules_are_scoped_to_theme` for the sheet, and `test_default_theme_renders_no_trust_markers_on_populated_rows` for the markup — the latter seeds all three trust levels with the flag on, because the same assertion against an empty Library passes vacuously. **What existing instances do gain:** admins get the Verify / Request-changes actions and authors get the Request-verification button, since `store.verification_enabled` now defaults on.
+- **One shape for every button** (new `--ds-radius-btn: 9px` token): the product shipped two different primary buttons. A detail page's `+ Add to my stack` was fully round (`--ds-radius-pill`, inherited from the paper skin's `.btn` rule), while the Library toolbar's `+ Add` — the same action, one page away — was a 9px rounded rectangle, because a toolbar CTA stands beside a search field and a filter button and cannot be pill-shaped without reading as a foreign component. Two spellings of one button is a bug in the vocabulary, so the pill loses the argument: **every labelled button now wears `--ds-radius-btn`**, matched to the toolbar/input radius it sits next to (`.cc-btn`, `.fbar__search input`, `.fbar-filter__btn`). Fully-round is now the badge language — category tags, status chips, counters, avatars, dots and circular icon-only buttons — which is what makes it legible as a badge in the first place. **One carve-out:** the two connect-banner CTAs (`.cbn-cta` on the "same knowledge, everywhere" bar, `.klb-cta` on the Knowledge Layer hero) stay fully round under every theme. Those two surfaces are the product-model pitch rather than page chrome — they carry their own gradient fill, their own illustration and the emerald brand green while the app primary is sky — so the pill is what separates "this is marketing" from "this is a button on your page", and squaring them down made them read as ordinary page CTAs sitting in a banner. Paper-theme only for the buttons that changed (the paper skin's `.btn` rule and `detail-page.css`); `.cc-btn` is retokenized at its existing value, so `blue`/`navy`/`dark` instances are byte-for-byte identical.
+- **Library table: the Stack control is a tint, not an outline**: `Add to Stack` was a bordered primary-tinted button while `In Stack` beside it was borderless, so the actions column drew a faint second grid down the table, competing with the row rules for structure — and "one of these is boxed and the other isn't" was never the difference worth seeing. `Add to Stack` is now borderless on the primary tint exactly as `In Stack` is borderless on the success tint (and its remove-on-hover state on the danger tint), so the three states differ by colour, icon and words alone. Geometry is untouched — same height, padding and slot width — so the in-place swap still moves nothing.
+- **Store upload wizard**: shows a cross-navigation flash toast ("Uploaded — review in progress.") on the entity detail page after a successful upload — written to `sessionStorage` before the redirect and drained by `app.js` `init()` on the next load; removes dead `.banner.success` CSS that was never reachable (success path always redirected).
+- **Contribute skill page**: action buttons (`Publish to Agnes`, `Paste from clipboard`, `Remove this skill`) now use `ds.button()` instead of bespoke `.contrib-btn-primary`/`.contrib-btn-ghost` classes, keeping them visually consistent with the rest of the design system; clipboard-denied error now uses `appToast` instead of overwriting the button label (which would overflow a canonical short-label button).
+- **One detail page for every resource type** (paper only — `blue`/`navy`/`dark` and the topnav chrome are byte-for-byte unchanged, guarded by `tests/test_ui_layout_theme.py::TestSharedDetailLayout::test_default_instance_gets_neither_shell_nor_badge`): the shared entity-detail scaffold (`macros/_detail.html`) had no paper rules at all, so it rendered exactly as authored — a saturated per-kind gradient slab, a frosted-glass panel nested inside it, and every section below in its own bordered card. A plugin was a violet slab and a skill a green one, which read as two unrelated products rather than two entries in the same library; three stacked surfaces deep, the header alone spent ~260px before the first line of content. Data packages, Skills, Plugins, Uploads, Files, Collections, Agents, Memory domains and Recipes now render through **one editorial layout**, and differ only in their accent colour, glyph and metadata. The header sits on the page ground: no fill, no container, no shadow — a soft radial wash of the resource accent in one corner, a whisper of dot texture in the other (the wave flourish is gone), a tinted 48px glyph tile, a 30px title, a **resource-type badge** naming the type in words beside it, one compact metadata row, and a hairline where it ends. Below it a **two-column shell** with a **sticky right rail**: content on the left, and on the right the answers to "what is this, who owns it, is it shared, is it on my laptop" — the lookups that were previously cards in the reading flow. Sections stop being cards entirely (whitespace and a hairline instead of a border and a fill), which is what removes the card-inside-card nesting a table or accordion used to sit in. **One filled action per header**, with the secondary ones moved into a new overflow menu (a `<details>`, so it opens and closes with no JavaScript): `Ask Agnes` — which under paper is the *same* sky as the brand and so competed for the identical glance — becomes an outlined control in the assistant's colour, and fills only when it is the page's sole action. Eleven new reusable macros (`cols_open` / `aside_open` / `side_open` / `side_rows` / `owner` / `stats` / `status` / `timeline` / `related` / `menu` / `empty`) are the building blocks every page composes from, so a new resource type inherits the layout rather than re-authoring it. Tables, lists, upload zones and status pills across the migrated pages come onto one rhythm — roomy rows, hairline separators, no outer frame, a wash on hover — and every transition is under 200ms with a `prefers-reduced-motion` opt-out. The layout ships as its own sheet (`static/css/detail-page.css`), every selector scoped `html[data-theme="paper"]` (the `html` prefix on purpose: the pages' own `<style>` blocks load from `head_extra`, i.e. after this sheet, and would otherwise win); the two hand-written marketplace heroes are covered explicitly, since every piece of ink in them was authored white-on-gradient and would have been invisible on a light header. **Migration is opt-in per template**, via `{% import "macros/_detail.html" as detail with context %}` — a plain import leaves `detail.redesign` false and the macros emit the legacy markup, so an unmigrated page is untouched. **Follow-up polish:** the header's ambient layers are gone entirely — a radial accent wash and a dot grid both read as a smudge behind the title on a warm canvas rather than as texture, so the accent now appears only where it means something (glyph tile, type badge, section glyphs) and the tile itself gains a real gradient + inset highlight to carry it. A section no longer inherits the card skin's hover, which was lifting an invisible box 2px and dropping a shadow under nothing. The data-package accordion stops being a stack of bordered cards: hairline rows, a real rotating chevron instead of a `▸` glyph, and two lines per row so the DESCRIPTION gets the width instead of being the thing that ellipses — with the sync date trimmed to a date (nobody reads a package page to learn a table synced at 14:21:49) and the size right-aligned into its own column. Query-mode badges go neutral, because the hardcoded green/blue/violet trio put the *Skill* violet and a near-brand blue on a storage detail; only `remote` keeps a tint (info, not a resource hue) since it is the one mode with a cost consequence. A gotcha becomes a note with a leading rule, and only the KEY one keeps an amber fill. The `Columns` table on a table page joins the same rhythm, and its column names lose the grey `code` pills that turned the first column into a stack of chips. Finally the header carries only the action a reader would TAKE: "Always downloaded (required)" was a 230px disabled button stating a status the rail already states in full — and squeezing the title until the badges wrapped — so it is gone, and "Remove local copy" moves into the overflow menu. Rails drop their `Type` row for the same reason: the badge beside the title already says it.
+- **Library: a sharing badge's colour now means "you can change this", and nothing else**: the chip's hue used to encode the visibility *value* — grey `Private`, blue `Workspace` — with a third violet hue (`--ds-readonly-*`) laid over the top for items shared with you. Value and editability don't correlate, so the colour was actively misleading: a grey `Private` badge on your own upload was one click from changing, while a coloured `Workspace` badge on someone else's item could not be changed at all — two rows in the same colour offering opposite affordances. Colour is now keyed off editability alone: **blue** on the badge that opens the dialog that changes access, **grey** on everything that cannot be changed — both items shared with you (a plain badge, `cursor: help`) and a store entity's access, which follows from its review state and whose badge opens a dialog that only *explains* the model, so it keeps its chevron and pointer but gives up the blue. The value is still fully stated, just not in the hue: every chip carries its own word (`Private` / `Workspace` / `Shared with you` / `In review`) and its own glyph (padlock when private, share node otherwise), so nothing is colour-only in either direction. The grid cards follow the identical rule and now state it **at rest** rather than only on hover, so switching view never recolours a state; the violet read-only trio is no longer used by either view (the tokens themselves are untouched). Guarded by a rewritten `tests/test_web_library_files_folders.py::test_sharing_badge_colour_means_changeable_not_visibility`, which asserts no visibility *value* carries a colour rule.
+- **Library: the Type column is retired, and a file's row says its format instead**: the table's Type column repeated the section the row was already drawn under — the list is GROUPED by type, which is also why the column could never sort — and for a collection it said nothing at all, rendering as a permanently empty cell that held 128px of a fixed four-column grid. It is gone, and the one thing it carried that the grouping does not is now on the name's second line: a **file states its FORMAT** ("PNG", "SVG", "MD") where every file used to print the same boilerplate sentence ("A private file — searchable by your agents."), so a line that no two rows differed on now carries the fact a filename may not reveal. Nested child files, which had no description and so showed a blank second line, gain the same format line. A collection keeps its file count there, and every other kind (skill, plugin, memory domain) keeps its real description. The 128px goes to Name, the only column that ever wanted more. The type's *words* still ride the row as `data-type-label` — the grid cards have no column headers and still name the kind on their metadata line, and a card is projected from its row — and the two in-place file⇄collection transitions write the same second line the server would have rendered, off a new `data-file-format`. One visible change in card view: an artefact with no description of its own now shows a blank description line there (as a collection always has) rather than the retired boilerplate.
+- **Library: a hovered row uses the same grey as a hovered sidebar item**: row hover was a 4% wash mixed from the text ink; it is now `--ds-surface-dim`, the token the rail's own `--rail-hover-bg` resolves to. Pointing at a row in the list and pointing at a destination in the sidebar are the same gesture and should not answer in two different greys. Collection rows keep their section-accent hover ramp — their resting state is already an accent tint, so a grey hover would read as losing it.
+- **Library: row cells centre on the row instead of hugging its top**: a Library row is two lines in its Name cell and one in each of the others, so the owner, the sharing badge and the Stack button each lined up with the *title* and none with the row — ~10px above its middle. The page had asked for `vertical-align: middle` all along, but the shared table primitive sets `vertical-align: top` through `:is(.data-table, …) tbody td`, which outranks a bare `.lib-table td` rule, so the declaration had never applied to a single body cell; it now matches that specificity and binds. The dead `padding: 9px 14px` that shared the rule is dropped rather than repaired — the primitive's 8/16 is what every row has actually been rendering, and "fixing" it would have re-spaced the whole table as a side effect of an alignment change.
+- **Library: every trust claim now rides the item's name, and the Owner column holds only a name**: following the community marker, the `Verified` chip becomes an icon marker on the title line too (shield-check, success ink — the one earned claim on the row, and the only place colour is spent there, so a verified row can be picked out of a scan). The grey `Organization` chip becomes an icon marker on the title line as well (a new shared `building` glyph, neutral secondary ink — the strongest claim on the row, but granted by who published rather than earned by review, so it does not take the colour Verified spends). It restates what the Owner cell says in words ("Your organization", set from `publisher_kind`), and that repetition is accepted deliberately: the alternative is one of the three trust levels expressing itself in a different column from the other two, and a trust axis with a hole in it is harder to read than one that repeats itself. The Owner cell keeps its name, and its flex wrapper and wrap rule are gone with the retired text chips. **The community marker no longer misdescribes your own uploads:** its sentence claimed the item was "shared by other users", which is false on the skill you published yourself, so an owner sees "Community item — yours, and not verified by your organization." instead — same glyph, same meaning ("nobody has verified this"), one honest sentence each. The three markers are mutually exclusive; Organization and Verified are ungated, and the community marker's `library.show_unverified_trust` now defaults **on** (see the trust-axis bullet above).
+- **Library: the community marker moves to the item's name and becomes an icon**: the amber **Community** chip sat in the Owner column beside the owner's name, where it made a statement about the *item* read as a statement about the *person* — and cost a chip's worth of a fixed 152px column on every unverified row to say in a word what a glyph says. It is now an icon-only indicator (a new shared `users` glyph, two figures) on the title line, immediately right of the item name, in muted ink rather than amber: it marks provenance, not a problem, and amber next to a name reads as a warning about the row. Hovering it (or reaching it with a screen reader) gives the full sentence — "Community item — shared by other users and not verified by your organization." — as both the `title` and the accessible name, so the marker is never colour- or shape-only. The Owner column is now the owner's name plus, where they apply, the two *positive* claims it always carried (**Organization**, **Verified**); the retired amber chip's CSS goes with it. The indicator follows the name into the grid cards too (cloned from the row, so the two views cannot disagree), where the chip had never appeared at all. This changed the marker's form, not when an instance shows one; the default itself changed separately (see the trust-axis bullet above). Guarded by `tests/test_web_library_store_entities.py` (including a new placement test asserting the marker precedes the Owner cell).
+- **Library: the page's caveats are one block under the header again**: the "Data apps — coming soon" banner moves from the foot of the page (below the inventory, where a reader met it only after scrolling past everything) up into the page head, directly under the "The same knowledge, everywhere" connect banner, and is joined there by a second note in the same component — an amber **Library content is still being prepared** ("some items and information may be incomplete or change while we finish loading them"). The two are distinguished by vocabulary rather than shape: warn for the caveat about the inventory the reader is about to trust, info blue for the roadmap note about a kind that is not in the list at all — so the head closes on one recognizable block of asides instead of two unrelated-looking panels. The warn variant's leading rule and glyph take `--ds-warn-ink` rather than the pale hairline `--ds-warn-line`, which would be near-invisible as a 3px rule on the warn fill in the light themes. Both notes render for a stocked Library and an empty one alike. **The amber note is a deliberate, temporary product statement, and it knowingly reverses an earlier decision** — `test_library_title_carries_no_setup_caveat` previously banned this copy from the page outright, on the reasoning that a standing condition asking nothing of the reader earns no permanent marker. That reasoning is kept where it still applies (the caveat may never be a `.pnote` panel or a pill beside the `h1`, both still asserted) and dropped where it cannot tell a heading ornament from a note in the asides stack. It is gated on nothing and shown to everyone on purpose, while the content backlog is being filled; `library_prep_warning()` and its single call site come out once the inventory is complete.
+- **Owner/admin actions on a store entity are a named strip, and destructive ones stop shouting** (paper only): `.owner-actions` was a bare right-aligned flex row floating between the hero and the first section — three unparented pills, two of them destructive (`Archive`, `Hard delete`) and exactly as loud as `Edit`, with nothing saying what the row was. It becomes a strip labelled **Manage**, closed off by a hairline above it rather than boxed — the sections around it no longer have boxes either, so a bordered bar would have been the only card left on the page — and the destructive pair is demoted to quiet controls that commit to danger on hover, so the colour arrives with the intent rather than with the page. The label is markup (real text, not CSS content) hidden by default, so every non-paper instance keeps the bare row it has today.
+- **The semantic layer gets a home instead of three doors** — metrics and glossary terms were reachable from a button on the chat empty state, a text link beside the Library's `+ Add`, and a CTA on `/catalog`: three entry points, none of which owned the thing, and each of them a bare link that could not say how many definitions there were or let you search them. They now **close the Library page** as a Definitions block under the inventory, carrying their two counts and a door into each tab. Deliberately **not rows in the list**: metrics and glossary terms are the one thing there that nobody owns, shares, installs, drops or edits, so modelled as inventory they had to blank all four of the table's columns at once — Owner said "Your workspace", Sharing said "Workspace" but refused to change, Stack said "In Stack" but locked, Actions was empty — and four special-cased columns is the list saying the object is not one of its rows. A data package looks similar but differs where it counts: access to it *varies per caller*, which is what makes it "what I have", whereas everyone has the whole glossary unconditionally. The block is **searchable by its contents**, which is what keeps it useful rather than decorative: it carries every metric name, display name and synonym plus every glossary term in a search index, so typing `MRR` or `active account` into "Search library…" — the query that otherwise returns *nothing* and reads as "Agnes has never heard of it" — gets the answer "“mrr” is one of your organization's definitions" from the one block on the page that knows the word. Names only, never the definition bodies: the index ships on every page load, and matching on prose would surface the block for words that merely appear inside some definition. The metric side is RBAC-filtered exactly as `/catalog/semantics` filters it, so nobody finds a metric they could not open; the glossary is deliberately ungated there (business vocabulary, not data). Absent entirely when no semantic layer is configured — a block reading "0 metrics · 0 glossary terms" describes the setup, not the content. **No nav item, in either chrome**: this is reference material consulted a handful of times, and permanent chrome is the wrong price for that. Looking a term up also now **finishes in the header search** — a glossary or metric hit renders its definition as a second line under the name (the API has carried the text all along), so the panel answers "what do we mean by active account?" instead of linking to a page you then scan. In **chat**, a `glossary_search` call stops rendering as a raw tool id and reads as "Checked your organization's glossary", linking to the definition — the one tool call that is provenance for the answer rather than plumbing behind it. The two orphan links are **removed**: the chat empty state offers no browse detour at the moment of intent (the composer is directly below it), and the Library header link is superseded by the block. Citing the *specific* definition an answer used, rather than noting that one was consulted, is [#1134](https://github.com/keboola/agnes-the-ai-analyst/issues/1134).
+
 - **`/how-it-works`: the hero states the model and stops selling**: the *Ask your first question* button and its *Or connect your own AI tool ↓* sibling are gone from the hero. This page is the **read** half of onboarding — the rail's "Continue setup" card is the **do** half — and both actions were already offered twice below the fold, in the page-foot "Keep going" row and (for chat) in the TOC's foot links. A CTA pair at the top made an orientation page read as a landing page and duplicated hand-offs the page already had. Nothing is unreachable as a result; guarded by `tests/test_web_how_it_works.py`.
 - **The Library's "Content being prepared" badge is removed**: the whole-Library caveat — a muted amber status pill on the `<h1>` with the full sentence in a hover/focus/click popover — is gone, markup, CSS and script. It had already been demoted from a `.pnote` panel to a pill for taking a band of the head on every visit; the badge form had the same problem in miniature, since a standing condition that asks nothing of the reader still printed a warning glyph next to the page title on every single visit, and the one thing it had to say was that there was nothing to do. The page now opens on its own name and its inventory. The Data apps "Coming soon" banner below the list is unchanged — that one names a specific kind you cannot have yet, and says so where its subject is. Guarded by `tests/test_web_library_sharing.py::test_library_title_carries_no_setup_caveat` + `tests/test_ui_layout_theme.py`.
 - **The spotlight tour is rebuilt around what a newcomer actually does — and it starts on its own**: the coach-mark tour walked **My Stack → the Marketplace → the Catalog's submit CTA**, three surfaces that have since left the rail (#1088), and it only ever ran for someone who first found the "Set up Agnes" card and clicked a step inside it. A first-timer doesn't do that: they land on an empty **/chat**, where the only thing on screen is a composer that looks like a search box and explains nothing. So the tour now follows the newcomer's own path in six steps — **ask (the composer) → your Library → what "in stack" means → add your own → share it → that's the tour** — and it **launches itself, once**, on that first visit. The gate is deliberately narrow: the whole journey untouched (not just `first_asked` — someone who worked the checklist by hand, or restarted onboarding after finishing it, is not a newcomer), the tour never seen before (`localStorage`), no tour already running or mid-hop, and not a `?session=` deep link into an existing conversation. Nobody who has already started is re-nagged. The first step is **usable, not blocking**: the scrim is `pointer-events: none`, focus stays in the composer, and the copy says to type straight through the card — and **submitting takes the card down immediately**, from the synchronous top of `submitUserMessage` rather than after the socket, so a cold runner (or a chat outage) can't leave it hanging over the input. Dismissal that way does **not** mark the tour seen: the remaining steps stay behind the checklist's "↻". Three engine defects surfaced while wiring it, each fixed generically: the positioner **centred the card when it fit on neither side of its anchor**, which laid it flat over the very thing the step pointed at (fatal for the composer step, which asks you to type into it) — it now takes the roomier side and caps its own height there, letting the body scroll, and only centres when even a readable card won't fit; `document.querySelector` returned the **first match rather than the first visible one**, and the Library renders every group's rows and then collapses them, so the sharing step spotlighted a real element with a zero-size box and dropped its popover in the corner; and a step can now name a **`reveal`** control — the thing that un-hides its anchor — which the engine clicks only when the anchor can't be found and only when it isn't already open, so the share step opens the Files group (then Skills) instead of silently skipping. The **"Set up Agnes" checklist is the same onboarding in list form**, so it now says the same thing in the same order. Copy: "Set up your Stack" / "Explore My Stack" / "Discover more knowledge" (two of them pointing at `/stack`, one at `/catalog`) become **"Put knowledge in your stack" / "Explore your Library" / "Add or share something"**, all three on `/library`. Order: the stack step ran **second**, ahead of the Library step — the reverse of the tour, and it put the one step you cannot complete by looking at anything (`stack_setup_done` lands when a package is actually subscribed) ahead of the one the tour completes for you, so finishing the tour ticked row 3 and left row 2 pending. It now runs **ask → Explore your Library → Put knowledge in your stack → Add or share something → Use Agnes outside this tab**. And the tour now asserts **one** step on finish, `explored_stack`, because walking you through the Library is the only one of the five it actually does: `catalog_discovered` used to ride along from when that step meant "saw the Catalog", but under its new label it is an action, and ticking it left the checklist claiming credit for work nobody had done. Rendering follows: `done` beats the positional lock, so a step completed out of turn is no longer drawn greyed-out-with-a-tick and no longer hides the sub-action under it. The journey **columns keep their names** — they are schema on both backends, and renaming them would cost a migration to say the same thing. `base_ds.html`'s tour boot drops its `tourPages` allow-list (`/stack`, `/catalog` — stale, and no longer the pages the tour runs on): a cross-page hop always leaves a `sessionStorage` record, so that record is the whole test, and every other entry point imports the engine itself. Guarded by `tests/test_tour_onboarding_steps.py` (step order, every anchor checked against the template that has to carry it, the launch gate, the dismissal) alongside the existing `tests/test_tour_journey_flags.py`.
@@ -148,7 +131,73 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The rail's conversation list drops four of its five date headers**: the recents region gets about seven rows of free space between the rail's two fixed zones, and it was spending three of them on labels — `Today` / `Yesterday` / `Earlier this week` / `Earlier this month` / `Older`, each costing a full row (14px margin + line + 4px ≈ the 34px row height) to head a group of one. More than a third of the visible list was chrome, and the labels were largely redundant with the ordering, which is strictly most-recent-first: `Yesterday` over a single row is a label, not a group. Under rail the buckets are now an **unlabelled recent block** (rolling 7 days — not the ISO week the old "Earlier this week" used, which dropped Friday's work into the archive the moment you sat down on Monday) and **`Older`**, which is the one boundary the ordering cannot express: past here, search rather than scroll. `Older` is suppressed when nothing renders above it, so someone returning after a month is not told that all their work is old. `Pinned` is unchanged in both layouts — it is the only group that breaks the chronology, so it is the only one that can't be inferred from position. **Topnav keeps all five buckets**: its conversations column is full-height, twenty titles are visible at once, and there the labels are what make the list scannable. Same rows, same order, same markup and classes — on the demo instance the visible list goes from 5 titles to 7. `chat.js` (`_groupSessionsByDate` gains the rail branch, `_renderSidebar` the two header suppressions) + the same two rules mirrored in `rail_history.js`, which only ever runs under rail and so needs no branch.
 - **The rail's conversation list fades at whichever edge has more rows behind it**: the recents region occupies exactly the free space between the rail's two fixed zones, so on most viewports there ARE rows past one edge or the other — and with a hard clip the first or last visible title was simply sliced mid-glyph, which reads as a rendering fault rather than as "keep scrolling". A 20px gradient mask now dissolves the rows into the rail at the top edge once you have scrolled and at the bottom edge while more remains, both off when the list fits entirely, so a short list is not dimmed at either end for no reason. Masking rather than a gradient overlay: the fade carries no colour of its own, so there is no value to keep in sync with `--ds-surface` across the palette themes and light/dark, and a hovered or active row's tint cannot show through it. The edge state is toggled in `rail_history.js` above the `/chat` bail (chat.js owns the rows there, but the scroll container is the same element on every rail page) off scroll plus a `ResizeObserver` on the list, since rows arrive from an async fetch and rename/delete/pin change the height under it; the pixels live in `rail.css`, and forced-colors mode drops the mask entirely. Rail layout only — topnav is unchanged.
 
+- **Rail nav trimmed to four flat destinations — New chat · My Stack · Library · Agents (rail layout)**: the left rail is reordered from *New chat · My Stack · Artefacts · Marketplace · Studio* and loses two entries outright. **Studio** — a hover dropdown that held Agents, the Skill and Plugin builders and a non-interactive "Corporate Memory builder" concept label — is **removed entirely** (markup plus its `.rail-studio-*` / `.rail-badge--maybe` styling); **Agents** is promoted out of it to a top-level item directly under Library, so building an agent is one click rather than a hover plus a click. The **Marketplace** entry is also removed from the rail. `/catalog`, `/skills` and `/store/new?type=plugin` remain live routes — the two builders are reached from the Library header's "+ New" menu (Build a skill · Build a plugin), and the Marketplace from in-page surfaces (chat suggestions, search). With four destinations left, the group dividers went too (`.rail-nav-sep` removed). The former **Artefacts** entry reads **Library** and points at `/library` (the renamed surface) instead of the `/artefacts` redirect, and `/library` no longer lights up the Marketplace item — it highlights its own entry. The tour's Marketplace step anchored `#nav-catalog` in the rail; tour.js already auto-skips a step whose anchor is absent, so it degrades to the next step rather than breaking. Rail-layout only; the topnav link row is unchanged (guarded by `tests/test_ui_layout_theme.py`, incl. a `test_rail_has_no_studio_or_marketplace_entry` guard that also fails on orphaned CSS).
+- **"Submit a skill or plugin" now starts a skill instead of describing the process**: the Marketplace's Curated-tab CTA (and the matching empty-state link) points at the Skill Builder — `/skills?spotlight=new-skill` — rather than `/marketplace/guide/curated`, which explained the Named-Curator hand-off but left the author with nothing to click. Landing with that parameter fires a one-step coach-mark on the **"+ New skill"** card, so a first-time author sees the affordance rather than a grid of skills they haven't written yet; the parameter is stripped once the coach-mark is up, so a reload or back-navigation doesn't re-pop it. Reuses the existing tour engine (`js/tour.js`), which gains a **solo** popover form for single-step tours (no progress dots, no "I'll explore on my own", primary reads "Got it") and a **side-placement fallback** in `_positionPopover` — when a popover fits neither below nor above its anchor it now sits beside it instead of clamping to the top of the viewport and covering the very element it points at. The curated guide at `/marketplace/guide/curated` is unchanged, and `/skills` carries a "Submitting a **plugin** instead?" line linking to it so the plugin half of the CTA's promise keeps an onward path. Guarded by `tests/test_web_marketplace_guide.py` + `tests/test_web_studio.py`.
+- **My Stack redesigned as curated context, not a download manager (rail layout, #896)**: `/stack` now presents the caller's Stack as the persistent context the Main Agent uses — everything shown is already in the Stack, so the page no longer repeats "In stack" or exposes technical states ("Downloaded" / "Download locally" / raw download toggles), and the `Added` + `Status` columns are gone. The inventory keeps the shared `.data-table` look (same as the Artefacts table — column headers **Name · Type · Details · Source · Actions**, neutral type chips) but splits into two **collapsible `<tbody>` groups**: **Required** (admin-granted resources — always available, not removable, marked with a subtle `Required` badge) and **Added by you** (optional resources the caller added — each carrying an overflow menu: *View details* · *Use in agent…* · *Remove from My Stack*, the last behind a lightweight confirmation). Each group header is a click-to-collapse row (chevron + live count). All filtering lives in one shared `.fbar` toolbar (the same component and grammar as `/artefacts`, in `static/css/filter_toolbar.css`): a dominant **Search**, a click-driven **Filter** dropdown, and a **Sort** (Name · Recently used · Type). The head tabs are retired — kind (Data · Plugins · Artefacts · Memory) is now a multi-select **"Type" facet** inside the Filter menu, and each active selection renders as a removable **chip on a second row** (with Clear all) that only appears when a filter is active. Option counts are per-kind totals and a kind with zero items hides its option (no dead filters). The facet filters both groups while preserving the grouping; sorting runs independently inside each group and Required always stays above Added by you. Origin (Required/Added) stays the group split, not duplicated as a toolbar control. Search matches name, description, type, source, and shared-by. The below-table workspace stat strip is removed. A **table ⇄ grid view toggle** (right of Sort, persisted in `localStorage`) switches the inventory between the table and a responsive **card grid** — same two groups, collapsible headers, Required badge / overflow-menu actions, and the same search/filter/sort — with the grid projected client-side from the (filtered, sorted) table rows so the table stays the single source of truth. Rail-layout only; the topnav chrome is unchanged (guarded by `tests/test_ui_layout_theme.py` + `tests/test_web_stack_auto_membership.py` + `tests/test_web_artefacts_toolbar.py`).
+- **Redesigned the initial chat hero into one premium Knowledge Layer banner**: the rail chat pre-conversation state now leads with a single, wide, gradient hero (`macros/_knowledge_layer.html`) instead of the busy three-panel diagram. Left: a `</> Work everywhere with the same knowledge` pill, the headline **"Agnes is your knowledge layer. / Use it here or connect your tools."** (second line in a blue→purple accent gradient), a one-line subcopy, and the large green **"Connect your tools"** CTA. Centre: the Agnes orb as the visual anchor (glow + dotted halo). Right: lightweight floating integration chips (Claude Code · Cursor · VS Code · CLI and more) with faint, short dotted connectors fanning back to the orb — no surrounding card. Soft mint→purple near-white background with subtle radial gradients, a faint dotted field on the far left, and thin curved lines top-right; 24px radius, feather-light shadow. Tuned to read as a compact promotional banner rather than a page-filling hero — tighter internal spacing, a smaller headline/orb, chips pulled closer to the orb, and reduced padding so the composer sits noticeably higher. The redundant blue "Ask Agnes" usage card and the "Use your own AI tools" card are removed. Below the banner the trust caption (**Secure. Private. Always in sync.**) leads a plain **"Ask Agnes anything"** heading that hands off directly to the composer. Rail-layout only; the topnav chat empty state is unchanged (guarded by `tests/test_ui_layout_theme.py` + `tests/test_web_chat_empty_state.py`).
+- **"Same knowledge, everywhere" connect banner now leads the Artefacts header too**: the shared connect banner (`macros/_connect_banner.html`, `bar` variant) that leads the My Stack page header is now also placed in the `/artefacts` page header, same component and placement. Its description on both pages is shortened to **"Connect your AI tools to give them access to the same knowledge."** Rail-layout surfaces only (guarded by `tests/test_ui_layout_theme.py`).
+- **The assistant is Agnes again — the "Kai" name is fully retired**: every user-visible mention of "Kai" across the web UI is now "Agnes". The left-rail logo reverts from the two-line "Kai · powered by Agnes" lockup back to the **Agnes orb mark + Agnes wordmark** (`instance_brand`/`INSTANCE_NAME` override preserved, default `Agnes`); the chat greeting ("I'm Agnes, your data agent"), composer placeholders ("Ask Agnes…"), the Stack context line ("Agnes is using N knowledge sources…"), the Knowledge Layer "Ask Agnes" card, the detail-page "Ask Agnes" buttons and "Example questions you can ask Agnes" sections, the guided-tour header ("Agnes is showing you around"), the onboarding greeting, and the profile notifications copy all follow. Internally the assistant-accent color token family `--ds-kai-*` (the chat's sky-blue accent, distinct from the emerald `--ds-agnes` platform brand) is renamed to `--ds-assistant-*` — a pure identifier rename that preserves the exact colors. Rail/paper surfaces only; the default topnav+blue chrome is unchanged (guarded by `tests/test_ui_layout_theme.py`).
+- **Sky blue is the paper theme's primary color, led by the Kai identity**: the paper theme's brand palette moved from emerald to **sky blue** — `--ds-primary` `#0284c7` (with `-dark` `#0369a1`, `-light` `#e0f2fe`, `-brand-accent` `#7dd3fc`), the legacy `--primary` compat shims, and the dark-hero CTA (`#0ea5e9`) all follow. The assistant/chat surfaces (`--ds-agnes` family: composer, send button, user bubble, voice cards) are overridden to the same sky under paper, and a dedicated `--ds-kai` family (`#0284c7` + `-dark`/`-soft`/`-line`) carries Kai-attributed surfaces (guided tour "Kai is showing you around", "Ask Kai" buttons, the "Ask Kai in Agnes" card, the "Kai is using…" pill) — so the whole paper app and the assistant read as one coherent sky-blue identity. The default `blue`/topnav theme is untouched (guarded by `tests/test_ui_layout_theme.py`); documented in the design-system reference's accent-vocabulary list.
+- **Agnes-platform "connect" surfaces stay emerald green**: while the app primary is sky blue, the surfaces that speak for the Agnes *platform* — the "same knowledge, everywhere" connect banner (`.cbn`), the "Use your own AI tools" card (`.klb-card--tools`), and the whole **AI Connector page** (`/me/ai-connector`, `.aic-flow`) — keep the emerald brand green via a paper-scoped `--ds-primary` override, so blue = Kai/app and green = the Agnes knowledge layer. The chat composer, send button, and user message bubble were repointed to `--ds-kai` so the chat input stays Kai blue regardless.
+- **Dashboard hero — tighter, single-viewport composition (rail layout)**: on the rail chat dashboard the Knowledge Layer trust caption ("Secure. Private. Always in sync.") is lifted out of the diagram's orb and re-hosted as a small eyebrow directly above the "One knowledge layer. Everywhere you work." headline, so it reads as one centered text block below the diagram (the orb stays in the diagram with its connectors intact; the "Agnes Knowledge Layer" title is dropped as redundant with the headline). The diagram padding and inter-section gaps were tightened so the whole hero — diagram → caption → headline → composer → suggested actions → footer — fits a standard laptop viewport without scrolling; on wide screens (≥981px) the text block lifts into the diagram's empty centre band so it sits higher on the page while the footer stays pinned to the bottom, leaving a balanced gap above it. New reusable `knowledge_hub_label()` macro + `hub_label` (on `knowledge_hub()`/`knowledge_layer_banner()`) and `show_title` args (all default `True`) let a host suppress the in-orb label / title and place them elsewhere; only the rail chat dashboard opts in, so other consumers of the banner are unchanged.
+- **Studio nav group with a hover dropdown (rail layout)**: a new **Studio** rail item reveals an inline dropdown on hover/focus containing **Agents** (moved out of the rail root), plus two exploratory builders — **Corporate Memory builder** and **Skill builder** — flagged with a dashed "Maybe?" badge and rendered as non-interactive concepts. The dropdown expands inline (a right flyout would be clipped by the rail's `overflow-y:auto`).
+- **AI Connector page gains a CLI tab**: the tool-tab row (`/me/ai-connector`) adds a **CLI** tab covering `agnes` CLI install (linking to `/setup` for the personalized, token-bearing one-click command) and a `agnes catalog` verify step — so one page answers "connect any tool" for both MCP editors and the terminal.
+- **Rail nav font consistency**: `.rail-i` now pins `font-family: inherit` so the chevron trigger items (Studio, Chats, Admin — `<button>`s) render in the page font instead of the UA default, matching the plain `<a>` nav links.
+- **Artefacts data-apps banner is now a warning above the table**: the "Data apps — WIP" banner on `/artefacts` moved above the artefacts table and is restyled as a warning message (amber `--ds-warn-*` surface, alert-triangle icon) instead of a neutral card at the page foot.
+- **Rail brand leads with Kai, "powered by Agnes" beneath**: the left-rail logo lockup now reads **Kai** as the hero wordmark with a quiet "powered by Agnes" sub-label (platform brand is `instance_brand`-driven), and the orb picks up a sky-blue glow. Rail-layout only; the topnav brand is unchanged.
+- **Assistant naming made consistent — the assistant is Kai, the platform is Agnes**: user-facing copy that attributed answering/using-knowledge to "Agnes" now reads "Kai" — the chat greeting ("Hi, I'm Kai 👋"), the sandbox agent intro ("I'm Kai, your data agent"), the `/chat` composer placeholder ("Ask Kai…"), the chat upload modals ("so Kai can read them"), and the onboarding-journey "why" tooltips. Platform/product references ("Agnes Knowledge Layer", page titles, "powered by Agnes", CLI/setup copy, "Ask Kai in Agnes") keep the Agnes name. (Slack-persona copy and data-access governance copy were left as-is pending the Slack bot's registered display name.)
+- **Guided tour reframes the Catalog as a community Marketplace**: the tour's third step is now "Here's the Marketplace" — see what colleagues have built and shared, add it, and share back — and the redundant "This is the Catalog" step was dropped (5 steps instead of 6). Publishing copy now says "Marketplace" rather than "Catalog".
+- **"Connect my AI tools" CTAs now all land on the AI Connector page**: the tour's final-step "Connect my AI tools" button and the Journey "Use … from other AI tools" step both pointed at `/setup` (the narrower "Install the Agnes CLI" page), while the main-page banner already opened `/me/ai-connector` (the per-tool MCP connector guide — Claude Code · Cursor · VS Code · Claude Desktop · Claude.ai · ChatGPT). Both onboarding CTAs now open `/me/ai-connector` too, matching their own "same context in Claude Code, Cursor, and VS Code" copy. `/setup` stays as the CLI-install path reached from getting-started.
+- **Artefacts present as files or collections — adaptive, one honest noun (rail layout, #896)**: the rail Artefacts surface presented every `file_corpora` **container** as a singular "upload" — the `+ New upload` modal took one file, so a row read as one file, yet its detail page let you keep adding more, and `library_detail.html` even renamed itself ("Ask this upload" vs "Ask this collection") depending on layout. Artefacts is now a legible, heterogeneous space: **Artefacts** stays the nav umbrella (a typed home for what you create — files and collections today, data apps next), and each item's presentation **adapts to how many files it holds** — one file reads AS that file (filename title, single-document glyph, `TYPE · size` meta, "File" label), two-or-more as a **Collection** (name, two-sheet glyph, `N files`, "Collection" label). Adding a second file on the detail page transparently promotes a File into a Collection; the detail hero, noun, and search copy follow the same count-based rule, so a lone file is never called a "collection". The primary action is a single neutral **`+ Upload`** modal (files first, name optional/defaulting to the filename): drop one file → a single-file artefact, drop several or name it → a collection. The `library`-kind glyph (shared macro + `catalog_card.js` / `stack_unified.html` mirrors) changed from a single document to a **two-sheet "files" icon**, and a new **`doc`** glyph draws the single-document icon for one-file artefacts. The `hero` detail macro gained an optional `glyph` override (accent color stays `library`, icon shape adapts). The default topnav `/library` chrome already used "collection" and is unchanged (guarded by `tests/test_ui_layout_theme.py`, `tests/test_web_library.py`).
+- **My Stack kind tabs moved onto the grey head band (rail layout, #896)**: on `/stack` the All/Data/Plugins/Memory kind tabs now render as the trailing row of the grey page head (`page_head`), directly under the stats tray, so the white content band sits flush beneath them and the search box + sort control open the white band below — the exact placement the Marketplace (`/catalog`) page already uses. Achieved by moving the tab strip out of `page_surface` into `page_head` in `stack_unified.html` (base_index's `.idx-head > :last-child` flush rule then applies) and dropping the page-local `.idx-head` bottom-padding override; the toolbar loses its now-redundant top margin. No shared component exists for this region — each page hand-rolls its tabs/toolbar — and the default topnav chrome is unchanged (guarded by `tests/test_ui_layout_theme.py`).
+- **Browser-tab favicon + title match the prototype (#896)**: the tab icon is now the Agnes orb (`img/agnes-orb.png`) instead of the flat blue "A" `favicon.svg`, across the design-system base, the legacy base, and the login base. The default document title falls back to `Agnes — ask and reuse` (the prototype's tagline) when no `INSTANCE_NAME` is configured; instances that set `INSTANCE_NAME` keep their own name (white-label unchanged), and per-page titles (`Chat — …`, `My Stack — …`) are unaffected.
+- **Paper-theme sweep: marketplace item detail (#896)**: tokenized the page-local `<style>` colours on `marketplace_item_detail.html` so status/category surfaces follow the `--ds-*` tokens and flip under `data-theme="paper"` (`--warn-color` → `--ds-accent-warn-ink`, stripped dead `var(--surface-alt, #hex)` fallbacks, JS disabled-button greys → `--ds-surface-sunken`/`--ds-text-muted`/`--ds-border`). Its dark hero and terminal-mock keep their fixed hex by design, matching the sibling `marketplace_plugin_detail` page. The page was already emoji-free, so it is dropped from the `tests/test_no_ui_emoji.py` allowlist — which is now empty: every user-facing template is swept.
+- **Admin emoji sweep — permanent guard coverage**: replaced all pictographic emoji in admin templates (`admin_tables.html`, `admin_corporate_memory.html`, `admin_server_config.html`, `admin_usage.html`, `admin_users.html`) with inline SVGs from the shared `macros/_icon.html` warning/folder paths (in JS innerHTML contexts) or plain-text labels (in `.textContent` assignments). User-editable icon fields (Data Package `icon`, Memory Domain `icon`) default to an empty string instead of a Unicode glyph so the stored value is fully user-controlled. The `tests/test_no_ui_emoji.py` guard now permanently covers all `admin_*` templates — the prior blanket exclusion is removed.
+- **Catalog reshaped around auto-membership — addable-only, admin god-mode removed**: follow-up to auto-membership (every RBAC-granted Data Package / Memory Domain is already in a caller's stack the moment it's granted). `/catalog` and `/corporate-memory` no longer show a caller's own granted packages/domains in the Browse grid (rail layout: the Data/Memory kind tabs) — that content lives in **My Stack** now; Browse/the Data & Memory tabs only list genuinely addable, not-already-in-stack entries, which for governed data is normally nothing, so the rail Catalog's Data/Memory kind tabs hide themselves when empty and the page centers on Plugins/Recipes instead. Admin god-mode (`StackResolver.browse_admin`, "see every package regardless of grant") is removed from both user-facing pages — admins now see the same grant-scoped view as everyone else. The full audit view moved to a new admin-only page, **`/admin/data-packages`** ("All packages", linked from the admin hub's Data Packages card), listing every Data Package and Memory Domain regardless of grant. Hero/empty-state copy on both pages was reworded to point at My Stack instead of implying Browse still holds what the caller already has. The "Recommended for you" row no longer surfaces granted-but-not-yet-downloaded data/memory packages (that download nudge lives on My Stack). Plugins and Recipes behave like an app store: a plugin you've added stays listed and is simply re-badged **"In stack"** (it does not disappear) — only governed Data/Memory are exclusive to My Stack. In the rail layout this page is now titled **Marketplace** (nav item, page heading, and browser title) since, post-reshape, it lists shared skills/plugins/recipes rather than the caller's granted data; the `/catalog` URL and the classic-topnav "Data Packages" page are unchanged. Guarded by `tests/test_web_catalog_reshape.py`, plus updates to `tests/test_web_catalog_unified.py`, `tests/test_web_memory_unified.py`, `tests/test_web_stack_auto_membership.py`, `tests/test_ui_layout_theme.py`.
+- **AI Connector page redesigned as an integration guide (#896)**: `/me/ai-connector` (`me_cowork.html`) is rebuilt from embedded documentation into a calm, scannable developer-integration page in the Stripe/Vercel/Supabase mould — generous whitespace, hairline borders, no shadows, one green accent reserved for the primary action and the selected tab. Deliberately **not** a wizard: no stepper, progress bar, step-nav, or completion styling (Agnes can't know whether a user finished), so the page reads as documentation you can enter at any section. A borderless **hero** puts the Agnes mark at the centre of a hub illustration — company knowledge and the AI tools both connect *to Agnes* — beside three trust benefits (private · access control · works with your tools). Then a **"Copy your connector URL"** card (URL styled as a credential + privacy note) and a **"Configure your AI tool"** card: tool tabs (Claude Code first) over a single top-to-bottom flow of icon-led sections — **Add the server** (terminal command as the primary action) → **Authenticate** (numbered checklist) → **Verify connection**. The final section never claims success the app can't verify: it shows the example prompt *"What tables are available in Agnes?"* with an informational note (*"If you receive data back from Agnes, your connection is working correctly"*) rather than a "Connected" / "You're all set" state. The tool picker is a segmented control (green only on the selected tool, horizontal-scroll on small screens). Blocking gotchas stay surfaced (Claude.ai Team/Enterprise admin-gate with one-click "Copy request for your admin"; Claude Desktop "don't search the directory"; Claude Code mandatory restart). A collapsible **"Having trouble?"** support card (expanded by default) holds the four common issues as individually-expandable cards in a responsive two-column grid, and everything non-essential collapses into a single **"Advanced & reference"** card (collapsed by default) whose plugin-packages / tools / skills groups are compact accordion rows with count badges. Adds `lock`/`shield-check`/`sparkle`/`user`/`chevron` glyphs to the shared icon set. `--ds-*` tokens only (terminal uses the dark `--ds-hero-*` family); guarded by `tests/test_design_system_contract.py`, `tests/test_ui_layout_theme.py`, `tests/test_no_ui_emoji.py`.
+- **Paper-theme sweep: activity center, marketplace plugin detail, memory domain detail (#896)**: tokenized the page-local styles on these three pages so their colours follow the design-system `--ds-*` tokens and flip correctly under `data-theme="paper"` (previously raw hex/`rgba()` status colours stayed blue/purple/amber regardless of theme). Status colours now use the `--ds-accent-{success,warn,danger,info}-*` vocabulary, category/source badges the `--ds-kind-*` palette. The marketplace detail page's dark hero and terminal-mock keep their fixed hex by design (the deliberate "night" moment). `marketplace_plugin_detail.html` dropped from the `tests/test_no_ui_emoji.py` allowlist (already emoji-free); `memory_domain_detail.html` + `activity_center.html` added to the raw-hex sweep guard in `tests/test_design_system_contract.py`. Default blue/topnav rendering unchanged.
+- **Paper-theme sweep: admin pages (#896)**: tokenized the page-local `<style>` colours on 19 admin templates so status badges, category chips, surfaces, text, and borders follow the `--ds-*` tokens and render correctly under `data-theme="paper"` — access/users (`admin_users`, `admin_user_detail`, `admin_groups`, `admin_group_detail`), tokens/credentials/workspace (`admin_tokens`, `admin_datasource_credentials`, `admin_initial_workspace`), MCP (`admin_mcp_sources`, `admin_mcp_source_detail`), store/marketplace/memory (`admin_store_submissions`, `admin_store_submission_detail`, `admin_marketplaces`, `admin_corporate_memory`, `admin_knowledge_digests`), and observability/ops (`admin_sessions`, `admin_session_detail`, `admin_usage`, `admin_sync`, `admin_server_config`). Status → `--ds-accent-{success,warn,danger,info}-*`, category/origin chips → `--ds-kind-*`. Pictographic lock emoji removed from the MCP pages' JS-rendered labels. Intentional darks (toast/terminal backgrounds, dark hero ink, modal scrims) are unchanged, and the default blue/topnav look is byte-for-byte unchanged.
+- **"Recommended for you" moved from My Stack to the Catalog (rail layout, #896)**: the grow-the-stack row — catalog assets not yet in the caller's stack (available data packages, then memory domains, capped at four) — now renders on `/catalog`, as a single side-scrollable card row between the page head and the kind tabs, where discovering new assets belongs. `/stack` is now purely the manage surface ("Everything in your Stack" inventory table); its recommendations section, "View all recommendations" link, and the rec-promotion script are gone. Because a recommended asset also appears in its kind grid below, the shared stack toggle (`catalog_card.js`) now syncs every card of the same resource on a page (keyed by `resource_type`/`resource_id`), so adding from the recommendations row flips the grid twin to "In stack" too. Rail-layout only; topnav pages unchanged (guarded by `tests/test_ui_layout_theme.py`).
+- **Knowledge Layer banner CTAs retargeted to matching pages (#896)**: the chat-dashboard banner's "Connect your tools" now opens `/me/ai-connector` (per-tool connection instructions for Claude Desktop / Claude.ai / Claude Code / Cursor / VS Code / ChatGPT — the same roster the banner card advertises) instead of the CLI-only `/setup` install page, and "Learn how it works" now opens `/home` (the "What happens when you launch Agnes" walkthrough) instead of the AI Connector page. Defaults on the reusable `knowledge_layer_banner()` macro; guarded by `tests/test_ui_layout_theme.py`.
+- **Knowledge Layer banner headline restored on the chat dashboard (#896)**: the rail chat pre-conversation banner now leads with its product-model headline — **"One knowledge layer. Everywhere you work."** + the "Use Kai here, or connect your favorite AI tools…" subcopy — above the three-part diagram, matching the dashboard reference. Previously the chat foot rendered the banner in `compact` mode, which dropped the headline lead. The reusable `knowledge_layer_banner()` macro gains a `show_lead` argument (defaults to `not compact`, so other callers are unchanged) and a `klb--lead` CSS modifier that spans the lead across the top of the compact grid. The rail chat empty state is recomposed as **hero → composer → suggested actions → diagram**: the Knowledge Layer *lead* (headline "One knowledge layer. Everywhere you work." + supporting sentence) is now the flush-left page hero — stating what Agnes is before the input — replacing the time-of-day greeting; the composer and four guided actions follow in the centered narrow column; and the Knowledge Layer *diagram* (the "Ask Kai in Agnes" card · orb hub · "Use your own AI tools" card, no headline) closes the page at the foot. The lead is factored into a reusable `knowledge_layer_lead()` macro shared by the hero and the (optional) in-banner lead, and the foot banner renders `show_lead=False`. Guarded by `tests/test_ui_layout_theme.py`.
+- **Knowledge Layer banner CTAs relocated (#896)**: the banner's standalone two-button CTA row is retired. **"Connect your tools"** now lives at the foot of the "Use your own AI tools" card (`connected_tools_card()`, still → `/me/ai-connector`), tying the action to the tools it advertises, and **"Learn how it works"** (→ `/home`) moves into the account/user menu, replacing the former **"AI Connector"** item in both the rail and topnav chromes (the AI Connector page stays reachable via the card CTA). Guarded by `tests/test_ui_layout_theme.py` and `tests/test_web_nav_cowork.py`.
+- **My Stack redesigned as a personal workspace (rail layout, #896)**: `/stack` no longer reads as "Catalog with different filters" — the page now separates *growing* the Stack from *managing* it. A new **"Recommended for you"** section surfaces catalog assets NOT yet in the caller's stack (available data packages, then memory domains, capped at four), rendered with the exact same `catalog_card` component as `/catalog` (macro + CSS + JS untouched) in a single side-scrollable row (snap points; never grows the page past one card row) with a "View all recommendations" link; adding one moves it into the inventory below without a reload, so an asset never shows in both zones (signal-based ranking — teammates, department, uploads, activity — is future work; today it's the browse order). The per-kind card grids are replaced by **"Everything in your Stack"** — ONE inventory table (shared `.data-table` primitive) across kinds with columns Name · Type · Details · **Added** · Shared by · Status, a search box above it, kind tabs (All/Data/Plugins/Uploads/Memory) and a right-aligned sort control (Recently added / Name / Type); Plugins hydrate into rows client-side, and Remove drops the row in place (shared stack-toggle in `catalog_card.js` now also removes `[data-stack-row]` hosts). "Added" comes from real timestamps — a new `list_for_user_with_dates` on the user-stack-subscriptions repos (DuckDB + PG, contract-tested) plus the upload's `created_at`, rendered as relative time. The stat strip becomes **workspace stats** (Items in your stack · Plugins · Memories · Uploads — live counts of the stack itself, updating as rows are added/removed), replacing the capability strip (Questions this week / Data sources / Skills / Memory facts, `_compute_capability_stats` removed with it). Hero copy, the top-right "+ New upload" action, the upload modal, and the "Use your Stack everywhere" connect banner are kept. Rail-layout only; topnav unchanged (guarded by `tests/test_ui_layout_theme.py`).
+- **Rail landing converges on the working chat; legacy `/dashboard` retired as a landing, `/ask` removed (#896)**: under the rail layout the legacy table-inventory `/dashboard` is no longer a landing surface — it now 302s to the working chat (`/chat`) when the caller can reach it (chat enabled **and** holds the `CHAT` grant, mirroring `/chat`'s own guard so the redirect can't loop), otherwise to **My Stack** (`/stack`), the data-estate home the dashboard's stats already moved to. (The `/chat` landing has since become the rail Dashboard — `/chat`'s pre-conversation empty state, see the entry under **Added**; the grant-less `/stack` fallback remains.) The visual-only `/ask` hero — a composer that just forwarded to `/chat`, and a dead-end for users without a chat grant — is **retired**: the route 302s to `/` and its rail nav entry is gone, so the rail "Chat" slot renders only when cloud-chat is actually reachable. The RBAC-filtered knowledge/capability pill and suggested questions `/ask` introduced live on — `/chat`'s empty state already renders them. The **Notifications** channels (Telegram + macOS-app linking), previously reachable only on `/dashboard`, move onto the account page (`/me/profile`) as a design-system section card, with Telegram link state now read for real via `notifications_telegram_repo` (the dashboard rendered a hardcoded not-linked stub). Rail-layout only — topnav instances render `/dashboard` byte-for-byte unchanged (guarded by `tests/test_ui_layout_theme.py`).
+- **My Stack "what your agents can draw on" strip above the kind tabs (#896)**: `/stack` renders a four-metric strip — Questions this week · Data sources · Skills · Memory facts — as a row of small, evenly-sized dashboard-style cards between the page description and the kind tabs. It replaces the earlier data-shape footprint (Tables/Columns/Rows/Data size), which duplicated the kind-tab counts and reported inventory rather than value, with outcome-oriented metrics: the caller's own activity (**Questions this week** — their prompts over the trailing 7 days, proof the estate is used) plus the estate's reach — **data sources** (distinct source systems the registered tables come from — Keboola/BigQuery/Jira, derived from the registry rather than the credential table so it populates whenever there is data), **skills** (curated marketplace plugins + community Store entities), and approved, non-personal corporate-memory **facts**. Consumption/cost telemetry (tokens, time-spent, tool-calls) is deliberately excluded — that stays on the admin adoption view. Each card carries an accent icon in a soft circular badge — Questions → `chat`, Data sources → `database`, Skills → `puzzle`, Memory facts → `brain` — a hairline divider, then the value + label, on a flat dim-filled surface (equal-width, left-aligned; wraps on mobile). It reads as ambient context rather than hero cards. Every zero-valued metric is skipped, and the **whole strip (freshness caption included) hides when no metric has a value** — a sparse instance shows nothing here instead of an empty band. Questions this week is per-caller (via `usage_repo().adoption_user_kpis`); the reach counts come from a new defensive `_compute_capability_stats(user)` helper (a repo hiccup degrades a single metric to 0 rather than 500-ing the page). The "Updated …" freshness caption still comes from `_compute_data_stats()`. Adds semantic `chat`, `database` glyphs to the shared `macros/_icon.html` set (reusing existing `puzzle`/`brain`; the strip no longer references `table`/`rows`/`pie`). `/dashboard` and the default topnav look are unchanged. `--ds-*` tokens only (icon accent recolors per theme; adapts to blue/paper + light/dark). Guarded by `tests/test_ui_layout_theme.py`.
+- **`/ask` landing + rail logo matched to the #896 prototype look**: the brand orb is now the raster mark (`app/web/static/img/agnes-orb.png`), rendered through a single shared macro (`macros/_agnes_orb.html`) at both call sites — the rail nav logo and the `/ask` hero — so the logo lives in one place. The `/ask` hero widened to a 920px content column (wider composer, suggested questions in a single row). Suggested questions are lighter, more compact prompt affordances now — a leading sparkle glyph and a trailing arrow that reveals on hover. The "same knowledge, everywhere" card carries the real tool brand icons (Claude Code / Cursor / VS Code `.ico`, borderless, unlabelled) and is pinned to the bottom of the surface just above the Keboola footer. Rail-layout only; the default topnav chrome is unchanged.
+- **Reusable connect-anywhere banner component**: the "same knowledge, everywhere" card is now one shared macro (`macros/_connect_banner.html`, styles under `.cbn-*` in `style-custom.css`) with two variants — `inline` (compact row: copy + tool chips + CTA, on `/ask`) and `orbit` (illustration-led: the Agnes orb as a hub with orbiting tool satellites + copy + CTA, on `/stack`). Any page can drop in either with its own title/copy/CTA target. `/ask` and `/stack` were refactored onto it, deleting their duplicated per-page banner markup and CSS. The `/stack` banner also picks up the new orbit design (illustration left, copy right); both variants keep the light-green, borderless surface.
+- **`/chat` rebuilt to match the `/ask` design under the rail layout (#896)**: on rail instances a new/empty chat now renders the same "Ask anything. Reuse everything." hero as `/ask` — orb, RBAC-filtered "Operated by Kai · N knowledge sources · M capabilities" pill (counts computed server-side in `chat_page`, same helpers as `/ask`), shared suggested-question chips, and the connect-anywhere banner. The composer sits **in the middle, under the description** (brand → composer → pill/suggestions/banner, laid out by flex `order` so an active conversation still pins it to the bottom), narrowed to the 760px hero width, as a slim paper pill with a circular send button. The Conversations column is hidden by default and revealed by a floating history toggle in the main area, and its contents are restyled to the `/ask` history look (stacked header, full-width outline "New chat", agnes-accent active row); opening it insets the chat surface into a rounded card on a tinted gutter (animated), mirroring `/ask`. The shell now fills the viewport (the base `100dvh − 72px` height assumed the top nav the rail layout doesn't have, which left a grey strip below the chat), and the "© Agnes powered by Keboola" credit renders inside the empty-state card — narrowing with the card when history opens and disappearing once a conversation starts. Starting a new conversation returns to this hero empty state. All persisted per-browser. Topnav/blue instances keep the classic capability cards + composer + always-visible sidebar unchanged (rail-gated in `chat.html` and under `html[data-ui-layout="rail"]` in `chat.css`; guarded by `tests/test_ui_layout_theme.py`).
+- **Refined the active-conversation chrome on `/chat` (rail layout, #896)**: once a conversation starts, the top band is cleaner — a floating **+ New chat** button now sits beside the history toggle (reachable without opening the Conversations column; shown only inside a live thread and hidden while the column is open, since the column carries its own button), the conversation title is inset to the right so the floating buttons no longer overlap it, and the full-width "Connected." status strip is replaced by a compact state pill (with a tone dot) in the top-right corner of the chat surface. Message containers are redesigned to match the paper-theme reference: avatars are dropped, assistant turns read as unboxed text on the chat surface at full reading width (no card fill, no inset — the answer flows like a document and stays on the same reading column as the title and composer), and user turns are solid agnes-green bubbles pinned right. The thread now scrolls under a frosted gradient at the top (behind the title) and bottom (behind the composer) — the messages fill the surface and dissolve softly at both edges (`backdrop-filter` blur + a masked surface gradient) instead of hard-cutting at a border. Rail-layout only; the default topnav chat is unchanged (guarded by `tests/test_ui_layout_theme.py`).
+- **Chat history moved into the left rail (rail layout, #896)**: the conversation history is no longer a per-page column on `/chat` — it now lives in the left rail itself, as a collapsible, independently-scrollable **Chats** section directly under the primary destinations, so past conversations are reachable from every page (click one anywhere → `/chat?session=<id>`), like modern chat apps. The rail's chat entry is renamed **New chat** and always starts a fresh conversation (in place on `/chat`, else navigating to a clean `/chat`); the separate standalone "+ New chat" button above the nav, the `/chat` Conversations column, and its floating history/new-chat toggles are all retired under the rail. On `/chat` the existing `chat.js` renders the list live (active-row highlight, delete, Cmd+K palette unchanged — it just targets the rail's `<ul id="chat-list">` now); on every other page a small `js/rail_history.js` fetches `/api/chat/sessions` and renders the same rows. The rail column keeps the nav pinned at top and the user menu pinned at bottom while only the history list scrolls. The chat-driven onboarding **"Your Journey"** steps — previously crammed at the bottom of the conversation list where they were easy to miss — now open from a pinned **"Get started"** launcher in the rail foot (above the user row) that shows live progress (N/5); the panel is rendered by `chat_onboarding.js` (by `chat.js` on `/chat`, with the replay affordance; by a standalone `mountJourneyPanel()` mount on every other rail page). The in-rail **global search box was removed** — search no longer lives in the sidebar chrome. Rail-layout only — the topnav chat keeps its classic in-page sidebar (and its header search) unchanged (guarded by `tests/test_ui_layout_theme.py`).
+
+- **No pictographic emoji in the UI — meaningful line icons instead**: analyst-facing pages no longer inline emoji (`📦 🎯 🧠 📄 🔒 🖼 ⚠ ✅` …). A new shared icon set (`macros/_icon.html` — `ico.icon('package'|'brain'|'warning'|…)`) supplies consistent `currentColor` line icons, wired into the empty states, capability cards, drop zones, and status banners across Catalog, My Stack, Chat, Corporate Memory, the marketplace listing, the upload/edit forms, Cowork, and the Slack-bind confirmation. Detail-page heroes stop rendering admin-set emoji entity icons and instead show the same per-kind line glyph the catalog cards render, on the same soft kind-tinted tile with the glyph in the section accent color (`--kind` on `--kind-soft`) — so a data package / plugin / memory domain / recipe / library collection reads with one consistent, high-contrast icon on both its index card and its detail hero, and the hero glyph matches the accent of the sections below it. The glyph set is now a single shared macro (`cards.kind_glyph()` in `macros/_catalog_card.html`, imported by `macros/_detail.html`); data packages with an uploaded cover image still show it, falling back to the glyph on load error. Typographic symbols that are normal UI text (arrows `→ ←`, and the monochrome `✓ / ✗` marks) are intentionally kept. A ratchet test (`tests/test_no_ui_emoji.py`) fails CI if new pictographic emoji land in user-facing templates; admin pages and the two async-hydrated marketplace detail pages are allowlisted for a follow-up sweep.
+- **Unified entity detail pages onto one hero + section system (#896)**: the data-package, memory-domain, recipe, table, and library-collection detail pages now share a single scaffold (`macros/_detail.html` — `detail.hero()`, `detail.section_open/close()`, `detail.ask_kai()`, `detail.edit_icon()`) instead of five bespoke heroes on three different base shells. Each hero carries a soft kind-tinted wash + a subtle corner topographic wave, the entity's card icon/color (so the hero matches its index card), badges, tag chips, and an icon meta row; the accent recolors per kind from one `--kind` token (`--ds-kind-{data,memory,recipe,library,plugin}`), so data reads teal, memory brown, recipe magenta, library blue. The data-package page merges its "What it is" + "Use it / Skip it" into one card; every page gains an **Ask Kai** action (opens `/chat` pre-seeded with a question about the entity) and demotes the admin **Edit** control to a quiet icon button. Content sections (tables/items/columns/files/query/questions) are preserved and re-skinned as consistent section cards; example questions become one-click Ask-Kai chips. Rail/paper-scoped visual work; guarded by `tests/test_design_system_contract.py` + `tests/test_ui_layout_theme.py`. The marketplace **plugin** detail page (async-hydrated, with its own install/versions/telemetry lifecycle) is intentionally not folded in here — it needs a dedicated pass.
+- **Marketplace plugin + skill/agent detail pages folded onto the shared scaffold; detail hero evolved to a dark per-kind gradient (#896)**: the two async-hydrated marketplace detail pages (`marketplace_plugin_detail.html`, `marketplace_item_detail.html`) now extend `base_ds.html` and reuse `macros/_detail.html` (`detail.styles()`, the `.detail`/`.detail-hero`/`.detail-section` vocabulary, and a new shared `detail.hero_deco()` for the dot-grid + wave layers) instead of two ~770-line bespoke shells on legacy `base.html`. The macOS-"window" cover and blue/green/purple bespoke heroes are gone; the curator cover now overlays the shared per-kind icon tile (widening it via `.detail-hero__icon--cover`) and reverts to the kind glyph on load error. Client-side hydration is preserved unchanged (curated filesystem data + RBAC-on-XHR) — only the shell markup + CSS moved, with all page-local colours retokenized to `--ds-*`. As part of this, the **shared detail hero is now a dark per-kind gradient** (derived from the single `--ds-kind-<kind>` token via `color-mix`, decorated with the existing dot/wave pattern layers recoloured white-on-dark) — so *all* detail pages (data package, table, recipe, library, memory, plugin, skill, agent) share one hero treatment. Adds `--ds-kind-skill` / `--ds-kind-agent` tokens and `skill`/`agent` glyphs to `cards.kind_glyph()` (previously inlined as raw hex in the item page). Guarded by `tests/test_design_system_contract.py` + `tests/test_ui_layout_theme.py`.
+- **Unified the suggested-question sparkle icon across chat + detail pages (#896)**: the `/ask` and `/chat` suggested-question chips and the entity detail pages' "Example questions you can ask Kai" lists (and the "Ask Kai" action) now use the same glyph — the filled four-point sparkle from the chat hero. The detail-page `spark` icon (`macros/_detail.html`) was an outlined five-point star; it now matches the chat/ask `.as-ico`, so every "ask Kai" affordance reads as one component.
+- **Airier Catalog/My Stack index hero; page-local Catalog search removed (rail layout, #896)**: the shared index shell (`base_index.html`) now leaves more room above the page title (`.idx-head` top padding 16px → 32px), and the hero on `/catalog` and `/stack` gets more breathing room between the title, description, and kind tabs. The Catalog's page-local search box is removed — search is served globally by the rail's `#global-search` combobox (`js/global_search.js`), so a second box on the page was redundant. Rail-layout only; the default topnav chrome is unchanged.
+- **Footer divider dropped on Catalog/Stack index and catalog detail pages (rail layout, #896)**: the hairline `border-top` above the "© Agnes powered by Keboola" credit is removed on the rail index shell (`base_index.html` → `.idx > footer`) and on the catalog package/table/recipe detail pages (new `body.detail-page` hook, scoped to `html[data-ui-layout="rail"]`) — the white content band already provides the visual break, so the extra rule read as clutter. The default topnav chrome renders byte-identically.
+- **Primary content nested into the detail hero as a frosted-glass panel + consistent action rows / Remove button (#896)**: the shared `detail.hero()` scaffold gains an optional content **panel** pinned to the bottom of the dark gradient header (`.detail-hero__bar` for the action row + `.detail-hero__panel` beneath it, `panel=` macro arg). The panel is a **frosted-glass card** — a slightly translucent `--ds-surface` with a `backdrop-filter` blur so the per-kind gradient bleeds through as a subtle tint (near-opaque `@supports` fallback where backdrop-filter is unavailable, so text contrast never depends on the blur). The **data-package** page renders its "What it is / Use it · Skip it" card there instead of as a separate card below the hero; the **plugin** and **skill/agent** marketplace heroes render "What it does/Description" + "Details" as one two-column card (`.detail-hero__panel-split`) at the foot of the header. Both marketplace heroes keep every action on a single non-wrapping row that sizes to its content — so the layout no longer shifts (nor does "↓ Download for Cowork" drop to a second line) when the install state toggles between "+ Add to my stack" and "In your stack · Remove · Cowork" — and their "✕ Remove from stack" button is unified with the shared danger-button treatment used everywhere else (translucent white "glass" by default, full red fill on hover). Backward compatible: detail pages that pass no `panel` (table / recipe / library / memory) render exactly as before. `--ds-*` tokens only; default topnav chrome unaffected. Guarded by `tests/test_design_system_contract.py` + `tests/test_ui_layout_theme.py`.
+- **Brighter detail-hero gradients (#896)**: the shared per-kind hero gradient was lifted out of its muted near-black look — the `--ds-kind-*` bases are deliberately dark (they must clear 4.5:1 as text on their `-soft` tints), so the ramp now lifts toward the hue's full saturation (brighter top-left → pure `--kind` mid → only lightly deepened bottom) with a stronger top-right glow, and the dot/wave decoration opacity is nudged up slightly. Still derived from the single `--kind` token (theme-agnostic) and kept dark enough for the white hero text/buttons; applies to every detail page (data / table / recipe / library / memory / plugin / skill / agent).
+- **BREAKING: the Agnes "stack" is now auto-membership, not opt-in** — every data package / memory domain granted (`required` or `available`) to one of a user's groups is automatically part of their stack: visible in `agnes catalog`, `GET /api/stack`, the Catalog/My Stack pages, and authorized for server-side query (`agnes query --scope auto` falling back to remote execution) the moment it's granted, with no subscribe step. `required` resources are unaffected (always in-stack, always downloaded). `POST /api/stack/subscribe` / `DELETE /api/stack/subscription/{type}/{id}` are reinterpreted: they no longer control stack membership, only whether `agnes pull` keeps a **local copy** on disk (`ResourceEntry.materialized`, exposed as `materialized` on `GET /api/stack`/`/api/stack/browse`) — an `available` package/domain not yet subscribed is still authorized+listed in the manifest but its parquet is skipped (reusing the existing `server_only` listed-but-not-downloaded mechanism). The web toggle on Catalog/My Stack/detail pages is relabeled "Download locally" / "Remove local copy" accordingly (Marketplace plugin install/uninstall keeps its "Add to stack"/"In stack" wording — unaffected). The admin grants-downgrade path (`required → available`) no longer needs to eagerly materialize `user_stack_subscriptions` rows for `data_package`/`memory_domain` — auto-membership already keeps the resource in every granted user's stack (the `marketplace_plugin` opt-out fan-out is unchanged). `user_stack_subscriptions` keeps its existing schema; only its meaning changed.
+
 ### Fixed
+- **Library: a curated plugin's Stack pill follows the subscription, not the grant — so it stops contradicting every other surface about the same plugin.** Plugins are the one granted kind whose membership is not automatic: Model B (v28+) has `resolve_user_marketplace` serve `subscriptions ∪ required-tier grants`, so a plugin granted at the `available` tier and never subscribed is genuinely absent from the caller's served set — its skills and commands are not loaded in their Claude Code. The Library rendered plugin rows through the auto-membership model that data packages and memory domains legitimately have (`_add_shared_row` hardcodes `stack_state="in_stack"`), so every *eligible* plugin claimed membership; since the redesign also made every granted row LOCKED, the row additionally removed the one affordance that could have corrected the state. The result was three surfaces disagreeing about one fact: `/library` said a locked "In Stack", `/marketplace` offered "Add", and an agent asked "what plugins do I have?" answered "not installed" from `marketplace_search` — the last of which was the *correct* answer. Plugin rows now derive their state from `_curated_stack_sets`, the same helper `GET /api/marketplace/items` computes its `installed` flag from, and render all three real states: eligible-but-unsubscribed is **addable** (POST/DELETE on `/api/marketplace/curated/{mid}/{plugin}/install`, which the kind-agnostic toggle already handles), a self-made subscription is **removable**, and only `is_system` or required-tier grants **lock** — precisely the two cases `curated_uninstall` answers 409 to, so the lock now promises exactly what the API enforces. Plugin rows also pass their real grant tier through, so the Optional/Required facet slices them the way it slices data packages. A cross-surface guard test pins the Library and `/api/marketplace/items` to the same answer.
+- **Chat 500s on instances that rode this branch before the main merge.** A database that climbed the branch's *old* step numbering arrives already stamped past the version numbers main's steps now occupy, so those steps are skipped forever — `schema_version` sits at the head and `/api/health` reports `db_schema: ok` while the columns they add are simply absent. `chat_sessions.agent_id` is the painful one: every chat read and write names it, so `GET`/`POST /api/chat/sessions` both fail with `Binder Error: Table "s" does not have a column named "agent_id"`, the session list never loads, no conversation can be started, and the reaper logs the same error every cycle. `_heal_legacy_agents_table` already repaired the `agents` *table* for this exact stranding; `_heal_stranded_ladder_columns` now closes the rest of the gap — `chat_sessions.agent_id` and `personal_access_tokens.agent_id` (v101), `sync_state.parts` (v100), and the `data_apps` draft (v99) + linked (v108) columns. Stamp-independent and idempotent like its siblings: it checks `information_schema` rather than trusting the version, so it is a no-op on cleanly-migrated and fresh installs, and it runs only on the DuckDB state backend (Postgres tracks Alembic revision ids and cannot be stranded this way). `personal_access_tokens.surface` is repaired alongside it: every PAT mint names that column, including the CLI sign-in exchange, so healing chat without it would have left the operator locked out of the CLI on the same database. The heal also CHECKPOINTs afterwards — the post-migration checkpoint sits inside `if current < SCHEMA_VERSION` and a stranded DB is stamped AT the head, so on precisely these instances it never ran and the repair's `ALTER TABLE ... ADD COLUMN` statements would have stayed in the WAL, which is the shape that can leave `system.duckdb` unrecoverable on a cross-version replay after an abrupt restart. The repair covers `usage_session_summary.uploaded_at`, `file_corpora.origin` and `chat_sessions.pinned_at` as well, and a guard now derives the whole comparison from the ladder: any future step in the renumbered window that adds a column no heal repairs fails the suite by name. The hand-kept list had already drifted twice, each time shipping a repair that fixed one screen and left another broken.
+- **`/me/profile` no longer scrolls sideways below ~980px.** Two independent causes, both the same class of bug — a layout that could not give way. The single-column grid rule used a bare `1fr` (`minmax(auto, 1fr)`), so the track refused to shrink below its content's min-content width and the column blew out of the grid; and the token cards demanded a fixed `200px` usage column with no wrap, which is what supplied that min-content width. The grid now uses `minmax(0, 1fr)` in both rules and the card wraps on a shrinkable basis. Separately, the group and effective-access rows wrap and nothing in them is unshrinkable: every part can be arbitrarily long (a Workspace group name is an email address, a resource id is user-authored, one resource can arrive via several groups), and the group chip ellipsises rather than wrapping into what would read as two chips — the full value stays on its `title`. The tokens status control scrolls inside its own track on a phone instead of widening the page, and the shared section head becomes two rows below 560px so a head carrying an action button no longer squeezes its title onto three lines in the gutter beside it.
+- **`/me/profile`'s only `<h1>` announced as "Jamie Rivera Edit".** The inline name editor's button and input were *inside* the heading — valid phrasing content, but they join its accessible name. The `<h1>` now holds the name and nothing else, with the editor as its sibling.
+- **`.fbar-chip[hidden]` is explicit in the shared filter toolbar.** The component sets `display: inline-flex` on the chip, an author rule that would otherwise be at the mercy of how a given engine weights the UA `[hidden]` rule — fine for the callers that build chips dynamically, wrong for one that renders a fixed set and toggles `hidden` per filter (the tokens toolbar).
+- **Library grid: the sharing control on a card looks like a control, and every surface calls a sharing state the same thing.** Two bugs with one root — a signal carried on a channel that was already busy. (1) On a card the control stated "you can change this" in its INK (primary blue, 12px/400, no container, no chevron, 20px tall) — but blue is already that card's ambient hover colour (`.fbar-card:hover` turns the title primary, `:focus-within` draws a primary ring), so the cue meant to say *control* was the cue the card spends on *the pointer is here*; beside a filled semibold `Add to stack` pill it read as coloured metadata, and its entire hover response was `#0284c7` → `#0369a1`, invisible at that size and quieter than the card-level hover it had to stand out from. Changeability now rides FORM: a bordered 26px chip with the chevron the table badge always had (the card silently dropped it) where the state can be changed, bare text where it cannot — so box-vs-no-box survives a 40-card scan, the control clears WCAG 2.2 SC 2.5.8 (20px did not, and the adjacent 26px pill denied it the spacing exemption), and it is no longer colour-alone (WCAG 1.4.1). Outlined rather than filled like the table's badge on purpose: that chip owns a column, this one shares a 40px bar with the primary action, and a second tint just doubles the blue — the footer now reads filled = the action, outlined = a state you can change, bare text = a state you cannot. (2) The card kept its own vocabulary ("Only you" / "Specific groups" / "Everyone") against the table's ("Private" / "Shared" / "Workspace"), so most rows named their own state differently depending on the view; because that map knew only the three scope keys, a skill *pending review* — correctly "In review" on its row — printed "Only you" on its card, which is not a wording difference but a false statement about the item. There is now ONE set of words, owned by `app/services/artefact_access.py :: VISIBILITY_LABELS` (**Private** / **Specific groups** / **Everyone**), with both client-side maps deleted and the card printing the server's label verbatim, so review states arrive without being enumerated client-side. **Everyone** replaces **Workspace** everywhere it faced a user (Library, My Stack's Source column, the skill builder's preview): `workspace` is the internal enum key, the product calls that scope the *organization* in every sentence it writes, and it was the odd one grammatically — "Private" and "Specific groups" answer *who can see this*, "Workspace" named a container. Two further fixes fall out: a read-only row no longer overwrites its scope with "Shared with you" (which understated a workspace-published item as though someone had picked you, and erased "In review" on your own pending skill) — that phrase is now used only where the server genuinely cannot resolve a scope, which is what a grant-derived row already reports; and saving a share change now refreshes the row's `data-sharing`, which the Sharing column sorts on and the card prints, so neither goes stale without a reload.
+- **Builder: a refused save is a short work list next to the fields it faults, not a paragraph that shoves the buttons down the page** — every message the builder produced shared one `.sk-result` span, and that span sat *inside* the action row with `flex: 1 1 100%`. So the one message that is genuinely long — the store's multi-issue rejection — claimed its own full-width row, re-flowed the header, and moved **Save to Library** out from under the pointer that had just pressed it. What it printed was worse than where it printed: the same "description is too short" fires at both component and submission level, so the reader got it **twice**, and the submission-level copy carries advice for the ZIP-upload path ("Do not add a `.claude-plugin/plugin.json` to the ZIP") that a person typing Markdown into a textarea cannot act on — about 300 characters of right-aligned red prose, un-dismissable, for two actual defects. Feedback now rides **two channels, split by whether the reader has to act**. *Receipts* (draft saved, file loaded, check finished, item created) go to the app-wide toast — out of layout entirely, announced `aria-live="polite"`, dismissable, auto-expiring. *Problems* stay on the page as a `role="alert"` list **below** the action row, so the row it grows under never moves: one row per defect, deduped on field+code, each naming the field that owns it with a **Take me there** jump — and the same fault is restated **on that field**, which is where it gets fixed. Alert and field split the text rather than repeating it: the alert carries the verdict ("Skill content is too short (minimum 200 characters).") and the field carries the whole hint. Advisory `quality` warnings are no longer dressed up as blockers (they never blocked — `status: 'warn'` is their ceiling); they belong to the Check panel. Rows retire as the author answers them and the count is derived, so the header can't claim "2 things to fix" over one row. Progress moved onto the control that started the work (**Saving…** / **Checking…**), so no status text can grow in that row again. The success case had **no confirmation at all** — the builder navigated away and left the Library to imply it worked; the receipt now survives the redirect (`agnes.flash.toast`) and names which door the item went through: private lands immediately, "everyone" waits on the automated review. Guarded by `tests/test_web_studio.py::test_builder_splits_receipts_from_problems`.
+- **The shared toast primitive is announced, dismissable, and no longer renders empty for half its callers**: `window.appToast` read `opts.msg` only, but eight existing call sites (`me_memory_mining.js`, `admin_store_lint.js`, `studio.js`, `studio_suggestions.js`) pass a **bare string** — every one of those produced a visible, empty toast. It now accepts both shapes. The container gains `role="status"` + `aria-live="polite"` (toasts were silent to screen readers), each toast gains a keyboard-reachable ✕ (click-anywhere-to-dismiss was the only affordance, discoverable solely as a `cursor: pointer`), the timer pauses on hover so a sentence-long receipt can't expire mid-read, the stack is capped at four so a repeated action can't paper over the page, and the entrance animation honours `prefers-reduced-motion`.
+- **Chat: the composer's placeholder sits on the pill's centre line, not 1.2px above it**: the rail composer is a 56px pill whose leading `+` and circular send button are flex-centred to the exact pixel, so the one element that missed the centre line was the thing the eye actually reads. The textarea inherits `min-height: 40px` from the shared `.cloud-chat-input` rule, but at `line-height: 1.4` on 14px type a single line is only 19.6px, and with the base rule's 9px padding the box came to 37.6px of content in a 40px frame — a textarea drops all of that 2.4px slack *below* its last line box, so the placeholder (and the first line you type) rendered 1.2px high while everything beside it was centred. Retokenized as an exact fit under rail: a 20px line plus 2×10px padding *is* the 40px min-height, so there is no slack left to distribute. Integer values, so nothing lands on a subpixel, and `autosizeComposer()` still steps cleanly at 40 / 60 / 80px as the box grows. Rail-scoped: the topnav composer is `rows="2"`, where the intrinsic two-line height already exceeds the 40px floor and no slack exists to mis-centre — its metrics are unchanged.
+- **Library: an "In Stack" row you cannot remove now looks like one**: the lock on the Stack pill was keyed on the grant *tier* (`requirement == 'required'`) rather than on whether the caller can actually drop the membership. But every group grant is undroppable — the grant *is* the membership (auto-membership in `StackResolver.browse()`); subscribing only decides whether `agnes pull` keeps a local copy. So an *optional* grant rendered the success-tinted check that a **removable** pill wears at rest — pixel-identical to a control that turns into "Remove from Stack" on hover, differing only in a tooltip — and the only way to discover it wasn't one was to hover it and watch nothing happen. Optional grants now carry the same lock glyph as required ones, in both the table and the grid card, with a tooltip that names who can remove it ("Granted to your group — only an admin can remove it from your Stack."). The tier still differs where it's legible: that tooltip, and the Optional/Required facet where it is actually filterable. `.lib-instack--required` is renamed `.lib-instack--locked` after the property it now encodes. A locked pill wears the **same grey as the read-only Sharing badge** beside it rather than an informational blue — one colour per row for "you cannot change this", instead of a third tint competing with the primary and success pills for meaning on the one control that has no action to offer. It takes that badge's border along with its fill, because the row's own hover background *is* `--ds-surface-dim`: borderless, the chip dissolved into the row at exactly the moment someone pointed at it. And it explains itself through the page's fast tooltip (`data-tip`, ~120ms) instead of the native `title`, whose OS-controlled 600ms+ delay meant the sentence about who *can* remove it arrived after the pointer had moved on; the two Stack **buttons** stay on `title`, since their hover already swaps the label to say what a click does. Guarded by `tests/test_web_library.py::test_library_available_grant_reads_in_stack_and_offers_no_toggle`.
+- **Chat: the conversation "⋮" menu is the same dropdown as every other dropdown in the app**: the row menu (Pin/Unpin · Rename · Delete) was the only menu built off the legacy `--radius-*` / `--text-*` size ladder — a 168px panel with 6px corners, a heavy `--ds-shadow-lg`, and 12px labels on 4px rows — while the other three menus in the app (the detail-page overflow menu, the Library move menu, the filter menu) had long since agreed on one look. Next to them it read as a different component from a different product: harder corners, a darker drop, and type a step and a half smaller than the rows it sat over. It now wears the shared spec verbatim — 208px wide, 6px padding on a 12px radius with `--ds-shadow-md`, rows at 13.5px on an 8px radius — and each action gains the muted 15px leading glyph the house menus label their rows with (pushpin, pencil, bin; the bin turns danger-ink with its label). **The `P` / `R` / `D` accelerator hints are gone**, along with the bindings behind them: they keyed off `event.key`, i.e. the character the keyboard *layout* produces, so on any non-Latin layout the same physical keys emit different characters and the shortcut silently did nothing — the panel was advertising three bindings it could not honour, in a column of muted text no other menu in the app carries. Layout-independent keyboard support is untouched (arrows, Home/End, Escape back to the trigger). Under `paper` the panel also picks up that theme's short menu rise, matching `.detail-menu__panel`, with a `prefers-reduced-motion` opt-out; the entrance is transform-only, so the JS that positions and clamps the panel is untouched. Both hosts (chat.js on `/chat`, rail_history.js everywhere else) draw from the one shared component, so neither can drift. Guarded by `tests/test_chat_pin_conversations.py::test_panel_wears_the_house_dropdown_look`, which asserts the metrics in the row-menu sheet **and** in `detail-page.css` so a change to either side fails.
+- **Chat: a highlighted code block is readable, and no longer draws a stray frame around its own contents**: every fenced block in a chat answer painted a *light*-theme syntax palette onto the dark code surface — the vendored `highlight.min.css` is GitHub **Light**, whose token colours are chosen for a white page. On `--ds-code-bg` a string (`#032f62`) landed at **1.2:1** and a number/operator/attribute (`#005cc5`) at **1.7:1**, i.e. invisible rather than merely dim; keywords (2.5:1) and function names (1.8:1) were barely better, so the parts of a snippet the highlighting exists to distinguish were the parts that disappeared. Rather than swap the vendored sheet for a dark one (which would hardcode a second palette outside the token system), each hljs token family is remapped in `chat.css` onto a new `--ds-code-*` set in `design-tokens.css`, verified in the browser at **≥5.5:1 for every family in both themes** (blue `#0c1224` and paper `#1c1b1a`), with the block's plain ink at 14.6:1. The same blocks also drew a 1px light rectangle inside themselves: `style-custom.css` gives every bare `code` a `--border` box, and the chat block's reset covered `background` / `padding` / `color` but not `border`, so the frame rode along on the `<code>` inside the dark `<pre>` — the block itself owns the chrome, so it is cleared. Affects both themes and both chromes; the token set is declared once and inherited, since both code surfaces are near-black.
+- **The chat dashboard's Stack line links to the Library, not to a page the rail retired**: "Agnes is using N knowledge sources and M capabilities from your Stack" — the status strip under the composer in the rail empty state — sent both of its counts to `/stack`, a surface that is no longer a rail destination (#1088), so following the line landed the caller on a page with no nav entry and no active state, off the IA they had been navigating. Both links (and the "add more sources and capabilities to your Stack" note in the empty suggested-actions card) now go to `/library?stack=in_stack`: a new deep link that arrives with the Library's **In stack only** toggle already pressed, narrowing the united inventory to exactly what the line counts. The Library is the right destination rather than a redirect target of convenience — data packages and memory domains on it come from the *same* `StackResolver.browse()` read the Stack page used, so this is the same content under the chrome that has a nav entry for it. The deep link flips the toolbar's own control instead of reaching into the filter engine's state, so the pressed state, the item count, the per-band tallies and the no-results view can't drift from what a human press produces; it also opens the bands the filter left with rows, since the bands are folded by default and a screen of closed bands is a poor answer to "what is Agnes using?". Neither the applied filter nor the opened bands are persisted — like `?section=`, it is a hand-off for this arrival, not a preference the caller set. Any value of `stack=` other than the facet's one legal value is simply off, so the param is not a free-text hook into the page's JS, and an instance where the toggle doesn't render (everything, or nothing, is in the Stack — where the filter would change nothing) lands on the page as rendered. Rail-layout only: the status line exists nowhere else, and `/stack` itself stays a live route. Guarded by `tests/test_web_chat_empty_state.py` + `tests/test_web_library_toolbar.py`.
+- **Rail chrome: the open Admin tree is one column of text, not two stepped ones** (spacing only — no row, fill, hairline or flyout geometry moves): the seven area labels started 8px left of every `.rail-i` label above them (x=44 vs x=52), so opening `Admin` stepped the column left and the eye had two left edges to track in a 240px rail. The indent moves onto the row's own left padding, which lands the labels on the `.rail-i` offset exactly; the rows' boxes, the hairline guide and the caret column stay where they were, so the indent now belongs to the text rather than to the hover fill. The `has-active` dot is positioned in that padding instead of sitting in the flex flow — as a flex child it displaced its own label ~10px, making the one row marked as containing the current page the one row whose text left the column (x=54). `Admin` itself is untouched: it is a `.rail-i` and was already at x=52 with its gear icon to its left, so the fix is that its children join it rather than that it moves away from `Library` / `Agents` / `How Agnes works`.
+- **Rail chrome: the Admin flyouts are reachable by mouse again**: every Admin destination (`Activity Center`, `Users & Access`, `Data Packages`, `Sources`, `Agent Experience`, `Documentation`, `Server`) was effectively mouse-unreachable under the `rail` layout — the panel opens 14px to the right of its row, and moving the pointer toward it crossed a dead strip where hover was lost, so the panel vanished mid-journey and the only ways in were the keyboard or typing the URL. The hover bridge meant to cover that gap existed but never worked: it was a `.rail-admin-flyout::before` at `left: -16px`, i.e. outside the panel's padding box, and the panel's `overflow-y: auto` (which it needs for `max-height` scrolling) forces the used value of `overflow-x` to `auto` as well, clipping the bridge away — hit-testing the mid-gap pixels landed on `.rail`, outside `.rail-admin-sub`, in both breakpoints. The bridge moves onto `.rail-admin-sub` (which has no `overflow` of its own, so it escapes), gated on the same hover/focus-within condition that reveals the panel so the strip never overlays page content at rest, and sits at `z-index: 60` — below the panel it leads to, above the content it has to cross. It spans the panel's full vertical reach rather than just the row's height, so a diagonal move toward a tall panel's top item stays inside the hover region too; panel and bridge read that height from one new `--rail-admin-flyout-max-h` so they cannot drift apart. Affects the `rail` layout only (`data-ui-layout="rail"`, opt-in) and is theme-independent — it reproduced identically under `paper` and `blue`.
+- **A collection's browser tab no longer names a surface that doesn't exist**: under the rail chrome, `library_detail.html` titled its tab "<name> — Artefacts", though the rail nav, the page's own back-link and every other reference say **Library**. The `/artefacts` surface was renamed to Library and took over the route — as the template's own back-link comment explains — and this title block was left behind. Both chromes now say Library.
+
 - **Skill builder LLM pre-check verdict could be replayed against different content**: `_mint_verdict_token` stored only the verdict dict; `_consume_verdict_token` did not verify that the bundle being saved matched the one that was reviewed, so a direct API caller could run `dry_run + include_llm` on benign content, keep the token, and resubmit different content while bypassing the gate. Both functions now bind the token to a `sha256` of the canonical content fields (`name`, `type`, `description`, `skill_md`); a token consumed with mismatched content is silently dropped and the LLM gate re-runs normally.
 - **Skill builder review-status banner disappeared when the author changed the access option after saving**: the banner was inserted as a standalone child of `builderView`, and changing the access radio triggered `renderBuilder()`, which replaced `builderView.innerHTML` and wiped it. The current banner HTML is now stored in `_reviewBannerHtml` and re-inserted by `renderBuilder()` whenever `reviewInProgress` is true.
 - **Skill builder showed "Waiting for admin review" after a save on an instance with guardrails disabled**: the builder only checked `GUARDRAILS_LLM_READY` (provider configured), not whether guardrails were enabled at all. When guardrails are off, the banner now says "Published immediately" instead. Requires the new `guardrails_enabled` template variable passed by `skills_page()`.
@@ -210,61 +259,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Uploaded tabular files are now SQL-queryable, owner-private (#896)**: a CSV/TSV/XLSX/Parquet/JSON uploaded into a collection already becomes a DuckDB table (`src/ingest/tabular.py` → `table_registry` row, `source_type='collection'`), but it was never reachable by the uploader — table access is stack-gated (data packages) with no owner path, so `/api/query` rejected it. Collection-derived tables now inherit their owning collection's access: `src/rbac.can_access_table` / `get_accessible_tables` admit a `source_type='collection'` row when the caller can access its `bucket` collection (owner via `file_corpora.created_by`, or a group the collection is shared with), delegating to the existing `can_access_collection` / `accessible_collection_ids`. Ingestion now stamps the real uploader as `registered_by` (was the literal `'ingest'`). The derived table stays invisible to other analysts and surfaces in the owner's catalog only; admins still see all. Guarded by `tests/test_rbac_uploaded_table.py`.
 - **Knowledge-search chat-landing hero (#896 prototype)**: the "Ask anything. Reuse everything." hero — composer, curated suggested-question chips, and a "Same knowledge and skills, everywhere" connect card — with a server-side, RBAC-filtered "Using N knowledge sources · M capabilities" pill (data packages + memory domains + library collections/recipes/knowledge digests for N, accessible marketplace plugins for M). Introduced on a standalone `/ask` page and now folded into `/chat`'s empty state; the standalone `/ask` route has since been retired (see the rail-landing-convergence entry under **Changed**).
 
-### Added
-- **Skills surface — an index for your authored skills + a redesigned builder (rail layout, WIP)**: a new **Skills** page (`/skills`, reached from the left-rail Studio dropdown's **Skill builder** entry, now a real link flagged **WIP**) modelled on `/agents`. It has two in-page views: a **LIST** of the skills you've authored — real store data fetched from `GET /api/store/entities?type=skill&owner=<self>` (so entries still in review show too), each card carrying a status pill (Live / In review / Needs attention), category tag, and install count, linking to its store detail page — and a **BUILDER** that reuses the Agent builder's visual language: numbered sections (Identity · Instructions) beside a live preview card, an advisory **Check** (dry-run lint) that never blocks, and **Publish to store** wired to `POST /api/store/entities/from-markdown` (the same endpoint the studio Skill Builder uses, so quota, guardrails, and the review pipeline apply identically). Client-side name validation mirrors the store's `^[a-z][a-z0-9-]{0,63}$` contract, and structured store guardrail errors (e.g. body-too-short) are flattened into a readable line. The rail item picks up the active-state highlight on `/skills`; only the Corporate Memory builder remains a "Maybe?" placeholder. The existing studio Skill Builder (`/admin/studio/skill`) is unchanged and still reachable from the Studio index. Rail-layout only.
-
-### Changed
-
-- **Rail nav trimmed to four flat destinations — New chat · My Stack · Library · Agents (rail layout)**: the left rail is reordered from *New chat · My Stack · Artefacts · Marketplace · Studio* and loses two entries outright. **Studio** — a hover dropdown that held Agents, the Skill and Plugin builders and a non-interactive "Corporate Memory builder" concept label — is **removed entirely** (markup plus its `.rail-studio-*` / `.rail-badge--maybe` styling); **Agents** is promoted out of it to a top-level item directly under Library, so building an agent is one click rather than a hover plus a click. The **Marketplace** entry is also removed from the rail. `/catalog`, `/skills` and `/store/new?type=plugin` remain live routes — the two builders are reached from the Library header's "+ New" menu (Build a skill · Build a plugin), and the Marketplace from in-page surfaces (chat suggestions, search). With four destinations left, the group dividers went too (`.rail-nav-sep` removed). The former **Artefacts** entry reads **Library** and points at `/library` (the renamed surface) instead of the `/artefacts` redirect, and `/library` no longer lights up the Marketplace item — it highlights its own entry. The tour's Marketplace step anchored `#nav-catalog` in the rail; tour.js already auto-skips a step whose anchor is absent, so it degrades to the next step rather than breaking. Rail-layout only; the topnav link row is unchanged (guarded by `tests/test_ui_layout_theme.py`, incl. a `test_rail_has_no_studio_or_marketplace_entry` guard that also fails on orphaned CSS).
-- **"Submit a skill or plugin" now starts a skill instead of describing the process**: the Marketplace's Curated-tab CTA (and the matching empty-state link) points at the Skill Builder — `/skills?spotlight=new-skill` — rather than `/marketplace/guide/curated`, which explained the Named-Curator hand-off but left the author with nothing to click. Landing with that parameter fires a one-step coach-mark on the **"+ New skill"** card, so a first-time author sees the affordance rather than a grid of skills they haven't written yet; the parameter is stripped once the coach-mark is up, so a reload or back-navigation doesn't re-pop it. Reuses the existing tour engine (`js/tour.js`), which gains a **solo** popover form for single-step tours (no progress dots, no "I'll explore on my own", primary reads "Got it") and a **side-placement fallback** in `_positionPopover` — when a popover fits neither below nor above its anchor it now sits beside it instead of clamping to the top of the viewport and covering the very element it points at. The curated guide at `/marketplace/guide/curated` is unchanged, and `/skills` carries a "Submitting a **plugin** instead?" line linking to it so the plugin half of the CTA's promise keeps an onward path. Guarded by `tests/test_web_marketplace_guide.py` + `tests/test_web_studio.py`.
-- **My Stack redesigned as curated context, not a download manager (rail layout, #896)**: `/stack` now presents the caller's Stack as the persistent context the Main Agent uses — everything shown is already in the Stack, so the page no longer repeats "In stack" or exposes technical states ("Downloaded" / "Download locally" / raw download toggles), and the `Added` + `Status` columns are gone. The inventory keeps the shared `.data-table` look (same as the Artefacts table — column headers **Name · Type · Details · Source · Actions**, neutral type chips) but splits into two **collapsible `<tbody>` groups**: **Required** (admin-granted resources — always available, not removable, marked with a subtle `Required` badge) and **Added by you** (optional resources the caller added — each carrying an overflow menu: *View details* · *Use in agent…* · *Remove from My Stack*, the last behind a lightweight confirmation). Each group header is a click-to-collapse row (chevron + live count). All filtering lives in one shared `.fbar` toolbar (the same component and grammar as `/artefacts`, in `static/css/filter_toolbar.css`): a dominant **Search**, a click-driven **Filter** dropdown, and a **Sort** (Name · Recently used · Type). The head tabs are retired — kind (Data · Plugins · Artefacts · Memory) is now a multi-select **"Type" facet** inside the Filter menu, and each active selection renders as a removable **chip on a second row** (with Clear all) that only appears when a filter is active. Option counts are per-kind totals and a kind with zero items hides its option (no dead filters). The facet filters both groups while preserving the grouping; sorting runs independently inside each group and Required always stays above Added by you. Origin (Required/Added) stays the group split, not duplicated as a toolbar control. Search matches name, description, type, source, and shared-by. The below-table workspace stat strip is removed. A **table ⇄ grid view toggle** (right of Sort, persisted in `localStorage`) switches the inventory between the table and a responsive **card grid** — same two groups, collapsible headers, Required badge / overflow-menu actions, and the same search/filter/sort — with the grid projected client-side from the (filtered, sorted) table rows so the table stays the single source of truth. Rail-layout only; the topnav chrome is unchanged (guarded by `tests/test_ui_layout_theme.py` + `tests/test_web_stack_auto_membership.py` + `tests/test_web_artefacts_toolbar.py`).
-- **Redesigned the initial chat hero into one premium Knowledge Layer banner**: the rail chat pre-conversation state now leads with a single, wide, gradient hero (`macros/_knowledge_layer.html`) instead of the busy three-panel diagram. Left: a `</> Work everywhere with the same knowledge` pill, the headline **"Agnes is your knowledge layer. / Use it here or connect your tools."** (second line in a blue→purple accent gradient), a one-line subcopy, and the large green **"Connect your tools"** CTA. Centre: the Agnes orb as the visual anchor (glow + dotted halo). Right: lightweight floating integration chips (Claude Code · Cursor · VS Code · CLI and more) with faint, short dotted connectors fanning back to the orb — no surrounding card. Soft mint→purple near-white background with subtle radial gradients, a faint dotted field on the far left, and thin curved lines top-right; 24px radius, feather-light shadow. Tuned to read as a compact promotional banner rather than a page-filling hero — tighter internal spacing, a smaller headline/orb, chips pulled closer to the orb, and reduced padding so the composer sits noticeably higher. The redundant blue "Ask Agnes" usage card and the "Use your own AI tools" card are removed. Below the banner the trust caption (**Secure. Private. Always in sync.**) leads a plain **"Ask Agnes anything"** heading that hands off directly to the composer. Rail-layout only; the topnav chat empty state is unchanged (guarded by `tests/test_ui_layout_theme.py` + `tests/test_web_chat_empty_state.py`).
-- **"Same knowledge, everywhere" connect banner now leads the Artefacts header too**: the shared connect banner (`macros/_connect_banner.html`, `bar` variant) that leads the My Stack page header is now also placed in the `/artefacts` page header, same component and placement. Its description on both pages is shortened to **"Connect your AI tools to give them access to the same knowledge."** Rail-layout surfaces only (guarded by `tests/test_ui_layout_theme.py`).
-- **The assistant is Agnes again — the "Kai" name is fully retired**: every user-visible mention of "Kai" across the web UI is now "Agnes". The left-rail logo reverts from the two-line "Kai · powered by Agnes" lockup back to the **Agnes orb mark + Agnes wordmark** (`instance_brand`/`INSTANCE_NAME` override preserved, default `Agnes`); the chat greeting ("I'm Agnes, your data agent"), composer placeholders ("Ask Agnes…"), the Stack context line ("Agnes is using N knowledge sources…"), the Knowledge Layer "Ask Agnes" card, the detail-page "Ask Agnes" buttons and "Example questions you can ask Agnes" sections, the guided-tour header ("Agnes is showing you around"), the onboarding greeting, and the profile notifications copy all follow. Internally the assistant-accent color token family `--ds-kai-*` (the chat's sky-blue accent, distinct from the emerald `--ds-agnes` platform brand) is renamed to `--ds-assistant-*` — a pure identifier rename that preserves the exact colors. Rail/paper surfaces only; the default topnav+blue chrome is unchanged (guarded by `tests/test_ui_layout_theme.py`).
-- **Sky blue is the paper theme's primary color, led by the Kai identity**: the paper theme's brand palette moved from emerald to **sky blue** — `--ds-primary` `#0284c7` (with `-dark` `#0369a1`, `-light` `#e0f2fe`, `-brand-accent` `#7dd3fc`), the legacy `--primary` compat shims, and the dark-hero CTA (`#0ea5e9`) all follow. The assistant/chat surfaces (`--ds-agnes` family: composer, send button, user bubble, voice cards) are overridden to the same sky under paper, and a dedicated `--ds-kai` family (`#0284c7` + `-dark`/`-soft`/`-line`) carries Kai-attributed surfaces (guided tour "Kai is showing you around", "Ask Kai" buttons, the "Ask Kai in Agnes" card, the "Kai is using…" pill) — so the whole paper app and the assistant read as one coherent sky-blue identity. The default `blue`/topnav theme is untouched (guarded by `tests/test_ui_layout_theme.py`); documented in the design-system reference's accent-vocabulary list.
-- **Agnes-platform "connect" surfaces stay emerald green**: while the app primary is sky blue, the surfaces that speak for the Agnes *platform* — the "same knowledge, everywhere" connect banner (`.cbn`), the "Use your own AI tools" card (`.klb-card--tools`), and the whole **AI Connector page** (`/me/ai-connector`, `.aic-flow`) — keep the emerald brand green via a paper-scoped `--ds-primary` override, so blue = Kai/app and green = the Agnes knowledge layer. The chat composer, send button, and user message bubble were repointed to `--ds-kai` so the chat input stays Kai blue regardless.
-- **Dashboard hero — tighter, single-viewport composition (rail layout)**: on the rail chat dashboard the Knowledge Layer trust caption ("Secure. Private. Always in sync.") is lifted out of the diagram's orb and re-hosted as a small eyebrow directly above the "One knowledge layer. Everywhere you work." headline, so it reads as one centered text block below the diagram (the orb stays in the diagram with its connectors intact; the "Agnes Knowledge Layer" title is dropped as redundant with the headline). The diagram padding and inter-section gaps were tightened so the whole hero — diagram → caption → headline → composer → suggested actions → footer — fits a standard laptop viewport without scrolling; on wide screens (≥981px) the text block lifts into the diagram's empty centre band so it sits higher on the page while the footer stays pinned to the bottom, leaving a balanced gap above it. New reusable `knowledge_hub_label()` macro + `hub_label` (on `knowledge_hub()`/`knowledge_layer_banner()`) and `show_title` args (all default `True`) let a host suppress the in-orb label / title and place them elsewhere; only the rail chat dashboard opts in, so other consumers of the banner are unchanged.
-- **Studio nav group with a hover dropdown (rail layout)**: a new **Studio** rail item reveals an inline dropdown on hover/focus containing **Agents** (moved out of the rail root), plus two exploratory builders — **Corporate Memory builder** and **Skill builder** — flagged with a dashed "Maybe?" badge and rendered as non-interactive concepts. The dropdown expands inline (a right flyout would be clipped by the rail's `overflow-y:auto`).
-- **AI Connector page gains a CLI tab**: the tool-tab row (`/me/ai-connector`) adds a **CLI** tab covering `agnes` CLI install (linking to `/setup` for the personalized, token-bearing one-click command) and a `agnes catalog` verify step — so one page answers "connect any tool" for both MCP editors and the terminal.
-- **Rail nav font consistency**: `.rail-i` now pins `font-family: inherit` so the chevron trigger items (Studio, Chats, Admin — `<button>`s) render in the page font instead of the UA default, matching the plain `<a>` nav links.
-- **Artefacts data-apps banner is now a warning above the table**: the "Data apps — WIP" banner on `/artefacts` moved above the artefacts table and is restyled as a warning message (amber `--ds-warn-*` surface, alert-triangle icon) instead of a neutral card at the page foot.
-- **Rail brand leads with Kai, "powered by Agnes" beneath**: the left-rail logo lockup now reads **Kai** as the hero wordmark with a quiet "powered by Agnes" sub-label (platform brand is `instance_brand`-driven), and the orb picks up a sky-blue glow. Rail-layout only; the topnav brand is unchanged.
-- **Assistant naming made consistent — the assistant is Kai, the platform is Agnes**: user-facing copy that attributed answering/using-knowledge to "Agnes" now reads "Kai" — the chat greeting ("Hi, I'm Kai 👋"), the sandbox agent intro ("I'm Kai, your data agent"), the `/chat` composer placeholder ("Ask Kai…"), the chat upload modals ("so Kai can read them"), and the onboarding-journey "why" tooltips. Platform/product references ("Agnes Knowledge Layer", page titles, "powered by Agnes", CLI/setup copy, "Ask Kai in Agnes") keep the Agnes name. (Slack-persona copy and data-access governance copy were left as-is pending the Slack bot's registered display name.)
-- **Guided tour reframes the Catalog as a community Marketplace**: the tour's third step is now "Here's the Marketplace" — see what colleagues have built and shared, add it, and share back — and the redundant "This is the Catalog" step was dropped (5 steps instead of 6). Publishing copy now says "Marketplace" rather than "Catalog".
-- **"Connect my AI tools" CTAs now all land on the AI Connector page**: the tour's final-step "Connect my AI tools" button and the Journey "Use … from other AI tools" step both pointed at `/setup` (the narrower "Install the Agnes CLI" page), while the main-page banner already opened `/me/ai-connector` (the per-tool MCP connector guide — Claude Code · Cursor · VS Code · Claude Desktop · Claude.ai · ChatGPT). Both onboarding CTAs now open `/me/ai-connector` too, matching their own "same context in Claude Code, Cursor, and VS Code" copy. `/setup` stays as the CLI-install path reached from getting-started.
-- **Artefacts present as files or collections — adaptive, one honest noun (rail layout, #896)**: the rail Artefacts surface presented every `file_corpora` **container** as a singular "upload" — the `+ New upload` modal took one file, so a row read as one file, yet its detail page let you keep adding more, and `library_detail.html` even renamed itself ("Ask this upload" vs "Ask this collection") depending on layout. Artefacts is now a legible, heterogeneous space: **Artefacts** stays the nav umbrella (a typed home for what you create — files and collections today, data apps next), and each item's presentation **adapts to how many files it holds** — one file reads AS that file (filename title, single-document glyph, `TYPE · size` meta, "File" label), two-or-more as a **Collection** (name, two-sheet glyph, `N files`, "Collection" label). Adding a second file on the detail page transparently promotes a File into a Collection; the detail hero, noun, and search copy follow the same count-based rule, so a lone file is never called a "collection". The primary action is a single neutral **`+ Upload`** modal (files first, name optional/defaulting to the filename): drop one file → a single-file artefact, drop several or name it → a collection. The `library`-kind glyph (shared macro + `catalog_card.js` / `stack_unified.html` mirrors) changed from a single document to a **two-sheet "files" icon**, and a new **`doc`** glyph draws the single-document icon for one-file artefacts. The `hero` detail macro gained an optional `glyph` override (accent color stays `library`, icon shape adapts). The default topnav `/library` chrome already used "collection" and is unchanged (guarded by `tests/test_ui_layout_theme.py`, `tests/test_web_library.py`).
-- **My Stack kind tabs moved onto the grey head band (rail layout, #896)**: on `/stack` the All/Data/Plugins/Memory kind tabs now render as the trailing row of the grey page head (`page_head`), directly under the stats tray, so the white content band sits flush beneath them and the search box + sort control open the white band below — the exact placement the Marketplace (`/catalog`) page already uses. Achieved by moving the tab strip out of `page_surface` into `page_head` in `stack_unified.html` (base_index's `.idx-head > :last-child` flush rule then applies) and dropping the page-local `.idx-head` bottom-padding override; the toolbar loses its now-redundant top margin. No shared component exists for this region — each page hand-rolls its tabs/toolbar — and the default topnav chrome is unchanged (guarded by `tests/test_ui_layout_theme.py`).
-- **Browser-tab favicon + title match the prototype (#896)**: the tab icon is now the Agnes orb (`img/agnes-orb.png`) instead of the flat blue "A" `favicon.svg`, across the design-system base, the legacy base, and the login base. The default document title falls back to `Agnes — ask and reuse` (the prototype's tagline) when no `INSTANCE_NAME` is configured; instances that set `INSTANCE_NAME` keep their own name (white-label unchanged), and per-page titles (`Chat — …`, `My Stack — …`) are unaffected.
-- **Paper-theme sweep: marketplace item detail (#896)**: tokenized the page-local `<style>` colours on `marketplace_item_detail.html` so status/category surfaces follow the `--ds-*` tokens and flip under `data-theme="paper"` (`--warn-color` → `--ds-accent-warn-ink`, stripped dead `var(--surface-alt, #hex)` fallbacks, JS disabled-button greys → `--ds-surface-sunken`/`--ds-text-muted`/`--ds-border`). Its dark hero and terminal-mock keep their fixed hex by design, matching the sibling `marketplace_plugin_detail` page. The page was already emoji-free, so it is dropped from the `tests/test_no_ui_emoji.py` allowlist — which is now empty: every user-facing template is swept.
-- **Admin emoji sweep — permanent guard coverage**: replaced all pictographic emoji in admin templates (`admin_tables.html`, `admin_corporate_memory.html`, `admin_server_config.html`, `admin_usage.html`, `admin_users.html`) with inline SVGs from the shared `macros/_icon.html` warning/folder paths (in JS innerHTML contexts) or plain-text labels (in `.textContent` assignments). User-editable icon fields (Data Package `icon`, Memory Domain `icon`) default to an empty string instead of a Unicode glyph so the stored value is fully user-controlled. The `tests/test_no_ui_emoji.py` guard now permanently covers all `admin_*` templates — the prior blanket exclusion is removed.
-- **Catalog reshaped around auto-membership — addable-only, admin god-mode removed**: follow-up to auto-membership (every RBAC-granted Data Package / Memory Domain is already in a caller's stack the moment it's granted). `/catalog` and `/corporate-memory` no longer show a caller's own granted packages/domains in the Browse grid (rail layout: the Data/Memory kind tabs) — that content lives in **My Stack** now; Browse/the Data & Memory tabs only list genuinely addable, not-already-in-stack entries, which for governed data is normally nothing, so the rail Catalog's Data/Memory kind tabs hide themselves when empty and the page centers on Plugins/Recipes instead. Admin god-mode (`StackResolver.browse_admin`, "see every package regardless of grant") is removed from both user-facing pages — admins now see the same grant-scoped view as everyone else. The full audit view moved to a new admin-only page, **`/admin/data-packages`** ("All packages", linked from the admin hub's Data Packages card), listing every Data Package and Memory Domain regardless of grant. Hero/empty-state copy on both pages was reworded to point at My Stack instead of implying Browse still holds what the caller already has. The "Recommended for you" row no longer surfaces granted-but-not-yet-downloaded data/memory packages (that download nudge lives on My Stack). Plugins and Recipes behave like an app store: a plugin you've added stays listed and is simply re-badged **"In stack"** (it does not disappear) — only governed Data/Memory are exclusive to My Stack. In the rail layout this page is now titled **Marketplace** (nav item, page heading, and browser title) since, post-reshape, it lists shared skills/plugins/recipes rather than the caller's granted data; the `/catalog` URL and the classic-topnav "Data Packages" page are unchanged. Guarded by `tests/test_web_catalog_reshape.py`, plus updates to `tests/test_web_catalog_unified.py`, `tests/test_web_memory_unified.py`, `tests/test_web_stack_auto_membership.py`, `tests/test_ui_layout_theme.py`.
-- **AI Connector page redesigned as an integration guide (#896)**: `/me/ai-connector` (`me_cowork.html`) is rebuilt from embedded documentation into a calm, scannable developer-integration page in the Stripe/Vercel/Supabase mould — generous whitespace, hairline borders, no shadows, one green accent reserved for the primary action and the selected tab. Deliberately **not** a wizard: no stepper, progress bar, step-nav, or completion styling (Agnes can't know whether a user finished), so the page reads as documentation you can enter at any section. A borderless **hero** puts the Agnes mark at the centre of a hub illustration — company knowledge and the AI tools both connect *to Agnes* — beside three trust benefits (private · access control · works with your tools). Then a **"Copy your connector URL"** card (URL styled as a credential + privacy note) and a **"Configure your AI tool"** card: tool tabs (Claude Code first) over a single top-to-bottom flow of icon-led sections — **Add the server** (terminal command as the primary action) → **Authenticate** (numbered checklist) → **Verify connection**. The final section never claims success the app can't verify: it shows the example prompt *"What tables are available in Agnes?"* with an informational note (*"If you receive data back from Agnes, your connection is working correctly"*) rather than a "Connected" / "You're all set" state. The tool picker is a segmented control (green only on the selected tool, horizontal-scroll on small screens). Blocking gotchas stay surfaced (Claude.ai Team/Enterprise admin-gate with one-click "Copy request for your admin"; Claude Desktop "don't search the directory"; Claude Code mandatory restart). A collapsible **"Having trouble?"** support card (expanded by default) holds the four common issues as individually-expandable cards in a responsive two-column grid, and everything non-essential collapses into a single **"Advanced & reference"** card (collapsed by default) whose plugin-packages / tools / skills groups are compact accordion rows with count badges. Adds `lock`/`shield-check`/`sparkle`/`user`/`chevron` glyphs to the shared icon set. `--ds-*` tokens only (terminal uses the dark `--ds-hero-*` family); guarded by `tests/test_design_system_contract.py`, `tests/test_ui_layout_theme.py`, `tests/test_no_ui_emoji.py`.
-- **Paper-theme sweep: activity center, marketplace plugin detail, memory domain detail (#896)**: tokenized the page-local styles on these three pages so their colours follow the design-system `--ds-*` tokens and flip correctly under `data-theme="paper"` (previously raw hex/`rgba()` status colours stayed blue/purple/amber regardless of theme). Status colours now use the `--ds-accent-{success,warn,danger,info}-*` vocabulary, category/source badges the `--ds-kind-*` palette. The marketplace detail page's dark hero and terminal-mock keep their fixed hex by design (the deliberate "night" moment). `marketplace_plugin_detail.html` dropped from the `tests/test_no_ui_emoji.py` allowlist (already emoji-free); `memory_domain_detail.html` + `activity_center.html` added to the raw-hex sweep guard in `tests/test_design_system_contract.py`. Default blue/topnav rendering unchanged.
-- **Paper-theme sweep: admin pages (#896)**: tokenized the page-local `<style>` colours on 19 admin templates so status badges, category chips, surfaces, text, and borders follow the `--ds-*` tokens and render correctly under `data-theme="paper"` — access/users (`admin_users`, `admin_user_detail`, `admin_groups`, `admin_group_detail`), tokens/credentials/workspace (`admin_tokens`, `admin_datasource_credentials`, `admin_initial_workspace`), MCP (`admin_mcp_sources`, `admin_mcp_source_detail`), store/marketplace/memory (`admin_store_submissions`, `admin_store_submission_detail`, `admin_marketplaces`, `admin_corporate_memory`, `admin_knowledge_digests`), and observability/ops (`admin_sessions`, `admin_session_detail`, `admin_usage`, `admin_sync`, `admin_server_config`). Status → `--ds-accent-{success,warn,danger,info}-*`, category/origin chips → `--ds-kind-*`. Pictographic lock emoji removed from the MCP pages' JS-rendered labels. Intentional darks (toast/terminal backgrounds, dark hero ink, modal scrims) are unchanged, and the default blue/topnav look is byte-for-byte unchanged.
-- **"Recommended for you" moved from My Stack to the Catalog (rail layout, #896)**: the grow-the-stack row — catalog assets not yet in the caller's stack (available data packages, then memory domains, capped at four) — now renders on `/catalog`, as a single side-scrollable card row between the page head and the kind tabs, where discovering new assets belongs. `/stack` is now purely the manage surface ("Everything in your Stack" inventory table); its recommendations section, "View all recommendations" link, and the rec-promotion script are gone. Because a recommended asset also appears in its kind grid below, the shared stack toggle (`catalog_card.js`) now syncs every card of the same resource on a page (keyed by `resource_type`/`resource_id`), so adding from the recommendations row flips the grid twin to "In stack" too. Rail-layout only; topnav pages unchanged (guarded by `tests/test_ui_layout_theme.py`).
-- **Knowledge Layer banner CTAs retargeted to matching pages (#896)**: the chat-dashboard banner's "Connect your tools" now opens `/me/ai-connector` (per-tool connection instructions for Claude Desktop / Claude.ai / Claude Code / Cursor / VS Code / ChatGPT — the same roster the banner card advertises) instead of the CLI-only `/setup` install page, and "Learn how it works" now opens `/home` (the "What happens when you launch Agnes" walkthrough) instead of the AI Connector page. Defaults on the reusable `knowledge_layer_banner()` macro; guarded by `tests/test_ui_layout_theme.py`.
-- **Knowledge Layer banner headline restored on the chat dashboard (#896)**: the rail chat pre-conversation banner now leads with its product-model headline — **"One knowledge layer. Everywhere you work."** + the "Use Kai here, or connect your favorite AI tools…" subcopy — above the three-part diagram, matching the dashboard reference. Previously the chat foot rendered the banner in `compact` mode, which dropped the headline lead. The reusable `knowledge_layer_banner()` macro gains a `show_lead` argument (defaults to `not compact`, so other callers are unchanged) and a `klb--lead` CSS modifier that spans the lead across the top of the compact grid. The rail chat empty state is recomposed as **hero → composer → suggested actions → diagram**: the Knowledge Layer *lead* (headline "One knowledge layer. Everywhere you work." + supporting sentence) is now the flush-left page hero — stating what Agnes is before the input — replacing the time-of-day greeting; the composer and four guided actions follow in the centered narrow column; and the Knowledge Layer *diagram* (the "Ask Kai in Agnes" card · orb hub · "Use your own AI tools" card, no headline) closes the page at the foot. The lead is factored into a reusable `knowledge_layer_lead()` macro shared by the hero and the (optional) in-banner lead, and the foot banner renders `show_lead=False`. Guarded by `tests/test_ui_layout_theme.py`.
-- **Knowledge Layer banner CTAs relocated (#896)**: the banner's standalone two-button CTA row is retired. **"Connect your tools"** now lives at the foot of the "Use your own AI tools" card (`connected_tools_card()`, still → `/me/ai-connector`), tying the action to the tools it advertises, and **"Learn how it works"** (→ `/home`) moves into the account/user menu, replacing the former **"AI Connector"** item in both the rail and topnav chromes (the AI Connector page stays reachable via the card CTA). Guarded by `tests/test_ui_layout_theme.py` and `tests/test_web_nav_cowork.py`.
-- **My Stack redesigned as a personal workspace (rail layout, #896)**: `/stack` no longer reads as "Catalog with different filters" — the page now separates *growing* the Stack from *managing* it. A new **"Recommended for you"** section surfaces catalog assets NOT yet in the caller's stack (available data packages, then memory domains, capped at four), rendered with the exact same `catalog_card` component as `/catalog` (macro + CSS + JS untouched) in a single side-scrollable row (snap points; never grows the page past one card row) with a "View all recommendations" link; adding one moves it into the inventory below without a reload, so an asset never shows in both zones (signal-based ranking — teammates, department, uploads, activity — is future work; today it's the browse order). The per-kind card grids are replaced by **"Everything in your Stack"** — ONE inventory table (shared `.data-table` primitive) across kinds with columns Name · Type · Details · **Added** · Shared by · Status, a search box above it, kind tabs (All/Data/Plugins/Uploads/Memory) and a right-aligned sort control (Recently added / Name / Type); Plugins hydrate into rows client-side, and Remove drops the row in place (shared stack-toggle in `catalog_card.js` now also removes `[data-stack-row]` hosts). "Added" comes from real timestamps — a new `list_for_user_with_dates` on the user-stack-subscriptions repos (DuckDB + PG, contract-tested) plus the upload's `created_at`, rendered as relative time. The stat strip becomes **workspace stats** (Items in your stack · Plugins · Memories · Uploads — live counts of the stack itself, updating as rows are added/removed), replacing the capability strip (Questions this week / Data sources / Skills / Memory facts, `_compute_capability_stats` removed with it). Hero copy, the top-right "+ New upload" action, the upload modal, and the "Use your Stack everywhere" connect banner are kept. Rail-layout only; topnav unchanged (guarded by `tests/test_ui_layout_theme.py`).
-- **Rail landing converges on the working chat; legacy `/dashboard` retired as a landing, `/ask` removed (#896)**: under the rail layout the legacy table-inventory `/dashboard` is no longer a landing surface — it now 302s to the working chat (`/chat`) when the caller can reach it (chat enabled **and** holds the `CHAT` grant, mirroring `/chat`'s own guard so the redirect can't loop), otherwise to **My Stack** (`/stack`), the data-estate home the dashboard's stats already moved to. (The `/chat` landing has since become the rail Dashboard — `/chat`'s pre-conversation empty state, see the entry under **Added**; the grant-less `/stack` fallback remains.) The visual-only `/ask` hero — a composer that just forwarded to `/chat`, and a dead-end for users without a chat grant — is **retired**: the route 302s to `/` and its rail nav entry is gone, so the rail "Chat" slot renders only when cloud-chat is actually reachable. The RBAC-filtered knowledge/capability pill and suggested questions `/ask` introduced live on — `/chat`'s empty state already renders them. The **Notifications** channels (Telegram + macOS-app linking), previously reachable only on `/dashboard`, move onto the account page (`/me/profile`) as a design-system section card, with Telegram link state now read for real via `notifications_telegram_repo` (the dashboard rendered a hardcoded not-linked stub). Rail-layout only — topnav instances render `/dashboard` byte-for-byte unchanged (guarded by `tests/test_ui_layout_theme.py`).
-- **My Stack "what your agents can draw on" strip above the kind tabs (#896)**: `/stack` renders a four-metric strip — Questions this week · Data sources · Skills · Memory facts — as a row of small, evenly-sized dashboard-style cards between the page description and the kind tabs. It replaces the earlier data-shape footprint (Tables/Columns/Rows/Data size), which duplicated the kind-tab counts and reported inventory rather than value, with outcome-oriented metrics: the caller's own activity (**Questions this week** — their prompts over the trailing 7 days, proof the estate is used) plus the estate's reach — **data sources** (distinct source systems the registered tables come from — Keboola/BigQuery/Jira, derived from the registry rather than the credential table so it populates whenever there is data), **skills** (curated marketplace plugins + community Store entities), and approved, non-personal corporate-memory **facts**. Consumption/cost telemetry (tokens, time-spent, tool-calls) is deliberately excluded — that stays on the admin adoption view. Each card carries an accent icon in a soft circular badge — Questions → `chat`, Data sources → `database`, Skills → `puzzle`, Memory facts → `brain` — a hairline divider, then the value + label, on a flat dim-filled surface (equal-width, left-aligned; wraps on mobile). It reads as ambient context rather than hero cards. Every zero-valued metric is skipped, and the **whole strip (freshness caption included) hides when no metric has a value** — a sparse instance shows nothing here instead of an empty band. Questions this week is per-caller (via `usage_repo().adoption_user_kpis`); the reach counts come from a new defensive `_compute_capability_stats(user)` helper (a repo hiccup degrades a single metric to 0 rather than 500-ing the page). The "Updated …" freshness caption still comes from `_compute_data_stats()`. Adds semantic `chat`, `database` glyphs to the shared `macros/_icon.html` set (reusing existing `puzzle`/`brain`; the strip no longer references `table`/`rows`/`pie`). `/dashboard` and the default topnav look are unchanged. `--ds-*` tokens only (icon accent recolors per theme; adapts to blue/paper + light/dark). Guarded by `tests/test_ui_layout_theme.py`.
-- **`/ask` landing + rail logo matched to the #896 prototype look**: the brand orb is now the raster mark (`app/web/static/img/agnes-orb.png`), rendered through a single shared macro (`macros/_agnes_orb.html`) at both call sites — the rail nav logo and the `/ask` hero — so the logo lives in one place. The `/ask` hero widened to a 920px content column (wider composer, suggested questions in a single row). Suggested questions are lighter, more compact prompt affordances now — a leading sparkle glyph and a trailing arrow that reveals on hover. The "same knowledge, everywhere" card carries the real tool brand icons (Claude Code / Cursor / VS Code `.ico`, borderless, unlabelled) and is pinned to the bottom of the surface just above the Keboola footer. Rail-layout only; the default topnav chrome is unchanged.
-- **Reusable connect-anywhere banner component**: the "same knowledge, everywhere" card is now one shared macro (`macros/_connect_banner.html`, styles under `.cbn-*` in `style-custom.css`) with two variants — `inline` (compact row: copy + tool chips + CTA, on `/ask`) and `orbit` (illustration-led: the Agnes orb as a hub with orbiting tool satellites + copy + CTA, on `/stack`). Any page can drop in either with its own title/copy/CTA target. `/ask` and `/stack` were refactored onto it, deleting their duplicated per-page banner markup and CSS. The `/stack` banner also picks up the new orbit design (illustration left, copy right); both variants keep the light-green, borderless surface.
-- **`/chat` rebuilt to match the `/ask` design under the rail layout (#896)**: on rail instances a new/empty chat now renders the same "Ask anything. Reuse everything." hero as `/ask` — orb, RBAC-filtered "Operated by Kai · N knowledge sources · M capabilities" pill (counts computed server-side in `chat_page`, same helpers as `/ask`), shared suggested-question chips, and the connect-anywhere banner. The composer sits **in the middle, under the description** (brand → composer → pill/suggestions/banner, laid out by flex `order` so an active conversation still pins it to the bottom), narrowed to the 760px hero width, as a slim paper pill with a circular send button. The Conversations column is hidden by default and revealed by a floating history toggle in the main area, and its contents are restyled to the `/ask` history look (stacked header, full-width outline "New chat", agnes-accent active row); opening it insets the chat surface into a rounded card on a tinted gutter (animated), mirroring `/ask`. The shell now fills the viewport (the base `100dvh − 72px` height assumed the top nav the rail layout doesn't have, which left a grey strip below the chat), and the "© Agnes powered by Keboola" credit renders inside the empty-state card — narrowing with the card when history opens and disappearing once a conversation starts. Starting a new conversation returns to this hero empty state. All persisted per-browser. Topnav/blue instances keep the classic capability cards + composer + always-visible sidebar unchanged (rail-gated in `chat.html` and under `html[data-ui-layout="rail"]` in `chat.css`; guarded by `tests/test_ui_layout_theme.py`).
-- **Refined the active-conversation chrome on `/chat` (rail layout, #896)**: once a conversation starts, the top band is cleaner — a floating **+ New chat** button now sits beside the history toggle (reachable without opening the Conversations column; shown only inside a live thread and hidden while the column is open, since the column carries its own button), the conversation title is inset to the right so the floating buttons no longer overlap it, and the full-width "Connected." status strip is replaced by a compact state pill (with a tone dot) in the top-right corner of the chat surface. Message containers are redesigned to match the paper-theme reference: avatars are dropped, assistant turns read as unboxed text on the chat surface at full reading width (no card fill, no inset — the answer flows like a document and stays on the same reading column as the title and composer), and user turns are solid agnes-green bubbles pinned right. The thread now scrolls under a frosted gradient at the top (behind the title) and bottom (behind the composer) — the messages fill the surface and dissolve softly at both edges (`backdrop-filter` blur + a masked surface gradient) instead of hard-cutting at a border. Rail-layout only; the default topnav chat is unchanged (guarded by `tests/test_ui_layout_theme.py`).
-- **Chat history moved into the left rail (rail layout, #896)**: the conversation history is no longer a per-page column on `/chat` — it now lives in the left rail itself, as a collapsible, independently-scrollable **Chats** section directly under the primary destinations, so past conversations are reachable from every page (click one anywhere → `/chat?session=<id>`), like modern chat apps. The rail's chat entry is renamed **New chat** and always starts a fresh conversation (in place on `/chat`, else navigating to a clean `/chat`); the separate standalone "+ New chat" button above the nav, the `/chat` Conversations column, and its floating history/new-chat toggles are all retired under the rail. On `/chat` the existing `chat.js` renders the list live (active-row highlight, delete, Cmd+K palette unchanged — it just targets the rail's `<ul id="chat-list">` now); on every other page a small `js/rail_history.js` fetches `/api/chat/sessions` and renders the same rows. The rail column keeps the nav pinned at top and the user menu pinned at bottom while only the history list scrolls. The chat-driven onboarding **"Your Journey"** steps — previously crammed at the bottom of the conversation list where they were easy to miss — now open from a pinned **"Get started"** launcher in the rail foot (above the user row) that shows live progress (N/5); the panel is rendered by `chat_onboarding.js` (by `chat.js` on `/chat`, with the replay affordance; by a standalone `mountJourneyPanel()` mount on every other rail page). The in-rail **global search box was removed** — search no longer lives in the sidebar chrome. Rail-layout only — the topnav chat keeps its classic in-page sidebar (and its header search) unchanged (guarded by `tests/test_ui_layout_theme.py`).
-
-- **No pictographic emoji in the UI — meaningful line icons instead**: analyst-facing pages no longer inline emoji (`📦 🎯 🧠 📄 🔒 🖼 ⚠ ✅` …). A new shared icon set (`macros/_icon.html` — `ico.icon('package'|'brain'|'warning'|…)`) supplies consistent `currentColor` line icons, wired into the empty states, capability cards, drop zones, and status banners across Catalog, My Stack, Chat, Corporate Memory, the marketplace listing, the upload/edit forms, Cowork, and the Slack-bind confirmation. Detail-page heroes stop rendering admin-set emoji entity icons and instead show the same per-kind line glyph the catalog cards render, on the same soft kind-tinted tile with the glyph in the section accent color (`--kind` on `--kind-soft`) — so a data package / plugin / memory domain / recipe / library collection reads with one consistent, high-contrast icon on both its index card and its detail hero, and the hero glyph matches the accent of the sections below it. The glyph set is now a single shared macro (`cards.kind_glyph()` in `macros/_catalog_card.html`, imported by `macros/_detail.html`); data packages with an uploaded cover image still show it, falling back to the glyph on load error. Typographic symbols that are normal UI text (arrows `→ ←`, and the monochrome `✓ / ✗` marks) are intentionally kept. A ratchet test (`tests/test_no_ui_emoji.py`) fails CI if new pictographic emoji land in user-facing templates; admin pages and the two async-hydrated marketplace detail pages are allowlisted for a follow-up sweep.
-- **Unified entity detail pages onto one hero + section system (#896)**: the data-package, memory-domain, recipe, table, and library-collection detail pages now share a single scaffold (`macros/_detail.html` — `detail.hero()`, `detail.section_open/close()`, `detail.ask_kai()`, `detail.edit_icon()`) instead of five bespoke heroes on three different base shells. Each hero carries a soft kind-tinted wash + a subtle corner topographic wave, the entity's card icon/color (so the hero matches its index card), badges, tag chips, and an icon meta row; the accent recolors per kind from one `--kind` token (`--ds-kind-{data,memory,recipe,library,plugin}`), so data reads teal, memory brown, recipe magenta, library blue. The data-package page merges its "What it is" + "Use it / Skip it" into one card; every page gains an **Ask Kai** action (opens `/chat` pre-seeded with a question about the entity) and demotes the admin **Edit** control to a quiet icon button. Content sections (tables/items/columns/files/query/questions) are preserved and re-skinned as consistent section cards; example questions become one-click Ask-Kai chips. Rail/paper-scoped visual work; guarded by `tests/test_design_system_contract.py` + `tests/test_ui_layout_theme.py`. The marketplace **plugin** detail page (async-hydrated, with its own install/versions/telemetry lifecycle) is intentionally not folded in here — it needs a dedicated pass.
-- **Marketplace plugin + skill/agent detail pages folded onto the shared scaffold; detail hero evolved to a dark per-kind gradient (#896)**: the two async-hydrated marketplace detail pages (`marketplace_plugin_detail.html`, `marketplace_item_detail.html`) now extend `base_ds.html` and reuse `macros/_detail.html` (`detail.styles()`, the `.detail`/`.detail-hero`/`.detail-section` vocabulary, and a new shared `detail.hero_deco()` for the dot-grid + wave layers) instead of two ~770-line bespoke shells on legacy `base.html`. The macOS-"window" cover and blue/green/purple bespoke heroes are gone; the curator cover now overlays the shared per-kind icon tile (widening it via `.detail-hero__icon--cover`) and reverts to the kind glyph on load error. Client-side hydration is preserved unchanged (curated filesystem data + RBAC-on-XHR) — only the shell markup + CSS moved, with all page-local colours retokenized to `--ds-*`. As part of this, the **shared detail hero is now a dark per-kind gradient** (derived from the single `--ds-kind-<kind>` token via `color-mix`, decorated with the existing dot/wave pattern layers recoloured white-on-dark) — so *all* detail pages (data package, table, recipe, library, memory, plugin, skill, agent) share one hero treatment. Adds `--ds-kind-skill` / `--ds-kind-agent` tokens and `skill`/`agent` glyphs to `cards.kind_glyph()` (previously inlined as raw hex in the item page). Guarded by `tests/test_design_system_contract.py` + `tests/test_ui_layout_theme.py`.
-- **Unified the suggested-question sparkle icon across chat + detail pages (#896)**: the `/ask` and `/chat` suggested-question chips and the entity detail pages' "Example questions you can ask Kai" lists (and the "Ask Kai" action) now use the same glyph — the filled four-point sparkle from the chat hero. The detail-page `spark` icon (`macros/_detail.html`) was an outlined five-point star; it now matches the chat/ask `.as-ico`, so every "ask Kai" affordance reads as one component.
-- **Airier Catalog/My Stack index hero; page-local Catalog search removed (rail layout, #896)**: the shared index shell (`base_index.html`) now leaves more room above the page title (`.idx-head` top padding 16px → 32px), and the hero on `/catalog` and `/stack` gets more breathing room between the title, description, and kind tabs. The Catalog's page-local search box is removed — search is served globally by the rail's `#global-search` combobox (`js/global_search.js`), so a second box on the page was redundant. Rail-layout only; the default topnav chrome is unchanged.
-- **Footer divider dropped on Catalog/Stack index and catalog detail pages (rail layout, #896)**: the hairline `border-top` above the "© Agnes powered by Keboola" credit is removed on the rail index shell (`base_index.html` → `.idx > footer`) and on the catalog package/table/recipe detail pages (new `body.detail-page` hook, scoped to `html[data-ui-layout="rail"]`) — the white content band already provides the visual break, so the extra rule read as clutter. The default topnav chrome renders byte-identically.
-- **Primary content nested into the detail hero as a frosted-glass panel + consistent action rows / Remove button (#896)**: the shared `detail.hero()` scaffold gains an optional content **panel** pinned to the bottom of the dark gradient header (`.detail-hero__bar` for the action row + `.detail-hero__panel` beneath it, `panel=` macro arg). The panel is a **frosted-glass card** — a slightly translucent `--ds-surface` with a `backdrop-filter` blur so the per-kind gradient bleeds through as a subtle tint (near-opaque `@supports` fallback where backdrop-filter is unavailable, so text contrast never depends on the blur). The **data-package** page renders its "What it is / Use it · Skip it" card there instead of as a separate card below the hero; the **plugin** and **skill/agent** marketplace heroes render "What it does/Description" + "Details" as one two-column card (`.detail-hero__panel-split`) at the foot of the header. Both marketplace heroes keep every action on a single non-wrapping row that sizes to its content — so the layout no longer shifts (nor does "↓ Download for Cowork" drop to a second line) when the install state toggles between "+ Add to my stack" and "In your stack · Remove · Cowork" — and their "✕ Remove from stack" button is unified with the shared danger-button treatment used everywhere else (translucent white "glass" by default, full red fill on hover). Backward compatible: detail pages that pass no `panel` (table / recipe / library / memory) render exactly as before. `--ds-*` tokens only; default topnav chrome unaffected. Guarded by `tests/test_design_system_contract.py` + `tests/test_ui_layout_theme.py`.
-- **Brighter detail-hero gradients (#896)**: the shared per-kind hero gradient was lifted out of its muted near-black look — the `--ds-kind-*` bases are deliberately dark (they must clear 4.5:1 as text on their `-soft` tints), so the ramp now lifts toward the hue's full saturation (brighter top-left → pure `--kind` mid → only lightly deepened bottom) with a stronger top-right glow, and the dot/wave decoration opacity is nudged up slightly. Still derived from the single `--kind` token (theme-agnostic) and kept dark enough for the white hero text/buttons; applies to every detail page (data / table / recipe / library / memory / plugin / skill / agent).
-- **BREAKING: the Agnes "stack" is now auto-membership, not opt-in** — every data package / memory domain granted (`required` or `available`) to one of a user's groups is automatically part of their stack: visible in `agnes catalog`, `GET /api/stack`, the Catalog/My Stack pages, and authorized for server-side query (`agnes query --scope auto` falling back to remote execution) the moment it's granted, with no subscribe step. `required` resources are unaffected (always in-stack, always downloaded). `POST /api/stack/subscribe` / `DELETE /api/stack/subscription/{type}/{id}` are reinterpreted: they no longer control stack membership, only whether `agnes pull` keeps a **local copy** on disk (`ResourceEntry.materialized`, exposed as `materialized` on `GET /api/stack`/`/api/stack/browse`) — an `available` package/domain not yet subscribed is still authorized+listed in the manifest but its parquet is skipped (reusing the existing `server_only` listed-but-not-downloaded mechanism). The web toggle on Catalog/My Stack/detail pages is relabeled "Download locally" / "Remove local copy" accordingly (Marketplace plugin install/uninstall keeps its "Add to stack"/"In stack" wording — unaffected). The admin grants-downgrade path (`required → available`) no longer needs to eagerly materialize `user_stack_subscriptions` rows for `data_package`/`memory_domain` — auto-membership already keeps the resource in every granted user's stack (the `marketplace_plugin` opt-out fan-out is unchanged). `user_stack_subscriptions` keeps its existing schema; only its meaning changed.
-
-### Fixed
 - **Postgres model drift on `file_corpora.origin`**: the `origin` column shipped in DuckDB (`_v108_to_v109`) and Alembic (`0049`) but was never added to the `FileCorpus` SQLAlchemy model, so `tests/db_pg/test_schema_parity.py` / `test_alembic_roundtrip.py` reported model-vs-migration drift. Added to the model.
 
 - **"Build an agent" no longer 500s after an agent has been deleted**: `POST /api/agents` derives a free slug by walking `base`, `base-2`, … but checked availability with the default *live-rows-only* lookup, while `delete` is a SOFT delete (`deleted_at`) and the `slug` UNIQUE constraint spans deleted rows on both backends. So a soft-deleted agent still owned its slug at the storage layer while the search reported it free — the INSERT then hit `ConstraintException: Duplicate key "slug: …"` and the endpoint 500'd. Worst on the untitled-draft path, where every "+ Build an agent" click derives the same fallback slug `agent`: create one, delete it, click again → 500. `_unique_slug` now searches with `include_deleted=True`. Guarded by `tests/test_web_library_sharing.py::test_agent_slug_freed_name_reuses_suffix_after_delete` (create-delete-create, named + untitled) and a cross-engine `tests/db_pg/test_agents_contract.py::test_get_by_slug_include_deleted_sees_soft_deleted`.
@@ -285,1062 +279,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Onboarding "?" replay button no longer looks dead (#896)**: the "Your Journey" header's "?" replay had no error boundary and its only visible effect was a chat bubble appended to `#chat-messages`, so a hook throwing (or the thread being scrolled off-screen behind the empty-state hero) made a click produce nothing visible with no trace. `restartOnboarding()` is now wrapped in `try/catch` that logs to the console, and after re-greeting it forces the freshly rendered welcome into view (`scrollIntoView`) as a fallback when `scrollToBottom` is a no-op — so the "?" always yields a visible result or a diagnosable error.
 
 ### Removed
-
 - Retired the guided product-tour overlay (replaced by chat-driven onboarding).
 
 ### Internal
 - **Contract guard against the light-only-tint bug class** (`tests/test_design_system_contract.py`): every `--ds-*-soft` token is declared once in the global `:root` with no `data-theme="dark"` override, so filling with one and inking with `--ds-text-*` yields invisible text under dark — the connect-banner bug fixed above. The guard parses every shipped stylesheet plus each template's inline `<style>` (flattening `@media` wrappers), and fails when a rule fills with a light-only `-soft` tint, ink that flips with the theme is drawn on that element or a descendant/BEM child of it, and the same stylesheet ships no `[data-theme="dark"]` override for it. Correct pairings stay quiet by construction: a tint inked with a deep accent (`.ag-instack` → `--ds-agnes`), `--ds-text-inverse` on a solid fill, and rules already scoped to any `[data-theme="…"]`. Four unit tests pin the detector against synthetic CSS — including the exact pre-fix `.cbn` shape — so it can't rot into a vacuous pass; removing the shipped fix makes it fail with `.cbn (fill --ds-agnes-soft; ink from .cbn-title)`.
 
-### Security
-
-## [0.77.22] - 2026-07-29
-
-### Added
-
-- `agnes update` now runs an `agnes push` catch-up step (step 4b, before the data pull), so the SessionStart hook uploads session transcripts + `CLAUDE.local.md` that the SessionEnd hook never got to send. SessionEnd is not a dependable trigger — closing the terminal window (or a crash / kill) can take Claude Code down before it reaches the hook, leaving the transcript on disk and invisible in the admin session views, which read the pipeline's summary table and have no filesystem fallback. SessionStart cannot be missed, because the session is being created. push is already a full folder scan with ledger dedup, so one call recovers everything earlier runs missed, including a session still open in another window whose transcript has grown; the convergence report gains a `push` stage line.
-
-## [0.77.21] - 2026-07-29
-
-### Added
-
-### Changed
-
-- **BREAKING** (admins only): session-JWT agent surfaces follow the stack too — the web-chat/E2B runner (`scope="chat"`) and the MCP streamable-HTTP OAuth transport (Claude Desktop / claude.ai connectors) now resolve with the `stack` data-read surface, matching the PAT default. Browser sessions, `/admin`, and non-admins are unchanged.
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.20] - 2026-07-29
-
-### Added
-
-- Per-connection Keboola master (owner) Storage API token for the semantic-layer sync — a separate vault slot from the plain storage token, set/rotate/remove via `/admin/data-sources`'s connection card ("Master token (semantic layer)" control) or `agnes admin connection secret <connection_id> --kind master`, validated with a live `verify_token` preflight at save time (rejected if the token isn't a master token, since the Metastore API rejects non-master tokens).
-- Multi-project semantic-layer sync: every Keboola connection holding a master token now syncs independently under its own `source_ref` provenance, with metric/glossary prune scoped to that connection's own rows so one connection's sync can never wipe another's.
-- `GET /admin/semantic-layer` — per-connection view of the sync: one row per master-token project with its own metric/glossary counts and last-sync result, plus an "orphaned rows" section for rows whose recorded project no longer matches any connected source.
-
-### Changed
-
-- `/admin/data-sources`'s semantic-layer card is now a one-line status ("Semantic layer: <status> — manage at /admin/semantic-layer"); the per-project counts, "Sync now" control, and the new orphaned-rows view moved to `/admin/semantic-layer`.
-
-### Fixed
-
-### Removed
-
-### Internal
-
-- `metric_definitions.source_ref` + `glossary_terms.source_ref` (schema v107, Alembic 0054): per-connection provenance for the multi-project semantic-layer sync.
-
-### Security
-
-## [0.77.19] - 2026-07-29
-
-### Added
-
-- CLI: `agnes admin memory approve|reject|revoke|require|unrequire` — lifecycle moderation of corporate-memory knowledge items from the terminal, wrapping the existing governance endpoints (`POST /api/memory/admin/batch`, per-item `mark-unmandatory`) with the same dedicated audit rows. Status changes stay off the generic `edit`/`bulk-edit` paths by design; these subcommands are the CLI counterpart of the web admin review queue.
-
-## [0.77.18] - 2026-07-29
-
-### Added
-
-- PAT data-read **surface** (`personal_access_tokens.surface`, v106): `'all'` or `'stack'`. `POST /auth/tokens` accepts `surface` (default `all`) and token listings show it; `agnes auth token create --surface` mirrors it. New `POST /cli/auth/rescope-surface` (admin-only, PAT-authenticated) mints a full-surface token; `agnes init --as-admin` uses it.
-
-### Changed
-
-- **BREAKING** (admins only): PATs minted by `agnes init` / the CLI login exchange, Cowork setup bundles, and self-service MCP connections now carry `surface='stack'` — an admin's workspace/agent catalog and server-side queries follow their stack (required ∪ subscribed data packages + internal tables) like any analyst, instead of god-mode over every registered table. Existing tokens are grandfathered to `surface='all'`; opt up per-workspace with `agnes init --as-admin`. Parquet distribution was already stack-scoped and is unchanged; session (browser) logins and `/admin` are unchanged.
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.17] - 2026-07-29
-
-### Added
-
-### Changed
-
-### Fixed
-
-- `agnes pull` empty-manifest hint no longer recommends the retired per-table grant flow (`agnes admin grant`); it now points at the post-#356 data-package path — `agnes stack browse` + `agnes stack add data_package <id>` — while keeping the "nothing registered yet" explanation.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.16] - 2026-07-28
-
-
-### Fixed
-
-- Store guardrails: the LLM security review no longer false-positives on the
-  pipeline's own file-truncation marker. Oversized files clipped to fit the
-  review budget used to get an anonymous `[... truncated N bytes ...]` marker
-  that reviewer models flagged as submitter-side "intentional content hiding"
-  (`prompt_injection`, medium) and blocked the submission. The marker now
-  self-identifies as pipeline-authored (`[AGNES-REVIEW-PIPELINE: …]`), the
-  reviewer system prompts declare it benign, and submitter forgeries of the
-  marker are defused by the same escaping that protects the `<bundle>`
-  sentinels (applies to the security review, the whole-bundle truncation note,
-  and the SL010 craft review).
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.15] - 2026-07-28
-
-
-### Added
-
-- The admin MCP source detail page gains an inline "Your connection" panel
-  for `per_user`-scoped sources — connect, test, or disconnect your own
-  credential (the one Introspect / Test connection run under) without
-  hopping to `/me/connections` first. Uses the same write-only
-  `/api/mcp/sources/{id}/my-secret` API as the self-service page.
-
-### Fixed
-
-- The `/me/connections` page (connect your own accounts for `per_user` MCP
-  sources) is now reachable from the user dropdown menu ("My connections").
-  It shipped in #919 but was never wired into the header, so users could
-  only reach it by typing the URL.
-- Admins can now store/test their own credential on a freshly registered
-  `per_user` source that has no passthrough tools yet. The `my-secret`
-  endpoints' admin short-circuit previously resolved through registered
-  passthrough tools, so the connect step 403'd exactly at the start of the
-  register → connect → introspect flow (tools only exist after the first
-  introspect). Non-admin callers still require a grant on the source.
-
-## [0.77.14] - 2026-07-28
-
-### Added
-
-- **Data Apps: in-chat AI authoring loop (wave 3C).** A chat conversation can now scaffold, preview, and promote a hosted data app end-to-end with no shell access. The bundled `agnes-data-apps-extras` skill (the first bundled skill; loads alongside the upstream `dataapp-development` skill) drives a baked `nodejs-dashboard` React+Vite+Tailwind+Express scaffold (with `server/agnesQuery.ts` helpers over `AGNES_TOKEN`/`AGNES_URL`) onto a draft branch, deploys it in `dev` mode, and shows it live in a split-pane preview iframe. Four chat-surface MCP tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) render the preview, authorized by a short-TTL scoped `data-app-preview:<slug>` grant (`POST /api/data-apps/{slug}/preview-grant`) that the ingress proxy accepts for the view-only serving path only — reusing the existing `access_tokens` table (no migration) and mirroring the `data-app-git:<slug>` fail-closed scope guard. On approval the agent merges the draft into `main` and redeploys prod. Operators register the upstream `dataapp-developer` marketplace plugin per the new `docs/DEPLOYMENT.md` runbook.
-
-### Changed
-
-### Fixed
-
-- **Data Apps: the `nodejs-dashboard` scaffold's `server/` directory is now committed.** The repo `.gitignore`'s broad `server/` rule (for the legacy top-level `server/` dir) also matched the scaffold's `server/index.ts` + `server/agnesQuery.ts`, so they were silently excluded and the scaffold copied into a chat session would be incomplete. Force-added, with a negation rule so the path isn't re-swallowed.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.13] - 2026-07-28
-
-
-### Fixed
-
-- Admin MCP connect probes (`POST /api/admin/mcp-sources/{id}/introspect`,
-  `/classify`, `/test`) now surface the real upstream failure (e.g.
-  `httpx.HTTPStatusError: Client error '401 Unauthorized' …`) instead of the
-  MCP SDK's opaque `unhandled errors in a TaskGroup (1 sub-exception)`
-  ExceptionGroup wrapper.
-- The same probes on a `per_user`-scoped source now use the calling admin's
-  own connected secret when one exists (previously they always ran
-  caller-less, so a per-user source with no shared fallback secret probed
-  anonymously and failed with 401 even though the admin had a working token
-  connected). Sources with a shared/fallback secret behave as before.
-## [0.77.12] - 2026-07-28
-
-### Added
-
-### Changed
-
-### Fixed
-
-- `POST /api/admin/run-keboola-semantic-layer-refresh` no longer reports success when the sync couldn't run at all (missing Keboola credentials, or a Storage/Metastore API failure) — `sync_semantic_layer()` surfaces those as a returned `{"status": "error"}` value rather than an exception, and the endpoint previously recorded and returned "ok" regardless. The `/admin/data-sources` "Semantic layer" summary card showed a false green "OK" after a failed sync; it now shows the actual failure reason.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.11] - 2026-07-28
-
-### Added
-
-### Changed
-
-### Fixed
-
-- **Chat bootstrap reads the feature overlay from the same file the admin
-  panel writes.** `app/main.py` resolved the chat `instance.yaml` overlay as
-  `DATA_DIR/state/instance.yaml`, ignoring a `STATE_DIR` override — on a
-  flat-mount deployment the admin server-config toggle wrote a file the chat
-  runtime never read, so the panel and the running app could disagree about
-  chat being enabled. The bootstrap now resolves via the same
-  `app.secrets._state_dir()` helper as the overlay writer and
-  `load_instance_config`.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.10] - 2026-07-28
-
-### Added
-
-- **Canonical feature-flag convention.** `app.instance_config.feature_enabled`
-  is now the single resolver (env var > instance.yaml/server-config overlay >
-  default) for every operator-facing feature toggle, backed by a
-  `FEATURE_FLAGS` registry; `/admin/server-config` gained a read-only
-  "Feature flags" inventory panel (also surfaced via
-  `GET /api/admin/server-config`'s new `feature_flags` field).
-  `get_studio_enabled` and `get_guardrails_enabled` now delegate to it
-  (behavior-preserving); `guardrails.enabled` gained a new
-  `AGNES_GUARDRAILS_ENABLED` env override (additive); `chat.enabled` gained a
-  new `AGNES_CHAT_ENABLED` env override at its `load_chat_config` read site;
-  `data_apps.enabled`'s read sites (the existing `AGNES_DATA_APPS_ENABLED`
-  var) now route through the same resolver. See `docs/feature-flags.md`.
-  (#1022)
-
-### Changed
-
-- `AGNES_DATA_APPS_ENABLED` now follows the canonical flag resolution: when
-  set, it wins over `data_apps.enabled` in instance.yaml in **both**
-  directions (a falsy value forces the feature off; previously falsy values
-  were ignored and the yaml decided). Unset behavior is unchanged, and the
-  shipped infra module only ever writes `true`. (#1022)
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.9] - 2026-07-28
-
-
-### Added
-
-### Changed
-
-### Fixed
-
-- **BigQuery jobs from a restricted principal keep their cost-attribution
-  labels.** `_user_id_label` reached for `user.get("email")` on a frozen
-  `SessionPrincipal` / `AgentPrincipal`; the `AttributeError` hit
-  `build_bq_job_labels`' totality guard, which dropped the ENTIRE label set
-  (`workload_type`, `agent_name`, `environment` — not just `user_id`), so a
-  scoped agent's BQ spend was unattributable in `INFORMATION_SCHEMA.JOBS` and
-  the billing export. Identity now routes through `identity_for_audit()`: an
-  agent's jobs carry its owner, a co-session's carry the remaining labels.
-- **`GET /api/v2/catalog` writes its audit row for a restricted principal.**
-  The last `user.get("id")` audit call site missed by the identity rollout —
-  the `AttributeError` landed in the `except Exception` around the audit
-  write, so a co-session or agent-session listed the catalog (200) while its
-  `catalog.list` row was silently dropped.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.8] - 2026-07-28
-
-### Changed
-
-- Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
-
-## [0.77.7] - 2026-07-28
-
-### Added
-
-- `usage_session_summary.uploaded_at` (schema v105): sessions record when
-  they ARRIVED, not just when they started. The health pulse gains a
-  `session_ingest` field reconciling `session.upload` audit rows against
-  ingested summaries (joined on the file name — resumed/forked sessions
-  carry a different content-derived session id); the browser hints the file
-  id when it differs.
-
-### Changed
-
-- **The sessions browser windows on arrival by default** (`anchor=uploaded`;
-  `anchor=started` and `agnes admin sessions list --anchor started` restore
-  the old view). Previously a session uploaded late (queue catch-up) never
-  appeared in any recent window and read as data loss — on a production
-  dataset, 34 of 157 uploads in 30 days were invisible this way. Adoption
-  charts stay anchored on `started_at` (usage-over-time semantics).
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.6] - 2026-07-28
-
-### Added
-
-- Activity Center timeline rows carry a server-computed `source`
-  (web/cli/scheduler/system/…) so every consumer classifies rows by one rule
-  (landed unreleased in #1071; recorded here after a changelog-section
-  collision with the concurrent 0.77.3/0.77.4 cuts).
-- Activity Center **result classes**: the Result filter now partitions every
-  row (`success` = success/ok, `errors`, `denied` = denied/blocked/
-  invalid_password/deactivated, `no result`, `other`) — previously 35% of
-  rows matched neither dropdown option. Facets expose per-class counts;
-  `agnes admin activity` gains `--result-class`, `--source`,
-  `--include-self-reads`.
-- `duration_ms` is now auto-measured for every HTTP-triggered audit write via
-  a request-start contextvar (no per-endpoint instrumentation); the p95 card
-  shows what fraction of rows carry a measurement.
-
-### Changed
-
-- **Activity Center KPI cards, facet dropdowns and the timeline share one
-  server-side filter surface** — KPIs/facets accept the same filters as the
-  table (user, action, resource, result class, source, search), so the cards
-  finally change when the filters do. The `source` filter is applied
-  server-side (was client-side on the loaded page only).
-- **Activity Center hides its own `activity.read` audit rows by default**
-  (toggle "Include Activity Center reads" to see them); the rows are still
-  written for governance.
-- Activity Center "Active users" counts people — scheduler/system actors are
-  excluded from the user count (events totals still include them); card
-  sub-labels state each number's population.
-
-### Fixed
-
-- Audit rows record `users.id` in `user_id` everywhere — the chat,
-  corporate-memory governance, authoring-suggestion, and Slack-binding
-  writers previously stored the email, splitting one person into two
-  Activity Center facet entries. Schema v104 backfills historical rows
-  (exact single-account email matches only). (#1071)
-- Scheduler-tick audit writers (`run_*`) stamp `client_kind`, and source
-  classification uses the shared `action LIKE 'run_%'` rule instead of a
-  stale hardcoded action list — scheduler traffic no longer floods the
-  "other" bucket in the Activity Center source facet. (#1071)
-- Activity Center Reset button clears the Resource and Source filters too.
-- Audit writers standardize on `result="success"` (`"ok"` retired; a guard
-  test pins the vocabulary to the classification map).
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.5] - 2026-07-28
-
-### Changed
-
-- **Infra (customer-instance module): `data_apps_enabled` is now a per-VM field.** It moved from a module-global variable to an `optional(bool, false)` field on the `prod_instance` / `dev_instances[*]` object types (mirroring `dispatcher_enabled`), so an operator can enable hosted data apps on a single dev VM without also flipping every other VM in the instance — including prod. `data_apps_runtime_image` stays instance-wide. Consumed by a new `infra-v1.20.0` module tag.
-
-## [0.77.4] - 2026-07-28
-
-### Added
-
-- **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
-  with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
-  carrying a bare `*` (implicit `SELECT *`), now prints an advisory stderr
-  warning before proceeding — making the `CLAUDE.md` query rails mechanical at
-  the point the fetch is issued. WARN-only: it never blocks the fetch, and the
-  `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
-  Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
-
-## [0.77.3] - 2026-07-28
-
-### Added
-
-### Changed
-
-### Fixed
-
-- **Broker fails closed on a deleted or misconfigured scoped agent.**
-  `_mint_identity_jwt` previously fell through to the owner's full-access
-  identity JWT when a session's agent had been deleted or carried an
-  unknown mode value — silently restoring the very authority the scope
-  removed. A deleted/missing agent now yields 401 `ticket_agent_not_found`
-  (mirroring the resolver's fail-closed posture), and only an explicit
-  all-`'all'` agent (`agent_is_passthrough`) skips the enforced
-  agent-session path.
-
-- **Agent scope is now enforced at request time, not merely recorded.** A
-  `selected`-scoped agent's brokered requests are authorized against
-  `(owner grants ∩ agent scope)` via a restricted `AgentPrincipal`
-  (`app/auth/session_principal.py`), so an agent PAT — or a chat session
-  bound to that agent — can no longer reach tables, plugins, or MCP tools
-  outside the agent's declared scope. Agents never inherit their owner's
-  admin authority, even when the owner is an admin. Previously the scope
-  was computed and audit-snapshotted (`agent_scope_snapshots`) but the
-  brokered request still ran under the owner's full grants — the HIGH
-  finding from the V1 `/agnes-review`. See
-  `docs/superpowers/specs/2026-07-25-agent-scope-live-enforcement-design.md`
-  and the end-to-end proof in `tests/test_agent_scope_e2e.py`.
-- **`/api/query` crashed instead of returning rows for a restricted
-  principal's successful (in-scope) request against a real local table.**
-  A co-session (`SessionPrincipal`) or agent-session (`AgentPrincipal`)
-  request that RBAC correctly *allowed* still 400'd downstream, because the
-  audit-log and BQ-quota-key bookkeeping called `user.get(...)` unconditionally
-  — a frozen-dataclass principal has no `.get`. Denials were unaffected (the
-  crash was swallowed inside an already-caught audit-log failure), which is
-  why this went unnoticed until the agent-scope end-to-end test exercised an
-  actually-successful principal-authenticated query. Fixed via a
-  principal-aware `_identity_for_audit` helper used only for audit/quota
-  bookkeeping, never for an authorization decision.
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.2] - 2026-07-28
-
-### Added
-
-- **Data Apps: durable enablement via the customer-instance Terraform module.** A new `data_apps_enabled` module variable (off by default; `data_apps_runtime_image` sets the runtime image) brings the feature up on VM boot without hand-editing config: the startup script mints/persists an `APPS_RUNNER_TOKEN`, resolves `DOCKER_GID` from the docker socket, writes `AGNES_DATA_APPS_ENABLED=true` (plus the runner token/prefix/gid) into the app `.env`, and enables the `apps` compose profile via a `--profile apps` command-line flag in both the startup script and `agnes-auto-upgrade.sh` (not `COMPOSE_PROFILES` in `.env` — docker compose ignores that env var whenever any `--profile` flag such as `--profile tls` is present). The app honors a Terraform-friendly `AGNES_DATA_APPS_ENABLED` env override (mirrors `AGNES_HOME_ROUTE`/`PUBLIC_URL`) that flips the feature on and backfills the example-config `data_apps:` defaults, so no instance.yaml edit is needed. Disabled instances render byte-identically.
-
-### Changed
-
-### Fixed
-
-- **Data Apps: the apps-runner sidecar can now reach the docker socket.** The sidecar runs as the image's non-root uid 999 but bind-mounts the root:docker-owned socket; with no group membership every container `up`/`stop` failed the daemon handshake with `PermissionError(13)`, surfaced as a 502 `runner_unavailable` (found in a live end-to-end run). `docker-compose.yml` now adds `${DOCKER_GID}` to the sidecar via `group_add` (the customer-instance startup resolves the host gid; a hand-run `--profile apps` must export it), keeping the sidecar uid 999 so the `config.json` it writes stays owner-deletable by the app.
-- **Data Apps: internal-repo containers can now clone their app.** The runtime image only embeds git credentials into HTTPS clone URLs and leaves plain-HTTP URLs untouched, so the container cloning Agnes's internal `http://app:8000/...` git backend prompted for a username in a non-interactive shell and crash-looped (proxy then 502 `container_unreachable`). `build_config_json` now embeds the percent-encoded push token directly in the repository URL (`http://agnes:<token>@app:8000/...`), which the image preserves.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.1] - 2026-07-28
-
-### Added
-
-### Changed
-
-### Fixed
-
-- **Cloud-chat answers finally stream token-by-token on TLS-fronted
-  deployments.** The real cause of the "silence, then the whole answer at
-  once" behavior was Caddy, not the app: Caddy only auto-flushes a reverse-
-  proxied response when the Content-Type is EXACTLY `text/event-stream`, but
-  Starlette appends `; charset=utf-8`, so the SSE completion was buffered and
-  every token delta arrived in one end-of-turn burst. Every Caddy
-  `reverse_proxy` that fronts the app now sets `flush_interval -1` (main
-  `Caddyfile` + the m-tier and apps-subdomain variants), forcing an immediate
-  flush. Diagnosed by a live A/B: `mac→Caddy→app→Anthropic` delivered all
-  deltas at a single timestamp, while the identical request straight to the
-  app streamed over seconds. (Supersedes the earlier `/api/broker/anthropic`
-  GZip skip-list attempt, which was a no-op — GZip never buffered the stream;
-  the buffering was entirely in the proxy.)
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.77.0] - 2026-07-28
-
-### Added
-
-- **Agent profiles.** Named, scoped agents layered over a user's own stack
-  (agent-api V1a). `POST/GET /api/v1/agents` (create/list), `GET/PUT/DELETE
-  /api/v1/agents/{id}` (detail/update/delete), and `PUT
-  /api/v1/agents/{id}/scope` (replace an agent's resource-grant set: plugins,
-  connections, tables, memory domains) — every route requires an interactive
-  session token, never a PAT. Every user gets an implicit `default` agent
-  (seeded lazily, `all`-mode scope on every dimension, undeletable); web chat
-  sessions are now attributed to it. A new agent defaults all four scope
-  modes (`plugins_mode`/`connections_mode`/`tables_mode`/`memory_mode`) to
-  `selected` — the owner grants specific resources via `scope set` rather
-  than inheriting the account's full stack. Optional per-agent `model`
-  (pins the brokered LLM to one model) and `token_budget_monthly`. Surfaced
-  at `/agents` (a minimal builder page: list, create, issue token, delete)
-  and via `agnes agent {list,create,show,delete,scope set,token,ask}`.
-  New `agents` / `agent_scope` / `agent_scope_snapshots` / `llm_usage`
-  tables (DuckDB v100 + Alembic `0047`).
-- **Agent personal access tokens (`typ=agent_pat`).** `POST
-  /api/v1/agents/{id}/tokens` mints a token bound to one agent — accepted
-  only on the agent runtime API (`/api/v1/{agents,jobs}/...`), rejected
-  everywhere else, and only issuable once all four scope modes are
-  `selected` (`403 agent_not_selected_mode` otherwise — never for an
-  `all`-mode agent, including the default agent). Deleting an agent revokes
-  every PAT minted for it.
-- **`POST /api/v1/agents/{slug}/responses`** — one-shot request/response over
-  an owner's agent (agent-api V1a, Task 9). Runs a headless (no-WebSocket)
-  chat turn and returns `{answer, session_id, response_id, usage,
-  agent_config_hash, request_id}` synchronously, bounded by a clamped
-  `timeout_s` (default 120s, 1..600) — a wait that times out but already
-  collected an answer serves it as a 200 rather than degrading. `background:
-  true`, or a sync call whose wait genuinely times out with no answer yet,
-  degrades to a background job — the run itself is never killed, only the
-  wait — via the new `agent_response` job kind (registered only on a process
-  with a live chat manager, so it runs on gateway-colocated workers);
-  `GET /api/v1/jobs/{job_id}` (owner-scoped, and agent-PAT-bound to the same
-  agent when called with one) reads the result back. Callable with an
-  interactive session token or an agent PAT scoped to the exact agent. A
-  per-user concurrency-cap hit maps to `429 {"code": "concurrency_cap"}`.
-  Supports an `Idempotency-Key` header (scoped to caller+agent, 24h default
-  TTL): the key is reserved before the request runs, closing a
-  double-execution race between concurrent calls under the same key — a
-  losing concurrent call gets `409 idempotency_key_in_flight`; identical-body
-  replay of a completed call returns the original response verbatim; a
-  different body under the same key is `409 idempotency_key_reuse`.
-- **Agent-as-API multi-turn sessions + SSE streaming** (agent-api V1b Task
-  4). `POST /api/v1/agents/{slug}/sessions` creates an API-surface session
-  bound to an agent (`201 {session_id}`); `POST
-  /api/v1/sessions/{id}/messages` streams one turn as Server-Sent Events in
-  the AG-UI event vocabulary (`RUN_STARTED`/`TEXT_MESSAGE_CONTENT`/
-  `TOOL_CALL_START`/`TOOL_CALL_END`/`RUN_FINISHED`/`RUN_ERROR`, each record
-  carrying a monotonic `id: {session_id}:{seq}` line), rejecting a second
-  concurrent turn on the same session with `409 {"code": "turn_in_flight"}`
-  and force-terminating a turn that never reaches a terminal event with
-  `RUN_ERROR{code: "idle_timeout"}`; `GET /api/v1/sessions/{id}` reads back
-  state + full message history; `POST /api/v1/sessions/{id}/cancel` cancels
-  the in-flight turn (`202`, session preserved); `DELETE
-  /api/v1/sessions/{id}` archives it. Same owner/agent-PAT auth model as
-  `/responses`, collapsed to a uniform `404` on any mismatch (wrong owner,
-  or an agent PAT bound to a different agent) so a non-owner can never
-  distinguish "no such session" from "not yours" — and, after ownership
-  passes, the same `ResourceType.CHAT` grant `/responses` requires is
-  re-checked too (`403 {"code": "chat_access_denied"}`), since a session
-  outlives the grant that let its owner create it. A `send_user_message`
-  failure right after a successful `attach()` now detaches the sink before
-  releasing the turn lock, instead of leaking it in `live.sinks`. Create-session
-  maps a config-level `chat.enabled=false` to `503 {"code": "chat_disabled"}`
-  rather than an unhandled 500.
-- **Agent-as-API sandbox artifact harvest + download** (agent-api V1b Task
-  5). Files an agent writes under `/work/outputs` inside its E2B sandbox are
-  now harvested into the object store + `agent_artifacts` registry when a
-  one-shot `/responses`/`/jobs` turn completes and when `DELETE
-  /api/v1/sessions/{id}` tears the sandbox down — best-effort, never fails
-  the run/delete it piggybacks on. Filenames are agent-chosen input and are
-  sanitized to a flat, CR/LF-free basename before use as the object key
-  (`agent-artifacts/{session_id}/{filename}`) or in a download response's
-  `Content-Disposition` header. Per-session caps (`agent_api_artifact_max_bytes`,
-  25 MiB default; `agent_api_artifact_max_files`, 20 default) bound a single
-  run's harvest. `GET /api/v1/sessions/{id}/artifacts` lists harvested
-  artifacts (cursor envelope); `GET /api/v1/sessions/{id}/artifacts/{id}`
-  streams the bytes (default, through this endpoint's own auth) or, with
-  `?redirect=true`, 307-redirects to a short-TTL (≤120s) presigned
-  object-store URL. Same owner/agent-PAT auth as the rest of
-  `/api/v1/sessions/{id}/*`. New `agent_artifacts` table (DuckDB v101 +
-  Alembic `0048`, shared with the webhooks migration below).
-- **LLM broker: per-agent model policy, batched `llm_usage` ledger, monthly
-  token budgets.** The secret broker's `anthropic_proxy` chokepoint (applies
-  to every upstream credential mode — static key, workload identity, LLM
-  dispatcher) now enforces an agent's pinned `model` before spending a
-  token (`403 model_not_allowed` if the request's `model` is outside
-  `{agent.model} ∪ utility_models`; an agent with `model IS NULL` has no
-  policy at all) and its `token_budget_monthly` (`429 budget_exhausted`,
-  deliberately no `Retry-After` so SDKs don't auto-retry). Every brokered
-  call's token usage (input/output/cache-read/cache-creation, parsed from
-  both JSON and buffered SSE upstream responses) is buffered in-memory by a
-  new `UsageAccumulator` and flushed in bulk to the `llm_usage` ledger on a
-  size/age threshold (20 rows or 30s) rather than one synchronous write per
-  call. Every proxied response carries `x-agnes-budget-limit` /
-  `x-agnes-budget-used` headers; the month-to-date total backing the budget
-  check is cached in the coordination backend (60s TTL) so the hot path
-  doesn't hit the ledger table on every call.
-- **MCP tools `agent_list` / `agent_ask`** (agent-api V1a) — triple-surface
-  with `/api/v1/agents` (`GET`, list your agent profiles) and
-  `/api/v1/agents/{slug}/responses` (`POST`, one-shot ask). `agent_ask` is
-  sync-only: it never sets `background: true` and does not poll
-  `GET /api/v1/jobs/{id}` — waiting out a background degrade has no MCP
-  tool by design (a tool call blocking on a poll loop is a poor fit for a
-  chat turn); use `agnes agent ask` or the REST endpoint directly for that.
-- **Outbound agent webhooks, SSRF-hardened (agent-api V1b Task 6).**
-  `GET/POST /api/v1/agents/{slug}/webhooks` and `DELETE
-  /api/v1/agents/{slug}/webhooks/{id}` register an HTTPS callback URL that
-  gets an HMAC-signed POST (`x-agnes-signature: sha256=...`) whenever a
-  background `agent_response` job reaches `job.completed`/`job.failed`.
-  Owner-only (`require_session_token`, rejects PATs). The notification body
-  is deliberately minimal — `{event, job_id, agent_slug, status, ts}`, never
-  the agent's answer — the receiver fetches the actual result afterward via
-  `GET /api/v1/jobs/{id}`. Registration validates the URL up front
-  (`400 webhook_url_forbidden` for anything resolving to a
-  private/loopback/link-local/reserved/cloud-metadata address); delivery
-  (a new `webhook-deliver` worker job kind) re-resolves and pins the target
-  IP fresh on every send, closing the DNS-rebinding window a create-time-only
-  check would leave open. A webhook auto-disables after
-  `agent_api_webhook_max_failures` (default 5) consecutive delivery
-  failures. New `agent_webhooks` table (DuckDB v101 + Alembic `0048`,
-  shared with the artifact-harvest migration above).
-- **Structured JSON output, `response_format: {"type": "json_schema", ...}`**
-  (agent-api V1b Task 7). `POST /api/v1/agents/{slug}/responses` accepts an
-  optional `response_format`; when present, a schema directive is appended
-  to the prompt (steering, not constrained decoding — there is no
-  provider-level grammar/sampler hook in this runtime) and the collected
-  answer is validated against the schema server-side (`jsonschema`,
-  tolerating a fenced ` ```json ` block) before the response is built. A
-  matching answer gets a `parsed` field alongside the raw `answer` string; a
-  violating or non-JSON answer returns `422 {"code":
-  "schema_validation_failed", "message", "session_id", "usage",
-  "raw_answer"}` instead — the run already spent tokens, so the structured
-  error carries everything needed to recover the paid-for output, and (like
-  any other terminal response) it's stored under the caller's
-  `Idempotency-Key` so a retry replays the same 422 instead of re-running.
-  Background and sync-timeout-degraded runs (the `agent_response` job kind)
-  validate the same way, failing the job with the identical structured
-  error. `POST /api/v1/sessions/{id}/messages` accepts the same field and
-  applies the prompt-steering directive, but does not yet post-validate the
-  streamed answer — see `SendSessionMessageBody.response_format`'s
-  docstring (`app/api/agent_sessions.py`) for why that's a separate,
-  deferred design question (no HTTP status is left to change once an SSE
-  stream has started).
-- **`GET /api/v1/agents/{slug}/usage`** (agent-api V1b Task 8) — per-agent
-  monthly token usage against its budget. `?period=YYYY-MM` (default:
-  current UTC month; `400 invalid_period` for anything else) → `{period,
-  agent_slug, input_tokens, output_tokens, cache_read_tokens,
-  cache_creation_tokens, total_tokens, budget_limit, budget_remaining}` —
-  the usage-shaped fields mirror Anthropic's own usage object.
-  `total_tokens` excludes `cache_read_tokens` (informational only), the
-  same quantity the broker's budget check compares against
-  `token_budget_monthly`, so `budget_remaining` (floored at `0`) lines up
-  with when a call against this agent would actually 429 with
-  `budget_exhausted`. Same owner/agent-PAT auth as `/responses`. Surfaced
-  as `agnes agent usage <slug> [--period YYYY-MM] [--json]` and the
-  `agent_usage` MCP foundation tool.
-- **`agnes agent webhooks list|add|delete`** — CLI surface for the
-  `/api/v1/agents/{slug}/webhooks` registration API (landed REST-only in
-  Task 6). `add` takes `--url` and repeatable `--event`, printing the HMAC
-  signing secret exactly once, like `agnes agent token`.
-- **Per-agent memory** (agent-api V1c). Agents keep a private notebook that
-  persists across runs, materialized pre-spawn into `.claude/agent-memory.md`
-  up to a ~6000-token budget (newest-first; older active memories can be
-  shadowed out — never silently, see below). A sandbox "remember" tool
-  (`POST /api/v1/sessions/{id}/memories`, `{content: str}` → `201 {id,
-  status}`) writes new memories, size-capped (`agent_memory_max_chars`,
-  default 2000 → `413`), rate-limited (`agent_memory_writes_per_hour`,
-  default 20/hr → `429 memory_rate_limited`), and backlog-capped
-  (`agent_memory_max_pending`, default 100 → `429 memory_pending_full`);
-  the write is bound to the CALLING session (never a path `{id}`), closing
-  a same-owner-different-agent memory-poisoning gap. `memory_write_mode`
-  (`off`/`propose`/`auto`, default `propose`) decides whether a write needs
-  owner approval before it re-materializes: `off` rejects with `403
-  memory_writes_disabled`, `propose` lands `pending`, `auto` lands already
-  `active`. Owners inspect/approve/archive/delete via `GET/PATCH/DELETE
-  /api/v1/agents/{id}/memories[/{memory_id}]` — `GET` marks every `active`
-  row `in_budget: bool` so an owner who just approved a memory can tell
-  whether it actually lands in the next spawn or is shadowed behind newer
-  content — the `agnes agent memory list|approve|archive|delete` CLI, and a
-  per-agent Memory panel on `/agents` (status badges, in-effect/shadowed
-  marker, Approve/Delete buttons). New `agent_memories` table (DuckDB v102
-  + Alembic `0049`).
-- **`agnes chat <slug>`** (agent-api V1c) — an interactive, streaming
-  terminal REPL over a composed agent's session API
-  (`POST /api/v1/agents/{slug}/sessions` + SSE
-  `POST /api/v1/sessions/{id}/messages`), plus a scriptable
-  `--once "<prompt>" [--json]` mode. Pure client of the public `/api/v1`
-  surface (session token or agent PAT, no privileged backchannel). Ctrl-C
-  cancels the in-flight turn server-side (a bare disconnect does not — only
-  `/cancel` stops the run and its budget burn); `/exit` best-effort frees
-  the sandbox.
-### Fixed
-
-- **Schema upgrade crashed on any DB between v82 and v96.** The
-  `corpus_files(corpus_id, path)` UNIQUE INDEX was declared inside
-  `_SYSTEM_SCHEMA`, which executes *before* the migration ladder. Because
-  `corpus_files` is created at v82 but its `path` column is only ALTER-added at
-  v97, the `CREATE TABLE IF NOT EXISTS` was a no-op on those DBs and the index
-  statement then raised `BinderException: Table "corpus_files" does not have a
-  column named "path"` — aborting the whole schema pass before the ALTER could
-  run, so the instance never started. The index is now created by
-  `_ensure_corpus_path_index()` after the ladder, guarded on the column
-  existing, which covers fresh installs, incremental upgrades, and the
-  split-brain future-version self-heal path alike.
-
-### Internal
-
-- **DuckDB schema v101/v102/v103 + Alembic `0048`/`0049`/`0050`** — new tables
-  `agents`, `agent_scope`, `agent_scope_snapshots`, `llm_usage`,
-  `idempotency_keys` (v101), `agent_webhooks`, `agent_artifacts` (v102),
-  `agent_memories` (v103), plus `agent_id` columns on
-  `personal_access_tokens`/`chat_sessions` — dual-backend parity (DuckDB +
-  Postgres), no secondary indexes per the ART-index incident rule.
-- **Flaky relay test de-flaked.** `test_relay_non_sse_anthropic_response_stays_buffered`
-  asserted on a single `reader.read()`, which returns only the bytes available
-  at that instant and often yielded just the status line (~40% failure rate in
-  isolation). It now accumulates until the full buffered response arrives — the
-  same read-until-complete idiom the streaming test beside it already used.
-- **`agnes chat --help` test no longer asserts on colourised output.**
-  `test_group_help_shows_repl_usage_and_caveats` matched `agnes chat <slug>`
-  against the raw output; rich-click highlights the metavar, so with colour on
-  (off for a non-tty locally, on in CI) the literal is split by ANSI codes and
-  the assertion failed only in CI. It now strips SGR codes first, the same
-  `_clean()` idiom the other CLI test modules use.
-- **Migration-safety tests no longer pin a literal future schema version.**
-  Both future-version tests derive it from `SCHEMA_VERSION + 1`; the previous
-  hardcoded `99` silently stopped exercising the noop path as the ladder grew,
-  then broke outright once the ladder passed it.
-
-## [0.76.38] - 2026-07-28
-
-### Added
-
-### Changed
-
-- **Cloud-chat sessions get a resend notice on server restart — but only when
-  the turn is actually lost.** A chat whose turn was mid-generation when the
-  server drained (deploy/restart) previously just stopped mid-answer with the
-  composer wedged in the "running" state (it only clears on
-  done/error/cancelled). `ChatManager.shutdown()` now broadcasts a
-  `server_restarting` notice + a `done` frame to an in-flight session on the
-  kill path (`on_detach="kill"`, or a failed pause), so the client can prompt
-  a resend against the replacement process. On the default successful-pause
-  path the notice is deliberately suppressed: the snapshot keeps the turn
-  running and it finishes after resume, so "please resend" there would invite
-  a duplicate turn. Idle sessions drain silently as before.
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.76.37] - 2026-07-28
-
-### Added
-
-### Changed
-
-### Fixed
-
-- **Broker SSE stream no longer re-buffered by PostHog/rate-limit middleware.**
-  Follow-up to the GZip skip (0.76.36): `PosthogInjectionMiddleware` and the
-  auth `SlowAPIMiddleware` both subclass Starlette's `BaseHTTPMiddleware`,
-  which buffers the whole response body — so the broker's `text/event-stream`
-  completion was still collapsed into one end-of-turn burst (and risked the
-  Python 3.13 `AssertionError` on a second `http.response.start`) two hops
-  above the broker. Both middlewares now consult a shared
-  `SSE_BYPASS_PREFIXES` tuple (`/api/mcp`, `/api/broker/anthropic`) and fall
-  through to the bare ASGI app for SSE paths; a guard test keeps the gzip
-  skip-list in sync with the tuple.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.76.36] - 2026-07-27
-
-### Added
-
-### Changed
-
-### Fixed
-
-- **Cloud-chat token streaming now actually reaches the browser** — the
-  final missing link after the broker/relay stream-through (#1020). The app
-  wraps responses in `GZipMiddleware`, which buffers a `StreamingResponse`
-  whole to compress it, re-collapsing the model's SSE completion into one
-  end-of-turn burst one hop above the broker. `/api/broker/anthropic` is now
-  gzip-skip-listed alongside the existing `/api/mcp` SSE endpoint, so the
-  streamed deltas pass through uncompressed and arrive incrementally.
-  Diagnosed with an in-sandbox trace: the in-sandbox CLI was receiving all
-  SSE events at a single timestamp (one text delta for a 500-char answer);
-  skip-listing restores true token-by-token delivery.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.76.35] - 2026-07-27
-
-### Added
-
-- **Partitioned local tables can now be distributed to analyst laptops via `agnes pull`.** Tables stored as a *directory* of parquet parts — Jira (hive `month=*/data.parquet`) and Keboola `sync_strategy=partitioned` (`<key>.parquet`) — were previously undistributable: the manifest/download/pull path assumed exactly one `{table}.parquet` per table, so the orchestrator wrote an empty hash, `/api/data/{id}/download` 404'd, and the client couldn't build a view. Now the whole chain is part-aware: `sync_state` gains a `parts` JSON column (per-part `{path, hash, size_bytes}`; DuckDB + Postgres, schema v100 / alembic `0047`); the orchestrator hashes each part (`_hash_table_parts`) and stores a rollup hash so the whole-table "changed?" compare + object-store mirror keep working; the manifest emits `parts`; `GET /api/data/{id}/download?part=<relpath>` serves a single part (path-traversal-guarded); and `agnes pull` fetches only the changed parts into `server/parquet/{id}/`, swaps them all-or-nothing (a failed part leaves the prior dir intact — never a silently-partial view), prunes server-dropped parts, and builds one hive-partitioned local view per table (`union_by_name=true, hive_partitioning=true`, byte-identical to the server view). Single-file tables are unchanged (`parts` is `NULL`/absent → treated as single-file). Incremental by design: an analyst re-pulls only the month(s) that changed.
-
-### Changed
-
-### Fixed
-
-- **Caddy `@download` `forward_auth` no longer deletes the client's credential.** The block used `copy_headers Authorization Cookie`, which copies headers *from* the `check-access` response back onto the request; since `check-access` returns `204` with no such headers, on Caddy ≥ v2.11.2 (GHSA-7r4p-vjf4-gxv4) that unconditionally *stripped* the client's Authorization/Cookie. Any download not served by the `file_server` static path (a partitioned-table `?part=` fetch, or any table whose parquet isn't at the hardcoded `try_files` locations) then reached the app reverse-proxy fallback with no credential and returned `401`. Removed the directive — `forward_auth` already forwards the original request headers to `check-access`.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.76.34] - 2026-07-24
-
-### Added
-
-### Changed
-
-- **BREAKING: `agnes setup bootstrap` no longer takes `--password`.** The
-  first-admin password is now read from `AGNES_BOOTSTRAP_PASSWORD` or prompted
-  with hidden input via `--set-password`, so it never lands on the process argv
-  (security audit F14). Scripts passing `--password <secret>` must switch to the
-  env var.
-
-### Fixed
-
-### Removed
-
-- **MCP connect page: the "Generic URL" (`?token=<PAT>`) snippet is gone.** A
-  365-day PAT in a URL query string leaks into server/proxy access logs and
-  browser history (CWE-598); use the `Authorization: Bearer` header snippets
-  (Cursor / VS Code / Claude Code) instead (security audit F13).
-
-### Internal
-
-### Security
-
-Remediation of the 2026-07-24 whole-repo security audit
-(`CLAUDE-SECURITY-20260724`). 1 HIGH, 11 MEDIUM, 3 LOW:
-
-- **F1 (HIGH) — SQL injection via uploaded-file column names in the profiler.**
-  Column identifiers from a `DESCRIBE` of an attacker-uploaded parquet were
-  interpolated into profiling SQL wrapped only in bare double-quotes; a name
-  containing `"` broke out and executed arbitrary DuckDB SQL. All identifier
-  interpolation in `src/profiler.py` now routes through a `quote_ident()`
-  helper that doubles embedded `"`.
-- **F2 (MEDIUM) — CSRF on `GET /slack/bind`.** The Slack-identity bind
-  happened on a cookie-gated GET, letting an attacker bind their Slack to a
-  victim's account. Binding now requires a POST with a double-submit CSRF
-  token; the GET only renders a confirmation page.
-- **F3 (MEDIUM) — stored XSS in chat via `marked`→`innerHTML`.** Chat message
-  content (incl. co-presence peers') was rendered with no sanitizer. All
-  `marked.parse()`→`innerHTML` sinks now route through `renderMarkdownSafe()`,
-  which parses into an inert `<template>` and strips dangerous
-  elements/attributes and unsafe URL schemes; tool-call metadata is built via
-  `textContent`.
-- **F4 (MEDIUM) — SSTI in the admin install-prompt override.** The
-  admin-authored install/workspace-prompt override was rendered with a
-  non-sandboxed Jinja2 `Environment` — an SSTI → RCE sink. Every server-side
-  render of that content (the `/setup` page, the dashboard clipboard banner in
-  `src/welcome_template.py`, the workspace overlay in `src/initial_workspace.py`,
-  and the welcome/prompts preview endpoints) now routes through a single
-  sandboxed factory `src.prompt_render.make_prompt_env` (`SandboxedEnvironment`),
-  so no render path is left unsandboxed.
-- **F5 (MEDIUM) — ReDoS in the internal-query SQL sanitizer.** The `E''`
-  string-literal regex had an ambiguous alternation that backtracked
-  exponentially on a backslash run, freezing the worker. Rewritten with
-  disjoint branches for linear-time matching.
-- **F6 (MEDIUM) — path traversal in the marketplace asset mirror.** A
-  curator-controlled plugin name flowed into an on-disk path; names are now
-  validated as a single safe segment and `_write_body` asserts containment
-  under the cache root.
-- **F7 (MEDIUM) — PAT on the `git clone` command line.** `agnes` bootstrap
-  embedded the PAT in the clone URL (readable via `ps`/`/proc`). It now clones
-  the credential-free URL and supplies the token via the env-based git
-  credential helper.
-- **F8 (MEDIUM) — `/api/query` file-replacement-scan bypass.** A quoted
-  relative path in table position (`FROM 'data/…parquet'`) read files with no
-  `read_parquet()` call. The SELECT guard now rejects string literals directly
-  in `FROM`/`JOIN` position and, via a sqlglot parse, any table source whose
-  name is a file path (path separator, glob, or data-file extension) — so
-  comma-list/glob forms are caught while legitimate value literals in
-  `SELECT`/`WHERE` (e.g. `WHERE f = 'report.csv'`) are not.
-- **F9 (MEDIUM) — auth rate limiter keyed on spoofable leftmost XFF hop.** The
-  client IP is now derived from the `AGNES_TRUSTED_PROXY_HOPS` (default 1)
-  rightmost X-Forwarded-For hops via a shared `app/auth/client_ip.py` helper,
-  and the shipped Caddyfile overwrites `X-Forwarded-For` with the real peer.
-- **F10 / F11 (MEDIUM) — connector-controlled ATTACH URL had no host
-  allowlist.** An adversarial connector could exfiltrate an allowlisted
-  credential to `attacker.example`. Both attach paths now honor
-  `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST` (enforced when set; warns when unset).
-- **F12 (MEDIUM) — one dev VM's `tls_mode=none` opened `:8000` fleet-wide.**
-  The Terraform raw-HTTP firewall is now per-instance (a raw-http network tag
-  attached only to VMs whose own `tls_mode != "caddy"`).
-- **F13 (LOW) — MCP connect embedded a 365-day PAT in a URL** (see Removed).
-- **F14 (LOW) — bootstrap admin password on argv** (see Changed).
-- **F15 (LOW) — Telegram `send_photo` read arbitrary caller-supplied paths.**
-  `photo_path` is now realpath-contained under `AGNES_TELEGRAM_PHOTO_DIR`
-  (default `DATA_DIR`).
-
-New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST`,
-`AGNES_BOOTSTRAP_PASSWORD`, `AGNES_TELEGRAM_PHOTO_DIR`.
-
-## [0.76.33] - 2026-07-24
-
-### Changed
-
-- **Cloud-chat conversations survive a sandbox respawn with FULL context.**
-  A fresh sandbox for a chat with history (crash respawn, post-restart
-  spawn, cross-gateway takeover) previously replayed only the last 3 raw
-  user messages over stdin — dropping every assistant answer and tool
-  result (the agent lost the thread of its own analysis) and burning one
-  full LLM turn per replayed message. The manager now uploads a bounded
-  restored-conversation transcript (user + assistant turns, newest-first
-  under a character budget; departed co-session participants' turns still
-  omitted per SR-11) and the runner appends it to the agent's system
-  prompt at boot.
-
-### Fixed
-
-- **Redelivered pending question could be silently lost on a mid-answer disconnect.** The trailing-unanswered-turn redelivery introduced above wrote the live `user_msg` frame directly to stdin instead of going through the shared turn-delivery helper, so it never set `turn_in_flight`. If the user disconnected while the agent was still answering, the idle-linger-pause didn't know a turn was in flight and could pause the sandbox mid-answer, dropping the reply. Redelivery now goes through the same delivery path as every other live turn.
-- **Context restore and pending-question redelivery both used stale history in chats past 500 messages.** Both looked at the trailing element of `list_messages()`'s default `ORDER BY created_at ASC LIMIT 500`, so for a conversation longer than that the "latest" message they inspected was actually the 500th-oldest one — either dropping the real pending question, re-answering a stale one, or restoring context from the middle of the conversation instead of its recent tail. A new `list_recent_messages()` (`ORDER BY created_at DESC`, implemented on both the DuckDB and Postgres repos) replaces `list_messages()` at both call sites.
-
-### Removed
-
-### Internal
-
-### Security
-
-## [0.76.32] - 2026-07-24
-
-### Added
-
-### Changed
-
-### Fixed
-
-- **`resolve_token_to_user` no longer stashes a JWT payload on
-  `request.state.token_payload` until the token has fully passed
-  validation.** Previously the stash ran right after JWT signature
-  verification, before the revoked/expired/mismatched/wrong-surface/
-  deleted-agent checks — a token that failed one of those later checks
-  still left its claims (including `agent_id`) readable via
-  `agent_id_from_request` for the rest of the request. Task 4 review
-  carry-over.
-- **`DELETE /api/v1/agents/{id}` now cascades to webhooks and artifacts,
-  not just PATs.** Previously deleting an agent revoked its tokens but
-  left every `agent_webhooks` row and every `agent_artifacts` row (plus
-  their object-store blobs) behind, orphaned and unreachable through any
-  API surface. The delete now also removes the agent's webhook
-  registrations and harvested-artifact rows, best-effort deleting each
-  artifact's object-store blob first (a single blob-delete failure is
-  logged and skipped, never blocking the agent delete).
-### Removed
-
-### Internal
-
-- **Verification loop for the sync-map rows CI did not guard.**
-  `scripts/verify_syncmap.py` (stdlib-only, diff-scoped) fails on an
-  unregistered `ResourceType`, a user-visible change with no `## [Unreleased]`
-  CHANGELOG bullet, a new boolean scope flag in a CLI command, and
-  `query_mode='remote'` in a connector that never mentions `_remote_attach`; it
-  warns on a new entity-scoped endpoint carrying authn but no authz. The
-  `verify-agnes-change` skill wraps it into a cheapest-first loop (sync-map →
-  targeted guards → full suite → `/agnes-review`) so mechanical findings stop
-  consuming LLM review. `CONTRIBUTING.md` sync-map now names the new guard per
-  row instead of `NO`.
-- **The test suite no longer wedges the machine when it runs out of disk.** Two
-  consecutive full runs filled a 460 GB disk (218 GB of retained `pytest-of-*`
-  dirs), after which every teardown raised `OSError: [Errno 28]` and buried the
-  real result. A `pytest_sessionstart` guard in `tests/conftest.py` now refuses
-  to start below 5 GB free and warns below 60 GB, naming the cleanup command;
-  bypass with `AGNES_SKIP_DISK_CHECK=1`. Thresholds are set so a CI shard
-  (`--splits 8`) is never aborted. `tmp_path_retention_count` stays at `1` —
-  `pytest.ini` now records why `0` is not an option (it sweeps the current
-  session's dir, so live tests lose their `tmp_path` mid-run).
-
-### Security
-
-## [0.76.31] - 2026-07-24
-
-### Fixed
-
-- **Materialized Keboola tables no longer OOM the sync on large results.**
-  The typed-parquet retype (the all-VARCHAR fix) loaded the whole
-  materialized parquet into one in-memory `pyarrow.Table` before casting —
-  peak memory scaled 2–3× with the result size (pyarrow copy + pandas
-  fallback copies) and OOM-killed syncs of large materialized tables,
-  leaving them stale. The retype now streams through a memory-capped DuckDB
-  `COPY` with per-column `TRY_CAST`, so peak memory is bounded by the
-  consolidation cap regardless of table size. Cast semantics keep the
-  coerce-to-NULL behavior (uncastable values → NULL, now with a
-  footer-stats warning per affected column); DATE columns additionally
-  retype correctly now (previously a single bad value left the whole
-  column VARCHAR), and an already-typed parquet skips the rewrite
-  entirely.
-
-## [0.76.30] - 2026-07-24
-
-### Added
-
-- **Data Apps: prod + draft iteration model.** Create a draft on an iteration branch
-  (`agnes app draft create`), deploy it in `dev` mode, then promote by merging into
-  `main`; drafts share the prod app's git repo and are hidden from the app list.
-  New MCP tools (`data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`)
-  and a broker `data_apps` scope let the chat agent author apps end-to-end.
-
-### Changed
-
-### Fixed
-
-- **Data Apps: drafts hidden from the `/apps` web list and admin grant picker.** `GET /api/data-apps`, `agnes app list`, and the MCP `data_apps_list` tool already excluded drafts; the human-facing `/apps` page and `/admin/access`'s data-app grant picker now filter them too.
-- **Data Apps: draft metadata hidden from non-owner grantees.** `GET /{slug}`'s inlined `drafts` list (branch, state, URL of every in-progress draft) was gated on the same broad `_can_view` check as the rest of the app detail response — a group merely holding a read grant on the parent app could see it, even though every draft-mutating endpoint is owner/Admin-only. `drafts` is now omitted entirely unless the caller is the owner or an Admin.
-- **Data Apps: `git-credential` clone URL uses the public base URL.** `POST /{slug}/git-credential` (and `data_app_git_credential`) previously built the returned clone URL from `AGNES_INTERNAL_URL` (the in-cluster hostname), unusable from an analyst laptop, the MCP tool, or a remote sandbox. It now uses `get_public_url()` when configured (falling back to the internal URL otherwise), matching `create_data_app`'s `git_url`. The container-facing clone URL used inside `config.json` is unaffected — it stays on the internal URL.
-- **Data Apps: reject git-invalid draft branch names.** `POST /{slug}/drafts`'s branch validation admitted names `git update-ref` refuses (`a..b`, `a//b`, a trailing `/` or `.`, an `x.lock` suffix), which previously surfaced as an unhandled 500 and left an orphaned draft row (turning a retry into a misleading 409 `slug_exists`). Now rejected up front as 400 `invalid_branch`, with a `subprocess.CalledProcessError` catch around the git call as a second line of defense that also rolls back the draft row.
-- **Data Apps: draft creation no longer 500s on Postgres when the slug races.** The new-app and new-draft endpoints only caught DuckDB's `ConstraintException` on a unique-slug violation; on the Postgres backend the same race raises `sqlalchemy.exc.IntegrityError`, which fell through to an unhandled 500 instead of the intended 409 `slug_exists`. Both endpoints now catch either exception, matching the existing pattern in `knowledge_digests.py`/`marketplaces.py`.
-- **Data Apps: a user's drafts no longer eat their prod-app quota.** The non-admin `max_apps_per_user` check listed apps without excluding drafts, so a user's in-progress drafts counted toward the same limit as their prod apps and could block them from creating a new one. The quota check now excludes drafts, matching every other listing surface.
-- **Data Apps: a failed draft creation cleans up after itself when the owner is gone.** `POST /{slug}/drafts` already rolled back the just-inserted draft row (and avoided leaving a branch behind) when the branch was invalid or the parent had no `main`; the owner-account-missing failure path — hit when minting the push credential — did not, so a retry after that 500 was wrongly refused as `slug_exists`. It now rolls back the same way as the other two failure paths.
-- **Data Apps: draft teardown now serializes with a concurrent wake.** `_teardown_draft` (used by both `DELETE /{slug}/drafts/{draft_slug}` and the cascade in `DELETE /{slug}`) stopped a draft's container without holding its `dataapp:op:{draft_slug}` lease — the same lease every other runner-mutating operation takes to prevent the unlocked check-then-act container swap in the runner sidecar (see 0.76.23). A draft deleted at the same moment someone opens its URL could leave a zombie or clobbered container; teardown now takes the lease first.
-- **Data Apps: deleting a draft through the generic app-delete route no longer orphans its branch.** A draft is a full `data_apps` row, so `DELETE /{slug}` (and `agnes app delete <draft_slug>`) would happily resolve and delete it — but that route's own teardown never deletes the draft's branch on the parent's repo (only `_teardown_draft`, used by the dedicated drafts route, does). Now rejected up front as 400 `use_draft_delete_route`.
-
-### Removed
-
-### Internal
-
-- `JobsRepository.complete()` / `JobsPgRepository.complete()` gained an
-  optional `result: Optional[dict]` parameter, merged into
-  `payload_json["result"]` when given (the `jobs` table has no dedicated
-  result column) — backs the new `agent_response` job kind's
-  `GET /api/v1/jobs/{id}` result surface. Every other job kind's handler
-  still returns `None`, so this is a no-op for them.
-- `IdempotencyRepository`/`IdempotencyPgRepository` gained `reserve()`/
-  `fulfill()` (atomic `INSERT ... ON CONFLICT ... WHERE <stale> ...
-  RETURNING` — see `src/repositories/idempotency.py`'s module docstring);
-  `LlmUsageRepository`/`LlmUsagePgRepository` gained `list_for_session()`
-  (exact SQL filter, replacing an in-Python filter over the last 1000 rows
-  per agent) — both Task 9 review carry-overs.
-
-### Security
-
-- **Data Apps: enforce the `data-app-git:<slug>` PAT scope.** The credential minted by `POST /{slug}/git-credential` (and `data_app_git_credential`) now authenticates only the `/data-apps.git/{slug}` surface it was minted for, pinned to that one app's slug — previously the `scope` claim was unenforced, so the credential was a full-privilege user PAT usable against the whole non-admin (and, for an Admin owner, admin) REST/MCP API. Rejected JSON-API calls get 401 `git_scope_token_not_allowed`.
-
-## [0.76.29] - 2026-07-24
-
-### Fixed
-
-- **Cloud-chat answers now stream token-by-token.** Both credential hops on
-  the model-call path buffered the LLM's SSE response whole — the broker's
-  Anthropic proxy read the full completion before responding, and the
-  in-sandbox loopback relay did the same again (writing a single
-  Content-Length body) — so every token delta collapsed into one burst at
-  turn end: the user stared at silence for the whole generation, then the
-  entire answer appeared at once. The broker now stream-opens the upstream
-  call and forwards 2xx `text/event-stream` responses chunk-by-chunk
-  (closing the upstream in the background once drained), and the relay
-  forwards event streams with chunked transfer encoding, flushing each
-  chunk to the in-sandbox CLI as it arrives. Non-stream responses (JSON
-  endpoints, upstream errors) keep the exact buffered behavior, including
-  the operator credential diagnostics.
-
-### Removed
-
-### Internal
-
-### Security
-
 ## [0.79.0] - 2026-08-05
-
 ### Added
 
 - Cloud chat runs without an E2B account: `chat.provider: docker` spawns each session in a local Docker container instead of a cloud microVM, so a self-hosted instance no longer loses chat entirely for want of E2B keys. Same feature set — web chat, Slack, the agent API, headless runs and artifact harvest are unchanged. Docker access stays behind the `apps-runner` sidecar (still the only process holding the socket) over a new token-gated `/sandboxes/*` API; the gateway never touches `/var/run/docker.sock`. The per-session workspace is **bind-mounted** rather than uploaded, which removes the 100 MB `chat.e2b_workspace_max_bytes` cap and the per-spawn tarball, and makes files the agent writes persist on the host — note that concurrent sessions of the same user therefore share one workspace, and agent-created `node_modules`/`.venv` now survive the session; co-drive sessions still mount only their ephemeral directory. Pause maps to `docker pause` (memory survives while the daemon does, not across a host reboot — the next attach then produces a fresh sandbox with restored conversation context). Sandboxes run non-root with `cap_drop: ALL`, `no-new-privileges`, pids/memory/CPU limits, a capped allowlist of mounts and an image-prefix allowlist; no secret enters the container env. Agent-profile sessions never get the shared workspace mount — only their data symlink targets (snapshots writable, the rest read-only), so a profiled agent cannot rewrite the user's shared settings/hook files. New keys: `chat.docker_image`, `docker_network`, `docker_mem_limit`, `docker_cpus`, `docker_pids_limit`, `docker_egress_mode` (`open` | `none`; hostname-level allowlisting is E2B-only), `docker_max_total_sandboxes`. Requires the operator-built sandbox image (`app/initial_workspace_default/docker-sandbox/`), the `apps` compose profile, and `AGNES_INTERNAL_URL`/`SERVER_URL` pointing at a container-reachable address — boot gates refuse to start chat with actionable log lines otherwise. Operator walkthrough, including an honest E2B-vs-Docker comparison: `docs/cloud-chat.md`.
@@ -1366,7 +310,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). The re-check reduces every spelling of an address to one set of rules first — IPv4-mapped (`::ffff:169.254.169.254`), 6to4 and Teredo answers are unwrapped to the IPv4 address a dual-stack host would actually reach, and the unspecified address (`0.0.0.0`, `::`), multicast and reserved ranges are refused outright. Ignoring the proxy env is not a bypass — the internal network has no other route. Docker never reconciles the `internal` flag on a network that already exists, so a sandbox start refuses with `network_not_internal` rather than silently running without that layer if a same-named non-internal bridge is left over; remove it and it is recreated correctly. Plain-HTTP proxying authorizes every request rather than only the first on a connection — proxy clients pool per-proxy, not per-destination, so keep-alive is not offered upstream and a request's body is forwarded by its declared length (chunked request bodies are refused, having no length to bound the forward by). Closes the "hostname-level allowlisting is E2B-only" gap.
 
 ## [0.78.2] - 2026-08-05
-
 ### Added
 
 ### Changed
@@ -1403,7 +346,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   admin menu is in the DOM — so on the `/dashboard` default a non-admin could
   not reach it at all.
 
-
 ### Removed
 
 ### Internal
@@ -1429,7 +371,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   deleting it — the map is an index whose decisions link into the tickets, so
   removing them discarded the only full copy of the reasoning.
 
-
 - Vault repositories now share one decrypt path: `SharedSecretsRepository`,
   `PerUserSecretsRepository`, `ConnectionSecretsRepository` and
   `SystemSecretsRepository` (DuckDB and Postgres alike) fold their inline
@@ -1447,7 +388,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.78.1] - 2026-08-04
-
 ### Added
 - MCP OAuth sources, phase 2 — the per-user browser connect flow: `GET
   /api/mcp/sources/{id}/oauth/authorize` (signed, single-use PKCE state;
@@ -1464,7 +404,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   signed state are now redacted from the server's own access log for the
   callback path — operators should apply the same redaction in their
   TLS-terminating reverse proxy's access log (see `docs/DEPLOYMENT.md`).
-
 
 ### Changed
 
@@ -1485,9 +424,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   lock: a fresh install must not be able to resolve back to a vulnerable
   release. A `telegram` extra now declares aiohttp too — `services/telegram_bot/bot.py` imports it at module scope, so that service only ever started because the shipped image installs `[slack-socket]` alongside; an operator installing `[server]` and running only the Telegram bot hit ImportError. aiohttp joins the `dev` extra too, so `tests/test_telegram_bot.py` actually executes in CI instead of skipping through its guarded import — the ImportError the extra prevents was previously untested.
 
-
 ## [0.78.0] - 2026-08-04
-
 ### Added
 
 - Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
@@ -1707,7 +644,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Admin god-mode observability: when the Admin short-circuit in `can_access` grants a resource the admin holds no explicit group grant for, a deduplicated `god_mode_bypass` log line records who reached what. Observability only — access decisions are unchanged; the data shows which surfaces actually rely on god-mode before any future narrowing.
 
 ## [0.77.33] - 2026-08-03
-
 ### Added
 
 ### Changed
@@ -1725,7 +661,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.32] - 2026-07-30
-
 ### Added
 
 ### Changed
@@ -1742,7 +677,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.31] - 2026-07-30
-
 ### Added
 
 ### Changed
@@ -1758,7 +692,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.30] - 2026-07-30
-
 ### Added
 
 - Query telemetry now reports `failed` (queries that errored) and `registered` (whether the id exists in `table_registry`) per table, on both the `/admin/usage` top-tables panel and `agnes admin usage summary` (unregistered ids marked `*`). An id parsed out of SQL is not proof a table exists, and the dashboard now says so instead of implying it.
@@ -1779,7 +712,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.29] - 2026-07-30
-
 ### Added
 
 ### Changed
@@ -1803,14 +735,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.28] - 2026-07-29
-
 ### Added
 
 - Linked (externally-hosted) data apps: an admin can surface an app that runs elsewhere — e.g. a Keboola-platform data app ingested via an MCP source — as a grantable Agnes resource without Agnes hosting it. A Keboola MCP tool set to *materialize* produces a `keboola_data_apps` table; a generic projection reconciler upserts `data_apps` rows with the new `repo_mode="linked"` (external URL, no git repo/runtime), keyed by ingest provenance and soft-deleting apps that disappear upstream (per-connection scoped, admin `description` override preserved across re-sync). Linked apps are granted like hosted ones (`ResourceType.DATA_APP` on `/admin/access`), appear in the same `/apps` list + detail (opening at their external URL, Keboola handling auth), and are known to a user's LLM through `data_apps_list` (RBAC-filtered, carries the description). New surfaces: `GET /api/data-apps?kind=hosted|linked`, `PATCH /api/data-apps/{slug}` (description override) + `agnes app list --linked` / `agnes app set-description` + the `data_app_set_description` MCP tool (foundation + stdio). Schema v108. Design: `docs/superpowers/specs/2026-07-29-keboola-dataapps-linking-design.md`.
 - Guided admin flow for linked apps: a `/admin/linked-apps` wizard walks an admin through the whole path in one page — pick a Keboola MCP source → set its data-app lister to `materialize` and fetch → select the ingested apps and grant them to a group — instead of hopping across the MCP-sources, tool-registry, and access pages. Adds a `source=<connection_id>` filter to `GET /api/data-apps` and nav entries (header + admin hub).
 
 ## [0.77.27] - 2026-07-29
-
 ### Fixed
 
 - The passthrough MCP forward's 502 detail now surfaces the upstream's actual
@@ -1827,7 +757,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.26] - 2026-07-29
-
 ### Added
 
 ### Changed
@@ -1843,32 +772,27 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.25] - 2026-07-29
-
 ### Added
 
 - Admin corporate-memory page: search boxes on the Review Queue and All Items tabs (title/content, debounced; `GET /api/memory/admin/pending` gained a `search` param), and moderation actions — Approve / Reject / Revoke / Mark required — on the All Items batch bar. Previously search existed only on Browse (which has no bulk actions) and bulk moderation only on Review (which had no search), so moderating specific items in a large queue required paging through it by eye.
 
 ## [0.77.24] - 2026-07-29
-
 ### Fixed
 
 - Corporate memory now actually reads the `CLAUDE.local.md` files `agnes push` uploads. The collector scanned only `<HOME_BASE>/<user>/CLAUDE.local.md` — the bare-VM layout where analysts work on the server — while `POST /api/upload/local-md` writes to `${DATA_DIR}/user_local_md/`. On any deployment that doesn't populate `/home` (Docker Compose, i.e. analysts on laptops) the every-17-min job therefore found zero files and returned `skipped` forever: the upload arrived and was never read, so corporate memory had no `claude_local_md` input at all. It now scans both layouts; a user present in both is collected once with the home copy winning, and the bare-VM layout keeps emitting the directory name as `source_user` so existing hash keys and item provenance don't shift. `HOME_BASE` also gained a `CORPORATE_MEMORY_HOME_BASE` env override (it was hardcoded, unlike its sibling constants), and the per-run "Home base directory does not exist" WARNING that fired on every Docker run is now debug-level. The filename + directory are derived through shared helpers (`app.utils.local_md_filename` / `uploaded_local_md_dir`) used by both the writing endpoint and the reading collector, with a round-trip test asserting the two agree — that divergence is what made this silent.
 
 ## [0.77.23] - 2026-07-29
-
 ### Fixed
 
 - Data apps: the in-chat authoring + live-preview loop is now actually reachable by the chat agent. The `data_app_*` MCP tool family — the hosted-app actions (`data_apps_list`, `data_app_get`, `data_app_deploy`, `data_app_logs`, `data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`) and the four in-chat preview render tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) — was registered only on the HTTP MCP foundation surface (the SSE/streamable transports serving external clients), but the chat agent connects through the CLI **stdio** `agnes mcp` server, which never exposed them. As a result the chat agent could neither author/deploy an app nor open the split-pane preview. The stdio server now registers the whole family (mirroring the REST contracts), and a `DATA_APP_TOOL_NAMES` parity guard asserts both surfaces stay in sync. Analysts running a local `agnes mcp` gain the same app-management tools.
 - Data apps: `agnes_data_app_preview` no longer returns the scoped preview-grant cookie in its MCP tool result (on either transport). The cookie is a short-TTL bearer credential and a tool result is archived in the chat session transcript; the grant is still minted server-side and installed via the grant endpoint's `Set-Cookie` header (the web chat re-fetches it same-origin), so the preview pane is unaffected.
 
 ## [0.77.22] - 2026-07-29
-
 ### Added
 
 - `agnes update` now runs an `agnes push` catch-up step (step 4b, before the data pull), so the SessionStart hook uploads session transcripts + `CLAUDE.local.md` that the SessionEnd hook never got to send. SessionEnd is not a dependable trigger — closing the terminal window (or a crash / kill) can take Claude Code down before it reaches the hook, leaving the transcript on disk and invisible in the admin session views, which read the pipeline's summary table and have no filesystem fallback. SessionStart cannot be missed, because the session is being created. push is already a full folder scan with ledger dedup, so one call recovers everything earlier runs missed, including a session still open in another window whose transcript has grown; the convergence report gains a `push` stage line.
 
 ## [0.77.21] - 2026-07-29
-
 ### Added
 
 ### Changed
@@ -1884,7 +808,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.20] - 2026-07-29
-
 ### Added
 
 - Per-connection Keboola master (owner) Storage API token for the semantic-layer sync — a separate vault slot from the plain storage token, set/rotate/remove via `/admin/data-sources`'s connection card ("Master token (semantic layer)" control) or `agnes admin connection secret <connection_id> --kind master`, validated with a live `verify_token` preflight at save time (rejected if the token isn't a master token, since the Metastore API rejects non-master tokens).
@@ -1906,13 +829,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.19] - 2026-07-29
-
 ### Added
 
 - CLI: `agnes admin memory approve|reject|revoke|require|unrequire` — lifecycle moderation of corporate-memory knowledge items from the terminal, wrapping the existing governance endpoints (`POST /api/memory/admin/batch`, per-item `mark-unmandatory`) with the same dedicated audit rows. Status changes stay off the generic `edit`/`bulk-edit` paths by design; these subcommands are the CLI counterpart of the web admin review queue.
 
 ## [0.77.18] - 2026-07-29
-
 ### Added
 
 - PAT data-read **surface** (`personal_access_tokens.surface`, v106): `'all'` or `'stack'`. `POST /auth/tokens` accepts `surface` (default `all`) and token listings show it; `agnes auth token create --surface` mirrors it. New `POST /cli/auth/rescope-surface` (admin-only, PAT-authenticated) mints a full-surface token; `agnes init --as-admin` uses it.
@@ -1930,7 +851,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.17] - 2026-07-29
-
 ### Added
 
 ### Changed
@@ -1946,8 +866,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.16] - 2026-07-28
-
-
 ### Fixed
 
 - Store guardrails: the LLM security review no longer false-positives on the
@@ -1968,8 +886,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.15] - 2026-07-28
-
-
 ### Added
 
 - The admin MCP source detail page gains an inline "Your connection" panel
@@ -1992,7 +908,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   introspect). Non-admin callers still require a grant on the source.
 
 ## [0.77.14] - 2026-07-28
-
 ### Added
 
 - **Data Apps: in-chat AI authoring loop (wave 3C).** A chat conversation can now scaffold, preview, and promote a hosted data app end-to-end with no shell access. The bundled `agnes-data-apps-extras` skill (the first bundled skill; loads alongside the upstream `dataapp-development` skill) drives a baked `nodejs-dashboard` React+Vite+Tailwind+Express scaffold (with `server/agnesQuery.ts` helpers over `AGNES_TOKEN`/`AGNES_URL`) onto a draft branch, deploys it in `dev` mode, and shows it live in a split-pane preview iframe. Four chat-surface MCP tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) render the preview, authorized by a short-TTL scoped `data-app-preview:<slug>` grant (`POST /api/data-apps/{slug}/preview-grant`) that the ingress proxy accepts for the view-only serving path only — reusing the existing `access_tokens` table (no migration) and mirroring the `data-app-git:<slug>` fail-closed scope guard. On approval the agent merges the draft into `main` and redeploys prod. Operators register the upstream `dataapp-developer` marketplace plugin per the new `docs/DEPLOYMENT.md` runbook.
@@ -2010,8 +925,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.13] - 2026-07-28
-
-
 ### Fixed
 
 - Admin MCP connect probes (`POST /api/admin/mcp-sources/{id}/introspect`,
@@ -2024,8 +937,8 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   caller-less, so a per-user source with no shared fallback secret probed
   anonymously and failed with 401 even though the admin had a working token
   connected). Sources with a shared/fallback secret behave as before.
-## [0.77.12] - 2026-07-28
 
+## [0.77.12] - 2026-07-28
 ### Added
 
 ### Changed
@@ -2041,7 +954,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.11] - 2026-07-28
-
 ### Added
 
 ### Changed
@@ -2064,7 +976,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.10] - 2026-07-28
-
 ### Added
 
 - **Canonical feature-flag convention.** `app.instance_config.feature_enabled`
@@ -2098,8 +1009,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.9] - 2026-07-28
-
-
 ### Added
 
 ### Changed
@@ -2127,13 +1036,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.8] - 2026-07-28
-
 ### Changed
 
 - Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
 
 ## [0.77.7] - 2026-07-28
-
 ### Added
 
 - `usage_session_summary.uploaded_at` (schema v105): sessions record when
@@ -2161,7 +1068,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.6] - 2026-07-28
-
 ### Added
 
 - Activity Center timeline rows carry a server-computed `source`
@@ -2214,13 +1120,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.5] - 2026-07-28
-
 ### Changed
 
 - **Infra (customer-instance module): `data_apps_enabled` is now a per-VM field.** It moved from a module-global variable to an `optional(bool, false)` field on the `prod_instance` / `dev_instances[*]` object types (mirroring `dispatcher_enabled`), so an operator can enable hosted data apps on a single dev VM without also flipping every other VM in the instance — including prod. `data_apps_runtime_image` stays instance-wide. Consumed by a new `infra-v1.20.0` module tag.
 
 ## [0.77.4] - 2026-07-28
-
 ### Added
 
 - **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
@@ -2232,7 +1136,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
 
 ## [0.77.3] - 2026-07-28
-
 ### Added
 
 ### Changed
@@ -2278,7 +1181,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.2] - 2026-07-28
-
 ### Added
 
 - **Data Apps: durable enablement via the customer-instance Terraform module.** A new `data_apps_enabled` module variable (off by default; `data_apps_runtime_image` sets the runtime image) brings the feature up on VM boot without hand-editing config: the startup script mints/persists an `APPS_RUNNER_TOKEN`, resolves `DOCKER_GID` from the docker socket, writes `AGNES_DATA_APPS_ENABLED=true` (plus the runner token/prefix/gid) into the app `.env`, and enables the `apps` compose profile via a `--profile apps` command-line flag in both the startup script and `agnes-auto-upgrade.sh` (not `COMPOSE_PROFILES` in `.env` — docker compose ignores that env var whenever any `--profile` flag such as `--profile tls` is present). The app honors a Terraform-friendly `AGNES_DATA_APPS_ENABLED` env override (mirrors `AGNES_HOME_ROUTE`/`PUBLIC_URL`) that flips the feature on and backfills the example-config `data_apps:` defaults, so no instance.yaml edit is needed. Disabled instances render byte-identically.
@@ -2297,7 +1199,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.1] - 2026-07-28
-
 ### Added
 
 ### Changed
@@ -2325,7 +1226,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.77.0] - 2026-07-28
-
 ### Added
 
 - **Agent profiles.** Named, scoped agents layered over a user's own stack
@@ -2560,7 +1460,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   then broke outright once the ladder passed it.
 
 ## [0.76.38] - 2026-07-28
-
 ### Added
 
 ### Changed
@@ -2586,7 +1485,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.37] - 2026-07-28
-
 ### Added
 
 ### Changed
@@ -2611,7 +1509,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.36] - 2026-07-27
-
 ### Added
 
 ### Changed
@@ -2636,7 +1533,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.35] - 2026-07-27
-
 ### Added
 
 - **Partitioned local tables can now be distributed to analyst laptops via `agnes pull`.** Tables stored as a *directory* of parquet parts — Jira (hive `month=*/data.parquet`) and Keboola `sync_strategy=partitioned` (`<key>.parquet`) — were previously undistributable: the manifest/download/pull path assumed exactly one `{table}.parquet` per table, so the orchestrator wrote an empty hash, `/api/data/{id}/download` 404'd, and the client couldn't build a view. Now the whole chain is part-aware: `sync_state` gains a `parts` JSON column (per-part `{path, hash, size_bytes}`; DuckDB + Postgres, schema v100 / alembic `0047`); the orchestrator hashes each part (`_hash_table_parts`) and stores a rollup hash so the whole-table "changed?" compare + object-store mirror keep working; the manifest emits `parts`; `GET /api/data/{id}/download?part=<relpath>` serves a single part (path-traversal-guarded); and `agnes pull` fetches only the changed parts into `server/parquet/{id}/`, swaps them all-or-nothing (a failed part leaves the prior dir intact — never a silently-partial view), prunes server-dropped parts, and builds one hive-partitioned local view per table (`union_by_name=true, hive_partitioning=true`, byte-identical to the server view). Single-file tables are unchanged (`parts` is `NULL`/absent → treated as single-file). Incremental by design: an analyst re-pulls only the month(s) that changed.
@@ -2654,7 +1550,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.34] - 2026-07-24
-
 ### Added
 
 ### Changed
@@ -2745,7 +1640,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 `AGNES_BOOTSTRAP_PASSWORD`, `AGNES_TELEGRAM_PHOTO_DIR`.
 
 ## [0.76.33] - 2026-07-24
-
 ### Changed
 
 - **Cloud-chat conversations survive a sandbox respawn with FULL context.**
@@ -2771,7 +1665,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.32] - 2026-07-24
-
 ### Added
 
 ### Changed
@@ -2821,7 +1714,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.31] - 2026-07-24
-
 ### Fixed
 
 - **Materialized Keboola tables no longer OOM the sync on large results.**
@@ -2839,7 +1731,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   entirely.
 
 ## [0.76.30] - 2026-07-24
-
 ### Added
 
 - **Data Apps: prod + draft iteration model.** Create a draft on an iteration branch
@@ -2884,7 +1775,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Data Apps: enforce the `data-app-git:<slug>` PAT scope.** The credential minted by `POST /{slug}/git-credential` (and `data_app_git_credential`) now authenticates only the `/data-apps.git/{slug}` surface it was minted for, pinned to that one app's slug — previously the `scope` claim was unenforced, so the credential was a full-privilege user PAT usable against the whole non-admin (and, for an Admin owner, admin) REST/MCP API. Rejected JSON-API calls get 401 `git_scope_token_not_allowed`.
 
 ## [0.76.29] - 2026-07-24
-
 ### Fixed
 
 - **Cloud-chat answers now stream token-by-token.** Both credential hops on
@@ -2908,7 +1798,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.28] - 2026-07-24
-
 ### Changed
 
 - `/catalog/semantics` metric detail now renders the full **description**
@@ -2926,7 +1815,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   stored but not indexed).
 
 ## [0.76.27] - 2026-07-24
-
 ### Added
 
 - **Per-instance `upgrade_schedule` override** on `prod_instance` /
@@ -2953,7 +1841,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.26] - 2026-07-24
-
 ### Fixed
 
 - Worker lane slots now wake immediately on a fresh Postgres enqueue instead
@@ -2970,7 +1857,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   can't race on the same tmp path.
 
 ## [0.76.25] - 2026-07-24
-
 ### Changed
 
 - **Cloud chat reuses a paused sandbox across process restarts instead of
@@ -2987,7 +1873,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   likely follow-up before it pauses.
 
 ## [0.76.23] - 2026-07-24
-
 ### Fixed
 
 - **Data Apps**: a manual `deploy`/`stop` and an auto-wake for the same app
@@ -3002,7 +1887,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   after it.
 
 ## [0.76.22] - 2026-07-24
-
 ### Fixed
 
 - **Corporate Memory no longer accumulates near-duplicate pending items when
@@ -3023,8 +1907,8 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   restating it (and tends to be a near-verbatim reword of the item it
   contradicts), so it is routed to the create path where contradiction
   detection runs, rather than being absorbed as confirming evidence.
-## [0.76.20] - 2026-07-24
 
+## [0.76.20] - 2026-07-24
 ### Internal
 
 - **DuckDB↔Postgres parity: hydrate sandbox lifecycle fields in the chat
@@ -3039,7 +1923,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   test in `tests/db_pg/`.
 
 ## [0.76.18] - 2026-07-23
-
 ### Fixed
 
 - **Editing a cross-project BigQuery table's Dataset/Source Table no longer
@@ -3055,7 +1938,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   label.
 
 ## [0.76.17] - 2026-07-23
-
 ### Added
 
 ### Changed
@@ -3118,20 +2000,17 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   while a vault is configured (full vault routing is a tracked follow-up).
 
 ## [0.76.16] - 2026-07-23
-
 ### Added
 
 - **Upsert-on-upload for collection files.** `POST /api/collections/{id}/files` accepts an optional per-file `paths` form field; re-uploading a file with the same `(corpus_id, path)` replaces it (old blob/chunks/derived tables purged) instead of inserting a duplicate. New `agnes collections upload --path <id>` (single-file) exposes it. Files without a path keep the current plain-insert behavior. Schema: `corpus_files.path` (nullable), DuckDB v97 + Alembic `0044`.
 - **`agnes collections rm-file <collection_id> <file_id> [--yes]`** — CLI command to delete a single file from a collection (previously only the whole-collection `rm` was exposed; per-file removal required a raw API call).
 
 ## [0.76.15] - 2026-07-23
-
 ### Fixed
 
 - **`docker compose up` no longer requires `APPS_RUNNER_TOKEN` for stacks that never touch Data Apps.** The `apps-runner` service's env var was declared hard-required (`${APPS_RUNNER_TOKEN:?...}`), which broke every `docker compose up` invocation without it set — compose validates interpolation for the whole file before profile filtering, so this fired even though `apps-runner` is gated behind `profiles: ["apps"]`. Caused the v0.76.14 release to fail its smoke test and auto-rollback (#1007). Now soft-defaults to empty; the service's own token check already fails closed (rejects every request) when unset, so this is not an auth-bypass regression.
 
 ## [0.76.14] - 2026-07-23
-
 ### Added
 
 - **Data Apps** (schema v96): host user web applications next to the data
@@ -3171,7 +2050,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.13] - 2026-07-23
-
 ### Added
 
 - **Register a BigQuery table from another project without leaving the UI.**
@@ -3192,7 +2070,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   location <location>` symptom of a mismatch.
 
 ## [0.76.12] - 2026-07-23
-
 ### Fixed
 
 - **The tarball workspace transport actually engages** — the 0.76.9
@@ -3224,13 +2101,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   blank line.
 
 ## [0.76.11] - 2026-07-22
-
 ### Fixed
 
 - Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
 
 ## [0.76.10] - 2026-07-22
-
 ### Fixed
 
 - Pages rendered through `_chrome_ctx` (`/admin/studio*`, `/me/memory-mining`, `/admin/store/lint`) no longer drop the Chat nav link or render an empty instance name in the page title ("Studio — ") — the helper now provides the same shared `can_chat` and `config` context as `_build_context` (#993).
@@ -3250,7 +2125,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   fail unrelated queries.
 
 ## [0.76.9] - 2026-07-22
-
 ### Changed
 
 - **Cloud-chat spawn and first-response latency cut across the whole E2B
@@ -3284,7 +2158,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the reconnect/teardown partial-save path.
 
 ## [0.76.8] - 2026-07-22
-
 ### Added
 
 - **Full agent/skill lifecycle over MCP** — six new foundation tools close the
@@ -3308,7 +2181,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   bare forms.
 
 ## [0.76.7] - 2026-07-22
-
 ### Fixed
 
 - Observability/hygiene follow-ups from the three-plane architecture audit
@@ -3333,7 +2205,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   synchronous/BackgroundTask paths still run and neither kind is enqueued.
 
 ## [0.76.6] - 2026-07-22
-
 ### Fixed
 
 - A configured object-store bucket on an image without the `[distribution]`
@@ -3355,7 +2226,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   fail-and-retry semantics.
 
 ## [0.76.5] - 2026-07-21
-
 ### Added
 
 - The authoring Studio (`/admin/studio*`) can now be disabled per-instance.
@@ -3381,7 +2251,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Security
 
 ## [0.76.4] - 2026-07-21
-
 ### Fixed
 
 - Install prompt (`/setup` clipboard payload) no longer instructs the agent to
@@ -3397,7 +2266,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   one-shot setup prompt.
 
 ## [0.76.3] - 2026-07-21
-
 ### Fixed
 
 - **`customer-instance` VMs now write `SERVER_URL` into `/opt/agnes/.env`**,
@@ -3412,13 +2280,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   VM recreates wipe).
 
 ## [0.76.2] - 2026-07-21
-
 ### Fixed
 
 - **Postgres container could fail with "Permission denied" on `global/pg_filenode.map` after a VM delete+recreate.** The `agnes-state-applier-bootstrap.service` unit runs on every boot and chowns `/data/postgres` to uid:gid `70:70` (the Postgres Alpine image's user) — but the chown wasn't recursive. `/data/postgres` lives on the persistent data disk, so a boot-disk-only VM recreate (auto-upgrade rollout, instance-template change) leaves its existing PGDATA contents in place with whatever uid the *previous* instance's postgres container mapped to 70; the non-recursive chown fixed only the top-level directory, leaving nested files like `global/pg_filenode.map` owned by the stale uid and unreadable to the freshly-started container. Observed live on a customer VM after a delete+insert. `scripts/ops/agnes-state-applier-bootstrap.service` now chowns `-R`.
 
 ## [0.76.1] - 2026-07-21
-
 ### Fixed
 
 - **`customer-instance` VM recreation no longer breaks side-car Postgres or
@@ -3437,7 +2303,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   watchdog sections install.
 
 ## [0.76.0] - 2026-07-21
-
 ### Added
 
 - Agent authoring domain in Studio (`/admin/studio/agent`): a chat-assisted
@@ -3447,8 +2312,8 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   bakes a bare `<name>.md` instead of `<name>/SKILL.md`). Plus a new Studio
   landing page (`/admin/studio`) listing every authoring domain, and a
   top-level "Studio" primary-nav link.
-## [0.75.16] - 2026-07-21
 
+## [0.75.16] - 2026-07-21
 ### Fixed
 
 - DuckDB→Postgres migrator (`scripts.migrate_duckdb_to_pg`) no longer aborts a
@@ -3465,7 +2330,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   missing from the target) still fails via the new `missing_count`.
 
 ## [0.75.15] - 2026-07-21
-
 ### Fixed
 
 - `system.duckdb` ART-index self-heal: the rebuild now swaps the corrupt
@@ -3477,7 +2341,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   FTS-created schemas instead of relying on `search_path`.
 
 ## [0.75.14] - 2026-07-20
-
 ### Fixed
 
 - Auto-upgrade now keeps the placement-driven `docker-compose.gcp-logging.yml`
@@ -3492,7 +2355,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   spurious drift).
 
 ## [0.75.13] - 2026-07-20
-
 ### Added
 
 - `/admin/data-sources` now shows the Keboola semantic-layer sync status
@@ -3529,13 +2391,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   through the same gate.
 
 ## [0.75.12] - 2026-07-20
-
 ### Fixed
 
 - Health probe no longer emits `alembic.runtime.migration` INFO noise every ~30s. The Postgres schema-revision read now uses a plain `SELECT` from `alembic_version` instead of configuring an Alembic `MigrationContext` per call, and `/api/health/detailed?include=schema` runs the read off the event loop (worker thread + reuse of the 30s liveness cache) so it no longer does a synchronous DB round-trip on the loop.
 
 ## [0.75.11] - 2026-07-20
-
 ### Added
 
 - `system.duckdb` now **self-heals on-disk ART-index corruption on start**. DuckDB
@@ -3556,7 +2416,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   single-writer). No-ops on a Postgres app-state backend.
 
 ## [0.75.10] - 2026-07-20
-
 ### Fixed
 
 - Dropped the 3 non-unique secondary indexes on `usage_session_summary`
@@ -3570,7 +2429,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   upsert keeps refreshing all columns (safe once unindexed).
 
 ## [0.75.9] - 2026-07-20
-
 ### Added
 
 - E2B SDK contract tests (`tests/test_e2b_sdk_contract.py`) that assert against
@@ -3584,7 +2442,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   drives the real `list() → await next_items()` auth round trip.
 
 ## [0.75.8] - 2026-07-20
-
 ### Security
 
 - OAuth `client_secret` is now encrypted at rest instead of stored in plaintext,
@@ -3597,7 +2454,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   presented secret by equality against the value `get_client` returns.)
 
 ## [0.75.7] - 2026-07-20
-
 ### Fixed
 
 - `/api/v2/scan` and `/api/v2/scan/estimate` on a `source_type='bigquery'` +
@@ -3615,7 +2471,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Removed
 
 ## [0.75.6] - 2026-07-20
-
 ### Fixed
 
 - Chat: a sandbox that spawned but then failed post-spawn setup (a broken-pipe
@@ -3626,13 +2481,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   reaper-cadence half is tracked separately).
 
 ## [0.75.5] - 2026-07-20
-
 ### Changed
 
 - The Admin nav dropdown's catch-all "Agent Experience" section is split into three intent-based groups — **Moderation queues** (Curated memory reviews, Flea Submissions), **Marketplace & knowledge distribution** (Curated Marketplaces, Maintained digests), and **Onboarding & messaging** (Initial Workspace, News, Prompts) — so an admin lands on the right page by the job they're doing instead of scanning seven loosely-related items. Nav-only change in `app/web/templates/_app_header.html`; same links, same routes, same RBAC.
 
 ## [0.75.4] - 2026-07-20
-
 ### Changed
 
 - BigQuery cost attribution: the billable job on the fully-materialized
@@ -3648,13 +2501,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   [docs/planning/752-bq-billable-labels.md](docs/planning/752-bq-billable-labels.md).
 
 ## [0.75.3] - 2026-07-20
-
 ### Added
 
 - Keboola relationship-based JOIN metrics: `semantic-metric` expressions previously skipped as `foreign_alias_reference` now compose a two-table `LEFT JOIN` when exactly one `semantic-relationship` connects the metric's dataset (on the live-verified `to` side) to a registered Agnes table, resolved by real column metadata rather than alias-name matching (verified live: alias names in `semantic-relationship.on` never matched the aliases metric authors used). Anything ambiguous, an unverified join direction, or an unsupported relationship type still skips and counts under a specific reason — never a guessed JOIN.
 
 ## [0.75.2] - 2026-07-20
-
 ### Added
 
 - **Actionable diagnostic when the chat LLM credential fails at runtime.** An invalid/expired key (HTTP 401/403), an unfunded account ("credit balance too low", HTTP 400), or a provider outage forwarding chat traffic through the broker previously surfaced only as an opaque synthetic assistant message. The broker now classifies the failure (reusing `app/chat/readiness.py::classify_llm_failure`, shared with the admin "test connection" probe), records a key-free signal, and audits it as `broker_llm_auth_failure`. `GET /admin/chat/readiness` gains an `llm_runtime` field and the *Cloud chat readiness* admin panel shows a red banner naming the exact fault; the signal clears on the next successful forward. Operator remediation runbook added to `docs/DEPLOYMENT.md`.
@@ -3672,7 +2523,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   guarding against this gap reopening.
 
 ## [0.75.1] - 2026-07-20
-
 ### Added
 
 - Jira parquet: reproducible bloom-filter benchmark
@@ -3689,7 +2539,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Session processors could hold the request-serving process for minutes under a large session backlog (e.g. a bulk onboarding wave), causing app-wide `503`s on completely unrelated endpoints.** `run_processor()` (`services/session_pipeline/runner.py`) now enforces a per-tick wall-clock time budget (default 150s) across the whole cross-session loop, in addition to the existing per-tick attempt-count cap — once the budget is exceeded, the loop stops visiting new candidates and leaves the rest for the next scheduler tick (already-processed sessions in that tick stay marked processed; no exception is raised, since a partial tick is a normal outcome). This closes a gap the attempt-count cap alone didn't cover: one processor (`usage`) is deliberately exempt from the attempt-count cap as cheap/local-only, so a large backlog could previously drain unboundedly in one tick.
 
 ## [0.75.0] - 2026-07-20
-
 ### Added
 
 - **Process roles for multi-process deployments** (wave-1, WS A):
@@ -3925,7 +2774,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   enforcement copies were consolidated into one helper.
 
 ## [0.74.121] - 2026-07-20
-
 ### Added
 
 - **Per-table timing in the scheduled BigQuery metadata refresh.** A slow
@@ -3941,7 +2789,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
 
 ## [0.74.120] - 2026-07-20
-
 ### Added
 
 - New admin/analyst web page `/catalog/semantics` — a read-only browser for
@@ -3957,13 +2804,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   connection has synced. Picks up issue #853 plus the glossary.
 
 ## [0.74.119] - 2026-07-20
-
 ### Changed
 
 - `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`. The server stream-decompresses uploads at ingest and stores plain JSONL — the size cap binds on decompressed bytes and per-call decompression output is bounded (zip-bomb / peak-memory guard).
 
 ## [0.74.118] - 2026-07-18
-
 ### Changed
 
 - `/me/connections` Connect / Replace token / Test / Remove buttons now use the
@@ -3972,7 +2817,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the row wraps on narrow viewports.
 
 ## [0.74.117] - 2026-07-18
-
 ### Changed
 
 - `/me/connections` "Test connection" now shows a friendly, actionable failure
@@ -3984,7 +2828,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   visually distinct from a neutral message.
 
 ## [0.74.116] - 2026-07-18
-
 ### Added
 
 - New analyst HOWTO: [Installing skills in Claude Cowork](docs/HOWTO/06-claude-cowork.md)
@@ -3993,13 +2836,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   and troubleshooting for upload-validation failures.
 
 ## [0.74.115] - 2026-07-18
-
 ### Added
 
 - Keboola glossary import: `semantic-glossary` Metastore items sync into a new `glossary_terms` table (DuckDB + Postgres, schema v93), tagged `source='keboola_semantic_layer'` and upsert+pruned each `keboola-semantic-layer-refresh` run alongside metrics — no new scheduler job. Relevance-ranked search (`GET /api/glossary/search`, `agnes glossary search`, the `glossary_search` MCP tool) uses DuckDB FTS BM25 (Postgres: `ts_rank`) with an ILIKE fallback, mirroring the corporate-memory knowledge search.
 
 ## [0.74.114] - 2026-07-18
-
 ### Fixed
 
 - Cowork per-plugin zips (`GET /marketplace/cowork/<prefixed_name>.zip`) no
@@ -4023,7 +2864,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `/test` but not these three sibling verbs.
 
 ## [0.74.113] - 2026-07-18
-
 ### Added
 
 - Self-service per-user MCP credential management. A new `/me/connections`
@@ -4040,7 +2880,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   when no public URL is configured).
 
 ## [0.74.112] - 2026-07-17
-
 ### Added
 
 - `customer-instance` Terraform module can now deploy the opt-in LLM
@@ -4064,7 +2903,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   password from the surviving database.
 
 ## [0.74.111] - 2026-07-17
-
 ### Fixed
 
 - **`INSERT OR REPLACE` could crash the whole app process on DuckDB, same class of bug as #909.**
@@ -4083,12 +2921,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `src/repositories/usage.py`, `app/chat/persistence.py`.
 
 ## [0.74.110] - 2026-07-17
-
 ### Internal
 - Tests: `agnes init` / launcher tests can no longer write into the developer's real home — all in-process and subprocess init invocations redirect `HOME` into tmp, and a `tests/conftest.py` autouse guard fails any test that mutates the real shell rc files (legacy-block cleanup) or drops launcher scripts into the real `~/.local/bin`.
 
 ## [0.74.109] - 2026-07-17
-
 ### Fixed
 
 - Marketplace git smart-HTTP: a `git http-backend` subprocess that exited (or
@@ -4102,7 +2938,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `app/marketplace_server/git_router.py` (race introduced in #887).
 
 ## [0.74.108] - 2026-07-17
-
 ### Added
 
 - Opt-in LLM dispatcher upstream for chat completions (token-arbitrage PoC).
@@ -4117,7 +2952,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `app/api/broker.py`, documented in `config/.env.template`.
 
 ## [0.74.107] - 2026-07-17
-
 ### Security
 
 - **Jira attachment download: SSRF via the webhook-supplied URL (audit L3).**
@@ -4146,7 +2980,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - The one-word workspace launcher installed by `agnes init` is now an executable script in `~/.local/bin` (`<word>.cmd` on Windows) instead of a shell function appended to `~/.zshrc` / `~/.bashrc` / PowerShell profiles. Scripts are visible to `which`, work from non-interactive shells, and on Windows are immune to the default `ExecutionPolicy Restricted` (which silently blocked the old profile function from loading). The collision guard now also refuses to shadow any existing executable on PATH (a workspace named `Node` gets `nodeai`, not `node`). `agnes init` and a new `agnes update` convergence step automatically remove the legacy marked rc-function blocks and install the script — never before the replacement script is in place; users who opted out via `agnes init --no-shortcut` are left untouched. `scripts/dev/agnes-client-reset.sh` removes marker-carrying launcher scripts on reset.
 
 ## [0.74.106] - 2026-07-17
-
 ### Fixed
 
 - **Keboola export scratch dirs could leak silently, filling the data disk.**
@@ -4180,13 +3013,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `src/repositories/usage.py`.
 
 ## [0.74.105] - 2026-07-16
-
 ### Fixed
 
 - **`agnes pull` no longer aborts when a table's display name contains spaces or punctuation.** The stack sync used a table/package/domain label verbatim as an on-disk path segment; a display name like `Agnes audit log` failed the strict path-segment guard with `unsafe path segment: 'Agnes audit log'` and, because the check ran inside the server-map comprehension (before the per-table `try/except`), aborted the entire sync so `sync_state.json` was never written. Path segments are now sanitized (unsafe runs → `_`, already-safe names preserved verbatim), a genuinely un-nameable row is logged and skipped instead of raising, and the pre-existing `.`/`..` traversal pass-through is closed.
 
 ## [0.74.104] - 2026-07-16
-
 ### Added
 
 - **Admin hub page (`GET /admin`)** — a settings-style landing page that indexes
@@ -4214,19 +3045,16 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `require_admin`; this is a discoverability/IA change only.
 
 ## [0.74.103] - 2026-07-16
-
 ### Fixed
 
 - **Fresh Postgres-backend deployments can boot compose from scratch.** On a brand-new `data` volume the `data-migrate` one-shot in `docker-compose.postgres.yml` found no `system.duckdb` to migrate from, exited 2, and wedged the boot — `app` and `scheduler` gate on it via `service_completed_successfully`. The compose command now passes a new `--missing-source-ok` flag: `python -m scripts.migrate_duckdb_to_pg` treats the missing source as "nothing to migrate" (logged no-op, exit 0), so a fresh deployment proceeds straight to the alembic-seeded PG. Operator-driven runs WITHOUT the flag keep exiting 2 — during a real cutover a missing `system.duckdb` means a mis-mounted volume, not a fresh install — and the flag is rejected in combination with `--reset-target`. Covered by a static compose contract test plus a docker-gated e2e that boots the real overlay chain on fresh volumes (`pytest tests/test_e2e_docker_postgres_fresh.py -m docker`).
 
 ## [0.74.102] - 2026-07-16
-
 ### Fixed
 
 - **`agnes init` and the recommended launch command no longer trip Claude Code's auto-mode classifier during analyst setup.** `agnes refresh-marketplace --bootstrap` (marketplace clone + plugin install) was soft-denied as "Untrusted Code Integration" under `--permission-mode auto`; `agnes init` now declares the configured marketplace host as trusted internal infrastructure in the user-scope `~/.claude/settings.json` (`autoMode.environment`), derived from config at runtime — never hardcoded. Separately, the `/home` onboarding page's recommended launch command now pre-approves `uv tool install` (setup step 1) via `Bash(uv tool install:*)` in `--allowedTools`, so it no longer requires an interactive permission prompt. Existing installs pick up the trust on their next `agnes init`; wiring it into `agnes update` for installs that never re-run init is a tracked follow-up.
 
 ## [0.74.101] - 2026-07-16
-
 ### Fixed
 
 - Built-in marketplace plugins (`agnes-analyst`, `agnes-operator`) now ship
@@ -4240,7 +3068,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   start).
 
 ## [0.74.100] - 2026-07-16
-
 ### Added
 
 - **Search responses now label the retrieval mode** (#898): `GET /api/collections/search`, `GET /api/knowledge/search`, and the MCP tools `collections_search` / `knowledge_search` (both transports, including the stdio offline fallback) carry a `retrieval: "hybrid" | "lexical_only"` field. Previously the lexical-only degradation that kicks in without the `agnes[embeddings]` extra was visible only in a server-side log line, so a client could not tell semantic-scored results from degraded ones.
@@ -4251,13 +3078,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - MCP `describe` docstrings (stdio + server-side foundation tool) now document the actual sample shape (#898): `sample.rows` is a list of `{column: value}` objects and there is no `sample.columns` key — the docstring previously promised `{"columns": [...], "rows": [...]}`, which broke agents parsing the documented shape on empty tables.
 
 ## [0.74.99] - 2026-07-16
-
 ### Added
 
 - Container CPU caps in `docker-compose.yml` are now env-overridable, mirroring the existing `AGNES_APP_MEM_LIMIT` pattern: `cpus: ${AGNES_APP_CPUS:-2.0}` (app) and `${AGNES_SCHEDULER_CPUS:-1.0}` (scheduler), settable per deployment in `.env` instead of editing the compose file (live edits are lost on VM recreate). The `customer-instance` Terraform module grows matching `app_cpus` / `scheduler_cpus` instance attributes (defaults unchanged) that flow into `/opt/agnes/.env` via the startup script.
 
 ## [0.74.98] - 2026-07-16
-
 ### Fixed
 
 - **`agnes auth import-token` no longer fails a valid PAT when server-side verification is merely slow or transiently erroring.** The verification call (against `/api/catalog/tables`) hard-exited on any `5xx` and used a hard-coded 15s timeout, so a momentarily loaded or flapping endpoint turned a structurally-valid token into a failed install. Now only a definitive rejection (`401`) aborts; a `5xx` or a read timeout warns and proceeds to save the token (it already decoded locally and was not rejected — same posture as `--skip-verify`), while a genuine connection failure (bad URL / server down) still aborts. The timeout is configurable via `AGNES_VERIFY_TIMEOUT` (seconds; falls back to the 15s default on an unset, non-numeric, or non-positive value). `cli/commands/auth.py`.
@@ -4288,7 +3113,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   staleness-warning grace window stays calibrated to the real cadence.
 
 ## [0.74.97] - 2026-07-16
-
 ### Added
 
 - `security.ssrf_allowed_hosts` (env `AGNES_SSRF_ALLOWED_HOSTS`): operator
@@ -4357,7 +3181,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.96] - 2026-07-15
-
 ### Fixed
 
 - Intermittent **"system unavailable"** (503) responses under load. The
@@ -4409,7 +3232,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.95] - 2026-07-15
-
 ### Added
 
 - **Keyless chat LLM auth via Workload Identity Federation (opt-in).** A new
@@ -4430,7 +3252,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.94] - 2026-07-15
-
 ### Fixed
 
 - RBAC N+1 in catalog (`/api/v2/catalog`, `/api/catalog`), sync manifest
@@ -4448,7 +3269,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.93] - 2026-07-15
-
 ### Fixed
 
 - Keboola connector data-sync reliability (found via live end-to-end verification against a real project):
@@ -4458,7 +3278,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.92] - 2026-07-15
-
 ### Fixed
 
 - Keboola semantic layer importer: metrics whose Keboola SQL fragment carries an embedded `--` comment (e.g. an author note flagging a missing table or an unapplied filter) are now skipped and counted (`skipped_embedded_comment`) instead of silently emitting broken SQL — appending the composed `FROM` clause after such a comment let SQL treat it as part of the comment, dropping the `FROM` clause entirely. Found via live end-to-end verification against a real project.
@@ -4466,7 +3285,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.91] - 2026-07-15
-
 ### Internal
 
 - **INC-01572 red-team coverage — process-memory leg.** Added
@@ -4483,7 +3301,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.90] - 2026-07-15
-
 ### Fixed
 
 - **Chat P0 — CLI data tools and MCP tools returned `HTTP 405` inside chat.**
@@ -4503,7 +3320,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.89] - 2026-07-15
-
 ### Fixed
 
 - **Chat P0 — UI-rotated `ANTHROPIC_API_KEY` / `E2B_API_KEY` silently lost on
@@ -4520,7 +3336,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.88] - 2026-07-15
-
 ### Added
 
 - Keboola semantic layer importer: `connectors/keboola/semantic_layer.py` syncs a Keboola project's Metastore (datasets, metrics, constraints) into `metric_definitions` on a schedule (`SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL`, default 6h), tagged `source='keboola_semantic_layer'` and upsert+pruned each run. Requires a master (owner) Storage API token. Metrics referencing a JOINed dataset (via an aliased column not in scope for v1) are skipped and counted rather than guessed. A failed Metastore fetch or Storage API master-token preflight (401/5xx/network) aborts with a logged `{status: error}` instead of a 500; an empty upstream metrics response never prunes the entire existing row set (safety valve against upstream filter drift); and foreign-alias detection masks single-quoted string literals so a dotted enum value like `'in.progress'` no longer skips a valid single-table metric.
@@ -4528,7 +3343,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.87] - 2026-07-15
-
 ### Fixed
 
 - **Chat P0 — LLM completions timed out, agent returned empty responses.** Both
@@ -4547,7 +3361,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.86] - 2026-07-15
-
 ### Fixed
 
 - **Chat readiness probe:** the admin "test E2B connection" diagnostic
@@ -4565,7 +3378,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.85] - 2026-07-15
-
 ### Fixed
 
 - **Security:** the SSE (`/api/mcp`) and Streamable-HTTP MCP transports now
@@ -4585,7 +3397,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.84] - 2026-07-15
-
 ### Security
 
 - OAuth 2.1 authorization codes, access tokens, and **refresh tokens** are now
@@ -4602,7 +3413,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   verification change and is tracked as a follow-up.
 
 ## [0.74.83] - 2026-07-15
-
 ### Security
 
 - `/api/query` and `/api/v2/scan` (`from_query`) now deny non-admin references
@@ -4619,7 +3429,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   closes the sensitive metadata/credential-name leak.
 
 ## [0.74.82] - 2026-07-15
-
 ### Fixed
 
 - **Chat sandbox runner crashed at startup**, taking chat down end-to-end. The
@@ -4636,7 +3445,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (the deny_out egress fix let sandboxes spawn, which unmasked this).
 
 ## [0.74.81] - 2026-07-15
-
 ### Security
 
 - Marketplace and initial-workspace clone URLs are now run through
@@ -4648,7 +3456,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   depth). Found by the post-INC-01572 audit (L2).
 
 ## [0.74.80] - 2026-07-15
-
 ### Added
 
 - The guided web tour now includes the global header search box ("Search everything") — one step between Memory and the admin menu, explaining the cross-source search (tables + knowledge + documents) and its origin-labeled results.
@@ -4656,7 +3463,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.79] - 2026-07-15
-
 ### Security
 
 - Curated-marketplace file serving: two path/RBAC gaps from the post-INC-01572
@@ -4672,7 +3478,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   slugs (`..`, `/`, `\` rejected) on the asset, doc, and mirrored endpoints.
 
 ## [0.74.78] - 2026-07-15
-
 ### Fixed
 
 - **Chat sandbox spawn was hard-down** on `e2b>=2.32.0`: the VM egress config
@@ -4688,11 +3493,9 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   change.
 
 ## [0.74.77] - 2026-07-15
-
 ### Security
 
 ## [0.74.76] - 2026-07-15
-
 ### Security
 
 - Corporate-memory curator: the LLM prompt that ingests every analyst's
@@ -4742,7 +3545,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.74] - 2026-07-15
-
 ### Added
 
 - **Chat sandbox secret broker.** The real Anthropic key and Agnes token are
@@ -4807,7 +3609,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.73] - 2026-07-15
-
 ### Added
 
 - Connector SKILL.md frontmatter accepts `required: true` — required
@@ -4822,7 +3623,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.72] - 2026-07-15
-
 ### Fixed
 
 - **Security (defense-in-depth):** the PreToolUse hook's curl/wget
@@ -4842,7 +3642,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.71] - 2026-07-14
-
 ### Fixed
 
 - PreToolUse hook no longer misreads a `curl`/`wget` flag argument as a bare
@@ -4860,7 +3659,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.70] - 2026-07-14
-
 ### Changed
 
 - **Security:** chat sandboxes now enforce a VM-level outbound network allowlist
@@ -4886,7 +3684,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.69] - 2026-07-14
-
 ### Fixed
 - **Security:** the SSE and Streamable-HTTP MCP servers now enforce the same authorization + policy gate on passthrough tool *invocations* as the REST endpoint. Their dynamically-registered passthrough closures previously forwarded straight to the upstream MCP source, bypassing the per-group `tool_grants` check, the `mutating` admin-only gate, and the per-(tool, user) rate limit that `POST /api/mcp/passthrough/tools/{id}/call` enforces — so a caller reaching a passthrough tool over a remote MCP connector was neither grant-checked, mutation-gated, nor rate-limited (the credential leak on these transports was already closed in 0.74.66; this closes the gate bypass deferred there). The gate stack is now extracted into a single `enforce_passthrough_access` helper shared by both the REST endpoint and the transport closures so they can't drift; each transport re-fetches the live registry row per call (grant/mutating/rate-limit/`enabled` changes take effect immediately, no restart), fails closed when the caller identity can't be resolved from the request, applies the tool's `pii_fields` redaction to the response, and enforces the same pre-forward `scope='per_user'` credential guard (refuse with an `agnes mcp my-secret set <source>` remedy rather than an opaque upstream auth error).
 - **Known residual (invocation gated, listing not):** on the SSE / Streamable-HTTP transports every enabled passthrough tool's name + description + input schema is still advertised to any authenticated caller via the MCP `tools/list` response, regardless of that caller's `tool_grants` — invocation is now denied (above) but visibility is not yet filtered, unlike the REST listing (`_visible_passthrough_tools`) which already intersects with the caller's grants. Per-caller `tools/list` filtering on these transports is a follow-up (it needs the SDK's per-connection tool enumeration, not the one-time registration this fix touches).
@@ -4894,14 +3691,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.68] - 2026-07-14
-
 ### Fixed
 - Marketplace skill/agent detail hero now renders the same name-derived, type-tinted placeholder as the card grid — a skill named `Sales Dashboard` shows a green `SD` tile instead of a generic dark `SK`/`AG` glyph. Completes the #791 rollout (`name-derived, type-tinted placeholder initials`), which had tinted the card grid and the plugin detail hero but missed `marketplace_item_detail.html` (the standalone skill/agent detail page). Both the server-side placeholder and the post-load JS hydration now derive initials from the display name and apply the `--ds-accent-*` per-type tint (skill=green / agent=amber / plugin=blue).
 
 ---
 
 ## [0.74.67] - 2026-07-14
-
 ### Added
 
 - Daily Slack release digest: a scheduled workflow (`release-digest.yml`)
@@ -4914,14 +3709,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.66] - 2026-07-14
-
 ### Fixed
 - **Security:** `scope='per_user'` MCP sources no longer fall back to the shared service credential for an *identified* caller who has not set their own credential — such passthrough calls now fail closed instead of silently borrowing the shared credential and exposing whatever it can see. This holds across all caller-facing transports: the REST passthrough endpoint returns a 403 with an `agnes mcp my-secret set <source>` remedy, and the SSE and Streamable-HTTP MCP servers (the Cowork remote-MCP path) now thread the per-request caller identity into the forward so their once-registered tool closures resolve the caller's own credential rather than defaulting to shared. The shared credential remains available only to the caller-less materialize path.
 
 ---
 
 ## [0.74.65] - 2026-07-14
-
 ### Added
 
 - New branding knob `instance_brand_short` (`AGNES_INSTANCE_BRAND_SHORT` env >
@@ -4933,14 +3726,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.64] - 2026-07-13
-
 ### Fixed
 - Postgres telemetry day bucketing is now pinned to UTC. `occurred_at`/`started_at`/`timestamp` are `timestamptz`, and the usage rollup producer (`rebuild_rollups`), the telemetry day group-by, and the adoption/DAU/token series all bucketed days via a bare `CAST(... AS DATE)` — i.e. in the database session's TimeZone, so day labels drifted on non-UTC servers (DuckDB was unaffected: its session timezone is pinned to UTC). Window/trend boundaries in the reports repository (`CURRENT_DATE`, also session-TZ-dependent on Postgres) are pinned the same way. Guarded by a new contract test that runs the producer under a skewed session TimeZone.
 
 ---
 
 ## [0.74.63] - 2026-07-13
-
 ### Fixed
 
 - Store uploads now locate the bundle by its anchor file anywhere in the ZIP instead of assuming the archive root: plugins root at the shallowest `.claude-plugin/plugin.json` (two anchors at the same depth → new `zip_multiple_plugins` error), and macOS archive junk (`__MACOSX/`, AppleDouble `._*`, `.DS_Store`) is skipped during anchor search and excluded from the baked tree. Previously a plugin ZIP created with macOS Finder's "Compress <folder>" (everything under one wrapper directory) pre-filled the upload form fine but then failed the final submit with a misleading "plugin.json missing at root" error — and an AppleDouble `._*.md` mirror could even win the agent-anchor search over the real agent file.
@@ -4948,7 +3739,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.62] - 2026-07-13
-
 ### Added
 
 - Maintained digests: admins define digest documents (title + standing
@@ -4970,7 +3760,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.61] - 2026-07-13
-
 ### Fixed
 
 - Bundled `connector-gws` seed skill no longer writes a non-empty `project_id` into `client_secret.json`. A non-empty value made the `gws` CLI send an `x-goog-user-project` header on every API call, so every analyst except the operator needed `roles/serviceusage.serviceUsageConsumer` on the shared OAuth GCP project and got "Caller does not have required permission to use project …" 403s after a successful OAuth login. The skill now writes `"project_id": ""` (header dropped; quota bills to the OAuth client's own project) and heals existing installs in its precheck — on a `serviceUsageConsumer` failure it blanks the stored `project_id` and retries without re-auth. `AGNES_GWS_PROJECT_ID` is still served by `/api/connectors/params` for operator-customized seed templates, but the bundled skill ignores it and `instance.yaml.example` now marks it legacy.
@@ -4978,7 +3767,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.60] - 2026-07-13
-
 ### Added
 
 - `agnes query --scope {auto,local,server}` (default `auto`) — runs locally first and transparently falls back to server-side execution when there is no local data yet or the query hits a table that is `query_mode='remote'`/`server_only`; a `[scope]` stderr note says where the query ran. `--remote`/`--local` remain as shorthands for `--scope server`/`--scope local`.
@@ -5004,14 +3792,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.59] - 2026-07-13
-
 ### Fixed
 - Marketplace daily-series telemetry (plugin detail chart, inner-item series): the 30-day axis is now built from the UTC date, matching the UTC day buckets of the rollup fact. Previously, on hosts where the local date differed from the UTC date (e.g. shortly after local midnight east of UTC), the series dropped or misplaced today's bucket; the daily-series contract test asserted on the local clock for the same reason.
 
 ---
 
 ## [0.74.58] - 2026-07-13
-
 ### Changed
 
 - BQ metadata lookups (rows/size via `TABLE_STORAGE` and `__TABLES__`, entity type via `INFORMATION_SCHEMA.TABLES`) now run through the python BigQuery SDK instead of the DuckDB extension: ~0.3 s per call instead of 7–13 s through a pooled extension session, certifi-verified TLS (immune to the extension's intermittent `CURL error 77` class), and the region-scoped `TABLE_STORAGE` job is now pinned to the configured location — previously it could silently return no row and always fall through to the legacy path. The COLUMNS fetch (shared `fetch_bq_columns_full`) stays on the extension.
@@ -5020,7 +3806,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.57] - 2026-07-13
-
 ### Added
 
 - Claude Code setup instructions on both connector pages: the AI Connector page (`/me/ai-connector`) gains a **Claude Code** tab in the setup guide — `claude mcp add --transport http agnes <server>/api/mcp/http`, the restart-before-it-appears note, `/mcp` to authenticate, and an SSE-fallback note for servers that predate the mount-root fix below — and the token page (`/mcp-connect`) gains a **Claude Code** tab with the PAT-in-header one-liner (`claude mcp add --transport sse … --header "Authorization: Bearer <PAT>"`).
@@ -5032,7 +3817,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.56] - 2026-07-13
-
 ### Added
 
 - Startup now seeds the six canonical memory domains (`md_finance` … `md_infrastructure`) into the **active** state backend through the repository factory — previously only the DuckDB schema ladder seeded them, so a fresh Postgres-backed instance had no canonical domains at all (Alembic creates the table empty). The new `memory_domains` repo method `ensure_seed` (DuckDB + PG siblings) inserts under the deterministic `md_<slug>` ids and never touches an existing row — admin renames are not overwritten and soft-deleted domains are not resurrected (a soft-deleted row still holds its slug). Covered by cross-engine contract tests and a both-backends lifespan-replay parity test.
@@ -5044,7 +3828,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.55] - 2026-07-12
-
 ### Changed
 
 - `agnes init` no longer auto-marks the bootstrap Claude Code session private (reverts the auto-mark half of #771; the push-time JWT redaction half stays and is the sole PAT defense — the raw token still never reaches the server's transcript store). Setup-session transcripts now upload like any other session, and marking a session private is exclusively the analyst's own deliberate action: the `/agnes-private` command template gains `disable-model-invocation: true` (the model can suggest the command but can never invoke it), and the install-prompt NOTE + step-4 tip + workspace CLAUDE.md template now instruct the agent to treat the PAT-in-transcript as designed behavior — no warnings, no self-initiated `agnes mark-private` — while still suggesting `/agnes-private` to the user for future sensitive sessions.
@@ -5056,7 +3839,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.54] - 2026-07-12
-
 ---
 ### Added
 
@@ -5076,7 +3858,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.53] - 2026-07-12
-
 ### Fixed
 
 - The three host-side ops scripts (`agnes-auto-upgrade.sh`, `agnes-state-applier.sh`, `agnes-tls-rotate.sh`) bash-sourced the entire `/opt/agnes/.env` (`set -a; . .env`) just to read a few infra-controlled keys. A free-text app var in `.env` (e.g. an operator-set `AGNES_INSTANCE_CUSTOM_PREAMBLE` containing a backtick, `>`, `$`, or quote) made the source abort with a shell syntax error under `set -e` — silently blocking every 5-minute auto-upgrade tick (VM stopped pulling new images), and latent on the cutover state-applier and daily TLS rotation. Each script now extracts only the keys it actually needs, line-by-line, never shell-evaluating any value (auto-upgrade: `AGNES_TAG`/`STATE_DIR`/`COMPOSE_FILE`; state-applier: `AGNES_TAG`; tls-rotate: `TLS_FULLCHAIN_URL`/`TLS_PRIVKEY_URL`/`TLS_CSR_SUBJECT`/`DOMAIN`/`STATE_DIR`). Docker Compose was unaffected — it parses `.env` with its own safe parser.
@@ -5084,7 +3865,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.52] - 2026-07-12
-
 ---
 ### Added
 
@@ -5102,7 +3882,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.51] - 2026-07-11
-
 ### Added
 
 - Credential-free local knowledge packaging: the server builds a per-collection
@@ -5128,7 +3907,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.50] - 2026-07-10
-
 ### Fixed
 
 - Postgres-backed instances: ~25 further backend-split sites (beyond the 0.74.36 batch) read/wrote app-state on the always-DuckDB connection instead of the active backend, breaking (among others) the per-table MCP endpoint (404 for every table), internal-source registration, MCP passthrough-tool registration, memory-endpoint RBAC audience filtering, blocked-bundle purge (reaped 0 rows), session-pipeline user attribution and marketplace usage attribution (empty telemetry rollups), home-page stats, the admin activity health pulse, catalog profile display, workspace CLAUDE.md rendering (empty tables/metrics/marketplace sections), OpenMetadata catalog export, Slack-bot user identity + channel allowlist, chat audit-log writes, and the Keboola/BigQuery/MCP extractor registry reads. All sites now route through the backend-aware repository factory.
@@ -5140,7 +3918,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.49] - 2026-07-10
-
 ### Added
 
 - Unified knowledge search: one query across document Collections (hybrid
@@ -5152,7 +3929,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.48] - 2026-07-10
-
 ### Added
 - Cloud-chat sandbox agents now connect to the Agnes MCP stdio server (`agnes mcp`) via `ClaudeAgentOptions.mcp_servers`, so a web-chat agent sees the same RBAC-filtered Universal-MCP passthrough tools (`crm_*`, etc.) that a local Claude Code / Cowork install gets — previously the sandbox agent could only reach Agnes through the `agnes` CLI's Bash surface and never saw passthrough tools. Auth (`AGNES_SERVER`/`AGNES_TOKEN`/`AGNES_SESSION_ID`) is forwarded on the MCP server's own env; unconfigured spawns (fake-agent tests) fall back to built-in tools only.
 
@@ -5162,7 +3938,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.47] - 2026-07-10
-
 ### Changed
 
 - Compose hardening for the app and scheduler services: `CURL_CA_BUNDLE`/`SSL_CERT_FILE` pinned to the image's CA bundle (the statically linked libcurl inside DuckDB extensions intermittently failed new TLS handshakes with `CURL error 77` while its own CA discovery raced fd pressure) and the file-descriptor soft limit raised from the 1024 default to 65536 (fd exhaustion during bursts produces the same error signature).
@@ -5175,14 +3950,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.46] - 2026-07-10
-
 ### Changed
 - **Rebrand: "AI Data Analyst" → "AI Harness".** Agnes outgrew its data-analyst framing — it now spans governed data access, an aggregated skills marketplace, corporate memory, and multiple agent surfaces (web chat, Slack, Telegram, MCP, CLI). Renamed the platform one-liner and brand strings across README, docs, the FastAPI/OpenAPI title, MCP server instructions, CLI help, web page-title fallbacks, `config/instance.yaml.example`, and the marketplace owner name. The default `instance.name` is now `"AI Harness"` (was `"AI Data Analyst"`; instances that set `instance.name` explicitly are unaffected). The `agnes init` workspace CLAUDE.md template heading no longer contains the legacy `AI Data Analyst` marker — workspace-initialized detection has been sentinel-based (`.claude/init-complete`) since #259, and the legacy substring check is retained for pre-#259 workspaces.
 
 ---
 
 ## [0.74.45] - 2026-07-10
-
 ### Added
 
 - Collections: zip archive upload — a bundle (e.g. a Confluence HTML space export)
@@ -5197,14 +3970,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.44] - 2026-07-10
-
 ### Changed
 - Interactive web login sessions now persist for 30 days (JWT `exp` + `access_token` cookie `max_age`), up from 24 hours. Session JWTs remain non-revocable per-session — the only server-side kill switch is deactivating the account.
 
 ---
 
 ## [0.74.43] - 2026-07-10
-
 ### Added
 - `instance.custom_preamble` install-prompt hook (env `AGNES_INSTANCE_CUSTOM_PREAMBLE`, resolver `get_instance_custom_preamble()`): an operator-authored block injected at the very top of the `agnes init` install prompt, above `Set up the … CLI`. Empty/unset (the default) emits zero lines, so the rendered prompt stays byte-identical; `{instance_brand}` and the other server-side placeholders are substituted, but it must not contain literal `{server_url}`/`{token}`. Documented in `docs/CONFIGURATION.md` and surfaced by `GET /api/admin/config-surface`.
 
@@ -5223,7 +3994,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.42] - 2026-07-10
-
 ### Changed
 - The cloud-chat workspace seed (`WorkdirManager.server_url`) now resolves its
   server URL through the same fallback chain as the sandbox data rails
@@ -5244,7 +4014,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.41] - 2026-07-10
-
 ### Added
 
 - Studio Skill Builder (`/admin/studio/skill`, issue #688): guided authoring of a SKILL.md with an assistant profile, published straight into the store's guardrail + review pipeline via the new `POST /api/store/entities/from-markdown` (also `agnes store publish-md` and the `store_publish_markdown` MCP tool). Direct-submit domains bypass the authoring-suggestions queue — the store's own review is the moderation.
@@ -5252,7 +4021,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.40] - 2026-07-10
-
 ### Fixed
 
 - Failed or killed scheduled materializations are retried the same day instead of silently waiting until the next schedule boundary. The orchestrator's post-rebuild bookkeeping bumped `sync_state.last_sync` for every table in `_meta` — including `query_mode='materialized'` rows, whose daily due-check reads that timestamp — so one failed `daily 06:00` run left the table stale for 24 h (observed live as a week-long refresh gap). Materialized rows' sync_state is now owned solely by the materialized pass; the filesystem-fallback publish still records rows/hash and clears stale errors but preserves `last_sync` (new `update_sync(bump_last_sync=False)` on both backends), keeping the schedule gate open so the next tick re-materializes and heals the missing `_meta` row. Also fixes the filesystem-fallback path detecting materialized rows via `get_by_name()` instead of `get()` so that the schedule-gate protection applies when the registry `id` differs from the `name` (parquet filename stem).
@@ -5260,14 +4028,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.39] - 2026-07-10
-
 ### Added
 - Single `.skill` file uploads to the Store: the marketplace now accepts a lone `.skill` file (a `SKILL.md` document with YAML frontmatter `name`+`description` and a markdown body) as an alternative to a `.zip` bundle. The file is materialized server-side as `scratch/SKILL.md` and is identical to a zip upload; only valid for `type=skill` (uploading as plugin/agent returns 422 `skill_file_wrong_type`).
 
 ---
 
 ## [0.74.38] - 2026-07-10
-
 ### Fixed
 - MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.
 
@@ -5277,7 +4043,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.74.37] - 2026-07-10
-
 ### Added
 - Operator toggle to hide individual `/login` feature cards without forking: set `instance.hide_login_features` (a YAML list or comma-separated string of the stable keys `data`, `marketplace`, `mcp`, `memory`, `anywhere`) in `instance.yaml`, or the `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` env override. Empty by default — nothing is hidden.
 
@@ -5288,7 +4053,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.36] - 2026-07-10
-
 ### Changed
 - Admin secrets/data-sources UX consolidation: Keboola project connect/browse/register/"Set as default"/"Rotate token" now live entirely on `/admin/data-sources`, removing the duplicate Keboola section from `/admin/datasource-credentials`. That page is retitled "Instance secrets" (Google Workspace + BigQuery only) and links back to `/admin/data-sources` for Keboola; `/admin/data-sources` gains a reciprocal link to Instance secrets.
 
@@ -5300,13 +4064,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Backend-split guard hardened: state-table list is now derived from the SQLAlchemy model metadata (a new model automatically extends the guard), `connectors/` joined the scan dirs, and a new detector flags raw state-SQL through *any* connection outside the repository layer — closing the helper-param blind spot behind this bug batch. New cross-engine repo methods added in pairs with contract-test coverage.
 
 ## [0.74.35] - 2026-07-10
-
 ### Added
 
 - Web chat composer: a filterable slash menu (type `/` at the start of a message) showing the skills and slash commands actually invokable in your chat sandbox — server-normalized from bundled workspace-template skills and your RBAC-filtered marketplace/store plugin skills via the new `GET /api/chat/skills` endpoint (also reachable as `agnes chat skills` and the `chat_skills` MCP tool). (#780)
 
 ## [0.74.34] - 2026-07-10
-
 ### Added
 
 - Marketplace registration supports pinning a marketplace to a fixed git tag or full 40-char commit SHA via a new `ref` field (mutually exclusive with `branch` — 400 if both are set). Nightly and manual syncs stay at the pinned ref even when upstream's default branch moves; a mismatched/unreachable SHA pin fails the sync and keeps serving the previous checkout, same as any other sync failure. Surfaced on the `/admin/marketplaces` cards/edit modal and in the `MarketplaceResponse` API shape (#781)
@@ -5320,13 +4082,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Schema v87: `ref` column added to `marketplace_registry` (DuckDB `_v86_to_v87` + Alembic `0034_marketplace_ref_pin_v87`)
 
 ## [0.74.33] - 2026-07-10
-
 ### Fixed
 
 - Store uploads: `_safe_zip_extract` now rejects archives with more than 2000 members (`413 zip_too_many_entries`) — the existing size caps didn't bound member count, so a small ZIP packed with tiny files could exhaust inodes on the data volume (#779)
 
 ## [0.74.32] - 2026-07-10
-
 ### Changed
 
 - /home onboarding now recommends launching Claude with `claude --permission-mode auto` instead of `--dangerously-skip-permissions`. Auto mode's classifier auto-approves safe actions (file edits and safe Bash) so the setup script runs mostly unattended while riskier commands can still prompt — an honest middle ground rather than a blanket skip. The broad-blast-radius flag is no longer surfaced on /home (it stays documented as an advanced option on /setup-advanced), and the workspace launcher comment examples were updated to match.
@@ -5334,7 +4094,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   their bundle row (DuckDB `_v86_to_v87` + Alembic `0034_parent_file_id_v87`).
 
 ## [0.74.31] - 2026-07-10
-
 ### Fixed
 
 - Filesystem-fallback master views now record success in `sync_state`: a table published via the fallback path (parquet on disk, `_meta` row missing) previously kept whatever stale `set_error()` row the failed run left behind, so the admin dashboard and manifest kept reporting a long-fixed failure indefinitely
@@ -5344,7 +4103,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Keboola connector: added test coverage for the GCS/Azure sliced-download branches in `connectors/keboola/storage_api.py` and the equivalent `gs://` rewrite in the legacy `connectors/keboola/client.py` fallback path — previously exercised only by manual verification, not the test suite.
 
 ## [0.74.30] - 2026-07-09
-
 ### Added
 - Collections: `POST /api/collections/{id}/files/{file_id}/reingest` (+ `agnes collections reingest`, MCP `collections_reingest`) — re-run ingestion for one file after a fix. Files ingested before this release may still be sitting at `indexed` over what was actually empty content — re-ingest them to get an honest status.
 
@@ -5355,12 +4113,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - PDF ingestion works on default installs: `pypdf` is now a core dependency (previously every PDF was rejected unless the heavy `docling` extra was installed).
 
 ## [0.74.29] - 2026-07-09
-
 ### Changed
 - Marketplace cover-photo placeholders now derive their initials from the entity name (`keboola-cli` → `KC`) instead of a generic per-type `PL`/`SK`/`AG`, and tint by type — plugin (blue) / skill (green) / agent (amber) — so a wall of cover-less cards is scannable at a glance. Applies to the card grid, the plugin detail hero, and inner skill/agent cards within a plugin's Internal Structure section; unknown/empty names fall back to the type abbreviation and default gradient. The plugin detail hero now pre-renders server-side initials as a progressive-enhancement fallback so no empty gradient flash occurs before the JS fetch completes.
 
 ## [0.74.28] - 2026-07-09
-
 ### Changed
 
 - Install prompt: replaced the render-time "your account has zero grants" claim with live-manifest wording plus an `agnes my-stack show` verification step (explaining the `[✓]`/`[✗]` legend), and added an up-front reconcile-vs-fresh-install note keyed on the `.claude/init-complete` sentinel — the prompt no longer contradicts grants added after it was generated or breaks on partially-set-up machines.
@@ -5372,13 +4128,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - connector-gws seed skill: the operator params file is documented at its real location `<workspace>/.claude/agnes/.env` (was wrongly `~/.claude/agnes/.env`, sending installs into the manual GCP walkthrough even when the operator had provisioned OAuth), and the skill now checks for the secret value directly in that file (instance.yaml `connectors:` overlay ships values verbatim) before falling back to the `*_ENV` shell-env pointer.
 
 ## [0.74.27] - 2026-07-09
-
 ### Added
 - Admin "Add Keboola project" wizard at `/admin/data-sources`: paste a connection URL + storage token, validate, then browse buckets/tables and register the ones you want — no SSH, no config-file edits. Backed by a new `GET /api/admin/source-connections/{id}/tables` discovery endpoint (buckets grouped with nested tables) and `list_buckets()`/`list_tables()` on `KeboolaStorageClient`. Source connections can now also be renamed via `PUT /api/admin/source-connections/{id}` (`name` field), used by the wizard to adopt the project name `test-connection` reports. The admin nav gained a "Sources" grouping distinguishing "Data sources" (Keboola/BigQuery projects Agnes pulls tables from) from "MCP sources" (MCP servers whose tools Agnes calls at runtime) (#755)
 
-
 ## [0.74.26] - 2026-07-09
-
 ### Changed
 - `POST /api/v2/scan`'s billable BigQuery execution now runs through `google-cloud-bigquery`'s `client.query(labels=...)` instead of the unlabeled DuckDB `bigquery_query()` extension, so scan jobs carry the same cost-attribution labels (`workload_type`/`agent_name`/`user_id`) as the dry-run estimate and the hybrid-query path (#751). The `snapshot.create` audit row now also carries `bq_job_id`/`bytes_scanned`/`bytes_billed` for BigQuery-source scans, replacing the previously-deferred `None` placeholders. The remote-select streaming path (`agnes query --remote`) is unaffected — it stays on the DuckDB extension for Storage Read API pushdown (#752)
 
@@ -5386,17 +4139,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Audit rows for chat-secret updates, CLI auth code/token minting, data-package/recipe/memory-domain admin mutations, and memory-item required-flag toggles now go through the backend-aware `audit_repo()` factory instead of instantiating `AuditRepository` directly against the request's DuckDB connection. On Postgres instances the direct form wrote to the always-DuckDB connection while admin reads went to Postgres, so those audit entries silently never appeared in the Activity Center.
 
 ## [0.74.25] - 2026-07-09
-
 ### Fixed
 - `agnes init` no longer writes a shell launcher function that shadows the `agnes` CLI binary itself (workspace folder named `Agnes` produced `function agnes`, hijacking every subsequent CLI call into a Claude chat session). The collision guard that already renamed shell built-ins now also covers the toolchain's own commands (`agnes`, `claude`) — the function becomes e.g. `agnesai` — and re-running `agnes init` removes the stale shadowing block a pre-fix install left in `~/.zshrc` / `~/.bashrc` / PowerShell profiles. IWT launchers seeded as `bin/<sanitized-name>` keep routing correctly under the renamed function (#783)
 
 ## [0.74.24] - 2026-07-08
-
 ### Changed
 - Library: the collection-creation form on `/library` is now a proper panel — labeled Name/Description fields with a live `/library/<slug>` URL preview, inline validation and 409 duplicate-slug errors (replacing `alert()`), Enter/Escape keyboard handling, and creating a collection now lands on the new collection's detail page ready for file upload instead of reloading the list.
 
 ## [0.74.23] - 2026-07-08
-
 ### Added
 
 ### Changed
@@ -5409,7 +4159,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.22] - 2026-07-08
-
 ### Added
 
 ### Changed
@@ -5422,7 +4171,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Removed dead `get_system_db()` connection acquisitions in `app/api/sync.py` — the connections were opened and closed without ever being used, since the actual data access already went through `table_registry_repo()` / `sync_state_repo()` / `audit_repo()`, which open their own connections internally.
 
 ## [0.74.21] - 2026-07-08
-
 ### Added
 - CLI proactively nudges analysts to re-mint their 90-day PAT before it expires: a one-line stderr warning (at most once per day, `AGNES_TOKEN_RENEW_DAYS` env override, default 7 days, `0` disables) when the stored token's `exp` claim is close to expiring, plus token status in `agnes auth whoami` and the `agnes update` convergence report. No refresh-token grant, no PAT TTL change — `agnes auth login` remains the renewal path (#477)
 
@@ -5435,7 +4183,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.20] - 2026-07-08
-
 ### Added
 - `agnes statusline` now surfaces a one-line "what changed" summary after a detached `agnes update` convergence actually changes something (e.g. `Agnes: CLI 0.72.9 -> 0.73.0 (active next session) · +2 plugins · workspace refreshed`), shown once per convergence report; an all-`ok`/`skipped` report renders nothing, and the CLI portion is phrased honestly ("active next session" vs already active) since a freshly-installed binary only takes effect on the next `agnes` invocation (#744)
 
@@ -5448,7 +4195,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.19] - 2026-07-08
-
 ### Added
 
 ### Changed
@@ -5461,7 +4207,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.18] - 2026-07-08
-
 ### Added
 
 ### Changed
@@ -5474,7 +4219,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.17] - 2026-07-08
-
 ### Added
 
 ### Changed
@@ -5489,7 +4233,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.16] - 2026-07-08
-
 ### Added
 
 ### Changed
@@ -5502,7 +4245,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.15] - 2026-07-07
-
 ### Added
 - BigQuery job labels (`workload_type`, `agent_name`, `environment`, `user_id`) on agent-issued BQ jobs. The **hybrid** path labels its billable jobs; the `/api/v2/scan` and remote-`/api/query` paths label only the dry-run cost estimate — their billable execution runs through the DuckDB BigQuery extension, which (like sync/snapshot) cannot carry job labels. Full billable-job attribution for those paths is a follow-up slice (bytes/slot capture).
 
@@ -5515,7 +4257,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.14] - 2026-07-07
-
 ### Added
 - `GET /api/store/entities/{id}/status` — owner-facing review-pipeline status (latest submission status, error cause, actionable hint), with `agnes store status <id> [--wait]` and a `store_status` MCP tool; `agnes store upload` now points at it when the entity is held for review. Previously the only post-upload signal was a 409 `prior_version_pending` on the next update
 
@@ -5532,7 +4273,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.13] - 2026-07-07
-
 ### Added
 
 ### Changed
@@ -5545,7 +4285,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.12] - 2026-07-07
-
 ### Added
 - Interactive chat turns (web + Slack) now emit a `chat.message` usage event (`source='server'`, surface + session id in props), so `/admin/telemetry` and the adoption dashboard's active-user counts include chat activity — previously `usage_events` only saw desktop CC sessions (`agnes push`) and server product events
 
@@ -5558,7 +4297,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.11] - 2026-07-07
-
 ### Added
 
 ### Changed
@@ -5571,7 +4309,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.10] - 2026-07-07
-
 ### Added
 - `connectors` (the per-tenant connector-params overlay) is now an editable section in `/admin/server-config` (UI + API), so operators can manage it without hand-editing the overlay file on the server
 
@@ -5585,7 +4322,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.9] - 2026-07-07
-
 ### Added
 
 ### Changed
@@ -5598,7 +4334,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.8] - 2026-07-07
-
 ### Added
 
 - `agnes init` now automatically installs a one-word launcher shortcut (`<workspace_name_lowercased>`) into the user's shell config (`~/.zshrc` / `~/.bashrc` on POSIX, PowerShell `$PROFILE` on Windows). The shortcut changes into the workspace and launches Claude with `--permission-mode auto`; when the IWT supplies a `bin/<word>` launcher it routes through it so the welcome skill fires. Cross-platform, idempotent (per-workspace marker — re-running `agnes init` never duplicates, and a second workspace on the same machine gets its own block), and reversible. If a same-named shell function from the old manual step already exists, the new block is appended (last definition wins) and the user is told the old line is a harmless leftover. Use `agnes init --no-shortcut` to opt out.
@@ -5614,7 +4349,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.7] - 2026-07-07
-
 ### Added
 
 ### Changed
@@ -5627,7 +4361,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Catalog table-detail page (`/catalog/t/{table_id}`) no longer swallows exceptions silently — all three `except` blocks in `app/web/router.py` (package-enumeration, profile-load, schema-introspection fallback) now log with `exc_info=True`, so the real cause (e.g. DuckDB catalog contention during a concurrent `SyncOrchestrator.rebuild()`) is visible in logs instead of a bare warning.
 
 ## [0.74.6] - 2026-07-07
-
 ### Added
 
 ### Changed
@@ -5641,7 +4374,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Re-arm the debug-toolbar integration test weakened in #660: a rendered HTML 200 route without toolbar markup under `DEBUG=1` now fails instead of skipping; only the empty-body pytest-split artifact still skips.
 
 ## [0.74.5] - 2026-07-07
-
 ### Added
 
 ### Changed
@@ -5654,7 +4386,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Test-suite disk hygiene: `pytest.ini` now sets `tmp_path_retention_count = 1` (down from the default 3) — a full-suite run writes 20–50 GB of DuckDB/parquet/pgserver fixtures into pytest's basetemp, and retaining the last 3 sessions accumulated 56+ GB and filled the disk, failing a run with thousands of spurious errors. Retaining a single session lets the next run's startup sweep reclaim the prior one (~3× less peak). Deliberately keeps the default `tmp_path_retention_policy = all` rather than `failed`: `failed` deletes each passing test's `tmp_path` mid-session, which desyncs the cached DuckDB system-DB connection (`get_system_db()` singleton) from disk and makes later tests fail with duplicate-key errors in the `seeded_app` fixture. A session-scoped reaper fixture (`tests/db_pg/pgserver_reaper.py`) additionally removes `agnes-pgserver-*` data dirs orphaned by hard-killed runs (older than 1 h, `postmaster.pid` process gone); live concurrent-worktree sessions are never touched.
 
 ## [0.74.4] - 2026-07-03
-
 ### Added
 
 ### Changed
@@ -5667,7 +4398,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.3] - 2026-07-03
-
 ### Added
 
 ### Changed
@@ -5680,7 +4410,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.2] - 2026-07-02
-
 ### Added
 
 ### Changed
@@ -5693,7 +4422,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Bump `PyJWT` minimum to 2.13.0 (lock: 2.12.1 → 2.13.0), resolving five Dependabot alerts against the auth-critical JWT dependency — GHSA-xgmm-8j9v-c9wx (high: public-key JWK accepted as HMAC secret), GHSA-w7vc-732c-9m39, GHSA-993g-76c3-p5m4, GHSA-jq35-7prp-9v3f, GHSA-fhv5-28vv-h8m8. Agnes only uses symmetric HS256 `encode`/`decode` (no `PyJWK`/`PyJWKClient`), so none of the advisories were directly exploitable here; this is defense-in-depth hygiene.
 
 ## [0.74.1] - 2026-07-02
-
 ### Added
 - `POST /api/admin/validate-gws-credentials` — admin-only format check for the Google Workspace OAuth `client_id` (no network call, no persistence). Powers a new "Test" button on the GWS card of `/admin/datasource-credentials`; the endpoint was documented for #718 but never wired up (previously returned 405 / absent from OpenAPI).
 
@@ -5706,7 +4434,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.74.0] - 2026-07-02
-
 ### Added
 - Keboola multi-project support: `GET/POST/PUT/DELETE /api/admin/source-connections` CRUD surface (+ `/secret` vault endpoints and `/test` connectivity check) for naming and storing multiple Keboola project credentials; `connection_id` field on `POST /api/admin/register-table` pins a table to a specific named connection (400 on unknown id); sync materialized-pass resolves Keboola client credentials per-table via the named connection (vault-first, then `token_env` env var), falling back to the global instance token for tables without a `connection_id`.
 - `/admin/datasource-credentials` Keboola projects section: dynamic cards backed by the source-connections API showing name, stack URL, default and token-status badges, with Test / Set as default / Rotate token / Delete actions and an Add project modal.
@@ -5721,7 +4448,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.73.4] - 2026-07-02
-
 ### Added
 - `agnes update` — one idempotent, best-effort convergence of the workspace + CLI: CLI self-upgrade, workspace template (override 3-way merge with `.bak` backups / default `CLAUDE.md` refresh), Agnes-owned hooks/statusLine/commands, marketplace plugins, and data pull. Single-instance locked (`~/.config/agnes/update.lock`), runnable from any directory, with a per-run report appended to `<workspace>/.claude/agnes/update.log`. This is the recommended way to repair a broken install or pick up a new release.
 - A corrupt `<workspace>/.claude/settings.json` is now backed up to `settings.json.corrupt.<ts>` and rebuilt, instead of leaving hook install/repair permanently skipped.
@@ -5745,7 +4471,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `agnes refresh-marketplace --check` exits a dedicated drift code (`20`) so `agnes update` can decide whether to run a full reconcile without re-implementing the ls-remote comparison.
 
 ## [0.73.3] - 2026-07-02
-
 ### Added
 - **Generic Jira custom-field refresh** via `JIRA_REFRESH_FIELDS`. An operator lists the custom fields they want kept fresh on tickets (`field_id` or `field_id:column`, comma-separated, no defaults); the webhook overlay and the 15-minute poll re-fetch them with the primary token and overwrite them on the ticket, and the transform emits one JSON-text column per field on the `issues` table (column = the alias, or the field id). SLA fields are not special — they are just entries in the list. Joins are implicit: the value lives on the ticket row, keyed by `issue_key`. A configured column name that would collide with a built-in `issues` column (e.g. `resolution`, `status`) is prefixed with `cf_` so built-in values are never overwritten.
 - **`verify_sla_access` field preflight** (`connectors/jira/scripts/verify_sla_access.py`). Discovers an instance's custom fields (`--list-fields`, id + name + type) and verifies, against the live API, that the configured fields are readable with the primary token (`--issue KEY`) — classifying each as present / permission-error / null across the domain and `api.atlassian.com` gateway URLs. Never prints token/email values; exits non-zero when no field is readable.
@@ -5764,7 +4489,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.73.2] - 2026-07-02
-
 ### Added
 - `POST /api/admin/register-table` accepts `defer_rebuild` (BigQuery only): skips the synchronous, O(registry) per-insert rebuild of the extract + master views, returning `202 registered` without making the table queryable yet. New companion `POST /api/admin/registry/rebuild` triggers that rebuild once. Bulk onboarding can now register many tables with `defer_rebuild=true` and rebuild a single time, instead of one full registry-wide rebuild per table (which made large batches pathologically slow and starved foreground requests).
 
@@ -5773,12 +4497,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `POST /api/admin/registry/rebuild` now calls `invalidate_all()` after a synchronous rebuild so stale catalog entries are cleared immediately.
 
 ## [0.73.1] - 2026-07-02
-
 ### Fixed
 - Corporate-memory contradiction check no longer fails with a 400 from the LLM provider. `BATCH_CONTRADICTION_SCHEMA`'s nullable `severity` / `resolution_action` fields now use `anyOf` (a string-with-enum branch or null) instead of a union `["string", "null"]` type combined with an `enum` containing `null`, which strict structured outputs reject — every contradiction check was permanently broken. The enum stays enforced at the schema level, so the model still can't emit out-of-range values.
 
 ## [0.73.0] - 2026-07-02
-
 ### Added
 - `/admin/contribute-skill` page (admin-only) that accepts a pasted Claude Code
   `SKILL.md` and publishes it as a one-skill plugin in a local, sync-immune
@@ -5806,13 +4528,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.72.1] - 2026-06-29
-
 ### Internal
 
 - `scripts/dev/worktree-spawn.sh` — helper script to spawn an isolated Git worktree for a parallel Claude Code session; symlinks shared local state (`user/`, `.venv/`, `.env`, `data/`) back to the main checkout. Documented in CLAUDE.md under *Parallel Claude Code worktrees*.
 
 ## [0.72.0] - 2026-06-26
-
 ### Fixed
 - `POST /api/admin/keboola/test-connection` now resolves the Keboola token from the vault when absent from the environment, so the "Test connection" button on `/admin/datasource-credentials` works for vault-only deployments.
 - `PUT /api/admin/datasource-secrets/BIGQUERY_SERVICE_ACCOUNT_JSON` now calls `clear_token_cache()` after storing the new SA JSON, so the rotated credential takes effect immediately instead of after the cached token expires (up to ~50 min).
@@ -5860,7 +4580,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Session-upload internals reorganized: new `cli/lib/session_paths.py` (projects-dir encoder honoring `CLAUDE_CONFIG_DIR`, no dash-collapsing) and `cli/lib/upload_log.py` (upload ledger `session_id⇥size⇥iso` + audit logs); `cli/lib/session_queue.py` and `cli/lib/claude_sessions.py` removed. Hook installer (`cli/lib/hooks.py`) drops the capture entries while keeping the capture markers for one-time migration cleanup.
 
 ## [0.71.61] - 2026-06-23
-
 ### Added
 
 - `POST /api/admin/run-knowledge-migration` — admin endpoint to retroactively import `knowledge.json` items into the `knowledge_items` DB table for instances that collected corporate memory before v0.71.60. Idempotent; a one-click button on `/admin/corporate-memory` calls it and auto-hides after success.
@@ -5876,7 +4595,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.71.60] - 2026-06-23
-
 ### Fixed
 - Corporate memory pipeline now persists extracted knowledge items to the DuckDB `knowledge_items` table via `knowledge_repo()`; previously `collect_all()` only wrote `knowledge.json` and `/api/memory` always returned empty (#205).
 - `run_corporate_memory` now returns `ok: false` when DB-level sync errors occur; stats response includes `items_db_inserted`, `items_db_updated`, `items_db_errors`.
@@ -5885,7 +4603,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `test-pg` CI job now runs as a 2-shard matrix, halving wall-clock time for the Postgres contract suite.
 
 ## [0.71.59] - 2026-06-22
-
 ### Added
 - **AI Connector page leads with a "Control Agnes from your AI agent" connector panel.** The page moved to `/me/ai-connector` (the old `/me/cowork` and `/me/mcp` now 301-redirect there). The OAuth 2.1 connector URL (`/api/mcp/http`) is now the primary call to action — a prominent panel with the copy-able connector URL, a 3-step connect flow, and the supported clients (Claude Cowork, Claude web, ChatGPT, Gemini, Cursor, Microsoft Copilot, VS Code). Previously this no-token connect path was undiscoverable: the page surfaced only the setup-bundle download and the legacy SSE endpoint. The setup-bundle UI and the legacy SSE endpoint display were removed from the page (the bundle and SSE backend endpoints are unchanged). The "AI Connector" name is now applied consistently across the profile dropdown menu, the onboarding tour, and the help/onboarding docs (previously still labelled "AI Cowork"); references to the third-party Claude Cowork product are unchanged. The hero subtitle and the connector panel's lead paragraph now span the full content width instead of wrapping early.
 
@@ -5899,7 +4616,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **CI test suite now runs across 8 shards (up from 4) with uv dependency caching**, reducing the worst-case shard wall-clock time from ~11 min to ~3 min. Regenerated `.test_durations` so pytest-split can balance all 8 900+ tests evenly across shards. `tests/db_pg/` now runs in a dedicated `test-pg` job, removing pgserver startup overhead from the split shards.
 
 ## [0.71.58] - 2026-06-22
-
 ### Added
 - **Admin "Disable plugin" toggle in the `/admin/marketplaces` Details modal.** Each plugin row now has a "Disabled" switch (confirmation modal, same style as "Mark as system") that admin-disables the plugin instance-wide via the existing `POST /{marketplace_id}/plugins/{plugin_name}/{disable,enable}` endpoints. A disabled plugin disappears from every surface except the Details modal where it can be re-enabled — the RBAC served feed, the marketplace browse page, every user's my-stack, the synthetic served marketplace, the `/admin/access` grant UI, and the v2 `/skills` endpoint (admin included). The disable also survives restarts: the built-in marketplace re-seed on boot preserves `admin_disabled` (the `replace_for_marketplace` upsert never resets it), so a disabled built-in plugin stays disabled and hidden after a reboot. Disabling also clears the `is_system` flag (re-enabling does NOT restore it), and the "Mark as system" button is greyed out while a plugin is disabled. The `admin_disabled` flag is now surfaced on `GET /{marketplace_id}/plugins` (`PluginResponse`) so the modal can render the switch and a DISABLED pill.
 
@@ -5921,7 +4637,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Backend-split guard residual shrunk by 13 handler-files / 23 handlers** (`_GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL`). New dual-backend repo methods backing them, all with cross-engine contract tests: `users.get_info_by_ids`; `sync_state.clear_for_table`; `store_submissions.{delete,list_for_entity}`; `session_processor_state.{delete_for_processors,max_processed_at,processed_session_files,get_states_for_session_files}`; `usage.{count_events,reset_all,list_sessions_for_user_admin,list_sessions_for_user_self,tokens_daily_series,tokens_by_model,tokens_top_sessions,tokens_totals}`; `audit.{count_for_user,query_governance,facets,kpis}` (added to `AuditRepositoryProtocol`; `kpis` p95 uses `approx_quantile` on DuckDB / `percentile_cont` on Postgres); `memory_domains.resolve_ids_to_slugs`; `marketplace_plugins.list_system_keys`; `store_entities.category_counts`; `table_registry.count_non_internal`; `user_group_members.{list_groups_with_meta_for_user (widened),list_google_sync_groups_for_user}`; `observability_views.{count_for_user,name_exists}`. New contract files: `test_{usage,sync_state,session_processor_state,table_registry,observability_views}_contract.py`. Also fixed a latent `usage.delete_older_than` bug (DuckDB returned `-1` rowcount; Postgres `::TEXT` interval cast broke under SQLAlchemy). `usage.reset_all` gained a `clear_processors` arg so `reprocess_usage` clears the usage rollups *and* their `session_processor_state` checkpoints in one transaction (restores the pre-refactor all-or-nothing reset); retention-prune and token-series contract tests strengthened with seeded cutoff / cross-user-and-window cases.
 
 ## [0.71.57] - 2026-06-19
-
 ### Added
 
 ### Changed
@@ -5939,7 +4654,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Backend-split guard now also catches `Depends(_get_db)` + raw `conn.execute` on state tables** (`tests/test_backend_split_guard.py`), and the cross-engine parity sweep compares `/api/admin/access-overview` response bodies, not just HTTP status (`tests/db_pg/`). New repo methods `users.get_by_ids`, `store_entities.synthetic_name_taken`, and `user_stack_subscriptions.subscribe_group_members` added to both DuckDB and Postgres backends with contract-test coverage.
 
 ## [0.71.56] - 2026-06-18
-
 ### Changed
 - **BREAKING** License changed from MIT to PolyForm Small Business License 1.0.0. Use of the software is now restricted to organizations with fewer than 100 total individuals and less than 1,000,000 USD (2019) in total revenue in the prior tax year. See [LICENSE](LICENSE) for full terms.
 ### Fixed
@@ -5947,41 +4661,34 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Refreshed OAuth access tokens keep their `resource` binding (RFC 8707).** `exchange_refresh_token` minted the new access token without a `resource`, so a resource-bound token lost its binding (`resource=None`) on every refresh while the auth-code path set it correctly. The `resource` is now persisted on the refresh-token row (new `oauth_refresh_tokens.resource` column, DuckDB schema v84 + Alembic `0031`) and carried through token rotation into both the new access token and the rotated refresh token.
 
 ## [0.71.55] - 2026-06-17
-
 ### Fixed
 - **Keboola materialized `where_filters` now resolve date placeholders (`{{last_6_months}}`, `{{today}}`, …) — a rolling window in a materialized `source_query` no longer needs a hand-maintained literal date.** `materialize_query` parsed the `source_query` filter spec but never ran `resolve_placeholders`, so a placeholder like `{{last_6_months}}` was sent to the Storage API verbatim and silently matched 0 rows — placeholders only worked on `query_mode='local'` rows. The materialized path now resolves them (via `parse_filters` + `resolve_placeholders`) exactly like the local/legacy path, and an unknown placeholder (`{{typo}}`) now fails loudly with a clear error instead of silently returning 0 rows.
 
 ## [0.71.54] - 2026-06-17
-
 ### Internal
 - OpenMetadata connector: added `search_data_products_by_tag` and `search_tables_by_data_product` reverse-search methods (query-filter by `tags.tagFQN` / `dataProducts.fullyQualifiedName`) for catalog-driven data-product onboarding.
 - `app/plugins.py`: generic extension points (`load_routers`, `extra_template_dirs`) to mount deployment-specific admin routers + Jinja template dirs from `instance.yaml` `plugins.*` config, without forking the app. Wired into bootstrap: `app.main.create_app` includes configured `plugins.admin_routers` before the web catch-all, and `app.web.router` adds `plugins.template_dirs` to the Jinja loader (built-in templates first; missing dirs dropped; config-read failure falls back to built-in only).
 
 ## [0.71.53] - 2026-06-17
-
 ### Fixed
 
 - Google group membership changes now propagate to PAT/CLI callers without requiring a browser re-login. When `require_resource_access` denies a request, it re-fetches the caller's Workspace groups via the existing DWD path and retries the access check once (self-heal-on-miss, #504). A 60-second per-user cooldown prevents Admin SDK call storms on repeated denials.
 
 ## [0.71.52] - 2026-06-17
-
 ### Internal
 - Ruff-formatted `test_google_group_prefix_sync.py`; documented why success-path assertions use strict `== 302` (the callback explicitly sets `status_code=302`) rather than `in (302, 307)`. (#676)
 
 ## [0.71.51] - 2026-06-17
-
 ### Fixed
 - **Invite copy button works on plain HTTP.** The clipboard helper now falls back to `document.execCommand('copy')` when `navigator.clipboard` is unavailable (non-HTTPS contexts), so the Copy button in the invitation and password-reset link modals reliably copies the URL on self-hosted instances that run without TLS. (#681)
 - **SMTP-not-configured notice is now visually prominent.** When no email transport is configured the modal note is styled as a yellow warning banner instead of gray secondary text, making it immediately clear the admin must share the link manually. (#681)
 - **Missing `audit_repo` import in password provider.** `app/auth/providers/password.py` referenced `audit_repo` inside `_audit()` without importing it, causing every audit call inside that module to silently fail with a `NameError` (swallowed by the bare `except Exception`). (#681)
 
 ## [0.71.50] - 2026-06-17
-
 ### Fixed
 - **Collections: deleting a tabular file now purges its derived `table_registry` row, parquet, and `extract.duckdb` view.** Previously the cleanup left the table queryable via `agnes catalog` even after the file was removed. The same cascade fires on collection soft-delete. Both DuckDB and Postgres backends are covered. (#692)
 
 ## [0.71.49] - 2026-06-17
-
 ### Added
 - Maintenance page shown during app restarts, replacing raw 502 errors; page auto-refreshes every 12 s
 
@@ -5989,14 +4696,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - 502 errors during container restarts (e.g. auto-upgrade) are absorbed by Caddy's retry window instead of being surfaced to users
 
 ## [0.71.48] - 2026-06-17
-
 ### Added
 - **Container logs ship to GCP Cloud Logging on GCE deployments.** A new opt-in compose overlay `docker-compose.gcp-logging.yml` switches the `app`, `scheduler`, `caddy`, `telegram-bot`, `ws-gateway`, and `extract` services to Docker's built-in `gcplogs` logging driver, so container stdout/stderr (application INFO **and** uncaught-exception tracebacks) flows to Google Cloud Logging next to the VM/system logs (resource `gce_instance`, logName `gcplogs-docker-driver`, tagged by `jsonPayload.container.name`; the app JSON line is preserved in `jsonPayload.message`) instead of staying in the local json-file driver and being lost on container recreate. Activation is **placement-driven**: the overlay is deliberately **not** baked into the image and **not** in any default `COMPOSE_FILE` / `CONFIG_FILES` list — `agnes-auto-upgrade.sh` and `agnes-state-applier.sh` append it only when the file physically exists on disk (`[ -f ]` guard), and the file is placed solely by the GCE deploy layer (Terraform startup-script), which runs only on GCE. Non-GCP deployments never receive the file and keep the default `json-file` driver unchanged (gcplogs would otherwise fail without a GCE metadata server). The VM service account already carries `roles/logging.logWriter`, so no IAM change is required, and `docker logs` keeps working via Docker's dual-logging local cache. (#679)
 
 ### Internal
 
 ## [0.71.47] - 2026-06-17
-
 ### Added
 - **Native OAuth 2.1 remote MCP connector.** Agnes can now be added as a custom connector by any MCP-compatible AI agent — Claude Desktop / Claude.ai, Cursor, Cline, ChatGPT connectors, or a custom MCP SDK client — using the standard browser-based OAuth 2.1 + PKCE handshake, with no manually-issued PAT. A new Streamable-HTTP MCP transport is mounted at `/api/mcp/http` (the existing SSE transport stays at `/api/mcp/sse` for Cowork back-compat) and acts as its own OAuth Authorization Server: RFC 7591 dynamic client registration, `/authorize` + `/token` with PKCE (S256), and RFC 8414 + RFC 9728 discovery metadata published at the origin root (`/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/api/mcp/http`) so a client given the bare instance URL can discover the connector. The authorize step bridges into the existing Agnes login (Google OAuth, email magic-link fallback) and shows a consent screen before minting a short-lived authorization code; the access token is a standard Agnes session JWT, so `resolve_token_to_user` accepts it and all existing RBAC applies unchanged. The connector URL a user pastes into their agent is `https://<your-host>/api/mcp/http`. New modules `app/api/mcp_streamable.py` + `app/auth/mcp_oauth.py`; OAuth clients/codes/tokens persisted via the dual-backend `oauth_clients` repo (DuckDB + Postgres parity). Schema → v83.
 
@@ -6011,7 +4716,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.71.46] - 2026-06-16
-
 ### Added
 - Collections web UI: a **Library** nav section — `/library` lists your
   accessible collections; `/library/{slug}` shows files with per-file status
@@ -6063,13 +4767,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   DuckDB `_v81_to_v82` migration + Alembic `0029_collections_v82`.
 
 ## [0.71.45] - 2026-06-16
-
 ### Added
 - Corporate-memory mining (privacy-gated, v81): per-user **opt-in consent** (`memory_mining_consent`, dual-backend) before any session transcript is mined; an admin `POST /api/admin/memory-mining/run` PII-scans candidates, tags provenance, and routes them through the authoring-suggestions queue (never an admin-direct write). Candidate extraction is a deterministic placeholder; LLM distillation plugs in on top of the same consent/PII/provenance/approval gate.
 - Authoring agents — non-admin suggestion queue (`authoring_suggestions`, DuckDB v80 + Alembic, dual-backend): `POST /api/studio/suggestions` lets a non-admin submit a proposed create payload per studio domain; admins review via a moderation queue at `/admin/studio/suggestions` + `GET/POST /api/admin/authoring-suggestions[/{id}/approve|reject]`. Approving a suggestion auto-creates the real resource for all four domains by replaying the payload through each domain's own validation + repo create path (pydantic re-validation; the moderation UI shows the complete `command`/`url` payload so admin approval is informed consent).
 - Authoring agents: profiled chat sessions (`profile` on `POST /api/chat/sessions`, materialized into the session workdir, no migration) + a generic admin-only **authoring studio** at `/admin/studio/{domain}` with an embedded assistant panel, covering four domains — **data-package**, **mcp**, **marketplace**, and **corporate-memory** — each wiring its Create action to the existing admin endpoint.
-## [0.71.44] - 2026-06-16
 
+## [0.71.44] - 2026-06-16
 ### Added
 
 ### Changed
@@ -6084,7 +4787,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Schema v81 (DuckDB `_v80_to_v81` + Alembic `0028_memory_mining_consent_v81`): `memory_mining_consent` table — opt-in privacy gate for memory mining, dual-backend.
 
 ## [0.71.43] - 2026-06-16
-
 ### Added
 
 ### Changed
@@ -6108,7 +4810,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   coverage guard that fails CI when a new endpoint has no test or exclusion entry.
 
 ## [0.71.42] - 2026-06-16
-
 ### Added
 - Named source connections (phase 1/5): `source_connections` + vault-backed `connection_secrets` registry (DuckDB v79 + Alembic `0026`), per-type config validation with URL normalization, a connection/token resolver (vault → `token_env`), and first-boot seeding of `keboola`/`bigquery` defaults from env/yaml. Invisible in this phase — extraction switches over to per-connection `extracts/<name>/` in phase 2. Lays the groundwork for N connections per source type (multiple Keboola stacks/projects, multiple BigQuery projects) without changing single-connection deployments.
 
@@ -6121,7 +4822,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.71.41] - 2026-06-16
-
 ### Added
 - **Built-in marketplace: owner + richer plugin descriptions.** The seeded built-in marketplace now sets `curator_name="Agnes"`, so it shows a clear owner/attribution in the admin and browse UI (distinct from admin-registered marketplaces that carry their curator's name). The `marketplace.json` + per-plugin `plugin.json` descriptions now spell out what each plugin actually covers — `agnes-analyst` (discovery, local-vs-remote query path, estimate-first snapshots, per-source SQL flavour, metric definitions) and `agnes-operator` (the three config layers + live config-surface) — so users browsing know what they're installing.
 - **Jira connector: hive-partitioned parquet layout.** Monthly parquet files are
@@ -6148,7 +4848,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.71.40] — 2026-06-15
-
 ### Added
 - **Config-surface introspection** — `GET /api/admin/config-surface` (admin-gated), the `agnes admin config-surface` CLI, and a matching MCP tool expose this instance's complete configurable surface in one read: every `instance_config` knob with its resolved value + source (env / yaml / default), the registered Initial Workspace Template (url/branch/last-sync-sha), the registered marketplaces, and `infra_repo_url`. The machine-readable form of `docs/CONFIGURATION.md`. Also adds the optional `instance.infra_repo_url` / `AGNES_INFRA_REPO_URL` knob (empty default) — the one deployment pointer the app cannot self-discover.
 - **Built-in marketplace** — two vendor-neutral plugins ship with every instance and are seeded automatically (offline, from `src/_builtin_marketplace/`, no git fetch): `agnes-analyst` (how to query/discover/snapshot Agnes data + look up metrics, served to `Everyone`) and `agnes-operator` (how to configure the instance — init prompt, workspace, branding, connectors — backed by a live `config-surface` call so guidance names this instance's real pointers, served to `Admin`). New `marketplace_registry.is_builtin` flag (the nightly git-sync skips built-in rows) and `marketplace_plugins.admin_disabled` flag for per-plugin admin disable, on both the DuckDB (v77→v78) and Postgres ladders.
@@ -6162,7 +4861,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.71.39] — 2026-06-15
-
 ### Added
 - `agnes diagnose` now includes a **Jira partition-format** check
   (`jira-partition-format`) that detects whether the Jira connector's
@@ -6224,7 +4922,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (underscore) before branching so existing view-path logic is unaffected.
 
 ## [0.71.38] — 2026-06-15
-
 ### Added
 - **Forced password change on first sign-in for non-self-chosen passwords.** A
   new `users.must_change_password` flag (schema v77; Alembic
@@ -6264,7 +4961,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   ("at least one HTML 200 response") — and only skips when none do.
 
 ## [0.71.37] — 2026-06-13
-
 ### Fixed
 - `GET /api/health` no longer blocks the event loop on its DB schema read. The
   liveness probe is `async`, but it ran the schema `SELECT` synchronously on the
@@ -6278,13 +4974,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   so the watchdog's schema-bump info event and the docker smoke check keep working. (#654)
 
 ## [0.71.36] — 2026-06-13
-
 ### Added
 - **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3, #653)
 - **Initial Workspace Template moved to its own page + optional nightly auto-sync.** The IWT register / sync / delete UI now lives at `/admin/initial-workspace` (Admin → Agent Experience) instead of buried in a `/admin/server-config` section; the old anchor leaves a cross-link. The new page also surfaces a read-only **Prompt bindings** provenance table (which repo file each managed prompt reads from + divergence state, deep-linking to `/admin/prompts`). Optional **nightly auto-sync**: set `initial_workspace.sync_schedule` (UI field or `instance.yaml`; grammar `daily HH:MM` / `every Nm` / `cron …`, default `daily 03:30` when never configured, **leave empty to disable** — the scheduler then omits the nightly job entirely; env override `SCHEDULER_INITIAL_WORKSPACE_SCHEDULE`) and the scheduler fast-forwards the repo nightly via a new always-200 `POST /api/admin/initial-workspace/sync-if-configured` wrapper (silent no-op when no IWT is registered; the manual `/sync` still errors loudly). Cadence is read once at scheduler-container start — a UI edit takes effect on the next scheduler restart. Each nightly run writes an `initial_workspace.sync` / `initial_workspace.sync_failed` audit row, surfaced under the `/admin/activity` scheduler filter. (#622 Slice 3, #653)
 
 ## [0.71.35] — 2026-06-13
-
 ### Added
 - **Store pre-submit dry-run** — `POST /api/store/entities/dryrun` runs the full
   guardrail pipeline (inline checks + LLM review) against a candidate bundle and
@@ -6301,7 +4995,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   identical-bundle verdict caching are deferred (tracked on #317). (#317, #652)
 
 ## [0.71.34] — 2026-06-13
-
 ### Added
 - **Thumbs up/down ratings on store / marketplace items.** Analysts can now
   signal whether a store entity (skill / agent / plugin) was useful via a
@@ -6320,7 +5013,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (DuckDB + Postgres) with a cross-engine contract test. (#398, #651)
 
 ## [0.71.33] — 2026-06-13
-
 ### Added
 - **Query telemetry in the admin usage view** (addresses #410, on-demand slice).
   `GET /api/admin/telemetry/summary` now returns a `query_telemetry` facet that
@@ -6335,7 +5027,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   issue is deferred). Implemented on both DuckDB and Postgres backends. (#650)
 
 ## [0.71.32] — 2026-06-13
-
 ### Added
 - **Structured `where_filters` builder in the admin Keboola register/edit modals**
   (addresses #408). The Direct-extract (Storage API) registration path used to
@@ -6351,7 +5042,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   power users. Pure front-end (`app/web/static/js/where-filters-builder.js`). (#649)
 
 ## [0.71.31] — 2026-06-13
-
 ### Added
 - **Webhook alert on scheduled-sync failure.** When a scheduled sync fails —
   either fatally, on an extractor/subprocess timeout, or with per-table errors
@@ -6374,22 +5064,18 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.71.30] — 2026-06-13
-
 ### Added
 - **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3)
 
 ## [0.71.29] — 2026-06-12
-
 ### Added
 - Admin → Tables: **Unregister** action on unpackaged table rows, giving admins a UI path to delete a registered table (previously only possible via `DELETE /api/admin/registry/{id}`). Wires the existing, until-now unreachable `deleteTable()` handler to a per-row danger button. The action is offered only on **unpackaged** rows: tables shown inside a package keep *Remove from package* (detach), so a table is unregistered only after it has been detached — deletion follows the safe detach-then-unregister order and never leaves a dangling package→table link. (#645)
 
 ## [0.71.28] — 2026-06-12
-
 ### Added
 - The customer-instance watchdog now also reports two informational deployment-timeline events alongside incident alerts: an app **image change** (auto-upgrade recreated the container; includes the boot banner version when available) and a **DB schema-version change** (startup self-migration or a manual migration run, read from the `/api/health` body the liveness probe already fetches). Both are tracked as run-to-run deltas in the watchdog state dir, prefixed `i` in the message body, bypass the hourly alert-type anti-spam (one-shot by construction), and seed silently on first run. Incident alerts that arrive right after an upgrade now carry that context instead of looking like spontaneous failures.
 
 ## [0.71.27] — 2026-06-12
-
 ### Fixed
 - BigQuery "not found" errors (a registered table pointing at a non-existent BQ
   dataset/table, or a location mismatch) now surface as a structured 502 on
@@ -6399,12 +5085,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (#643, FAI-22)
 
 ## [0.71.26] — 2026-06-12
-
 ### Changed
 - **The Postgres backend now self-migrates at startup** (issue #636, part 2). When the DB's Alembic revision is behind the image's head, the app applies the pending migrations in-process under a Postgres advisory lock (replica-safe: concurrent starters serialize and the late one no-ops) instead of refusing to boot — mirroring the DuckDB ladder's self-migration on connect, and ending the crash-loop that the #641 fail-closed guard caused on deployments with no migrate step. `AGNES_PG_AUTO_MIGRATE=0` restores the fail-closed check for pipeline-controlled deployments; a DB *ahead* of the image (app rollback) and a failed upgrade still refuse to boot; `AGNES_SKIP_PG_REVISION_CHECK=1` keeps skipping everything for emergency boots.
 
 ## [0.71.25] — 2026-06-12
-
 ### Added
 - **`/admin/prompts` divergence badge.** When a managed prompt (install / workspace) is bound to a file in the Initial Workspace Template (IWT) repo (Git mode), each card now shows whether the bound file's content has drifted from the version captured at bind time: an `in sync @ <short-sha>` badge, or a red `diverged from repo` badge with a hint to re-click **Bind** to accept the repo's current version as the new baseline (no new endpoint — Bind already re-stamps). Divergence is computed lazily on `GET /api/admin/prompts/{kind}` (new response fields `diverged` + `current_blob_sha`) by comparing the live git blob sha of the bound path to the stored `base_sha`; it's a UI hint only and never blocks rendering. A bound file deleted from the repo, or a binding stamped before this change (legacy commit-sha baseline), reads as diverged — the safe loud default. The `initial_workspace.sync` audit event also gains a `diverged_prompts` param listing which bound prompts the new commit moved. (#622 Slice 2, #642)
 
@@ -6415,18 +5099,15 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `src/initial_workspace.py` gains `blob_sha(rel_path)` — best-effort per-file blob sha from the IWT clone HEAD (containment-guarded, returns `None` on absent path / unconfigured / git error). (#622 Slice 2, #642)
 
 ## [0.71.24] — 2026-06-12
-
 ### Fixed
 - Postgres backend now fails closed at startup when the DB's Alembic revision doesn't match the application's expected head, instead of booting "healthy" and 500ing every write that touches a post-stamp column (e.g. `table_registry.server_only`). The DuckDB ladder self-migrates on connect; Postgres did not apply or even check revisions on boot, so a re-pulled image against a PG stamped at an older revision drifted silently. A new `assert_pg_at_head()` runs in the FastAPI lifespan (PG-only, gated on `use_pg()`) and refuses to serve with a clear message naming the current and head revisions plus the remediation — distinguishing a DB *behind* the image (apply `alembic upgrade head`) from a DB *ahead* of it (unknown revision after an app rollback: roll the image forward or restore the matching backup). Set `AGNES_SKIP_PG_REVISION_CHECK=1` to boot anyway for emergency recovery. Auto-apply of pending migrations is intentionally deferred. (#636, #641)
 
 ## [0.71.23] — 2026-06-12
-
 ### Fixed
 - **Session uploads: three silent data-loss vectors closed.** (1) Queue entries pointing at a transcript that doesn't exist *yet* (Claude Code writes the `.jsonl` lazily on the first prompt) were permanently dropped by any concurrent `agnes push`; they are now requeued with a first-failure stamp and only age out to the forensic failed-log after 30 days (`RETRY_TTL`). (2) The SessionEnd hook now runs `agnes capture-session` before the detached push, so an ending session always re-queues its final transcript — previously a push fired mid-session from another window (or by `/clear`) consumed the entry and the server kept a partial transcript, or an empty post-`/clear` stub, forever. Existing workspaces pick the new layout up via the `agnes self-upgrade` hook refresh. (3) 401 (expired / not-yet-imported PAT) dropped the whole queue permanently; it is now transient — retried until re-auth, bounded by the same TTL, which also caps persistent 5xx requeue loops. `agnes push` reports a new `requeued` counter. (#640)
 - **Admin session list & downloads now see API-uploaded sessions.** The endpoints scanned only the legacy collector layout (`user_sessions/<email local-part>/`), so sessions stored by `/api/upload/sessions` under `user_sessions/<user_id>/` were invisible in the list until the usage processor indexed them and their single-file download 404'd forever. List, single-file download, and bulk ZIP now scan both layouts, and the self-service `/api/me/stats/sessions` list gained the same dual-layout scan (plus basename matching for its download links). (#640)
 
 ## [0.71.22] — 2026-06-12
-
 ### Added
 - **`/admin/prompts` — edit the install + workspace prompts from the admin UI even when an Initial Workspace Template (IWT) repo is registered.** Previously, as soon as the IWT clone contained `workspace/CLAUDE.md`, the admin editor flipped read-only (the implicit `seed_owns()` lock) — exactly when operators adopt the override repo, the common production setup. Each managed prompt now carries an explicit **Git ⇄ Editor** source toggle (`instance_templates.source_mode`): in **Editor** mode the admin's DB override wins at render time and the editor is always writable; in **Git** mode the prompt binds to a repo-relative file in the IWT clone (e.g. `workspace/CLAUDE.md`; editor read-only, edit in the repo + "Sync now") — bind-time validation and render-time resolution share the same repo-root namespace, and the render-time read is containment-guarded against `..`/symlink escapes like `resolve_seed_file`. A new unified page (`/admin/prompts`, two cards) replaces the two standalone editors (`/admin/agent-prompt` + `/admin/workspace-prompt`, now `308` → `/admin/prompts`). New REST surface (admin-only): `GET/PUT/DELETE /api/admin/prompts/{kind}`, `POST .../source`, `POST .../bind-git`, `POST .../preview` (`kind ∈ install|workspace`). The core fix lands at `build_zip()` — override-mode `agnes init` (which serves the IWT zip verbatim, bypassing `/api/welcome`) now ships the admin-edited `CLAUDE.md` when the workspace prompt is in Editor mode. (#622 Slice 1, #638)
 
@@ -6437,64 +5118,52 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **DuckDB schema v75 + Alembic `0022_prompt_source_mode_v75`.** Adds `source_mode` (NOT NULL, default `'editor'`), `git_path`, and `base_sha` to `instance_templates`; existing `welcome`/`claude_md` rows backfill to `'editor'`. `base_sha` is reserved for Slice-2 divergence detection (written, not read in Slice 1). Both backends kept in parity (SQLAlchemy model + dual repos with `get_meta`/`set_source_mode`/`bind_git`, cross-engine contract test included). (#622, #638)
 
 ## [0.71.21] — 2026-06-12
-
 ### Fixed
 - Pasting a fully-qualified BigQuery path (`project.dataset.table` or `dataset.table`) into `source_table` no longer breaks the table's sync. BigQuery table names cannot contain dots, so the registration layer (`POST /api/admin/register-table`, `PUT /api/admin/registry/{id}`, precheck, and the `/admin/tables` UI which surfaces the same errors) now collapses an unambiguous pasted path to the bare table name (when its dataset component matches `bucket`), and rejects contradictions with an actionable 400 — dataset mismatch points the admin at `bucket`, a foreign project points at `bq_fqn`. Previously the FQN was stored verbatim and the extractor composed a doubled path that failed to register on every sync.
 
 ## [0.71.20] — 2026-06-12
-
 ### Internal
 - CI: `release.yml` no longer builds a `:dev-<slug>` image for `*-autopilot` branches. These short-lived per-issue PR branches deploy to no VM, so the dev image was waste; worse, each force-push cancelled the prior run (`cancel-in-progress`), leaving a cosmetic red `build-and-push` check (not a required check — only `test` + `docker-build` gate merges) that made every such PR look broken. `main` and real dev branches are unaffected. (#634)
 
 ## [0.71.19] — 2026-06-12
-
 ### Fixed
 - `/api/v2/scan` results exceeding `api.scan.max_result_bytes` no longer crash with `AttributeError: 'RecordBatchReader' object has no attribute 'num_rows'` — the truncation guard assumed a `pyarrow.Table`, but duckdb ≥ 1.5 `.arrow()` returns a streaming `RecordBatchReader` (hit in production on the `from_query` auto-snapshot path). The guard now streams batch-by-batch with the cap applied (`arrow_to_ipc_bytes_capped`), which also bounds server memory: an over-cap result is consumed only up to the cap instead of being fully materialized in RAM — previously a single large `from_query` materialization could OOM the container.
 - Post-sync data profiling persists again. The profiler block in the sync runner referenced the repository factory without importing it — the NameError was swallowed and logged only as `[SYNC] Profiler skipped`, so table profiles were never saved after any sync; a second bug in the same block called `.save` on the factory function instead of the repository instance. Also drops a stray always-DuckDB `get_system_db()` connection from the block (backend-split hygiene).
 
 ## [0.71.18] — 2026-06-12
-
 ### Fixed
 - **`/admin/chat` is now reachable from the Admin menu.** The cloud-chat session dashboard had no nav entry anywhere — admins could only find it by typing the URL, and the adjacent Activity Center item "Sessions" (analyst-uploaded Claude Code session files) was easy to mistake for it. The Admin → Activity Center menu now lists both with distinct labels: "Analyst sessions" (`/admin/sessions`, renamed incl. its page title) and "Chat sessions" (`/admin/chat`). The chat dashboard itself migrated off its raw-HTML scaffold onto the design-system page shell ("Chat runners", Activity Center hero, standard nav/theme) — the last entry in the standalone-template allowlist, which is now empty and locked. (#632)
 
 ## [0.71.17] — 2026-06-12
-
 ### Internal
 - **E2E docker harness works again from a clean checkout.** Four stacked bit-rots made `tests/e2e/` unrunnable: (1) `Dockerfile.e2e` copied only `pyproject.toml` into the dep layer — metadata generation fails since `readme = "README.md"` was declared — and installed with plain pip, which cannot apply the `[tool.uv] override-dependencies` urllib3 pin and dies with `ResolutionImpossible` on the kbcstorage cap; the image now mirrors the production Dockerfile (python:3.13-slim + uv). (2) The root `.dockerignore` excludes `tests/`, so the image never contained its own `start.sh` entrypoint — a per-Dockerfile `Dockerfile.e2e.dockerignore` (BuildKit) now carries the list minus that line. (3) The harness probed `/healthz`, which no longer exists — conftest, the compose healthcheck, and the adversarial liveness probe now hit `/api/health`. (4) Tests that create chat sessions hard-failed with 503 `chat_disabled` when `E2B_API_KEY` is unset (fake-agent mode still spawns real E2B microVMs) — every chat-session-creating test file now skips cleanly via a shared `skip_unless_chat_sessions_possible()` helper. Note: the suite needs `--timeout=900` to outlive pytest.ini's global `--timeout=60` during image build + health wait. (#631)
 - **New `agnes-e2e-tester` agent** (`.claude/agents/`): runs/triages the layered test suites (unit → docker E2E → real-LLM/E2B) with the env-var gates and cost guardrails spelled out, and carries per-surface manual verification checklists (web chat incl. pause/resume, Slack, MCP/CRM passthrough, onboarding tour) for live-instance smoke tests. (#631)
 
 ## [0.71.16] — 2026-06-12
-
 ### Added
 - **`server_only` distribution mode for registered tables.** A new `server_only` boolean flag on `table_registry` (default `false`), decoupled from `query_mode`: a `server_only=true` table is kept server-side and refreshed by the normal extract/sync pipeline (including incremental) **and** stays queryable via `agnes query --remote`, but `agnes pull` does NOT download its parquet to analyst laptops. The manifest still lists it (so `agnes catalog` discovery + RBAC are unaffected); the `cli/lib/pull.py` download-set loop counts it in `parquets_total` but skips the fetch, mirroring the remote-skip’s listed-but-not-downloaded behavior — and prunes a previously-downloaded parquet (plus its sync-state row) on the first pull after the flag flips on, so the table doesn’t stay locally queryable. Use it for large tables where re-downloading the whole parquet to every laptop on each change is wasteful but live upstream querying is undesirable. Only meaningful for `query_mode IN ('local', 'materialized')` — the admin API validator (`POST`/`PUT` register/update) rejects `server_only=true` paired with `query_mode='remote'`, including after the BigQuery live-registration coercion to `'remote'` (the invariant is re-asserted post-coercion on both the register and update paths). Exposed as a checkbox in the admin register/edit modals for Keboola **and** BigQuery synced rows (hidden for live/remote rows; switching a BQ row to Live clears it). The `agnes query` "no local view → use `--remote`" hint now also covers `server_only` tables. DuckDB schema v74 + Alembic migration `0021_server_only_v74` keep both backends in parity. (#607, #630)
 
 ## [0.71.15] — 2026-06-12
-
 ### Added
 - **Operator wheels for stdio MCP sources survive container recreates.** stdio-transport MCP sources need their server's binary inside the app container, but anything installed by hand (`docker exec pip install …`) was wiped on every recreate — and recreates are routine now that auto-upgrade tracks releases — silently breaking the source's scheduled materialize with command-not-found until someone reinstalled. New contract: drop the wheel(s) into `${DATA_DIR}/mcp/wheels/` on the persistent data volume; at startup the app installs each with `pip install --user --no-deps` (`--no-deps` so a third-party wheel can never clobber the app's pinned dependencies — ship dependency wheels alongside if the server needs extras) and puts `~/.local/bin` on PATH so the stdio client can spawn the console script. Idempotent via a content-hash marker (unchanged wheels cost one hash per boot), fail-soft per wheel (a bad wheel logs an ERROR and is retried next boot; startup is never blocked). (#629)
 
 ## [0.71.14] — 2026-06-12
-
 ### Fixed
 - **Chat sandbox: the freshly-minted session token now always wins over a persisted token file.** `ChatManager._spawn_runner` mints a fresh short-lived session JWT into `AGNES_TOKEN` on every spawn/respawn, but the `agnes` CLI's `get_token()` preferred `token.json` over the env var — so any token file present in the sandbox (e.g. written by an in-session `agnes init`, or replayed workspace state) silently shadowed the fresh credential and produced `HTTP 401: Invalid or expired token` on `agnes catalog`/`query` after a respawn. Inside the sandbox (`AGNES_SESSION_ID` set — only the chat runner sets it) a non-empty `AGNES_TOKEN` env now takes precedence; an empty env still falls through to the file rather than returning a blank credential. Analyst laptops keep the historical file-first order — `token.json` written by `agnes init` stays canonical there. (#628)
 
 ## [0.71.13] — 2026-06-12
-
 ### Added
 - **Scheduler now supports cron expressions** alongside the existing `every Nm` / `every Nh` / `daily HH:MM` formats (fully backward compatible). A `cron <minute hour day-of-month month day-of-week>` schedule (UTC) covers day-of-month, weekly, monthly, and arbitrary cadences with one well-known format — e.g. `cron 0 5 7 * *` (05:00 UTC on the 7th of every month), `cron 0 5 * * 1` (05:00 UTC every Monday), `cron 30 6 1,15 * *` (06:30 on the 1st and 15th). Each field supports `*`, comma lists (`1,15`), ranges (`9-17`), and steps (`*/15`); day-of-week is 0-6 (0 = Sunday). When both day-of-month and day-of-week are restricted, both must match (AND) — a documented, deterministic departure from vixie cron's OR quirk. Implemented with a hand-rolled 5-field matcher (no new dependency). `is_table_due` mirrors the existing `daily` catch-up contract — a missed occurrence fires on the next tick after it passed, across arbitrarily long offline gaps (the due-check walks days, not minutes, bounded at 8 years — past the 4-year gap of a Feb-29 schedule) — and month-end is handled natively (`cron 0 0 31 * *` never fires in a 30-day month). `is_valid_schedule` validates each field against its range so the admin API rejects malformed cron with 422, consistent with the `daily 25:00` rejection. The admin table forms' Sync Schedule hints now mention the `cron …` form. (#608, #627)
 
 ## [0.71.12] — 2026-06-12
-
 ### Fixed
 - **`agnes pull` no longer destroys a good parquet on a hash mismatch, and a partial pull exits non-zero.** A table whose download failed the manifest-hash check used to be `unlink`ed *before* the result was verified — so a corrupt or raced download left the table completely missing from disk (not just stale), and `agnes pull` still reported success with exit 0. Now `_download_one` (`cli/lib/pull.py`) downloads into a sidecar `<tid>.parquet.verify.tmp`, verifies the hash there, and only `os.replace`s it onto the live `<tid>.parquet` **after** verification passes — so a bad download never touches the prior good file. A hash mismatch is treated as transient and re-downloaded (2 retries, small backoff) before giving up; on persistent mismatch the old parquet stays in place and the table is recorded under `result.errors`. Retries reset the per-file progress display, so a re-download doesn't inflate the byte counter past the file's size. The `agnes pull` command (`cli/commands/pull.py`) now `raise typer.Exit(1)` whenever `result.errors` is non-empty on all three output paths (normal, `--quiet`, `--json` — the JSON path emits the summary dict first, then exits 1), so manual runs and CI both see a partial pull as a failure instead of a success-looking exit 0. The pre-v49 / no-hash `_is_valid_parquet` fallback path is unchanged. (#596, #626)
 
 ## [0.71.11] — 2026-06-12
-
 ### Added
 - **Host-side watchdog + daily DB backup with restore-verification in the `customer-instance` module.** Every provisioned VM now runs two systemd timers (artifacts ship as module files through the startup script — independent of the pinned app `image_tag`): `agnes-watchdog` (every 5 min) greps container logs for known incident signatures — DuckDB `FatalException` crash loops, the invalidated-database "zombie" state where the app keeps answering `/api/health` 200 while every write returns 500, WAL-salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler HTTP-500 streaks, `/data` disk pressure and a dead health endpoint; `agnes-db-backup` (daily) copies `system.duckdb`+WAL to `/data/backups/system-duckdb/` (7-day retention) and *proves each copy restorable* by opening a scratch copy, replaying the WAL and exercising the statement classes from the 2026-06 index-corruption incident — so silent on-disk corruption surfaces within a day instead of at the next outage. Alerts go to journald + `/var/log/agnes-watchdog.log` and optionally to a Slack/Google-Chat-compatible webhook (new `alert_webhook_url` variable, sensitive; messages carry a per-environment label derived from the VM role). Opt out with `enable_watchdog = false`. Complements `enable_monitoring`'s uptime checks + PD snapshots: those observe the VM from outside; the watchdog reads failure states the health endpoint cannot express, and the canary verify catches corruption a disk snapshot would preserve faithfully. (#623)
 
 ## [0.71.10] — 2026-06-12
-
 ### Added
 - **An analyst's Claude can now browse and subscribe to stack resources without leaving the chat.** New `GET /api/stack/browse?type=<data_package|memory_domain>` exposes the existing `StackResolver.browse()` candidate set — every RBAC-granted resource for the caller, each annotated with an `in_stack` flag — so the model can discover what it *could* add, not just what is already subscribed. Surfaced on all three contracts: `agnes stack browse [--type] [--json]` (renders an `IN STACK` ✓ column), and three MCP tools (`stack_browse`, `stack_subscribe`, `stack_unsubscribe`). `stack_subscribe` returns a post-subscribe `next_step` hint (`Run \`agnes pull\` to download the new tables.`) so the freshly-subscribed resource becomes usable in the same conversation. Subscriptions are persistent (identical to the web UI "Add to stack" button). User approval rides the MCP client's own tool-permission prompt — no custom mechanism. The workspace `CLAUDE.md` rails now point at the browse → add → pull flow. (#621, #625)
 
@@ -6502,37 +5171,30 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `POST /api/stack/subscribe` and `DELETE /api/stack/subscription/{type}/{id}` now reject co-session principals with 403 (`co_session cannot manage stack`), matching `GET /api/stack` and the new `/browse`. Previously a co-session token reaching these endpoints crashed on the principal dataclass instead of being cleanly refused. (#625)
 
 ## [0.71.9] — 2026-06-12
-
 ### Changed
 - **`/admin/users` is now server-paged.** The page previously pulled every user account to the browser and filtered in JavaScript. It now shows a total-users metric at the top and a table of only the 10 most recently registered users; the search box and a new group-filter dropdown push their work to the backend (`GET /api/users?search=&group_id=&limit=`), which returns at most the requested window ordered by registration date. New repository method `search_recent(limit, search, group_id)` (DuckDB + Postgres parity). The `GET /api/users` list is now recency-ordered (was email-sorted); `limit` still defaults to 1000 so list-everything callers (`agnes admin list-users`, the setup health check) keep their prior reach. (#624, FAI-23)
 
 ## [0.71.8] — 2026-06-11
-
 ### Added
 - **`agnes query --remote --auto-snapshot` auto-recovers from the BigQuery scan cap on VIEW targets.** When a `--remote` query against a BigQuery VIEW / MATERIALIZED VIEW trips the 5 GB `remote_scan_too_large` cap (BigQuery can't push `LIMIT` into a view body), the opt-in `--auto-snapshot` flag now completes the query in one command: it materializes each over-cap view's **raw rows** as a deterministic local snapshot (`auto_<sha8>` keyed on the view name), substitutes the view names for their snapshots in the original SQL, and re-runs it locally — instead of failing with a "go run `agnes snapshot create` yourself" hint. Per-view keying means a JOIN across N over-cap views gets N distinct snapshots (no silent self-join), and the same view shared across two over-cap queries hits one cached snapshot. View-name substitution is case-insensitive so analysts who type any case still hit the canonical-case registry ID. A fresh snapshot (24h TTL, reusing the per-snapshot TTL infra) is reused on repeat invocations; an elapsed one is rebuilt. The flag parses the server's structured `remote_scan_too_large` 400 (no text regex); with the flag OFF, or on a non-view over-cap (empty `view_targets`), or any other error, behavior is byte-for-byte unchanged. Physical-table `--remote` queries are unaffected. Backed by a new `agnes snapshot create --from-query "<sql>"` mode that materializes a snapshot from a raw SELECT executed remotely (mutually exclusive with `--select`/`--where`), and a small server hook on `/api/v2/scan` (`from_query`) that runs the raw SELECT through the same RBAC + registry-gating as `/api/query` but without the scan cap (the analyst explicitly opted in). DuckDB execution errors on the from_query path now map to a structured `duckdb_execution_error` 400 (not a raw 500), and `scan_endpoint` logs the error-result audit row when `run_remote_select_to_arrow` raises so audit coverage matches the rest of the endpoint (Devin Review BUG_0001 + BUG_0002 + ANALYSIS_0001 + ANALYSIS_0003 on #620). (#620)
 
 ## [0.71.7] — 2026-06-11
-
 ### Added
 - **One-keystroke upgrade flow: `agnes self-update` alias + interactive prompt on version drift.** Added a hidden `agnes self-update` verb that resolves to the same callback as the canonical `agnes self-upgrade` (both point at one Typer instance, so they are byte-for-byte identical and idempotent). On a server-touching command where the local CLI is behind the server's pinned version — and stdin is an interactive TTY, the prompt isn't bypassed, and no skip-state exists for the current server version — the CLI now prompts **once**: `agnes <local> is <N> versions behind the server (latest: <server>). Upgrade now? [Y/n] (5s default Y)`. Accepting (or the 5s timeout) runs the self-upgrade flow and then re-execs the user's original command against the freshly-installed binary (`[upgraded → <server>] running your original command...`), guarded against a re-exec loop by an env sentinel. Declining touches `~/.config/agnes/state/skipped-upgrade-<server-version>` so the prompt stays quiet until the server's pinned version moves forward. Non-TTY contexts (CI, pipes), `--no-update-check`, and `AGNES_NO_UPDATE_CHECK=1` skip the prompt entirely; the existing one-line out-of-date banner remains as the fallback for every declined/skipped/non-interactive path. The banner's earlier pinned-URL → `agnes self-upgrade` replacement shipped previously (#521/#593). New `cli/upgrade_prompt.py`. EOF (Ctrl+D) on the prompt now returns No (deferred, not silent auto-upgrade), and the wrapper honours the install rc + persists the outcome via `record_outcome` + refreshes hooks on success — mirroring the canonical `self_upgrade` callback's wiring (Devin Review BUG_0001 + ANALYSIS_0001 + ANALYSIS_0003 on #619). (#619)
 
 ## [0.71.6] — 2026-06-11
-
 ### Fixed
 - The Windows PowerShell "one-word shortcut" snippet on `/home` (auto + YOLO modes) and `/setup-advanced` now prefixes the `function` definition it appends to `$PROFILE` with an empty array element (`Add-Content $PROFILE '', 'function …'`). `Add-Content` only adds a *trailing* line terminator, so when the user's existing profile didn't end in a newline (e.g. a trailing `$PSStyle.FileInfo.Directory = "…"` line) the function got glued onto the previous line, producing `ParserError: Unexpected token 'function'` on every new shell. The single-quoted body is preserved so `$env:USERPROFILE` is still written verbatim rather than expanded at append time. (#618, FAI-51)
 
 ## [0.71.5] — 2026-06-11
-
 ### Fixed
 - Onboarding Step 2 "Pick a folder" — the Windows/PowerShell command is now a single line (`New-Item … | Out-Null; Set-Location …`) so one paste both creates the folder *and* enters it. Previously it was two newline-separated statements; pasting into PowerShell submitted only the first line and left `Set-Location` unsent in the input buffer, so the shell never `cd`'d into the new folder. Mirrors the macOS/Linux tab's single-line `mkdir … && cd …` (`;` is used over `&&` so it also parses in Windows PowerShell 5.1). (#615, FAI-50)
 
 ## [0.71.4] — 2026-06-11
-
 ### Fixed
 - **MCP source names are now validated as safe SQL identifiers at create/rename.** An admin could register an MCP source whose name the sync engine refuses to attach (e.g. `keboola-crm` with a hyphen): materialize reported success and wrote `/data/extracts/<name>/`, but the orchestrator's scan rejected the directory (`Rejected unsafe source_name identifier` — a server-log WARNING only), so the tables silently never reached analytics/catalog with zero admin-visible feedback. `POST /api/admin/mcp-sources` and the rename path of `PUT /api/admin/mcp-sources/{id}` now reject such names up front with an actionable 400, using the same strict validator (`src/identifier_validation.is_safe_identifier`) the orchestrator enforces — no second regex to drift. (#613)
 
 ## [0.71.3] — 2026-06-11
-
 ### Added
 - **Onboarding / guided tour.** A client-side spotlight tour that walks a signed-in user through the app. On the first authed visit an intro consent modal pops once ("Take a tour?"); accepting runs the spotlight, and either choice (or completing/exiting) sets a `localStorage` flag so it never auto-pops again. Each step can be skipped or ended (Skip / ✕ / Esc), and arrow keys / Enter drive it. Re-openable anytime from the `(?)` help icon in the nav header. The tour **renders in place on whatever page the user is on** — all spotlighted elements are nav anchors present in the header on every authenticated page, so no cross-page navigation occurs. Each step carries a wayfinding icon, a richer description, and a list of concrete "what you can do here" bullets, plus a progress bar; the spotlight breathes and the card animates in (all `prefers-reduced-motion`-aware). The steps are **role-split** (admin vs non-admin) and filtered server-side, so non-admins never receive admin-only steps. Steps are the single source of truth in `app/web/onboarding.py` — injected as JSON, never hardcoded in JS — and a contract test (`tests/test_onboarding_not_outdated.py`) fails if any step points at a nav anchor that no longer exists, drops its icon, or thins its tips below two, so the tour can't silently go stale or hollow out as the UI changes. Generic + vendor-agnostic; styles read `--ds-*` tokens (flips with blue/dark themes). New `app/web/onboarding.py`, `app/web/static/css/tour.css`, `app/web/static/js/tour.js`, and `_tour.html` partial included by both base layouts. (#573)
 
@@ -6540,12 +5202,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **`DEBUG=0` can now override the `LOCAL_DEV_MODE` debug-toolbar default.** `LOCAL_DEV_MODE` still implies `DEBUG` (so dev gets the toolbar without setting both), but an explicit `DEBUG` env now wins either way — set `DEBUG=0` to run an auth-bypassed local-dev instance *without* the debug toolbar, whose per-request instrumentation (it also profiles the compose healthcheck) can saturate the event loop and peg CPU on heavy HTML pages. `docker-compose.local-dev.yml` sets `DEBUG=0` by default for a snappy UI preview; set it to `1` to get the toolbar back.
 
 ## [0.71.2] — 2026-06-11
-
 ### Fixed
 - **VM auto-upgrade no longer loses a deferred upgrade.** `scripts/ops/agnes-auto-upgrade.sh` detected changes by comparing the local tag digest before/after `docker compose pull` — but when the recreate was deferred because a sync was in flight, that tick's pull had already moved the local tag, so every subsequent tick saw "no change" and the deferred recreate never happened: the VM silently kept running the old image until the *next* release shipped (observed live: 8+ hours on a stale image with the new tag pulled beside it). Detection is now drift-based — the running `app` container's image ID is compared against what the tag points to (stateless; also self-heals a stopped/missing container), and config-file changes are tracked against a marker recording the hash at the last successful recreate (`/opt/agnes/.agnes-config-applied`, lazily initialized) — so a deferred change is re-detected on every tick until the recreate actually succeeds. A failing `docker compose pull` (registry blip) no longer aborts the script before drift detection — a warning is logged and the local tag is consulted either way. VMs pick the fix up automatically via the script's own self-update step. (#610)
 
 ## [0.71.1] — 2026-06-11
-
 ### Added
 
 ### Changed
@@ -6560,12 +5220,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.71.0] — 2026-06-11
-
 ### Fixed
 - **Chat `_linger_then_pause` no longer spins forever on a 3× runner crash.** If a turn was in flight (`turn_in_flight=True`), all sinks disconnected, and the runner then crashed 3 consecutive times (terminal `SessionState.DEAD` set by `_wait_for_exit_and_respawn` without emitting a `done` frame to clear the flag), the linger task spun at 50 ms intervals indefinitely — the `live.state != SessionState.ACTIVE` guard at the bottom of the function was only evaluated *after* the spin exited, which it never did. The `_live` entry also leaked (the reaper skips `DEAD` sessions), making this a slow memory grow on long-running servers. The spin now checks `live.state` each tick and bails cleanly when the session is no longer `ACTIVE`. Devin Review BUG_0001 follow-up from #605.
 
 ## [0.70.21] — 2026-06-11
-
 ### Added
 - Chat sessions survive browser disconnects: in-flight turns always complete and
   persist; orphaned sessions pause their sandbox (memory snapshot) and resume with
@@ -6594,17 +5252,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `system.duckdb` file-lock failures. (#605)
 
 ## [0.70.20] — 2026-06-10
-
 ### Fixed
 - **MCP `pull` tool now returns wall-clock duration.** The tool used to read `result.elapsed_s` with a `hasattr` guard — but `PullResult` exposes `duration_s`, so the guard always returned `False` and every MCP `pull` response carried `"elapsed_s": None`, silently erasing the real call duration that REST + `agnes pull --json` correctly surface. The response key is now `duration_s` (matching `PullResult` and the rest of the codebase) and reads the right attribute. Devin Review BUG_0001 follow-up from #594.
 
 ## [0.70.19] — 2026-06-10
-
 ### Fixed
 - **Slash commands now work on Socket Mode deployments.** The Socket Mode dispatcher only routed `events_api` envelopes, so `SLACK_TRANSPORT=socket` instances silently dropped `/agnes`, `/agnes-new` and `/agnes-status` (the command never reached the server). `slash_commands` envelopes are now acked within the 3s contract — `/agnes help` is answered entirely inside the ack payload, everything else acks with an interim "working on it" ephemeral — and then routed through the same `dispatch_command` path the HTTP endpoint uses, with the same `response_url` recovery backstop. Interactive (button) routing over Socket Mode remains a later phase. (#606)
 
 ## [0.70.18] — 2026-06-10
-
 ### Added
 - **Legacy-hook nudge on `agnes pull`.** Workspaces bootstrapped by the old server-upload flow (a `SessionEnd`/`SessionStart` hook referencing `collect_session` or `server/scripts/`, with none of the modern `agnes init` hooks) never invoke `agnes self-upgrade`, so the CLI drifts stale indefinitely. `agnes pull` now detects this layout via `workspace_has_legacy_hooks()` and emits a single stderr nudge — `This workspace uses an outdated hook layout — run \`agnes init\` to enable auto-update.` — pointing the analyst at `agnes init`. It does NOT auto-migrate; the analyst owns when their hook layout changes. Suppressed under `--quiet` (the SessionStart hook path) and `--json`. (#601)
 
@@ -6612,17 +5267,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Silent `agnes self-upgrade` failures now surface.** The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null || true`, so a failing auto-update (network, uv/pip resolution, smoke-test rollback) was invisible and the CLI could sit stale for weeks. Each self-upgrade outcome is now persisted to `$AGNES_CONFIG_DIR/upgrade_status.json` (`last_attempt_ts`, `last_outcome`, `consecutive_failures`); the quiet path stays silent but increments the counter on failure / resets it on success, and the next NON-quiet `agnes` command warns once — `agnes self-upgrade has failed N times — run \`agnes self-upgrade\` to see the error.` — when three or more attempts in a row have failed. `--quiet` commands and the in-progress smoke-test subprocess stay silent. A transient network blip (server unreachable without `--force`) no longer resets the consecutive-failure counter — the offline branch now takes no opinion on the CLI state (Devin Review BUG_0001). (#601)
 
 ## [0.70.17] — 2026-06-10
-
 ### Added
 - **Per-snapshot TTL expiry for local snapshots (#407).** `agnes snapshot create --ttl <7d|24h|90m>` stamps an `expires_at` instant on the snapshot; `agnes refresh --ttl …` re-anchors it. A lazy sweep at the start of `agnes pull` deletes any snapshots whose TTL has elapsed (best-effort, never blocks a pull; skipped under `--dry-run`/`--json`, one quiet stderr notice per swept snapshot otherwise), and `agnes snapshot prune --expired` runs the same sweep on demand. `agnes snapshot list` now shows an `EXPIRES` column. There is no global default TTL — only `--ttl` snapshots ever expire; existing snapshots and legacy `meta.json` files (no `expires_at` key) are unaffected. The lazy sweep re-reads + re-verifies the expiry under `snapshot_lock` (closing a TOCTOU race against a concurrent `agnes snapshot refresh --ttl <d>` that re-anchors `expires_at`, Devin Review BUG_0001). (#599)
 
 ## [0.70.16] — 2026-06-10
-
 ### Added
 - **Per-source partial rebuilds.** `POST /api/sync/trigger?source=<source_type>` (and the new `agnes admin sync --source <type>`) scope a sync to a single registered source: only that source's local + materialized rows are rebuilt, leaving the other source's `extract.duckdb` untouched. Useful on dual-source deployments where a BigQuery refresh should not pay the cost of re-extracting every Keboola table. A bare trigger / `agnes admin sync` still rebuilds everything. Unknown source types fail fast with `422`. (#602)
 
 ## [0.70.15] — 2026-06-10
-
 ### Added
 - **`bytes_scanned` on the query API + `agnes query --remote` output (#393).** `POST /api/query` now returns the BigQuery dry-run scan estimate as `bytes_scanned` (bytes) for `query_mode='remote'` queries (`None` for local DuckDB queries — no BQ tables involved), exposing it to REST and MCP consumers. `agnes query --remote` prints a human-readable `BigQuery scanned ~<size> (dry-run estimate)` line to STDERR (mirroring the existing `truncated` notice), so json/csv stdout stays pure. (#598)
 
@@ -6630,7 +5282,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Admin Adoption dashboard now renders users from the `users` table.** The `/admin/adoption` list and per-user drill-down used to display the email local-part from `usage_session_summary` and guess initials/avatar from it, so names, circle initials, and the circle color all disagreed with `/admin/users`. The `/api/admin/adoption/top-users` rows are now enriched server-side with the real `name`/`email`/`registered` flag (joined by `user_id`, with an unambiguous email-local-part fallback for pre-v45 rows), and both pages render the avatar circle via a shared `AgnesIdentity` helper (`app/web/static/js/identity.js`) — identical initials and stable color to `/admin/users`. Session identities with no matching user show the bare email with an empty circle. (#604)
 
 ## [0.70.14] — 2026-06-10
-
 ### Added
 - **`agnes update-workspace`** — safe re-apply of the Initial Workspace Template into an already-initialised workspace, **without losing analyst edits**. Reads the server URL + PAT from saved config (like `agnes pull`, no `--server-url`), warns + requires a literal `YES` (or `--yes` for the slash-command flow), and does a 3-way diff against a per-workspace baseline: files the analyst changed are backed up to `<name>.bak.<timestamp>` before being refreshed, files they hadn't touched are updated in place, new template files are created, and files not in the template are left untouched. `--dry-run` previews the plan. **IWT-only** — a clean no-op (touches nothing, exits 0) on instances with no Initial Workspace Template configured; it never re-pulls parquets. The baseline is the exact installed template zip, stored **client-side** under `~/.config/agnes/workspace-baselines/` (keyed by a hash of the workspace path, so it never pollutes the workspace tree or lands in a git commit), written on the first override `agnes init` so the first update has a reference point (older workspaces with no baseline conservatively back up every changed file). A canonical `/update-workspace` slash command ships under `cli/templates/commands/` for IWT admins to copy into their template repo. (FAI-24, #595)
 
@@ -6638,38 +5289,31 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Security: Agnes now protects its own PAT on disk and reduces its transcript exposure (#580, Findings 1-min + 2).** Plaintext token files are written with mode `0o600` (owner-only) instead of being left at the ambient umask (commonly `0o644`, world-readable) — at all three write sites: `cli.config.save_token` (`~/.config/agnes/token.json`) and the generated Cowork `setup.py` (`token.json` + both `.agnes-creds.json` copies). Each uses an atomic write (temp file chmod'd before rename) and is best-effort + Windows-safe (the chmod is skipped where the platform/filesystem doesn't honor it; native ACLs apply). `agnes init` now deletes the transient `~/.agnes/token` bootstrap file once it has consumed the token, and the setup prompt gained an explicit note that the heredoc PAT lands in the uploaded session transcript, with a `/agnes-private` reminder to keep the bootstrap session out of `agnes push`. (Storing the PAT in the OS keychain — Finding 3 — is deferred pending a security review; `0o600` plaintext is the accepted baseline.) (#580, #600)
 
 ## [0.70.13] — 2026-06-10
-
 ### Fixed
 - **`agnes pull` now revokes local query access when a data package leaves your stack.** After an analyst removed a data package, `agnes pull` left the package's parquets under `server/parquet/` and their DuckDB views in place, so the tables stayed locally queryable — and for admins the flat `manifest["tables"]` dict over-listed every accessible table regardless of subscription (the server-side `can_access_table` Admin short-circuit bypasses the stack). When the manifest carries the typed v49 stack sections (`data_packages[].tables[]` + `direct_tables[]`), `run_pull` now restricts the download set to the authorized table names and prunes any `server/parquet/<name>.parquet` (plus its `sync_state` row and, via the unconditional view rebuild, its now-orphaned view) that left the stack. Pre-v49 servers emit no typed sections, so their behavior is unchanged. `PullResult.tables_removed` counts the prune and is surfaced in `agnes pull --json`, the MCP `pull` tool's return dict, and the human-readable summary line (Devin Review BUG_0001). (#506, #594)
 
 ## [0.70.12] — 2026-06-10
-
 ### Fixed
 - **CLI out-of-date banner no longer prints a copy-paste command that 404s after a server upgrade.** The `agnes` out-of-date notice (`cli/update_check.py:format_outdated_notice`) used to emit `uv tool install --force <server>/cli/wheel/agnes-X.Y.Z-py3-none-any.whl` — a version-pinned URL the CLI caches for up to 24h. `GET /cli/wheel/{name}` serves only the *current* wheel, so once the server upgrades, the old pinned wheel is gone and the cached command 404s. The banner now recommends `agnes self-upgrade`, the supported path that re-probes `/cli/latest`, installs the current wheel, smoke-tests it, and rolls back on failure — it never 404s and always converges to the true latest even if the banner's version number lags. `UpdateInfo.download_url` is still populated and still consumed by `agnes self-upgrade`; server endpoints (`/cli/latest`, `/cli/wheel/{name}`, `/cli/download`) and the first-install setup-page instructions are unchanged. (#521, #593)
 
 ## [0.70.11] — 2026-06-10
-
 ### Internal
 - **Regression tests anchoring the materialize memory-cap + disk-space pre-flight invariants (#431/#433).** Added unit coverage that the Keboola consolidation connection sets `memory_limit='2GB'` (+ `threads=2`, `preserve_insertion_order=false`), that `_download_single` performs its disk-space pre-flight check, and that the BigQuery pool-acquire path enforces its memory cap — locking these guardrails against silent regression. Tests only; no production behavior change. (#432, #591)
 
 ## [0.70.10] — 2026-06-10
-
 ### Internal
 - Anti-regression guards for the `/setup` design-system unification (#586 / #590): `test_setup_html_uses_design_system_base` in `tests/test_design_system_contract.py` locks `setup.html` on `base_ds.html` + `.container--narrow` (no regression to `base_login.html` or hardcoded `max-width: 520px`), and a new `tests/test_setup_page_unified.py::test_first_time_setup_renders_all_wizard_fields` is an end-to-end render check that all four wizard steps, progress dots, and key inputs survive the migration. Locks the v0.70.8 fix; no behaviour change. (#592)
 
 ## [0.70.9] — 2026-06-10
-
 ### Fixed
 - Slack chat dropped the **first message after binding** with `SessionNotFound`. The DM / mention / `/agnes` handlers schedule `ChatManager.attach()` fire-and-forget (it spawns the E2B sandbox — several seconds — and never returns for the session's lifetime) and then waited a fixed `asyncio.sleep(0.1)` before `send_user_message`. The sleep raced attach() registering the live session, so the turn was injected before the session existed. Added `ChatManager.wait_until_live(chat_id, timeout=…)` which polls the live registry, and the three handlers now await it (and post a friendly "still starting up — resend" notice on timeout) instead of a blind sleep. The `/agnes` slash-command path also uses the strong-ref `_schedule()` helper for the fire-and-forget attach (Devin Review BUG_0001): with the 30s wait window the bare `asyncio.create_task()` it used to use could be GC-collected mid-flight, silently dropping the turn. (#589)
 - A Slack `message` event with no `user` field (message edits/deletions and other subtypes) crashed the event dispatch: `_handle_dm` fell through to `issue_verification_code(slack_user_id=None)`, tripping the `slack_binding_codes.slack_user_id` NOT NULL constraint. `_handle_dm` now early-returns on a user-less event, mirroring the guard `_handle_mention` already had. (#589)
 
 ## [0.70.8] — 2026-06-10
-
 ### Changed
 - Setup wizard (`/setup`): migrated from the `base_login` centered card to the standard `base_ds` app shell + `.container--narrow` (800px), dropping the hardcoded `max-width: 520px` inline styles so its width and gutters match every other page. (#586, #590)
 
 ## [0.70.7] — 2026-06-10
-
 ### Added
 - The `customer-instance` Terraform module now exposes a `home_route` variable, so instances built on the upstream module (not just self-contained infra) can pin the post-auth landing page to `/home` (state-aware onboarding) instead of the `/dashboard` default. It writes `AGNES_HOME_ROUTE` into `/opt/agnes/.env` **only when set non-empty** — left empty (the default) it omits the line entirely, so the route stays operator-settable at runtime via `instance.home_route` / `/admin/server-config` (the env tier shadows the YAML tier, so pinning both is a footgun). Closes a parity gap where module-based instances had no declarative way to opt into `/home`. (#588)
 
@@ -6677,17 +5321,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `docs/CONFIGURATION.md` is now the single authoritative map of every per-instance knob — env override, `instance.yaml` path, default, and resolver for all 33 `get_*` resolvers — with the env > YAML > default resolution order, the Initial Workspace Template tier, and the infra-pattern reachability caveat documented up front. A new ratchet test (`tests/test_config_reference_coverage.py`) fails when a resolver in `app/instance_config.py` is undocumented (or an exemption names a deleted resolver), so the reference can't silently drift behind the code — the same anti-drift discipline already applied to DuckDB↔Postgres parity and REST×CLI×MCP coverage. (#588)
 
 ## [0.70.6] — 2026-06-10
-
 ### Fixed
 - Slack magic-link binding (and Slack `/chat` deep links) were always **root-relative** (`/slack/bind?code=…`) and therefore not clickable from Slack — even with `PUBLIC_URL` set — because the bot's request-less handlers read `app.state.public_url`, which nothing ever assigned. Resolve the instance base URL at startup via a new `get_public_url()` (`PUBLIC_URL` env > `server.public_url` in instance.yaml > unset, mirroring `get_home_route`) and stash it on `app.state.public_url` before the Socket Mode dispatcher starts, so the bot mints **absolute** links. Unset still degrades gracefully to a relative path. This makes good on the `0.70.5` "Requires `PUBLIC_URL` set so the link is absolute" contract, which the wiring never fulfilled. (#587)
 
 ## [0.70.5] — 2026-06-09
-
 ### Added
 - Slack identity binding is now a **one-click magic link** instead of a copy-paste code. When an unbound Slack user messages Agnes, the bot replies with a `…/slack/bind?code=NNNNNN` link; opening it while signed in to Agnes redeems the code server-side via the new auth-gated `GET /slack/bind` route and stamps `users.slack_user_id` — no copy-paste, and it's a one-time bind per Slack user. Security is unchanged: the route requires an Agnes login, so the code in the URL is inert on its own (it only binds the signed-in account). This also fills a gap — there was previously **no frontend UI at all** to redeem the code the bot handed out (the bot pointed at `/setup?slack=1`, which has no bind form), so binding could not actually be completed through the browser. Requires `PUBLIC_URL` (or `server.public_url`) set so the link is absolute. (#584)
 
 ## [0.70.4] — 2026-06-09
-
 ### Fixed
 - **Bounded process memory on data-source-heavy instances (no more allocator-driven OOM crash-loops).** On instances serving BigQuery/DuckDB query traffic, anonymous (heap) memory grew without bound until the container hit its `mem_limit` and the cgroup OOM-killed the server — raising `mem_limit` only deferred the kill. Root cause was *allocator retention*, not a code leak: glibc's default per-CPU malloc arenas hold freed memory and never return it to the OS, and on a host with Transparent Huge Pages = `always` each retained region is backed by a 2 MiB huge page, so RSS ratchets up to the largest concurrent native working set (Arrow/DuckDB buffers) and stays there. Two complementary mitigations: the container image now sets `MALLOC_ARENA_MAX=2` + `MALLOC_TRIM_THRESHOLD_=131072` (Dockerfile), and the `customer-instance` provisioning module sets host THP to `madvise` (startup script, re-applied every boot). Heap was confirmed flat under churn (no Python/object leak); the fix is allocator-level. Negligible CPU impact for this I/O-bound workload. (#583)
 
@@ -6695,32 +5336,26 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `app/chat/e2b_workspace_sync._iter_files` now sorts subdirs and filenames so workspace uploads visit files in a deterministic, cross-platform order (was filesystem-dependent: lexical on macOS, inode order on Linux). Caused a `test_workspace_too_large_carries_byte_count` CI flake; surfaced while CI'ing #583. (#583)
 
 ## [0.70.3] — 2026-06-09
-
 ### Fixed
 - **Cloud chat: every chat turn stalled without an answer on E2B SDK 2.x.** `app/chat/e2b_provider.py` calls `sandbox.commands.run()` to spawn the agent runner, then streams the user's prompt via `commands.send_stdin()`. E2B SDK 2.x gates interactive stdin behind a new `stdin=True` flag on `run()` — without it the runner gets EOF and exits, and every subsequent `send_stdin()` fails with `SandboxException: Code.internal: error writing to stdin: stdin not enabled or closed`. The "agent never responds after Slack binding" symptom seen during live E2E testing turned out to be this — not a Slack/auth issue. Both web `/chat` and Slack bound-DM sessions are affected; SDK 1.x deployments are not (the kwarg didn't exist there) but the floor is raised to `e2b>=2.0.0` so a downstream resolver can't silently land on 1.x and break with `TypeError` instead (Devin Review on #585). (#585)
 
 ## [0.70.2] — 2026-06-09
-
 ### Added
 - A **Light / Dark / System** theme switcher in the user (avatar) menu. Agnes already shipped a dark palette and an OS-aware `auto` mode, but only operators could select it via `instance.yaml` — this adds a per-user, in-app control. The choice persists per-browser (`localStorage`), overrides the instance default and the OS setting, and is applied before first paint so there's no flash on reload. **System** tracks the OS `prefers-color-scheme` live. Pages with legacy hardcoded colors may still need per-page dark touch-ups (the dark palette is documented as a work-in-progress). (#581)
 
 ## [0.70.1] — 2026-06-09
-
 ### Fixed
 - **Postgres: catalog table-page renders `platforms` / `gotchas` lists correctly again.** `TableRegistryPgRepository._decode_row` was returning the raw `json.dumps()`'d TEXT for `platforms` and `gotchas` (only the JSONB `sample_questions` / `pairs_well_with` arrived pre-decoded), so the catalog UI iterated the JSON string character-by-character (`[ · " · w · e · b · " · , ...]`) and the gotchas section showed a long run of empty rows before the text. JSON-decoded on read now. DuckDB-backed instances were unaffected. Also closes the latent parity gap flagged in Devin Review (ANALYSIS_0001): all four list-shaped docs fields (`platforms`, `gotchas`, `sample_questions`, `pairs_well_with`) now normalize `None` / empty-string / parse-failure / non-list-parsed-value to `[]`, matching the DuckDB backend byte-for-byte — current consumers were safe via `or []` guards, but the first consumer without one would have hit cross-backend behaviour drift. Locked by 6 parity tests. (#582)
 
 ## [0.70.0] — 2026-06-09
-
 ### Added
 - **Adoption dashboard (`/admin/adoption`).** A business-facing view of how the system is actually used — distinct from the technical telemetry/sessions/activity pages. Top KPI cards (active users, time spent active + wall-clock, sessions, skill usage, tokens, prompts) over a 24h/7d/30d window toggle; a 30-day daily-trend chart section (inline SVG, one small-multiple per metric); a top-skills table; and a "users by activity" list (top 10 by active time, searchable) that links to a per-user drill-down at `/admin/adoption/users/{id}` with that user's KPIs, daily trends, and top skills/tools. Backed by new `/api/admin/adoption/*` endpoints aggregating `usage_session_summary` (time/sessions/tokens/prompts via `active_seconds`/`wall_seconds`, already computed by the session processor) and `usage_events` (distinct-users-per-day, skill events) on the fly — no new tables or data collection. Admin-only, audit-logged. (FAI-32, #579)
 
 ## [0.69.1] — 2026-06-09
-
 ### Fixed
 - The `[slack-socket]` extra now also installs `aiohttp` (`slack_sdk`'s `SocketModeClient` uses the aiohttp transport at `services/slack_bot/socket_mode_client.py`, but `slack_sdk` does not depend on `aiohttp` itself). Without it, a `chat.slack.transport: socket` deployment still fail-closed at startup with `ModuleNotFoundError: No module named 'aiohttp'` even after the image bundled `slack_sdk` (#576). Follow-up to #576; HTTP transport unaffected. Found during live Socket Mode E2E testing.
 
 ## [0.69.0] — 2026-06-08
-
 ### Added
 
 - Dev-agent kit: a Claude Code dev-agent kit under `.claude/` — `/agnes-review` scope-gated review team (rules / architecture / rbac / parity + consolidator), `agnes-builder` + `agnes-conventions` (five code-verified playbooks), `/agnes-build` parallel build team (`agnes-decomposer` + `agnes-integrator`), a `CONTRIBUTING.md` change-safety sync-map, and a PostToolUse ruff/mypy quality hook (`scripts/post-edit-quality.sh`). A router table in `CLAUDE.md` indexes it.
@@ -6735,67 +5370,54 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.68.12] — 2026-06-08
-
 ### Fixed
 - The server Docker image now bundles `slack_sdk` (the `[slack-socket]` extra is added to the `uv pip install` line in the Dockerfile), so the optional Slack **Socket Mode** inbound transport works out-of-the-box. Previously the extra was documented but never installed in the image, so a `chat.slack.transport: socket` / `SLACK_TRANSPORT=socket` deployment fail-closed at startup (logged + Slack left disabled) on the stock image — Socket Mode effectively required a custom build. HTTP transport (the default) is unaffected and the `slack_sdk` import stays lazy, so HTTP-only deployments pay nothing at runtime. (#576)
 
 ## [0.68.11] — 2026-06-08
-
 ### Added
 - Admin Tables: a **Test connection** button in the Keboola register & edit modals that verifies the instance's Keboola Storage API token/stack (lists buckets) and reports the result inline — previously this probe was only available on the Instance settings page. Both modals clear any stale result on reopen so a previously-passed badge isn't shown on a freshly-reset form. (#402, #575)
 
 ## [0.68.10] — 2026-06-08
-
 ### Changed
 - Admin Tables: on non-Keboola instances, the Keboola **Discover** / **List tables** / **Use table as base** buttons in the register & edit modals now render disabled with an explanatory tooltip (*"Keboola not connected — set token in Instance settings"*) instead of being hidden — the inputs were already shown, so the buttons were silently vanishing with no explanation. The disabled buttons carry no click handler, so they still can't reach the instance-type-routed discover endpoint. (#405, #574)
 
 ## [0.68.9] — 2026-06-08
-
 ### Changed
 - Tokenized hardcoded font-sizes in `style-custom.css` to the `--text-*` scale — 27 value-preserving swaps (`0.875rem`→`var(--text-base)`, `0.75rem`→`var(--text-sm)`, `1rem`→`var(--text-md)`, `1.5rem`→`var(--text-xl)`; each token equals the literal it replaces at the 16px root, so rendering is unchanged). Addresses the font-size half of #400 (the absorbed-`style.css` legacy section); the neutral-color half is already handled by the legacy `--text`/`--border` token aliases, and the remaining hardcoded colors there are intentional semantic tints (alert states) / a dark code block. Sizes with no exact token (13px `0.8125rem`, 22px `1.375rem`, …) are left as-is — rounding them to the nearest token would change rendering, so they're better standardised per-component. (#400, #572)
 
 ## [0.68.8] — 2026-06-08
-
 ### Fixed
 - Cleaned up half-rebranded UI spots where a brand-green element still used the old pre-rebrand blue `#0056A3` (the legacy `--primary-dark`), now `var(--ds-primary-dark)`: the `marketplace_plugin_detail` hero gradient (was green→blue, now green→green-dark), the `news_editor` primary-button hover, and the green-tinted status/type badges in `memory_domain_detail`, `admin_corporate_memory`, `catalog_package_detail` (`.qm-remote`), and `marketplace.css` (`.type-badge[data-type=plugin]`) — were green bg + blue text, now green-on-green (the LOCAL/REMOTE/MATERIALIZED + PLUGIN/SKILL/AGENT labels carry the distinction). Left untouched: the legacy `--primary` blue palette (internally consistent; a separate migration). (#497, #571)
 
 ## [0.68.7] — 2026-06-08
-
 ### Fixed
 - **Dark mode: form controls and their surfaces no longer render white.** Two parts. (1) `color-scheme: light`/`dark` is now set on the theme roots (`design-tokens.css`) so browser-default inputs/selects/textareas + scrollbars adopt the dark UA palette instead of staying white. (2) The hardcoded-white form surfaces that `color-scheme` can't reach are tokenized to `var(--ds-surface)`/`var(--ds-border)`/`var(--ds-text-*)`: the search/filter inputs on `admin_sync`/`admin_groups`/`admin_mcp_sources`/`admin_access`, the `store_upload` fields + type-tiles + drop-zone, the `news_editor` panels/textareas/preview/labels (it was a fully hardcoded-light admin page), the `catalog` hero search-row, and the JS-built `chip-input` component (container + dropdown). The `marketplace` page was light-locked via a full light palette scoped to `.mp-page` (`--surface`/`--text-primary`/`--text-secondary`/`--border-light` pinned to fixed values) — those now flip to the design-system tokens, plus its hero search-row. Verified across ~28 routes with an in-browser crawler: every previously-white form surface now flips light↔dark, and light mode is unchanged. Complements the edit-group modal fix (#560). Part of #497 §8/§9. (#497, #563)
 
 ## [0.68.6] — 2026-06-08
-
 ### Fixed
 - **Edit-group modal now flips in dark mode.** `admin_group_detail`'s edit modal hardcoded a white card (`background: #fff`) with `#e5e7eb`-bordered inputs, so it stayed a white island in the dark theme. It now adopts the canonical global `.modal-card` — whose token-driven rules (`var(--surface)`/`var(--text-primary)`/`var(--border)`) style the card plus its labels and inputs — and the description field uses the `.form-textarea` canonical. Light mode is unchanged (`--ds-surface` resolves to `#ffffff`, the prior literal); dark mode flips the card, inputs, and labels together. Part of the #497 §8 form-input audit. (#497, #560)
 
 ## [0.68.5] — 2026-06-08
-
 ### Changed
 - Tokenized the remaining hardcoded brand-green tints in templates: 30 `rgba(46, 168, 119, α)` literals across 10 templates (`store_upload`, `_profile_tokens`, `admin_tokens`, `admin_corporate_memory`, `install`, `marketplace_plugin_detail`, `memory_domain_detail`, `catalog_package_detail`, `home_onboarded`, `admin_tables`) → `color-mix(in srgb, var(--ds-primary) X%, transparent)`, so the tints follow the operator's brand color (e.g. they go blue under the blue theme) instead of staying green. Finishes #510's hex sweep, which only covered the 6 CSS files; visually identical under the default (green) theme. Also fixes an adjacent rebrand leftover flagged in review — `.hero-action-btn:hover` hardcoded the old pre-rebrand blue `#0056A3` (`--primary-dark`) → `var(--ds-primary-dark)`, so the hover darkens on-brand instead of jumping to blue. (#497 §5, #570)
 
 ## [0.68.4] — 2026-06-08
-
 ### Changed
 - `/admin/server-config`: bespoke `.danger-pill` / `.secret-pill` badges now use the canonical `.badge` / `.badge--danger` / `.badge--success` classes (token-based, so they flip correctly in dark mode), and the page's duplicated `.modal-*` CSS was dropped in favor of the global design-system modal styles (page-specific `.diff-*` kept). (#497, #549)
 
 ## [0.68.3] — 2026-06-07
-
 ### Fixed
 - **Windows: `agnes refresh-marketplace` (both `--bootstrap` and the default refresh) crashed with `FileNotFoundError [WinError 2]`.** Every `claude` subprocess call passed the bare command name, but Windows `CreateProcess` doesn't apply `PATHEXT` to a bare name, and the npm-installed `claude` shim (`.cmd`/`.bat`) can't be launched directly even via its fully-resolved path — it must be routed through `cmd.exe`. A new `_claude_base_cmd()` helper now resolves the executable via `shutil.which`, wraps a `.cmd`/`.bat` shim in `cmd /c` on Windows, and every claude invocation site splats its result; when `claude` isn't installed the helper returns `None` and each caller falls back to its existing claude-missing behavior. (#568)
 
 ## [0.68.2] — 2026-06-07
-
 ### Fixed
 - **Postgres: flea-market LLM security reviews are now backend-agnostic.** `run_llm_review` (the background task that reviews a submitted plugin/skill/agent) was hardcoded to DuckDB (`conn_factory=get_system_db`): on a Postgres-backed instance it looked the submission up in an empty DuckDB, logged "submission vanished", and returned with no verdict — leaving **every** submission stuck at `pending_llm` ("Under review") forever, regardless of whether the LLM provider key was set. DuckDB-backed instances were unaffected. It now resolves `store_submissions` / `store_entities` / `audit` through the `src.repositories` factory (the same `use_pg()` switch the rest of the app uses), so it follows the configured backend (the `conn_factory` argument is retained for call-site/test compatibility but no longer used). Same root cause as the stuck-review reaper fix in v0.67.2; covered by a cross-engine contract test. (#567)
 
 ## [0.68.1] — 2026-06-06
-
 ### Fixed
 - **Setup page no longer serves a stale install script after a redeploy.** Server-rendered HTML responses now carry `Cache-Control: no-store`, so browsers re-render `/home`, `/setup`, and `/install` against the live build on every load. Previously the page had no cache directive: a browser-cached setup hero kept handing out the wheel filename baked in at its original render time, and after a redeploy that version-pinned `/cli/wheel/{name}` URL 404s (the new build replaced the wheel on disk), breaking a fresh install end-to-end. Scoped to `text/html` — JSON APIs and the immutable-cached static / marketplace-image assets are untouched. (#569)
 
 ## [0.68.0] — 2026-06-05
-
 ### Added
 - **Per-plugin Cowork export + Cowork download UI.** Plugins can now be downloaded individually as Claude Cowork-uploadable zips. New `GET /marketplace/cowork/{prefixed_name}.zip` (same PAT/cookie auth and RBAC filtering as `marketplace.zip`) repackages a single plugin into the shape Cowork's stricter validator accepts — matched against a known-good reference upload. It keeps all plugin content (`data/`, `scripts/`, `vendor/`, `global-rules/`, `CLAUDE.md`, `settings.json`, agent `tools:`) and only: puts the plugin at the zip root (no `marketplace.json` wrapper); coerces `plugin.json` to a semver `version` + required `author` + dropped `homepage`; whitelists SKILL.md frontmatter to `name`/`description`/`compatibility` (drops Claude-Code-only `argument-hint`/`user-invocable`) with `<`/`>`/`"` sanitized out of descriptions; concatenates the per-directory `.md` files under `data/` into `_all.md` (keeps every byte while staying under Cowork's 5000-file cap — a docs/Confluence dump can be tens of thousands of files); renames Next.js route path segments (`[x]`→`dyn-x`, `(y)`→`grp-y`); and strips `.DS_Store` + Agnes-only paths. `/me/cowork` describes both Cowork flows — the bundled project (skills + live MCP data, scoped to one project folder) and per-plugin packages (uploaded via Customize, skills work across all Cowork projects) — and hosts the per-plugin download list; each marketplace plugin detail page also gains a "Download for Cowork" button. New module `app/marketplace_server/cowork_packager.py`. (#488)
 - **In-app API documentation, three surfaces.** A curated API Reference guide (`docs/api-reference.md`) is now reachable from three surfaces in lockstep, so a public endpoint is documented everywhere an analyst or agent might reach for: (a) web — `/documentation/api` (login-gated, no admin requirement; Documentation group in the Admin nav links the guide alongside Swagger UI and ReDoc); (b) CLI — `agnes docs api` renders the same guide in the terminal via Rich's Markdown formatter; (c) MCP — `documentation_api` tool on the HTTP MCP server returns the raw Markdown so Claude Desktop / Cursor / Cline can look up the REST surface without leaving the chat. Single source of truth (`docs/api-reference.md`), Markdown rendered or echoed at each surface — adds the triple-surface policy floor for future endpoints (see `tests/test_documentation_api_triple_surface.py`). (#565)
@@ -6803,12 +5425,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Admin menu highlights on `/documentation` pages.** The Admin nav trigger now shows the active state when the user is anywhere under `/documentation`, consistent with the existing `/admin/*` highlight behaviour. (#565)
 
 ## [0.67.6] — 2026-06-05
-
 ### Fixed
 - **Keboola discovery now opens the suggestions dropdown.** After clicking Discover (buckets) or List tables in the register or edit Keboola-table modal, the freshly populated `<datalist>` opens its native suggestion popup automatically — the associated input is focused and an `input` event dispatched — so the loaded buckets/tables are visible without a second click into the field. No-op when discovery returns nothing; degrades gracefully on browsers that ignore the nudge (the populated datalist + success toast are unchanged). (#556, #561)
 
 ## [0.67.5] — 2026-06-05
-
 ### Internal
 - Anti-regression guard in `tests/test_design_system_contract.py`: page-level
   templates must `{% extends %}` a design-system base, not ship their own
@@ -6822,7 +5442,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   entry goes stale (page migrated or removed) so the list can't silently rot. (#551)
 
 ## [0.67.4] — 2026-06-05
-
 ### Fixed
 - **Postgres: admins can grant data tables to analysts again.** `POST /api/admin/data-packages/{id}/tables` resolved the table via `TableRegistryRepository(conn)` on the always-DuckDB `_get_db` connection, so on a Postgres-backed deployment it never found tables that live in PG and returned `404 table_not_found` for tables that are present in `/api/v2/catalog` — analysts could not be granted any data package. The lookup now goes through the backend-aware `table_registry_repo()` factory. (#562)
 - **Postgres: deleting a group that carries grants no longer 500s.** `DELETE /api/admin/groups/{id}` cascaded members + grants via raw `conn.execute(...)` (DuckDB) before `repo.delete()` (Postgres), so on a Postgres deployment the children were never removed and the parent delete hit a `resource_grants.group_id` foreign-key violation. The cascade now routes through the `user_group_members_repo()` / `resource_grants_repo()` factories, matching the parent delete's backend. (#562)
@@ -6831,12 +5450,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Cross-backend parity regression test (`tests/db_pg/test_parity_data_packages_groups.py`) driving the data-package table-attach and group-delete endpoints on both DuckDB and Postgres; retired the now-fixed `TableRegistryRepository` entry for `app/api/data_packages.py` from the backend-split direct-instantiation allow-list. (#562)
 
 ## [0.67.3] — 2026-06-05
-
 ### Internal
 - Planning docs for the ORM-on-state migration land under `docs/planning/`: an inventory of every raw-SQL callsite (`agnes-orm-rawsql-audit.md` + per-subsystem inventories for `app`, `src`, `cli/conn/svc`), a phased migration plan (`orm-state-migration.md`), and three rounds of Codex adversary review (`orm-migration-adversary-review.md` → v2 → v3) that progressively patched factual errors and tightened the cut/rollback plan. No code change — pure planning artifact, locks the scope before any callsite is touched. (#555)
 
 ## [0.67.2] — 2026-06-05
-
 ### Changed
 - **PG debug-toolbar panel now captures data-XHR queries.** v0.67.1 pinned the toolbar to document navigations to stop background polls (`/api/version`, `/api/health`, …) from wiping the panel — but that also hid the queries from data XHRs like `/api/marketplace/items` and `/api/store/entities`, which is exactly what an operator wants to inspect. The skip list is now narrow (a handful of named pollers) and everything else — document navigations AND data XHRs — is instrumented. `/api/health` is exact-match so the separate authenticated admin diagnostics endpoint `/api/health/detailed` stays observable. (#559)
 
@@ -6847,7 +5464,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - The stuck-review reaper now works on Postgres-backed instances. It was DuckDB-only: `POST /api/admin/run-reap-stuck-reviews` injected a DuckDB connection and the reaper ran raw DuckDB SQL against it, so on a Postgres deployment it queried an empty local DuckDB, found nothing, and returned `200 reaped=0` every 15 minutes while real `pending_llm` submissions sat in Postgres forever. A flea-market submission whose LLM review never completed (e.g. the LLM provider key was unset when it was uploaded, so no review was scheduled) would then show "Under review" indefinitely instead of flipping to `review_error` with a Retry button. The flip SQL now lives on the repositories (`reap_stuck_pending_llm` on both the DuckDB and Postgres `store_submissions` repos) and the reaper resolves the repo from the factory, so it flips rows on whichever backend holds them. Covered by a cross-engine contract test. (#558)
 
 ## [0.67.1] — 2026-06-05
-
 ### Added
 - **Postgres debug-toolbar panel.** The FastAPI debug toolbar (mounted only when `DEBUG=1`) now has a Postgres panel alongside the DuckDB one — captures every state-layer SQL statement through SQLAlchemy `before/after_cursor_execute` + `handle_error` event listeners into a contextvar-scoped, request-scoped store, then renders timings/params/errors per request. Closes the toolbar gap that opened when app state moved from `system.duckdb` to Cloud SQL Postgres (state SQL was invisible; only analytics DuckDB queries showed). The toolbar background-poll fix-up also pins panel state to document navigations so background polls (e.g. usage telemetry) don't reset the query panel mid-request. (#553)
 
@@ -6855,7 +5471,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `fastapi-debug-toolbar` moves from the `[dev]` extra to the `[server]` extra so it ships inside the single production image (build-once / promote-the-same-artifact discipline — the image validated in dev is the exact one promoted to prod, differing only by the `DEBUG` env var). The toolbar middleware is mounted only when `DEBUG=1` in `app/main.py`, which prod never sets, so the dep is inert in prod. (#553)
 
 ## [0.67.0] — 2026-06-05
-
 ### Added
 - **Cowork bundle ships a `skill-router` agent.** Every generated
   `bundle.zip` now includes `.claude/agents/skill-router.md` alongside the
@@ -6867,21 +5482,18 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   so a marketplace plugin can't shadow it.
 
 ## [0.66.1] — 2026-06-05
-
 ### Internal
 - Bump `starlette` 1.0.0 → 1.0.1 (transitive bugfix release; no public-surface change). (#554)
 
 ## [0.66.0] — 2026-06-04
-
 ### Added
 - Slack bot tokens (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`) can now be set, rotated, and cleared from the admin UI (`/admin/server-config` → Slack bot secrets), stored encrypted in the server vault. Environment variables still take precedence, so Terraform-managed deployments are unaffected. Requires `AGNES_VAULT_KEY` on the server.
 
 ## [0.65.20] — 2026-06-04
-
 ### Fixed
 - The Keboola sync now sweeps orphaned `kbc-export-*` / `kbc-slice-*` staging dirs from the temp root (`AGNES_TEMP_DIR`) at the start of every run. These dirs are normally removed by `TemporaryDirectory` on any return — including the disk-full path — so the only way they survive is a hard kill (SIGKILL / OOM / container recreate) mid-export. Without a sweep they accumulated on the data disk until it filled and *every* subsequent sync failed with `No space left on device`, a self-reinforcing failure that needed a manual `rm` to break. The sweep is age-gated (`AGNES_SCRATCH_MAX_AGE_SEC`, default 1h) so a concurrent in-flight export is never deleted, and runs under the sync lock before any new scratch is created.
-## [0.65.19] — 2026-06-04
 
+## [0.65.19] — 2026-06-04
 ### Internal
 - Repository factory (`src/repositories/__init__.py`) now dispatches through a
   declarative `_REGISTRY` table (`key -> {backend: (module, class)}`) instead of
@@ -6897,19 +5509,18 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   complementing the method-parity and behavioural-contract suites.
 
 ## [0.65.18] — 2026-06-04
-
 ### Added
 - Dark mode is now reachable. `instance.theme` accepts two new values: `dark` (the full dark surface palette that already shipped in `design-tokens.css` but was unreachable — `get_instance_theme()` only allowed `blue`/`navy`) and `auto` (brand palette in light, flips to the dark palette when the user's OS prefers dark — resolved client-side in `_theme_resolve.html`, inline in `<head>` before first paint so there's no flash). (#497)
 
 ### Fixed
 - Dark theme: the legacy `--ds-info-*` / `--ds-warn-*` token vocab now maps to the dark accent tints instead of staying light pastel (which washed out on dark surfaces). (#497)
 - Dark theme: `/first-time-setup` form inputs no longer render white-on-dark — they derive bg/text from `--ds-surface` / `--ds-text-primary` (unchanged in light). (#497)
-## [0.65.17] — 2026-06-04
 
+## [0.65.17] — 2026-06-04
 ### Changed
 - The store-upload page header now renders via the shared `_page_hero.html` partial (which gains an optional `page_hero_class` hook) instead of duplicating the hero markup. (#497)
-## [0.65.16] — 2026-06-04
 
+## [0.65.16] — 2026-06-04
 ### Changed
 - The registered/discovered MCP tools tables (`/admin/mcp-sources/…`) now use the canonical `.ds-table` class instead of bespoke `tools-table` styles; the key-value config summary stays bespoke. (#497)
 ### Internal
@@ -6927,7 +5538,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   CI instead of wedging a customer instance at startup.
 
 ## [0.65.14] — 2026-06-04
-
 ### Fixed
 - Cowork bundle now ships skills in Claude Code's directory format
   (`.claude/skills/<name>/SKILL.md`) with supporting files (references/,
@@ -6941,7 +5551,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Cowork bundle connects over verified TLS on macOS without manual cert setup.** The generated `mcp_server.py` / `agnes.py` now build their HTTPS `ssl` context from a Mozilla CA bundle shipped in the ZIP as `cacert.pem` (also copied to `~/.config/agnes/` by `setup.py`), falling back to the OS trust store and honouring `SSL_CERT_FILE`. This fixes `CERTIFICATE_VERIFY_FAILED` on Pythons that lack a usable system CA store (notably macOS python.org builds) **without disabling certificate verification**. An explicit opt-out for genuinely broken environments remains via `AGNES_INSECURE_SKIP_TLS_VERIFY=1`.
 
 ## [0.65.13] — 2026-06-04
-
 ### Internal
 - **Fixed the DuckDB/Postgres status-parity sweeps being dead under
   `pytest -n auto`.** `test_get_status_parity_sweep.py` and
@@ -6959,7 +5568,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `/first-time-setup` 302-redirect-when-users-exist fix per backend.
 
 ## [0.65.12] — 2026-06-04
-
 ### Fixed
 - **Postgres backend: the first-time-setup wizard stayed open on a
   provisioned instance.** `GET /first-time-setup` counted users with a raw
@@ -6985,8 +5593,8 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   ratchet can't see (it only scans `get_system_db()` callers + direct repo
   instantiation). The GET sweep found the `/first-time-setup` divergence above;
   the mutation sweep is clean (no remaining divergence on that surface).
-## [0.65.11] — 2026-06-04
 
+## [0.65.11] — 2026-06-04
 ### Fixed
 - **`agnes schema` / `agnes describe` / sample / scan 500'd for any extract
   whose directory name differs from its `source_type`.** The v2 endpoints
@@ -7004,7 +5612,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   parquet now returns a clean 404 instead of 500.
 
 ## [0.65.10] — 2026-06-04
-
 ### Fixed
 - **Postgres backend: `agnes query` against internal tables returned nothing.**
   The internal-table SQL feature (analyst SQL over `agnes_telemetry` /
@@ -7025,7 +5632,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (`tests/db_pg/test_parity_internal_query.py`).
 
 ## [0.65.9] — 2026-06-04
-
 ### Fixed
 - **Postgres backend: Slack identity binding silently failed.** The
   `users.slack_user_id` column (mapping a Slack user to an Agnes account) was
@@ -7053,8 +5659,8 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   DuckDB rejects multiple NULLs in a UNIQUE index, which the many unbound users
   would violate; the one-code-per-Slack-user issue flow already prevents
   duplicate bindings.
-## [0.65.8] — 2026-06-04
 
+## [0.65.8] — 2026-06-04
 ### Fixed
 - **Postgres backend: per-user MCP credentials were ignored at call time.**
   When forwarding to an upstream MCP source, `connectors.mcp.client.`
@@ -7076,7 +5682,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   deferred follow-up flagged in #530's merge body. (#537)
 
 ## [0.65.7] — 2026-06-04
-
 ### Fixed
 - **Postgres backend: a fresh instance had no `Admin` / `Everyone` system
   groups, so admin access and Everyone-scoped grants never worked.** The system
@@ -7090,7 +5695,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   Pinned by both-backends parity tests (`tests/db_pg/test_parity_seed_admin_groups.py`). (#536)
 
 ## [0.65.6] — 2026-06-04
-
 ### Fixed
 - **Postgres backend: catalog `/sample` preview was empty for internal tables.**
   The preview for an internal source (`agnes_audit` / `agnes_sessions` /
@@ -7100,8 +5704,8 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   which dispatches on `use_pg()` (Postgres via the engine, DuckDB via the system
   connection) while keeping the same RBAC row filter. Pinned by a both-backends
   parity test (`tests/db_pg/test_parity_internal_sample.py`).
-## [0.65.5] — 2026-06-04
 
+## [0.65.5] — 2026-06-04
 ### Fixed
 - **Postgres backend: deleting an MCP source leaked its per-user secrets.**
   `DELETE /api/admin/mcp-sources/{id}` purged per-user vault rows via a raw
@@ -7123,8 +5727,8 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   module is already fully factory-routed, so the `Depends(_get_db)` / passed
   connection was dead. `bq_metadata_refresh.py` and `query.py` drop out of the
   backend-split guard's `get_system_db` residual list.
-## [0.65.4] — 2026-06-04
 
+## [0.65.4] — 2026-06-04
 ### Fixed
 - **Postgres backend: co-session tokens failed closed on a PG instance.**
   Co-session token resolution (`pat_resolver.resolve_token_to_user`) read
@@ -7145,7 +5749,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   Slack-identity-on-Postgres migration is a separate subsystem effort. (#533)
 
 ## [0.65.3] — 2026-06-04
-
 ### Fixed
 - **Postgres backend: the sync pipeline served no data on a PG instance.**
   `SyncOrchestrator.rebuild()` read the table registry, wrote `sync_state`, and
@@ -7166,12 +5769,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   were invisible/miscounted on Postgres.
 
 ## [0.65.2] — 2026-06-04
-
 ### Changed
 - Refreshed the `/login` feature panel to match the product pillars shown on `/home`: **Data packages**, **Marketplace** (plugins, skills, and agents in one card), **MCP**, **Memory**, and a **Use it anywhere** card for the cloud surfaces (Cowork, web chat, Slack). Replaces the stale, aspirational cards (*Unified Data Access / Instant Automation / Smart Notifications / Performance Intelligence*) with descriptions that reflect what the platform actually does, and adds a `BETA` badge to every capability except the mature Data packages core. The panel subtitle is realigned with the `/home` hero copy, and the cards are tightened so the full set fits without scrolling. Adds a "Made by Keboola" attribution with the Keboola wordmark at the foot of the brand panel.
 
 ## [0.65.1] — 2026-06-04
-
 ### Internal
 - Made `tests/test_cache_warmup.py::test_list_remote_rows_filters_to_bigquery_source_type`
   deterministic by patching the `table_registry_repo()` factory the code calls
@@ -7305,7 +5906,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the detector flags a planted violation and ignores the factory-call form.
 
 ## [0.65.0] — 2026-06-03
-
 ### Added
 - Web chat: a non-interactive "Slack" pill in the `/chat` sidebar marks sessions that originated from Slack (`slack_dm` / `slack_thread`), and `/chat?session=<id>` now deep-links straight into a session on page load. Both are client-side renders that degrade gracefully on older servers; the deep link is a one-shot, RBAC-guarded by the existing session-scoped endpoints (an unknown/forbidden id lands on an empty chat with an error status rather than leaking data).
 - **Slack Block Kit interactivity.** Bot DM replies now carry interactive
@@ -7433,33 +6033,26 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   wrapper.
 
 ## [0.64.0] — 2026-06-03
-
 ### Added
 - MCP source secrets are now fully manageable from the admin UI: set/rotate/clear a vault-stored secret (encrypted at rest), an `env` (`KEY=VALUE`) field and a `scope` selector on the source form, and a secret-status indicator — no host environment variable required. The legacy `auth_secret_env` (host-env) path is relabelled "Advanced (legacy)" and still works. Storing a secret with no `AGNES_VAULT_KEY` set now returns `409` (outside `LOCAL_DEV_MODE`) instead of silently using an ephemeral key that loses the value on restart; a set-but-invalid key still raises a clear config error. `GET /api/health` now reports `vault_key_configured`, source serialization includes a `has_vault_secret` boolean, and `AGNES_VAULT_KEY` is documented in `config/.env.template`. Deleting a source now also removes its vault secrets (shared + per-user) so no orphaned encrypted rows are left behind.
 
 ## [0.63.1] — 2026-06-03
-
 ### Fixed
 - **A cloud/DuckDB-backend VM now reboots cleanly instead of hanging on a side-car migration.** The `customer-instance` startup-script baked the Postgres side-car overlay (`docker-compose.postgres.yml` + `…-host-mount.yml`) into the `.env` `COMPOSE_FILE` unconditionally — so a reboot of a `backend: cloud` (or `duckdb`) instance re-engaged the side-car and ran the one-shot `migrate` service against it, which fails (`failed to resolve host 'postgres'`) and blocks `app`/`scheduler` startup via `depends_on`. The startup-script now selects the overlay set from the persisted `instance.yaml` backend — side-car overlay only for `backend=side_car`; `duckdb`/`cloud` run the baseline (cloud reaches managed Postgres via `instance.yaml::database.url`) — mirroring `agnes-state-applier.sh`. Regression test added.
 
 ## [0.63.0] — 2026-06-03
-
 ### Added
 - MCP **sources** can now carry per-source non-secret environment variables (`env`, a `{VAR: value}` map) passed to the spawned **stdio** subprocess — e.g. a base API URL the upstream server needs alongside its `auth_secret_env` secret (which overlays `env`). New optional field on `POST/PUT /api/admin/mcp-sources` and a new nullable `mcp_sources.env` column (DuckDB `_v68_to_v69` + Alembic `0016`). Backward-compatible: existing sources (`env` NULL) behave exactly as before.
 
 ## [0.62.4] — 2026-06-03
-
 ### Fixed
 - **Fresh customer-instance VMs on the Postgres/cloud path now boot.** Two gaps broke first-boot for any VM whose startup-script engages the Postgres overlay (existing DuckDB-only fleets were unaffected): (1) the `Dockerfile` never copied `agnes-state-applier-bootstrap.service` into `/opt/agnes-host/`, so the startup-script's `install` of it failed under `set -e` (`install: cannot stat …`); (2) the `migrate` and `data-migrate` services in `docker-compose.postgres.yml` declared only `build: .`, so `docker compose up` tried to build them on the sourceless VM and failed with `failed to read dockerfile`. The Dockerfile now ships the bootstrap unit, and both one-shot services carry an `image:` (the pulled GHCR image) alongside `build` — mirroring the app/scheduler split. Regression tests assert every startup-script-installed ops unit is shipped by the Dockerfile and that the overlay's migrate services carry a prebuilt image. (#524)
 
-
 ## [0.62.3] — 2026-06-03
-
 ### Fixed
 - `Dockerfile.demo` pins `ENV DATA_DIR=/data` so the baked demo extract (written to the absolute `/data/extracts/demo` at build time) is found by the boot-time rebuild. The app default `DATA_DIR=./data` is relative to the `/app` workdir, so without this the demo tables (`orders_demo`, `customers_demo`) silently never loaded and the demo catalog came up empty. (#525)
 
 ## [0.62.2] — 2026-06-03
-
 ### Fixed
 - **Served Claude Code marketplace was missing every plugin on Postgres-backed deployments.** `src/marketplace_filter.py:resolve_allowed_plugins` ran the `resource_grants ⋈ marketplace_plugins ⋈ marketplace_registry` JOIN as raw `conn.execute` against the DuckDB-typed connection. On a `db-state-machine` CLOUD / SIDE_CAR instance the rows live in Postgres — the raw SQL hit an empty DuckDB table and the JOIN returned 0 rows, so `/marketplace.git/` and `/marketplace.zip` served only plugins from marketplaces ingested *before* the PG cutover (typically the seed `grpn-foundryai` set). `agnes marketplace search` still reported `installed: true` on the missing plugins because the curated tab reads `user_curated_subscriptions` through the repo factory and that *was* PG-routed — divergent UX signals that matched the field tickets exactly. Routed `resolve_allowed_plugins`, `resolve_user_groups`, and the subscription / store-install reads in `resolve_user_marketplace` through the repo factory (`marketplace_plugins_repo().list_granted_for_groups`, `user_groups_repo().list_names_by_ids`, `user_curated_subscriptions_repo`, `user_store_installs_repo`) so the served set, the marketplace search results, and the My Stack page all read the same source of truth on either backend. (#522)
 
@@ -7467,12 +6060,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - New cross-engine contract test (`tests/db_pg/test_marketplace_plugins_grants_contract.py`) parametrises `list_granted_for_groups` + `list_names_by_ids` over both DuckDB and Postgres backends — pins the JOIN shape (DISTINCT + ORDER BY parity with PG's stricter standard), the registered-at + name ordering, the marketplace_registry INNER-JOIN filter (orphan plugins drop), and the empty-input short-circuit. Catches the routing regression that drove this PR and prevents it from reappearing on either side. (#522)
 
 ## [0.62.1] — 2026-06-03
-
 ### Fixed
 - MCP passthrough tools that declare no input parameters (e.g. canned-view tools such as a pipeline summary) no longer fail with a `kwargs` validation error. Empty-schema tools now register a parameterless signature in both the server-hosted (`app/api/mcp/tools_generator.py`) and CLI stdio (`cli/mcp/_dynamic_passthrough.py`) MCP servers, instead of a `**kwargs` wrapper that FastMCP rendered as a required field (so the only valid — empty — call was rejected).
 
 ## [0.62.0] — 2026-06-03
-
 ### Added
 - **`agnes auth refresh-groups` + `POST /auth/refresh-groups`** — re-sync the caller's Google Workspace group memberships against the live Admin SDK without a browser sign-in. Closes the gap that drove a recurring class of "I'm in the new group but Agnes can't see my access" tickets: previously the `user_group_members.source='google_sync'` snapshot refreshed *only* in the browser OAuth callback (`app/auth/group_sync.fetch_user_groups`), so CLI/PAT users (`agnes refresh-marketplace`, `agnes pull`, `/api/marketplace/*`) saw a frozen view of their groups until they re-signed-in on the dashboard. The new endpoint reuses the OAuth-callback write path (prefix filter, admin/everyone mapping, `replace_google_sync_groups`) via the extracted `apply_user_groups` helper, so policy stays single-sourced. Rate-limited at 5/min/IP (slowapi default key — matches the `/token` and `/bootstrap` pattern in the same router; refreshing is cheap on our side but each call costs a Workspace Admin SDK quota unit, so the limit guards the upstream quota). Response reports `added` / `removed` / `current` so the CLI shows exactly what changed. The diff-computation read path goes through `user_group_members_repo().list_groups_with_meta_for_user()` so the response is correct on both DuckDB and Postgres state backends (Devin Review caught the original raw-SQL drift); a new `tests/db_pg/test_user_group_members_contract.py` pins down the read shape across both engines. (#520)
 
@@ -7480,7 +6071,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Extracted `app.auth.group_sync.apply_user_groups(user_id, email, conn) -> SyncResult`** from the OAuth callback's inline sync block (`app/auth/providers/google.py`), so the callback and the new refresh endpoint write the snapshot through one implementation. Cuts ~70 LoC of duplication and removes the OAuth-only assumption baked into the previous shape. Behavior preserved end-to-end (verified by the existing prefix/system-mapping/idempotency suite). The extracted function preserves the pre-extraction OAuth callback's fail-soft contract: a transient `ug_repo.ensure()` / `get_by_name()` hiccup (DuckDB write lock, PG connection drop) downgrades to `soft_failed=True` rather than raising — without this, the OAuth callback would turn a transient DB hiccup into `/login?error=oauth_failed` (user locked out) and the refresh endpoint into HTTP 500. The denied case (`denied=True`) deliberately preserves existing `source='google_sync'` rows rather than wiping RBAC on a prefix-policy mismatch that may be transient (operator-typo in `PREFIX_ENV` / Admin SDK propagation lag). Both contracts documented on the function's docstring. (#520)
 
 ## [0.61.6] — 2026-06-03
-
 ### Fixed
 - `/home` "Mark me as onboarded" (and `agnes init`) now takes effect on a
   Postgres-backed instance. The route read `users.onboarded` with a raw
@@ -7493,27 +6083,22 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Marketplace **My Stack** tab returned HTTP 500 on the Postgres state backend — the `user_store_installs` PG repo's `list_for_user` omitted `title` / `tagline` / `synthetic_name` from its SELECT, which the flea-card builder (`_flea_to_item`) reads directly (`entity["synthetic_name"]` → `KeyError`). Brought the PG projection to parity with the DuckDB repo and added a cross-engine contract test. (#517)
 
 ## [0.61.5] — 2026-06-03
-
 ### Added
 - The configured instance logo (`AGNES_INSTANCE_LOGO_SVG` env > `instance.logo_svg` YAML) now renders on the `/login` Sign In card, above the heading — previously the logo only surfaced in the app header. Empty default keeps the OSS vendor-neutral: no logo renders unless an operator sets one.
 
 ## [0.61.4] — 2026-06-03
-
 ### Changed
 - **Migrated the 7 remaining `base.html` leaf pages onto the design-system base (`base_ds`).** `admin_tables`, `admin_database`, `admin_sync`, `admin_mcp_sources`, `admin_mcp_source_detail`, `admin_mcp_tool_grants`, `cowork_help` — pages added on `main` *after* the #481 batch (Cowork + Universal MCP #474, db-state #455). Each is an extends-swap onto `base_ds` with its per-page component CSS moved into `{% block head_extra %}` and the redundant `_components.html` import dropped (`base_ds` auto-imports `ds`); every hero is kept in place (faithful — no visual change, render-verified). Only the 7 intentionally-bespoke templates (the catalog/marketplace `*_detail` card-heroes, the dead `admin_scheduler_runs` redirect, and the `_message` partial) now remain on `base.html`. Migration-tail follow-up to #482.
 
 ## [0.61.3] — 2026-06-03
-
 ### Changed
 - Brand-green tints, focus rings, and shadows across the static CSS (`style-custom.css`, `home.css`, `dashboard.css`, `marketplace.css`, `activity_center.css`, `admin_access.css`) now derive from the `--ds-primary` theme token via `color-mix` instead of hardcoded green, so they follow the active theme (light/blue/dark). No visual change in the default theme. (#497)
 
 ## [0.61.2] — 2026-06-03
-
 ### Changed
 - Confirmation, alert, and input dialogs across the web UI now render as styled in-app modals instead of native browser `confirm()` / `alert()` / `prompt()` pop-ups — design-system look (rounded corners + brand colours), non–event-loop-blocking, with focus trap, Esc/backdrop dismissal, and keyboard-friendly Enter-to-confirm. Helpers live in `app/web/static/js/modal.js` (`confirmModal()` / `alertModal()` / `promptModal()`), CSS in `app/web/static/style-custom.css`, autoloaded via `_app_scripts.html`. Touches 22 templates + `admin/db_state.js`; covers regular pages and the admin surface (`admin_tables`, `admin_corporate_memory`, `admin_store_submission_detail`, `admin_user_detail`, etc.). The Devin Review on #508 caught a `window.confirm` slip in `home_not_onboarded.html` (the prior audit regex matched bare `confirm(` but not the `window.`-prefixed form); converted in this PR. Also fixes a name collision where `admin_tokens.html` / `_profile_tokens.html` defined a page-local `confirmModal` element id that shadowed the helper. (#497)
 
 ## [0.61.1] — 2026-06-03
-
 ### Fixed
 - **`app/api/mcp_http.py:_BASE` no longer reuses `AGNES_BASE_URL` for self-calls.** The MCP HTTP server makes server-side self-calls into Agnes for `catalog` / `schema` / `describe` / `query` / `skills`. Reusing the public-facing `AGNES_BASE_URL` made every tool round-trip through the reverse proxy (added TLS + DNS + proxy latency, broke when the external URL wasn't resolvable from inside the container). The base URL is now read from a dedicated `AGNES_MCP_INTERNAL_URL` env var (default `http://localhost:8000`). Operators running Agnes split across multiple pods can point the var at the in-cluster service URL. (Devin Review on #474.)
 - **`app/api/admin_mcp.py` adopts the `mcp_sources_repo()` / `tool_registry_repo()` factory functions across all 15 handler sites.** Direct `MCPSourceRepository(conn)` / `ToolRegistryRepository(conn)` instantiations skipped the dual-backend factory, so a Postgres-backed (side-car / cloud) deploy was reading MCP source / tool data from the wrong place. The `audit_log` path keeps the conn dependency intact since it's a per-router helper; only the MCP repository constructions were swapped. (Devin Review on #474.)
@@ -7522,7 +6107,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Cross-engine contract tests for the MCP repository pairs.** New `tests/db_pg/test_mcp_sources_contract.py` (11 tests) + `tests/db_pg/test_tool_registry_contract.py` (8 tests) parametrise over `[duckdb, pg]` (sister of `test_data_packages_contract.py`) so DuckDB and Postgres implementations of `mcp_sources` + `tool_registry` upsert / get / get_by_name / list / delete + their validators are exercised against the same call sites. Closes the third Devin Review follow-up on #474 (cross-engine contract tests for the 3 new repository pairs landed by Cowork + MCP); the `setup_tokens` pair (the third) has narrower API surface and is exercised end-to-end through the existing Cowork bundle setup tests.
 
 ## [0.61.0] — 2026-06-03
-
 ### Added
 - Seed-driven connector framework foundation (A1.1 of the connector-skills refactor).
   - `src/_bundled_seed/` snapshot of the OSS workspace seed ships inside the wheel and serves as the fallback when no Initial Workspace Template is configured. Resolution chain: operator IWT clone first, bundled snapshot second.
@@ -7618,7 +6202,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   - `e2b` Python lib upper-bound widened from `<2.0.0` to `<3.0.0` (lets the resolver pick up the v2 line as the e2b SDK ships it; runtime API surface that `app/chat/e2b_provider.py` uses is unchanged). Supersedes #503.
 
 ## [0.60.0] — 2026-06-02
-
 ### Internal
 - **DuckDB schema → v68 + Postgres parity.** The cloud-chat tables
   (`chat_sessions`, `chat_messages`, `user_workdirs`) ship as migration
@@ -7634,7 +6217,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the DB — the DuckDB path keeps the app-layer workarounds for the 1.5.3
   FK+index bug. The state-machine migrator copies the tables (no
   schema-parity exemption).
-
 
 ### Added
 - **Cloud-chat: admin secret management + readiness panel.** The
@@ -8007,8 +6589,8 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   empty HMAC signatures with 401; (7) a WS ticket minted for session
   A cannot open session B's WebSocket. nsjail-side tests reuse the
   same skip helper as `tests/security/test_nsjail_escape.py`.
-## [0.59.4] — 2026-06-02
 
+## [0.59.4] — 2026-06-02
 ### Added
 - **`/me/cowork` — AI Cowork page.** New dedicated page consolidating setup bundle download (numbered steps, first-prompt copy box, active-bundle revoke list), MCP connection details, and available tools (Agnes tools, passthrough tools, marketplace skills) in collapsible sections. Replaces the split between `/me/profile → Connect Claude Code` and `/me/mcp`. Accessible via the user menu ("AI Cowork") for all authenticated users.
 - **Cowork bundle ships marketplace skills + agents as Cowork slash commands.** The bundle ZIP now includes all RBAC-granted marketplace skills (`.claude/skills/<name>.md`) and agents (`.claude/agents/<name>.md`) so they appear as `/skill-name` slash commands immediately on first Cowork open — no per-plugin ZIP upload needed. Claude-Code-only frontmatter keys (`argument-hint`, `user-invocable`) are filtered out; skill names are de-duplicated across plugins. Three curated Agnes skills always ship: `/explore-data` (catalog + describe + suggest), `/query-data` (schema-aware SQL workflow), `/new-skill` (design + write a skill to the workspace).
@@ -8018,7 +6600,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Profile page simplified.** The "Connect Claude Code" setup panel has been removed from `/me/profile`; setup now lives at `/me/cowork`.
 
 ## [0.59.3] — 2026-06-02
-
 ### Added
 - **`base_page.html` intermediate page-shell layout (#367 Tier 2).** A thin layer between `base_ds.html` and content pages that auto-wires the canonical chrome — hero (`page_hero_*` → `_page_hero.html`) + `{% block toolbar %}` + `{% block page %}` — so a page gets the standard shell without a per-page `<style>` block or a container opt-out. `profile.html` is migrated onto it as the first adopter (rendered width unchanged — the canonical `.container:has(.profile-page)` cap still applies).
 - **Design-system anti-drift guards in `tests/test_design_system_contract.py` (#367 Tier 1).** Leaf templates can no longer reintroduce a `.container:has()` width opt-out or a bare `:root {}` token-shadow block; the canonical bases (`base.html`, `base_ds.html`, `base_page.html`, `_theme.html`) are exempt.
@@ -8050,7 +6631,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Documented the design-system page shell for agents.** `docs/architecture.md` now describes the `base.html` → `base_ds.html` → `base_page.html` hierarchy and carries a step-by-step **New Web Page** recipe under *Extending the Platform*; `CLAUDE.md` gains a `Web pages` pointer under *Extensibility*, and the `#419` refactor playbook is de-staled (`base_ds` is canonical + auto-imports `ds`). New pages now have a clear path: extend `base_page` / `base_ds` (never legacy `base.html`), page CSS in `{% block head_extra %}`, `ds.*` macros auto-imported.
 
 ## [0.59.2] — 2026-06-02
-
 ### Added
 
 ### Changed
@@ -8066,24 +6646,20 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ---
 
 ## [0.59.1] - 2026-06-02
-
 ### Fixed
 
 - `POST /api/admin/db/migrate`: concurrent calls where one caller writes `*_in_progress` before the other's pre-lock transition check now correctly return 409 "already in progress" instead of a misleading 400 "transition not allowed".
 - Cowork nav link positioned at the end of Admin → Agent Experience group (was missing after #491 rearrangement).
 
 ## [0.59.0] — 2026-06-02
-
 ### Changed
 - **Cowork page renamed and relocated in the header.** The `/me/mcp` page (added in 0.58.0 as "AI Tools" in the primary nav) is now titled **"Cowork"** and reached from the **Admin → Agent Experience** dropdown instead of the top-level navigation. Page `<h1>` and browser `<title>` updated to match. Note: the Admin dropdown is admin-only, so the page is no longer linked from the header for non-admins (the route itself remains accessible to any authenticated user).
 
 ## [0.58.1] — 2026-06-02
-
 ### Fixed
 - **`e2e-nightly.yml` + `ci.yml` docker-e2e workflows no longer fail at container start after v0.56.0's BREAKING JWT fail-closed (#483).** Both workflows created an empty `.env` (`touch .env`) and relied on docker-compose's `environment:` block for runtime values; with `JWT_SECRET_KEY` absent, the app refused to start in production mode and the `Container agnes-the-ai-analyst-app-1 is unhealthy` failure auto-filed issue #487 against the first v0.58.0 nightly run. Both workflows now write a random 64-hex `JWT_SECRET_KEY` (per run, via `openssl rand -hex 32`) to `.env` before `docker compose up` so the safety guard is satisfied without committing a secret to the repo. `release.yml` smoke-test was unaffected — it already mounts `docker-compose.ci.yml` overlay which sets `JWT_SECRET_KEY` for the built-image path.
 
 ## [0.58.0] — 2026-06-02
-
 ### Added
 - **Cowork `setup.py` shows macOS restart dialog after MCP registration.** After writing Agnes into Claude Desktop's config, `setup.py` shows a native macOS dialog ("Agnes MCP tools registered. Restart Claude Desktop now to activate them?" / "Later" / "Restart Now"). Choosing "Restart Now" quits Claude Desktop and reopens it automatically. Best-effort — silently skipped if `osascript` is unavailable.
 - **Cowork `setup.py` uses stable `mcp_server.py` path in `~/.claude/settings.json`.** Previously wrote the bundle folder path (`HERE/mcp_server.py`) to the user-level Claude settings, which broke when the bundle folder was deleted. Now writes `~/.config/agnes/mcp_server.py` (the stable copy created by setup) so the entry survives bundle cleanup and new-bundle downloads.
@@ -8127,12 +6703,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Cowork zip arcname dedup keeps skills valid.** Arcname collisions (two source dirs sanitizing to one path, e.g. `[id]/` and `dyn-id/`) now resolve at the directory level (`skills/dyn-id` → `skills/dyn-id-1`) instead of renaming the file, so a colliding `SKILL.md` is never turned into `SKILL-1.md` (which would make Cowork stop recognising the skill). The root-level filename fallback now splits on the filename only, so a dot in a parent directory can no longer corrupt the path. A missing per-file size guard in the store-bundle branch was added to match the on-disk-plugin branch.
 
 ## [0.57.2] — 2026-06-01
-
 ### Added
 - **Container memory caps are now overridable via `.env`.** `docker-compose.yml` reads `AGNES_APP_MEM_LIMIT` (default `4g`) and `AGNES_SCHEDULER_MEM_LIMIT` (default `2g`), so a deployment on a larger host can raise the cap without forking compose — small deploys keep the previous defaults. The `infra/modules/customer-instance` Terraform module exposes matching per-VM `app_mem_limit` / `scheduler_mem_limit` attributes on `prod_instance` / `dev_instances` (same defaults) and renders them into `/opt/agnes/.env`. Sizing note: DuckDB enforces `memory_limit` per-connection and (1.5+) defaults a fresh connection to ~80% of the cgroup limit, so on a big VM leaving the container at `4g` both wastes host RAM and lets the per-connection budgets sum past the cap, at which point the cgroup OOM-killer SIGKILLs uvicorn mid-WAL-write (the corruption guarded against by the `stop_grace_period` note in compose and the per-connection caps in `src/db.py`). Raise this cap together with those per-connection budgets.
 
 ## [0.57.1] — 2026-06-01
-
 ### Fixed
 - **`POST /api/admin/db/migrate` refuses to queue when the source backend is PG but `instance.yaml`'s `database.url` is unset.** Round-3 review H1-NEW — pre-fix, a migration FROM `cloud` / `side_car` whose `current_url` came back `None` (corrupted overlay per B2-NEW, or operator manually cleared the url) would queue a job with `source_url=null`, the migrator would crash later with `--source-url is required`, and the rollback path would write empty url back to `instance.yaml` — leaving `backend=cloud + no url` and requiring manual YAML repair to recover. The endpoint now refuses with a 400 naming `database.url` so the operator can fix the overlay before retrying.
 - **`POST /api/admin/db/migrate` pins the resolved target/source IP into the queued job, closing the DNS rebinding window between validation and migrator connect.** Round-3 review B1-NEW (BLOCKER) — round-2's `_urls_alias` ran `socket.getaddrinfo` for the alias check, but the hostname-bearing URL was then persisted verbatim into the pending job JSON; the applier passed it unresolved to psycopg. An attacker controlling `rebind.example`'s DNS could pass it as `cloud_url`, the host resolves to a public IP at validation time, and then to the local sidecar's IP when the migrator connects — self-migration commits, the next cloud-only applier tick stops the only live Postgres. `start_migration` now records both the display URL (hostname form) AND a `*_pinned_ip` field whose host is the resolved IP at validation time; the applier prefers the pinned URL when present and falls back to the hostname URL for v1 (legacy) jobs queued before this fix. Job-JSON `schema_version` bumped 1 → 2.
@@ -8142,7 +6716,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Cancel ↔ flip is now atomically gated by `MigrationLock`.** Round-3 review H1-PARTIAL — round-2's `_check_cancel_before_flip` narrowed the cancel-during-verify race but a microsecond window remained between the migrator's re-check and its `write_backend_state(TARGET, ...)`. Neither side held `MigrationLock` during the actual flip, so a concurrent `cancel_job` could revert `instance.yaml` to SOURCE between the migrator's check and its write — and the migrator would then overwrite the revert, producing data on TARGET but `instance.yaml` on SOURCE. Both sides now acquire `MigrationLock` around their check+write blocks; `MigrationInProgressError` triggers a brief retry on either side, after which the loser sees the winner's terminal state.
 
 ## [0.57.0] — 2026-06-01
-
 ### Added
 - **Admin-controlled DB backend state machine.** Replaces ad-hoc `.env` editing with a guarded workflow for migrating Agnes app-state between DuckDB, side-car Postgres, and managed cloud Postgres. Spec at `docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md`; operator playbook in `docs/postgres-cutover-runbook.md` (new "Admin UI / CLI" section). The machine records `target_state` intent + a `db_migration_job` row; a host-side `agnes-state-applier.timer` runs the data-migrate subprocess, then rewrites `/opt/agnes/.env` and `docker compose up -d` once verification passes. Pre-flip DuckDB snapshots land gzipped under `/data/state/backups/duckdb-pre-<target>-<ts>.duckdb.gz`.
 - **`/admin/server-config` — Database backend section.** UI card showing current backend, redacted connection URL, allowed transitions, and a live progress panel that polls the running migration job. Confirmation modal + cloud-URL input for the `cloud` transition.
@@ -8216,7 +6789,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **DuckDB system schema bumped to v62.** Main shipped `cli_auth_codes` table as v61 (PR #475 browser-based `agnes auth login`); this branch's per-type FK columns on `resource_grants` (E.3) were renumbered to v62 during the merge. Migration ladder runs `_v60_to_v61` (cli_auth_codes) → `_v61_to_v62` (resource_grants FK columns) in order. `_SYSTEM_SCHEMA` declares both, so fresh installs and design-pass-origin DBs at v61 heal correctly. The detailed verification matrix (one line per finding mapped to commit SHA) lives in the PR #455 description.
 
 ## [0.56.0] — 2026-06-01
-
 ### Added
 - `AGNES_REBUILD_ON_BOOT=1` builds master views from baked extracts at startup (for images that ship data without a scheduler).
 - `scripts/build_demo_extract.py` + `Dockerfile.demo` produce an image variant with a self-contained synthetic demo dataset.
@@ -8226,17 +6798,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **BREAKING**: in production (non-local-dev) the app now refuses to start without an explicit `JWT_SECRET_KEY` of ≥32 chars — auto-generation is limited to local dev. Set a strong `JWT_SECRET_KEY` before deploying.
 
 ## [0.55.32] — 2026-06-01
-
 ### Added
 - **`agnes admin data-semantics generate <dir>` — scaffold the workspace data-semantics pack from the catalog (#469, Gap 1).** Emits a *starter* pack so an operator hand-edits know-how instead of authoring the whole tree: `<pkg>/tables/*.yml` (id, fqn, partition/cluster keys, columns — from `table_registry` + `column_metadata` + `bq_metadata_cache`), `<pkg>/metrics/*.yml` (from `metric_definitions`), grouped by `data_packages`, plus seed-if-absent `_brief.md` / `_overview.md` skeletons. Provenance + 3-way merge ride the pack's native `sync:` block (`method: generated` vs `hand-authored`): re-runs refresh machine-owned fields, keep human edits, preserve human-added keys, and drop a field whose source disappears. `--check` makes drift CI-enforceable; `--dry-run` / `--json` for inspection. Engine `src/data_semantics_scaffold.py` is `app.`-free. Metrics that belong to no data package are reported, not silently dropped.
 
 ## [0.55.31] — 2026-06-01
-
 ### Fixed
 - **Frontend timestamps now render in the analyst's local timezone.** Three coupled fixes: (1) every `duckdb.connect(...)` is now routed through `src.db._open_duckdb`, which pins the DuckDB session timezone to UTC via `SET GLOBAL TimeZone='UTC'` — DuckDB's `TIMESTAMP` type strips tzinfo on write after shifting the value into the session zone, and ICU's default session zone is the host's local zone, so on a non-UTC host a UTC-aware write was previously stored as local-naive. `GLOBAL` is required because DuckDB cursors do NOT inherit session-level `SET TimeZone` (they start with the ICU default), and every repository reads through `conn.cursor()`. (2) FastAPI now serializes datetime fields with an explicit UTC offset — `app.serialization.AgnesJSONResponse` set as the default response class plus an override of `fastapi.encoders.ENCODERS_BY_TYPE[datetime]` so naive datetimes get the `+00:00` suffix on the wire instead of an offset-less ISO string that `new Date()` would parse as local time. (3) A new `window.AgnesTime` helper (`app/web/static/js/datetime.js`) hydrates `<time datetime="...">` tags client-side, replaces the per-template `fmtDate` slice helpers in `admin_users.html` / `admin_groups.html` / `admin_marketplaces.html` / `admin_user_detail.html` / `admin_group_detail.html` (which used to chop the ISO string and never convert to local tz), and powers the marketplace 'added' date. Two follow-on call sites — `app/api/health.py:_check_session_pipeline` sync-lag and `src/repositories/session_processor_state.py:scan_unprocessed_for` mtime compare — now compare against UTC-naive instead of local-naive to match the pinned DB. UTC label stays as the no-JS fallback and as the tooltip. No DuckDB schema migration — deferred until the parallel Postgres migration lands.
 
 ## [0.55.30] — 2026-06-01
-
 ### Fixed
 - **`system.duckdb` could roll back days of admin state (data packages, RBAC grants, group members) after an OOM kill, and the OOM kill itself was self-inflicted.** Three compounding defects in a memory-bounded container (e.g. a 4 GiB cgroup):
   - **Uncapped system connection → OOM loop.** DuckDB enforces `memory_limit` per-connection, not per-process. The analytics + read-only connections were capped (2 GiB each) but the long-lived `system.duckdb` singleton was left uncapped, so a telemetry/audit aggregation on it could grow the process past the cgroup cap and the kernel OOM-killed the worker. `get_system_db()` now applies an explicit budget via a shared `_apply_memory_caps` helper (system 1 GiB, analytics 1.5 GiB, read-only 1 GiB) plus a `temp_directory` so an over-budget query spills to disk instead of growing RSS.
@@ -8244,12 +6813,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   - **FTS DDL lingering in the WAL.** `ensure_knowledge_fts_index` rebuilds the `fts_main_knowledge_items` schema on every search; those DROP/CREATE ops sat in the WAL until the next checkpoint and were what DuckDB's replay choked on after a kill. It now `CHECKPOINT`s immediately after (re)creating the index (best-effort) so the FTS DDL never lingers in the WAL.
 
 ## [0.55.29] — 2026-06-01
-
 ### Added
 - **`agnes admin autodoc-tables` — LLM-generate descriptions for undescribed tables (#399).** Most registered tables ship with no `description`, weakening `agnes catalog` for AI agents. The command reads each undescribed table's stored profile (columns + sample rows) and asks the configured LLM (Haiku by default, via `connectors.llm`) for a short factual description, then saves it via `TableRegistryRepository.set_description`. Only empty descriptions are filled — an existing one is never overwritten — and only already-profiled tables are touched. `--table` to target one, `--dry-run` to preview, `--limit N` to cap. Pure prompt/parse core in `src/table_autodoc.py` (no `app.`/DB/network deps). Uses `ANTHROPIC_API_KEY` / `LLM_API_KEY` (or the instance `ai:` block).
 
 ## [0.55.28] — 2026-06-01
-
 ### Added
 - Browser-based `agnes auth login` (gh-style loopback). Instead of
   prompting for a plaintext password, the CLI opens the browser to
@@ -8267,7 +6834,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `agnes auth import-token` path.
 
 ## [0.55.27] — 2026-06-01
-
 ### Security
 - Bumped `dulwich` from 0.24.1 to 1.2.5 (Dependabot, #468). dulwich powers the in-process git server mounted at `app/marketplace_server/{git_backend,git_router}.py` that serves the curated-marketplace clone endpoint — five hardenings landed in this jump:
   - **GHSA-gfhv-vqv2-4544** — `porcelain.submodule_update` (and `porcelain.clone(recurse_submodules=True)`) now validates submodule paths; a crafted upstream could previously direct submodule contents into `.git/hooks` and drop an executable hook there. dulwich analogue of git's CVE-2024-32002 / CVE-2024-32004.
@@ -8278,12 +6844,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   - Test impact: the four-shard test suite + `tests/test_marketplace_server_git.py` are green on 1.2.5 — no Agnes-side API breakage from the 0.x → 1.x bump.
 
 ## [0.55.26] — 2026-06-01
-
 ### Fixed
 - **Data Package card: the lifecycle status pill (POC / Coming soon / Draft) overlapped the curated/new badges.** Both the status pill (`.stack-card__status-pill`) and the derived-badge row (`.stack-card__badges`) were absolute-positioned at the same `top:8px; left:8px` corner of the card cover, so a package that had a non-default status *and* a derived badge rendered the two stacked on top of each other. The badge row now drops just below the status pill when one is present; placement is unchanged (top-left) when there's no pill. Macro: `app/web/templates/macros/_stack_card.html`.
 
 ## [0.55.25] — 2026-05-28
-
 ### Fixed
 - **Telemetry dropdown listed the same user under both their email and
   their UUID.** `usage_events.username` /
@@ -8304,7 +6868,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the display/grouping identity changes.
 
 ## [0.55.24] — 2026-05-28
-
 ### Fixed
 - **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
   The `{% set _brand = instance_brand | e %}` + `{% set title = _brand ~ "…<span>…" %}`
@@ -8319,7 +6882,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `test_home_not_onboarded_hero_title_html_escapes_brand`).
 
 ## [0.55.23] — 2026-05-27
-
 ### Added
 - **Seven new design-system macros in `_components.html`.** Closes the
   "Macro gaps" tracker on #419 by extending the canonical 5 (button,
@@ -8375,7 +6937,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   legacy primary tokens or raw hex literals fails the build.
 
 ## [0.55.22] — 2026-05-27
-
 ### Added
 - **`customer-instance` module: per-VM OAuth client secrets via naming
   template.** New module-level variable `oauth_secret_name_template` lets
@@ -8410,7 +6971,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   Bump to `infra-v1.10.0`.
 
 ## [0.55.21] — 2026-05-27
-
 ### Added
 - **Scheduler-driven Jira self-healing pair: SLA poll + consistency check.** Brings Agnes back to parity with the legacy Data Broker `jira-sla-poll.timer` / `jira-consistency.timer` systemd units, but invoked from the in-cluster scheduler container instead of host systemd. Two new entries in `services/scheduler/__main__.py` (`jira-sla-poll`, `jira-consistency-check`) target the new endpoints `POST /api/admin/run-jira-sla-poll` and `POST /api/admin/run-jira-consistency-check`. Defaults match the systemd unit cadence — 15 min for SLA poll, 30 min for consistency — and are tunable via two new env vars: `SCHEDULER_JIRA_SLA_POLL_INTERVAL`, `SCHEDULER_JIRA_CONSISTENCY_INTERVAL`. The SLA poll re-fetches `elapsed_millis` + `status` for open tickets whose snapshot would otherwise stagnate between webhooks (and self-heals stale status/resolution on the same pass); the consistency check compares Jira API ↔ raw JSON ↔ parquet and auto-backfills small webhook-loss gaps (`max_age_days=30` default, tunable per call). Both endpoints short-circuit with `{"status": "skipped", "reason": "jira_not_configured"}` when the `JIRA_*` env vars are unset, so a customer without Jira ingest pays nothing for the default scheduler entries. `connectors/jira/scripts/poll_sla.py` `main()` was split into a programmatic `run(dry_run, verbose) -> dict` plus a thin CLI wrapper so the endpoint can call it in-process (the `consistency_check.py` `Config` + `JiraConsistencyChecker` factoring was already endpoint-shaped). The pre-existing systemd units in `connectors/jira/systemd/` are left in place for customers who prefer host-side scheduling. Twelve new parametrized tests cover defaults, env-var overrides, and rejection of invalid values for both intervals.
 
@@ -8421,7 +6981,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   if you stayed on v0.55.19 or upgraded straight to v0.55.21.
 
 ## [0.55.20] — 2026-05-27
-
 ### Added
 - **`/admin/tables` Keboola smart-paste — split `bucket.table_name` on paste/blur.** Keboola Storage's "COPY TO CLIPBOARD" yields the full table id `{bucket}.{table_name}` (e.g. `out.c-crm-tr-RdC3aX4M.account`). The Register Keboola modal has two separate inputs (Bucket + Source Table), so pasting the full id used to fail silently. The modal now has a dedicated `#kbTableIdPaste` input above the existing fields; pasting or blurring with a value containing a `.` splits on the LAST dot and fills both downstream inputs. Downstream fields get a synthetic `input` event so any datalist-refresh / discover hooks treat it as user-typed; manual entry through Bucket + Source Table still works as before. Closes #401.
 - **`/dashboard` live sync-status pill.** Small horizontal pill between the env-setup-cta and the stats-row. Initial state is server-rendered from the existing `data_stats.last_updated` (MAX `last_sync` across all `sync_state` rows): "Last sync: <iso>" or "No sync recorded yet". A JS poller hits `GET /api/sync/status` every 30 s and flips the pill to `is-running` (brand-primary pulsing dot, "Sync running…" text) when the `locked` flag is true. The `/api/sync/status` endpoint is intentionally tiny (`{locked: bool}`, public/no-auth for the host-side auto-upgrade cron), so the timestamp comes from server-render rather than live fetch; extending the endpoint to return last-run pass/fail status is a follow-up. Closes #392.
@@ -8458,7 +7017,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   named volume and exit 2.
 
 ## [0.55.19] — 2026-05-27
-
 ### Fixed
 - **Profile pass in `_run_sync` now runs each `profile_table` call in a
   fresh Python subprocess** (`src/_profiler_worker.py`, new generic
@@ -8477,7 +7035,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   stays single-writer.
 
 ## [0.55.18] — 2026-05-27
-
 ### Changed
 - **`/admin/server-config` button family migrated to the canonical `.btn-*` vocabulary.** The 21 page-local `.cfg-btn` / `.cfg-btn.primary` / `.cfg-btn.danger` instances (5 static modal buttons + 16 buttons emitted from `<script>` template literals — array/map remove + add, per-section Save, BigQuery / Keboola connection-test, initial-workspace Sync / Edit / Delete / Download / Register) now route through `.btn .btn-primary` / `.btn-secondary` / `.btn-danger`, matching the rest of the admin UI. Small "×" remove buttons compose `.btn-sm .btn--icon` for tightness. The page-local `.cfg-btn` CSS block is gone. Static modal buttons render via `ds.button`; JS-string buttons emit canonical class names directly (macros can't reach inside `<script>` literals).
 - **`/admin/corporate-memory` button family migrated to the canonical `.btn-*` vocabulary.** The bespoke moderation-specific variants (`.btn-mandate`, `.btn-approve`, `.btn-reject`, `.btn-revoke`) are retired in favor of the canonical four — `.btn-mandate` → `.btn-primary` (Save / Apply / Confirm / Mark-as-Required / Mark-as-duplicate), `.btn-approve` → `.btn-secondary` (Approve / Keep / Different), `.btn-reject` → `.btn-danger` (Reject / Delete), `.btn-revoke` → `.btn-ghost` (Dismiss). The variant-choice hierarchy (primary > secondary > danger > ghost) continues to encode the semantic priority; the green-on-approve / red-on-reject solid color cues from the bespoke palette are lost but visual hierarchy is preserved. Page-local `.btn` base rule deleted — the canonical `.btn` family in `style-custom.css` supplies the same contract. 29 button class-name swaps across Jinja static markup + JS template-literal contexts. Closes one of the four dedicated follow-up PRs called out by #427.
@@ -8507,7 +7064,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   keeps the same wording.
 
 ## [0.55.17] — 2026-05-27
-
 ### Fixed
 - `scripts/generate_sample_data.py` size `l` preset went from
   unfinishable (>2h wall-clock, ~30 min on `_generate_orders_and_items`
@@ -8529,7 +7085,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   faster but the bug was only catastrophic at `l`.
 
 ## [0.55.16] — 2026-05-27
-
 ### Changed
 - **Web UI consistency pass — CSS extraction, design-token migration, parametric hero sections.** Eight templates with large inline `<style>` blocks (news, profile, error, activity_center, admin_access, dashboard, home_not_onboarded, marketplace) had their CSS extracted into dedicated stylesheets under `app/web/static/css/`, and four landing surfaces (home, dashboard, marketplace, catalog) gained parametric hero sections sharing one partial. Color references migrated from legacy `var(--primary)` (blue) to canonical `var(--ds-primary)` (green) on `me_activity` and `memory_domain_detail` so their hover/focus accents read in the unified palette; exact-match hex literals (terminal yellow, Google-sync chip green, VS Code thumbnail bg/ink) were swapped for their `--ds-*` token equivalents in `home.css` and `profile.html`. The bespoke `.btn-warning` variant was retired — its single use (the `/admin/marketplaces` system-confirm modal) now renders via canonical `.btn-danger`, since marking a plugin as system is destructive (fans out a forced grant to every existing principal). `.btn-required` (amber-disabled affordance on catalog_package_detail + memory_domain_detail) was promoted from page-local to canonical in `style-custom.css` and pinned in `tests/test_design_system_contract.py`. Modal dialogs on `/admin/tables` now center vertically.
 
@@ -8563,7 +7118,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   something goes wrong.
 
 ## [0.55.15] — 2026-05-26
-
 ### Fixed
 - **DuckDB consolidation connections in `materialize_query` now cap
   `memory_limit` + `threads`** (`connectors/keboola/extractor.py`,
@@ -8627,7 +7181,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `docs/ONBOARDING.md` step 4 tfvars block no longer scopes optional variables to "module infra-v1.4.0+" (those have been default for several minor versions); step 9 Monitoring & backup reframed from "follow-up — not required" to "module already provisions, wire a notification channel" since `customer-instance` ships uptime checks + daily PD snapshots out of the box.
 
 ## [0.55.14] — 2026-05-26
-
 ### Changed
 - **`agnes admin grant list` default tabular output now leads with an `ID` column** (first 8 chars of the grant UUID). Pre-fix the table omitted the id entirely, so any operator wanting to `agnes admin grant delete <id>` had to re-run with `--json` and pipe through jq to recover what should be a primary identifier. `--json` output is unchanged (still includes the full uuid).
 - **`agnes admin grant create --help` now leads with a positional-arguments usage example** (`agnes admin grant create <group> <resource_type> <resource_id>`). The previous help body assumed the reader had already inferred argument order from typer's USAGE line; combined with the parent-level `agnes admin grant --help` hinting at flag-style filters on `list`, operators frequently invoked `grant create --group X --resource-type Y --resource-id Z` and were left to discover positional syntax from the typer error.
@@ -8641,17 +7194,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **`agnes admin grant delete` now accepts the 8-char `short_id` from `agnes admin grant list`** (in addition to the full UUID). The previous PR added a `short_id` column to `grant list` and advertised it as input to `grant delete`, but `grant delete` was a thin pass-through to `DELETE /api/admin/grants/{id}` which does exact-match lookup → every short-id paste returned 404. A new `_resolve_grant_id` helper queries the grants API and matches by full id or unique 8-char prefix; ambiguous prefixes abort with a clear error rather than silently picking one. Closes the workflow gap created by the prior commit (caught in self-review).
 
 ## [0.55.13] — 2026-05-26
-
 ### Internal
 - `.github/workflows/e2e-nightly.yml` GitHub Actions bumped: `actions/setup-node@v4 → v6`, `actions/github-script@v7 → v9`, `actions/upload-artifact@v4 → v7`. Consolidates dependabot PRs #422, #423, #424 into one merge. Standard usage paths unchanged; the bump tracks the Node 24 runtime + ESM upgrades the actions ecosystem moved to since these were last pinned.
 
 ## [0.55.12] — 2026-05-26
-
 ### Fixed
 - **`src/db.py::_try_open_system_db` no longer silently drops post-migration data on WAL-replay recovery (#379).** The auto-recovery path used to copy `system.duckdb.pre-migrate` over the broken DB and re-run the migration ladder unconditionally — but the snapshot is captured once per migration transition and never refreshed, so any rows added since that transition vanished without warning. The function now opens the snapshot read-only to peek its `schema_version`; if it does not match the current `SCHEMA_VERSION` exactly (either direction — stale OR future, the latter catching the operator-rolled-the-code-back split-brain case), the broken DB + WAL are preserved at `.broken.<ts>` (chmod `0o600` because `system.duckdb` holds argon2 password hashes + PAT rows + audit log) and a `RuntimeError` is raised with the explicit manual-recovery `cp` command operators can run if they choose to accept the snapshot's data state. The happy-path (HEAD-version snapshot) and the "no snapshot file" path are unchanged.
 
 ## [0.55.11] — 2026-05-25
-
 ### Fixed
 - **`e2e-nightly` smoke scripts now sign the agent-browser session in before navigating to protected pages.** After #389 unblocked the workflow far enough to reach the smoke step, both `smoke_catalog.sh` and `smoke_admin_activity.sh` were redirected to `/login?next=…` by the global 401 handler in `app/main.py:898-907` and asserted against the login snapshot. Fix introduces `scripts/seed_e2e_user.py` (idempotent — creates `e2e@example.com` in Admin group with a hardcoded dev-only password; refuses to seed without Admin group present; rehashes only when verify fails) and `scripts/e2e/_login.sh` (sourced by both smoke scripts; uses agent-browser to POST against `/auth/password/login/web`, selectors scoped to `form[action='/auth/password/login/web']` to disambiguate the tabbed login UI). `.github/workflows/e2e-nightly.yml` orchestrates the seed via a stop-seed-start cycle (uvicorn holds an exclusive DuckDB writer lock on `/data/state/system.duckdb`; `docker compose exec` while the app is running can't open the DB — the new step stops the app, runs the seed in a one-shot `docker compose run --rm` container sharing the data volume, restarts the app, and polls `/api/health` until ready). The seed module is gated on `AGNES_E2E_SEED=1` as defence-in-depth: the script ships in the production image via `COPY . .`, so a stray `docker exec` on a prod box without the opt-in env var refuses to mint an Admin user. `_login.sh` no longer hardcodes credentials — the workflow's "Export E2E credentials" step imports them from `scripts/seed_e2e_user.py` constants and writes them to `$GITHUB_ENV`, so seed and smoke helper share a single source of truth. Closes #417.
 
@@ -8660,7 +7210,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - New regression test `tests/test_login_form_action.py` pins the literal `action="/auth/password/login/web"` in `login_email.html` so the smoke helper's CSS selector and the template can't drift apart silently.
 
 ## [0.55.10] — 2026-05-25
-
 ### Added
 - `/admin/tables` now warns when a Keboola table exists but Keboola is not the configured data source: an amber "⚠ Keboola not connected" chip appears under the table name in the listing, and a banner at the top of both the Register and Edit Keboola modals links directly to the Data source section in Instance settings (`/admin/server-config#cfg-s-data_source`).
 - `/admin/tables` shows a **Last synced** column (YYYY-MM-DD HH:MM) for every registered table, populated from a single batched `sync_state` read.
@@ -8678,7 +7227,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `/admin/server-config` hash deep-link no longer crashes the page render when the hash contains invalid CSS selector characters (e.g. `#:foo`, `#test[bar`) — `querySelector` is now wrapped in try/catch and invalid hashes are silently ignored.
 
 ## [0.55.9] — 2026-05-25
-
 ### Fixed
 - **`/admin/tables` first-run setup prompt example trimmed.** The verbatim sample
   for connector verify lines previously hardcoded a personal name + an
@@ -8709,7 +7257,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   #386, #385, #376, #368, #362.
 
 ## [0.55.8] — 2026-05-25
-
 ### Changed
 - `/admin/server-config` now has a sticky two-column layout: a section-navigation sidebar on the left (jumps to Instance, Data source, Email, Auth, AI, etc.) and scrollable config fields on the right. Page title corrected from "Server config" to "Server configuration".
 - Initial Workspace Template panel moved above the Danger zone section on the server-config page.
@@ -8718,7 +7265,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Second `renderAll()` call on the server-config page no longer destroys the `#iw-section` DOM node; the element is now detached before `wrap.innerHTML` replaces child nodes and re-inserted before the danger zone.
 
 ## [0.55.7] — 2026-05-25
-
 ### Changed
 - **Design system unification — phase 1 (templates → macros).** New `ds.button` + `ds.panel` macros in `app/web/templates/_components.html` plus a `base_ds.html` shell and `app/web/static/css/design-tokens.css`. 33 templates (admin / home / marketplace / catalog / auth / setup / store / activity / corporate-memory / me-activity / profile / login flows / password reset+setup / error / news editor / sessions / users / tokens / usage / workspace prompt / welcome) refactored to render their buttons + side panels via the new macros — single source of truth for button variants, sizes, icon-only, and panel chrome. Plus 234 new lines in `style-custom.css` (notably `.ds-table` with `:is()` aliases over 15 legacy table class names so existing rules cascade onto the new design) and 40 lines in `design-tokens.css`. Design rationale + per-batch refactor playbook live in `.design/design-system-unification/{DESIGN_BRIEF,DESIGN_REVIEW,REFACTOR_PLAYBOOK}.md` and `.interface-design/system.md`. Credit @davidrybar-grpn (#375).
 
@@ -9001,12 +7547,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 
 ## [0.55.6] — 2026-05-20
-
 ### Fixed
 - `agnes query --remote`: SQL using only a full backtick BQ path (`` `<proj>.<dataset>.<table>` ``) no longer fails with `Parser Error: syntax error at or near "``"`. The rewriter now detects backtick-quoted paths and wraps them in `bigquery_query()` before passing to DuckDB, instead of sending the BQ-native backtick syntax to the local DuckDB parser. (#363)
 
 ## [0.55.5] — 2026-05-19
-
 ### Fixed
 - `agnes init` now runs `_chmod_workspace_hooks(workspace)` for OVERRIDE
   mode too (Initial Workspace Template seed-repo flow), not just the
@@ -9037,12 +7581,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   scope (`.install-hero code` / `.hero code`).
 
 ## [0.55.4] — 2026-05-19
-
 ### Security
 - Bumped `idna` from 3.11 to 3.15 (Dependabot, #357). 3.14 closed a bypass of the CVE-2024-3651 mitigation by rejecting oversize inputs up-front (**CVE-2026-45409**); 3.15 hardens further by enforcing the DNS-length cap on individual labels early in `check_label`. Transitive dependency of `requests` / `httpx` — bumped via `uv.lock` only, no surface-area change.
 
 ## [0.55.3] — 2026-05-19
-
 ### Changed
 - **BREAKING:** `src/rbac.can_access_table` + `get_accessible_tables` now route through Data Package stack membership instead of per-table `resource_grants`. Per-table grants no longer surface a table to analysts on their own — admins must wrap tables in a Data Package and grant the package (Required or in the user's stack). `manifest.direct_tables` is always `[]` (key kept for older-CLI destructuring). Internal tables (`agnes_sessions/telemetry/audit`) + admin god-mode keep their carve-outs. Standardised 403 detail across every CLI gate (`/api/data/*`, `/api/query`, `/api/v2/sample`, `/api/v2/scan`, `/api/v2/schema`): *"Table 'X' is not in your stack. Ask an admin to add it to a Data Package you have access to (Required or in your stack), then run `agnes pull` to refresh."* New shared test helper `tests.conftest.grant_table_via_package` replaces the legacy `resource_grants(table)` pattern across 8 test files. Closes #356 / #333 follow-up.
 - `agnes diagnose` is now role-aware. A fresh analyst install no longer reports `Overall: degraded` just because the server has operator-side warnings (stale tables, session-pipeline cadence, BQ billing-project config) that the analyst can't act on. Server (`/api/health/detailed`) tags every check with `audience: "analyst" | "operator"` plus a top-level `caller_role` derived from `user.is_admin` and an `overall_analyst` aggregation. Client excludes operator checks from the headline for analyst callers, surfaces operator warning count on a secondary line so they stay visible, auto-promotes admin/operator callers to the full aggregation, and lets analysts opt in via `--include-operator-checks`. Legacy servers (no `caller_role`) keep the pre-#345-B full aggregation — no silent regression. Closes #345 B.
@@ -9082,7 +7624,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **First-demo UX polish on /catalog** (2026-05-19): Browse grid now groups **Required** packages first instead of by `created_at` so the most-relevant adopt-immediately items lead. `.stack-card__desc` line clamp bumped 2 → 4 lines so card descriptions get more room. `/catalog/t/<id>` table-detail page dropped four editorial sections (Sample questions / What's inside / Things to know / Pairs well with) — hero (name + description + parent packages) only. Same Browse-order treatment applied to `/corporate-memory`.
 
 ## [0.55.2] — 2026-05-19
-
 ### Fixed
 - **Customer-instance Terraform module pre-creates `/data/uploads`**
   (`infra/modules/customer-instance/startup-script.sh.tpl`). v50/0.55.0
@@ -9102,7 +7643,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   /data/uploads` on the host.
 
 ## [0.55.1] — 2026-05-19
-
 ### Added
 - `/home` install-hero lead now includes a short "What leaves your
   machine" privacy callout: explains that prompts / tool-calls /
@@ -9154,7 +7694,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   bug report).
 
 ## [0.55.0] — 2026-05-19
-
 ### Added
 - **Extended Data Packages content (v56 schema)** backing the rewritten
   `/catalog/p/<slug>` package detail page per the extended-descriptions admin
@@ -9463,7 +8002,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   functional change beyond the number shift; the migration ladder runs
   main's v51 first, then mine in order.
 
-
 ### Added
 - **Data Packages** — admin-curated bundles of tables surface as a first-class
   stack type under `/catalog` with the same card pattern + tab strip
@@ -9594,7 +8132,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   to approve each command; persistent YOLO setup link unchanged.
 
 ## [0.54.29] — 2026-05-19
-
 ### Added
 - **`table_registry.bq_fqn` column** (schema v51, issue #343) — optional
   fully-qualified BigQuery path (`project.dataset.table`) that decouples
@@ -9797,7 +8334,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   than letting the index create fail mid-way with a raw DuckDB error.
 
 ## [0.54.28] — 2026-05-18
-
 ### Fixed
 - `/api/v2/sample` (and `agnes describe`) no longer returns HTTP 500
   for materialized BigQuery tables (`source_type='bigquery'`,
@@ -9810,7 +8346,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `test_materialized_bq_table_reads_parquet_not_bq`. Closes #341.
 
 ## [0.54.27] — 2026-05-18
-
 ### Fixed
 - `/admin/tables` edit modal no longer throws `ReferenceError` on
   non-Keboola instances (BigQuery, CSV). Two JS helpers
@@ -9822,7 +8357,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the shared sync-mode helpers ship to every instance.
 
 ## [0.54.26] — 2026-05-18
-
 ### Changed
 - **BREAKING:** eight `DELETE` endpoints that previously returned `200` with
   a JSON body now correctly return `204 No Content` (HTTP semantics for
@@ -9849,7 +8383,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   now carry the auth-error responses in the spec.
 
 ## [0.54.25] — 2026-05-18
-
 ### Fixed
 - `POST /api/sync/table-subscriptions` now enforces the same RBAC gate as
   `POST /api/sync/settings` — authenticated users can no longer subscribe to
@@ -9910,7 +8443,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   serving-installs (CLAUDE.md contract).
 
 ## [0.54.24] — 2026-05-16
-
 ### Fixed
 - Flea-market admin submissions UI now derives the per-submission
   `v#` label by **submission_id**, not **hash**. Hash-based lookup
@@ -9956,7 +8488,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   markers (`reused_from_submission_id`) render too.
 
 ## [0.54.23] — 2026-05-16
-
 ### Fixed
 - Flea-market admin **Rescan** of a non-current v2+ submission with
   `guardrails.enabled: false` now promotes the entity forward
@@ -9969,7 +8500,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   when the verdict approves through `runner.run_llm_review`).
 
 ## [0.54.22] — 2026-05-15
-
 ### Fixed
 - **Flea-market — promote-on-approve + admin-override now look up
   the submission's `version_no` in `version_history` by
@@ -10010,7 +8540,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   placeholder per `CLAUDE.md § Vendor-agnostic OSS`.
 
 ## [0.54.21] — 2026-05-15
-
 ### Added
 - **Marketplace — flea inner skill/agent detail page parity with
   curated.** New backend endpoints `GET /api/marketplace/flea/{id}/skill/{name}`
@@ -10104,7 +8633,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   and `docs/superpowers/plans/2026-05-15-agnes-agents.md`.
 
 ## [0.54.20] — 2026-05-15
-
 ### Added
 - **Corporate Memory — BM25 relevance ranking on knowledge search.**
   Replaces the `title ILIKE '%q%' OR content ILIKE '%q%'`
@@ -10139,7 +8667,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   rebuild contract.
 
 ## [0.54.19] — 2026-05-15
-
 ### Changed
 - `connectors/jira/scripts/consistency_check.py` —
   `AUTO_FIX_THRESHOLD` bumped from 10 to 20. Auto-backfill now covers
@@ -10180,7 +8707,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   JSON-overlay / parquet-rewrite pipeline) but is no longer off-limits.
 
 ## [0.54.18] — 2026-05-15
-
 ### Added
 - "Curated Memory" now sits in the primary navigation next to Data
   Packages, visible to every authenticated user.
@@ -10249,7 +8775,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (Low — surfaced by adversarial review.)
 
 ## [0.54.17] — 2026-05-15
-
 ### Changed
 - `agnes refresh-marketplace --check` (the SessionStart-hook detector
   that fires on every Claude Code session start in every workspace)
@@ -10264,7 +8789,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `git fetch + reset --hard` — they actually need the objects.
 
 ## [0.54.16] — 2026-05-14
-
 ### Fixed
 - Store submit-flow wizard buttons were missing the `.btn` base class —
   Next / Back / Finish on `/store/new` and Save on `/store/edit/<id>`
@@ -10274,7 +8798,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   links. Added the `.btn` base class on all four.
 
 ## [0.54.15] — 2026-05-14
-
 ### Added
 - New `/me/activity` page consolidating per-analyst usage analytics into
   one place: four tabs — Sessions, Token usage, Data access, Sync
@@ -10333,7 +8856,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Documentation tree cleaned up and consolidated. `CLAUDE.md` rewritten (708 → ~320 lines): the four overlapping release sections, the stale `v1→v35` DuckDB schema history, and the marketplace endpoint internals moved out to focused docs; preachy process sections tightened. New `docs/RELEASING.md` (release process + deploy workflows + CI quirks, with `RELEASE_TEMPLATE.md` folded in as an appendix) and `docs/marketplace.md` (marketplace ingestion + re-serving internals). Historical planning artifacts (`docs/superpowers/`, 52 files) and dated one-off docs (`HACKATHON.md`, `pd-ps-comments.md`, `security-audit-2026-04.md`, `future/NOTIFICATIONS.md`) moved under `docs/archive/`. New `docs/README.md` documentation index organized by audience, linked from `README.md` and `CLAUDE.md`. Removed the `docs/auto-install.md` stub. Fixed dangling doc links in `connectors/jira/README.md` and `dev_docs/README.md`, and repointed code/doc references to the archived paths (or dropped the pointer where the target was already a dead reference on `main`). Added a root `AGENTS.md` pointing to `CLAUDE.md` as the single source of truth for any AI coding agent, and `CLAUDE.local.md` to `.gitignore`.
 
 ## [0.54.14] — 2026-05-14
-
 ### Changed
 - **Marketplace submission surfaces — clearer CTA + fuller guides
   (#308).** The curated-tab action-row CTA now reads "Submit a skill
@@ -10431,7 +8953,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   minimize-mode machinery unreachable.
 
 ## [0.54.13] — 2026-05-14
-
 ### Security
 
 - **RBAC filter uses stable `user_id` (UUID) instead of mutable email
@@ -10445,7 +8966,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   an OR fallback on `username` so pre-backfill rows remain visible.
 
 ## [0.54.12] — 2026-05-14
-
 ### Fixed
 - **Usage processor now extracts user-typed slash invocations.** Claude Code
   records `/foo` and `/plugin:name` slash commands as
@@ -10462,7 +8982,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   extraction (LLM-decided invocations) is unchanged.
 
 ## [0.54.11] — 2026-05-14
-
 ### Changed
 - Catalog page: each `catalog_data` bucket now renders as its own
   top-level Data Package card instead of being nested as a collapsible
@@ -10480,7 +8999,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   where the old wrapper always rendered (showing "0 tables").
 
 ## [0.54.10] — 2026-05-14
-
 ### Changed
 - Web UI design system unified: single stylesheet (`style-custom.css`),
   canonical primitives for buttons, form controls, page headers, tables,
@@ -10640,7 +9158,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Surface failures to write the `store.upload.security_blocked` audit row via `logger.exception` instead of silently swallowing — that audit row is the only forensic trace of an inline-tier security finding, and a swallowed DB error would have left no record at all.
 
 ## [0.54.9] — 2026-05-13
-
 ### Added
 - **Initial Workspace Template** — admin-configurable per-instance override for the `agnes init` analyst workspace skeleton. Configure on `/admin/server-config` → "Initial Workspace Template" section: link a Git repo (HTTPS, optional branch, optional PAT for private repos). Server clones manually via "Sync now" into `${DATA_DIR}/initial-workspace/`. **Repo layout convention**: only the contents of a top-level `workspace/` subdirectory are shipped to analysts; anything else at the repo root (README, LICENSE, CI configs) stays in the repo and is never delivered. Sync fails strictly when the repo has no `workspace/` subdirectory at root. When configured, `agnes init` downloads a zip of `workspace/` content and extracts it into the analyst's workspace, fully bypassing Agnes-default `CLAUDE.md`, `.claude/settings.json`, hooks, slash commands, `CLAUDE.local.md` stub, and `AGNES_WORKSPACE.md`. Admin's repo is authoritative. `--force` shows a typed-YES confirmation listing files-to-overwrite vs files-to-create before extracting. See `docs/initial-workspace-override.md` for the full responsibility-transfer contract and required hooks the admin's repo must ship for `agnes pull` / `agnes push` to keep working.
 - New endpoints: `GET/POST/DELETE /api/admin/initial-workspace`, `POST /api/admin/initial-workspace/sync` (admin); `GET /api/initial-workspace`, `GET /api/initial-workspace.zip`, `POST /api/initial-workspace/applied` (PAT-authed analyst).
@@ -10653,7 +9170,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `app/api/marketplaces.py::_persist_token` removed; both marketplaces and the new initial-workspace endpoint now route through the shared `app/secrets.py::persist_overlay_token` helper, which wraps the `.env_overlay` read-modify-write in a process-wide `threading.Lock`. Closes a pre-existing race where two concurrent `/admin/marketplaces` Save clicks could clobber each other's PATs on the overlay file.
 
 ## [0.54.8] — 2026-05-13
-
 ### Changed
 
 - **BREAKING** Store upload — inline guardrail failures now hard-reject
@@ -10692,7 +9208,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the hidden + blocked_llm state.
 
 ## [0.54.7] — 2026-05-13
-
 ### Added
 
 - `instance.overview` yaml field (env override
@@ -10721,7 +9236,6 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   diff focused.
 
 ## [0.54.6] — 2026-05-13
-
 ### Changed
 
 - Header brand: wired `instance.logo_svg` (yaml) /
@@ -10757,13 +9271,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   flip back without digging through settings.
 
 ## [0.54.5] — 2026-05-13
-
 ### Internal
 
 - **`get_analytics_db()` is a singleton — mirrors `get_system_db()`** (#163). Pre-fix the function opened a fresh `duckdb.connect()` on every call; most callers don't `.close()` the returned handle, so each leaked connection held a WAL ref + FD until GC kicked in. Under load this manifested as "too many open files" or DuckDB lock contention on the analytics DB. Singleton + cursor-per-call (matches the system-DB pattern) keeps one underlying connection alive while letting callers safely close the cursor handle. New `close_analytics_db()` mirrors `close_system_db()` (best-effort CHECKPOINT then close); both are wired into the FastAPI shutdown hook in `app/main.py`. `get_analytics_db_readonly()` deliberately stays per-call — each invocation re-ATTACHes extract.duckdb files into a fresh read-only context. 5 tests in `tests/test_analytics_db_singleton.py` pin the contract: cache, cursor-close-safe, DATA_DIR-change reopen, thread safety (16 concurrent calls share the singleton), close + reopen.
 
 ## [0.54.4] — 2026-05-13
-
 Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
 
 ### Fixed
@@ -10776,7 +9288,6 @@ Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
 - **Skills walker uses `rglob("*.md")` instead of `rglob("*")`** — perf nit. The skills walker in `_iter_components` greedily walked every file under `skills/` (assets, scripts, data fixtures) just to filter to `skill.md` by name. For asset-heavy skill packs (tutorials with screenshots, data fixtures) this was hundreds of stat() calls per ingest. Brings the skills walker in line with the agents + commands walkers which already filter at the glob layer. (#277 LOW #1)
 
 ## [0.54.3] — 2026-05-13
-
 ### Added
 - `AGNES_DEFAULT_SYNC_SCHEDULE` env var (consumed by `app/api/sync.py:_run_materialized_pass`) sets the platform-wide fallback `sync_schedule` for registry rows that don't pin their own value. Lets a deployment dial cadence down to `daily 03:00` without having to PUT every row. Per-table `sync_schedule` still wins; literal `every 1h` is the floor if neither is set (matches OSS-historical behaviour).
 
@@ -10785,7 +9296,6 @@ Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
 - `scripts/ops/agnes-auto-upgrade.sh`: the post-upgrade chown loop now includes `/data/tmp` (the default `AGNES_TEMP_DIR` set in `docker-compose.yml`) and `mkdir -p`'s it first. Pre-fix the runtime user (`uid 999`) couldn't create `/data/tmp` under a root-owned data-disk root, so tempfiles silently fell back to the boot disk's overlayfs `/tmp` — defeating the whole point of routing slice staging onto the dedicated data volume.
 
 ## [0.54.2] — 2026-05-13
-
 ### Added
 
 - **Admin-configurable flea-market content guardrail thresholds.**
@@ -10805,8 +9315,8 @@ Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
   `_guardrail_thresholds()` helper threaded into the route context.
   Defaults are unchanged — instances that don't set
   `guardrails.*` keep the original PR #276 bar.
-## [0.54.1] — 2026-05-13
 
+## [0.54.1] — 2026-05-13
 ### Added
 - `agnes marketplace search` — unified search across Curated and Flea Market; RBAC-filtered server-side, supports `--source`, `--type`, `--sort`, `--query`, `--json`
 - `agnes marketplace detail <id>` — full detail view for any marketplace item (curated: `marketplace_id/plugin_name`, flea: UUID)
@@ -10825,7 +9335,6 @@ Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
 - `agnes my-stack show` output label updated: `From Store:` → `From Flea Market:`
 
 ## [0.54.0] — 2026-05-12
-
 Activity Center build — unified observability surface plus a recursive
 internal data source so Claude Code can introspect its own usage.
 
@@ -10918,7 +9427,6 @@ the `Usage` → `Telemetry` rename across UI / URL / API / CLI
 - First boot on v41 against an existing instance with >100k `audit_log` rows: index creation runs synchronously and may take 30–120s. Plan an upgrade window. Subsequent restarts are unaffected.
 
 ## [0.53.5] — 2026-05-12
-
 ### Added
 
 - **Flea-market content guardrail — two-tier per-component description
@@ -10969,7 +9477,6 @@ the `Usage` → `Telemetry` rename across UI / URL / API / CLI
   already filtered the same shape.
 
 ## [0.53.4] — 2026-05-12
-
 ### Fixed
 
 - **Analyst CLI install (`uv tool install <wheel>`) no longer fails with `urllib3 / kbcstorage` resolver conflict on a clean machine.** From 0.53.3, every fresh `/setup` walkthrough hit `kbcstorage<=0.9.5 → urllib3<2.0.0` vs the wheel METADATA's `urllib3>=2.7.0` security pin and resolved to `unsatisfiable`. The `[tool.uv] override-dependencies = ["urllib3>=2.7.0"]` workaround that masked the conflict in workspace installs (Dockerfile, dev) does NOT propagate to the wheel — wheel METADATA is plain PEP 621 `Requires-Dist`, and a fresh resolver context (`uv tool install <wheel-url>`) never sees the override. Fix: `kbcstorage` moved out of `[project] dependencies` into `[project.optional-dependencies] server`, since it is server-side-only (`connectors/keboola/client.py` callers — admin endpoints, server connectors, integration tests; no CLI import path). Server install picks it up via the Dockerfile's `uv pip install --system --no-cache ".[server]"`; CI installs `.[dev,server]` so the workspace tests still cover the kbcstorage path. Analyst CLI wheel METADATA now lists `kbcstorage>=0.9.0; extra == 'server'` (gated) — `uv tool install` resolves cleanly.
@@ -10979,7 +9486,6 @@ the `Usage` → `Telemetry` rename across UI / URL / API / CLI
 - **New CI lane `cli-wheel-clean-install` in `.github/workflows/ci.yml`** builds the wheel via `uv build` and installs it into a fresh `python:3.13-slim` container with `uv tool install`, asserting `agnes --version` works AND that `kbcstorage` is absent from the CLI venv. Catches the "wheel METADATA conflicts with transitive deps under fresh resolver" regression class — exactly what `[tool.uv] override-dependencies` does NOT protect against. Without this lane, the previous regression slipped through every existing test (workspace overrides masked the conflict in pytest) and only surfaced on the next analyst's first install.
 
 ## [0.53.3] — 2026-05-12
-
 Hygiene round closing #244 + #252 + clearing 5 Dependabot urllib3 advisories. (Originally cut as 0.53.2 — bumped to 0.53.3 after #264 / #268 landed as 0.53.2 in parallel.)
 
 ### Added
@@ -10999,7 +9505,6 @@ Hygiene round closing #244 + #252 + clearing 5 Dependabot urllib3 advisories. (O
 - 8 regression tests in `tests/test_session_health.py` cover the #244 check matrix (ok / warning / info / threshold / window-bounds / malformed-log resilience).
 
 ## [0.53.2] — 2026-05-12
-
 Two threads in one cut. **Operator surface:** `instance.brand` /
 `instance.workspace_dir` let an operator rebrand the analyst-facing UI
 and the `~/Agnes` workspace folder without a fork (defaults preserve
@@ -11032,7 +9537,6 @@ unchanged.
 - **BREAKING: `agnes query --register-bq` CLI flag removed.** The flag ran the `RemoteQueryEngine` in-process on the caller's machine and required local BigQuery credentials (`BIGQUERY_PROJECT` + ADC) that analysts don't have. Calling it from an analyst workspace surfaced as a confusing `not_configured` error chain ("Could not load static instance.yaml" + "BigQuery project not configured"), and an agent following CLAUDE.md guidance for hybrid queries would land in exactly that trap. The underlying engine was originally designed server-side ("Step 28: Remote query architecture", commit `d180b201`); the CLI port (`d605e7d9`) silently assumed parity. Analysts now have two paths for combining local and remote data: `agnes snapshot create` a filtered slice of the remote table and join it locally, or run the join server-side via `agnes query --remote`. Admins keep an unchanged server-side path via `POST /api/query/hybrid` (`app/api/query_hybrid.py`). Removed: `--register-bq` flag, `register_bq` field in `--stdin` JSON, `_query_hybrid()` in `cli/commands/query.py`. CLAUDE.md "Hybrid Queries" section rewritten; `cli/skills/agnes-data-querying.md` and `docs/DATA_SOURCES.md` updated to drop the flag.
 
 ## [0.53.1] — 2026-05-12
-
 Follow-up to 0.53.0 closing #266 — `/admin/tables` Edit modal on BQ
 materialized rows silently destroyed `bucket` / `source_table` on every
 save, and the prior whole-table register path never persisted them in
@@ -11083,8 +9587,8 @@ relies on.
   per-issue payload. Verdicts missing `content_quality` are treated as
   pass for backward compatibility with already-recorded verdicts.
 >
-## [0.53.0] — 2026-05-12
 
+## [0.53.0] — 2026-05-12
 Second hygiene round closing the Tier B trackers opened during the
 0.51.0 retro plus one new admin UI bug. `agnes init` resumes after a
 kill (#259), schema endpoint stops calling BigQuery for materialized
@@ -11104,7 +9608,6 @@ stale parquet locks get swept at startup (#260).
 - **#266** admin tables Edit dialog dataset field "disabled for materialized" — actual behavior is `display:none` (hidden when sync mode is custom-SQL); not the same as "disabled". UX clarification not in scope for this release.
 
 ## [0.52.0] — 2026-05-12
-
 UX + hygiene round following the 0.51.0 catalog-hang fix. Five small,
 analyst-facing improvements surfaced by the post-merge perf-test runs
 (`~/Downloads/agnes-perf-test-2026-05-12/`); each closes a tracker
@@ -11130,11 +9633,10 @@ issue opened during the 0.51.0 retro.
 - **Docker root on boot disk** (#262) — infra-level, not app code.
 
 ## [0.51.1] — 2026-05-12
-
 ### Fixed
 - **`/corporate-memory/admin` no longer fails with "Error loading pending items." once pending knowledge items exist.** `GET /corporate-memory/admin` was passing the `corporate_memory.groups` YAML section (a dict, default `{}`) into the template as `groups=`, but `renderItemCard` evaluates `GROUPS.map(g => ...)` to build the mandate-form audience picker — `{}.map is not a function` threw inside the template literal, bubbled up to `renderReviewItems`, and the `loadReviewQueue` catch block painted the misleading "Error loading pending items." banner over a perfectly valid `/api/memory/admin/pending` response. Bug was dormant since the initial system commit because `renderItemCard` only runs when at least one pending item exists, so test fixtures and empty queues never tripped it. Fix: route now passes RBAC user_groups (`user_groups` table) shaped as `[{name, members_count}]`, which is what the mandate form actually targets (audience targeting is `group:<rbac-group-name>`, not `corporate_memory.groups`); template hardens the `.map` call with `Array.isArray(GROUPS) ? GROUPS : []` so a future shape regression degrades to "no group options" instead of crashing the whole list. No DB migration; no API change.
-## [0.51.0] — 2026-05-12
 
+## [0.51.0] — 2026-05-12
 ### Fixed
 
 - **`GET /api/v2/catalog` no longer hangs on cold cache.** Since 0.47.0 the catalog endpoint enriched each remote BigQuery row by fetching `INFORMATION_SCHEMA.TABLE_STORAGE` + `COLUMNS` through the DuckDB BigQuery extension inside the request. On cold caches that fanned out to O(N) sequential BQ jobs-API roundtrips — easily 90 s+ on partitioned / view-backed tables — and reliably exceeded the CLI's 30 s `httpx.ReadTimeout`. Enrichment now reads exclusively from a persistent `bq_metadata_cache` DuckDB table, populated by a scheduler-driven refresh job. First call after a fresh container start returns in tens of milliseconds with `metadata_freshness: never_fetched` for rows the scheduler hasn't reached yet; subsequent ticks fill the cache. Closes the cold-start outage class entirely.
@@ -11163,7 +9665,6 @@ issue opened during the 0.51.0 retro.
 - `tests/test_cli_binary_rename.py::test_agnes_command_exists` now skips with an actionable message instead of failing when the local venv has no `agnes` on PATH or the binary is a stale shim from a prior editable install. CI installs the package fresh and still asserts the real contract.
 
 ## [0.50.0] — 2026-05-12
-
 ### Added
 
 - Skill and agent detail pages (`/marketplace/curated/<mp>/<plugin>/{skill,agent}/<name>`) now render the same rich curator-authored content as the plugin detail page. New optional per-item fields in `marketplace-metadata.json` under `plugins.<plugin>.skills.<name>` and `plugins.<plugin>.agents.<name>`: `display_name`, `tagline`, `category` (per-item override; falls back to parent plugin's category when absent), `description` (markdown body for "Description" panel), `use_cases[]` ("When to use it" cards), `sample_interaction` (Claude Code-style dark transcript Q&A panel — same Catppuccin Mocha treatment as plugin detail), `when_to_use` (markdown disambiguation block "When to use this", typically referencing alternative skills/agents), and `invocation` (curator-provided literal command string, e.g. `/my-plugin:tool <your question>` or `@my-agent:role` — overrides the computed `<manifest_name>:<inner_name>` chip when set, and works correctly for both `/` skill prefix and `@` agent prefix).
@@ -11189,7 +9690,6 @@ issue opened during the 0.51.0 retro.
 - New tests for the must-fixes above (cache stress at >256 entries, per-field byte cap with UTF-8 boundary preservation, truthy-vs-presence resolver contract) plus XSS regression coverage on `render_safe` for `javascript:` autolinks (raw + reference + mixed-case), `data:`, `vbscript:` schemes, and positive-coverage for `http`/`https`/`mailto` allowlist + `noopener noreferrer` rel attribute.
 
 ## [0.49.1] — 2026-05-11
-
 ### Added
 
 - **`instance.admin_email` operator config knob** (env `AGNES_INSTANCE_ADMIN_EMAIL` > YAML `instance.admin_email` > unset). When set, the `/home` Google Workspace connector tile renders an "Email admin" mailto button so analysts whose operator hasn't pre-provisioned a shared OAuth app can request one without leaving the workspace. Empty default cleanly hides the button.
@@ -11209,7 +9709,6 @@ issue opened during the 0.51.0 retro.
 - **BREAKING: `/corporate-memory` page + dashboard widget + nav link restricted to admins.** The `/corporate-memory` route now requires `require_admin` (was `get_current_user`); non-admin users hitting it see 403 (was 200). The Memory link in the top nav and the corporate-memory widget on `/dashboard` are hidden via `{% if session.user.is_admin %}` guards. **Asymmetry:** the underlying `/api/memory/*` endpoints stay on `get_current_user` so CLI / agent flows that POST a knowledge item or fetch `/api/memory` keep working; the gating is web-UI-only. Operators who relied on non-admin web access need to either grant Admin to those users or use the API.
 
 ## [0.49.0] — 2026-05-11
-
 ### Fixed (PR #242 follow-ups)
 
 - **`/agnes-private` legacy-scan gap closed (David #8 from PR review).**
@@ -11451,7 +9950,6 @@ issue opened during the 0.51.0 retro.
   shifts from step 9 to step 8 across all variants.
 
 ## [0.48.0] — 2026-05-10
-
 ### Fixed
 
 - **`agnes refresh-marketplace --bootstrap` now recovers when the local
@@ -12054,26 +10552,22 @@ issue opened during the 0.51.0 retro.
 - **`docker-compose.yml` `stop_grace_period: 60s`** on the `app` and `scheduler` services (was Docker's 10s default). Gives uvicorn time to drain in-flight requests + run the new shutdown CHECKPOINT before SIGKILL. Healthy `docker compose down` is unaffected (services still stop as soon as their lifespan exits).
 
 ## [0.47.4] — 2026-05-08
-
 ### Fixed
 
 - `services/session_collector` no longer logs "Collection complete: 0 users, 0 files copied" + "Group 'data-ops' not found" every 10 minutes in the Docker layout where `/home/*/user/sessions/` doesn't exist. New env var `AGNES_SKIP_LEGACY_COLLECTOR=1` (set by default in `docker-compose.yml`) short-circuits the collector pass. The bare-VM deployment path (where /home/* IS populated by Claude Code) leaves this unset and continues to scan + log normally — including the data-ops warning, which is load-bearing for catching missing-group mis-deploys.
 - `agnes diagnose` `session_pipeline` check gains a FIFO-aware lookup: in addition to the existing MAX(processed_at) comparison (catches "detector hasn't run lately"), it now flags the case where an OLD jsonl never got processed even though newer ones did (= verification-detector skipped a file). Threshold defaults to 4× the verification-detector grace (= 2h with default 30min grace) and is configurable via `SESSION_PIPELINE_STUCK_FILE_GRACE_SECONDS`. Severity intentionally starts at `info` — operators can tighten to `warning` once they have prod data on false-positive rate.
 
 ## [0.47.3] — 2026-05-07
-
 ### Fixed
 
 - `agnes self-upgrade` (without `--force`) previously read the local 24h `update_check.json` cache to decide whether an upgrade was needed — meaning that for up to 24 hours after a server-side version bump, the explicit `agnes self-upgrade` command exited silently as a no-op even though a newer wheel was available. Cache is now always invalidated for the explicit command (the cache still gates the implicit warning loop in the root callback to avoid hammering `/cli/latest` on every `agnes <anything>` invocation). Surfaced when a server bump 0.47.1 → 0.47.2 didn't trigger client-side upgrade.
 
 ## [0.47.2] — 2026-05-07
-
 ### Fixed
 
 - Restore #218 (real BQ error surfacing in `remote_estimate_failed`) and #219 (friendlier missing-table hint in `agnes query`) — both fixes were silently reverted by the squash merge of #217 because that branch carried stale snapshots of `app/api/query.py` and `cli/commands/query.py` from before #218 and #219 merged. Verified end-to-end against production: `agnes query --remote "SELECT FROM unit_economics WHERE bad_col=1"` now returns the BQ "Unrecognized name" diagnostic; `agnes query "DESCRIBE unit_economics"` now appends the remote-table hint.
 
 ## [0.47.1] — 2026-05-07
-
 Keboola connector v27 — incremental, partitioned, where_filters, typed parquet.
 
 ### Added
@@ -12098,7 +10592,6 @@ Keboola connector v27 — incremental, partitioned, where_filters, typed parquet
 - **`incremental.py:_convert_column` failure on primary_key column** now raises hard (was silent mixed-type column → broken dedup downstream). Test added.
 
 ## [0.47.0] — 2026-05-07
-
 Catalog metadata enrichment + cache discipline + automatic warmup.
 Closes #155 + #156.
 
@@ -12180,20 +10673,17 @@ Closes #155 + #156.
   `test_main_startup_warmup`, `test_admin_tables_warmup_ui`.
 
 ## [0.46.5] — 2026-05-07
-
 ### Fixed
 
 - `agnes describe <table> -n 5` previously failed with `Missing argument 'TABLE_ID'` because the command was registered as a `Typer.Typer` subcommand group; the combination of positional `table_id` + short option `-n INTEGER` mis-parses in that pattern. Switched to a flat `@app.command("describe")` registration. All forms (`-n` before/after positional, `--rows=N`, default n=5) now parse correctly. Surfaced from a real analyst session following the CLAUDE.md "agent rails" discovery workflow.
 - `/api/v2/sample/<id>` (called by `agnes describe`) returned HTTP 500 with `ValueError: Out of range float values are not JSON compliant: nan` when the result rows contained NaN values from the underlying DuckDB / BigQuery scan. The endpoint now sanitizes NaN/±inf to JSON `null` before serialization. Same surfaced from a real analyst session.
 
 ## [0.46.4] — 2026-05-07
-
 ### Fixed
 
 - SessionEnd `agnes push` hook previously synchronous-ran in the foreground; Claude Code's `-p` (headless) mode terminates SessionEnd hook subprocesses after ~1 second regardless of work in progress, so the upload was killed mid-stream and most session JSONLs never reached the server. Now wrapped in `bash -c "( nohup agnes push ... & ) ; true"` so the upload child detaches from the hook subprocess and survives Claude's aggressive shutdown. Existing workspaces pick up the detached form on their next `agnes init` invocation via the existing migration path. Verified end-to-end against production: `claude -p` exited in 5s, the detached child completed the upload, and the session JSONL landed on the server within 30s.
 
 ## [0.46.3] — 2026-05-07
-
 ### Added
 
 - `agnes init` now installs a third SessionStart hook entry (`agnes push --quiet`) so orphan session JSONLs left behind by `claude -p` headless invocations (where Claude Code does NOT fire SessionEnd) or abnormal exits get uploaded on the next interactive session start. Symmetric self-healing alongside the existing `agnes pull` SessionStart entry. Existing workspaces pick up the third entry on their next `agnes init` invocation via the existing migration path in `cli/lib/hooks.py:_OUR_COMMAND_MARKERS`.
@@ -12203,19 +10693,16 @@ Closes #155 + #156.
 - `agnes diagnose` `session_pipeline` warning previously read "uploads are not being processed", which led users to suspect their `agnes push` uploads were failing. The warning now reads "verification-detector backlog" and includes `last_processed` so operators see at a glance that uploads are fine and only the LLM extraction step is behind.
 
 ## [0.46.2] — 2026-05-07
-
 ### Fixed
 
 - `agnes query` against a `query_mode='remote'` table previously surfaced DuckDB's misleading "did you mean <similar materialized table>" suggestion. Now appends a friendlier hint pointing users to `agnes catalog`, `agnes schema <id>`, and `agnes query --remote`. Reproduces from a real analyst session where `DESCRIBE unit_economics` (a remote table) sent the user down a 30-second wrong path.
 
 ## [0.46.1] — 2026-05-07
-
 ### Fixed
 
 - `remote_estimate_failed` now surfaces the rewritten-SQL diagnostic (the actual BQ "Unrecognized name" / "Syntax error" message) instead of the unhelpful "Table must be qualified" from the user-original-SQL retry. Adds `underlying_original` for the second-attempt context. Hint now points users to `agnes schema <id>` first — the typical cause is a typo'd column name.
 
 ## [0.46.0] — 2026-05-07
-
 Catalog metadata enrichment + cache discipline + automatic warmup.
 Closes #155 + #156.
 
@@ -12297,7 +10784,6 @@ Closes #155 + #156.
   `test_main_startup_warmup`, `test_admin_tables_warmup_ui`.
 
 ## [0.45.0] — 2026-05-07
-
 Operator-and-analyst quality bundle: a security fix for the optional
 Telegram bot, two CLI gaps closed, and three rounds of UX polish on
 `agnes diagnose` and `agnes pull` so non-TTY consumers (CI runners,
@@ -12406,16 +10892,12 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   in from #214, which landed on main between 0.44.1 and this cut.
 
 ## [0.44.1] — 2026-05-07
-
-## [0.44.1] — 2026-05-07
-
 ### Fixed
 
 - `/admin/users/{id}` — "Add to group" dropdown explains itself when empty instead of leaving the admin staring at a silent `— Pick a group —` placeholder. Three cases now surface a hint below the picker: (a) user is already in every group, (b) every remaining group is Google-Workspace-managed and Agnes can't grant manually (POST would 409 — link to `/admin/groups` to create a custom group), (c) no groups exist at all. Pre-fix on deployments where `Admin` + `Everyone` are mapped via `AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL` and no custom groups exist, the picker was empty with zero indication that the operator needed to create a custom group first.
 - `/admin/users/{id}` — "Add to group" dropdown's `loadAll()` race fixed: pre-fix `loadGroups()` and `loadMemberships()` ran in parallel and `refreshGroupDropdown()` (called from `loadGroups`) read the `memberships` global, which could still be `[]` if memberships hadn't returned yet — letting the dropdown show groups the user was already in. `loadMemberships()` now re-runs the dropdown refresh once it has its data, so the final render reflects both data sets regardless of which fetch completes first.
 
 ## [0.44.0] — 2026-05-07
-
 ### Added
 - `agnes refresh-marketplace` — single CLI command that owns the per-user
   filtered Claude Code marketplace lifecycle. `--bootstrap` does the
@@ -12459,7 +10941,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
 - `infra/modules/customer-instance` (tag `infra-v1.7.0`): `google_compute_instance.vm` now sets `allow_stopping_for_update = true`. Without it, changing `machine_type` (or any other field GCP will only mutate on a stopped VM) caused Terraform to fall back to a destroy + recreate, churning VM-local state for what should be an in-place resize. Consumers do not need to update — the field is provider-side only — but bumping the module ref to `infra-v1.7.0` enables in-place machine-type bumps.
 
 ## [0.43.0] — 2026-05-06
-
 ### Added
 
 - CLI auto-upgrade: `agnes self-upgrade` reinstalls the CLI from the server's currently-shipped wheel via `uv tool install --force`, falling back to `pip install --force-reinstall --no-deps` via `sys.executable` when uv is not on PATH. After install, the new binary is smoke-tested at the install-resolved path (`uv tool dir --bin` for uv, `<sys.executable parent>/agnes` for pip) — never via PATH lookup, to avoid stale-shadow false positives. Smoke failure triggers automatic rollback to the previously verified-good wheel (recorded in `~/.config/agnes/last_known_good.json`); rollback's exit code is captured and surfaced on stderr if it also fails. First-ever upgrade or unrecoverable rollback prints the canonical bootstrap recovery: `curl -fsSL <your-agnes-server>/cli/install.sh | bash`. The new command is wired into the SessionStart hook installed by `agnes init` as a chained shell entry (`agnes self-upgrade … || true; agnes pull … || true`) so an upgrade failure does not block the pull.
@@ -12467,7 +10948,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
 - CLI: `cli/update_check.py:check()` accepts a keyword-only `bypass_disabled=True` so explicit `agnes self-upgrade` invocations probe `/cli/latest` even when `AGNES_NO_UPDATE_CHECK=1` is set (which silences the implicit warning loop only).
 
 ## [0.42.0] — 2026-05-06
-
 ### Fixed
 - `agnes query --remote`: full backtick BigQuery paths in user SQL are no
   longer corrupted by the registered-name rewriter. Previously a query
@@ -12501,7 +10981,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   kinds. Issue #201.
 
 ## [0.41.0] — 2026-05-06
-
 ### Fixed
 - **Orchestrator filesystem fallback for materialized parquets that
   couldn't register in `extract.duckdb`'s `_meta`**
@@ -12530,7 +11009,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   source without `data/` subdir doesn't crash the scan.
 
 ## [0.40.0] — 2026-05-06
-
 ### Fixed
 - **Materialized BigQuery parquets now register themselves in
   `extract.duckdb` so the master view actually appears**
@@ -12556,7 +11034,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   file and the master view appears on the rebuild after that.
 
 ## [0.39.0] — 2026-05-06
-
 ### Performance
 - **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing
   `query_mode='remote'` BigQuery rows into a single `bigquery_query()` call
@@ -12630,7 +11107,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   across chunked-download chunks).
 
 ## [0.38.3] — 2026-05-06
-
 ### Changed
 - **Admin / Tables**: registry table now shows Source (bucket/table), Schedule, Folder, Registered by/at, and a sync-error warning icon per row. The page widens to ~1600px to accommodate.
 
@@ -12640,7 +11116,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
 - **Admin / Tables**: `scripts/fix_description_escapes.py` cleans up already-corrupted descriptions in `table_registry` (run with `--dry-run` first, then `--apply`).
 
 ## [0.38.2] — 2026-05-06
-
 ### Fixed
 - **`bq_query_timeout_ms` was not applied on every BigQuery ATTACH branch**
   (`src/db.py:_reattach_remote_extensions`,
@@ -12662,7 +11137,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   exhibit) and a mismatch logs `WARNING` too.
 
 ## [0.38.1] — 2026-05-06
-
 ### Internal
 - `CLAUDE.md` — `Claude Code marketplace endpoint` section now documents the
   two-step fallback (system `git clone` + local `claude plugin marketplace
@@ -12675,7 +11149,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   doc snippet now matches that behavior for manual flows.
 
 ## [0.38.0] — 2026-05-06
-
 ### Added
 - **`/store` page** — community marketplace where every authenticated user
   can upload skills, agents, and plugins as ZIPs. Listing has type / category /
@@ -12812,7 +11285,6 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   suffix collision).
 
 ## [0.37.0] — 2026-05-06
-
 Operator-side disk-layout release. Closes the 2026-05-05 shadow-mount class identified in v0.36.0's deploy notes via two independent fixes that operators can adopt separately: (#194 folds in @cvrysanek's #191 + #192). The image-side change is invisible — `STATE_DIR` defaults to the legacy nested path, so existing deployments see no behavior change unless they opt into the new flat layout. Folds in three rounds of Devin Review (3 BUGs + 1 ANALYSIS class, ANALYSIS deferred per the operator-side limitation it describes).
 
 ### Added
@@ -12822,7 +11294,6 @@ Operator-side disk-layout release. Closes the 2026-05-05 shadow-mount class iden
 - **`docker-compose.host-mount.yml` switched from "named volume + driver_opts" to direct service-level bind mounts** (`volumes: !override` per service). Docker named volumes have an immutability footgun: once a volume is created, its driver options are fixed for the life of the volume, and editing this file does NOT propagate the new options to existing volumes. This bit a deployer in production: the volume was created before the overlay had `bind,rbind`, kept the old `bind` (non-recursive) propagation, and containers wrote to a shadowed subdirectory of the parent disk instead of the nested child mount. DuckDB went FATAL on a root-owned WAL during a routine container recreate; sign-in broke. Direct service binds re-evaluate options every container start and default to recursive in modern Docker (20.10+) — no immutable state to migrate, no shadow-mount class. Operators on this overlay: next `docker compose up -d` starts containers with direct binds; the old `agnes_data` named volume is no longer referenced and can be removed with `docker volume rm agnes_data` (operator's choice — orphaned but harmless if left). Both `host-mount.yml` and `flat-mount.yml` `volumes: !override` blocks for `caddy` now restate every mount the base service depends on (notably `data:/srv:ro` for the v0.36.0 file_server bypass and `caddy_config:/config` for ACME state) — a Devin-caught regression where `!override` silently dropped these mounts under the new layout, defeating the parquet-download perf bypass.
 
 ## [0.36.0] — 2026-05-05
-
 Combined performance + analyst-clarity bundle. Folds three previously-staged work streams into one PR (#188): the long-running `agnes query --remote` timeout (#181), the Caddy parquet-download bypass (#182), and Pavel's #185 Phase 1 trace findings (silent 44-min first-init, opaque CLI tracebacks, no analyst-Claude size signal). Also performs the Tier 1 event-loop unblocking — the five hottest BQ-touching endpoints were `async def` over synchronous DuckDB / BQ-extension calls, so a single heavy `agnes query --remote` froze every other request for the duration of the BQ wait. The image-side fixes ship in this release; for existing VMs, the new auto-upgrade.sh self-fetches the matching Caddyfile + compose overlays from `main` on its next 5-minute tick, so deployment requires no operator action beyond letting the cron run.
 
 ### Added
@@ -12850,13 +11321,11 @@ Combined performance + analyst-clarity bundle. Folds three previously-staged wor
   Together these unblock deployments where the extension's bucket-schema scans return `Schema '..."in.c-..."' does not exist or not authorized` (keboola/duckdb-extension#17) while the upstream extension fix is in flight.
 
 ## [0.35.1] — 2026-05-05
-
 ### Fixed
 
 - `agnes query --remote` no longer dies after 30s on long-running BigQuery SELECTs. The CLI HTTP client now defaults to a 300s timeout for `/api/query` and exposes `AGNES_QUERY_TIMEOUT` (seconds, float) for operators who need to extend it further. Other CLI calls keep the 30s default. (`cli/client.py`, `cli/commands/query.py`)
 
 ## [0.35.0] — 2026-05-05
-
 Five-defect fix for the silently-broken session pipeline on default Compose deploys (#176). Sessions uploaded by `agnes push` landed on `/data/user_sessions/<user>/*.jsonl`, but on a stock `docker compose up` deploy nothing ever processed them — `/corporate-memory` stayed empty even when sessions and `CLAUDE.local.md` were uploaded. The root cause was a stack of compounding defects: LLM SDKs were dev-only deps so the scheduler container boot-looped on `ModuleNotFoundError`, the side-car services were profile-gated and ran as tight `restart: unless-stopped` boot loops anyway, the `verification_detector` had no scheduler entry at all, the first-time setup never seeded an `ai:` block, and the `/corporate-memory` page silently filtered out the pending review queue. This release wires the LLM pipeline into the existing scheduler-v2 model (one HTTP-driven cron tick per service) and adds a health-check that warns when uploaded jsonls aren't being processed.
 
 ### Changed
@@ -12916,7 +11385,6 @@ Five-defect fix for the silently-broken session pipeline on default Compose depl
 - `docs/architecture.md` — Services table updated to reflect the scheduler-v2 cadence map.
 
 ## [0.34.0] — 2026-05-04
-
 End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a single unified paste prompt that, dropped into Claude Code in an empty folder, fully bootstraps a workspace — installs the CLI, authenticates, fetches `CLAUDE.md`, installs SessionStart/End hooks, runs the first data refresh, and writes a human-readable workspace docs file (`AGNES_WORKSPACE.md`). The admin-vs-analyst layout split (introduced as `?role=` mid-cycle) was collapsed before merge: every caller sees the same flow, with the marketplace + plugins block emitted iff the caller has plugin grants. 26 implementation tasks across 6 phases plus a 10-task unification follow-up.
 
 ### Changed
@@ -12977,7 +11445,6 @@ End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a
 - Audited and replaced stale `da` verbs left over from prior merges in admin UI text, audit-log messages, code comments, operator runbooks, analyst-facing skill docs, and test docstrings (welcome template renderer/API tests now assert exact emitted markers — `agnes init` for analyst flow, `agnes auth` for admin flow — with explicit absence checks on legacy verbs). Vendor-specific `/opt/data-analyst/` install paths in jira backfill/consistency scripts and operator docs replaced with `<install-dir>/` and an `AGNES_ENV_FILE` env-var override. Intentional stale-marker tuples (`_LEGACY_STRINGS` in `app/api/claude_md.py`, `_OUR_COMMAND_MARKERS` in `cli/lib/hooks.py`) and tests that seed legacy hook content (`tests/test_lib_hooks.py`, `tests/test_legacy_strings_scan.py`) are preserved by design.
 
 ## [0.33.0] — 2026-05-04
-
 Closes #162. Headline fix: `query_mode='materialized'` BigQuery rows now
 materialize correctly for views and materialized views, with per-table
 concurrency control preventing parquet corruption on overlapping scheduler
@@ -13060,7 +11527,6 @@ converts existing DuckDB-flavor source_query values to BQ-native SQL.
   actually intercepts the call — the deferred form made test patches a no-op.
 
 ## [0.32.0] — 2026-05-04
-
 Closes #160. Headline fix: `da query --remote` now resolves
 `query_mode='remote'` BigQuery rows whose underlying entity is a `VIEW`
 or `MATERIALIZED_VIEW`. Plus four reinforcing fixes that surfaced during
@@ -13149,7 +11615,6 @@ iterations of Devin Review.
   `v2_scan._build_quota_tracker()` keep working.
 
 ## [0.31.0] — 2026-05-04
-
 ### Added
 
 - **Agent Workspace Prompt** — admin-editable Jinja2 markdown template for the analyst's `CLAUDE.md`, surfaced in their workspace by `da analyst setup`. Default = rich briefing with RBAC-filtered tables/metrics/marketplaces context. Edit at `/admin/workspace-prompt`. Endpoints: `GET /api/welcome` (analyst-facing, auth required), `GET/PUT/DELETE /api/admin/workspace-prompt-template`, `POST /api/admin/workspace-prompt-template/preview`. CLI: `da analyst setup` writes `CLAUDE.md` by default; new `--no-claude-md` flag opts out. See `docs/agent-workspace-prompt.md`.
@@ -13169,7 +11634,6 @@ iterations of Devin Review.
 - `da analyst setup` summary now accurately reflects whether `CLAUDE.md` was written, skipped (`--no-claude-md`), or skipped due to a server error — previously it always claimed "written from server template" even when the fetch failed (404, 401/403, network), contradicting its own stderr warning.
 
 ## [0.30.1] — 2026-05-02
-
 ### Security
 - **auth**: per-IP rate limiting now applied across every credential-bearing
   auth endpoint. Defaults:
@@ -13265,7 +11729,6 @@ iterations of Devin Review.
   Tests had drifted and broke nightly e2e on main.
 
 ## [0.30.0] — 2026-05-01
-
 ### Added
 - **admin UI**: each row in `/admin/tables` listings now has a per-row
   **Manage access** icon button (between Edit and Delete) that deep-links
@@ -13519,12 +11982,10 @@ cannot exercise them and they will be revisited in follow-up PRs:
   triggers are rare, so the race window is small.
 
 ## [0.29.0] — 2026-05-01
-
 ### Fixed
 - **`scripts/ops/agnes-tls-rotate.sh` self-signed fallback cert now sets `basicConstraints=critical,CA:FALSE` on the leaf.** OpenSSL's default `[v3_ca]` config marks `CA:TRUE` on `req -x509`, which causes strict TLS stacks (rustls / `webpki`, used by `uv`, `cargo`, and future versions of `pip`) to reject the cert with `invalid peer certificate: CaUsedAsEndEntity` per RFC 5280 §4.2.1.9. Browsers, curl, and OpenSSL-based clients tolerated the violation, hiding the bug until a `uv` user hit it. Affects every VM running on the self-signed fallback while the corp PKI hasn't published the real chain yet — the fix lands on the next `agnes-tls-rotate.timer` tick (or `systemctl start agnes-tls-rotate.service` for an immediate refresh). Existing CSR / real-cert paths unaffected; only the bring-up fallback regenerates.
 
 ## [0.28.0] — 2026-05-01
-
 ### Fixed
 
 - **Analyst CLAUDE.md template now documents BigQuery remote-query capability.** `config/claude_md_template.txt` (used by `da analyst setup`) had **zero mention** of `query_mode: "remote"`, `da fetch`, `da query --remote`, or `--register-bq` — the AI analyst running in a freshly-bootstrapped workspace had no idea remote tables existed. Added a `## Remote Queries (BigQuery)` section covering: discovery via `da catalog` (now called out as canonical, with `data/metadata/schema.json` flagged as local-only); the three query patterns (`da fetch` preferred, `da query --remote` for one-shots, `da query --register-bq` for hybrid joins); permission boundary (BQ access via the agnes server's GCE service account, not personal creds — escalate permission errors to admin); cost awareness (every query bills the SA's project for bytes scanned, `--select`/`--where`/`--estimate` discipline); `da fetch` estimate-first rules; BigQuery SQL flavor reminder; snapshot freshness ritual (`da snapshot drop` + re-fetch when source data updates); concrete hybrid-query example with `--register-bq` joining local + ad-hoc BQ; the unknown-table case (ad-hoc `--register-bq` or ask admin to register); and a cross-reference to `da skills show agnes-data-querying` for deeper guidance. Also clarifies that **personal customizations belong in `.claude/CLAUDE.local.md`**, not CLAUDE.md (which is regenerated by `da analyst setup --force` and would lose edits). Closes #153.
@@ -13534,7 +11995,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **Legacy `docs/setup/claude_md_template.txt` deleted.** 359-line stale template that documented the deprecated SSH-heredoc remote-query protocol (`ssh data-analyst 'bash ~/server/scripts/remote_query.sh --stdin' < query.json`). The active template lives at `config/claude_md_template.txt`; the docs/ copy was confusing references and at risk of being pulled into a workspace by a future refactor. No code references the deleted file (verified).
 
 ## [0.27.0] — 2026-04-30
-
 ### Removed
 
 - **BREAKING** Table access fully migrated to per-group `resource_grants` (`ResourceType.TABLE`). Existing `dataset_permissions` rows are dropped on upgrade — admins must re-grant via `/admin/access`. Wildcard bucket grants (`bucket.*`) no longer supported and not replaced: every table needs an explicit grant (or admin override). Per-table bulk action in `/admin/access` covers a whole bucket at once.
@@ -13550,14 +12010,12 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - Schema **v19**: drops `dataset_permissions`, `access_requests` tables and `users.role`, `table_registry.is_public` columns. Implementation in `src/db.py:_v18_to_v19_finalize` uses the table-rebuild idiom (rename → create new → INSERT … SELECT → drop old) to work around DuckDB's `ALTER TABLE DROP COLUMN` limitations on tables that have ever held FK constraints. The INSERT picks the intersection of the legacy and v19 column sets so test fixtures with hand-crafted minimal pre-v19 schemas migrate cleanly.
 
 ## [0.26.0] — 2026-04-30
-
 ### Changed
 
 - **BREAKING** **All host-side artifacts (compose files, `Caddyfile`, host bash scripts) now ship in the docker image, not curled from `main` at boot.** The Dockerfile bakes them at `/opt/agnes-host/` and the customer-instance startup template extracts the whole directory via `docker create` + `docker cp` from the same `image_tag` the operator already pinned. Removes 5 `curl`s against `raw.githubusercontent.com` from the customer template (`docker-compose.yml`, `docker-compose.prod.yml`, `docker-compose.host-mount.yml`, `docker-compose.tls.yml`, `Caddyfile`) plus the `agnes-auto-upgrade.sh` curl shipped in 0.25.0. The image also now ships `agnes-tls-rotate.sh` + `tls-fetch.sh` at `/opt/agnes-host/` so consumer-side deploy templates can adopt the same pattern. Replaces the curl-from-main pattern that decoupled host-side artifacts from the pinned image (split-brain — image at `stable-2026.04.516`, host artifacts floating on whatever `main` was when the VM last booted) and gave no rollback knob other than reverting upstream PRs globally. With everything baked in, host artifacts and app code are released together from one commit; `image_tag` controls all; rollback is one tag bump; egress simplifies to "private registry" only (no public-internet dependency on every boot). Drift prevention is preserved by construction — image and host artifacts CANNOT drift because they ship together. **Operator action**: `image_tag` MUST point to a tag from this release or later; older tags lack `/opt/agnes-host/` and the startup `docker cp` will fail-loud at first boot. Existing VMs are unaffected because the module sets `lifecycle { ignore_changes = [metadata_startup_script] }` — only newly-created VMs run the new script.
 - `compose_ref` variable on the customer-instance terraform module is **deprecated** — no longer used (compose files come from `image_tag` now). Variable retained for one release cycle to avoid breaking existing `terraform plan`s; will be removed in a future major bump. Pin `image_tag` instead.
 
 ## [0.25.0] — 2026-04-30
-
 ### Fixed
 - `scripts/ops/agnes-auto-upgrade.sh`: fail-fast guard before any `docker
   compose` action — when the VM has a config disk attached
@@ -13586,7 +12044,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
   net effect "app unreachable").
 
 ## [0.24.0] — 2026-04-30
-
 ### Changed
 
 - **Effective-access readout no longer short-circuits for admin users on `/admin/users/{id}` and `/profile`.** Both `GET /api/admin/users/{id}/effective-access` and `GET /api/me/effective-access` previously returned `is_admin=true, items=[]` when the target was in the Admin group, and the UI rendered a flat "Full access via Admin" gold pill — which hid the underlying grant graph. Now both endpoints always run the JOIN, return the explicit per-resource breakdown, and surface `is_admin` only as informational metadata on the response. The UI drops the special pill on both surfaces and renders the same per-resource table everyone else sees. Authorization at runtime still gives Admin god-mode regardless of this list (see `app.auth.access.is_user_admin`); this is purely an audit/debug surface for admins to see *which* Admin-group grants exist via *which* sibling groups.
@@ -13619,7 +12076,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **`GET /api/admin/group-suggestions` endpoint and the "Suggested from your Google account" picker on the `/admin/groups` create modal.** The picker fetched the calling admin's Workspace groups (via Cloud Identity), filtered out ones already registered as `user_groups` rows, and offered them as one-click name pre-fills. Replaced by the OAuth callback's automatic `google_sync` group materialization (every Workspace group the user belongs to that matches `AGNES_GOOGLE_GROUP_PREFIX` is auto-created on login) — the manual picker became redundant. Cloud Identity calls in the request path are gone with it.
 
 ## [0.23.0] — 2026-04-30
-
 ### Added
 - **Single-item Edit button on every memory item card** in `/corporate-memory/admin`. Surfaces the per-item `PATCH /api/memory/admin/{id}` endpoint added in #126 — until now it was only reachable via the CLI (`da admin memory edit <id>`) or by selecting one item in the bulk batch bar. The modal pre-fills from the item's current title / content / category / domain (dropdown matching `VALID_DOMAINS` + `(unset)`) / audience / tags (comma-separated). Authorisation: same `require_admin` gate as the rest of the memory admin surface.
 - **`ai` section editable in `/admin/server-config`**. The `ai:` block in `instance.yaml` (provider / api_key / model / base_url / structured_output for the corporate-memory extractor) was missing from `_EDITABLE_SECTIONS` and `SECTION_META`, so admins had no UI path to view or set the LLM token without editing `instance.yaml` directly. `api_key` is auto-masked via the existing `_SECRET_KEY_PATTERNS` (substring matches "api_key"), so the input renders as a password field and audit-log diffs redact the value.
@@ -13629,7 +12085,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **Edit modal NULL→empty-string preservation** in `/corporate-memory/admin`. `submitEditItem` was sending `audience=""` for items whose stored audience was NULL, which silently broke visibility (the audience filter checks `audience IS NULL OR audience = 'all'`, neither of which matches empty string). Now empty form values for `audience`/`category`/`domain`/`content` are sent as JSON `null` so the backend stores NULL. (Devin BUG_0001 on PR #141 5f649a4 review.)
 
 ## [0.22.0] — 2026-04-30
-
 ### Fixed
 
 - **`/api/v2/sample/{table_id}`, `/api/v2/schema/{table_id}`, `/api/v2/scan/estimate`, and `/api/v2/scan` now return structured 502/400 instead of bare 500 when BigQuery raises `Forbidden`/`BadRequest`.** Issue #134. Previously, `_fetch_bq_sample`, `_fetch_bq_schema`, `_bq_dry_run_bytes`, and `_run_bq_scan` had no `try/except`, so a cross-project SA without `serviceusage.services.use` on the data project surfaced as an empty HTTP 500 — operators got no diagnostic. All four call sites now translate `google.api_core.exceptions.Forbidden` to HTTP 502 with `error: "cross_project_forbidden"` (when the message mentions `serviceusage`) plus a `details.hint` pointing at `data_source.bigquery.billing_project` in `instance.yaml`, or `error: "bq_forbidden"` for non-serviceusage ACL denials. `BadRequest` translates to HTTP 400 (`bq_bad_request`) on `/scan/estimate` and `/scan` since their SQL is user-derived (built from `req.select`/`where`/`order_by`), and to HTTP 502 (`bq_upstream_error`) on `/sample` and `/schema` where SQL is server-constructed (server-built `SELECT * … LIMIT n` and `INFORMATION_SCHEMA.COLUMNS` queries respectively). The strict `_fetch_bq_schema` path is wrapped; the best-effort `_fetch_bq_table_options` path retains its existing `try/except → return {}` so `/schema` still returns 200 with empty partition info if BQ metadata is unreachable. `/api/v2/sample` additionally falls back to `data_source.bigquery.billing_project` (with `data_source.bigquery.project` as the default) — `/scan/estimate` and `/scan` already had this fallback.
@@ -13645,8 +12100,8 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **Side-effect behavior change for unusual cross-project setups in `/api/v2/sample`.** Issue #134. The FROM-clause project for `/sample` is now `data_source.bigquery.project` (the data project) rather than the conflated `billing_project` value — the Phase 1 fix passed `billing_project` (when set) as both the billing target AND the FROM-clause project. Deployments where `billing_project ≠ project` AND the queried table physically lives in `billing_project` (an unusual setup contradicting the documented config semantics) must move the table to the data project or unset `billing_project`. No effect on the standard cross-project setup (table in data project, jobs billed to billing project).
 - `scripts/smoke-test.sh`: assertion 8 now hits `/api/admin/registry` (the current admin tables endpoint). The old `/api/admin/tables` URL was renamed long ago and the smoke test was returning 404 on every run — it only surfaced as a deploy failure when the full release pipeline first triggered the rollback path on the post-#137 deploy (run 25151878647). Same stale URL was also fixed in `CLAUDE.md`, `README.md`, and `dev_docs/server.md` — the routes now correctly point at `POST /api/admin/register-table` (create) and `PUT /api/admin/registry/{id}` (update).
 - `.github/workflows/release.yml` smoke-test job: added `Log in to GHCR` step. The auto-rollback's `docker push :stable` was hitting `unauthenticated: User cannot be authenticated with the token provided` because the smoke-test job had no GHCR login of its own. Result: a failed deploy left `:stable` pointing at the broken image. The rollback step also got an explicit `GH_TOKEN` env, and the workflow's top-level `permissions` block gained `issues: write`, so its `gh issue create` call actually creates the alert issue (was silently swallowed by the `|| echo` fallback because of both the missing env var AND the missing scope).
-## [0.21.0] — 2026-04-30
 
+## [0.21.0] — 2026-04-30
 ### Internal
 
 - `scripts/dev/agnes-client-reset.sh` — destructive cleanup of an Agnes *client* install on a developer workstation, mirror image of `app/web/setup_instructions.py` so an onboarding-from-scratch test is reproducible. Removes the `da` CLI (`uv tool uninstall`), `~/.config/da` / `~/.agnes` / `~/.claude/skills/agnes`, the Claude Code `agnes` marketplace + its plugins, the Agnes CA from the OS trust store (Windows `certutil -delstore`, macOS `security delete-certificate -Z`, Linux `update-ca-certificates`/`update-ca-trust`), the `AGNES_CA_PEM_TRUST` block from the user's shell rc (with `.agnes-reset.bak` backup), and `/tmp/agnes*.whl` matches. Cross-platform (Git Bash on Windows / macOS / Linux); `--yes` skips the confirm prompt, `--dry-run` prints actions without executing.
@@ -13671,7 +12126,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **Setup prompt inlines the server's TLS cert as a step-0 trust block on instances with a private CA / self-signed chain.** `app.web.router._read_agnes_ca_pem` reads `/data/state/certs/fullchain.pem` (path overridable via `AGNES_TLS_FULLCHAIN_PATH`; the file is bind-mounted into the app container by `docker-compose.host-mount.yml` from the same location `agnes-tls-rotate.sh` writes). Self-signed leaves and CA-signed leaves whose issuer isn't in the server-side `certifi` trust store are inlined into the prompt; publicly-trusted chains (Let's Encrypt etc.) are skipped so users don't unnecessarily narrow their default Python TLS trust. The inlined block writes the PEM to `~/.agnes/ca.pem` via single-quoted heredoc (so `$`/backtick chars in the cert never shell-expand) and exports `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` for the current shell + persists them to `~/.bashrc`/`~/.zshrc` (idempotent via a marker grep guard) so `da` keeps trusting the host across new terminal sessions. When the trust block is emitted, the legacy `git config sslVerify=false` downgrade is suppressed — full TLS validation re-enabled, just against the inlined cert. Cross-platform (macOS bash/zsh + Windows Git Bash) — same env vars, same heredoc syntax. Replaces the `git config sslVerify=false`-only path that broke `claude plugin marketplace add` (Node has its own HTTPS client and ignores `git config`) and `uv tool install` (rustls, no insecure flag) on self-signed instances.
 
 ## [0.20.0] — 2026-04-29
-
 ### Added
 - Dev debug toolbar gated by `DEBUG=1`. Mounts `fastapi-debug-toolbar` with panels
   for headers, routes, settings, versions, timer, logging, and a custom DuckDB
@@ -13744,7 +12198,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - `tests/conftest.py`: removed stale comment about bot.py FileHandler.
 
 ## [0.19.0] — 2026-04-29
-
 ### Added
 - `table_registry.sync_schedule` is now honored at runtime. `POST /api/sync/trigger` (called by the scheduler sidecar every 15 min by default) drops local tables whose schedule says they are not due. Tables without a schedule continue to sync on every tick (opt-in feature). Manual `POST /api/sync/trigger {"tables":[...]}` bypasses the schedule filter — operator override always wins. (#79)
 - `script_registry.schedule` is now honored at runtime via the new endpoint `POST /api/scripts/run-due` (admin-only). The scheduler sidecar fires this every 60 s by default. Each due script is claimed atomically (`last_status='running'`), executed in a BackgroundTask, and the outcome written to `last_run` / `last_status`. Scripts already in `running` state are skipped — no concurrent runs of the same script. (#78)
@@ -13770,7 +12223,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **Schedule quantization rounds up**: `SCHEDULER_*_INTERVAL` accepts seconds but the underlying schedule grammar is minute-grained. Non-multiples of 60 round UP to the next minute (90 s → `every 2m`, never `every 1m`) so a job never fires more often than the operator configured. Sub-minute values clamp to `every 1m`. Documented in `docs/DEPLOYMENT.md` → Scheduler tuning.
 
 ## [0.18.0] — 2026-04-29
-
 ### Added
 
 - **Corporate-memory tree view + cross-axis filtering** on `/corporate-memory` and `/corporate-memory/admin`. Operators choose a grouping axis (domain / category / tag / audience) and combine it with chip filters (status, source_type, audience, has-duplicate-hint, search). Tree uses native `<details>`; localStorage persists open/closed state per axis; no new dependencies. Issue #62.
@@ -13820,7 +12272,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - `PUT /api/admin/registry/{id}` now preserves the original `registered_at` timestamp instead of resetting it to `now()` on every edit. `TableRegistryRepository.register` accepts `registered_at` as an optional kwarg; `update_table` re-passes the existing value from the row it just read. Closes #130.
 
 ## [0.17.0] — 2026-04-29
-
 ### Added
 
 - **Shared-secret auth path for the in-cluster scheduler service** (`SCHEDULER_API_TOKEN`). Both the `app` and `scheduler` containers source the same `/opt/agnes/.env` via Docker Compose `env_file:`, so a 256-bit secret generated once at VM provisioning serves both sides symmetrically. The app validates incoming `Authorization: Bearer <secret>` against the env var (constant-time compare; minimum length 32 chars; rejected when env is empty) and resolves matches to a synthetic `scheduler@system.local` user that is a member of the `Admin` system group — every existing RBAC gate (`require_admin`, `require_resource_access`) works unchanged. Audit-log entries from the scheduler are attributed to this user. Rotation: edit `.env`, `docker compose restart app scheduler`. See `app/auth/scheduler_token.py` for the threat model.
@@ -13850,7 +12301,6 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - Extracted `bigquery.extractor.rebuild_from_registry()` from the `__main__` block of `connectors/bigquery/extractor.py` so the API can call it post-register without `runpy`-importing the module. The standalone CLI entrypoint (`python -m connectors.bigquery.extractor`) keeps working.
 
 ## [0.16.0] — 2026-04-29
-
 Minor release. Comprehensive deploy safety audit — CI/CD pipeline hardening, 50+ new tests covering previously untested failure modes, DB schema health check, config versioning, and BigQuery ATTACH error resilience. Built on top of v0.15.0 / `2e1dfb7`.
 
 PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-safety-audit).
@@ -13894,19 +12344,15 @@ PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-
 - Docs updated: `ARCHITECTURE.md`, `docs/DATA_SOURCES.md`, `docs/QUICKSTART.md`, `docs/RBAC.md`, `docs/auth-groups.md`.
 
 ## [0.15.0] — 2026-04-29
-
 Minor release. Adds corporate memory v1+v1.5 and /me/debug self-only auth diagnostic. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.15.0) for full notes.
 
 ## [0.14.0] — 2026-04-28
-
 Minor release. Replaces BigQuery wrap-view pattern with Claude-driven fetch primitives. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.14.0) for full notes.
 
 ## [0.13.0] — 2026-04-28
-
 Minor release. Admin server-config editor + Windows PowerShell wrapper. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.13.0) for full notes.
 
 ## [0.12.1] — 2026-04-28
-
 Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.12.0](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0) and bundles the security/ops hardening from issue groups #82 (auth hardening), #85 (API validation), #87 (deploy posture), plus #46 (SSRF) and #90 (memory stats blocking).
 
 ### Added
@@ -14034,7 +12480,6 @@ Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.
   does not exist post-rename. See issue #87/M23.
 
 ## [0.12.0] — 2026-04-28
-
 ### Changed
 
 - `/admin/access` resource tree now visually separates the three-level hierarchy (resource type → block/bucket → item). Each resource-type section gets a colored left stripe and a faint tinted banner; sections are separated by an 8px neutral gap. Stripe colors cycle 4-wide via `nth-child` so adding new resource types to `app/resource_types.py` works without touching CSS. The first-position color is the project primary blue (`#0073D1`), avoiding the violet (`#6366f1`) reserved for granted items.
@@ -14319,7 +12764,6 @@ Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.
 ---
 
 ## [0.11.5] — 2026-04-27
-
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
 
 ### Fixed
@@ -14345,7 +12789,6 @@ Follow-up release for PR #73: addresses four rounds of Devin AI review on the ro
 ---
 
 ## [0.11.4] — 2026-04-27
-
 Role-management complete release. Sjednocuje legacy `users.role` enum (viewer/analyst/km_admin/admin) with the v8 internal-roles foundation under one model with implies hierarchy, ships admin UI + REST API + CLI for managing both group mappings and direct user grants, and wires `require_internal_role` for PAT-aware resolution so admin endpoints work uniformly across OAuth and headless callers.
 
 ### Added
@@ -14379,7 +12822,6 @@ Role-management complete release. Sjednocuje legacy `users.role` enum (viewer/an
 - "Last admin protection" on `DELETE /api/admin/users/{id}/role-grants/{grant_id}`: refuses to delete the final `core.admin` grant in the system (mirrors existing `count_admins` protection on user deletion / deactivation).
 
 ## [0.11.3] — 2026-04-26
-
 Authorization-foundation release — adds the internal-roles layer between Cloud Identity groups and per-module capability checks. Schema v8 migration; no admin UI yet (follow-up).
 
 ### Added
@@ -14397,7 +12839,6 @@ Authorization-foundation release — adds the internal-roles layer between Cloud
 - `_clear_registry_for_tests()` now refuses to run unless `TESTING=1` so a stray import path in production can't drop the registered capabilities.
 
 ## [0.11.2] — 2026-04-26
-
 Dev-experience patch release — make `LOCAL_DEV_MODE` realistic enough to actually exercise group-aware code paths on `localhost`, and consolidate scattered dev-onboarding instructions into a single `docs/local-development.md`.
 
 ### Added
@@ -14411,7 +12852,6 @@ Dev-experience patch release — make `LOCAL_DEV_MODE` realistic enough to actua
 - Fix nightly `docker-e2e` CI failures: refresh two stale assertions that had drifted from the live API. `tests/test_docker_full.py::test_app_returns_html_on_root` now expects the auth-aware `302 → /login` (root has redirected since the auth middleware landed); `tests/test_e2e_docker.py::TestDockerHealth::test_health_has_duckdb` now reads `services["duckdb_state"]` (current health-payload shape, already validated by `tests/test_api.py`). No application behavior change — these only ran in the scheduled nightly job, so the drift went unnoticed for several PRs.
 
 ## [0.11.1] — 2026-04-26
-
 Patch release — hotfix the missed Caddy env passthrough that should have shipped with 0.11.0, plus codify changelog discipline so this kind of drift gets caught at PR review time next time.
 
 ### Fixed
@@ -14423,7 +12863,6 @@ Patch release — hotfix the missed Caddy env passthrough that should have shipp
 - `CLAUDE.md` — non-negotiable changelog discipline: every PR touching user-visible behavior must update `CHANGELOG.md` under `## [Unreleased]` in the same PR.
 
 ## [0.11.0] — 2026-04-26
-
 First tagged semver release. The `version = "2.x"` strings that appeared in earlier `pyproject.toml` snapshots were arbitrary placeholders from the initial scaffold and never reflected actual API maturity — resetting to pre-1.0 to signal that things may still shift.
 
 ### Added — Auth
@@ -14511,3 +12950,4 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 [0.11.2]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.2
 [0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1
 [0.11.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.0
+

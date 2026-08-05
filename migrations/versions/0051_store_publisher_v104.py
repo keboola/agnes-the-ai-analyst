@@ -1,6 +1,6 @@
 """store_entities publisher_kind + verification columns
 
-Mirrors DuckDB ``_v109_to_v110``. Two orthogonal axes for the catalog card's
+Mirrors DuckDB ``_v110_to_v111``. Two orthogonal axes for the catalog card's
 trust line:
 
 - ``publisher_kind`` ('organization' | 'user') — who stands behind the item.
@@ -29,6 +29,12 @@ stamp time with ``StringDataRightTruncation`` — and because stamping happens
 in test fixture setup, it takes out every Postgres test, not just this one.
 Keep new ids short.
 
+
+Filename/version-suffix note: the ``_vNNN`` suffix in this module's
+FILENAME reflects an older restack of the DuckDB ladder and is frozen —
+the revision id is the deployed alembic_version key and renaming would
+only move the mismatch around. The ``Mirrors DuckDB`` line above is the
+authoritative mapping.
 """
 
 from __future__ import annotations

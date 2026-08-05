@@ -1818,8 +1818,8 @@ async def catalog(
         logger.warning("could not enumerate data_packages: %s", e)
 
     is_admin_view = is_user_admin(user["id"], conn)
-    # Admin god-mode removed from the user-facing Catalog (#XXXX follow-up
-    # to auto-membership): every visitor — admin included — browses through
+    # Admin god-mode removed from the user-facing Catalog (follow-up to the
+    # auto-membership reshape): every visitor — admin included — browses through
     # the same grant-scoped ``browse()``. Auditing every package regardless
     # of grant now lives at /admin/data-packages (``browse_admin`` still
     # backs that route).
