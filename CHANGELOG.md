@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.80.0] - 2026-08-06
+
+### Added
+
 - Domain migrations keep the old hostname working: set `DOMAIN_ALIAS` to the name you are moving away from and Caddy serves it alongside `DOMAIN`, with its own certificate, instead of failing the TLS handshake the moment `DOMAIN` changes — which is what would otherwise break bookmarks, `agnes` CLI configs and MCP connector URLs with a certificate error instead of a path onto the new address. Two audiences, two answers: someone arriving in a browser gets a short notice page naming the new address and what still points at the old one (deep links preserved, auto-forwarding after 15 s), while the CLI, MCP clients and anything else get a plain 308 — a silent redirect for everyone would never prompt a human to update the bookmark, and an HTML notice served to a machine client is just a confusing parse error. The split keys on `Accept: text/html` and is scoped to GET/HEAD, so a POST is never swallowed by the notice page. Unset (the default) the block is inert — it resolves to a non-published localhost port and, carrying no `tls` directive, is served an internal certificate silently rather than retrying a public one once a minute forever. Exposed on the `customer-instance` module as a per-VM `domain_alias` field on `prod_instance` / `dev_instances`; drop it once the old DNS record is retired. Cutover checklist — including the three things that do *not* follow `DOMAIN` (`SERVER_URL`/`public_url`, the Google OAuth client's redirect URIs, and already-connected MCP clients): `docs/DEPLOYMENT.md` → "Migrating to a new domain".
 
 ### Changed
