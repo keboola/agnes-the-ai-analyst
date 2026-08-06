@@ -12,6 +12,126 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.79.0] - 2026-08-05
+
+### Added
+
+- Cloud chat runs without an E2B account: `chat.provider: docker` spawns each session in a local Docker container instead of a cloud microVM, so a self-hosted instance no longer loses chat entirely for want of E2B keys. Same feature set — web chat, Slack, the agent API, headless runs and artifact harvest are unchanged. Docker access stays behind the `apps-runner` sidecar (still the only process holding the socket) over a new token-gated `/sandboxes/*` API; the gateway never touches `/var/run/docker.sock`. The per-session workspace is **bind-mounted** rather than uploaded, which removes the 100 MB `chat.e2b_workspace_max_bytes` cap and the per-spawn tarball, and makes files the agent writes persist on the host — note that concurrent sessions of the same user therefore share one workspace, and agent-created `node_modules`/`.venv` now survive the session; co-drive sessions still mount only their ephemeral directory. Pause maps to `docker pause` (memory survives while the daemon does, not across a host reboot — the next attach then produces a fresh sandbox with restored conversation context). Sandboxes run non-root with `cap_drop: ALL`, `no-new-privileges`, pids/memory/CPU limits, a capped allowlist of mounts and an image-prefix allowlist; no secret enters the container env. Agent-profile sessions never get the shared workspace mount — only their data symlink targets (snapshots writable, the rest read-only), so a profiled agent cannot rewrite the user's shared settings/hook files. New keys: `chat.docker_image`, `docker_network`, `docker_mem_limit`, `docker_cpus`, `docker_pids_limit`, `docker_egress_mode` (`open` | `none`; hostname-level allowlisting is E2B-only), `docker_max_total_sandboxes`. Requires the operator-built sandbox image (`app/initial_workspace_default/docker-sandbox/`), the `apps` compose profile, and `AGNES_INTERNAL_URL`/`SERVER_URL` pointing at a container-reachable address — boot gates refuse to start chat with actionable log lines otherwise. Operator walkthrough, including an honest E2B-vs-Docker comparison: `docs/cloud-chat.md`.
+
+### Changed
+
+- The chat sandbox's `agnes` CLI wheel and restored-conversation transcript are now staged for every sandbox provider, not only for providers that also upload the workspace. Only the workspace tarball itself remains tied to that decision. E2B behavior is unchanged.
+- `/admin/chat/secrets/test` ("Test connections" in server config) reports the sandbox credential for the configured provider: the E2B key on an E2B instance, a Docker daemon + image probe on a self-hosted one, instead of a permanently failing E2B row. The chat readiness list on the same page is provider-aware too — rows render from the server's readiness payload (`APPS_RUNNER_TOKEN`/`chat.docker_image` on a docker instance) instead of a fixed E2B-only set.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+- Deflaked `test_state_rejects_tampered_signature`: flipping the final base64url
+  char of an itsdangerous signature silently decodes to the same bytes whenever
+  only the discarded padding bits differ (trailing `Y` vs `a` — ~6% of signing
+  timestamps), so the "tampered" state verified fine. The test now flips
+  full-data chars at three non-final signature positions.
+
+### Security
+- Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). The re-check reduces every spelling of an address to one set of rules first — IPv4-mapped (`::ffff:169.254.169.254`), 6to4 and Teredo answers are unwrapped to the IPv4 address a dual-stack host would actually reach, and the unspecified address (`0.0.0.0`, `::`), multicast and reserved ranges are refused outright. Ignoring the proxy env is not a bypass — the internal network has no other route. Docker never reconciles the `internal` flag on a network that already exists, so a sandbox start refuses with `network_not_internal` rather than silently running without that layer if a same-named non-internal bridge is left over; remove it and it is recreated correctly. Plain-HTTP proxying authorizes every request rather than only the first on a connection — proxy clients pool per-proxy, not per-destination, so keep-alive is not offered upstream and a request's body is forwarded by its declared length (chunked request bodies are refused, having no length to bound the forward by). Closes the "hostname-level allowlisting is E2B-only" gap.
+
+## [0.78.2] - 2026-08-05
+
+### Added
+
+### Changed
+
+- `/me/connections` UX after the first real OAuth rollout: the page now
+  also lists per_user sources you have a stored connection for and (for
+  admins) freshly registered sources with no tools yet — with a "no tools
+  enabled yet" note linking admins to the source's admin page, distinct from
+  the "you no longer have access" note a viewer whose grants were withdrawn
+  gets on a source that does have tools — instead of
+  silently hiding the card mid-bootstrap; the success banner names the
+  source instead of printing its UUID; retryable connect failures render a
+  one-click "Try again" link back into the authorize flow; and the card
+  meta line explains the credential in plain words instead of
+  "http · per-user credential".
+
+### Fixed
+- Two pages that shipped with no way to reach them from the UI. The agent
+  builder (`/agents`) now has a **My agents** entry in the user dropdown —
+  a per-user resource list, so it sits next to *My connections* rather than in
+  the primary nav or the admin menu — and the token-based editor setup page
+  (`/mcp-connect`) is linked from the AI Connector page as the fallback for
+  clients that can't complete the browser sign-in. Both also gained Cmd/Ctrl-K
+  palette entries, and `tests/test_web_nav_agents.py` guards the links so the
+  pages can't go unreachable again (same bug class as #919's
+  `/me/connections`). The **News** page (`/news`) joins the palette too:
+  its only link was /home's news strip, which needs both a published version
+  and an instance whose `home_route` is `/home`, so on the `/dashboard` default
+  non-admins had no way in. The new-web-page playbook now carries a "wire an
+  inbound link" step — a route alone is not a shipped page.
+  `/news` gets a dropdown entry too: its other two entry points are both
+  conditional — /home's "What's new" strip needs a published version AND
+  `home_route == '/home'`, and the command palette initializes only when the
+  admin menu is in the DOM — so on the `/dashboard` default a non-admin could
+  not reach it at all.
+
+
+### Removed
+
+### Internal
+
+- The `resource_grants` SQLAlchemy model now declares migration 0013's
+  `ck_resource_grants_per_type_fk` check constraint. The constraint has
+  always existed in the DB; alembic 1.19.0 (2026-08-04) started comparing
+  check constraints in autogenerate, which surfaced the latent
+  model↔migration mismatch and broke `test_no_model_migration_drift` on
+  every branch (CI installs unpinned deps). Fixes #1168.
+- New dev-kit skill `agnes-wayfinder` (`.claude/skills/agnes-wayfinder/`) for efforts whose destination is known but whose route is still fogged in — the phase before `superpowers:writing-plans` has anything to plan. It charts a map (`docs/superpowers/maps/<effort>/map.md`) plus numbered decision tickets, resolved one per session until no decisions remain, then hands off to `writing-plans` → `/agnes-build`. Deliberately markdown-in-repo rather than GitHub issues: the *Issue economy* convention exists to stop exactly this kind of question-dumping into a public tracker, and a map under `docs/brainstorms/` would be gitignored and lost with its checkout. Explicit invocation only — if the steps can already be stated, the map is overhead. Adapted from Matt Pocock's `wayfinder` skill (MIT).
+  The frontier query hides a ticket only on positive evidence of a live
+  blocker. Everything it cannot interpret — an odd "no dependencies" marker,
+  an unpadded reference, a reference to a ticket that does not exist, an
+  unrecognised status on either the ticket OR its blocker, a dependency cycle —
+  surfaces the ticket
+  instead of dropping it; `claimed`
+  counts as unfinished, and a ticket ruled past the destination takes a
+  terminal `out-of-scope` status that both leaves the queue and settles
+  anything waiting on it. Five variants of one mistake: something
+  unrecognised defaulted to "blocked", so a question left the work list while
+  the effort read as finished. The exit step also keeps `issues/` rather than
+  deleting it — the map is an index whose decisions link into the tickets, so
+  removing them discarded the only full copy of the reasoning.
+
+
+- Vault repositories now share one decrypt path: `SharedSecretsRepository`,
+  `PerUserSecretsRepository`, `ConnectionSecretsRepository` and
+  `SystemSecretsRepository` (DuckDB and Postgres alike) fold their inline
+  decrypt-failure blocks onto the `app.secrets_vault.decrypt_optional` helper.
+  Behavior is unchanged — a NULL or unreadable column still reads as absent
+  instead of raising — but the warning now names the column that failed
+  (`<table>.<column>[<key>]`) and keeps the caller's "falling back to …" note
+  via a new `hint` argument. `SystemSecretsRepository` was going to stay
+  outside the fold, on the grounds that its wider catch (the `RuntimeError` a
+  malformed `AGNES_VAULT_KEY` raises) did not belong in a shared path; the
+  helper has since gained that catch for every caller, so the exception lost
+  its reason and the last hand-rolled copy goes with it. Cross-engine contract
+  tests assert the decrypt-failure path on both backends.
+
+### Security
+
+## [0.78.1] - 2026-08-04
+
+### Added
 - MCP OAuth sources, phase 2 — the per-user browser connect flow: `GET
   /api/mcp/sources/{id}/oauth/authorize` (signed, single-use PKCE state;
   grant- and rate-limit-gated) redirects the analyst's browser to the
@@ -28,6 +148,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   callback path — operators should apply the same redaction in their
   TLS-terminating reverse proxy's access log (see `docs/DEPLOYMENT.md`).
 
+
 ### Changed
 
 ### Fixed
@@ -39,11 +160,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 ### Security
+- `aiohttp` floor raised to `>=3.14.3`, clearing three upstream advisories:
+  an out-of-bounds heap read in the C HTTP response parser's error path
+  (high, GHSA-cq5v-8q36-5273), HTTP request smuggling via a WebSocket upgrade
+  (GHSA-mfx4-hv73-q22v), and a WebSocket client accepting compressed frames
+  without a negotiated extension (GHSA-mq44-7p77-q5h7). The two WebSocket ones
+  reach the `slack-socket` extra directly — the Socket Mode client is an
+  aiohttp WebSocket client — which is why the floor moves rather than only the
+  lock: a fresh install must not be able to resolve back to a vulnerable
+  release. A `telegram` extra now declares aiohttp too — `services/telegram_bot/bot.py` imports it at module scope, so that service only ever started because the shipped image installs `[slack-socket]` alongside; an operator installing `[server]` and running only the Telegram bot hit ImportError. aiohttp joins the `dev` extra too, so `tests/test_telegram_bot.py` actually executes in CI instead of skipping through its guarded import — the ImportError the extra prevents was previously untested.
+
 
 ## [0.78.0] - 2026-08-04
-
-### Added
-## [0.77.33] - 2026-07-31
 
 ### Added
 

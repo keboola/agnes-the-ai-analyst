@@ -6,15 +6,25 @@ admins enable it, and what to know about cost / isolation.
 ## What it is
 
 A zero-install web chat at `/chat` and a Slack DM bot, both backed by
-the same `claude-agent-sdk` Python runner spawned inside an **E2B
-ephemeral microVM**. Each session gets its own fresh sandbox with the
-per-user workspace synced in at spawn time. Users get the full Agnes
-harness (skills, marketplace, slash commands, `agnes` CLI, sub-agents)
-without installing anything locally.
+the same `claude-agent-sdk` Python runner spawned inside a per-session
+sandbox. Users get the full Agnes harness (skills, marketplace, slash
+commands, `agnes` CLI, sub-agents) without installing anything locally.
+
+Two sandbox providers, same feature set:
+
+- **`e2b`** (default) — an ephemeral cloud microVM per session, with the
+  per-user workspace synced in at spawn time. Needs an E2B account.
+- **`docker`** — a local container per session on the host's own Docker
+  daemon, with the workspace bind-mounted instead of uploaded. No cloud
+  dependency. See [Docker provider (self-hosted)](#docker-provider-self-hosted).
+
+Everything below describes the E2B setup unless a section says otherwise.
 
 ## Enabling on an instance
 
-Default is **off**. To enable:
+Default is **off**. To enable with the E2B provider (for the self-hosted
+container provider, jump to
+[Docker provider (self-hosted)](#docker-provider-self-hosted)):
 
 1. **Obtain an E2B account + API key.** E2B is the cloud microVM
    provider — sign up at https://e2b.dev, copy the API key from the
@@ -253,6 +263,173 @@ stalling the caller for 300 s.
 **Warehouse data is sent to Anthropic by design** — do not store data
 the operator does not want Anthropic to process.
 
+## Docker provider (self-hosted)
+
+`chat.provider: docker` runs each session in a **local Docker container**
+instead of an E2B microVM — no E2B account, no cloud dependency. Everything
+else (web chat, Slack, the agent API, artifact harvest, budgets, the reapers)
+is unchanged.
+
+### Prerequisites
+
+1. **A Docker daemon on the host** that runs the Agnes gateway.
+2. **The apps-runner sidecar.** It is the only process that touches
+   `/var/run/docker.sock`; the gateway reaches it over a token-gated HTTP API.
+   Under Compose: `docker compose --profile apps up -d apps-runner` with
+   `APPS_RUNNER_TOKEN` (`openssl rand -hex 32`) and `DOCKER_GID`
+   (`stat -c '%g' /var/run/docker.sock`) set in `.env`. On a bare host, run it
+   as a plain process: `python -m services.apps_runner` (same env; set
+   `APPS_RUNNER_URL` so the gateway can find it).
+3. **The sandbox image**, built by the operator:
+
+   ```bash
+   docker build -t agnes-chat-sandbox:latest app/initial_workspace_default/docker-sandbox
+   ```
+
+   The Agnes release pipeline does not publish it — see that directory's
+   README. `CHAT_SANDBOX_IMAGE_PREFIX` (default `agnes-chat-sandbox`) is the
+   sidecar's image allowlist; a tag outside it is refused at create time.
+4. **A container-reachable rails URL.** The sandbox's only network dependency
+   is `{AGNES_SERVER}/api/broker/*`. Set `AGNES_INTERNAL_URL=http://app:8000`
+   under Compose, or `http://host.docker.internal:8000` on a bare host (the
+   sidecar adds the `host-gateway` mapping for you on Linux). Chat refuses to
+   start on a loopback or unset value — inside the sandbox's own network
+   namespace `127.0.0.1` is the sandbox, not Agnes.
+
+   Use the plain-HTTP internal URL, not an `https://` public one: the
+   in-sandbox relay verifies certificates and has no CA-bundle knob, so a
+   private-CA certificate fails every brokered call.
+
+### Configuration
+
+```yaml
+chat:
+  enabled: true
+  provider: docker
+  docker_image: "agnes-chat-sandbox:latest"
+  docker_network: "agnes-apps"      # must be a network the Agnes app is on
+  docker_mem_limit: "2g"
+  docker_cpus: 1.0
+  docker_pids_limit: 512
+  docker_egress_mode: open          # open | none
+  docker_max_total_sandboxes: 10
+```
+
+Server env: `ANTHROPIC_API_KEY`, `JWT_SECRET_KEY` and `APPS_RUNNER_TOKEN`.
+**No `E2B_API_KEY`.** Watch the startup log for
+`ChatManager started (provider=docker, image=…, egress=…)`, and use
+*Test connections* in `/admin/server-config` for a live daemon + image probe.
+
+### Workspace: bind-mounted, and durable
+
+The per-session directory is bind-mounted as `/work`, and the user's workspace
+is mounted at the same absolute path the server sees, so the session's
+symlinks (`.claude`, `CLAUDE.md`, `snapshots`, …) resolve natively. Consequences,
+all deliberate:
+
+- **No 100 MB cap and no per-spawn upload** — `chat.e2b_workspace_max_bytes` is
+  inert under this provider, and spawn latency does not scale with workspace size.
+- **Files the agent writes persist on the host.** Under E2B everything written
+  in `/work` dies with the sandbox; here it stays in
+  `${DATA_DIR}/users/<email>/workspace`. That includes agent-created
+  `node_modules` / `.venv` directories, which the upload path used to filter out.
+- **Concurrent sessions of the same user share that workspace**
+  (`chat.concurrency_per_user`, default 3). Agent-profile sessions do NOT get
+  the shared workspace mount at all: their `.claude`/`CLAUDE.md` are private
+  copies, and mounting the workspace root would hand the profiled agent the
+  shared originals anyway — so only the targets of the session's data
+  symlinks are mounted (`snapshots` read-write, `scripts`/`scaffolds`/
+  `CLAUDE.local.md` read-only), preserving the isolation E2B provided
+  structurally by uploading nothing but the session dir.
+- **Co-drive sessions mount only their ephemeral directory** — no personal
+  workspace is mounted at all, so "never persist back" holds structurally.
+
+### Pause / resume vs E2B — honest comparison
+
+| | E2B | Docker |
+|---|---|---|
+| Pause | microVM memory snapshot | `docker pause` (SIGSTOP) |
+| Survives a paused sandbox's process memory | yes | yes, while the daemon lives |
+| Survives a daemon restart / host reboot | yes | **no** |
+| Resume | reattach to the same process | unpause + reattach (the daemon refuses attach on a paused container, so the order is forced) |
+| On resume failure | fresh sandbox + restore-context | same |
+| Cost while paused | billing stops | container keeps its memory reservation |
+| Session lifetime cap | clamped to E2B's 1 h platform max | `chat.max_session_seconds` applies as configured (default 4 h) |
+
+After a host reboot, the next attach to a paused session produces a *fresh*
+sandbox seeded with the restored-conversation transcript — the same path a
+crash respawn takes. No crash loop, no stuck session; the in-flight turn (if
+any) is lost.
+
+**Reattach gaps (v1, accepted).** Three bounded windows exist where runner
+output reaches only the container log, not the gateway:
+
+- *Gateway restart while the container keeps running.* The post-restart resume
+  reattaches without replay — there is no offset-tracking in the attach API,
+  so replaying would re-deliver every frame since session start. Whatever the
+  runner emitted while no gateway was attached (typically the tail of a turn
+  that was in flight when the gateway died) is not delivered or persisted.
+  A gateway restart drops E2B's SDK callbacks the same way; this is not a
+  regression against the E2B provider.
+- *Detach → pause.* `pause()` closes the attach before the daemon pauses the
+  container, so a frame emitted in that sub-second window is likewise only in
+  the container log.
+- *Unpause → reattach.* The mirror image on wake-up. The order cannot be
+  inverted: the daemon refuses `attach` on a paused container (409, "unpause
+  the container before attach"), so the attach necessarily opens a beat after
+  execution resumes. An idle runner emits nothing spontaneously — the window
+  only matters for a session that was paused mid-turn.
+
+In both cases the session self-heals on the next message — the runner is idle
+and answers normally; what's lost is the rendering of the missed frames, not
+agent state. If this ever bites in practice, the known follow-up is
+replay-with-dedup (tail the container log with `since=` and drop
+already-delivered frames).
+
+### Egress
+
+| Mode | Behavior |
+|---|---|
+| `open` (default) | normal bridge — the sandbox can reach the internet, so in-sandbox `pip install` / `npm install` work. Weaker than E2B's per-hostname allowlist. |
+| `none` | the sandbox joins an `internal` Docker network (`<docker_network>-internal`) with no route off the host. Stronger than E2B — but the Agnes app must also be attached to that network for the rails to work, and in-sandbox package installs stop working. |
+| `allowlist` | the `none` internal network **plus** the `services/egress_proxy` sidecar dual-homed onto it (compose profile `chat-docker-egress`). Sandboxes get `HTTP(S)_PROXY` pointed at the proxy and may reach exactly `chat.docker_egress_allow_hosts` (exact names or `*.suffix` wildcards) — each connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and connects to the vetted address, closing the DNS-rebinding gap; cloud metadata endpoints stay blocked even if listed. The proxy env is cooperative, but ignoring it is not a bypass: the internal network has no other route out. E2B `allow_out` parity, with rebinding protection E2B doesn't have. **Requires the rails URL to be internally reachable** — the sandbox's `NO_PROXY` carries whatever host `AGNES_SERVER` resolves to, so a public `SERVER_URL` would be forced onto a direct connection the no-route-out network cannot make. Use `AGNES_INTERNAL_URL` (e.g. `http://app:8000` under compose), as the rest of this page already instructs. |
+
+To enable `allowlist` mode under Compose: set `chat.docker_egress_mode:
+allowlist` + `chat.docker_egress_allow_hosts` in `instance.yaml`, export
+`EGRESS_ALLOW_HOSTS` (the same list, comma-separated — the proxy is the
+enforcing copy), and start the stack with `--profile chat-docker-egress`.
+The `app` service already joins `agnes-apps-internal`, so the rails URL
+(`AGNES_INTERNAL_URL=http://app:8000`) keeps working — the provider adds
+it to `NO_PROXY` automatically.
+
+**The E2B key `chat.egress_allow_out` remains E2B-only.** The in-workspace
+PreToolUse hook still applies in all modes as defense-in-depth.
+
+### Isolation
+
+`runner.py` runs the agent with `permission_mode=bypassPermissions`, justified
+by the sandbox boundary — and a container is a weaker boundary than a microVM.
+The compensating controls, all applied by the sidecar on every create: non-root
+user, `cap_drop: ALL`, `no-new-privileges`, a pids limit, memory + CPU limits,
+exactly two bind mounts (never an operator-supplied path), no Docker socket
+inside the sandbox, an image-prefix allowlist, and a container-name confinement
+(`agnes-chatsbx-*`) that keeps this API away from every other container on the
+host. As with E2B, no secret enters the container's environment: the Anthropic
+key stays server-side behind the broker, and per-session tickets arrive over
+stdin.
+
+### Limitations
+
+- **Single-gateway only.** Cross-gateway takeover assumes any gateway can
+  destroy any sandbox, which is false when each host runs its own daemon.
+  Multi-gateway (`mtier`) with the docker provider is unsupported in v1.
+- **Sandboxes contend with the gateway for host resources.**
+  `chat.docker_max_total_sandboxes` (default 10) is the host-wide ceiling on top
+  of `chat.concurrency_per_user`; a spawn past it fails rather than
+  oversubscribing the host.
+- Leftover containers from a crashed gateway are reconciled by ownership label
+  at gateway start and on the reaper tick.
+
 ## Operator setup details
 
 ### `agnes-chat:latest` is a mutable tag
@@ -285,7 +462,7 @@ trim local files.
 - Slack: DM only. Channel `@agnes` mentions land in a follow-up PR.
 - Single uvicorn worker only (see § Host requirements).
 - **Bundled workspace ships no sub-agents.** `app/initial_workspace_default/.claude/agents/` is empty. Sub-agent dispatch (Task tool) requires the operator to install marketplace plugins that ship `agnes-*.md` agent definitions; without them the chat agent will answer directly without sub-agent delegation. The E2E test `tests/e2e/test_sub_agent_dispatch.py::F.9` auto-skips when no agents are present in the workspace.
-- **`ANTHROPIC_API_KEY` + `E2B_API_KEY` + `chat.e2b_template_id` are gate-checked at startup.** Any missing value refuses chat with a clear log line.
+- **Startup gates refuse chat with a clear log line on any missing prerequisite.** `ANTHROPIC_API_KEY` + `JWT_SECRET_KEY` always; `E2B_API_KEY` + `chat.e2b_template_id` under `provider: e2b`; a non-loopback rails URL + a reachable sidecar with the sandbox image present under `provider: docker`.
 - **Egress is enforced at the VM level**, not by the in-sandbox hook. `E2BProvider.spawn` passes `network={"allow_out": …, "deny_out": [ALL_TRAFFIC]}`, so everything outside `chat.egress_allow_out` (default: the Agnes host, loopback, `api.anthropic.com`, `api.github.com`) is blocked by the platform. The workspace `PreToolUse` hook is defense-in-depth only: it is fail-open, inspects Bash alone, and is a workspace file the agent could rewrite — the VM-level deny-list survives its removal. (This supersedes the original Q4 fail-open decision.)
 - **A "Continue on web" click that lands on another replica loses the pending approval.** `attach()` resolves a session owned by a different gateway through a claim-then-respawn takeover, and a fresh runner has no memory of the suspended tool call — the old sandbox's gate dies with it. The user sees the turn restart rather than the card. Single-replica deployments are unaffected; on a multi-replica one, answer from a browser attached to the owning gateway (or just re-ask).
 - **Slash-command sessions get no approval nudge of their own.** `EphemeralCommandSink` posts to a `response_url` and carries no `chat_id`/`web_base` to build a deep link from, so it stays silent on `approval_request`. In practice those sessions also carry a `SlackSinkBridge`, which does post the nudge.
@@ -293,5 +470,5 @@ trim local files.
 - **`audit_log.user_id` for chat rows holds the user email, not the user UUID.** Joining `audit_log` to `users` for chat events requires `audit_log.user_id = users.email` for `action LIKE 'chat.%'` and the usual `audit_log.user_id = users.id` for everything else. Documented in `app/chat/audit.py::write_audit`.
 - **`_real_agent_loop` enforces a turn-level wall-clock cap, not per-tool.** `claude-agent-sdk` 0.2.x doesn't expose per-tool dispatch hooks; the runner enforces `tool_calls_per_turn_budget` and a turn-level timeout instead of per-tool granularity. Revisit when the SDK ships per-tool hooks.
 - **E2B SDK 1.x uses the mutable `:latest` template tag.** Per Q2 a teammate rebuild propagates to every live deployment on its next spawn — test rebuilds on a dev Agnes first.
-- **E2B API outage → chat unavailable, no fallback.** Per Q6 there is no `SubprocessProvider` fallback; chat returns 503 until the E2B SDK recovers. Operators monitor E2B status separately.
+- **E2B API outage → chat unavailable, no automatic fallback.** There is no runtime failover between providers: chat returns 503 until the E2B SDK recovers. Operators monitor E2B status separately. An instance that cannot depend on E2B at all should run `provider: docker` instead (a deliberate, restart-scoped configuration choice, not a hot standby).
 - **Per-session E2B billing is operator-visible only in the E2B dashboard**, not yet in Agnes admin UI.

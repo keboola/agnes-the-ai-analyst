@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 from app.chat.config import load_chat_config
 
 
@@ -41,6 +40,121 @@ def test_enabled_with_overrides(tmp_path: Path):
     assert cfg.e2b_kill_on_ws_disconnect is False
     assert cfg.concurrency_per_user == 5
     assert cfg.idle_ttl_seconds == 900
+
+
+def test_docker_provider_defaults(tmp_path: Path):
+    """`chat.docker_*` knobs are inert under the default e2b provider but must
+    still carry usable defaults — an operator flipping `provider: docker`
+    should get a working stack from the image tag alone."""
+    yaml = tmp_path / "instance.yaml"
+    yaml.write_text("instance_name: test\n")
+    cfg = load_chat_config(yaml)
+    assert cfg.docker_image == "agnes-chat-sandbox:latest"
+    assert cfg.docker_network == "agnes-apps"
+    assert cfg.docker_mem_limit == "2g"
+    assert cfg.docker_cpus == 1.0
+    assert cfg.docker_pids_limit == 512
+    assert cfg.docker_egress_mode == "open"
+    assert cfg.docker_max_total_sandboxes == 10
+
+
+def test_docker_provider_overrides(tmp_path: Path):
+    yaml = tmp_path / "instance.yaml"
+    yaml.write_text(
+        "chat:\n"
+        "  enabled: true\n"
+        "  provider: docker\n"
+        "  docker_image: agnes-chat-sandbox:0.77.32\n"
+        "  docker_network: agnes-chat\n"
+        "  docker_mem_limit: 4g\n"
+        "  docker_cpus: 2.5\n"
+        "  docker_pids_limit: 256\n"
+        "  docker_egress_mode: none\n"
+        "  docker_max_total_sandboxes: 3\n"
+    )
+    cfg = load_chat_config(yaml)
+    assert cfg.provider == "docker"
+    assert cfg.docker_image == "agnes-chat-sandbox:0.77.32"
+    assert cfg.docker_network == "agnes-chat"
+    assert cfg.docker_mem_limit == "4g"
+    assert cfg.docker_cpus == 2.5
+    assert cfg.docker_pids_limit == 256
+    assert cfg.docker_egress_mode == "none"
+    assert cfg.docker_max_total_sandboxes == 3
+
+
+def test_unknown_docker_egress_mode_normalizes_to_open(tmp_path: Path, caplog):
+    # "allowlist" graduated to a real mode; "wide-open" stays a typo
+    y = tmp_path / "instance.yaml"
+    y.write_text("chat:\n  enabled: true\n  provider: docker\n  docker_egress_mode: wide-open\n")
+    cfg = load_chat_config(y)
+    assert cfg.docker_egress_mode == "open"
+    assert "docker_egress_mode" in caplog.text
+
+
+def test_blank_string_keys_fall_back_to_their_defaults(tmp_path: Path):
+    """A key written with nothing after it parses to YAML null; the naive
+    `str(raw.get(key, default))` then produced the string "None" — and for
+    docker_egress_mode the *valid-looking* mode "none", silently cutting the
+    sandbox off from the internet (the #1148 trap). Blank must mean default."""
+    y = tmp_path / "instance.yaml"
+    y.write_text(
+        "chat:\n  enabled: true\n  provider:\n  harness:\n  docker_egress_mode:\n  on_detach:\n  llm:\n    auth:\n"
+    )
+    cfg = load_chat_config(y)
+    assert cfg.provider == "e2b"
+    assert cfg.harness == "claude-code"
+    assert cfg.docker_egress_mode == "open"
+    assert cfg.on_detach == "pause"
+    assert cfg.llm_auth == "api_key"
+
+
+def test_blank_numeric_and_bool_keys_fall_back_to_their_defaults(tmp_path: Path, caplog):
+    """The numeric variant of the same trap: `int(raw.get(key, default))` on a
+    key written with no value raised `int(None)` out of load_chat_config,
+    turning one blank line into chat being disabled at boot; `bool(None)`
+    silently flipped e2b_kill_on_ws_disconnect to False. Garbage values warn
+    and fall back rather than aborting the load."""
+    y = tmp_path / "instance.yaml"
+    y.write_text(
+        "chat:\n"
+        "  enabled: true\n"
+        "  docker_cpus:\n"
+        "  docker_pids_limit:\n"
+        "  docker_max_total_sandboxes:\n"
+        "  concurrency_per_user:\n"
+        "  detach_linger_seconds:\n"
+        "  e2b_kill_on_ws_disconnect:\n"
+        "  bootstrap_marketplace:\n"
+        "  rate_messages_per_hour: not-a-number\n"
+    )
+    cfg = load_chat_config(y)
+    assert cfg.docker_cpus == 1.0
+    assert cfg.docker_pids_limit == 512
+    assert cfg.docker_max_total_sandboxes == 10
+    assert cfg.concurrency_per_user == 3
+    assert cfg.detach_linger_seconds == 60
+    assert cfg.idle_grace_seconds == 60
+    assert cfg.e2b_kill_on_ws_disconnect is True
+    assert cfg.bootstrap_marketplace is False
+    assert cfg.rate_messages_per_hour == 100
+    assert "rate_messages_per_hour" in caplog.text
+
+
+def test_textual_kill_flag_drives_on_detach_and_echo_identically(tmp_path: Path):
+    """Both readers of the deprecated kill flag must share one parser: with
+    plain truthiness in _parse_on_detach, `"no"` was echoed as disabled while
+    still switching on_detach to kill."""
+    y = tmp_path / "instance.yaml"
+    y.write_text('chat:\n  enabled: true\n  e2b_kill_on_ws_disconnect: "no"\n')
+    cfg = load_chat_config(y)
+    assert cfg.e2b_kill_on_ws_disconnect is False
+    assert cfg.on_detach == "pause"
+
+    y.write_text('chat:\n  enabled: true\n  e2b_kill_on_ws_disconnect: "yes"\n')
+    cfg = load_chat_config(y)
+    assert cfg.e2b_kill_on_ws_disconnect is True
+    assert cfg.on_detach == "kill"
 
 
 def test_legacy_sandbox_uid_knob_is_dropped(tmp_path: Path):

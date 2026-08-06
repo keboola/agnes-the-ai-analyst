@@ -57,6 +57,14 @@ Use canonical classes (`.btn`, `.btn-primary`, `.search-input`, `.data-table`,
    design-system contract test will also run against the new template.
 2. Create the template (extend `base_page.html`) + the route.
 3. Green both.
+4. **Wire an inbound link — a route is not a shipped page.** Pick one:
+   admin page → the Admin mega-menu column in
+   `app/web/templates/_app_header.html`; per-user page → the user dropdown in
+   the same file; a fallback/secondary surface → a contextual link from the
+   page that owns the job. Add a Cmd/Ctrl-K entry in `_app_scripts.html` too,
+   and a guard test pinning the link (`tests/test_web_nav_agents.py`,
+   `tests/test_web_nav_me_connections.py`) — three pages have shipped
+   URL-only so far, each found by audit rather than by a user.
 
 ## Anchors
 

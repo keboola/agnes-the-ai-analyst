@@ -136,8 +136,15 @@ def test_state_rejects_tampered_signature(monkeypatch):
     monkeypatch.setenv("TESTING", "1")
     monkeypatch.setenv("JWT_SECRET_KEY", "a" * 32)
     state = sign_connect_state("src_1", "user_1", "nonce_1")
-    with pytest.raises(ConnectStateInvalid):
-        verify_connect_state(state[:-1] + ("a" if state[-1] != "a" else "b"))
+    body, sig = state.rsplit(".", 1)
+    # Tamper only non-final signature chars: each carries 6 signature bits, so
+    # the decoded bytes are guaranteed to change. The FINAL base64url char
+    # holds 2 discarded padding bits — flipping it can decode to the very same
+    # signature (trailing "Y" vs "a"), which made this test flaky per-run.
+    for pos in sorted({0, len(sig) // 2, len(sig) - 2}):
+        tampered_sig = sig[:pos] + ("a" if sig[pos] != "a" else "b") + sig[pos + 1 :]
+        with pytest.raises(ConnectStateInvalid):
+            verify_connect_state(f"{body}.{tampered_sig}")
 
 
 def test_state_rejects_expired(monkeypatch):
@@ -480,6 +487,8 @@ def test_callback_token_exchange_failure_redirects_with_error(seeded_app, monkey
     assert "invalid_grant" not in location
     assert "code+already+used" not in location and "code%20already%20used" not in location
     assert "connect_error=token_exchange_failed" in location
+    # Retryable failure with a known source → the page gets a Try-again hook.
+    assert "retry=src_oauth_cb_exfail" in location
 
 
 def test_callback_unreachable_as_redirects_with_unreachable_error(seeded_app, monkeypatch):
