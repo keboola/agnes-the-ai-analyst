@@ -16,6 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+### Removed
+
+### Internal
+
+### Security
+
+## [0.79.2] - 2026-08-06
+
+### Added
+
+### Changed
+
+### Fixed
+
 - An install-prompt override saved before the PAT handoff moved to `--token-file` is no longer served: Jinja2 leaves a single-brace `{token}` untouched, so such a template wrote the literal string `{token}` into `~/.agnes/token` and every setup attempt failed to authenticate. The save-time guards only inspect new writes, so the check now sits at the render seam — a stored override carrying the retired placeholder is ignored in favour of the built-in default, with a log line telling the operator to re-save it.
 
 - The /home install guide no longer strands users whose freshly installed Claude Code CLI is invisible to the terminal they installed it in: the official step-1 installer runs `claude install` as a child process, which can only write the User PATH to the registry (Windows) or shell rc files (macOS/Linux) — never the already-open terminal's PATH — so step 4's `claude` launch failed with "command not found" right after a successful install. Step 1's command is now a self-healing check-install-verify one-liner that keeps the user in the same terminal: an already-working `claude` skips installation entirely, an installed-but-not-on-PATH binary is fixed by prepending `~/.local/bin` to the current session's PATH (the pasted command runs in the user's own shell, so it can do what the child-process installer cannot) without re-downloading, and only a truly missing CLI runs the official installer; a trailing `claude --version` proves success in every branch. Step 4 now checks for `claude` before touching anything: when the CLI is missing it prints one actionable line (run step 1 in this terminal, paste again) and writes nothing — no 90-day plaintext token left on disk for a flow that stopped, the retry paste rewrites it; when present, the token write (still success-gated) and launch proceed as before. Its copy also notes the one-time browser sign-in on first launch.
