@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Callable
+from collections.abc import Callable
 
 
 async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 15.0, interval: float = 0.01) -> bool:
@@ -125,6 +125,7 @@ class FakeProvider:
         self.fail_resume = False
         self.keepalive_calls: list[int] = []
         self.destroyed: list[str] = []
+        self.staged: list[tuple[str, object]] = []
 
     async def spawn(self, *, workdir, env, argv) -> FakeHandle:
         h = FakeHandle()
@@ -142,6 +143,20 @@ class FakeProvider:
 
     async def keepalive(self, handle, *, timeout_seconds) -> None:
         self.keepalive_calls.append(timeout_seconds)
+
+    async def stage_file(self, handle, path, data) -> None:
+        """Provider-mediated file staging (agnes CLI wheel, restore-context).
+
+        Mirrors ``E2BProvider.stage_file``: writes through the handle's fake
+        sandbox file API when a test attached one, and always records the write
+        on ``self.staged`` so tests can assert on staging without wiring a
+        sandbox. Real providers declare this as an ``async def``, which is what
+        ``ChatManager._file_stager`` keys off.
+        """
+        self.staged.append((path, data))
+        sandbox = getattr(handle, "_sandbox", None)
+        if sandbox is not None:
+            await sandbox.files.write(path, data)
 
     async def destroy(self, *, sandbox_id) -> None:
         self.paused.pop(sandbox_id, None)

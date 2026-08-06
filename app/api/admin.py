@@ -307,6 +307,12 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "guardrails",
     "marketplace",
     "connectors",
+    # The token-in-URL fallback switch is an operator decision, and
+    # docs/DEPLOYMENT.md tells operators to make it here — but this tuple is
+    # what POST /api/admin/server-config validates against, so without the
+    # section the documented remediation 400s and only the env var works
+    # (Devin Review on #1183).
+    "mcp",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -339,6 +345,19 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # end-to-end so subagents 2-4 only have to add registry entries — they
 # don't need to touch admin_server_config.html.
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
+    "mcp": {
+        "allow_query_param_token": {
+            "kind": "bool",
+            "default": True,
+            "hint": (
+                "Accept an MCP access token in the `?token=` query string as "
+                "well as the Authorization header. Convenient for clients that "
+                "cannot set headers, but a URL travels through proxy logs, "
+                "browser history and Referer headers, so turn it off once every "
+                "client you use sends the header."
+            ),
+        },
+    },
     "instance": {
         # UI theme — flips `<html data-theme="...">` so the
         # design-system tokens (`--ds-*`) switch palettes via CSS
@@ -938,9 +957,10 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "kind": "object",
             "hint": (
                 "Instance-wide params written to every analyst's .env "
-                "(e.g. AGNES_INSTANCE_BRAND). Secret VALUES don't belong "
-                "here — use *_ENV keys naming the env var that holds the "
-                "secret."
+                "(e.g. AGNES_INSTANCE_BRAND). Keep user credentials and "
+                "server-side secrets out of globals; connector app "
+                "identifiers (e.g. the GWS OAuth client secret) belong "
+                "under their per-connector section as plain values."
             ),
         },
     },
@@ -966,9 +986,33 @@ _SECRET_KEY_PATTERNS: tuple[str, ...] = (
 )
 
 
+def _declared_boolean_fields() -> frozenset[str]:
+    """Field names the registry declares as ``kind: "bool"``.
+
+    A boolean cannot be a credential, so these must never be masked — and the
+    consequence of masking one is worse than a cosmetic glitch. ``_mask(False)``
+    returns ``"***"``, the UI's bool renderer coerces with ``!!value``, and
+    ``!!"***"`` is ``true``: an operator who turned a switch OFF sees it ON and
+    the next "Save section" posts ``true``, silently undoing what they did.
+    That is exactly what happened to ``mcp.allow_query_param_token``, whose
+    name contains the substring "token" (Devin Review on #1183).
+
+    Derived from the registry rather than an allowlist so a future boolean is
+    covered without anyone remembering this failure mode.
+    """
+    return frozenset(
+        name
+        for section in _KNOWN_FIELDS.values()
+        for name, spec in section.items()
+        if spec.get("kind") == "bool"
+    )
+
+
 def _is_secret_key(key: str) -> bool:
     """True if a config key holds a credential and should be masked in audit logs."""
     k = key.lower()
+    if k in _declared_boolean_fields():
+        return False
     return any(pat in k for pat in _SECRET_KEY_PATTERNS)
 
 
@@ -1236,7 +1280,7 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
 
     out = []
     for flag in FEATURE_FLAGS:
-        if flag.name == "chat":
+        if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)
         else:
             effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
@@ -1258,25 +1302,35 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
     return out
 
 
+#: Registry flags whose runtime value comes from ``load_chat_config`` rather
+#: than ``feature_enabled``, mapped to the ChatConfig attribute holding it.
+#: They need their own view because the two read DIFFERENT sources — the chat
+#: config parses the writable overlay only, ``feature_enabled`` the merged
+#: static+overlay — so resolving them the ordinary way lets the panel report a
+#: value the running chat gate does not use (Devin Review on #1146/#1157).
+_CHAT_RUNTIME_FLAGS = {"chat": "enabled", "chat_approvals": "approvals_enabled"}
+
+
 def _chat_flag_runtime_view(flag) -> tuple:
-    """(effective, source) for the ``chat`` flag, resolved from the same
-    overlay-only yaml source the runtime uses (see ``_feature_flags_inventory``
-    docstring). ``load_chat_config`` already applies the ``AGNES_CHAT_ENABLED``
-    env override, so ``effective`` matches what a restart would produce; the
-    source label probes the overlay file for an explicit ``chat.enabled`` key.
+    """(effective, source) for a flag the chat runtime resolves itself.
+
+    ``load_chat_config`` already applies the flag's env override, so
+    ``effective`` matches what a restart would produce; the source label probes
+    the overlay file for the explicit key.
     """
     import yaml
 
     from app.chat.config import load_chat_config
     from app.secrets import _state_dir
 
+    key = _CHAT_RUNTIME_FLAGS[flag.name]
     overlay_path = _state_dir() / "instance.yaml"
-    effective = load_chat_config(overlay_path).enabled
+    effective = getattr(load_chat_config(overlay_path), key)
     if os.environ.get(flag.env_var) is not None:
         return effective, "env"
     try:
         raw = yaml.safe_load(overlay_path.read_text()) or {}
-        has_key = "enabled" in ((raw.get("chat") or {}) if isinstance(raw, dict) else {})
+        has_key = key in ((raw.get("chat") or {}) if isinstance(raw, dict) else {})
     except Exception:
         has_key = False
     return effective, ("config" if has_key else "default")

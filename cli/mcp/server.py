@@ -28,6 +28,7 @@ Credentials are read from ~/.config/agnes/config.yaml (server URL) and
 from __future__ import annotations
 
 import os
+from typing import Literal
 from pathlib import Path
 
 import httpx
@@ -38,6 +39,7 @@ from cli.config import get_server_url, get_token
 from cli.query_hints import missing_table, remote_table_hint
 from cli.v2_client import V2ClientError, api_delete, api_get_json, api_patch_json, api_post_json
 from src.duckdb_conn import _open_duckdb
+from src.mcp_tooling import ensure_output_size, progressive_tool
 
 mcp = FastMCP(
     "Agnes",
@@ -48,6 +50,11 @@ mcp = FastMCP(
         "Run `pull` to sync the latest data before a session."
     ),
 )
+
+# Full docstrings by tool name — wire descriptions carry only the first
+# paragraph; `tool_docs` serves the rest on demand.
+TOOL_DOCS: dict[str, str] = {}
+tool = progressive_tool(mcp, TOOL_DOCS)
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -61,7 +68,7 @@ def _mcp_error(context: str, exc: V2ClientError) -> str:
 # ── tools ──────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@tool()
 def server_info() -> dict:
     """Return the configured Agnes server URL and your account email.
 
@@ -85,7 +92,7 @@ def server_info() -> dict:
     return info
 
 
-@mcp.tool()
+@tool()
 def catalog() -> dict:
     """List all tables available to you (RBAC-filtered).
 
@@ -106,7 +113,7 @@ def catalog() -> dict:
         raise ValueError(_mcp_error("catalog", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def collections_list() -> dict:
     """List the file Collections you can access (RBAC-filtered).
 
@@ -120,7 +127,7 @@ def collections_list() -> dict:
         raise ValueError(_mcp_error("collections_list", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def collection_get(collection_id: str) -> dict:
     """Show one Collection's detail plus its files and per-file status.
 
@@ -133,7 +140,7 @@ def collection_get(collection_id: str) -> dict:
         raise ValueError(_mcp_error("collection_get", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
     """Hybrid search across your accessible file Collections (RBAC-filtered).
 
@@ -153,7 +160,7 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
         raise ValueError(_mcp_error("collections_search", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def knowledge_search(query: str, k: int = 10) -> dict:
     """One query across documents, the knowledge base, and the data catalog.
 
@@ -206,7 +213,7 @@ def knowledge_search(query: str, k: int = 10) -> dict:
         }
 
 
-@mcp.tool()
+@tool()
 def collections_reingest(collection_id: str, file_id: str) -> dict:
     """Re-run ingestion for one file in a Collection (requires access to the collection).
 
@@ -224,7 +231,7 @@ def collections_reingest(collection_id: str, file_id: str) -> dict:
         raise ValueError(_mcp_error("collections_reingest", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def schema(table_id: str) -> dict:
     """Show column names, types, and SQL dialect hints for a table.
 
@@ -244,7 +251,7 @@ def schema(table_id: str) -> dict:
         raise ValueError(_mcp_error(f"schema({table_id})", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def describe(table_id: str, rows: int = 5) -> dict:
     """Show schema plus sample rows for a table.
 
@@ -262,12 +269,16 @@ def describe(table_id: str, rows: int = 5) -> dict:
     try:
         sch = api_get_json(f"/api/v2/schema/{table_id}")
         sam = api_get_json(f"/api/v2/sample/{table_id}", n=rows)
-        return {"schema": sch, "sample": sam}
     except V2ClientError as exc:
         raise ValueError(_mcp_error(f"describe({table_id})", exc)) from exc
+    return ensure_output_size(
+        {"schema": sch, "sample": sam},
+        "describe",
+        hint="lower `rows` or select specific columns with the query tool",
+    )
 
 
-@mcp.tool()
+@tool()
 def query(sql: str, limit: int = 1000) -> dict:
     """Execute a SQL query against Agnes data.
 
@@ -294,12 +305,13 @@ def query(sql: str, limit: int = 1000) -> dict:
       very large.
     """
     try:
-        return api_post_json("/api/query", {"sql": sql, "limit": limit})
+        result = api_post_json("/api/query", {"sql": sql, "limit": limit})
     except V2ClientError as exc:
         raise ValueError(_mcp_error("query", exc)) from exc
+    return ensure_output_size(result, "query")
 
 
-@mcp.tool()
+@tool()
 def query_local(sql: str, limit: int = 1000) -> dict:
     """Execute a SQL query directly against the local DuckDB cache.
 
@@ -337,15 +349,18 @@ def query_local(sql: str, limit: int = 1000) -> dict:
                 raise ValueError(f"query_local failed: {exc}\n{remote_table_hint(table, surface='mcp')}") from exc
             raise
 
-    return {
-        "columns": columns,
-        "rows": [list(r) for r in rows],
-        "row_count": len(rows),
-        "truncated": len(rows) == limit,
-    }
+    return ensure_output_size(
+        {
+            "columns": columns,
+            "rows": [list(r) for r in rows],
+            "row_count": len(rows),
+            "truncated": len(rows) == limit,
+        },
+        "query_local",
+    )
 
 
-@mcp.tool()
+@tool()
 def pull(skip_materialize: bool = False) -> dict:
     """Sync the latest data from the Agnes server to local disk.
 
@@ -388,6 +403,10 @@ def pull(skip_materialize: bool = False) -> dict:
         # query access). Was missing in the original #594 (Devin Review).
         "tables_removed": result.tables_removed,
         "parquets_total": result.parquets_total,
+        # Same reason as `tables_removed`: a withheld snapshot name silently
+        # stops resolving, and an MCP caller has no other way to learn why
+        # (#1129 review).
+        "snapshot_views_blocked": list(getattr(result, "snapshot_views_blocked", []) or []),
         "errors": result.errors,
         # `PullResult.duration_s` is the wall-clock duration of the call.
         # Was historically referenced here as `result.elapsed_s` with a
@@ -426,8 +445,8 @@ def _is_data_apps_disabled(exc: V2ClientError) -> bool:
     return isinstance(body, dict) and body.get("detail") == "data_apps_disabled"
 
 
-@mcp.tool()
-def data_apps_list(kind: str = "") -> dict:
+@tool()
+def data_apps_list(kind: Literal["", "hosted", "linked"] = "") -> dict:
     """List data apps you can see (RBAC-filtered).
 
     Visible to any authenticated user: apps you own, apps a group you're in has
@@ -449,7 +468,7 @@ def data_apps_list(kind: str = "") -> dict:
         raise ValueError(_mcp_error("data_apps_list", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def data_app_get(slug: str) -> dict:
     """Show one hosted data app's detail.
 
@@ -468,8 +487,8 @@ def data_app_get(slug: str) -> dict:
         raise ValueError(_mcp_error(f"data_app_get({slug})", exc)) from exc
 
 
-@mcp.tool()
-def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
+@tool()
+def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> dict:
     """Deploy (or redeploy) a hosted data app — app owner or Admin only.
 
     Fast-forwards the app's ``agnes-live`` ref (to ``sha`` if given, else the
@@ -498,7 +517,7 @@ def data_app_deploy(slug: str, sha: str = "", mode: str = "") -> dict:
         raise ValueError(_mcp_error(f"data_app_deploy({slug})", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def data_app_create_draft(slug: str, branch: str = "init") -> dict:
     """Create a draft of a prod data app on an iteration branch — owner/Admin only.
 
@@ -522,7 +541,7 @@ def data_app_create_draft(slug: str, branch: str = "init") -> dict:
         raise ValueError(_mcp_error(f"data_app_create_draft({slug})", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
     """Tear down a draft of a prod data app — app owner or Admin only.
 
@@ -545,7 +564,7 @@ def data_app_delete_draft(slug: str, draft_slug: str) -> dict:
     return {"status": "deleted"}
 
 
-@mcp.tool()
+@tool()
 def data_app_git_credential(slug: str) -> dict:
     """Mint a fresh git push credential for a data app — app owner or Admin only.
 
@@ -563,7 +582,7 @@ def data_app_git_credential(slug: str) -> dict:
         raise ValueError(_mcp_error(f"data_app_git_credential({slug})", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def data_app_logs(slug: str, tail: int = 200) -> dict:
     """Show the last N lines of runner logs for a hosted data app — owner/Admin only.
 
@@ -580,7 +599,7 @@ def data_app_logs(slug: str, tail: int = 200) -> dict:
         raise ValueError(_mcp_error(f"data_app_logs({slug})", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def data_app_set_description(slug: str, description: str) -> dict:
     """Set the admin description override on a managed (linked) data app.
 
@@ -601,7 +620,7 @@ def data_app_set_description(slug: str, description: str) -> dict:
         raise ValueError(_mcp_error(f"data_app_set_description({slug})", exc)) from exc
 
 
-@mcp.tool()
+@tool()
 def agnes_data_app_preview(slug: str, url: str = "") -> dict:
     """Open or refresh the in-chat split-pane preview of a hosted data app.
 
@@ -648,7 +667,7 @@ def agnes_data_app_preview(slug: str, url: str = "") -> dict:
     return {"render": "data_app_preview", "slug": slug, "url": url}
 
 
-@mcp.tool()
+@tool()
 def agnes_data_app_refresh(slug: str) -> dict:
     """Force-reload the in-chat preview pane for a hosted data app.
 
@@ -664,7 +683,7 @@ def agnes_data_app_refresh(slug: str) -> dict:
     return {"render": "data_app_preview_refresh", "slug": slug}
 
 
-@mcp.tool()
+@tool()
 def agnes_data_app_close(slug: str) -> dict:
     """Tear down the in-chat preview pane for a hosted data app.
 
@@ -681,7 +700,7 @@ def agnes_data_app_close(slug: str) -> dict:
     return {"render": "data_app_preview_close", "slug": slug}
 
 
-@mcp.tool()
+@tool()
 def agnes_data_app_credentials(slug: str) -> dict:
     """Show the shareable URL for a hosted data app — a terminal render directive.
 
@@ -709,6 +728,52 @@ def agnes_data_app_credentials(slug: str) -> dict:
         "url": detail.get("url"),
         "password": None,
     }
+
+
+def _registered_tools() -> dict:
+    """Tools FastMCP currently knows about, including dynamically added ones.
+
+    FastMCP has moved this accessor around between versions, so probe rather
+    than bind to one shape; an unexpected layout degrades to "no dynamic
+    tools" instead of breaking tool_docs.
+    """
+    for attr in ("_tool_manager", "_tools"):
+        holder = getattr(mcp, attr, None)
+        if holder is None:
+            continue
+        tools = getattr(holder, "_tools", holder)
+        if isinstance(tools, dict):
+            return tools
+    return {}
+
+
+def _registered_tool_names() -> list:
+    return list(_registered_tools())
+
+
+def _registered_tool_doc(tool_name: str):
+    tool = _registered_tools().get(tool_name)
+    if tool is None:
+        return None
+    doc = getattr(tool, "description", None) or getattr(getattr(tool, "fn", None), "__doc__", None)
+    return doc.strip() if isinstance(doc, str) and doc.strip() else None
+
+
+@tool()
+def tool_docs(tool_name: str) -> dict:
+    """Return the full reference documentation (docstring) for one registered MCP tool — arguments, return shape, and usage tips beyond the short description shown in the tool list."""
+    doc = TOOL_DOCS.get(tool_name)
+    if doc is None:
+        # Passthrough tools are registered at start-up from the server's
+        # registry, so they are absent from the static TOOL_DOCS map. An
+        # agent told to call tool_docs for any tool it sees in the listing
+        # would otherwise be answered "Unknown tool" for exactly the ones
+        # whose docs it cannot already read (review finding on #1144).
+        doc = _registered_tool_doc(tool_name)
+    if doc is None:
+        known = ", ".join(sorted(set(TOOL_DOCS) | set(_registered_tool_names())))
+        raise ValueError(f"Unknown tool {tool_name!r}. Valid tool names: {known}")
+    return {"tool": tool_name, "docs": doc}
 
 
 def run() -> None:

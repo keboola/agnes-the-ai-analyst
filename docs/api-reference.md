@@ -719,6 +719,8 @@ section for the full operator flow. CLI: `agnes admin analytics migrate
 - /api/admin/mcp-sources/{source_id}/classify
 - /api/admin/mcp-sources/{source_id}/introspect
 - /api/admin/mcp-sources/{source_id}/materialize
+- /api/admin/mcp-sources/{source_id}/oauth/client
+- /api/admin/mcp-sources/{source_id}/oauth/register
 - /api/admin/mcp-sources/{source_id}/secret
 - /api/admin/mcp-sources/{source_id}/test
 
@@ -1006,6 +1008,17 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/connectors/manifest
 - /api/connectors/params
 
+`/api/connectors/params` serves per-tenant connector params (the
+`connectors:` overlay of `instance.yaml`, filtered against the seed
+manifest) as plain string values; `agnes init`/`agnes update` write them
+to the workspace's `.claude/agnes/.env`. When the operator provisioned a
+shared Google Workspace OAuth client, the response backfills
+`connector-gws` params including the client-secret value (a Desktop-app
+OAuth client secret is an app identifier, not a user credential); the
+legacy `*_ENV` pointer key is still emitted alongside the value for
+backward compatibility with seed skills that read the pointer shape.
+Overlay keys win over server-resolved ones.
+
 ### `/api/data-apps` — Hosted data apps control plane
 
 Control-plane REST for hosted user web apps (`data_apps` registry, v96) — a
@@ -1172,11 +1185,22 @@ Relevance-ranked search uses DuckDB FTS BM25 with an ILIKE fallback.
 
 ### `/api/mcp` — MCP passthrough and per-table query
 
+Outbound MCP OAuth connect flow (2026-07-30 spec §3, PR 2): `GET
+.../oauth/authorize` (human-only, grant-gated) 302s the caller's browser to
+the upstream authorization server; `GET /api/mcp/oauth-client/callback`
+(deliberately outside the `/api/mcp/sources/*` prefix — see the spec's
+routing note) redeems the code and redirects to `/me/connections`; `DELETE
+.../oauth/connection` drops the caller's stored token. `agnes mcp connect` /
+`agnes mcp disconnect` are the CLI equivalents.
+
+- /api/mcp/oauth-client/callback
 - /api/mcp/passthrough/tools
 - /api/mcp/passthrough/tools/{tool_id}/call
 - /api/mcp/query-table/{table_id}
 - /api/mcp/sources/{source_id}/my-secret
 - /api/mcp/sources/{source_id}/my-secret/test
+- /api/mcp/sources/{source_id}/oauth/authorize
+- /api/mcp/sources/{source_id}/oauth/connection
 
 ### `/api/mcp-connect` — Headless MCP client setup
 
@@ -1188,6 +1212,7 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 ### `/api/me` — Current user self-service
 
 - /api/me/effective-access
+- /api/me/elevation
 - /api/me/home-stats
 - /api/me/onboarded
 - /api/me/stats/queries

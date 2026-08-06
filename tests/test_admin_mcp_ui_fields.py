@@ -58,3 +58,20 @@ def test_detail_has_inline_my_connection_panel():
     assert "myconn-test-btn" in html
     assert "myconn-clear-btn" in html
     assert "/my-secret" in html  # per-user secret API used by JS
+
+
+def test_admin_connection_card_handles_expired_stored_connection():
+    """The admin "Your connection" JS must have a third branch: stored but
+    unusable (expired, no refresh path) still offers Disconnect (Devin
+    Review on #1130)."""
+    html = _read("admin_mcp_source_detail.html")
+    assert "Connection expired — reconnect or disconnect" in html
+
+
+def test_auth_method_selects_offer_oauth():
+    """Both the create and edit forms must offer auth_method='oauth' — a
+    select without the option silently coerces an oauth source to '' on
+    save, flipping auth away from oauth and (by design) purging everyone's
+    tokens (Devin Review on #1130)."""
+    for name in ("admin_mcp_sources.html", "admin_mcp_source_detail.html"):
+        assert 'value="oauth"' in _read(name), name

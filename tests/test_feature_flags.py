@@ -84,7 +84,7 @@ class TestFeatureEnabledResolutionOrder:
 class TestFeatureFlagsRegistry:
     def test_registry_covers_expected_flags(self):
         names = {f.name for f in ic.FEATURE_FLAGS}
-        assert names == {"studio", "guardrails", "chat", "data_apps"}
+        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps", "mcp_query_param_token"}
 
     def test_every_entry_resolves(self, monkeypatch):
         monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
@@ -165,7 +165,7 @@ class TestServerConfigFeatureFlagsInventory:
         flags = data["feature_flags"]
         assert isinstance(flags, list)
         names = {f["name"] for f in flags}
-        assert names == {"studio", "guardrails", "chat", "data_apps"}
+        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps", "mcp_query_param_token"}
         for f in flags:
             assert set(f.keys()) >= {"name", "effective", "source", "default", "env_var", "description"}
             assert f["source"] in ("env", "config", "default")
@@ -228,3 +228,29 @@ class TestServerConfigFeatureFlagsInventory:
         token = seeded_app["analyst_token"]
         resp = c.get("/api/admin/server-config", headers=_auth(token))
         assert resp.status_code == 403
+
+
+def test_chat_approvals_reports_the_value_the_gate_actually_uses(tmp_path, monkeypatch):
+    """`load_chat_config` parses the writable overlay only, `feature_enabled`
+    the merged static+overlay — so resolving this flag the ordinary way let the
+    panel report a value the running chat gate does not use (Devin Review on
+    #1157). It goes through the same runtime view `chat` already needed."""
+    import app.api.admin as admin_mod
+    from app.instance_config import FEATURE_FLAGS
+
+    assert "chat_approvals" in admin_mod._CHAT_RUNTIME_FLAGS, "would resolve from the wrong source"
+
+    overlay = tmp_path / "instance.yaml"
+    overlay.write_text("chat:\n  enabled: true\n  approvals_enabled: false\n")
+    monkeypatch.setattr(admin_mod, "_state_dir", lambda: tmp_path, raising=False)
+    monkeypatch.setattr("app.secrets._state_dir", lambda: tmp_path)
+    monkeypatch.delenv("AGNES_CHAT_APPROVALS_ENABLED", raising=False)
+
+    flag = next(f for f in FEATURE_FLAGS if f.name == "chat_approvals")
+    effective, source = admin_mod._chat_flag_runtime_view(flag)
+    assert effective is False, "the panel must show what the gate reads"
+    assert source == "config"
+
+    monkeypatch.setenv("AGNES_CHAT_APPROVALS_ENABLED", "1")
+    effective, source = admin_mod._chat_flag_runtime_view(flag)
+    assert effective is True and source == "env"

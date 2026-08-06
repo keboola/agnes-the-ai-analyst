@@ -23,15 +23,21 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
+
+logger = logging.getLogger(__name__)
 
 
 def exc_summary(exc: BaseException) -> str:
@@ -201,6 +207,412 @@ def _build_http_headers(
     return headers
 
 
+# ---------------------------------------------------------------------------
+# OAuth token resolution + refresh (2026-07-30 outbound MCP OAuth spec §4)
+#
+# ``auth_method='oauth'`` sources are ALWAYS ``scope='per_user'`` (enforced
+# at ``MCPSourceRepository.upsert()``), so the token lookup below has no
+# shared-vault fallback at all — an identified caller with no stored row
+# gets no token, and the caller-less materialize path (``caller_user_id`` is
+# ``None``) gets no token either (spec: "the caller-less scheduled path gets
+# no token", stricter than the secret-vault per_user path which still lets
+# materialize borrow the shared vault).
+# ---------------------------------------------------------------------------
+
+#: Refresh once the stored access token is within this many seconds of
+#: ``expires_at`` (or already expired).
+_OAUTH_REFRESH_SKEW_SECONDS = 60
+#: Headroom added to the token-endpoint timeout to get the coordination-lease
+#: TTL for the cross-process refresh single-flight. The lease must comfortably
+#: OUTLIVE the call it protects plus the persist that follows: at TTL ==
+#: timeout the lease can expire while the holder is still waiting on a slow
+#: AS, the next process wins it, re-reads the row, still sees the un-rotated
+#: refresh token and replays it — the exact reuse an AS with replay detection
+#: answers by revoking the user's whole grant (Devin Review on #1124). Kept as
+#: a margin rather than an absolute so it tracks the timeout automatically;
+#: see _oauth_refresh_lease_ttl_s().
+_OAUTH_REFRESH_LEASE_MARGIN_S = 60
+
+
+def _oauth_refresh_lease_ttl_s() -> int:
+    """Lease TTL derived from the OAuth HTTP client's own timeout.
+
+    Read at call time, not import time: ``connectors.mcp.oauth_client``
+    imports ``exc_summary`` from THIS module, so a module-level import here
+    would be circular.
+    """
+    from connectors.mcp.oauth_client import DEFAULT_TIMEOUT_SEC
+
+    return int(DEFAULT_TIMEOUT_SEC) + _OAUTH_REFRESH_LEASE_MARGIN_S
+
+
+#: In-process single-flight: one ``asyncio.Lock`` per (event loop,
+#: source_id, user_id), created lazily. Guards concurrent coroutines in
+#: THIS process from each independently refreshing the same pair. The
+#: coordination-backend lease (below) extends that across processes ONLY
+#: when a shared backend (e.g. redis) is configured — the default
+#: ``memory`` backend is process-local, so role-split deployments without
+#: one fall back to the under-lease re-read for correctness: the loser's
+#: replayed-refresh-token hazard is removed by re-reading the row after
+#: the lease/lock is won, not by the lease itself.
+_OAUTH_REFRESH_LOCKS: Dict[Tuple[int, str, str], Tuple[Any, asyncio.Lock]] = {}
+_OAUTH_REFRESH_LOCKS_GUARD = threading.Lock()
+
+
+def _get_oauth_refresh_lock(source_id: str, user_id: str) -> asyncio.Lock:
+    # Keyed by the RUNNING EVENT LOOP as well: an asyncio.Lock is bound to
+    # the loop it was created under, and the sync wrappers (call_tool /
+    # list_tools) spin a fresh loop per asyncio.run() — a lock cached from a
+    # previous loop would raise "attached to a different loop" on the second
+    # renewal in the same process (Devin Review on #1124). Dead loops' locks
+    # are dropped lazily.
+    loop = asyncio.get_running_loop()
+    key = (id(loop), source_id, user_id)
+    with _OAUTH_REFRESH_LOCKS_GUARD:
+        for stale_key, (stale_loop, _) in list(_OAUTH_REFRESH_LOCKS.items()):
+            if stale_loop.is_closed():
+                del _OAUTH_REFRESH_LOCKS[stale_key]
+        entry = _OAUTH_REFRESH_LOCKS.get(key)
+        if entry is None or entry[0] is not loop:
+            entry = (loop, asyncio.Lock())
+            _OAUTH_REFRESH_LOCKS[key] = entry
+        return entry[1]
+
+
+#: Seconds a (source, user) pair is left alone after a refresh attempt failed
+#: for a reason that is not the user's fault (a wedged or erroring AS, a
+#: network fault). Design spec §4: "repeated failures back off (no hot refresh
+#: loop against a broken AS)".
+_OAUTH_REFRESH_COOLDOWN_S = 60.0
+
+#: (source_id, user_id) -> monotonic deadline before which no refresh is
+#: re-attempted. Process-local on purpose: the cost this bounds is one process
+#: re-attempting on EVERY forwarded call, which is the hot loop. N replicas
+#: therefore make at most N attempts per window rather than one per request —
+#: bounded, where it was previously unbounded. A cross-process cap would need
+#: shared state on the failure path, which is exactly the path where the
+#: coordination backend may itself be the thing that is down.
+_OAUTH_REFRESH_COOLDOWN: Dict[Tuple[str, str], float] = {}
+
+
+def _refresh_in_cooldown(source_id: str, user_id: str) -> bool:
+    with _OAUTH_REFRESH_LOCKS_GUARD:
+        until = _OAUTH_REFRESH_COOLDOWN.get((source_id, user_id))
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            del _OAUTH_REFRESH_COOLDOWN[(source_id, user_id)]
+            return False
+        return True
+
+
+def _start_refresh_cooldown(source_id: str, user_id: str) -> None:
+    with _OAUTH_REFRESH_LOCKS_GUARD:
+        _OAUTH_REFRESH_COOLDOWN[(source_id, user_id)] = time.monotonic() + _OAUTH_REFRESH_COOLDOWN_S
+
+
+def reset_oauth_refresh_locks_for_tests() -> None:
+    """Test-only: drop every cached in-process lock between tests."""
+    with _OAUTH_REFRESH_LOCKS_GUARD:
+        _OAUTH_REFRESH_LOCKS.clear()
+        _OAUTH_REFRESH_COOLDOWN.clear()
+
+
+def _needs_refresh(row: Dict[str, Any], *, skew_seconds: int = _OAUTH_REFRESH_SKEW_SECONDS) -> bool:
+    """True iff ``row['expires_at']`` is within the effective skew of now (or
+    already past). ``expires_at is None`` means "non-expiring / unknown" —
+    never refresh proactively for those.
+
+    The skew is CLAMPED to half the token's own lifetime. A fixed 60s window
+    assumes tokens live a good deal longer than that; against an AS issuing
+    short-lived ones (``expires_in`` of 60, or 0) the row written by a
+    successful refresh is instantly "due" again, so every forwarded call makes
+    another token-endpoint round trip — a hot loop the failure cooldown does
+    not cover, because nothing here is failing. Clamping keeps the early
+    refresh proportional: half the lifetime is still ample headroom, and it
+    can never be the whole of it (Devin Review on #1124).
+    """
+    expires_at = row.get("expires_at")
+    if expires_at is None:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    issued_at = row.get("updated_at")
+    if issued_at is not None:
+        if issued_at.tzinfo is None:
+            issued_at = issued_at.replace(tzinfo=timezone.utc)
+        lifetime = (expires_at - issued_at).total_seconds()
+        if lifetime > 0:
+            skew_seconds = min(skew_seconds, lifetime / 2)
+    return (expires_at - datetime.now(timezone.utc)).total_seconds() <= skew_seconds
+
+
+def _expiry_after_refresh(row: Dict[str, Any], expires_in: Optional[int]) -> Optional[datetime]:
+    """Absolute expiry to store for a just-refreshed token.
+
+    ``expires_in`` is RECOMMENDED, not required (RFC 6749 §5.1), so a refresh
+    response may carry none even when the original grant did. Writing ``None``
+    over a known expiry is not a small loss of precision — it is terminal:
+    :func:`_needs_refresh` reads ``expires_at IS NULL`` as "non-expiring, never
+    refresh proactively" and ``_oauth_credential_missing`` reads it as
+    "connected", so nothing refreshes the token again and nothing prompts the
+    user to re-connect. There is no 401-triggered refresh, so once the access
+    token actually lapses the source returns opaque upstream 401s forever
+    (Devin Review on #1124).
+
+    So when the AS omits it we carry the previously observed lifetime forward —
+    the interval between the last write and the expiry it set. That is an
+    estimate, but a self-correcting one: the next response that does carry
+    ``expires_in`` replaces it, and being early merely costs one extra refresh
+    whereas being absent costs the connection. With no prior expiry to learn
+    from, ``None`` is the honest answer and matches the original grant.
+    """
+    now = datetime.now(timezone.utc)
+    if expires_in is not None:
+        return now + timedelta(seconds=expires_in)
+
+    prior_expiry, prior_written = row.get("expires_at"), row.get("updated_at")
+    if prior_expiry is None or prior_written is None:
+        return None
+    if prior_expiry.tzinfo is None:
+        prior_expiry = prior_expiry.replace(tzinfo=timezone.utc)
+    if prior_written.tzinfo is None:
+        prior_written = prior_written.replace(tzinfo=timezone.utc)
+    lifetime = (prior_expiry - prior_written).total_seconds()
+    if lifetime <= 0:
+        # Clock skew, or a row written after its own expiry. Nothing to learn.
+        return None
+    return now + timedelta(seconds=lifetime)
+
+
+async def _refresh_oauth_token_with_lease(
+    source_id: str,
+    user_id: str,
+    *,
+    holder_id: str,
+) -> Optional[str]:
+    """Coordination-lease-gated refresh — the cross-process half of the
+    single-flight (see the module docstring above). Re-reads the row AFTER
+    acquiring the lease (another process may have refreshed it while we
+    waited), refreshes only if still needed, persists the rotated token set
+    atomically, and deletes the row on ``invalid_grant`` (forces
+    re-connect). Returns the (possibly just-refreshed) access token, or
+    ``None`` when the row is gone (missing, or just deleted for
+    ``invalid_grant``).
+
+    Deliberately takes no ``source`` dict / in-process lock — this is the
+    seam ``tests/test_mcp_client_oauth.py``'s two-process race test drives
+    directly with two distinct ``holder_id``s, bypassing the in-process
+    lock entirely (which real separate OS processes never share) to prove
+    the LEASE alone is what caps concurrent refreshes at one.
+    """
+    from app.coordination.base import CoordinationUnavailable
+    from app.coordination.factory import coordination
+    from src.repositories import mcp_source_oauth_clients_repo, mcp_user_oauth_tokens_repo
+
+    tokens_repo = mcp_user_oauth_tokens_repo()
+    row = tokens_repo.get(source_id, user_id)
+    if row is None:
+        return None
+    if not _needs_refresh(row):
+        return row["access_token"]
+    refresh_token = row.get("refresh_token")
+    if not refresh_token:
+        # No refresh token on file — nothing we can do; hand back the
+        # (possibly expired) access token and let the upstream reject it.
+        return row["access_token"]
+    if _refresh_in_cooldown(source_id, user_id):
+        # A recent attempt failed against the AS. Retrying on the very next
+        # forward turns a broken authorization server into a hot loop driven
+        # by user traffic — the lease serializes those attempts but does not
+        # rate-limit them. Hand back the stale token; the upstream rejecting
+        # it is the same outcome a failed refresh produces anyway.
+        return row["access_token"]
+
+    client_row = mcp_source_oauth_clients_repo().get(source_id)
+    if client_row is None:
+        return row["access_token"]
+
+    lease_name = f"mcp_oauth_refresh:{source_id}:{user_id}"
+    try:
+        # A real coordination backend (redis) makes this a network round-trip,
+        # and this runs on the request event loop — inline, a slow or wedged
+        # backend stalls every other request the process is serving. Off-loaded
+        # exactly as app/chat/manager.py does for the same call (invariant
+        # sweep on #1124).
+        acquired = await asyncio.to_thread(
+            coordination().lease_acquire, lease_name, holder_id, ttl_s=_oauth_refresh_lease_ttl_s()
+        )
+    except CoordinationUnavailable:
+        # Fail OPEN: a down coordination backend must not wedge every MCP
+        # call on an oauth source — proceed unserialized (the in-process
+        # lock still protects same-process callers).
+        acquired = True
+
+    if not acquired:
+        # Another process holds the lease and is refreshing right now.
+        # Poll briefly for the winner's write to land instead of instantly
+        # handing back the stale token (which would surface as an opaque
+        # upstream 401 — Devin Review on #1124); never double-refresh.
+        fresh = None
+        for _ in range(10):
+            await asyncio.sleep(0.2)
+            fresh = tokens_repo.get(source_id, user_id)
+            if fresh is None or not _needs_refresh(fresh):
+                break
+        return fresh["access_token"] if fresh else None
+
+    try:
+        from app.secrets_vault import VaultKeyNotConfiguredError
+        from connectors.mcp.oauth_client import (
+            OAuthTokenError,
+            build_oauth_http_client,
+            is_invalid_grant_error,
+            refresh_access_token,
+        )
+
+        # Re-read UNDER the lease: the row snapshot above predates winning
+        # the exclusive turn, so a concurrent process may have already
+        # rotated the refresh token. Replaying the superseded one would
+        # trip refresh-token-reuse detection at the AS and could revoke the
+        # whole grant — silently disconnecting the user (Devin Review on
+        # #1124). If the winner-before-us already refreshed, just use it.
+        row = tokens_repo.get(source_id, user_id)
+        if row is None:
+            return None
+        if not _needs_refresh(row):
+            return row["access_token"]
+        refresh_token = row.get("refresh_token")
+        if not refresh_token:
+            return row["access_token"]
+
+        try:
+            async with build_oauth_http_client() as http_client:
+                token_set = await refresh_access_token(
+                    token_endpoint=client_row["token_endpoint"],
+                    client_id=client_row["client_id"],
+                    client_secret=client_row.get("client_secret"),
+                    refresh_token=refresh_token,
+                    client=http_client,
+                )
+        except OAuthTokenError as exc:
+            if is_invalid_grant_error(exc):
+                tokens_repo.delete(source_id, user_id)
+                logger.warning(
+                    "mcp oauth refresh invalid_grant for source=%s user=%s; row deleted, re-connect required",
+                    source_id,
+                    user_id,
+                )
+                return None
+            _start_refresh_cooldown(source_id, user_id)
+            logger.warning(
+                "mcp oauth refresh failed for source=%s user=%s: %s (backing off %.0fs)",
+                source_id,
+                user_id,
+                exc_summary(exc),
+                _OAUTH_REFRESH_COOLDOWN_S,
+            )
+            return row["access_token"]
+        except Exception as exc:
+            # Anything the token call can raise that ISN'T an OAuthTokenError.
+            # httpx faults are already wrapped, but the SSRF-guard transport
+            # raises SSRFRejected — a plain Exception — so a token endpoint that
+            # later resolves to a blocked address (DNS change, rebind attempt)
+            # used to escape here, fail the whole MCP forward, and skip the
+            # cooldown: every subsequent call retried immediately, which is the
+            # hot loop the cooldown exists to prevent (Devin Review on #1124).
+            # Treated exactly like a non-invalid_grant AS error: back off, hand
+            # back the stale token, let the upstream reject it.
+            _start_refresh_cooldown(source_id, user_id)
+            logger.warning(
+                "mcp oauth refresh errored for source=%s user=%s: %s (backing off %.0fs)",
+                source_id,
+                user_id,
+                exc_summary(exc),
+                _OAUTH_REFRESH_COOLDOWN_S,
+            )
+            return row["access_token"]
+
+        expires_at = _expiry_after_refresh(row, token_set.expires_in)
+        # Rotated refresh tokens are persisted atomically with the new
+        # access token — a single upsert, one row write.
+        try:
+            tokens_repo.upsert(
+                source_id,
+                user_id,
+                token_set.access_token,
+                refresh_token=token_set.refresh_token or refresh_token,
+                expires_at=expires_at,
+                scopes=token_set.scopes or row.get("scopes"),
+            )
+        except VaultKeyNotConfiguredError:
+            # The vault key went away between connect and this refresh, so
+            # the freshly-issued pair cannot be written. Upstream may have
+            # ROTATED the refresh token, in which case the stored one is now
+            # dead and the user is stranded until they reconnect — say so
+            # loudly instead of failing silently at the call seam. Returning
+            # the new access token still fails closed: nothing stale or
+            # borrowed is forwarded, and it is only usable until it expires
+            # (RBAC review on #1124).
+            logger.error(
+                "mcp oauth refresh succeeded for source=%s user=%s but the vault key is "
+                "unavailable, so the new token pair was NOT persisted; if upstream rotated "
+                "the refresh token the stored one is now stale and the user must reconnect "
+                "once AGNES_VAULT_KEY is restored",
+                source_id,
+                user_id,
+            )
+        return token_set.access_token
+    finally:
+        try:
+            await asyncio.to_thread(coordination().lease_release, lease_name, holder_id)
+        except CoordinationUnavailable:
+            pass
+
+
+async def _resolve_oauth_access_token(
+    source: Dict[str, Any],
+    caller_user_id: Optional[str],
+) -> Optional[str]:
+    """Resolve (and refresh if needed) the caller's OAuth access token for
+    an ``auth_method='oauth'`` source. Fail-closed, no shared fallback."""
+    source_id = source.get("id")
+    if not source_id or not caller_user_id:
+        return None
+    from src.repositories import mcp_user_oauth_tokens_repo
+
+    row = mcp_user_oauth_tokens_repo().get(source_id, caller_user_id)
+    if row is None:
+        return None
+    if not _needs_refresh(row):
+        return row["access_token"]
+
+    from app.coordination.leases import default_holder_id
+
+    lock = _get_oauth_refresh_lock(source_id, caller_user_id)
+    async with lock:
+        return await _refresh_oauth_token_with_lease(
+            source_id,
+            caller_user_id,
+            holder_id=default_holder_id(),
+        )
+
+
+async def _resolve_http_headers_async(
+    source: Dict[str, Any],
+    *,
+    caller_user_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """Async superset of :func:`_build_http_headers` — adds the
+    ``auth_method='oauth'`` branch (token resolution needs I/O to refresh);
+    every other auth method delegates unchanged to the sync helper."""
+    auth_method = (source.get("auth_method") or "").lower()
+    if auth_method == "oauth":
+        token = await _resolve_oauth_access_token(source, caller_user_id)
+        return {"Authorization": f"Bearer {token}"} if token else {}
+    return _build_http_headers(source, caller_user_id=caller_user_id)
+
+
 @asynccontextmanager
 async def _open_session(
     source: Dict[str, Any],
@@ -257,7 +669,7 @@ async def _open_session(
         url = source.get("url")
         if not url:
             raise ValueError(f"{transport!r} transport requires 'url'")
-        headers = _build_http_headers(source, caller_user_id=caller_user_id)
+        headers = await _resolve_http_headers_async(source, caller_user_id=caller_user_id)
 
         if transport == "http":
             # streamablehttp_client yields (read, write, get_session_id) — we

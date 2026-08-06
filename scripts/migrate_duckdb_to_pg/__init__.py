@@ -44,14 +44,15 @@ import duckdb
 from sqlalchemy.engine import Engine
 
 from scripts.migrate_duckdb_to_pg.tasks import (
+    _JSON_COLUMNS,  # re-exported for any external consumers
     EXPLICIT_TASKS,
     GenericCopyTask,
-    _JSON_COLUMNS,  # re-exported for any external consumers
-    _checksum,
     _build_insert,
+    _checksum,
     _normalize_for_pg,
     _resolved_columns,
 )
+from src.sql_ident import quote_ident
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +124,10 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     # v96 agent profiles + agent-as-API — composite PKs.
     "agent_scope": ["agent_id", "item_type", "item_id"],
     "idempotency_keys": ["key", "owner_user_id", "agent_id"],
+    # v109 outbound MCP OAuth data layer — non-`id` primary keys.
+    "mcp_source_oauth_clients": ["source_id"],
+    "mcp_user_oauth_tokens": ["source_id", "user_id"],
+    "mcp_oauth_flows": ["nonce"],
 }
 
 
@@ -258,7 +263,7 @@ def reset_target_state_tables(pg_engine: Engine) -> int:
         present = [t for t in tables if t.name in existing]
         discarded = 0
         for t in present:
-            n = conn.execute(sa.text(f'SELECT COUNT(*) FROM "{t.name}"')).scalar()
+            n = conn.execute(sa.text(f"SELECT COUNT(*) FROM {quote_ident(t.name)}")).scalar()
             discarded += int(n or 0)
         log.info(
             "reset target before DuckDB→PG copy: discarding %d pre-existing "
@@ -268,7 +273,7 @@ def reset_target_state_tables(pg_engine: Engine) -> int:
             len(present),
         )
         if present:
-            quoted = ", ".join(f'"{t.name}"' for t in present)
+            quoted = ", ".join(quote_ident(t.name) for t in present)
             conn.execute(sa.text(f"TRUNCATE {quoted} CASCADE"))
     return discarded
 

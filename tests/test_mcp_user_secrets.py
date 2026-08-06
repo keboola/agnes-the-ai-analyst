@@ -320,3 +320,171 @@ def test_lookup_per_user_materialize_uses_shared(seeded_app):
     )
     src = {"id": "src_pu", "scope": "per_user"}
     assert _lookup_secret_for_source(src, caller_user_id=None) == "shared-fallback"
+
+
+# ── GET /my-secret auth_kind (2026-07-30 outbound MCP OAuth sources spec §3/§5) ──
+
+
+def _seed_oauth_source(source_id: str = "src_oauth_status", grant_to: str = "analyst1") -> None:
+    """Seed an ``auth_method='oauth'`` (always ``scope='per_user'``) source
+    plus one passthrough tool granted to ``grant_to``."""
+    from src.repositories.tool_registry import PASSTHROUGH, ToolRegistryRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id=source_id,
+        name=source_id,
+        transport="http",
+        url="https://upstream.example/mcp",
+        auth_method="oauth",
+        scope="per_user",
+    )
+    tools = ToolRegistryRepository(conn)
+    tools.upsert(
+        tool_id=f"{source_id}.lookup",
+        source_id=source_id,
+        original_name="lookup",
+        exposed_name="lookup",
+        mode=PASSTHROUGH,
+        description="grant target",
+    )
+    grp = UserGroupsRepository(conn).create(name=f"grant-{source_id}", description=None)
+    tools.add_grant(f"{source_id}.lookup", grp["id"])
+    UserGroupMembersRepository(conn).add_member(grant_to, grp["id"], source="system_seed")
+    conn.close()
+
+
+def test_my_secret_status_defaults_to_secret_auth_kind(seeded_app):
+    """A pre-existing (non-oauth) per_user source's status is byte-identical
+    to before this change, plus the new fields defaulting harmlessly."""
+    _seed_per_user_source()
+    r = seeded_app["client"].get(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["auth_kind"] == "secret"
+    assert body["expires_at"] is None
+
+
+def test_my_secret_status_oauth_source_not_connected(seeded_app):
+    _seed_oauth_source()
+    r = seeded_app["client"].get(
+        "/api/mcp/sources/src_oauth_status/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["auth_kind"] == "oauth"
+    assert body["has_secret"] is False
+    assert body["expires_at"] is None
+    assert body["source_scope"] == "per_user"
+
+
+def test_my_secret_status_oauth_source_connected_reports_expiry(seeded_app):
+    from datetime import datetime, timedelta, timezone
+
+    from src.repositories import mcp_user_oauth_tokens_repo
+
+    _seed_oauth_source(source_id="src_oauth_status2")
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    mcp_user_oauth_tokens_repo().upsert(
+        "src_oauth_status2", "analyst1", "atok", refresh_token="rtok", expires_at=expires_at
+    )
+    r = seeded_app["client"].get(
+        "/api/mcp/sources/src_oauth_status2/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["auth_kind"] == "oauth"
+    assert body["has_secret"] is True
+    assert body["expires_at"] is not None
+    assert body["updated_at"] is not None
+
+
+def test_my_secret_status_expired_unrenewable_token_reports_not_connected(seeded_app):
+    """has_secret must use the same validity rule as enforce_per_user_credential:
+    an expired token with no refresh token 403s on every call, so the status
+    surface must not advertise it as connected (Devin Review on #1130)."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.repositories import mcp_user_oauth_tokens_repo
+
+    _seed_oauth_source(source_id="src_oauth_expired")
+    expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    mcp_user_oauth_tokens_repo().upsert(
+        "src_oauth_expired", "analyst1", "atok", refresh_token=None, expires_at=expires_at
+    )
+    r = seeded_app["client"].get(
+        "/api/mcp/sources/src_oauth_expired/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["has_secret"] is False
+
+
+def test_my_secret_status_expired_but_renewable_token_reports_connected(seeded_app):
+    """Expired + refresh token + live client registration = renewable at the
+    next call, so it still counts as connected."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.repositories import mcp_source_oauth_clients_repo, mcp_user_oauth_tokens_repo
+
+    _seed_oauth_source(source_id="src_oauth_renewable")
+    mcp_source_oauth_clients_repo().upsert(
+        "src_oauth_renewable",
+        issuer="https://as.example.com",
+        authorization_endpoint="https://as.example.com/authorize",
+        token_endpoint="https://as.example.com/token",
+        client_id="agnes-client",
+    )
+    expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    mcp_user_oauth_tokens_repo().upsert(
+        "src_oauth_renewable", "analyst1", "atok", refresh_token="rtok", expires_at=expires_at
+    )
+    r = seeded_app["client"].get(
+        "/api/mcp/sources/src_oauth_renewable/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["has_secret"] is True
+
+
+def test_my_secret_test_endpoint_uses_oauth_token_for_oauth_source(seeded_app, monkeypatch):
+    """``…/my-secret/test`` on an oauth source introspects via
+    ``list_tools_async`` (which already resolves the oauth token internally)
+    rather than the vault-backed per-user secret lookup."""
+    from src.repositories import mcp_user_oauth_tokens_repo
+
+    _seed_oauth_source(source_id="src_oauth_status3")
+    mcp_user_oauth_tokens_repo().upsert("src_oauth_status3", "analyst1", "atok", refresh_token="rtok")
+
+    async def _fake_list_tools_async(source, *, caller_user_id=None):
+        assert source["id"] == "src_oauth_status3"
+        assert caller_user_id == "analyst1"
+        return [object(), object()]
+
+    monkeypatch.setattr("connectors.mcp.client.list_tools_async", _fake_list_tools_async)
+    r = seeded_app["client"].post(
+        "/api/mcp/sources/src_oauth_status3/my-secret/test",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["tool_count"] == 2
+
+
+def test_my_secret_test_endpoint_403_without_oauth_connection(seeded_app):
+    """No stored oauth token yet → enforce_per_user_credential's remedy, same
+    403 shape as a secret-backed source with no stored secret."""
+    _seed_oauth_source(source_id="src_oauth_status4")
+    r = seeded_app["client"].post(
+        "/api/mcp/sources/src_oauth_status4/my-secret/test",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 403

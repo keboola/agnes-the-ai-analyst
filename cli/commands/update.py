@@ -104,6 +104,73 @@ def _resolve_workspace() -> Optional[Path]:
     return None
 
 
+def _step_bootstrap_token_cleanup(report: list[dict]) -> None:
+    """Remove a leftover ``~/.agnes/token`` once the saved credential is proven.
+
+    Step 4 of the web install guide writes the bootstrap token file; only
+    ``agnes init`` consumes and deletes it. On the reconcile path (this
+    command) the file used to survive indefinitely — a plaintext 90-day
+    credential on disk guarded only by umask/NTFS ACLs. Once this run has
+    completed an authenticated server round-trip (a workspace/push/pull step
+    that neither errored nor was skipped), the saved credential in
+    ``~/.config/agnes/token.json`` is proven to work and the bootstrap file
+    is redundant — remove it. When NO step proved the credential (auth
+    failure, offline run), the file is kept on purpose: it is exactly the
+    input the expired-credential recovery (``agnes init --force
+    --token-file``) needs. (``_step_push`` reports a zero-work run — which
+    makes no HTTP request at all — as ``skipped`` for exactly this reason:
+    finishing without work proves nothing about the credential.)
+    """
+    bootstrap = Path.home() / ".agnes" / "token"
+    try:
+        exists = bootstrap.is_file()
+    except OSError:
+        exists = False
+    if not exists:
+        return  # nothing to clean; no report noise
+    # This gate is load-bearing beyond "did anything work". On /home step 4 the
+    # bootstrap token is written and `claude` launched on the same line, so the
+    # SessionStart hook's detached `agnes update` can reach this cleanup seconds
+    # later — before the user has pasted the step-5 install script. The flow
+    # still converges only because of three things: on a fresh machine
+    # `_resolve_workspace()` returns None so no authenticated step runs and this
+    # code is never reached; `agnes init --token-file` falls back to the saved
+    # credential when the file is gone; and a zero-work push classifies as
+    # `skipped`, not success, so expired-credential recovery does not trip the
+    # gate either. Relaxing any of those turns this into deleting a token the
+    # user is about to need (Devin Review on #1139).
+    proven = any(
+        step.get("stage") in ("workspace", "push", "pull") and step.get("status") not in ("error", "skipped")
+        for step in report
+    )
+    if not proven:
+        report.append(
+            {
+                "stage": "bootstrap-token",
+                "status": "skipped",
+                "detail": "leftover ~/.agnes/token kept — no authenticated step succeeded this run",
+            }
+        )
+        return
+    try:
+        bootstrap.unlink()
+        report.append(
+            {
+                "stage": "bootstrap-token",
+                "status": "ok",
+                "detail": "removed leftover ~/.agnes/token (saved credential verified this run)",
+            }
+        )
+    except OSError as exc:
+        report.append(
+            {
+                "stage": "bootstrap-token",
+                "status": "error",
+                "detail": f"could not remove leftover ~/.agnes/token: {exc}",
+            }
+        )
+
+
 def _run_step(name: str, fn: Callable[[], None], report: list[dict]) -> None:
     """Run one convergence step, swallowing any failure into the report.
 
@@ -521,6 +588,15 @@ def _step_push(*, report: list[dict]) -> None:
     errors = summary.get("errors") or []
     if errors:
         report.append({"stage": "push", "status": "error", "detail": f"{detail}; errors={errors}"})
+    elif not summary.get("sessions") and not summary.get("local_md"):
+        # Zero uploads and no CLAUDE.local.md means push deliberately made
+        # no HTTP request at all (the capability probe is gated on having
+        # work), so this run proved nothing about the saved credential.
+        # Report skipped, not ok — _step_bootstrap_token_cleanup counts a
+        # non-error/non-skipped push as an authenticated round-trip, and a
+        # no-op must never delete the ~/.agnes/token recovery input on a
+        # run where workspace/pull failed auth.
+        report.append({"stage": "push", "status": "skipped", "detail": "nothing to upload; no server request made"})
     else:
         report.append({"stage": "push", "status": "ok", "detail": detail})
 
@@ -535,13 +611,23 @@ def _step_pull(workspace: Path, *, server_url: str, token: str, quiet: bool, rep
     if getattr(result, "errors", None):
         report.append({"stage": "pull", "status": "error", "detail": list(result.errors)})
     else:
-        report.append(
-            {
-                "stage": "pull",
-                "status": "ok",
-                "detail": f"{result.tables_updated} tables, {result.parquets_total} parquets",
-            }
-        )
+        detail = f"{result.tables_updated} tables, {result.parquets_total} parquets"
+        # The SessionStart hook runs THIS command, detached, with stdout and
+        # stderr both sent to /dev/null — so a name withheld from a snapshot is
+        # taken on a path where nothing the pull prints can ever be seen. The
+        # run report is the only durable channel (it lands in
+        # `.claude/agnes/update.log`), so it has to carry the withheld names or
+        # the analyst meets "Table with name <x> does not exist" with no
+        # explanation anywhere (#1129 review).
+        withheld = list(getattr(result, "snapshot_views_blocked", []) or [])
+        if withheld:
+            shown = ", ".join(sorted(withheld)[:5])
+            more = f" (+{len(withheld) - 5} more)" if len(withheld) > 5 else ""
+            detail += (
+                f"; withheld {len(withheld)} snapshot name(s) now owned by a table you can no longer "
+                f"read locally: {shown}{more} — re-create with `agnes snapshot create <table> --as <name>`"
+            )
+        report.append({"stage": "pull", "status": "ok", "detail": detail})
 
 
 # --------------------------------------------------------------------------- #
@@ -699,6 +785,11 @@ def update(
                         lambda: _step_pull(
                             workspace, server_url=server_url, token=token, quiet=step_quiet, report=report
                         ),
+                        report,
+                    )
+                    _run_step(
+                        "bootstrap-token",
+                        lambda: _step_bootstrap_token_cleanup(report),
                         report,
                     )
                 finally:

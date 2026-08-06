@@ -5,11 +5,12 @@
 #
 # Tag: agnes-chat:latest  (Q2 — see plan; single mutable tag).
 #
-# IMPORTANT: No firewall / iptables rules are baked into the template — per
-# Q4 the egress allowlist lives only in the PreToolUse hook bundled in the
-# workspace template (`.claude/hooks/pre_tool_use.py`). This is fail-open
-# at the network layer; a prompt injection that rewrites the hook can
-# bypass it. Tradeoff accepted for operator-setup simplicity.
+# IMPORTANT: No firewall / iptables rules are baked into the template, and
+# none are needed — egress is enforced by the E2B platform, not from inside
+# the sandbox: `E2BProvider.spawn` passes `deny_out=[ALL_TRAFFIC]` alongside
+# the `chat.egress_allow_out` allowlist. The PreToolUse hook in the workspace
+# template is defense-in-depth only; the VM-level deny-list survives an agent
+# rewriting it. (Supersedes the original Q4 hook-only decision.)
 FROM e2bdev/base:latest
 
 # Python 3 + curl + Node.js (the latter for `@anthropic-ai/claude-code` CLI

@@ -7,7 +7,7 @@ See tests/test_chat_subprocess_provider.py for precedent.
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import duckdb
 import pytest
@@ -960,7 +960,9 @@ def test_active_count_for_user_matches_private(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _attach_fake_live_with_fake_handle(mgr: ChatManager, chat_id: str, user_email: str, sink):
+def _attach_fake_live_with_fake_handle(
+    mgr: ChatManager, chat_id: str, user_email: str, sink, *, surface: str = Surface.WEB.value, extra_sinks=()
+):
     """Insert a LiveSession with FakeHandle (has emit/readline) and one sink."""
     from datetime import datetime, timezone
     from app.chat.manager import LiveSession
@@ -973,7 +975,8 @@ def _attach_fake_live_with_fake_handle(mgr: ChatManager, chat_id: str, user_emai
         handle=handle,
         started_at=datetime.now(timezone.utc),
         last_activity=datetime.now(timezone.utc),
-        sinks=[SinkEntry(participant_email=user_email, sink=sink)],
+        surface=surface,
+        sinks=[SinkEntry(participant_email=user_email, sink=s) for s in (sink, *extra_sinks)],
     )
     mgr._live[chat_id] = live
     return live
@@ -2100,14 +2103,14 @@ def test_spawn_uploads_wheel_before_workspace_and_sets_sentinel_env(manager: Cha
 
     order: list[str] = []
 
-    async def fake_wheel(sandbox):
+    async def fake_wheel(stage):
         order.append("wheel")
 
     async def fake_workspace(sandbox, root, *, max_bytes):
         order.append("workspace")
         return 0
 
-    monkeypatch.setattr(sync_mod, "upload_agnes_wheel", fake_wheel)
+    monkeypatch.setattr(sync_mod, "stage_agnes_wheel", fake_wheel)
     monkeypatch.setattr(sync_mod, "upload_workspace", fake_workspace)
 
     handle = FakeHandle()
@@ -2119,9 +2122,7 @@ def test_spawn_uploads_wheel_before_workspace_and_sets_sentinel_env(manager: Cha
         return handle
 
     manager._provider.spawn = fake_spawn
-    # The fixture's provider is a MagicMock whose auto-attribute would be
-    # truthy — pin the real E2BProvider value so the sync branch runs.
-    manager._provider.syncs_workspace = False
+    _make_provider_e2b_shaped(manager)
 
     async def _run():
         s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
@@ -2132,6 +2133,141 @@ def test_spawn_uploads_wheel_before_workspace_and_sets_sentinel_env(manager: Cha
 
     assert order == ["wheel", "workspace"]
     assert captured["env"]["AGNES_WORKSPACE_SYNC_SENTINEL"] == SANDBOX_WORKSPACE_READY
+
+
+def _make_provider_e2b_shaped(manager: ChatManager) -> None:
+    """Make the fixture's MagicMock provider behave like ``E2BProvider``:
+    ``syncs_workspace=False`` (the manager pushes the workspace) plus an async
+    ``stage_file`` that writes through the handle's sandbox file API.
+
+    Needed because the fixture provider is a bare ``MagicMock``: its
+    auto-attributes are truthy (so ``syncs_workspace`` must be pinned) and its
+    ``stage_file`` is not a coroutine function, which is exactly how
+    ``ChatManager._file_stager`` detects "this provider cannot stage files".
+    """
+    manager._provider.syncs_workspace = False
+
+    async def _stage(handle, path, data):
+        await handle._sandbox.files.write(path, data)
+
+    manager._provider.stage_file = _stage
+
+
+def test_spawn_stages_wheel_and_context_for_a_bind_mounting_provider(manager: ChatManager, tmp_path, monkeypatch):
+    """`syncs_workspace=True` must skip ONLY the workspace push.
+
+    The CLI wheel and the restore-context transcript are not workspace sync:
+    without them a bind-mounting provider loses the `agnes` CLI (the runner
+    blocks the full 60 s wheel wait on a `.ready` that never appears) and loses
+    conversation history on every crash respawn.
+    """
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    import app.chat.e2b_workspace_sync as sync_mod
+    from app.chat.e2b_workspace_sync import SANDBOX_CONTEXT_RESTORE, SANDBOX_WHEEL_READY
+
+    staged: dict = {}
+    pushed: list[str] = []
+
+    async def fake_workspace(sandbox, root, *, max_bytes):
+        pushed.append("workspace")
+        return 0
+
+    monkeypatch.setattr(sync_mod, "upload_workspace", fake_workspace)
+
+    handle = FakeHandle()
+    captured: dict = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return handle
+
+    async def _stage(h, path, data):
+        staged[path] = data
+
+    manager._provider.spawn = fake_spawn
+    manager._provider.syncs_workspace = True
+    manager._provider.stage_file = _stage
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.append_message(session_id=s.id, role="assistant", content="earlier answer")
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path)
+
+    asyncio.run(_run())
+
+    assert SANDBOX_WHEEL_READY in staged, "the wheel-ready sentinel must be staged for every provider"
+    assert SANDBOX_CONTEXT_RESTORE in staged
+    assert "earlier answer" in str(staged[SANDBOX_CONTEXT_RESTORE])
+    # The context must land BEFORE the wheel-ready sentinel: that sentinel is
+    # the only pre-boot barrier a bind-mounting provider has (the workspace
+    # wait is skipped), and the runner reads the context strictly after its
+    # sentinel-gated install — staged later, a restarted session could start
+    # answering without its history.
+    paths = list(staged)
+    assert paths.index(SANDBOX_CONTEXT_RESTORE) < paths.index(SANDBOX_WHEEL_READY)
+    # ...and only the workspace tarball stays behind the syncs_workspace gate.
+    assert pushed == []
+    assert captured["env"]["AGNES_WORKSPACE_SYNC_SENTINEL"] == ""
+
+
+def test_spawn_stages_wheel_and_context_through_the_e2b_files_api(manager: ChatManager, tmp_path, monkeypatch):
+    """E2B regression for the same split: with the REAL provider the wheel,
+    its sentinel and the restore-context still land through
+    ``sandbox.files.write``, at the same paths — restore-context first, so the
+    wheel's ``.ready`` sentinel guarantees it on every provider (under E2B the
+    trailing workspace-ready sentinel is a second barrier)."""
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    from app.chat.e2b_provider import E2BProvider
+    from app.chat.e2b_workspace_sync import (
+        SANDBOX_CONTEXT_RESTORE,
+        SANDBOX_WHEEL_DIR,
+        SANDBOX_WHEEL_READY,
+        SANDBOX_WORKSPACE_READY,
+    )
+
+    wheel = tmp_path / "agnes_the_ai_analyst-0.1.0-py3-none-any.whl"
+    wheel.write_bytes(b"WHEELBYTES")
+    monkeypatch.setattr("app.api.cli_artifacts._find_wheel", lambda: wheel)
+
+    written: list[str] = []
+
+    handle = FakeHandle()
+    sb = MagicMock()
+    sb.files = MagicMock()
+
+    async def _write(path, data):
+        written.append(path)
+
+    sb.files.write = AsyncMock(side_effect=_write)
+    sb.commands = MagicMock()
+    sb.commands.run = AsyncMock()
+    handle._sandbox = sb
+
+    async def fake_spawn(**kw):
+        return handle
+
+    provider = E2BProvider(api_key="k", template_id="t")
+    provider.spawn = fake_spawn  # type: ignore[method-assign]
+    manager._provider = provider
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.append_message(session_id=s.id, role="assistant", content="earlier answer")
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path / "session")
+
+    (tmp_path / "session").mkdir()
+    asyncio.run(_run())
+
+    assert written == [
+        SANDBOX_CONTEXT_RESTORE,
+        f"{SANDBOX_WHEEL_DIR}/{wheel.name}",
+        SANDBOX_WHEEL_READY,
+        SANDBOX_WORKSPACE_READY,
+    ]
 
 
 def test_agnes_server_url_resolution_chain(monkeypatch):
@@ -3230,7 +3366,7 @@ class TestRestoreContext:
                 return handle
 
             manager._provider.spawn = fake_spawn
-            manager._provider.syncs_workspace = False
+            _make_provider_e2b_shaped(manager)
             await manager._spawn_runner(sess, tmp_path)
             assert SANDBOX_CONTEXT_RESTORE in writes
             assert "earlier answer" in str(writes[SANDBOX_CONTEXT_RESTORE])
@@ -3350,9 +3486,7 @@ def test_shutdown_drains_inflight_turn_with_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         # Simulate a turn in progress.
         mgr._live[s.id].turn_in_flight = True
 
@@ -3383,9 +3517,7 @@ def test_shutdown_pause_path_suppresses_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = True
 
         await mgr.shutdown()
@@ -3412,9 +3544,7 @@ def test_shutdown_pause_failure_falls_back_to_notice(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = True
 
         async def _boom(live):
@@ -3447,9 +3577,7 @@ def test_shutdown_no_notice_when_idle(tmp_path):
         s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
         ws = FakeWS()
         attach_task = asyncio.create_task(mgr.attach(s.id, ws))
-        await _wait_until(
-            lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks
-        )
+        await _wait_until(lambda: s.id in mgr._live and mgr._live[s.id].handle is not None and mgr._live[s.id].sinks)
         mgr._live[s.id].turn_in_flight = False
 
         await mgr.shutdown()
@@ -3462,5 +3590,649 @@ def test_shutdown_no_notice_when_idle(tmp_path):
             await attach_task
         except (asyncio.CancelledError, Exception):
             pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Orphan sandbox reconciliation (host-local providers)
+# ---------------------------------------------------------------------------
+
+
+def _orphan_provider(manager: ChatManager, rows: list[dict]) -> list[str]:
+    """Give the fixture's provider the host-local-provider extras: an async
+    ``list_sandboxes`` (what the docker provider exposes) plus a recording
+    ``destroy``. Returns the list destroyed sandbox ids land in."""
+    destroyed: list[str] = []
+
+    async def _list():
+        return rows
+
+    async def _destroy(*, sandbox_id):
+        destroyed.append(sandbox_id)
+
+    manager._provider.list_sandboxes = _list
+    manager._provider.destroy = _destroy
+    return destroyed
+
+
+def test_orphan_sweep_destroys_sandboxes_with_no_owner(manager: ChatManager):
+    """A gateway that crashed mid-session leaves containers behind with no row
+    left to reap them — the paused-TTL sweep only ever sees rows."""
+
+    async def _run():
+        destroyed = _orphan_provider(
+            manager,
+            [{"name": "agnes-chatsbx-gone-1", "chat_id": "chat_gone", "age_seconds": 3600.0}],
+        )
+        assert await manager.reap_orphan_sandboxes() == 1
+        assert destroyed == ["agnes-chatsbx-gone-1"]
+
+    asyncio.run(_run())
+
+
+def test_orphan_sweep_keeps_a_sandbox_its_row_still_points_at(manager: ChatManager):
+    """The paused-and-resumable case: a row whose sandbox_id is this container."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.set_sandbox_ref(s.id, sandbox_id="agnes-chatsbx-live-1", runner_pid=1)
+        destroyed = _orphan_provider(
+            manager,
+            [{"name": "agnes-chatsbx-live-1", "chat_id": s.id, "age_seconds": 3600.0}],
+        )
+        assert await manager.reap_orphan_sandboxes() == 0
+        assert destroyed == []
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Approval-decision routing (review follow-ups on #1145)
+# ---------------------------------------------------------------------------
+
+
+def test_approval_decision_local_delivery(manager: ChatManager):
+    """With a live local runner, the decision is written to its stdin — no
+    cross-gateway publish."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        handle = FakeHandle()
+        live = MagicMock()
+        live.handle = handle
+        live._stdin_lock = asyncio.Lock()
+        manager._live[s.id] = live
+        with patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub:
+            await manager.deliver_approval_decision(s.id, "appr-1", "allow", sender_email="u@x")
+        pub.assert_not_called()
+        written = b"".join(handle._stdin_buf)
+        assert b"approval_decision" in written
+        assert b"appr-1" in written
+
+    asyncio.run(_run())
+
+
+def test_orphan_sweep_skips_young_sandboxes(manager: ChatManager):
+    """_spawn_runner returns before set_sandbox_ref persists — a just-created
+    sandbox legitimately has no row yet."""
+
+    async def _run():
+        destroyed = _orphan_provider(
+            manager,
+            [{"name": "agnes-chatsbx-fresh-1", "chat_id": "chat_fresh", "age_seconds": 5.0}],
+        )
+        assert await manager.reap_orphan_sandboxes() == 0
+        assert destroyed == []
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_dropped_when_no_runner_and_no_owner(manager: ChatManager):
+    """No local runner AND no other gateway owns it → drop, never publish a
+    junk control entry (which could disconnect the caller if coordination is
+    down). Mirrors the kill/cancel owner check (review finding on #1145)."""
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value=None),
+            patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub,
+        ):
+            await manager.deliver_approval_decision("chat_dead", "appr-2", "deny", sender_email="u@x")
+        pub.assert_not_called()
+
+    asyncio.run(_run())
+
+
+def test_orphan_sweep_skips_sessions_this_process_serves(manager: ChatManager):
+    from datetime import datetime, timezone
+
+    from app.chat.manager import LiveSession
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        now = datetime.now(timezone.utc)
+        manager._live[s.id] = LiveSession(
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
+            handle=FakeHandle(),
+            started_at=now,
+            last_activity=now,
+        )
+        destroyed = _orphan_provider(
+            manager,
+            [{"name": "agnes-chatsbx-inflight-1", "chat_id": s.id, "age_seconds": 3600.0}],
+        )
+        assert await manager.reap_orphan_sandboxes() == 0
+        assert destroyed == []
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_forwarded_to_remote_owner(manager: ChatManager):
+    """No local runner but another gateway owns it → forward over the inbound
+    control stream (command='approval')."""
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value="other-gateway"),
+            patch("app.chat.routing.this_gateway_id", return_value="this-gateway"),
+            patch("app.chat.inbound.publish_control", new=AsyncMock()) as pub,
+        ):
+            await manager.deliver_approval_decision("chat_remote", "appr-3", "allow", sender_email="u@x")
+        pub.assert_awaited_once()
+        assert pub.await_args.args[1] == "approval"
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_publish_failure_does_not_escape(manager: ChatManager):
+    """A coordination hiccup must not drop the user's chat connection.
+
+    `deliver_approval_decision` runs on the WebSocket reader path, so an
+    escaping `InboundPublishFailed` would disconnect the window instead of
+    losing just the answer. The gate's own timeout still resolves the
+    pending request, so the turn finishes either way. Mirrors the
+    cross-gateway kill path, which already swallows this.
+    """
+    import app.chat.inbound as inbound
+
+    async def _run():
+        with (
+            patch("app.chat.routing.owner_of", return_value="other-gateway"),
+            patch("app.chat.routing.this_gateway_id", return_value="this-gateway"),
+            patch(
+                "app.chat.inbound.publish_control",
+                new=AsyncMock(side_effect=inbound.InboundPublishFailed("coordination down")),
+            ),
+        ):
+            # must not raise
+            await manager.deliver_approval_decision("chat_remote", "appr-9", "allow", sender_email="u@x")
+
+    asyncio.run(_run())
+
+
+def test_approval_decision_hardens_invalid_to_deny(manager: ChatManager):
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        handle = FakeHandle()
+        live = MagicMock()
+        live.handle = handle
+        live._stdin_lock = asyncio.Lock()
+        manager._live[s.id] = live
+        await manager.deliver_approval_decision(s.id, "appr-4", "bogus", sender_email="u@x")
+        written = b"".join(handle._stdin_buf)
+        assert b'"decision": "deny"' in written
+
+    asyncio.run(_run())
+
+
+def test_spawn_env_arms_approvals_on_every_surface(manager: ChatManager, monkeypatch):
+    """The gate is armed regardless of origin surface — whether anyone can
+    answer a request is decided per-request at the fan-out from the attached
+    sinks, not once at spawn from `session.surface`. A Slack session
+    continued on the web must be able to approve."""
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "jwt")
+    import app.chat.manager as manager_mod
+
+    monkeypatch.setattr(manager_mod, "ticket_repo", lambda: _FakeTicketRepo())
+
+    captured = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return FakeHandle()
+
+    manager._provider.spawn = fake_spawn
+
+    async def _env_for(surface, **kw):
+        s = await manager.create_session(user_email="u@x", surface=surface, **kw)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, Path("/tmp"))
+        return captured["env"]
+
+    async def _run():
+        # No surface switches the gate off: the runner defaults to armed and
+        # nothing here overrides it (AGNES_APPROVALS survives only as an
+        # operator kill-switch).
+        for env in (
+            await _env_for(Surface.WEB),
+            await _env_for(Surface.API),
+            await _env_for(Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None),
+        ):
+            assert env.get("AGNES_APPROVALS", "on") == "on"
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# approval_request fan-out: who (if anyone) can answer a pending request
+# ---------------------------------------------------------------------------
+
+
+def _approval_decisions_written(handle) -> list[dict]:
+    """Every approval_decision frame the manager wrote to the runner's stdin."""
+    out = []
+    for line in b"".join(handle._stdin_buf).decode().splitlines():
+        try:
+            frame = json.loads(line)
+        except ValueError:
+            continue
+        if frame.get("type") == "approval_decision":
+            out.append(frame)
+    return out
+
+
+async def _pump_one_approval_request(mgr: ChatManager, live, *, request_id: str = "appr-1"):
+    """Run the pump over a single approval_request frame and stop."""
+    pump = asyncio.create_task(mgr._pump_subprocess_to_ws(live))
+    live.handle.emit(
+        {
+            "type": "approval_request",
+            "request_id": request_id,
+            "tool": "Bash",
+            "command": "agnes admin user delete bob@x",
+            "reason": "admin mutation",
+            "timeout_seconds": 300,
+        }
+    )
+    await _wait_until(lambda: bool(live.pending_approvals))
+    pump.cancel()
+    try:
+        await pump
+    except asyncio.CancelledError:
+        pass
+
+
+def test_slack_origin_approval_waits_for_a_client(manager: ChatManager):
+    """A Slack-origin session has no card-capable sink, but the user is one
+    "Continue on web" click away — so the request is NOT auto-denied. It
+    stays pending (the gate's own timeout is the backstop) and rides
+    ``pending_approvals`` so a browser attaching later replays the card."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+        await _pump_one_approval_request(manager, live)
+
+        assert _approval_decisions_written(live.handle) == [], "a Slack session must not be auto-denied"
+        pending = list(live.pending_approvals.values())
+        assert pending and pending[0]["attended"] is False
+
+    asyncio.run(_run())
+
+
+def test_slack_session_continued_on_web_can_approve(manager: ChatManager):
+    """The bug this fixes: a session STARTED in Slack and opened through the
+    "Continue on web" deep link has a real web sink attached, so the request
+    is marked attended, is never auto-denied, and the user's decision
+    reaches the runner."""
+
+    async def _run():
+        from app.chat.replay import GapReplayGate
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        # The Slack bridge stand-in stays seated; the browser arrives as the
+        # real web sink wrapper (GapReplayGate is what app/api/chat.py seats).
+        web = GapReplayGate(FakeWS())
+        live = _attach_fake_live_with_fake_handle(
+            manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value, extra_sinks=(web,)
+        )
+        await _pump_one_approval_request(manager, live)
+
+        assert _approval_decisions_written(live.handle) == []
+        pending = list(live.pending_approvals.values())
+        assert pending and pending[0]["attended"] is True
+
+        # …and the approval actually goes through.
+        await manager.deliver_approval_decision(s.id, "appr-1", "allow", sender_email="u@x")
+        assert _approval_decisions_written(live.handle) == [
+            {"type": "approval_decision", "request_id": "appr-1", "decision": "allow"}
+        ]
+
+    asyncio.run(_run())
+
+
+def test_agent_api_one_shot_denies_approval_immediately(manager: ChatManager):
+    """The agent-API one-shot path has a HeadlessSink by construction and no
+    human who could ever attach a browser, so it keeps the fast deny rather
+    than stalling the caller for the full approval timeout. The decision is
+    `unattended`, which the runner turns into an actionable message."""
+
+    async def _run():
+        from app.chat.headless import HeadlessSink
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.API)
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", HeadlessSink(), surface=Surface.API.value)
+        await _pump_one_approval_request(manager, live)
+
+        assert _approval_decisions_written(live.handle) == [
+            {"type": "approval_decision", "request_id": "appr-1", "decision": "unattended"}
+        ]
+
+    asyncio.run(_run())
+
+
+def test_web_session_with_no_attached_browser_still_waits(manager: ChatManager):
+    """A web session whose browser is closed mid-turn keeps the request
+    pending — the user reconnects and answers the replayed card. Only
+    Surface.API is treated as permanently clientless."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", None)
+        live.sinks.clear()
+        await _pump_one_approval_request(manager, live)
+
+        assert _approval_decisions_written(live.handle) == []
+
+    asyncio.run(_run())
+
+
+def test_orphan_sweep_is_a_noop_for_providers_without_listing(manager: ChatManager):
+    """E2B (and any provider whose sandboxes aren't host-local) has no
+    list_sandboxes — the sweep must do nothing, not crash the reaper."""
+
+    async def _run():
+        assert await manager.reap_orphan_sandboxes() == 0
+
+    asyncio.run(_run())
+
+
+def test_pending_approvals_live_outside_the_turn_buffer(manager: ChatManager):
+    """A pending approval is separate state, not a turn-buffer frame.
+
+    Holding it in the buffer pinned the replay watermark to an old moment,
+    so a reconnect skipped everything said after the card appeared; and a
+    card retained across a crash respawn rendered with buttons whose
+    request_id belonged to the dead runner.
+    """
+    from types import SimpleNamespace
+
+    live = SimpleNamespace(turn_buffer=[], pending_approvals={})
+    # the pump routes frames by type
+    for frame in (
+        {"type": "token", "text": "hi", "seq": 1},
+        {"type": "approval_request", "request_id": "appr-1", "seq": 2},
+    ):
+        if frame["type"] == "approval_request":
+            live.pending_approvals[frame["request_id"]] = frame
+        else:
+            live.turn_buffer.append(frame)
+
+    # a new turn clears the buffer; the unanswered card is untouched
+    live.turn_buffer.clear()
+    assert live.pending_approvals == {"appr-1": {"type": "approval_request", "request_id": "appr-1", "seq": 2}}
+    assert live.turn_buffer == [], "the card must not pin the buffer's seq watermark"
+
+    # answering it drops it
+    live.pending_approvals.pop("appr-1", None)
+    assert live.pending_approvals == {}
+
+
+def test_a_web_sink_that_died_unnoticed_does_not_suppress_the_slack_nudge(manager: ChatManager):
+    """`attended` is stamped BEFORE the fan-out — the frame_seq contract wants
+    one envelope for every sink — but the fan-out is also where a dead sink is
+    discovered. A browser that dropped without a clean close (sleeping laptop,
+    lost mobile network) is still in `live.sinks` at stamp time, so the request
+    went out marked attended, the Slack bridge stayed quiet, and that same
+    broadcast then pruned the sink: the command stalled for the full timeout
+    with nothing said anywhere (Devin Review on #1157).
+    """
+
+    class DeadWeb:
+        """Looks card-capable, but every send fails — the silent-death case."""
+
+        supports_approvals = True
+
+        async def send_json(self, frame):
+            raise ConnectionError("socket went away without a close frame")
+
+    class RecordingSlack:
+        def __init__(self):
+            self.nudges = []
+
+        async def send_json(self, frame):
+            pass
+
+        async def _post_approval_request(self, data):
+            self.nudges.append(data)
+
+    async def _run():
+        slack = RecordingSlack()
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(
+            manager, s.id, "u@x", DeadWeb(), surface=Surface.SLACK_DM.value, extra_sinks=(slack,)
+        )
+        await _pump_one_approval_request(manager, live)
+
+        assert slack.nudges, "the dead web sink suppressed the nudge and nobody was told"
+        assert slack.nudges[0]["attended"] is False
+        pending = list(live.pending_approvals.values())
+        assert pending and pending[0]["attended"] is False, "the stored card still claims someone is holding it"
+
+    asyncio.run(_run())
+
+
+def test_replaying_a_pending_card_re_derives_who_is_attending(manager: ChatManager):
+    """The stamp records who was attached when the request was RAISED. A Slack
+    bridge seated afterwards replays the card, and off a stale `False` it would
+    post its nudge even though a browser has since attached and is holding the
+    buttons (Devin Review on #1157)."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+        await _pump_one_approval_request(manager, live)
+        pending = list(live.pending_approvals.values())
+        assert pending and pending[0]["attended"] is False
+
+        # A browser attaches: card-capable, so the replay must say attended.
+        web = FakeWS()
+        web.supports_approvals = True
+        live.sinks.append(SinkEntry(participant_email="u@x", sink=web))
+
+        late = FakeWS()
+        await manager.add_sink(s.id, late, participant_email="u@x")
+        replayed = [f for f in late.sent if f.get("type") == "approval_request"]
+        assert replayed and replayed[0]["attended"] is True, "replay carried the stale stamp"
+
+    asyncio.run(_run())
+
+
+def test_the_kill_switch_is_settable_again(manager: ChatManager):
+    """`docs/cloud-chat.md` advertises `AGNES_APPROVALS=off` as the operator
+    kill-switch and the runner still honours it, but the sandbox environment is
+    exactly the dict the manager builds — the host's is not merged in — so
+    dropping the entry left the switch unsettable anywhere while the docs said
+    otherwise (Devin Review on #1157)."""
+    captured = {}
+
+    class FakeHandle2(FakeHandle):
+        pass
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return FakeHandle2()
+
+    manager._provider.spawn = fake_spawn
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, Path("/tmp"))
+        assert captured["env"]["AGNES_APPROVALS"] == "on"
+
+        import dataclasses
+
+        manager._config = dataclasses.replace(manager._config, approvals_enabled=False)
+        s2 = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess2 = manager._repo.get_session(s2.id)
+        await manager._spawn_runner(sess2, Path("/tmp"))
+        assert captured["env"]["AGNES_APPROVALS"] == "off"
+
+    asyncio.run(_run())
+
+
+def test_a_browser_leaving_later_still_nudges_the_slack_thread(manager: ChatManager):
+    """The post-broadcast correction only covers the pump iteration that raised
+    the request. A browser that leaves LATER — while the card is still pending
+    — would otherwise leave nobody holding it and nobody told: the same stall,
+    in a wider window (Devin Review on #1157)."""
+
+    class RecordingSlack:
+        def __init__(self):
+            self.nudges = []
+
+        async def send_json(self, frame):
+            pass
+
+        async def _post_approval_request(self, data):
+            self.nudges.append(data)
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        web = FakeWS()
+        web.supports_approvals = True
+        slack = RecordingSlack()
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(
+            manager, s.id, "u@x", web, surface=Surface.SLACK_DM.value, extra_sinks=(slack,)
+        )
+        await _pump_one_approval_request(manager, live)
+        assert slack.nudges == [], "a browser was holding the card — no nudge expected yet"
+
+        # The browser goes away while the card is still pending.
+        await manager.detach_sink(s.id, web)
+
+        assert slack.nudges, "nobody can answer any more and nobody was told"
+        assert slack.nudges[0]["attended"] is False
+        # Idempotent: a second detach must not re-post.
+        await manager.detach_sink(s.id, web)
+        assert len(slack.nudges) == 1
+
+    asyncio.run(_run())
+
+
+def test_a_rebuilt_slack_bridge_learns_about_a_pending_card(manager: ChatManager):
+    """`_ensure_slack_sink` appends straight into `live.sinks` instead of going
+    through `_seat_sink`/`add_sink`, so it missed the pending-approval replay:
+    a bridge rebuilt on the cross-gateway forwarded-message path stayed silent
+    about a card already waiting, and the unattended re-check skipped it too
+    because the stored frame's `attended` was already latched False
+    (Devin Review on #1157)."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+        await _pump_one_approval_request(manager, live)
+        assert live.pending_approvals, "a card should be waiting"
+
+        seen = []
+
+        class Bridge:
+            """A real class, not a lambda: `_ensure_slack_sink` idempotence
+            uses isinstance against this symbol."""
+
+            def __init__(self, **kw):
+                pass
+
+            async def send_json(self, frame):
+                seen.append(frame)
+
+        import services.slack_bot.sink as sink_mod
+
+        original = sink_mod.SlackSinkBridge
+        sink_mod.SlackSinkBridge = Bridge
+        try:
+            await manager._ensure_slack_sink(live, {"channel": "C1", "thread_ts": None})
+        finally:
+            sink_mod.SlackSinkBridge = original
+
+        cards = [f for f in seen if f.get("type") == "approval_request"]
+        assert cards, "the rebuilt bridge never heard about the pending card"
+
+    asyncio.run(_run())
+
+
+def test_the_rebuilt_slack_bridge_uses_the_documented_public_url(manager: ChatManager, monkeypatch):
+    """`_ensure_slack_sink` read SERVER_URL directly while the ordinary Slack
+    DM/mention path takes web_base from `get_public_url()` (PUBLIC_URL env >
+    server.public_url). A deployment configuring only the yaml key got a
+    Continue-on-web button everywhere EXCEPT this path — and the no-link nudge
+    then named the wrong knob to fix (Devin Review on #1157)."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1", slack_thread_ts=None
+        )
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", FakeWS(), surface=Surface.SLACK_DM.value)
+
+        seen = {}
+
+        class Bridge:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+            async def send_json(self, frame):
+                pass
+
+        import services.slack_bot.sink as sink_mod
+
+        original = sink_mod.SlackSinkBridge
+        sink_mod.SlackSinkBridge = Bridge
+        monkeypatch.delenv("SERVER_URL", raising=False)
+        monkeypatch.setenv("PUBLIC_URL", "https://agnes.example.com")
+        try:
+            await manager._ensure_slack_sink(live, {"channel": "C1", "thread_ts": None})
+        finally:
+            sink_mod.SlackSinkBridge = original
+
+        assert seen.get("web_base") == "https://agnes.example.com", (
+            "the rebuilt bridge ignored the documented public-URL resolution"
+        )
 
     asyncio.run(_run())

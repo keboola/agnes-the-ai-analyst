@@ -45,6 +45,49 @@ The `path_template` argument is a Python format string resolved against the requ
 
 Admin short-circuits both helpers — admins never need explicit grants.
 
+### Admin elevation consent gate
+
+The short-circuit is subject to a per-browser consent gate
+(`app/auth/elevation.py`): an admin can **pause** their own elevation via
+`POST /api/me/elevation` (UI on `/profile`), and while paused the
+short-circuit is skipped — `can_access` falls through to the explicit
+group-grant path and `require_admin` refuses with the distinct detail
+`admin_elevation_paused`. State rides the `agnes_elevation` cookie, read
+into a request contextvar by middleware; the cookie can only ever
+*reduce* privilege (enforcement remains the server-side Admin-membership
+check), so this is a guard against accidental god-mode use plus an audit
+hook (`admin_elevation_paused`/`admin_elevation_resumed` audit actions),
+not a containment boundary — a paused admin can re-elevate at will.
+
+Scope, precisely: the gate sits in `can_access` and `require_admin`. Surfaces
+that consult Admin membership directly rather than going through those — the
+table/catalog visibility path is the notable one — are unaffected, so a paused
+admin still sees every table. WebSocket routes are unaffected too: the stamping
+middleware is `@app.middleware("http")` and never runs for a `ws` scope, so
+those connections read the contextvar default (elevated). Both cases fail
+toward the historical behavior and neither can grant a non-admin anything.
+Widening the gate to the membership checks is a separate change: several of
+them decide whether to offer the toggle at all.
+
+The pause belongs to the admin who set it. `can_access` is also asked about
+OTHER users (co-drive invites check the invitee), so the request also carries
+whose pause it is — a paused admin's own checks fall through to their grants
+while a question about a colleague is answered from the colleague's own
+permissions.
+
+The instance default is `access.admin_default_elevation: "elevated"`
+(historical behavior); set `"paused"` for consent-first deployments.
+The default applies to **browser sessions only**: Bearer-authenticated
+requests (CLI, PATs, service tokens) carrying no elevation cookie always
+run elevated — automation has no cookie jar to re-elevate with, so a
+paused default must not 403 every `agnes admin …` call (an explicit
+`paused` cookie is still honored even alongside a Bearer header).
+Non-HTTP contexts (scheduler internals, background jobs) likewise run
+elevated via the contextvar default. Each god-mode grant of a
+resource the admin holds no explicit grant for emits a deduplicated
+`god_mode_bypass` log line — the observability data for deciding where
+explicit grants should replace god-mode reliance.
+
 ---
 
 ## Adding a new resource type

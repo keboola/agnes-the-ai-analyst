@@ -92,17 +92,17 @@ def test_discovery_metadata_uses_request_host_when_env_unset(seeded_app, monkeyp
     from app.main import create_app
     from starlette.testclient import TestClient
 
-    client = TestClient(create_app(), base_url="https://agnes.keboola.com")
+    client = TestClient(create_app(), base_url="https://agnes.example.com")
     r = client.get("/.well-known/oauth-authorization-server")
     assert r.status_code == 200, r.text
     meta = r.json()
-    assert meta["issuer"] == "https://agnes.keboola.com/api/mcp/http"
-    assert meta["authorization_endpoint"] == "https://agnes.keboola.com/api/mcp/http/authorize"
+    assert meta["issuer"] == "https://agnes.example.com/api/mcp/http"
+    assert meta["authorization_endpoint"] == "https://agnes.example.com/api/mcp/http/authorize"
 
     r = client.get("/.well-known/oauth-protected-resource/api/mcp/http")
     assert r.status_code == 200, r.text
     pr = r.json()
-    assert pr["resource"] == "https://agnes.keboola.com/api/mcp/http"
+    assert pr["resource"] == "https://agnes.example.com/api/mcp/http"
 
 
 def test_unauthenticated_mcp_www_authenticate_uses_request_host(seeded_app, monkeypatch):
@@ -112,7 +112,7 @@ def test_unauthenticated_mcp_www_authenticate_uses_request_host(seeded_app, monk
     from app.main import create_app
     from starlette.testclient import TestClient
 
-    client = TestClient(create_app(), base_url="https://agnes.keboola.com")
+    client = TestClient(create_app(), base_url="https://agnes.example.com")
     r = client.post(
         MCP_ENDPOINT,
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
@@ -120,7 +120,7 @@ def test_unauthenticated_mcp_www_authenticate_uses_request_host(seeded_app, monk
     )
     assert r.status_code == 401
     www = r.headers.get("www-authenticate", "")
-    assert 'resource_metadata="https://agnes.keboola.com/.well-known/oauth-protected-resource/api/mcp/http"' in www
+    assert 'resource_metadata="https://agnes.example.com/.well-known/oauth-protected-resource/api/mcp/http"' in www
 
 
 def test_unauthenticated_mcp_returns_401_challenge(seeded_app):
@@ -161,7 +161,7 @@ def test_advertised_connector_url_reaches_mcp_data_plane(seeded_app):
         assert "/api/mcp/http/.well-known" not in www, f"{path}: doubled resource_metadata URL: {www}"
 
 
-def _register_client(client) -> dict:
+def _register_client(client, auth_method: str = "client_secret_post") -> dict:
     r = client.post(
         f"{MCP_MOUNT}/register",
         json={
@@ -169,7 +169,7 @@ def _register_client(client) -> dict:
             "redirect_uris": ["http://localhost:9999/callback"],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
-            "token_endpoint_auth_method": "client_secret_post",
+            "token_endpoint_auth_method": auth_method,
         },
     )
     assert r.status_code in (200, 201), r.text
@@ -600,3 +600,258 @@ def test_oauth_load_exposes_raw_not_hash_so_delete_and_revoke_work(seeded_app):
         assert rt is not None and rt.token == raw_rt, "load must expose the raw refresh token, not the digest"
         repo.revoke_refresh_token(rt.token)
         assert asyncio.run(prov.load_refresh_token(client, raw_rt)) is None, "revoked refresh token must not load"
+
+
+# ---------------------------------------------------------------------------
+# RFC 7009 token revocation — public PKCE clients (Claude Code, VS Code, …)
+# ---------------------------------------------------------------------------
+
+
+def _authorize_and_mint(client, admin_token, reg, redirect_uri="http://localhost:9999/callback") -> dict:
+    """Drive authorize → consent → token exchange for a registered client and
+    return the token-endpoint JSON. A public client (no client_secret issued)
+    exchanges without a ``client_secret`` field, exactly like a real RFC 8252
+    native app."""
+    verifier, challenge = _pkce()
+
+    r = client.get(
+        f"{MCP_MOUNT}/authorize",
+        params={
+            "response_type": "code",
+            "client_id": reg["client_id"],
+            "redirect_uri": redirect_uri,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "xyz",
+            "scope": "read",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 307), r.text
+    pending = parse_qs(urlparse(r.headers["location"]).query)["pending"][0]
+
+    auth_hdr = {"Authorization": f"Bearer {admin_token}"}
+    r = client.get(
+        "/api/mcp/oauth/consent",
+        params={"pending": pending},
+        headers=auth_hdr,
+        follow_redirects=False,
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/mcp/oauth/consent",
+        data={"pending": pending, "action": "allow"},
+        headers={**auth_hdr, "Origin": "http://testserver"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 307), r.text
+    code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": reg["client_id"],
+        "code_verifier": verifier,
+    }
+    if reg.get("client_secret"):
+        data["client_secret"] = reg["client_secret"]
+    r = client.post(f"{MCP_MOUNT}/token", data=data)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _initialize_call(client, access_token):
+    return client.post(
+        MCP_MOUNT,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "revoke-test", "version": "0"},
+            },
+        },
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json, text/event-stream",
+        },
+        follow_redirects=True,
+    )
+
+
+def test_registration_with_auth_method_none_issues_no_secret(seeded_app):
+    """RFC 7591: a public client (token_endpoint_auth_method='none') must not
+    be issued a client_secret."""
+    reg = _register_client(seeded_app["client"], auth_method="none")
+    assert not reg.get("client_secret"), reg
+    assert reg.get("token_endpoint_auth_method") == "none"
+
+
+def test_public_client_revokes_access_token(seeded_app):
+    """RFC 7009: a public PKCE client (auth method 'none' — what Claude Code
+    registers as) revokes its own access token with ``token=…&client_id=…``.
+
+    The SDK's RevocationRequest declares ``client_secret: str | None`` WITHOUT
+    a default — required-but-nullable in pydantic v2 — which 400s the request
+    ("client_secret: Field required") before revocation runs; still broken
+    upstream as of mcp 2.0.0, hence the patched route in mcp_streamable.py.
+    After revocation the token must stop authenticating MCP JSON-RPC calls.
+    """
+    import asyncio
+
+    from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+
+    admin_token = seeded_app["admin_token"]
+    with seeded_app["client"] as client:
+        reg = _register_client(client, auth_method="none")
+        tok = _authorize_and_mint(client, admin_token, reg)
+        access_token = tok["access_token"]
+
+        # Sanity: the token drives an authenticated JSON-RPC call.
+        r = _initialize_call(client, access_token)
+        assert r.status_code == 200, r.text
+
+        r = client.post(
+            f"{MCP_MOUNT}/revoke",
+            data={"token": access_token, "client_id": reg["client_id"]},
+        )
+        assert r.status_code == 200, f"public-client revocation must succeed: {r.status_code} {r.text}"
+
+        # The provider no longer verifies the token…
+        assert asyncio.run(AgnesMCPOAuthProvider().load_access_token(access_token)) is None
+
+        # …and the MCP endpoint rejects it.
+        r = _initialize_call(client, access_token)
+        assert r.status_code == 401, f"revoked token must not authenticate: {r.status_code}"
+
+
+def test_public_client_revocation_accepts_empty_client_secret(seeded_app):
+    """Some clients post ``client_secret=`` (empty) rather than omitting it.
+
+    The lenient model fixes the *absent* key; this pins the empty-string
+    case, which the SDK's ``ClientAuthenticator`` handles by forcing
+    ``request_client_secret = None`` for ``token_endpoint_auth_method="none"``
+    and only comparing when the stored client actually has a secret — a
+    public client has none, so the empty value never reaches a comparison.
+    Pinned because "" vs absent is a real client-behavior difference and the
+    existing token-flow test already posts it against /token.
+    """
+    import asyncio
+
+    from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+
+    admin_token = seeded_app["admin_token"]
+    with seeded_app["client"] as client:
+        reg = _register_client(client, auth_method="none")
+        tok = _authorize_and_mint(client, admin_token, reg)
+        access_token = tok["access_token"]
+
+        r = client.post(
+            f"{MCP_MOUNT}/revoke",
+            data={"token": access_token, "client_id": reg["client_id"], "client_secret": ""},
+        )
+        assert r.status_code == 200, f"empty client_secret must not 401 a public client: {r.status_code} {r.text}"
+        assert asyncio.run(AgnesMCPOAuthProvider().load_access_token(access_token)) is None
+
+
+def test_public_client_revokes_refresh_token(seeded_app):
+    """RFC 7009 with token_type_hint=refresh_token: the grant can no longer be
+    renewed after revocation."""
+    import asyncio
+
+    from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+
+    client = seeded_app["client"]
+    reg = _register_client(client, auth_method="none")
+    tok = _authorize_and_mint(client, seeded_app["admin_token"], reg)
+    refresh_token = tok["refresh_token"]
+
+    r = client.post(
+        f"{MCP_MOUNT}/revoke",
+        data={
+            "token": refresh_token,
+            "token_type_hint": "refresh_token",
+            "client_id": reg["client_id"],
+        },
+    )
+    assert r.status_code == 200, f"public-client refresh revocation must succeed: {r.status_code} {r.text}"
+
+    provider = AgnesMCPOAuthProvider()
+    sdk_client = asyncio.run(provider.get_client(reg["client_id"]))
+    assert asyncio.run(provider.load_refresh_token(sdk_client, refresh_token)) is None
+
+
+def test_confidential_client_revocation_requires_secret(seeded_app):
+    """The lenient revocation request model must NOT weaken confidential
+    clients: with a stored secret, revocation without (or with a wrong)
+    client_secret is rejected by client authentication and the token stays
+    live; with the correct secret it succeeds."""
+    import asyncio
+
+    from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+
+    client = seeded_app["client"]
+    reg = _register_client(client)  # client_secret_post
+    assert reg.get("client_secret")
+    tok = _authorize_and_mint(client, seeded_app["admin_token"], reg)
+    access_token = tok["access_token"]
+
+    # Missing secret → rejected, token still verifies.
+    r = client.post(f"{MCP_MOUNT}/revoke", data={"token": access_token, "client_id": reg["client_id"]})
+    assert r.status_code == 401, r.text
+    assert asyncio.run(AgnesMCPOAuthProvider().load_access_token(access_token)) is not None
+
+    # Wrong secret → rejected, token still verifies.
+    r = client.post(
+        f"{MCP_MOUNT}/revoke",
+        data={"token": access_token, "client_id": reg["client_id"], "client_secret": "wrong"},
+    )
+    assert r.status_code == 401, r.text
+    assert asyncio.run(AgnesMCPOAuthProvider().load_access_token(access_token)) is not None
+
+    # Correct secret → revoked.
+    r = client.post(
+        f"{MCP_MOUNT}/revoke",
+        data={"token": access_token, "client_id": reg["client_id"], "client_secret": reg["client_secret"]},
+    )
+    assert r.status_code == 200, r.text
+    assert asyncio.run(AgnesMCPOAuthProvider().load_access_token(access_token)) is None
+
+
+def test_discovery_advertises_public_client_revocation(seeded_app):
+    """Both discovery documents must advertise 'none' in
+    revocation_endpoint_auth_methods_supported — /revoke accepts public
+    clients, and strict clients consult this list before calling it."""
+    client = seeded_app["client"]
+    for path in (
+        "/.well-known/oauth-authorization-server",
+        f"{MCP_MOUNT}/.well-known/oauth-authorization-server",
+    ):
+        r = client.get(path)
+        assert r.status_code == 200, r.text
+        meta = r.json()
+        methods = meta.get("revocation_endpoint_auth_methods_supported") or []
+        assert "none" in methods, f"{path}: {methods}"
+
+
+def test_non_numeric_expires_in_does_not_break_the_refresh():
+    """RFC 6749 says expires_in is a number; real servers ship strings.
+
+    The raw value reached `timedelta(seconds=...)` AFTER the refresh had
+    already rotated the tokens, and the TypeError escaped the
+    OAuthTokenError boundary — so the rotated refresh token was lost and
+    the connection broke permanently rather than for one call.
+    """
+    from connectors.mcp.oauth_client import _coerce_expires_in
+
+    assert _coerce_expires_in(3600) == 3600
+    assert _coerce_expires_in("3600") == 3600
+    assert _coerce_expires_in("3600.0") == 3600
+    assert _coerce_expires_in(0) == 0
+    # unusable values mean "no known expiry", never a crash
+    for bad in (None, "", "abc", True, [], {}):
+        assert _coerce_expires_in(bad) is None, bad

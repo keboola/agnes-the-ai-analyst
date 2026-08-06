@@ -23,6 +23,7 @@ locals {
     upgrade_mode = "auto"
     tls_mode     = "none" # dev VMs default to plain HTTP; TLS requires domain
     domain       = ""
+    domain_alias = ""
   }
   all_instances = concat(
     [merge(var.prod_instance, { role = "prod" })],
@@ -404,6 +405,7 @@ resource "google_compute_instance" "vm" {
     upgrade_schedule                = each.value.upgrade_schedule
     tls_mode                        = each.value.tls_mode
     domain                          = each.value.domain
+    domain_alias                    = each.value.domain_alias
     acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email
     data_source                     = var.data_source
     keboola_stack_url               = var.keboola_stack_url

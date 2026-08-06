@@ -151,21 +151,32 @@ async def get_params(
           connector-gws:
             AGNES_GWS_CLIENT_ID: "..."
             AGNES_GWS_PROJECT_ID: "..."
-            AGNES_GWS_CLIENT_SECRET_ENV: AGNES_GWS_CLIENT_SECRET
+            AGNES_GWS_CLIENT_SECRET: "..."
 
     All values are strings (YAML scalars coerced via ``str()``).
 
-    Secrets contract — two different guarantees, don't conflate them:
+    Secrets contract:
 
-    - The **server-resolved GWS fallback** (below) never emits a secret
-      VALUE — only the ``*_ENV`` pointer naming the env var that holds it.
     - The **overlay passes through verbatim**: whatever keys the operator
       puts under ``connectors:`` in instance.yaml reach the analyst's
-      ``.env`` as-is — including ``AGNES_GWS_CLIENT_SECRET: <value>`` if
-      the operator chooses to ship the value that way. The endpoint does
-      not police overlay content; seed skills must therefore check the
-      ``.env`` file for the secret value first and fall back to the
-      ``*_ENV`` shell-env pointer.
+      ``.env`` as-is — including ``AGNES_GWS_CLIENT_SECRET: <value>``.
+      The endpoint does not police overlay content.
+    - The **server-resolved GWS fallback** (below) also ships the
+      client-secret VALUE. A Google Desktop-app OAuth client secret is an
+      app identifier, not a user credential (the redirect-URI / scope
+      guardrails on the GCP-side client enforce safety) — the pre-2026-05
+      design even rendered it into the public /home page. The
+      ``AGNES_GWS_CLIENT_SECRET_ENV`` pointer that originally replaced
+      the value (PR #765) never worked end-to-end — nothing fills that
+      env var on analyst laptops, so every analyst fell through to the
+      manual GCP walkthrough — but it still rides along next to the
+      value for backward compatibility with seed skills that read the
+      pointer shape. Audience note: the response reaches every
+      authenticated principal, including agent PATs — acceptable for the
+      reason above.
+    - The only runtime consumer is the CLI's ``write_agnes_env``
+      (init/update/template-apply), a pass-through into the workspace's
+      ``.claude/agnes/.env`` (0600, git-ignored by the seed template).
 
     Server-resolved GWS fallback: operators can provision the shared
     Google Workspace OAuth client outside the overlay — server env vars
@@ -177,15 +188,6 @@ async def get_params(
     the analyst's ``.env`` and the connector-gws seed skill takes its
     fast operator-provisioned branch. Overlay keys win — the overlay
     stays the per-connector source of truth; the merge only backfills.
-
-    In the fallback the client_secret VALUE deliberately does NOT ride
-    along, keeping the fallback's no-secrets guarantee intact even though
-    a GWS Desktop-app client secret is closer to an app identifier than a
-    credential (the analyst-side skill ultimately writes it into
-    client_secret.json). Analysts get the ``*_ENV`` pointer; when neither
-    the ``.env`` file (overlay-shipped value) nor their shell env yields
-    the value, the skill asks the operator for it — one string, instead
-    of the full manual GCP-project walkthrough.
     """
     from app.api.admin import _load_current_instance_yaml
 
@@ -248,8 +250,11 @@ async def get_params(
         if creds.get("configured"):
             server_gws = {
                 "AGNES_GWS_CLIENT_ID": creds["client_id"],
-                # Pointer to the env var holding the secret — never the
-                # secret value itself (endpoint contract above).
+                # The secret VALUE rides along (see the Secrets contract
+                # in the docstring). The legacy *_ENV pointer stays next
+                # to it for backward compatibility with seed skills that
+                # still read the pointer shape.
+                "AGNES_GWS_CLIENT_SECRET": creds["client_secret"],
                 "AGNES_GWS_CLIENT_SECRET_ENV": "AGNES_GWS_CLIENT_SECRET",
             }
             if creds.get("project_id"):

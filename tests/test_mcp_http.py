@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.mcp_tooling import MCPOutputTooLarge
+
 
 # ── helpers ─────────────────────────────────────────────────────────────────────
 
@@ -126,6 +128,70 @@ class TestAuthMiddleware:
         asyncio.run(middleware(scope, None, None))
         assert reached, "?token= param did not reach inner app"
 
+    def test_query_param_token_can_be_disabled(self, seeded_app, monkeypatch):
+        """`mcp.allow_query_param_token=false` turns the fallback off (401).
+
+        F-3, 2026-08-05 audit: a token in the query string lands in every
+        request log (CWE-598). The fallback stays ON by default so no existing
+        SSE client breaks, but an operator whose clients all send the header
+        can eliminate the exposure outright rather than relying on proxy log
+        redaction.
+        """
+        import asyncio
+
+        from app.api.mcp_http import _AuthMiddleware
+
+        monkeypatch.setenv("AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN", "false")
+
+        tok = seeded_app["analyst_token"]
+        reached = []
+        sent = []
+
+        async def _inner_app(scope, receive, send):
+            reached.append(True)
+
+        async def _send(msg):
+            sent.append(msg)
+
+        middleware = _AuthMiddleware(_inner_app)
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/mcp/sse",
+            "query_string": f"token={tok}".encode(),
+            "headers": [],
+        }
+        asyncio.run(middleware(scope, None, _send))
+
+        assert not reached, "?token= reached the inner app with the flag off"
+        assert any(m.get("type") == "http.response.start" and m.get("status") == 401 for m in sent)
+
+    def test_header_auth_still_works_with_query_param_disabled(self, seeded_app, monkeypatch):
+        """Turning the fallback off must not touch the Authorization header path."""
+        import asyncio
+
+        from app.api.mcp_http import _AuthMiddleware
+
+        monkeypatch.setenv("AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN", "false")
+
+        tok = seeded_app["analyst_token"]
+        reached = []
+
+        async def _inner_app(scope, receive, send):
+            reached.append(True)
+
+        middleware = _AuthMiddleware(_inner_app)
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/mcp/sse",
+            "query_string": b"",
+            "headers": [(b"authorization", f"Bearer {tok}".encode())],
+        }
+        asyncio.run(middleware(scope, None, None))
+
+        assert reached, "header auth broke when the query-param fallback was disabled"
+
 
 # ── tool registration ────────────────────────────────────────────────────────────
 
@@ -154,6 +220,9 @@ class TestToolRegistration:
             # the curated REST guide without leaving the chat. See
             # tests/test_documentation_api_triple_surface.py for the policy.
             "documentation_api",
+            # On-demand full tool docs (progressive descriptions) — wire
+            # descriptions carry only the first docstring paragraph.
+            "tool_docs",
             # Stack discovery + subscription (issue #621) — an analyst's
             # Claude can browse available resources and subscribe without
             # leaving the chat.
@@ -765,3 +834,83 @@ class TestMySecretTestTool:
             MC.return_value.__aenter__.return_value.post = AsyncMock(return_value=resp)
             with pytest.raises(RuntimeError):
                 _run(mod.my_secret_test("src_test"))
+
+
+# ── tool_docs + progressive descriptions ────────────────────────────────────────
+
+
+class TestToolDocs:
+    def test_returns_full_docstring(self):
+        mod = _import_mod()
+        result = _run(mod.tool_docs("query"))
+        assert result["tool"] == "query"
+        assert "Args:" in result["docs"]
+
+    def test_unknown_tool_lists_valid_names(self):
+        mod = _import_mod()
+        with pytest.raises(ValueError, match="Valid tool names"):
+            _run(mod.tool_docs("nope"))
+
+
+class TestWireDescriptions:
+    def _pristine(self):
+        import importlib
+
+        import app.api.mcp_http as mod
+
+        return importlib.reload(mod)
+
+    def test_all_descriptions_stay_short(self):
+        # Ratchet: tools/list must never re-bloat. 500 chars per description.
+        mod = self._pristine()
+        for t in mod.mcp._tool_manager.list_tools():
+            assert t.description, f"{t.name} has no description"
+            assert len(t.description) <= 500, (
+                f"{t.name}: {len(t.description)} chars (>500) — trim the docstring's first paragraph"
+            )
+
+    def test_query_description_points_to_tool_docs(self):
+        mod = self._pristine()
+        t = mod.mcp._tool_manager.get_tool("query")
+        assert "tool_docs('query')" in t.description
+        assert "Args:" not in t.description  # detail moved off the wire
+
+
+# ── output-size guard ───────────────────────────────────────────────────────────
+
+
+class TestOutputGuard:
+    def _query(self, mod, resp_data):
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            MC.return_value.__aenter__.return_value.post = AsyncMock(return_value=_mock_resp(resp_data))
+            return _run(mod.query("SELECT x FROM t"))
+
+    def test_query_over_cap_raises_with_guidance(self, monkeypatch):
+        mod = _import_mod()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "1000")
+        big = {"columns": ["x"], "rows": [["y" * 5000]], "truncated": False}
+        with pytest.raises(MCPOutputTooLarge, match="output cap"):
+            self._query(mod, big)
+
+    def test_query_under_cap_passes(self, monkeypatch):
+        mod = _import_mod()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "1000")
+        small = {"columns": ["x"], "rows": [[1]], "truncated": False}
+        assert self._query(mod, small) == small
+
+    def test_env_zero_disables_guard(self, monkeypatch):
+        mod = _import_mod()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "0")
+        big = {"columns": ["x"], "rows": [["y" * 500_000]], "truncated": False}
+        assert self._query(mod, big) == big
+
+    def test_describe_over_cap_mentions_rows_hint(self, monkeypatch):
+        mod = _import_mod()
+        monkeypatch.setenv("AGNES_MCP_MAX_OUTPUT_CHARS", "500")
+        wide = {"columns": [{"name": "x", "type": "VARCHAR", "blob": "z" * 5000}]}
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            MC.return_value.__aenter__.return_value.get = AsyncMock(return_value=_mock_resp(wide))
+            with pytest.raises(MCPOutputTooLarge, match="rows"):
+                _run(mod.describe("t1"))

@@ -31,20 +31,24 @@ the four connector helpers (introspect/classify/test/materialize).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
 import duckdb
+from sqlalchemy import exc as sa_exc
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.identifier_validation import is_safe_identifier
 
+from src.repositories.mcp_source_oauth_clients import KEEP_STORED
 from app.secrets_vault import (
     VaultKeyNotConfiguredError,
+    can_store_secrets,
 )
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
@@ -56,7 +60,11 @@ from src.repositories import (
     shared_secrets_repo,
     tool_registry_repo,
 )
-from src.repositories.mcp_sources import MCPSourceRepository  # noqa: F401  # kept for type-only imports + tests that monkeypatch the symbol
+from src.repositories.mcp_sources import (  # noqa: F401  # MCPSourceRepository kept for type-only imports + tests that monkeypatch the symbol
+    MCPSourceRepository,
+    validate_oauth_scope_coupling,
+    validate_source_fields,
+)
 from src.repositories.tool_registry import (
     MATERIALIZE,
     PASSTHROUGH,
@@ -107,6 +115,33 @@ def _validate_scope(v: Optional[str]) -> str:
     return v
 
 
+def _validate_auth_method(v: Optional[str]) -> Optional[str]:
+    """Normalize ``auth_method`` at the API boundary, like ``transport`` and
+    ``scope`` already are.
+
+    Without this the column stored whatever the admin typed, and only SOME
+    readers normalized: a pasted ``"oauth "`` passed the coupling validator
+    and the repository guard (both strip), was persisted with the space, and
+    then read as NOT-oauth by ``update_mcp_source``'s flip check — which
+    purged every user's tokens and the client registration as if the admin
+    had deliberately turned OAuth off. ``_require_oauth_source`` then refused
+    to re-register the source, so a trailing space silently disconnected
+    everyone and bricked the source (invariant sweep on #1124).
+
+    Normalizing here means the column can only ever hold the canonical form,
+    which keeps every downstream ``.lower()`` honest.
+    """
+    if v is None:
+        return None
+    return v.strip().lower() or None
+
+
+#: Re-exported so the request models below 400 on a bad combo before the repo
+#: ever sees it. The rule itself lives with the repository that enforces it —
+#: it was a second copy here until it drifted (Devin Review on #1124).
+_validate_oauth_scope_coupling = validate_oauth_scope_coupling
+
+
 class CreateMCPSourceRequest(BaseModel):
     name: str
     transport: str
@@ -129,6 +164,16 @@ class CreateMCPSourceRequest(BaseModel):
     @classmethod
     def _check_scope(cls, v: Optional[str]) -> Optional[str]:
         return _validate_scope(v) if v is not None else None
+
+    @field_validator("auth_method")
+    @classmethod
+    def _check_auth_method(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_auth_method(v)
+
+    @model_validator(mode="after")
+    def _check_oauth_scope_coupling(self) -> "CreateMCPSourceRequest":
+        _validate_oauth_scope_coupling(self.auth_method, self.transport, self.scope or "shared")
+        return self
 
 
 class UpdateMCPSourceRequest(BaseModel):
@@ -162,6 +207,11 @@ class UpdateMCPSourceRequest(BaseModel):
     @classmethod
     def _check_scope(cls, v: Optional[str]) -> Optional[str]:
         return _validate_scope(v) if v is not None else None
+
+    @field_validator("auth_method")
+    @classmethod
+    def _check_auth_method(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_auth_method(v)
 
 
 class MaterializeRequest(BaseModel):
@@ -227,6 +277,84 @@ class UpdateToolRequest(BaseModel):
 
 class AddGrantRequest(BaseModel):
     group_id: str
+
+
+# ---------------------------------------------------------------------------
+# Request / response models — outbound OAuth client (2026-07-30 spec §2)
+# ---------------------------------------------------------------------------
+
+
+class OAuthRegisterRequest(BaseModel):
+    """Body for ``POST …/oauth/register`` — RFC 7591 dynamic registration.
+
+    Everything else (issuer, endpoints, PKCE support) is discovered live
+    from the source's own ``url``; ``scopes`` is the one admin override the
+    spec calls out (default empty — AS/resource defaults apply)."""
+
+    scopes: Optional[str] = None
+
+
+class OAuthClientConfigRequest(BaseModel):
+    """Body for ``PUT …/oauth/client`` — the manual escape hatch for an AS
+    without dynamic client registration.
+
+    ``issuer`` is optional: when omitted it defaults to the
+    ``authorization_endpoint``'s origin — the schema's ``issuer`` column is
+    NOT NULL but the spec's manual-config shape doesn't call out a separate
+    issuer field, so this keeps the escape hatch a 4-field form in the
+    common case (same-origin AS) while still accepting an explicit value
+    when the issuer differs from the endpoint host."""
+
+    client_id: str
+    client_secret: Optional[str] = None
+    authorization_endpoint: str
+    token_endpoint: str
+    issuer: Optional[str] = None
+    scopes: Optional[str] = None
+
+
+#: The tuple a stored user token is bound to. A token minted by one
+#: authorization server, for one client, at one pair of endpoints is useless
+#: — and dangerous to send — anywhere else, so a change to ANY of these
+#: invalidates every user's tokens for the source (Devin Review on #1124).
+_OAUTH_IDENTITY_FIELDS = ("issuer", "authorization_endpoint", "token_endpoint", "client_id")
+
+
+def _oauth_identity_changed(existing: Dict[str, Any], **written: Optional[str]) -> bool:
+    """True when the about-to-be-written client row addresses a different
+    authorization-server identity than the stored one.
+
+    Shared by the DCR re-register and the manual ``PUT …/oauth/client`` so the
+    two cannot drift — the manual path silently keeping tokens across an
+    endpoint repoint, while the DCR path dropped them, is exactly the
+    asymmetry this collapses.
+    """
+    return any((existing.get(k) or "") != (written.get(k) or "") for k in _OAUTH_IDENTITY_FIELDS)
+
+
+def _serialize_oauth_client(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Project an ``mcp_source_oauth_clients`` row to the API shape.
+
+    Write-only fields (``client_secret``, ``registration_access_token``) are
+    NEVER echoed back — same contract as the vault secret endpoints
+    (``has_vault_secret`` flag, never the value). ``has_client_secret``
+    mirrors that pattern here.
+    """
+    return {
+        "source_id": row.get("source_id"),
+        "issuer": row.get("issuer"),
+        "client_id": row.get("client_id"),
+        # Ciphertext presence, not decryptability: after a vault-key rotation
+        # the secret is unreadable but still THERE, and reporting False would
+        # tell an admin the registration is a public client when it is not
+        # (Devin Review on #1124).
+        "has_client_secret": bool(row.get("client_secret_present", row.get("client_secret"))),
+        "authorization_endpoint": row.get("authorization_endpoint"),
+        "token_endpoint": row.get("token_endpoint"),
+        "scopes": row.get("scopes"),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +434,21 @@ def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest)
     """Merge a partial source patch onto the existing row.
 
     Returns the kwargs dict to pass to ``MCPSourceRepository.upsert``.
+
+    Fields with a non-nullable default (``scope``, ``enabled``) are normalized
+    HERE rather than at the call sites. ``exclude_unset`` treats an explicit
+    JSON ``null`` as set, so ``{"scope": null}`` used to survive the merge as
+    ``None`` — and a caller that substituted a default while validating, but
+    passed this dict verbatim to ``upsert``, would validate one value and write
+    another. On the update path that divergence sat in front of the
+    irreversible credential purge: the request validated as ``'shared'``,
+    purged, and only then 400'd inside ``upsert`` on ``scope=None``. Normalizing
+    the merged row makes the validated value and the written value the same
+    object by construction, instead of by every call site remembering to use
+    the same expression (Devin Review on #1124).
     """
     data = patch.model_dump(exclude_unset=True)
-    return {
+    merged = {
         "id": existing["id"],
         "name": data.get("name", existing.get("name")),
         "transport": data.get("transport", existing.get("transport")),
@@ -322,9 +462,36 @@ def _merge_source_patch(existing: Dict[str, Any], patch: UpdateMCPSourceRequest)
             "enabled",
             bool(existing.get("enabled")) if existing.get("enabled") is not None else True,
         ),
-        "scope": data.get("scope", existing.get("scope") or "shared"),
+        "scope": data.get("scope", existing.get("scope")),
         "connect_hint": data.get("connect_hint", existing.get("connect_hint")),
     }
+    # Explicit-null semantics, and why they differ per field (asked on #1124):
+    # null means CLEAR for the nullable columns (`url`, `command`, `args`,
+    # `auth_method`, `auth_secret_env`, `connect_hint`) because it is the only
+    # way to clear them, and the admin UI relies on exactly that — its save
+    # handler sends `auth_method: <value> || null` and, on a transport switch,
+    # `url: null` / `command: null` to mean "unset this". Taking that away
+    # would leave no way to blank a field.
+    #
+    # `scope` and `enabled` are NOT nullable (`enabled BOOLEAN NOT NULL`;
+    # `scope` is validated against a fixed set), so "clear" has no meaning for
+    # them and null can only be noise from a client that serializes its unset
+    # optionals — fall back to the stored value, then the type's default.
+    # Coercing to the default instead silently re-enabled a source an admin had
+    # disabled (Devin Review on #1124).
+    if merged["enabled"] is None:
+        merged["enabled"] = bool(existing["enabled"]) if existing.get("enabled") is not None else True
+    merged["scope"] = merged["scope"] or existing.get("scope") or "shared"
+    # `name` belongs to the same non-nullable group (`name VARCHAR NOT NULL
+    # UNIQUE`). It was missed because the handler's own empty-name guard reads
+    # the PATCH (`payload.name is not None and not new_name`) and an explicit
+    # null never trips it, while `validate_source_fields` does not look at
+    # `name` at all — so a `{"name": null}` rode all the way past the
+    # irreversible credential purge and only died on the NOT NULL constraint,
+    # surfacing as a bogus "name_exists" 409 (Devin Review on #1124).
+    if merged["name"] is None:
+        merged["name"] = existing.get("name")
+    return merged
 
 
 def _merge_tool_patch(existing: Dict[str, Any], patch: UpdateToolRequest) -> Dict[str, Any]:
@@ -362,11 +529,25 @@ def _probe_caller_user_id(src: Dict[str, Any], user: dict) -> Optional[str]:
     preserving the pre-existing fallback behavior. The client's fail-closed
     rule (an identified caller never borrows the shared credential) is why
     this pre-check lives here rather than passing ``user["id"]`` blindly.
+
+    ``auth_method='oauth'`` sources have no ``mcp_user_secrets`` row at all
+    — the probe instead checks ``mcp_user_oauth_tokens`` for the calling
+    admin's own OAuth connection (2026-07-30 outbound MCP OAuth sources spec
+    §5), so an admin who has connected their own account gets probed under
+    it; otherwise the probe stays caller-less exactly like every other
+    per_user source with no stored credential.
     """
-    if (src.get("scope") or "shared") != "per_user":
+    if (src.get("scope") or "shared").strip().lower() != "per_user":
         return None
     try:
         if per_user_secrets_repo().get(src["id"], user["id"]):
+            return user["id"]
+    except Exception:  # vault/db unavailable — keep the legacy path
+        pass
+    try:
+        from src.repositories import mcp_user_oauth_tokens_repo
+
+        if mcp_user_oauth_tokens_repo().has(src["id"], user["id"]):
             return user["id"]
     except Exception:  # vault/db unavailable — keep the legacy path
         pass
@@ -436,7 +617,8 @@ async def create_mcp_source(
     except ValueError as exc:
         # transport/command/url validation errors from the repo
         raise HTTPException(status_code=400, detail=str(exc))
-    except duckdb.ConstraintException:
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
+        # Same duplicate name, same 409, either backend — see update_mcp_source.
         raise HTTPException(status_code=409, detail="name_exists")
     _audit(
         conn,
@@ -485,7 +667,22 @@ async def update_mcp_source(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Partial update. Audit row carries before/after for the changed fields."""
+    """Partial update. Audit row carries before/after for the changed fields.
+
+    **Changing ``url`` on an http/sse source discards every stored credential
+    for it** — the shared vault secret, all per-user secrets, and (when the
+    source is OAuth) its client registration, user tokens and in-flight flows.
+    This is irreversible and happens without a separate confirmation, because
+    a credential must never be forwarded to a host that did not issue it, and
+    a path-only edit can still be a different protected resource. Users
+    re-connect afterwards. The audit row records ``credentials_purged`` so the
+    effect is traceable after the fact.
+
+    Flipping a ``stdio`` source to http/sse purges too: it makes an already
+    stored ``url`` live for the first time. Editing ``url`` on a row that stays
+    ``stdio`` does not — there the secret goes into the subprocess environment
+    and the url is never read.
+    """
     repo = mcp_sources_repo()
     existing = repo.get(source_id)
     if not existing:
@@ -510,11 +707,109 @@ async def update_mcp_source(
         # exact silent failure this validation exists to prevent.
         merged["name"] = new_name
     before = {k: existing.get(k) for k in ("name", "transport", "command", "url", "enabled")}
+    # Validate the MERGED row against the repo's own rules before anything is
+    # written or purged. A partial update can flip auth_method to 'oauth' (or
+    # transport/scope away from what oauth requires) without ever mentioning
+    # the other two fields, so the patch alone is not enough to judge. Running
+    # the repo's validator — not a local restatement of it — is what keeps the
+    # purge below from firing for a request that is about to 400 anyway.
+    #
+    # Every value below is read straight out of `merged`, with no defaulting:
+    # substituting one here would validate a row that differs from the one
+    # `upsert` is handed, and the purge sits between the two. Defaults belong
+    # to _merge_source_patch, which applies them once.
+    try:
+        validate_source_fields(
+            transport=merged.get("transport"),
+            command=merged.get("command"),
+            url=merged.get("url"),
+            auth_method=merged.get("auth_method"),
+            scope=merged["scope"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    was_oauth = (existing.get("auth_method") or "").strip().lower() == "oauth"
+    still_oauth = (merged.get("auth_method") or "").strip().lower() == "oauth"
+    # Repointing `url` sends every stored credential for this source to a
+    # host that did not issue it. That is true of ALL credential kinds, not
+    # just OAuth: a `bearer` source's per-user token and a `shared` source's
+    # vault secret are forwarded as `Authorization` headers by the same seam,
+    # which reads the freshly-written url. Any change counts — a path-only
+    # edit can still be a different protected resource (Devin Review on #1124
+    # for the OAuth half; invariant sweep for the rest).
+    #
+    # It is only true where the url is LIVE, though. On a `stdio` row the
+    # secret is injected into the subprocess environment under
+    # `auth_secret_env` and `url` is never read at all — inert documentation.
+    # Purging there is pure data loss: an admin filling in or correcting that
+    # note would destroy the vault secret and every analyst's per-user secret
+    # for a field the credential never travels to (Devin Review on #1124).
+    #
+    # The gate is the NEW transport, which also covers the case that is not a
+    # url edit at all: flipping a stdio source to http/sse makes an already
+    # stored url live for the first time, so a secret minted for a subprocess
+    # starts being sent as an `Authorization` header to a host it was never
+    # meant for. Same exposure, so the same purge.
+    now_network = (merged.get("transport") or "") in ("http", "sse")
+    was_network = (existing.get("transport") or "") in ("http", "sse")
+    url_repointed = now_network and ((existing.get("url") or "") != (merged.get("url") or "") or not was_network)
+    # The purge runs BEFORE the row is repointed, deliberately. There is no
+    # transaction spanning the sources row and the vault tables, so one of the
+    # two orders has to lose on a mid-sequence failure — and they do not lose
+    # equally. Purge-last leaves the source already pointing at the new host
+    # with the old credentials still on file, i.e. exactly the state the purge
+    # exists to prevent, and the very next forward ships them to that host.
+    # Purge-first leaves credentials gone while the source still points at the
+    # old host: nothing is disclosed, and the recovery is the one this endpoint
+    # already documents — users re-connect. The failure modes an operator can
+    # actually trigger (invalid oauth coupling, name collision) are ruled out
+    # above so they cannot reach the purge (Devin Review on #1124).
+    # What the audit records must be what actually RAN, not the predicate that
+    # was expected to trigger it. Keying the flag off `url_repointed` alone
+    # missed the second branch entirely: flipping `auth_method` off oauth
+    # destroys every analyst's tokens and the client registration with
+    # `url_repointed` False, so the row said nothing was purged while an
+    # operator hunting "why did everyone lose access" saw an ordinary field
+    # edit (Devin Review on #1124).
+    purged: List[str] = []
+    if url_repointed:
+        # Per-user secrets go through the factory — a raw repo would write to
+        # the always-DuckDB connection and orphan rows on a PG instance.
+        shared_secrets_repo().delete(source_id)
+        pu_secrets = per_user_secrets_repo()
+        for uid in pu_secrets.list_for_source(source_id):
+            pu_secrets.delete(source_id, uid)
+        purged.append("vault_secrets")
+    if (was_oauth and not still_oauth) or (was_oauth and still_oauth and url_repointed):
+        # Flipping away from oauth strands the OAuth trio — the client
+        # registration, every user's tokens, and in-flight flows are useless
+        # under any other auth_method and must not linger as orphaned
+        # credential material (Devin Review on #1124). Flipping BACK later
+        # means re-registering + users re-connecting, same as a new source.
+        from src.repositories import (
+            mcp_oauth_flows_repo,
+            mcp_source_oauth_clients_repo,
+            mcp_user_oauth_tokens_repo,
+        )
+
+        mcp_user_oauth_tokens_repo().delete_for_source(source_id)
+        mcp_oauth_flows_repo().delete_for_source(source_id)
+        mcp_source_oauth_clients_repo().delete(source_id)
+        purged.append("oauth_client_and_tokens")
+
     try:
         repo.upsert(**merged)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except duckdb.ConstraintException:
+    except (duckdb.ConstraintException, sa_exc.IntegrityError):
+        # The pre-check above rules this out for everything except a rename
+        # racing a concurrent one, so it is the last narrow window where the
+        # purge has already run. Both backends must land on the same 409 —
+        # on Postgres the unique violation arrives as SQLAlchemy
+        # IntegrityError, which fell through to a 500 and, now that the purge
+        # runs first, would have reported an internal error for a request that
+        # had already dropped the source's credentials (Devin Review on #1124).
         raise HTTPException(status_code=409, detail="name_exists")
     fresh = repo.get(source_id)
     after = {k: (fresh or {}).get(k) for k in ("name", "transport", "command", "url", "enabled")}
@@ -523,7 +818,12 @@ async def update_mcp_source(
         user["id"],
         "mcp_source.update",
         f"mcp_source:{source_id}",
-        {"after": after},
+        # credentials_purged is recorded because the purge is irreversible
+        # and is a side effect of an ordinary field edit — without it the
+        # audit trail shows a url change and no trace of what it destroyed
+        # (review finding on #1124). purged_kinds names WHICH, since the two
+        # branches fire independently and cost the operator different things.
+        {"after": after, "credentials_purged": bool(purged), "purged_kinds": purged},
         params_before={"before": before},
     )
     return (
@@ -557,6 +857,18 @@ async def delete_mcp_source(
     pu_secrets = per_user_secrets_repo()
     for uid in pu_secrets.list_for_source(source_id):
         pu_secrets.delete(source_id, uid)
+    # OAuth trio: every user's tokens, in-flight PKCE flows, and Agnes's own
+    # client registration for this source — a deleted source must leave no
+    # orphaned credential material (Devin Review on #1124).
+    from src.repositories import (
+        mcp_oauth_flows_repo,
+        mcp_source_oauth_clients_repo,
+        mcp_user_oauth_tokens_repo,
+    )
+
+    mcp_user_oauth_tokens_repo().delete_for_source(source_id)
+    mcp_oauth_flows_repo().delete_for_source(source_id)
+    mcp_source_oauth_clients_repo().delete(source_id)
     _audit(
         conn,
         user["id"],
@@ -630,6 +942,413 @@ async def delete_mcp_source_secret(
         f"mcp_source:{source_id}",
         {},
     )
+
+
+# ---------------------------------------------------------------------------
+# Outbound OAuth client registration (2026-07-30 spec §2)
+# ---------------------------------------------------------------------------
+
+
+def _url_origin(url: str) -> str:
+    """``scheme://netloc`` of ``url`` — used as the default ``issuer`` for a
+    manually-configured OAuth client when the admin omits it."""
+    from urllib.parse import urlparse
+
+    parts = urlparse(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _require_oauth_source(src: Dict[str, Any]) -> None:
+    if (src.get("auth_method") or "").lower() != "oauth":
+        raise HTTPException(
+            status_code=400,
+            detail="source is not configured with auth_method='oauth'",
+        )
+
+
+def _oauth_redirect_uri() -> str:
+    """``{server_url}/api/mcp/oauth-client/callback`` — the outbound
+    client's callback path, deliberately distinct from the inbound issuer's
+    ``/api/mcp/oauth/*`` (spec §3 routing note)."""
+    from app.instance_config import get_public_url
+
+    base = get_public_url()
+    if not base:
+        raise HTTPException(
+            status_code=409,
+            detail="server.public_url is not configured — required to build the OAuth redirect_uri",
+        )
+    return f"{base}/api/mcp/oauth-client/callback"
+
+
+@router.post("/mcp-sources/{source_id}/oauth/register")
+async def register_oauth_client(
+    source_id: str,
+    payload: Optional[OAuthRegisterRequest] = None,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """RFC 9728 + RFC 8414 discovery, PKCE-S256 fail-closed check, RFC 7591
+    dynamic client registration against the source's own authorization
+    server. Idempotent — a second call replaces the row, best-effort
+    revoking the OLD registration first (spec §2 step 5).
+    """
+    from connectors.mcp.oauth_client import (
+        OAuthDiscoveryError,
+        best_effort_revoke_registration,
+        build_oauth_http_client,
+        discover_as_metadata,
+        discover_protected_resource_metadata,
+        register_dynamic_client,
+        require_https_endpoints,
+        require_pkce_s256,
+        resolve_issuer,
+    )
+
+    import httpx
+
+    from src.net.ssrf_safe_client import SSRFRejected
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    src_repo = mcp_sources_repo()
+    src = src_repo.get(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_oauth_source(src)
+    if not src.get("url"):
+        raise HTTPException(status_code=400, detail="source has no 'url' to discover OAuth metadata from")
+
+    redirect_uri = _oauth_redirect_uri()
+    scopes = payload.scopes if payload else None
+    clients_repo = mcp_source_oauth_clients_repo()
+    existing = clients_repo.get(source_id)
+
+    try:
+        async with build_oauth_http_client() as http_client:
+            resource_meta = await discover_protected_resource_metadata(src["url"], client=http_client)
+            issuer = resolve_issuer(resource_meta)
+            as_metadata = await discover_as_metadata(issuer, client=http_client)
+            require_https_endpoints(as_metadata)
+            require_pkce_s256(as_metadata)
+
+            # Register the NEW client first, revoke the OLD one only after
+            # success — revoke-then-register left a failure window where the
+            # stored row pointed at a cancelled registration and every user
+            # silently lost access (Devin Review on #1124). A failed revoke
+            # merely leaves a dangling upstream registration (harmless).
+            registered = await register_dynamic_client(
+                as_metadata,
+                redirect_uri=redirect_uri,
+                scopes=scopes,
+                client=http_client,
+            )
+
+            # Only when the AS actually minted a DIFFERENT identity. RFC 7591
+            # does not require a fresh client_id per registration — an AS that
+            # dedupes on client_name/redirect_uris hands back the SAME one, and
+            # revoking it would delete the registration just re-issued, leaving
+            # the stored row pointing at nothing and every token call failing
+            # with invalid_client (Devin Review on #1124). Same guard the user-
+            # token purge below already carries.
+            if existing and existing["client_id"] != registered.client_id:
+                await best_effort_revoke_registration(
+                    registration_endpoint=as_metadata.get("registration_endpoint"),
+                    client_id=existing["client_id"],
+                    registration_access_token=existing.get("registration_access_token"),
+                    client=http_client,
+                )
+    except OAuthDiscoveryError as exc:
+        raise HTTPException(status_code=502, detail=f"oauth_discovery_failed: {_exc_summary(exc)}")
+    except SSRFRejected as exc:
+        # The discovery target (or an endpoint it advertised) resolved to a
+        # blocked address — an admin-actionable configuration problem, not an
+        # internal error (Devin Review on #1124).
+        raise HTTPException(status_code=400, detail=f"oauth_endpoint_rejected: {_exc_summary(exc)}")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"oauth_discovery_failed: {_exc_summary(exc)}")
+
+    # Same "keep what's on file" rule the manual PUT carries, for the same
+    # reason: a write of this row must not drop a field just because the
+    # inbound side had nothing to say about it. RFC 7591 does not require an
+    # AS to re-issue anything on a deduped registration, so an AS that hands
+    # back the SAME client_id may answer with no client_secret and no
+    # registration access token — passing those through wipes both. Losing the
+    # RAT silently disables upstream deregistration (best_effort_revoke_
+    # registration no-ops without one); losing the secret is worse, demoting a
+    # confidential registration to a public one so _client_auth_kwargs stops
+    # sending Basic auth and every token call fails. A DIFFERENT client_id is
+    # a new registration and replaces both wholesale (Devin Review on #1124
+    # for the RAT; the secret has the same exposure).
+    # Same predicate as the manual PUT and as the token purge below: discovery
+    # can hand back new endpoints for an unchanged client_id, and a secret
+    # minted by the old authorization server must not be paired with the new
+    # one (Devin Review on #1124).
+    same_client = bool(existing) and not _oauth_identity_changed(
+        existing,
+        issuer=registered.issuer,
+        authorization_endpoint=registered.authorization_endpoint,
+        token_endpoint=registered.token_endpoint,
+        client_id=registered.client_id,
+    )
+    keep_secret = registered.client_secret
+    if keep_secret is None and same_client:
+        keep_secret = existing.get("client_secret")
+        if keep_secret is None and existing.get("client_secret_present"):
+            # Stored ciphertext we can no longer open (vault key rotated).
+            # Unlike the manual PUT, refusing here is not an option — the DCR
+            # call upstream has already happened, so a 409 would strand it.
+            # Say so instead of demoting the registration in silence.
+            logger.warning(
+                "mcp oauth re-register: source %s keeps client_id %s but its stored client secret is "
+                "undecryptable and the AS returned none — the registration is being written as a public "
+                "client. Re-enter the secret via PUT .../oauth/client if it is a confidential one.",
+                source_id,
+                registered.client_id,
+            )
+    keep_rat = registered.registration_access_token
+    if keep_rat is None and same_client:
+        keep_rat = existing.get("registration_access_token")
+        if keep_rat is None and existing.get("registration_access_token_present"):
+            # Present but unreadable under the current vault key. `get()` cannot
+            # distinguish that from "no token", so writing the decrypted None
+            # back would destroy still-valid ciphertext and silently disable
+            # upstream deregistration forever — best_effort_revoke_registration
+            # returns early without a token. Preserve the column instead
+            # (Devin Review on #1124).
+            keep_rat = KEEP_STORED
+    # The one operator-triggerable failure of the write below is a missing
+    # vault key. Check it here so a request that is going to 409 cannot first
+    # destroy everyone's tokens (the write itself still raises, for the race).
+    # Two things the check must NOT do, both of which would refuse a request
+    # that works: fire in local-dev mode, where encrypt_secret falls back to
+    # the ephemeral key on purpose, and fire for a public PKCE client, which
+    # stores no secret material and so never reaches encrypt_secret at all
+    # (Devin Review on #1124).
+    if (keep_secret or keep_rat) and not can_store_secrets():
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        )
+    # Ordering, deliberately: the purge runs BEFORE the client row is written.
+    # There is no transaction spanning mcp_source_oauth_clients and
+    # mcp_user_oauth_tokens, so a failure between them has to land somewhere,
+    # and purge-last lands it in the dangerous place — the client row already
+    # addressing the NEW authorization server while the OLD server's refresh
+    # tokens are still on file. connectors/mcp/client.py's refresh path reads
+    # token_endpoint / client_id / client_secret straight off that fresh row,
+    # so the next forward POSTs the old server's refresh token, and the client
+    # secret via Basic auth, to the new host. Purge-first leaves the row
+    # untouched instead: users re-connect, nothing is disclosed. Same rule and
+    # same reasoning as the source `url` repoint in update_mcp_source
+    # (Devin Review on #1124).
+    # A stored token is only usable against the exact (issuer, endpoints,
+    # client_id) it was minted for, so ANY change to that tuple strands it —
+    # discovery can hand back new endpoints for the same client_id just as
+    # easily as a new client_id. They keep working until they expire, then
+    # refresh against whatever is now on the row: a spec-compliant AS answers
+    # invalid_grant (clean reconnect prompt) but others answer invalid_client,
+    # which is not classified as invalid_grant — the user would be stuck on an
+    # opaque upstream 401 indefinitely. Drop them so the next call asks for a
+    # reconnect straight away (Devin Review on #1124). Same predicate as the
+    # manual PUT below; keep the two in step.
+    if existing and _oauth_identity_changed(
+        existing,
+        issuer=registered.issuer,
+        authorization_endpoint=registered.authorization_endpoint,
+        token_endpoint=registered.token_endpoint,
+        client_id=registered.client_id,
+    ):
+        from src.repositories import mcp_oauth_flows_repo, mcp_user_oauth_tokens_repo
+
+        mcp_user_oauth_tokens_repo().delete_for_source(source_id)
+        mcp_oauth_flows_repo().delete_for_source(source_id)
+    try:
+        clients_repo.upsert(
+            source_id,
+            issuer=registered.issuer,
+            client_id=registered.client_id,
+            authorization_endpoint=registered.authorization_endpoint,
+            token_endpoint=registered.token_endpoint,
+            client_secret=keep_secret,
+            registration_access_token=keep_rat,
+            scopes=registered.scopes,
+        )
+    except VaultKeyNotConfiguredError as exc:
+        # The DCR registration already happened upstream; the next successful
+        # register re-registers and best-effort revokes it. Same actionable
+        # 409 the other credential endpoints give (Devin Review on #1124).
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
+    _audit(
+        conn,
+        user["id"],
+        "mcp_oauth.client_register",
+        f"mcp_source:{source_id}",
+        {
+            "method": "dcr",
+            "issuer": registered.issuer,
+            "client_id": registered.client_id,
+            "re_registered": bool(existing),
+        },
+    )
+    fresh = clients_repo.get(source_id)
+    return _serialize_oauth_client(fresh) if fresh else {"source_id": source_id}
+
+
+@router.put("/mcp-sources/{source_id}/oauth/client")
+async def set_oauth_client_config(
+    source_id: str,
+    payload: OAuthClientConfigRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Manual OAuth client configuration — the escape hatch for an
+    authorization server without dynamic client registration (spec §2).
+
+    Same https + SSRF-safe validation as the discovered path, even though
+    no outbound call happens here: these endpoint URLs get dialed for real
+    at token exchange/refresh time, so a bad (internal/metadata) URL must
+    be rejected at configuration time, not silently accepted and only
+    caught when a real caller triggers a forward.
+    """
+    from src.net.ssrf_safe_client import resolve_safe
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    src_repo = mcp_sources_repo()
+    src = src_repo.get(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    _require_oauth_source(src)
+
+    for field, url in (
+        ("authorization_endpoint", payload.authorization_endpoint),
+        ("token_endpoint", payload.token_endpoint),
+    ):
+        # resolve_safe() does a BLOCKING socket.getaddrinfo(); this is an
+        # `async def` handler, so calling it inline stalls the whole process's
+        # event loop for the resolver timeout, twice per save. Same hazard —
+        # and same remedy — as SSRFGuardAsyncTransport (Devin Review on #1124).
+        ok, reason, _ip = await asyncio.to_thread(resolve_safe, url, https_only=True)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"{field} failed SSRF/https validation: {reason}")
+
+    issuer = payload.issuer or _url_origin(payload.authorization_endpoint)
+
+    clients_repo = mcp_source_oauth_clients_repo()
+    # A PUT that leaves the registration's IDENTITY alone is a tweak (scopes,
+    # a re-typed secret) — keep the stored secret and registration access
+    # token, since a form re-save has nothing to resubmit for a write-only
+    # field. Anything that moves the identity replaces the registration, and
+    # the old credentials belong to the old one.
+    #
+    # "Identity" is the same four fields the token purge below uses, NOT
+    # client_id alone. Keying retention on client_id let the two disagree for
+    # the request where it matters most: repointing issuer/token_endpoint at a
+    # DIFFERENT authorization server while re-typing the same client name
+    # purged the user tokens (identity changed) yet kept the previous
+    # provider's client secret — which _client_auth_kwargs then sends as HTTP
+    # Basic to the new token_endpoint, and best_effort_revoke_registration
+    # bearer-sends the retained registration token to the new provider too
+    # (Devin Review on #1124).
+    existing = clients_repo.get(source_id)
+    same_client = bool(existing) and not _oauth_identity_changed(
+        existing,
+        issuer=issuer,
+        authorization_endpoint=payload.authorization_endpoint,
+        token_endpoint=payload.token_endpoint,
+        client_id=payload.client_id,
+    )
+    keep_rat = existing.get("registration_access_token") if same_client else None
+    if keep_rat is None and same_client and existing.get("registration_access_token_present"):
+        # See register_oauth_client: a decrypted None cannot round-trip a
+        # column the current vault key can no longer open, and overwriting it
+        # loses the only means of deregistering upstream.
+        keep_rat = KEEP_STORED
+    # The secret is write-only over the API (GET never echoes it), so a form
+    # re-saving scopes has nothing to resubmit and arrives with
+    # client_secret=None. Treat that as "leave it alone" for an UNCHANGED
+    # identity — passing it through wipes client_secret_enc and breaks every
+    # user's refresh (Devin Review on #1124). An explicit "" still clears it
+    # for a public PKCE-only client, and a changed identity replaces the
+    # registration and its secret wholesale.
+    client_secret = payload.client_secret
+    if client_secret is None and same_client:
+        client_secret = existing.get("client_secret")
+        if client_secret is None and existing.get("client_secret_present"):
+            # The column holds ciphertext we can no longer open (vault key
+            # rotated). Carrying the decrypted None forward would write NULL
+            # and silently demote a confidential registration to a public
+            # PKCE-only one — _client_auth_kwargs would stop sending Basic
+            # auth. Refusing is the honest move: the admin either re-enters
+            # the secret or clears it deliberately (Devin Review on #1124).
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "client_secret_undecryptable: a client secret is stored for this source but "
+                    "cannot be decrypted with the current vault key. Re-send it explicitly to "
+                    'replace it, or send "" to clear it and convert this to a public client.'
+                ),
+            )
+    # See the same check in register_oauth_client: match the predicate
+    # encrypt_secret actually guards on (a key, OR local dev), and skip it
+    # entirely when there is no secret material to encrypt.
+    if (client_secret or keep_rat) and not can_store_secrets():
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        )
+    # Ordering, deliberately: the purge runs BEFORE the client row is written.
+    # There is no transaction spanning mcp_source_oauth_clients and
+    # mcp_user_oauth_tokens, so a failure between them has to land somewhere,
+    # and purge-last lands it in the dangerous place — the client row already
+    # addressing the NEW authorization server while the OLD server's refresh
+    # tokens are still on file. connectors/mcp/client.py's refresh path reads
+    # token_endpoint / client_id / client_secret straight off that fresh row,
+    # so the next forward POSTs the old server's refresh token, and the client
+    # secret via Basic auth, to the new host. Purge-first leaves the row
+    # untouched instead: users re-connect, nothing is disclosed. Same rule and
+    # same reasoning as the source `url` repoint in update_mcp_source
+    # (Devin Review on #1124). ANY change to the (issuer, endpoints, client_id)
+    # tuple strands the tokens, not just a client_id swap — repointing
+    # token_endpoint while keeping client_id is the dangerous case.
+    if existing and _oauth_identity_changed(
+        existing,
+        issuer=issuer,
+        authorization_endpoint=payload.authorization_endpoint,
+        token_endpoint=payload.token_endpoint,
+        client_id=payload.client_id,
+    ):
+        from src.repositories import mcp_oauth_flows_repo, mcp_user_oauth_tokens_repo
+
+        mcp_user_oauth_tokens_repo().delete_for_source(source_id)
+        mcp_oauth_flows_repo().delete_for_source(source_id)
+    try:
+        clients_repo.upsert(
+            source_id,
+            issuer=issuer,
+            client_id=payload.client_id,
+            authorization_endpoint=payload.authorization_endpoint,
+            token_endpoint=payload.token_endpoint,
+            client_secret=client_secret,
+            registration_access_token=keep_rat,
+            scopes=payload.scopes,
+        )
+    except VaultKeyNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
+    _audit(
+        conn,
+        user["id"],
+        "mcp_oauth.client_register",
+        f"mcp_source:{source_id}",
+        {"method": "manual", "issuer": issuer, "client_id": payload.client_id},
+    )
+    fresh = clients_repo.get(source_id)
+    return _serialize_oauth_client(fresh) if fresh else {"source_id": source_id}
 
 
 # ---------------------------------------------------------------------------

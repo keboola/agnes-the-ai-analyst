@@ -2,6 +2,10 @@
 
 LOCAL_DEV_COMPOSE := -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.local-dev.yml
 
+# Prefer the project venv over whatever `python` happens to be on PATH — the
+# generator targets below need the project's dependencies installed.
+PYTHON := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+
 .PHONY: help test lint dev docker local-dev local-dev-down local-dev-logs update-openapi-snapshot
 
 help:
@@ -42,5 +46,10 @@ lint:
 	@ruff check . 2>/dev/null || echo "ruff not installed: pip install ruff"
 
 update-openapi-snapshot:
-	TESTING=1 python scripts/generate_openapi.py > tests/snapshots/openapi.json
+	@# Generate to a temp file first: the shell truncates a `>` target BEFORE
+	@# running the command, so a generator that fails (a missing dep, an import
+	@# error) left the committed snapshot empty — and the freshness test then
+	@# reports the whole API as removed instead of the real problem.
+	TESTING=1 $(PYTHON) scripts/generate_openapi.py > tests/snapshots/openapi.json.tmp
+	mv tests/snapshots/openapi.json.tmp tests/snapshots/openapi.json
 	@echo "Snapshot updated. Review diff and commit."

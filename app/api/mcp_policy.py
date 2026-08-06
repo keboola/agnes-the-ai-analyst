@@ -31,6 +31,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.instance_config import get_public_url
@@ -226,6 +227,50 @@ class PerUserCredentialMissing(Exception):
         super().__init__(msg)
 
 
+def _oauth_credential_missing(source_id: str, caller_user_id: str) -> bool:
+    """True iff the caller's ``mcp_user_oauth_tokens`` row is absent, OR
+    present but expired with no refresh token to renew it at call time
+    (2026-07-30 outbound MCP OAuth sources spec §4).
+
+    A present-but-expired row that STILL carries a refresh token is not
+    "missing" — ``connectors.mcp.client`` refreshes it transparently on the
+    next forward. Only the unrefreshable case (dead end, forces re-connect)
+    counts as missing, same bar as ``invalid_grant`` deleting the row
+    outright in the client's refresh path.
+    """
+    from src.repositories import mcp_user_oauth_tokens_repo
+
+    row = mcp_user_oauth_tokens_repo().get(source_id, caller_user_id)
+    if row is None:
+        return True
+    expires_at = row.get("expires_at")
+    if expires_at is None:
+        return False  # non-expiring / unknown expiry — treat as present
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at > datetime.now(timezone.utc):
+        return False  # not expired yet
+    if not row.get("refresh_token"):
+        return True
+    # Expired WITH a refresh token — renewable only if the source still has
+    # an OAuth client registration to refresh against. Without one the client
+    # would forward the stale token and surface an opaque upstream 401
+    # instead of this remedy (Devin Review on #1124).
+    from src.repositories import mcp_source_oauth_clients_repo
+
+    return mcp_source_oauth_clients_repo().get(source_id) is None
+
+
+def oauth_connection_usable(source_id: str, caller_user_id: str) -> bool:
+    """Status-surface twin of :func:`_oauth_credential_missing`: True iff the
+    caller's OAuth connection would pass ``enforce_per_user_credential`` right
+    now. The /me/connections page, the admin "Your connection" card, and
+    ``GET …/my-secret`` must use THIS — not bare row existence — so a lapsed,
+    unrenewable connection never shows a green "Connected" badge while every
+    actual call 403s (Devin Review on #1130)."""
+    return not _oauth_credential_missing(source_id, caller_user_id)
+
+
 def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional[str]) -> None:
     """Fail closed when a ``per_user`` source lacks the caller's own credential.
 
@@ -237,6 +282,12 @@ def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional
     borrow the shared credential). Refuse here with an actionable message
     instead of letting it degrade to an opaque upstream auth error.
 
+    ``auth_method='oauth'`` sources (always ``scope='per_user'`` — enforced
+    at ``MCPSourceRepository.upsert()``) route through
+    :func:`_oauth_credential_missing` instead of the secret-vault lookup —
+    same ``PerUserCredentialMissing`` exception, same remedy string, so
+    every caller-facing 403 reads identically regardless of credential kind.
+
     Shared by the REST endpoint and the SSE / Streamable-HTTP transport
     closures so the pre-forward guard can't drift. No-op for shared sources and
     for the caller-less (materialize) path, which legitimately rides the shared
@@ -247,6 +298,14 @@ def enforce_per_user_credential(source: Dict[str, Any], caller_user_id: Optional
     if not caller_user_id:
         # Caller-less materialize path — shared vault is the intended source.
         return
+    if (source.get("auth_method") or "").lower() == "oauth":
+        if _oauth_credential_missing(source["id"], caller_user_id):
+            raise PerUserCredentialMissing(
+                source_label=source.get("name") or source["id"],
+                source_id=source["id"],
+            )
+        return
+
     from src.repositories import per_user_secrets_repo
 
     if not per_user_secrets_repo().get(source["id"], caller_user_id):

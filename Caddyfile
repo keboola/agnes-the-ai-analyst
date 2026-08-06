@@ -144,3 +144,115 @@
 		file_server
 	}
 }
+
+# Legacy-domain handler, for the window of a domain migration. Set
+# DOMAIN_ALIAS to a hostname you are moving AWAY from: Caddy then serves that
+# name too, with its own cert, instead of failing the TLS handshake the moment
+# DOMAIN changes — which is what would otherwise break old bookmarks, `agnes`
+# CLI configs pointing at `server`, and MCP connector URLs, with a certificate
+# error rather than a path onto the new address. Drop the variable once the
+# old DNS record is retired.
+#
+# Two audiences, two answers. A person arriving in a browser gets a short
+# notice page telling them the address changed and what still points at the
+# old one — a silent redirect moves them along but never tells them to update
+# the bookmark, so the old name stays in circulation right up until it dies.
+# Everything else — the CLI, MCP clients, `agnes pull` — gets the plain 308,
+# because an HTML notice served to a machine client is just a confusing parse
+# error. The split is on `Accept: text/html`, which browsers send on
+# navigation and API clients do not.
+#
+# Why a second site block and not `DOMAIN="new.example.com, old.example.com"`:
+# Caddyfile env substitution is token-level, so a comma list inside ONE
+# variable is parsed as a single malformed address, not two site addresses.
+#
+# The default is deliberately `127.0.0.1:8081` — a port docker-compose never
+# publishes, so an unconfigured deployment gets an inert block. Two properties
+# of that default are load-bearing:
+#   - NON-PUBLIC. Any resolvable name would make every Agnes deployment
+#     attempt an ACME issuance for it on each start.
+#   - a different HOSTNAME from the primary site's own `localhost` default,
+#     not merely a different port. Sharing a hostname across two site blocks
+#     with different certificate settings is a hard config error — "hostname
+#     appears in more than one automation policy, making certificate
+#     management ambiguous" — and Caddy then refuses to start at all, which
+#     on a DOMAIN-less lab deployment means no server rather than no alias.
+{$DOMAIN_ALIAS:127.0.0.1:8081} {
+	# NO `tls` directive here, deliberately — do not "fix" this by mirroring
+	# the primary site's {$CADDY_TLS}. An explicit `tls <email>` pins an ACME
+	# issuer for the site, which overrides Caddy's per-name issuer choice: the
+	# inert localhost default then loops forever on
+	#   [localhost] Obtain: subject 'localhost' does not qualify for a public
+	#   certificate ... retrying_in 60
+	# on EVERY deployment that never set DOMAIN_ALIAS (verified live against
+	# caddy:2-alpine; the same run without the directive logs `certificate
+	# obtained successfully, issuer: local`). Left implicit, automatic HTTPS
+	# picks the right issuer per name — internal for the localhost default,
+	# public ACME for a real alias hostname. The alias's ACME account carries
+	# no contact email (CADDY_TLS's email belongs to the primary site's
+	# policy); that costs only expiry notices on a cert that exists for the
+	# length of a migration. A corporate-PKI deployment (CADDY_TLS unset,
+	# certs on disk) that sets DOMAIN_ALIAS should instead put both names on
+	# one SAN cert — this block would try public ACME for the legacy name.
+
+	# Browser navigation → the notice page. HEAD is included so a probe sees
+	# the same status as the GET it precedes.
+	@browser {
+		method GET HEAD
+		header Accept *text/html*
+	}
+	handle @browser {
+		header Content-Type "text/html; charset=utf-8"
+		# Deliberately no <style> block: Caddy substitutes placeholders in a
+		# `respond` body, and a CSS rule's braces read as placeholder syntax.
+		# Every style here is therefore an inline attribute.
+		#
+		# {$DOMAIN} is resolved once at config-parse time and is the ONLY
+		# placeholder here. {uri} is deliberately absent: Go leaves the query
+		# string raw in RequestURI(), so reflecting it into an href= or
+		# content= attribute lets `?x="><…>` inject markup into a response
+		# served by the legacy hostname — an origin browsers still hold
+		# cookies for during the migration. The deep link is not worth a
+		# reflected-XSS vector on that origin; the non-browser branch below
+		# still carries {uri} in a Location header, where it cannot become
+		# markup (Devin Review on #1182).
+		respond <<HTML
+			<!doctype html>
+			<html lang="en">
+			<head>
+			<meta charset="utf-8">
+			<meta name="viewport" content="width=device-width,initial-scale=1">
+			<title>This address has moved</title>
+			<meta http-equiv="refresh" content="15;url=https://{$DOMAIN:localhost}/">
+			</head>
+			<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f6f7f9;color:#1b1f24;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+			<main style="max-width:32rem;padding:2rem">
+			<p style="margin:0 0 .5rem;font-size:.75rem;letter-spacing:.09em;text-transform:uppercase;color:#6b7280">Address changed</p>
+			<h1 style="margin:0 0 1rem;font-size:1.5rem;font-weight:600;line-height:1.3">This instance has moved to a new address</h1>
+			<p style="margin:0 0 1.5rem;line-height:1.6;color:#374151">You reached it on its old hostname. That name still answers for now, but it stops working once the old DNS record is retired.</p>
+			<p style="margin:0 0 1.5rem"><a href="https://{$DOMAIN:localhost}/" style="display:inline-block;padding:.7rem 1.15rem;border-radius:.5rem;background:#2563eb;color:#fff;font-weight:600;text-decoration:none">Continue to {$DOMAIN:localhost}</a></p>
+			<p style="margin:0;line-height:1.6;font-size:.9rem;color:#6b7280">Please update anything still pointing here: browser bookmarks, the <code>server</code> entry in your <code>agnes</code> CLI config, and any connector configured with this hostname. Taking you there automatically in 15 seconds.</p>
+			</main>
+			</body>
+			</html>
+			HTML 200
+	}
+
+	# Everything else — API clients, the CLI, MCP. 308, not 301: both are
+	# permanent and equally cacheable, but clients re-issue a 301 on
+	# POST/PUT/PATCH as a GET with the body dropped, and this branch is
+	# precisely the one carrying `agnes push` and MCP JSON-RPC. A 301 here
+	# would break what the alias exists to carry. 308 preserves method and
+	# body; {uri} carries path + query through unchanged
+	# (Devin Review on #1182).
+	#
+	# What no redirect can fix: the `agnes` CLI does not follow redirects at all
+	# (`cli/client.py` omits `follow_redirects`; the parquet path refuses them),
+	# and a client that did would lose Authorization on a cross-host hop. So for
+	# the CLI this turns a TLS failure into a legible HTTP error rather than
+	# working transparently. Browser-grade safety net; API callers still need
+	# repointing — see docs/DEPLOYMENT.md.
+	handle {
+		redir https://{$DOMAIN:localhost}{uri} 308
+	}
+}

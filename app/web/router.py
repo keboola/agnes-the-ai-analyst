@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Depends, Form, Request, HTTPException
+from fastapi import APIRouter, Depends, Form, Request, HTTPException, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
@@ -1087,6 +1087,12 @@ async def mcp_connect_page(
 
     Any authenticated user (not admin-only) can reach this page.
     """
+    # Entry points: the AI Connector page (`/me/ai-connector`) links here as the
+    # token fallback to its OAuth flow, plus a Cmd/Ctrl-K palette entry. It is
+    # deliberately NOT a nav item — "connect an AI client" is one job and
+    # `/me/ai-connector` owns it. Both links are guarded by
+    # `tests/test_web_nav_agents.py`; don't drop them. (Comment, not docstring:
+    # FastAPI copies docstrings into the OpenAPI description.)
     ctx = _build_context(
         request,
         user=user,
@@ -1103,17 +1109,60 @@ async def me_connections_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Self-service page: connect / replace / test / remove your own credential
-    for the per_user MCP sources you are granted. Any authenticated user."""
+    for the per_user MCP sources you are granted. Any authenticated user.
+
+    ``auth_method='oauth'`` sources (2026-07-30 outbound MCP OAuth sources
+    spec §3) report against ``mcp_user_oauth_tokens`` instead of the
+    vault-backed per-user secrets table — same card, a Connect/Disconnect
+    button in place of the paste-field (template branches on
+    ``s.auth_kind``)."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.markdown_render import render_safe
-    from src.repositories import mcp_sources_repo, per_user_secrets_repo
+    from src.repositories import mcp_sources_repo, mcp_user_oauth_tokens_repo, per_user_secrets_repo
 
     granted_ids = {t["source_id"] for t in _visible_passthrough_tools(user)}
+    # Caller-relative (`granted_ids`) and source-level (`sourced_ids`) are two
+    # different questions, and the card needs both: "this source has no tools
+    # yet" is a property of the source, while "no tools are granted to me" is a
+    # property of the viewer. They coincide for an admin, which is how the
+    # conflation survived — for a revoked non-admin, whose card this PR
+    # deliberately keeps visible, it told them the source was unfinished rather
+    # than that they had lost access (Devin Review on #1167).
+    from src.repositories import tool_registry_repo
+    from src.repositories.tool_registry import PASSTHROUGH
+
+    sourced_ids = {t["source_id"] for t in tool_registry_repo().list_by_mode(PASSTHROUGH, enabled_only=True)}
+    caller_is_admin = is_user_admin(user["id"], conn)
     sources = []
     for src in mcp_sources_repo().list_all(enabled_only=True):
-        if src["id"] not in granted_ids:
-            continue
         if (src.get("scope") or "shared").lower() != "per_user":
+            continue
+        is_oauth = (src.get("auth_method") or "").lower() == "oauth"
+        if is_oauth:
+            from app.api.mcp_policy import oauth_connection_usable
+
+            token_row = mcp_user_oauth_tokens_repo().get(src["id"], user["id"])
+            # Same validity rule the server enforces at call time — a lapsed,
+            # unrenewable token must show Connect, not a green Connected pill
+            # (Devin Review on #1130).
+            has_secret = oauth_connection_usable(src["id"], user["id"])
+            # `stored` diverges from `has_secret` exactly for a lapsed,
+            # unrenewable token: not usable, but the row still exists and the
+            # user must be able to Disconnect it (Devin Review on #1130).
+            stored = token_row is not None
+            updated_at = token_row["updated_at"].isoformat() if token_row and token_row.get("updated_at") else None
+            expires_at = token_row["expires_at"].isoformat() if token_row and token_row.get("expires_at") else None
+        else:
+            has_secret = per_user_secrets_repo().has(src["id"], user["id"])
+            stored = has_secret
+            updated_at = per_user_secrets_repo().get_updated_at(src["id"], user["id"])
+            expires_at = None
+        # Visibility: granted tools, OR the caller's own stored credential
+        # (a connection you made must never be invisible — you need Test /
+        # Disconnect), OR admin (the register → connect → introspect
+        # bootstrap happens before any tools exist; hiding the source made
+        # a fresh connect look like nothing happened — UX round on #1130).
+        if src["id"] not in granted_ids and not stored and not caller_is_admin:
             continue
         sources.append(
             {
@@ -1121,17 +1170,63 @@ async def me_connections_page(
                 "name": src["name"],
                 "transport": src.get("transport"),
                 "hint_html": render_safe(src.get("connect_hint")),
-                "has_secret": per_user_secrets_repo().has(src["id"], user["id"]),
-                "updated_at": per_user_secrets_repo().get_updated_at(src["id"], user["id"]),
+                "auth_kind": "oauth" if is_oauth else "secret",
+                "has_secret": has_secret,
+                "stored": stored,
+                "has_tools": src["id"] in granted_ids,
+                "source_has_tools": src["id"] in sourced_ids,
+                # One definition for "this viewer has authority here", used by
+                # every control whose endpoint calls `_require_source_grant`
+                # unconditionally — Connect/Reconnect, Test, and the paste
+                # field + Save. Deciding that per control is what let the same
+                # dead-end bug be reported three separate times on this PR;
+                # Disconnect/Remove stay outside it because their own-credential
+                # carve-out means they work without a grant.
+                "can_act": src["id"] in granted_ids or caller_is_admin,
+                "updated_at": updated_at,
+                "expires_at": expires_at,
             }
         )
+    # Both banners render only fixed text: connect_error arrives as a short
+    # code mapped through CONNECT_ERROR_MESSAGES (unknown → generic fallback),
+    # and connected only renders when the caller really has a stored OAuth
+    # connection for that id — a crafted link can never put its own words in
+    # an Agnes banner. Checked against the token row, NOT this page's
+    # tool-derived source list: a freshly registered source has no tools yet
+    # and the admin's post-connect banner must still show (Devin Review on
+    # #1130).
+    from app.api.mcp_oauth_connect import CONNECT_ERROR_FALLBACK, CONNECT_ERROR_MESSAGES
+
+    error_code = request.query_params.get("connect_error") or ""
+    connected = request.query_params.get("connected") or ""
+    connected_name = ""
+    if connected:
+        if mcp_user_oauth_tokens_repo().get(connected, user["id"]) is None:
+            connected = ""
+        else:
+            src_row = mcp_sources_repo().get(connected)
+            # Show the human name, not a UUID (UX round on #1130).
+            connected_name = (src_row or {}).get("name") or connected
+    # `retry` names the source a failed connect can be retried against —
+    # rendered as a one-click "Try again" link. Validated against the cards
+    # the caller can actually authorize against, NOT merely the listed ones:
+    # since this page started showing a card for a stored-but-ungranted
+    # source, "listed" stopped implying "connectable", and retrying a
+    # not_granted failure would just fail again.
+    retry = request.query_params.get("retry") or ""
+    if not error_code or retry not in {s["id"] for s in sources if s["can_act"]}:
+        retry = ""
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
-        is_admin=is_user_admin(user["id"], conn),
+        is_admin=caller_is_admin,
         connect_sources=sources,
         highlight_source=request.query_params.get("source") or "",
+        connected_source=connected,
+        connected_name=connected_name,
+        connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
+        retry_source=retry,
     )
     return templates.TemplateResponse(request, "me_connections.html", ctx)
 
@@ -2565,6 +2660,62 @@ async def setup_page(
     return templates.TemplateResponse(request, "install.html", ctx)
 
 
+_WEB_CSRF_COOKIE = "web_csrf"
+
+
+def _get_or_mint_web_csrf(request: Request) -> str:
+    """Double-submit CSRF token for state-changing web form POSTs (F2).
+
+    Reuses the caller's existing ``web_csrf`` cookie value when present so
+    several open tabs keep working; otherwise mints a fresh random token. The
+    issuing page must set the cookie via :func:`_set_web_csrf_cookie` on the
+    same response that embeds the token in the form / page JS.
+    """
+    return request.cookies.get(_WEB_CSRF_COOKIE) or secrets.token_urlsafe(32)
+
+
+def _set_web_csrf_cookie(response: Response, request: Request, token: str) -> None:
+    """Set the ``web_csrf`` double-submit cookie (HttpOnly, SameSite=Strict)."""
+    response.set_cookie(
+        _WEB_CSRF_COOKIE,
+        token,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/",
+    )
+
+
+def _refresh_web_csrf_cookie(response: Response, request: Request, token: str) -> None:
+    """Set the cookie only when the caller did not already have one.
+
+    Used on REJECTION paths. Because the cookie is ``SameSite=Strict`` a
+    cross-site POST arrives without it, so unconditionally setting it there
+    would let any site rotate a signed-in admin's token and break the tabs
+    they already have open — a nuisance the CSRF check itself is supposed to
+    prevent, not create (review finding on #1142).
+    """
+    if request.cookies.get(_WEB_CSRF_COOKIE):
+        return
+    _set_web_csrf_cookie(response, request, token)
+
+
+def _web_csrf_ok(request: Request, supplied: str) -> bool:
+    """True when the supplied token matches the ``web_csrf`` cookie (F2).
+
+    A cross-site attacker cannot read the cookie, so cannot forge a matching
+    hidden form field / ``X-CSRF-Token`` header; ``compare_digest`` keeps the
+    comparison timing-safe. Compared as UTF-8 bytes: the str overload raises
+    TypeError on non-ASCII input, and both values are caller-controlled.
+    """
+    cookie_token = request.cookies.get(_WEB_CSRF_COOKIE, "")
+    return (
+        bool(supplied)
+        and bool(cookie_token)
+        and secrets.compare_digest(supplied.encode("utf-8"), cookie_token.encode("utf-8"))
+    )
+
+
 _SLACK_BIND_CSRF_COOKIE = "slack_bind_csrf"
 
 
@@ -2639,7 +2790,14 @@ async def slack_bind_confirm(
         return RedirectResponse(url="/login", status_code=302)
 
     cookie_token = request.cookies.get(_SLACK_BIND_CSRF_COOKIE, "")
-    if not code or not csrf_token or not cookie_token or not secrets.compare_digest(csrf_token, cookie_token):
+    if (
+        not code
+        or not csrf_token
+        or not cookie_token
+        # UTF-8 bytes: the str overload of compare_digest raises TypeError on
+        # non-ASCII input, and the form field is caller-controlled.
+        or not secrets.compare_digest(csrf_token.encode("utf-8"), cookie_token.encode("utf-8"))
+    ):
         ctx = _build_context(request, user=user, conn=conn, bind_status="csrf")
         resp = templates.TemplateResponse(request, "slack_bind.html", ctx, status_code=400)
         resp.delete_cookie(_SLACK_BIND_CSRF_COOKIE, path="/slack/bind")
@@ -3660,7 +3818,11 @@ async def admin_contribute_skill_page(
 
     ctx = _build_context(request, user=user)
     ctx["groups"] = user_groups_repo().list_all()
-    return templates.TemplateResponse(request, "contribute_skill.html", ctx)
+    csrf_token = _get_or_mint_web_csrf(request)
+    ctx["csrf_token"] = csrf_token
+    response = templates.TemplateResponse(request, "contribute_skill.html", ctx)
+    _set_web_csrf_cookie(response, request, csrf_token)
+    return response
 
 
 @router.post("/admin/contribute-skill", response_class=HTMLResponse)
@@ -3669,6 +3831,7 @@ def admin_contribute_skill_submit(
     user: dict = Depends(require_admin),
     skill_md: str = Form(...),
     grant_group: str = Form("Admin"),
+    csrf_token: str = Form(""),
 ):
     """Publish the pasted SKILL.md, then re-render the page with a deep link
     to the new plugin (the "open it in Agnes" advert loop).
@@ -3684,6 +3847,14 @@ def admin_contribute_skill_submit(
 
     ctx = _build_context(request, user=user)
     ctx["groups"] = user_groups_repo().list_all()
+    issued_token = _get_or_mint_web_csrf(request)
+    ctx["csrf_token"] = issued_token
+    if not _web_csrf_ok(request, csrf_token):
+        ctx["error"] = "Security check failed (missing or stale form token) — reload the page and try again."
+        ctx["skill_md"] = skill_md
+        resp = templates.TemplateResponse(request, "contribute_skill.html", ctx, status_code=400)
+        _refresh_web_csrf_cookie(resp, request, issued_token)
+        return resp
     try:
         result = contribute_skill(
             skill_md,
@@ -3709,6 +3880,7 @@ def admin_contribute_skill_delete(
     name: str,
     request: Request,
     user: dict = Depends(require_admin),
+    csrf_token: str = Form(""),
 ):
     """Delete a contributed skill plugin and redirect back to the list page."""
     import json as _json
@@ -3722,6 +3894,18 @@ def admin_contribute_skill_delete(
     from src.repositories import resource_grants_repo
     from src.skill_contribution import CONTRIBUTED_MARKETPLACE_SLUG
 
+    if not _web_csrf_ok(request, csrf_token):
+        from src.repositories import user_groups_repo
+
+        ctx = _build_context(request, user=user)
+        ctx["groups"] = user_groups_repo().list_all()
+        issued_token = _get_or_mint_web_csrf(request)
+        ctx["csrf_token"] = issued_token
+        ctx["error"] = "Security check failed (missing or stale form token) — reload the page and try again."
+        resp = templates.TemplateResponse(request, "contribute_skill.html", ctx, status_code=400)
+        _refresh_web_csrf_cookie(resp, request, issued_token)
+        return resp
+
     repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
     plugins_dir = repo_root / "plugins"
     plugin_dir = (plugins_dir / name).resolve()
@@ -3730,6 +3914,7 @@ def admin_contribute_skill_delete(
 
         ctx = _build_context(request, user=user)
         ctx["groups"] = user_groups_repo().list_all()
+        ctx["csrf_token"] = _get_or_mint_web_csrf(request)
         ctx["error"] = "Invalid plugin name."
         return templates.TemplateResponse(request, "contribute_skill.html", ctx)
 
@@ -3739,6 +3924,7 @@ def admin_contribute_skill_delete(
 
             ctx = _build_context(request, user=user)
             ctx["groups"] = user_groups_repo().list_all()
+            ctx["csrf_token"] = _get_or_mint_web_csrf(request)
             ctx["error"] = f"Plugin '{name}' not found."
             return templates.TemplateResponse(request, "contribute_skill.html", ctx)
         shutil.rmtree(plugin_dir)
@@ -4199,12 +4385,18 @@ async def profile_page(
     _SENSITIVE_USER_COLUMNS = ("password_hash", "setup_token", "reset_token")
     user_record_safe = {k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS}
     raw_token = _read_session_token(request)
+    # Double-submit CSRF token for the refetch-groups POST below (F2); the
+    # troubleshooting partial sends it back as the X-CSRF-Token header.
+    csrf_token = _get_or_mint_web_csrf(request)
+
+    from app.auth.elevation import elevation_paused
 
     ctx = _build_context(
         request,
         user=user,
         memberships=memberships,
         is_admin=is_user_admin(user["id"], conn),
+        elevation_paused=elevation_paused(),
         user_record=user_record_safe,
         claims=_decoded_claims(raw_token),
         token_fingerprint=_token_fingerprint(raw_token),
@@ -4212,12 +4404,16 @@ async def profile_page(
         # Display-only — keep original case (no .lower()), unlike the
         # refetch-groups handler below which lowercases for set comparison.
         google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
+        csrf_token=csrf_token,
     )
-    return templates.TemplateResponse(request, "profile.html", ctx)
+    response = templates.TemplateResponse(request, "profile.html", ctx)
+    _set_web_csrf_cookie(response, request, csrf_token)
+    return response
 
 
 @router.post("/me/profile/refetch-groups", name="me_profile_refetch_groups")
 async def me_profile_refetch_groups(
+    request: Request,
     _: None = Depends(require_debug_auth_enabled),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -4225,7 +4421,13 @@ async def me_profile_refetch_groups(
     """Re-issue ``fetch_user_groups`` for the current user and return a
     dry-run diff against the cached ``user_group_members`` snapshot,
     writing nothing. Gated behind AGNES_DEBUG_AUTH — a dry-run admin
-    debug action, not user-facing content."""
+    debug action, not user-facing content.
+
+    Requires the ``X-CSRF-Token`` header to match the ``web_csrf`` cookie
+    issued by the profile page (F2 double-submit; the cookie fallback in the
+    auth layer means even JSON POSTs are not automatically CSRF-exempt)."""
+    if not _web_csrf_ok(request, request.headers.get("x-csrf-token", "")):
+        raise HTTPException(status_code=403, detail="csrf_check_failed")
     from app.auth.group_sync import fetch_user_groups
 
     fetched = fetch_user_groups(user["email"])
