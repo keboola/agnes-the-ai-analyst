@@ -146,6 +146,87 @@ Both modes converge: once the CA publishes the signed chain at `TLS_FULLCHAIN_UR
 
 `scripts/tls-fetch.sh` at `/usr/local/bin/tls-fetch.sh` is required (generic URL fetcher used by rotate). On infra-repo-managed VMs, both scripts are installed by `startup.sh` and fired via a daily systemd timer; for manual compose deployments, copy them under `/usr/local/bin/` and wire a systemd timer (`OnBootSec=10min`, `OnUnitActiveSec=24h`, `Persistent=true`).
 
+#### Migrating to a new domain
+
+Changing `DOMAIN` alone makes the old hostname fail the TLS handshake the
+moment Caddy reloads — old bookmarks, `agnes` CLI configs (the `server` key in
+`~/.config/agnes/config.json`), and MCP connector URLs break with a
+certificate error rather than landing on the new address. Set `DOMAIN_ALIAS`
+to the hostname you are leaving and Caddy serves it too, with its own cert:
+
+- **Browser navigation** (`GET`/`HEAD` with `Accept: text/html`) gets a notice
+  page naming the new address, with an automatic forward after 15 s. A silent
+  redirect would never prompt anyone to update their bookmark, so the old name
+  would stay in circulation until it died. The page links to `DOMAIN`'s root
+  rather than the deep path on purpose: the request URI carries a raw query
+  string, and reflecting it into the HTML of a page served by the *legacy*
+  origin — one browsers still hold cookies for — would be a markup-injection
+  vector.
+- **Everything else** — the CLI, MCP clients, `agnes pull` — gets a **308**
+  (permanent, method- and body-preserving; a 301 would turn a `POST` into a
+  `GET` with the body dropped, breaking `agnes push` and MCP JSON-RPC).
+
+  Be clear about what that buys, though: the `agnes` CLI does **not** follow
+  redirects (`cli/client.py` builds its `httpx.Client` without
+  `follow_redirects`, and the parquet download path refuses them outright), and
+  even a client that did would have `Authorization` stripped on a cross-host
+  hop. So for the CLI the alias converts a TLS-handshake failure into a legible
+  HTTP error — an improvement, but not transparent operation. **Repoint CLI and
+  connector configs at `DOMAIN`;** the alias buys time to notice, not a reprieve
+  from the work.
+
+```
+DOMAIN=agnes.new.example.com
+DOMAIN_ALIAS=agnes.old.example.com
+SERVER_URL=https://agnes.new.example.com
+```
+
+Both DNS records must point at this host for the whole window — the alias
+needs its own ACME challenge on `:80`. Drop `DOMAIN_ALIAS` once the old record
+is retired; either removing the line or blanking it (`DOMAIN_ALIAS=`) is safe,
+because Compose resolves an empty value to the same inert loopback address as
+an absent one. Caddy cannot take both names from one variable (Caddyfile env
+substitution is token-level, so `DOMAIN="a.example.com, b.example.com"` parses
+as a single malformed address), which is why this is a separate knob.
+
+The redirect is a **308**, not a 301, so `POST`/`PUT`/`PATCH` keep their method
+and body — clients re-issue a 301 as a `GET` with the body dropped, which would
+break `agnes push` and MCP JSON-RPC, the two things this knob exists to carry
+through a cutover. What a redirect cannot fix: clients strip `Authorization`
+when following one to a different host, so API callers still have to be
+repointed at the new hostname. Treat the alias as a browser-grade safety net
+that buys you time, not a transparent API proxy.
+
+`DOMAIN_ALIAS` must differ from `DOMAIN`. Setting them equal gives Caddy two
+site blocks with the same address, which it refuses to parse — taking the
+primary site down on the next reload, not just the alias. Terraform rejects it
+at plan time and the startup script ignores it with a warning.
+
+The alias site carries no `tls` directive, so automatic HTTPS picks the issuer
+per name — which means the legacy name gets its certificate from public ACME
+even when `CADDY_TLS` points the primary site elsewhere. On a **corporate-PKI
+deployment** (certs on disk, no public ACME reachability) put both names on
+one SAN cert instead of setting `DOMAIN_ALIAS`.
+
+Three things do **not** follow `DOMAIN` and must be changed in the same pass:
+
+- **`SERVER_URL`** (and `PUBLIC_URL` / `server.public_url` in
+  `instance.yaml`, if set) — pins the public origin used for OAuth redirects,
+  magic links, the MCP issuer, and the sandbox's `AGNES_SERVER`. A stale value
+  leaves the MCP consent POST failing its same-origin check.
+- **The Google OAuth client** — add
+  `https://<new-domain>/auth/google/callback` to its authorized redirect URIs
+  (and the origin) *before* the cutover; adding one does not invalidate the old.
+- **Already-connected MCP clients** — the issuer changes, so existing
+  registrations stop validating and users reconnect once.
+
+On module-provisioned VMs `domain` / `domain_alias` are per-VM fields on
+`prod_instance` / `dev_instances`; note that a running VM keeps its `.env`
+until it is recreated (`metadata_startup_script` is in `ignore_changes`), so a
+live cutover means editing `/opt/agnes/.env` and re-running `docker compose
+--profile tls up -d`, with the Terraform change landing in the same session to
+keep the next recreate correct.
+
 #### Reverse-proxy access logs — outbound MCP OAuth callback
 
 `GET /api/mcp/oauth-client/callback?code=…&state=…` (the outbound MCP OAuth

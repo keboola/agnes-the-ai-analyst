@@ -51,6 +51,12 @@ variable "prod_instance" {
     upgrade_schedule = optional(string, "*/5 * * * *")
     tls_mode         = optional(string, "caddy")
     domain           = optional(string, "")
+    # Hostname being migrated AWAY from. When set, Caddy serves it alongside
+    # `domain` and 308s every request onto `domain` (see the Caddyfile's
+    # second site block), so old bookmarks / `agnes` CLI configs / MCP
+    # connector URLs keep resolving through a domain cutover instead of
+    # failing the TLS handshake. Clear it once the old DNS record is retired.
+    domain_alias = optional(string, "")
     # Container memory caps written to /opt/agnes/.env and read by
     # docker-compose.yml (mem_limit: $${AGNES_APP_MEM_LIMIT:-4g}). Defaults
     # match the compose defaults; raise on a larger VM together with the
@@ -74,6 +80,16 @@ variable "prod_instance" {
     # the AGNES_DATA_APPS_ENABLED env override on that VM's .env only.
     data_apps_enabled = optional(bool, false)
   })
+
+  # An alias equal to `domain` produces two Caddy site blocks with the same
+  # address, which Caddy refuses to parse — so the next recreate or reload
+  # takes the PRIMARY site down too, not just the alias. Rejecting it at plan
+  # time turns an outage into an error the operator reads before applying
+  # (Devin Review on #1182).
+  validation {
+    condition     = var.prod_instance.domain_alias == "" || var.prod_instance.domain_alias != var.prod_instance.domain
+    error_message = "prod_instance.domain_alias must differ from prod_instance.domain; two site blocks sharing one address stop Caddy from starting."
+  }
 }
 
 variable "dev_instances" {
@@ -93,6 +109,11 @@ variable "dev_instances" {
     image_tag    = optional(string, "dev")
     tls_mode     = optional(string, "none")
     domain       = optional(string, "")
+    # Legacy hostname to 308 onto `domain` during a domain migration. Same
+    # semantics as prod_instance.domain_alias — see there. MUST be declared on
+    # this object type: Terraform silently drops attributes absent from the
+    # type, so a bare entry in a caller's list would never reach the module.
+    domain_alias = optional(string, "")
     # Role label used by per-VM OAuth secret naming
     # (var.oauth_secret_name_template `{role}` placeholder), VM tagging in
     # downstream cron/log filters, and dev_defaults selection. Defaults to
@@ -117,6 +138,16 @@ variable "dev_instances" {
     upgrade_schedule = optional(string, "*/5 * * * *")
   }))
   default = []
+
+  # Same failure as prod_instance: an alias equal to the domain gives Caddy two
+  # site blocks with one address and it refuses to start, taking the primary
+  # site with it (Devin Review on #1182).
+  validation {
+    condition = alltrue([
+      for i in var.dev_instances : i.domain_alias == "" || i.domain_alias != i.domain
+    ])
+    error_message = "each dev_instances[].domain_alias must differ from its domain; two site blocks sharing one address stop Caddy from starting."
+  }
 }
 
 variable "oauth_secret_name_template" {

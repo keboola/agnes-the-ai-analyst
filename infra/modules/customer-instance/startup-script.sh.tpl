@@ -12,6 +12,7 @@ UPGRADE_MODE="${upgrade_mode}"
 UPGRADE_SCHEDULE="${upgrade_schedule}"
 TLS_MODE="${tls_mode}"
 DOMAIN="${domain}"
+DOMAIN_ALIAS="${domain_alias}"
 ACME_EMAIL="${acme_email}"
 DATA_SOURCE="${data_source}"
 KEBOOLA_STACK_URL="${keboola_stack_url}"
@@ -347,6 +348,24 @@ if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
     fi
 fi
 
+# DOMAIN_ALIAS — a legacy hostname Caddy serves alongside DOMAIN and 308s onto
+# it, so a domain cutover doesn't break old bookmarks / CLI configs / MCP
+# connector URLs (Caddyfile's second site block). Written ONLY when non-empty:
+# Caddy's `{$DOMAIN_ALIAS:localhost:8081}` fallback applies when the variable is
+# UNSET, but an empty-but-set value substitutes an EMPTY site address and Caddy
+# refuses to parse the config — which would take the primary site down too.
+# Equal to DOMAIN is the other way to break the same thing: two site blocks
+# with the same address, which Caddy also refuses to parse — taking the primary
+# site down on the next recreate/reload. Terraform rejects it at plan time; this
+# guard covers a value that reached the instance some other way (Devin Review
+# on #1182).
+DOMAIN_ALIAS_LINE=""
+if [ -n "$DOMAIN_ALIAS" ] && [ "$DOMAIN_ALIAS" != "$DOMAIN" ]; then
+    DOMAIN_ALIAS_LINE="DOMAIN_ALIAS=$DOMAIN_ALIAS"
+elif [ -n "$DOMAIN_ALIAS" ]; then
+    echo "WARN: domain_alias equals domain ($DOMAIN) — ignoring it; two site blocks with one address would stop Caddy from starting" >&2
+fi
+
 # Preserve operator overrides on AGNES_TAG. Rationale: this script
 # runs on every boot (and the `metadata_startup_script` is in
 # `lifecycle.ignore_changes` so a TF apply that changed the
@@ -653,6 +672,7 @@ APPS_RUNNER_IMAGE_PREFIX=$APPS_RUNNER_IMAGE_PREFIX
 DOCKER_GID=$DOCKER_GID
 %{ endif ~}
 $CADDY_TLS_LINE
+$DOMAIN_ALIAS_LINE
 $AGNES_TEMP_DIR_LINE
 ENVEOF
 chmod 600 "$APP_DIR/.env"
