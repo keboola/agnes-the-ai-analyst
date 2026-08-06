@@ -457,11 +457,12 @@ async def test_connection(
         if resp.status_code == 200:
             data = resp.json()
             project_name = data.get("owner", {}).get("name") or data.get("name") or ""
+            # project_name is response-body content — it goes to the caller
+            # but deliberately NOT into the log line (see comment above).
             logger.info(
-                "connection test for %s (%s): ok — project %r",
+                "connection test for %s (%s): ok",
                 connection_id,
                 _log_host(stack_url),
-                project_name,
             )
             return {"ok": True, "project_name": project_name}
         logger.info(
@@ -472,11 +473,15 @@ async def test_connection(
         )
         return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
     except Exception as exc:
+        # Scrub the resolved token before logging (replace, then cap, so a
+        # token straddling the cap can't survive). The client-visible error
+        # keeps its pre-existing shape — the caller is the admin who
+        # configured this token, the aggregated server log is not.
         logger.info(
             "connection test for %s (%s): failed — %s",
             connection_id,
             _log_host(stack_url),
-            str(exc)[:300],
+            str(exc).replace(token, "<redacted-storage-token>")[:300],
         )
         return {"ok": False, "error": str(exc)[:300]}
 
