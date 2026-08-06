@@ -22,6 +22,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.81.0] - 2026-08-06
+
+### Added
+
+- The marketplace digest reports `distinct_installers` (people who installed at least one item in the period) alongside `new_installs` (install events), and `system_installs` for system-plugin subscriptions. `active_users` counts people while `new_installs` counts `(user x item)` rows, so the two were never comparable despite sitting side by side in the same KPI row; `distinct_installers` is the people-unit figure to read against `active_users`. The digest template states both definitions inline and tolerates a payload from an older server that omits the new keys.
+
+### Changed
+
+### Fixed
+
+- Adoption KPIs (`/api/admin/adoption/kpis`, the `/admin/adoption` page and `agnes admin`) now exclude the same `<synthetic>` session artifact as the digest's session KPI, so the two agree. The digest renders both in one report, and filtering only one left two tiles labelled "Sessions" showing materially different numbers for no stated reason. Session counts, prompts and distinct users on that endpoint drop slightly as a result — the artifact contributes one user message and no work. The sessions BROWSER (`/admin/sessions` and its facets) deliberately still shows them: you browse it to inspect artifacts, so they must stay visible there. The predicate is a single shared spelling (`REAL_SESSION_PREDICATE`), mirrored across both repos and both backends and pinned equal by a test.
+- The digest's "new installs" no longer counts system-plugin subscriptions, which enter every stack by platform action rather than by anyone choosing them. A single system-plugin rollout can write one subscription row per user in a day, so the figure could exceed the number of active users on that day — more installs than the instance had people — which made the headline row read as self-contradictory. System subscriptions are still reported, as `system_installs`, and are excluded consistently from the headline KPI, the daily trend series and the per-plugin breakdown so the three cannot disagree. The exclusion is a `NOT EXISTS` against `marketplace_plugins.is_system` rather than a join, so an install whose plugin row has since been removed still counts as a real install instead of silently vanishing.
+- The digest's session KPI counted `<synthetic>` rows — a processing artifact carrying zero tool calls, zero active seconds and one user message — overstating reported sessions by roughly a quarter. They are now excluded from `session_count` on both backends.
+
+### Removed
+
+### Internal
+
+### Security
+
 ## [0.80.1] - 2026-08-06
 
 ### Added

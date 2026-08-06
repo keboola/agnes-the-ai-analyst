@@ -126,6 +126,43 @@ def test_adoption_kpis(seeded_app_both):
     assert b["tool_errors"] == 1
 
 
+def test_adoption_kpis_excludes_synthetic_sessions(seeded_app_both):
+    """Adoption KPIs and the digest's session KPI must agree.
+
+    The digest renders BOTH in one report. If only one filters the `<synthetic>`
+    processing artifact, the report shows two different numbers under two tiles
+    both labelled "Sessions". Regression guard for that divergence.
+    """
+    from src.repositories import usage_repo
+    repo = usage_repo()
+    _seed_overall(repo)
+    # the artifact: synthetic modal model, no tool calls, no active time
+    repo.upsert_summary(_summary(
+        session_file="ghost@test.com/s9.jsonl", username="ghost@test.com",
+        active_seconds=0, wall_seconds=0, user_messages=1,
+        skill_invocations=0, tool_calls=0, tool_errors=0,
+        input_tokens=0, output_tokens=0, primary_model="<synthetic>",
+    ), processor_version=1)
+    # synthetic-DOMINATED but real: must still count (primary_model is only the
+    # MOST FREQUENT model, not a session type)
+    repo.upsert_summary(_summary(
+        session_file="carol@test.com/s10.jsonl", username="carol@test.com",
+        active_seconds=600, wall_seconds=900, user_messages=3,
+        skill_invocations=1, tool_calls=9, tool_errors=0,
+        input_tokens=50, output_tokens=25, primary_model="<synthetic>",
+    ), processor_version=1)
+
+    b = seeded_app_both["client"].get(
+        "/api/admin/adoption/kpis?window=7d",
+        headers=_h(seeded_app_both["admin_token"]),
+    ).json()
+    # alice + bob + carol. ghost is the artifact and is excluded.
+    assert b["sessions"] == 3
+    assert b["active_users"] == 3
+    # ghost's single synthetic user_message must not inflate prompts either
+    assert b["prompts"] == 17            # 10 + 4 + 3, not 18
+
+
 def test_adoption_kpis_window_rescopes(seeded_app_both):
     """24h window excludes data seeded 3 days ago."""
     from src.repositories import usage_repo

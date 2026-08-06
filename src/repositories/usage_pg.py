@@ -935,6 +935,22 @@ class UsagePgRepository:
 
     _TOKEN_SUM = "input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens"
 
+    # A "real" session excludes the `<synthetic>` processing artifact: synthetic
+    # modal model AND no tool calls AND no active time. All three are required —
+    # `primary_model` is only the MOST FREQUENT model, so filtering on it alone
+    # drops genuine synthetic-dominated sessions that did real work.
+    #
+    # Adoption KPIs and the digest's session KPI must agree: the digest renders
+    # BOTH in one report, and an unexplained gap between two tiles both labelled
+    # "Sessions" is exactly the confusion this predicate exists to remove. The
+    # sessions BROWSER (`sessions_count` / `sessions_facets`) deliberately does
+    # NOT filter — you browse it to inspect artifacts, so they must stay visible.
+    #
+    # Mirrored in the sibling backend; the copies are pinned equal by a test.
+    REAL_SESSION_PREDICATE = """NOT (COALESCE(primary_model, '') = '<synthetic>'
+                                  AND COALESCE(tool_calls, 0) = 0
+                                  AND COALESCE(active_seconds, 0) = 0)"""
+
     def adoption_kpis(self, since: datetime) -> dict:
         with self._engine.connect() as conn:
             s = conn.execute(
@@ -948,7 +964,9 @@ class UsagePgRepository:
                                COALESCE(SUM(tool_calls), 0),
                                COALESCE(SUM(tool_errors), 0),
                                COUNT(DISTINCT COALESCE(user_id, username))
-                          FROM usage_session_summary WHERE started_at >= :since"""
+                          FROM usage_session_summary
+                         WHERE started_at >= :since
+                           AND {self.REAL_SESSION_PREDICATE}"""
                 ),
                 {"since": since},
             ).fetchone()
@@ -985,6 +1003,7 @@ class UsagePgRepository:
                                COALESCE(SUM(tool_calls), 0)
                           FROM usage_session_summary
                           WHERE CAST((started_at AT TIME ZONE 'UTC') AS DATE) >= :sd
+                            AND {self.REAL_SESSION_PREDICATE}
                           GROUP BY day ORDER BY day"""
                 ),
                 {"sd": start_date},
@@ -1018,7 +1037,7 @@ class UsagePgRepository:
 
     def adoption_top_users(self, since: datetime, limit: int = 10, q: Optional[str] = None) -> List[dict]:
         # adoption stays anchored on started_at (usage-over-time semantics)
-        where = ["started_at >= :since"]
+        where = ["started_at >= :since", self.REAL_SESSION_PREDICATE]
         params: dict = {"since": since, "lim": limit}
         if q:
             where.append("(username LIKE :q OR user_id LIKE :q)")
@@ -1083,7 +1102,8 @@ class UsagePgRepository:
                                MAX(ended_at)
                           FROM usage_session_summary
                           WHERE started_at >= :since
-                            AND (user_id = :uid OR username = :uname)"""
+                            AND (user_id = :uid OR username = :uname)
+                            AND {self.REAL_SESSION_PREDICATE}"""
                 ),
                 p,
             ).fetchone()
@@ -1098,6 +1118,10 @@ class UsagePgRepository:
                 ),
                 p,
             ).fetchone()
+            # The per-user MODEL BREAKDOWN is deliberately NOT filtered: it
+            # answers "which models did this user's sessions run on", and
+            # `<synthetic>` showing up there is how you diagnose the artifact.
+            # Headline KPIs filter; diagnostic breakdowns do not.
             models = conn.execute(
                 sa.text(
                     """SELECT primary_model, COUNT(*) AS n
@@ -1138,6 +1162,7 @@ class UsagePgRepository:
                           FROM usage_session_summary
                           WHERE CAST((started_at AT TIME ZONE 'UTC') AS DATE) >= :sd
                             AND (user_id = :uid OR username = :uname)
+                            AND {self.REAL_SESSION_PREDICATE}
                           GROUP BY day ORDER BY day"""
                 ),
                 {"sd": start_date, "uid": user_id, "uname": username},
