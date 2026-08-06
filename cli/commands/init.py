@@ -499,9 +499,20 @@ def init(
                     err=True,
                 )
                 raise typer.Exit(1)
+            # Deliberately a note, not a hard fail: templates pass
+            # --token-file unconditionally and the file legitimately may not
+            # exist when AGNES_TOKEN is set. But in the documented
+            # expired-credential recovery the ABSENT file means the fresh token
+            # was never written — and the fallback then retries with the
+            # expired one, so the failure surfaces as a server-side auth error
+            # that looks like the server's fault. Name the likely cause here,
+            # where we still know it (Devin Review on #1139).
             typer.echo(
                 f"note: --token-file {token_file!r} does not exist; "
-                "falling back to AGNES_TOKEN / the saved credential.",
+                "falling back to AGNES_TOKEN / the saved credential. "
+                "If you are recovering an expired credential, that saved one is "
+                "the expired credential — re-run the 'Get your token' step on "
+                "/home so the file is written, then run this again.",
                 err=True,
             )
     if token is None:

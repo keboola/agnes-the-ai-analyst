@@ -1144,3 +1144,43 @@ def test_init_writes_shortcut_and_reports_it(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert (home / ".local" / "bin" / "testbrand").exists()
     assert "Shortcut" in result.output or "testbrand" in result.output
+
+
+def test_init_absent_token_file_note_points_at_the_likely_cause(tmp_path, monkeypatch):
+    """The sibling of the hard-fail case above. An absent --token-file stays a
+    soft fallback on purpose — templates pass the flag unconditionally. But in
+    expired-credential recovery, absent means the fresh token was never
+    written, and the fallback then retries with the expired one, so the failure
+    surfaces as a server-side auth error that reads like the server's fault.
+    The note has to name that cause while we still know it
+    (Devin Review on #1139).
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.setenv("AGNES_TOKEN", "eyJ-from-env")
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    missing = home / ".agnes" / "token"  # never created
+
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token-file",
+            str(missing),
+            "--workspace",
+            str(tmp_path / "ws"),
+        ],
+    )
+
+    # Soft fallback preserved — it still ran with AGNES_TOKEN.
+    assert result.exit_code == 0, result.output
+    out = " ".join(result.output.split())  # the renderer wraps at terminal width
+    assert "does not exist" in out
+    assert "expired" in out, "the note does not mention the expired-credential case"
+    assert "/home" in out, "the note does not point back at the token step"
