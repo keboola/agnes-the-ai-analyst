@@ -735,6 +735,13 @@
         card: buildCard,
       },
       onApply: function () {
+        // The row menu is a shared component holding a module-level reference to
+        // the trigger it was opened from. A re-projection rebuilds every card,
+        // including that trigger, so an open menu would stay on screen anchored
+        // to a button that is no longer in the document. chat.js closes it around
+        // its own re-renders; the grid projection needs the same
+        // (Devin Review on #1185).
+        if (window.chatRowMenu) window.chatRowMenu.close();
         // A filter change can hide a selected row; the selection must not
         // survive invisibly (see syncSelection).
         syncSelection();

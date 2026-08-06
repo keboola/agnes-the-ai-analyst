@@ -742,10 +742,18 @@
   {# `entity` rows are `_FlexDict`s: a MISSING key yields an empty _FlexDict,
      not Undefined — and an empty dict is unhashable, so feeding it to a
      `{...}.get(…)` lookup below raises TypeError and 500s the page. Normalise
-     both fields to a plain type first. `''` (rather than none) is the
-     not-a-status sentinel, because `none` means "legacy v1, treat as
-     approved" and a row with no status at all is not that. #}
-  {% set _st = v.submission_status if v.submission_status is string else '' %}
+     both fields to a plain type first.
+     THREE cases, not two, because `none` and "no status at all" mean different
+     things: `none` is a legacy v1 row whose submission_id predates the v37
+     backfill, which `store_entities.get_with_submission_status` documents as
+     "the consumer treats them as approved (back-compat)"; `''` is the
+     not-a-status sentinel for a row that carries no status at all, which is NOT
+     that. Folding both into `''` made the documented `none` branch of
+     `restorable` below unreachable, so the oldest version of every long-lived
+     item silently lost its Restore button (Devin Review on #1185). `none` is
+     hashable, so keeping it costs the `.get(_st)` lookups nothing. #}
+  {% set _st = v.submission_status if v.submission_status is string
+               else (none if v.submission_status is none else '') %}
   {% set _size = v.size if v.size is number else None %}
   {% set _ = _versions.append({
        'n': v.n, 'hash': v.hash if v.hash is string else None,

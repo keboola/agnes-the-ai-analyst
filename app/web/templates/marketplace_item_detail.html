@@ -612,10 +612,14 @@
   {# `entity` rows are `_FlexDict`s: a MISSING key yields an empty _FlexDict,
      not Undefined — and an empty dict is unhashable, so feeding it to a
      `{...}.get(…)` lookup below raises TypeError and 500s the page. Normalise
-     both fields to a plain type first. `''` (rather than none) is the
-     not-a-status sentinel, because `none` means "legacy v1, treat as
-     approved" and a row with no status at all is not that. #}
-  {% set _st = v.submission_status if v.submission_status is string else '' %}
+     both fields to a plain type first.
+     THREE cases, not two — same rule and same reasoning as
+     `marketplace_plugin_detail.html`, which is where this was found: `none` is a
+     legacy v1 row that counts as approved, `''` is a row with no status at all,
+     which does not. Folding both into `''` made the `none` branch of
+     `restorable` below unreachable (Devin Review on #1185). #}
+  {% set _st = v.submission_status if v.submission_status is string
+               else (none if v.submission_status is none else '') %}
   {% set _size = v.size if v.size is number else None %}
   {% set _ = _versions.append({
        'n': v.n, 'hash': v.hash if v.hash is string else None,
@@ -944,10 +948,33 @@
       }
       window.location.reload();
     }
-    function bindVerdict(id) {
-      const b = document.getElementById(id);
+    // Delegated from `document`, NOT bound by id at parse time. This script is
+    // inline and runs where it sits, but the verification controls now exist in
+    // two mutually exclusive places: the legacy block above it, and — under
+    // `detail.redesign` — the rail further down the document, which has not been
+    // parsed yet when this runs. `getElementById` returned null there and
+    // `if (!b) return` swallowed it, so on redesigned instances every verdict
+    // button was inert with no error shown (Devin Review on #1185).
+    //
+    // Delegation rather than DOMContentLoaded on purpose: the assumption that
+    // broke is "the markup I bind to is above me", and a third layout would
+    // break an ordering-based fix again. A listener on `document` does not care
+    // where the button lives, or when it appears.
+    const VERDICT_IDS = ['verify-btn', 'unverify-btn', 'request-changes-btn'];
+    document.addEventListener('click', async (ev) => {
+      const b = ev.target && ev.target.closest
+        ? ev.target.closest('#verify-btn, #unverify-btn, #request-changes-btn, #request-verification-btn')
+        : null;
       if (!b) return;
-      b.addEventListener('click', async () => {
+      if (b.id === 'request-verification-btn') {
+        await send(
+          `/api/store/entities/${encodeURIComponent(entityId)}/verification/request`,
+          {method: 'POST'},
+        );
+        return;
+      }
+      if (VERDICT_IDS.indexOf(b.id) === -1) return;
+      {
         const stateVal = b.dataset.verificationState;
         // "Request changes" is the only verdict carrying a note — it is the one
         // that has something to say to the author.
@@ -961,16 +988,8 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({verification_state: stateVal, note: note || null}),
         });
-      });
-    }
-    ['verify-btn', 'unverify-btn', 'request-changes-btn'].forEach(bindVerdict);
-    const req = document.getElementById('request-verification-btn');
-    if (req) {
-      req.addEventListener('click', () => send(
-        `/api/store/entities/${encodeURIComponent(entityId)}/verification/request`,
-        {method: 'POST'},
-      ));
-    }
+      }
+    });
   })();
   </script>
 
