@@ -1637,7 +1637,10 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
                     ).fetchall()
                     for (t_name,) in up_tables:
                         try:
-                            conn.execute(f'CREATE OR REPLACE TABLE "{t_name}" AS SELECT * FROM _uploads."{t_name}"')
+                            conn.execute(
+                                f"CREATE OR REPLACE TABLE {quote_ident(t_name)} "
+                                f"AS SELECT * FROM _uploads.{quote_ident(t_name)}"
+                            )
                         except duckdb.Error:
                             continue
                 finally:

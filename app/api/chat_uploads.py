@@ -37,6 +37,7 @@ from app.chat.workdir import _safe_email_dir
 from app.corpus_ingest import create_single_file_artefact
 from app.resource_types import ResourceType
 from app.utils import get_data_dir
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -285,13 +286,13 @@ def _register_workspace_table(
         # Drop any prior object of the same name first. CREATE OR REPLACE TABLE
         # refuses to replace an object of a different type — e.g. a pre-fix
         # extract.duckdb where this name was a VIEW — so clear both types.
-        conn.execute(f'DROP VIEW IF EXISTS "{table_name}"')
-        conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
-        conn.execute(f'CREATE TABLE "{table_name}" AS SELECT * FROM {read_expr}')
+        conn.execute(f"DROP VIEW IF EXISTS {quote_ident(table_name)}")
+        conn.execute(f"DROP TABLE IF EXISTS {quote_ident(table_name)}")
+        conn.execute(f"CREATE TABLE {quote_ident(table_name)} AS SELECT * FROM {read_expr}")
 
         # Count rows for _meta (best-effort; zero on error).
         try:
-            row_count = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
+            row_count = conn.execute(f"SELECT COUNT(*) FROM {quote_ident(table_name)}").fetchone()[0]
         except Exception:
             row_count = 0
 
