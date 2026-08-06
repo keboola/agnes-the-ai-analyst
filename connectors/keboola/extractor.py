@@ -770,8 +770,14 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
 
             if query_mode == "remote":
                 # Create view pointing to kbc extension (requires re-ATTACH at query time)
+                from connectors.keboola.storage_api import normalize_source_table
+
                 bucket = tc.get("bucket", "")
-                source_table = tc.get("source_table", table_name)
+                # A row whose source_table carries the bucket prefix (pre-fix
+                # wizard registration) would build kbc."in.c-x"."in.c-x.tbl".
+                # validate_quoted_identifier accepts it — dots are legal in
+                # Keboola's `in.c-foo` convention — so nothing else catches it.
+                source_table = normalize_source_table(bucket, tc.get("source_table", table_name))
                 if not (
                     validate_quoted_identifier(bucket, "Keboola bucket")
                     and validate_quoted_identifier(source_table, "Keboola source_table")
@@ -780,9 +786,27 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     stats["errors"].append({"table": table_name, "error": "unsafe bucket/source_table"})
                     continue
                 if use_extension and bucket:
-                    conn.execute(
-                        f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM kbc.{quote_ident(bucket)}.{quote_ident(source_table)}"
-                    )
+                    # The extension validates the referenced table eagerly at
+                    # CREATE VIEW. Isolate the failure per row: unguarded, one
+                    # bad row raised out of run(), skipped the atomic
+                    # extract.duckdb rename, and took every other table of this
+                    # source down with it — every sibling branch degrades to
+                    # tables_failed and continues.
+                    try:
+                        conn.execute(
+                            f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM kbc.{quote_ident(bucket)}.{quote_ident(source_table)}"
+                        )
+                    except Exception as view_err:
+                        logger.warning(
+                            "Remote view creation failed for %s (%s.%s): %s",
+                            table_name,
+                            bucket,
+                            source_table,
+                            view_err,
+                        )
+                        stats["tables_failed"] += 1
+                        stats["errors"].append({"table": table_name, "error": f"remote view failed: {view_err}"})
+                        continue
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, 0, 0, ?, 'remote')",
                     [table_name, tc.get("description", ""), now],
@@ -1050,8 +1074,12 @@ def _register_local_meta(
 
 def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], pq_path: str) -> None:
     """Extract a table using the DuckDB Keboola extension."""
+    from connectors.keboola.storage_api import normalize_source_table
+
     bucket = tc.get("bucket", "")
-    source_table = tc.get("source_table", tc["name"])
+    # Strip a legacy bucket prefix (pre-fix wizard rows) before it becomes
+    # kbc."in.c-x"."in.c-x.tbl" — same healing the legacy/materialize paths do.
+    source_table = normalize_source_table(bucket, tc.get("source_table", tc["name"]))
     # #81 Group D — defense-in-depth. The caller already validates these;
     # refuse here too in case a future caller forgets. Use the relaxed
     # quoted-identifier check that accepts Keboola's `in.c-foo` form.
