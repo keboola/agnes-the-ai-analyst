@@ -50,7 +50,7 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
-from app.auth.access import can_access
+from app.auth.access import can_access, require_agent_profiles_enabled
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.pat_resolver import agent_id_from_request
 from app.auth.session_principal import PRINCIPAL_TYPES
@@ -64,7 +64,11 @@ from src.repositories import agents_repo, idempotency_repo, jobs_repo, llm_usage
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1", tags=["agent-runtime"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["agent-runtime"],
+    dependencies=[Depends(require_agent_profiles_enabled)],
+)
 
 #: `jobs.kind` for both the background-from-the-start path and the
 #: sync-timeout-degrades-to-background path — see `app/worker/kinds.py`'s

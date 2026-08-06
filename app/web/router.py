@@ -43,6 +43,7 @@ from app.instance_config import (
     get_custom_scripts,
     get_data_apps_config,
     get_studio_enabled,
+    get_agent_profiles_enabled,
     feature_enabled,
 )
 from src.repositories import (
@@ -845,6 +846,9 @@ def _build_context(
     # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
     # the nav to signed-in users. The hard gate lives on the routes.
     ctx["can_studio"] = get_studio_enabled()
+    # "My agents" nav entry visibility — instance-level toggle, mirrors
+    # can_studio. The hard gate lives on the /agents route + the API routers.
+    ctx["can_agent_profiles"] = get_agent_profiles_enabled()
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -4433,6 +4437,10 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         # survives on pages that render via _chrome_ctx — including the studio
         # pages themselves and the command palette.
         "can_studio": get_studio_enabled(),
+        # "My agents" nav entry visibility — instance-level toggle, mirrors
+        # can_studio (the hard gate lives on the /agents route + the API
+        # routers, this only hides the entry point).
+        "can_agent_profiles": get_agent_profiles_enabled(),
         # Same `config` object as _build_context — templates read
         # config.INSTANCE_NAME in <title> blocks and the header logo, which
         # rendered empty on _chrome_ctx pages ("Studio — " title).

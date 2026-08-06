@@ -40,6 +40,17 @@ def test_agents_link_in_user_dropdown_for_admin(seeded_app):
     assert 'href="/agents"' in resp.text
 
 
+def test_agents_link_hidden_when_agent_profiles_disabled(seeded_app, monkeypatch):
+    """`can_agent_profiles` (get_agent_profiles_enabled()) gates the same nav
+    entry point — mirrors test_web_studio.py's test_studio_nav_hidden_when_disabled."""
+    monkeypatch.setattr("app.web.router.get_agent_profiles_enabled", lambda: False)
+    c = seeded_app["client"]
+    resp = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert 'href="/agents"' not in resp.text
+    assert "href: '/agents'" not in resp.text  # command palette row too
+
+
 def test_mcp_connect_linked_from_ai_connector_page(seeded_app):
     """The AI Connector page is the only inbound link to /mcp-connect — if this
     fails, the token setup page is unreachable again."""

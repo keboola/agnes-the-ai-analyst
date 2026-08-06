@@ -223,8 +223,12 @@
                    the primary nav or the admin mega-menu (instance authoring of
                    agents is Studio's /admin/studio/agent). This is the page's
                    only nav entry point — guarded by
-                   tests/test_web_nav_agents.py. #}
+                   tests/test_web_nav_agents.py. Hidden when the
+                   instance-level toggle is off (`can_agent_profiles`, set by
+                   get_agent_profiles_enabled() in both chrome builders). #}
+                {% if can_agent_profiles %}
                 <a class="app-user-menu-item {% if _path == '/agents' %}is-active{% endif %}" role="menuitem" href="/agents">My agents</a>
+                {% endif %}
                 {# The redesign dropped the "AI Connector" link (the connector
                    content now lives in /how-it-works#connect) and added
                    "Learn how it works" (tests/test_web_nav_cowork.py). "My
