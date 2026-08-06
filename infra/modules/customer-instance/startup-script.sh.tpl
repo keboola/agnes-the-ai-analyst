@@ -348,7 +348,7 @@ if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
     fi
 fi
 
-# DOMAIN_ALIAS — a legacy hostname Caddy serves alongside DOMAIN and 301s onto
+# DOMAIN_ALIAS — a legacy hostname Caddy serves alongside DOMAIN and 308s onto
 # it, so a domain cutover doesn't break old bookmarks / CLI configs / MCP
 # connector URLs (Caddyfile's second site block). Written ONLY when non-empty:
 # Caddy's `{$DOMAIN_ALIAS:localhost:8081}` fallback applies when the variable is

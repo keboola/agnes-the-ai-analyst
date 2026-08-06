@@ -52,7 +52,7 @@ variable "prod_instance" {
     tls_mode         = optional(string, "caddy")
     domain           = optional(string, "")
     # Hostname being migrated AWAY from. When set, Caddy serves it alongside
-    # `domain` and 301s every request onto `domain` (see the Caddyfile's
+    # `domain` and 308s every request onto `domain` (see the Caddyfile's
     # second site block), so old bookmarks / `agnes` CLI configs / MCP
     # connector URLs keep resolving through a domain cutover instead of
     # failing the TLS handshake. Clear it once the old DNS record is retired.
@@ -109,7 +109,7 @@ variable "dev_instances" {
     image_tag    = optional(string, "dev")
     tls_mode     = optional(string, "none")
     domain       = optional(string, "")
-    # Legacy hostname to 301 onto `domain` during a domain migration. Same
+    # Legacy hostname to 308 onto `domain` during a domain migration. Same
     # semantics as prod_instance.domain_alias — see there. MUST be declared on
     # this object type: Terraform silently drops attributes absent from the
     # type, so a bare entry in a caller's list would never reach the module.

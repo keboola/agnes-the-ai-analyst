@@ -155,9 +155,9 @@
 #
 # Two audiences, two answers. A person arriving in a browser gets a short
 # notice page telling them the address changed and what still points at the
-# old one — a silent 301 moves them along but never tells them to update the
-# bookmark, so the old name stays in circulation right up until it dies.
-# Everything else — the CLI, MCP clients, `agnes pull` — gets the plain 301,
+# old one — a silent redirect moves them along but never tells them to update
+# the bookmark, so the old name stays in circulation right up until it dies.
+# Everything else — the CLI, MCP clients, `agnes pull` — gets the plain 308,
 # because an HTML notice served to a machine client is just a confusing parse
 # error. The split is on `Accept: text/html`, which browsers send on
 # navigation and API clients do not.

@@ -183,7 +183,9 @@ SERVER_URL=https://agnes.new.example.com
 
 Both DNS records must point at this host for the whole window — the alias
 needs its own ACME challenge on `:80`. Drop `DOMAIN_ALIAS` once the old record
-is retired. Caddy cannot take both names from one variable (Caddyfile env
+is retired; either removing the line or blanking it (`DOMAIN_ALIAS=`) is safe,
+because Compose resolves an empty value to the same inert loopback address as
+an absent one. Caddy cannot take both names from one variable (Caddyfile env
 substitution is token-level, so `DOMAIN="a.example.com, b.example.com"` parses
 as a single malformed address), which is why this is a separate knob.
 

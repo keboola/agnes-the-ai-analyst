@@ -271,12 +271,16 @@ services:
       # - "tls <email>"    → Let's Encrypt auto-issue
       # - "tls internal"   → Caddy-managed self-signed
       - CADDY_TLS
-      # Legacy hostname to 301 onto ${DOMAIN} during a domain migration (see
-      # the Caddyfile's second site block). Passed through WITHOUT a default
-      # on purpose: Caddy's `{$DOMAIN_ALIAS:localhost:8081}` fallback applies
-      # only when the variable is unset, and an empty-but-set value would
-      # substitute an empty site address and fail config parsing.
-      - DOMAIN_ALIAS
+      # Legacy hostname to redirect onto ${DOMAIN} during a domain migration
+      # (see the Caddyfile's second site block). The default is spelled here,
+      # with `:-`, rather than left to Caddy's `{$DOMAIN_ALIAS:127.0.0.1:8081}`:
+      # Caddy's fallback applies only when the variable is UNSET, so an
+      # empty-but-set value substituted an empty site address and failed config
+      # parsing — taking the primary site down with it. Retiring the alias by
+      # editing `.env` to `DOMAIN_ALIAS=` is the obvious operator action, and it
+      # was the one that broke. Compose's `:-` treats empty and unset alike, so
+      # both spellings now land on the inert loopback address.
+      - DOMAIN_ALIAS=${DOMAIN_ALIAS:-127.0.0.1:8081}
     depends_on:
       app:
         condition: service_healthy

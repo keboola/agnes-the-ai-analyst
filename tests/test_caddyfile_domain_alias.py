@@ -138,13 +138,29 @@ def test_alias_block_has_no_explicit_tls_directive():
     )
 
 
-def test_compose_passes_domain_alias_through_without_a_default():
+def test_compose_defaults_domain_alias_so_an_empty_value_is_inert():
+    """An operator retiring the alias by blanking the line must not break Caddy.
+
+    This test previously asserted the OPPOSITE — a bare `- DOMAIN_ALIAS`
+    passthrough — on the reasoning that any default would substitute an empty
+    address. That confused two different substitution rules. Caddy's
+    `{$VAR:default}` applies only when the variable is UNSET, so `DOMAIN_ALIAS=`
+    in `.env` did reach Caddy as an empty site address and failed config
+    parsing, taking the PRIMARY site down with it. Compose's `${VAR:-default}`
+    (colon-dash) treats empty and unset alike, so spelling the default here
+    closes that hole rather than documenting it (Devin Review on #1182).
+
+    Verified against `docker compose config`: unset and empty both render
+    `127.0.0.1:8081`; a real hostname passes through unchanged.
+    """
     text = (_ROOT / "docker-compose.yml").read_text()
-    assert re.search(r"^\s*- DOMAIN_ALIAS$", text, re.MULTILINE), (
-        "docker-compose.yml's caddy service must pass DOMAIN_ALIAS through "
-        "bare (`- DOMAIN_ALIAS`); assigning a default would set the variable "
-        "to an empty string, substituting an EMPTY site address that Caddy "
-        "refuses to parse"
+    assert re.search(r"^\s*- DOMAIN_ALIAS=\$\{DOMAIN_ALIAS:-[^}]+\}$", text, re.MULTILINE), (
+        "docker-compose.yml's caddy service must default DOMAIN_ALIAS with "
+        "Compose's `:-` form, so an empty-but-set value resolves to the same "
+        "inert address as an absent one"
+    )
+    assert not re.search(r"^\s*- DOMAIN_ALIAS$", text, re.MULTILINE), (
+        "the bare passthrough is the footgun this replaced — an empty value reached Caddy as an empty site address"
     )
 
 
