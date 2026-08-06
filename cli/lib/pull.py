@@ -42,6 +42,7 @@ import httpx
 
 from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
+from src.sql_ident import quote_ident
 
 
 @dataclass
@@ -110,7 +111,52 @@ class PullResult:
     stack_sync: object = None
 
 
+# Knowledge corpus ids, digest slugs and memory item ids: no dots. Each is
+# spliced into a request path (`/api/knowledge/artifacts/{cid}/download`) as well
+# as a local filename, and none of them has a legitimate dotted spelling.
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+
+# Registered table ids DO have a legitimate dotted spelling: `app/api/admin.py`
+# derives a table_id from an admin-supplied display name via
+# `.strip().lower().replace(" ", "_")`, which preserves dots, so `orders.v2` is a
+# real registered id. Kept separate from `_SAFE_ID_RE` rather than widening it —
+# that regex is shared by three unrelated validation sites, and dot-tolerance
+# there buys nothing while letting `..`-style values into a URL path segment.
+# `_safe_manifest_tables` still rejects the path-meaningful dot spellings
+# (`.`, `..`, leading dot) separately; the charset alone would admit them.
+_SAFE_TABLE_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
+
+
+def _safe_manifest_tables(raw: dict) -> tuple[dict, list[str]]:
+    """Split a manifest's ``tables`` dict into (kept, dropped_ids).
+
+    A table id from the manifest becomes BOTH a filesystem path segment
+    (``<tid>.parquet`` and its ``.verify.tmp`` sidecar under
+    ``<workspace>/server/parquet/``) and a DuckDB view identifier. This file
+    already gates collection ids, doc slugs and item ids through
+    their own charset regexes; the manifest table id was the one that was missed
+    (2026-08-05 audit, F-4b).
+
+    Honest severity: the server is the analyst's own authenticated Agnes
+    instance, which already ships executable plugin content to this laptop via
+    the marketplace bundle — so this narrows a trust boundary rather than
+    closing an open door. It is a one-line gate either way.
+
+    Returns dropped ids rather than raising or collecting into
+    ``PullResult.errors``: ``cli/commands/pull.py`` turns a non-empty ``errors``
+    list into ``typer.Exit(1)``, including on the ``--quiet`` SessionStart hook
+    path, so one odd id would make every subsequent ``agnes pull`` fail.
+    """
+    kept: dict = {}
+    dropped: list[str] = []
+    for tid, info in (raw or {}).items():
+        # `.`/`..`/leading-dot pass the charset check but are path-meaningful.
+        if not isinstance(tid, str) or tid.startswith(".") or not _SAFE_TABLE_ID_RE.match(tid):
+            dropped.append(tid)
+            continue
+        kept[tid] = info
+    return kept, dropped
+
 
 # #596 — hash-mismatch recovery in `_download_one`. A download whose bytes
 # don't match the manifest hash is treated as transient (corrupt mid-flight
@@ -625,7 +671,18 @@ def run_pull(
             result.duration_s = time.monotonic() - started
             return result
 
-        server_tables = manifest.get("tables", {}) or {}
+        server_tables, unsafe_tids = _safe_manifest_tables(manifest.get("tables", {}) or {})
+        if unsafe_tids:
+            # stderr, not result.errors: a non-empty errors list makes
+            # `agnes pull` exit 1 (cli/commands/pull.py), including on the
+            # --quiet SessionStart hook path. Visible, but not fatal.
+            import sys as _sys
+
+            print(
+                f"warning: skipped {len(unsafe_tids)} table(s) with an unsafe id: "
+                f"{', '.join(repr(t) for t in unsafe_tids[:5])}",
+                file=_sys.stderr,
+            )
         local_state = get_sync_state()
         local_tables = local_state.get("tables", {})
         # Which ids resolved LOCALLY as of the previous pull, captured before
@@ -797,9 +854,9 @@ def run_pull(
         use_textual_fallback = show_progress and to_download and not _sys.stderr.isatty()
         if show_progress and to_download and not use_textual_fallback:
             from rich.progress import (
-                Progress,
                 BarColumn,
                 DownloadColumn,
+                Progress,
                 TextColumn,
                 TimeRemainingColumn,
                 TransferSpeedColumn,
@@ -1481,6 +1538,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
     ordinary pull.
     """
     import duckdb  # noqa: F401  (kept for the duckdb.Error path below)
+
     from src.duckdb_conn import _open_duckdb
 
     db_path = workspace / "user" / "duckdb" / "analytics.duckdb"
@@ -1502,7 +1560,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
         try:
             views = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'").fetchall()
             for (view_name,) in views:
-                conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+                conn.execute(f"DROP VIEW IF EXISTS {quote_ident(view_name)}")
         except Exception:
             pass
 
@@ -1530,7 +1588,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
                     glob_lit = str((entry / "**" / "*.parquet").resolve()).replace("'", "''")
                     try:
                         conn.execute(
-                            f'CREATE VIEW "{view_name}" AS SELECT * FROM '
+                            f"CREATE VIEW {quote_ident(view_name)} AS SELECT * FROM "
                             f"read_parquet('{glob_lit}', union_by_name=true, hive_partitioning=true)"
                         )
                     except duckdb.Error:
@@ -1544,7 +1602,9 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
                         continue
                     abs_path = str(entry.resolve()).replace("'", "''")
                     try:
-                        conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+                        conn.execute(
+                            f"CREATE VIEW {quote_ident(view_name)} AS SELECT * FROM read_parquet('{abs_path}')"
+                        )
                     except duckdb.Error:
                         continue
 

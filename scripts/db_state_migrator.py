@@ -17,6 +17,7 @@ same migrator with a different source connection.
 Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
 from __future__ import annotations
+
 import json
 import logging
 import os
@@ -558,8 +559,9 @@ def _jsonb_columns_for(table_name: str) -> set[str]:
     ``./foo``); the target's ``CAST AS JSONB`` then fails on bare values.
     We re-encode every JSONB value with ``json.dumps`` on the copy path.
     """
-    import src.models  # noqa: F401
     from sqlalchemy.dialects.postgresql import JSONB
+
+    import src.models  # noqa: F401
     from src.db_pg import Base
 
     table = Base.metadata.tables.get(table_name)
@@ -624,7 +626,6 @@ def copy_pg_to_pg(
     import sqlalchemy as sa
 
     import src.models  # noqa: F401 — ensures every model is imported
-    from src.db_pg import Base
     from scripts.migrate_duckdb_to_pg import _PK_COLUMNS
     from scripts.migrate_duckdb_to_pg.tasks import (
         _array_columns_for,
@@ -634,6 +635,8 @@ def copy_pg_to_pg(
         _not_null_columns_with_default,
         _substitute_default,
     )
+    from src.db_pg import Base
+    from src.sql_ident import quote_ident
 
     def _row_to_dict(row, cols, array_cols, jsonb_cols, default_cols):
         d: dict[str, Any] = {}
@@ -695,7 +698,7 @@ def copy_pg_to_pg(
             # flagged.
             with source.connect() as src_conn:
                 stmt = sa.text(
-                    f'SELECT {", ".join(cols)} FROM "{tname}"'
+                    f'SELECT {", ".join(cols)} FROM ' + quote_ident(tname)
                 ).execution_options(yield_per=PG_TO_PG_BATCH_SIZE)
                 result = src_conn.execute(stmt)
                 batch: list[dict] = []
@@ -710,7 +713,7 @@ def copy_pg_to_pg(
 
             with target.connect() as tgt_conn:
                 count = tgt_conn.execute(
-                    sa.text(f'SELECT COUNT(*) FROM "{tname}"')
+                    sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")
                 ).scalar()
             rows_total += int(count or 0)
             tables_migrated += 1
@@ -775,10 +778,12 @@ def _content_hash_sample(
 
     import sqlalchemy as sa
 
-    pk_order = ", ".join(f'"{c}"' for c in pk_cols)
-    sel_cols = ", ".join(f'"{c}"' for c in non_pk_cols)
+    from src.sql_ident import quote_ident
+
+    pk_order = ", ".join(quote_ident(c) for c in pk_cols)
+    sel_cols = ", ".join(quote_ident(c) for c in non_pk_cols)
     sql = sa.text(
-        f'SELECT {sel_cols} FROM "{table_name}" ORDER BY {pk_order} LIMIT {int(sample_size)}'
+        f"SELECT {sel_cols} FROM {quote_ident(table_name)} ORDER BY {pk_order} LIMIT {int(sample_size)}"
     )
     h = hashlib.sha256()
     with engine.connect() as conn:
@@ -802,8 +807,10 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
     Empty list = both checks pass, migration may proceed to flip.
     """
     import sqlalchemy as sa
-    from src.db_pg import Base
+
     from scripts.migrate_duckdb_to_pg import _PK_COLUMNS
+    from src.db_pg import Base
+    from src.sql_ident import quote_ident
 
     diffs: list[dict] = []
     source = _bounded_engine(source_url)
@@ -814,7 +821,7 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
             try:
                 with source.connect() as c:
                     src_count = c.execute(
-                        sa.text(f'SELECT COUNT(*) FROM "{tname}"')
+                        sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")
                     ).scalar()
             except sa.exc.ProgrammingError as exc:
                 # Was: silent src_count=0. Hard-fail so the operator can act —
@@ -828,7 +835,7 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
             try:
                 with target.connect() as c:
                     tgt_count = c.execute(
-                        sa.text(f'SELECT COUNT(*) FROM "{tname}"')
+                        sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")
                     ).scalar()
             except sa.exc.ProgrammingError as exc:
                 # Was: silent tgt_count=0. That collapsed to a 0==0 "match"
@@ -878,7 +885,9 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
     """
     import duckdb as _duckdb
     import sqlalchemy as sa
+
     from src.db_pg import Base
+    from src.sql_ident import quote_ident
 
     diffs: list[dict] = []
     tables = [t.name for t in Base.metadata.sorted_tables]
@@ -894,14 +903,14 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
         for table in tables:
             try:
                 src_count = duck_conn.execute(
-                    f'SELECT COUNT(*) FROM "{table}"'
+                    f"SELECT COUNT(*) FROM {quote_ident(table)}"
                 ).fetchone()[0]
             except _duckdb.CatalogException:
                 src_count = 0
             try:
                 with pg_engine.connect() as pg_conn:
                     tgt_count = pg_conn.execute(
-                        sa.text(f'SELECT COUNT(*) FROM "{table}"')
+                        sa.text(f"SELECT COUNT(*) FROM {quote_ident(table)}")
                     ).fetchone()[0]
             except sa.exc.ProgrammingError as exc:
                 # Was: silent tgt_count=0. That collapsed to a 0==0 "match"
@@ -1213,7 +1222,8 @@ def main(
                     )
                     # Revert state to source like the generic except path.
                     try:
-                        from src.db_state_machine import BackendState as _BS, write_backend_state as _wbs
+                        from src.db_state_machine import BackendState as _BS
+                        from src.db_state_machine import write_backend_state as _wbs
                         _wbs(_BS(source_backend), url=source_url)
                     except Exception:
                         pass
@@ -1271,7 +1281,7 @@ def main(
         # cancel_job is currently holding the lock for its revert; by
         # the time we re-acquire, the cancel sentinel is on disk and
         # the re-check will raise JobCancelled.
-        from src.db_state_machine import MigrationLock, MigrationInProgressError
+        from src.db_state_machine import MigrationInProgressError, MigrationLock
         try:
             with MigrationLock():
                 _check_cancel_before_flip(job_path=writer._path, target_state=target_state)

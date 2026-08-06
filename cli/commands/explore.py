@@ -6,6 +6,8 @@ from pathlib import Path
 
 import typer
 
+from src.sql_ident import quote_ident
+
 explore_app = typer.Typer(help="Explore data tables")
 
 
@@ -49,14 +51,14 @@ def _explore_local(table: str, as_json: bool):
             raise typer.Exit(1)
 
         # Row count
-        count = conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
+        count = conn.execute(f"SELECT count(*) FROM {quote_ident(table)}").fetchone()[0]
 
         # Column info
-        columns = conn.execute(f"DESCRIBE \"{table}\"").fetchall()
+        columns = conn.execute(f"DESCRIBE {quote_ident(table)}").fetchall()
         col_info = [{"name": c[0], "type": c[1], "nullable": c[2]} for c in columns]
 
         # Sample rows
-        sample = conn.execute(f'SELECT * FROM "{table}" LIMIT 5').fetchall()
+        sample = conn.execute(f"SELECT * FROM {quote_ident(table)} LIMIT 5").fetchall()
         sample_cols = [desc[0] for desc in conn.description]
 
         info = {

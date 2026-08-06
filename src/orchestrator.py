@@ -37,7 +37,7 @@ from typing import Dict, Iterator, List, Optional
 
 import duckdb
 
-from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from connectors.bigquery.auth import BQMetadataAuthError, get_metadata_token
 from src.db import _open_duckdb
 from src.orchestrator_security import (
     attach_host_allowlist_configured,
@@ -47,6 +47,7 @@ from src.orchestrator_security import (
     is_extension_allowed,
     is_token_env_allowed,
 )
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,8 @@ def _capture_orchestrator_exception(exc: BaseException, **props) -> None:
 # rename — they import from a single source of truth now.
 from src.identifier_validation import (  # noqa: E402
     _SAFE_IDENTIFIER,  # noqa: F401  (re-exported for any historical caller)
+)
+from src.identifier_validation import (
     validate_identifier as _validate_identifier,
 )
 
@@ -183,9 +186,7 @@ def _parts_rollup_hash(parts: list[dict]) -> str:
     the path-sorted ``(path, hash)`` pairs. Lets the manifest's top-level
     ``hash`` / object-store mirror-index compare keep working unchanged for
     partitioned tables. Full 32-char MD5."""
-    joined = "\n".join(
-        f"{p['path']}:{p['hash']}" for p in sorted(parts, key=lambda p: p["path"])
-    )
+    joined = "\n".join(f"{p['path']}:{p['hash']}" for p in sorted(parts, key=lambda p: p["path"]))
     return hashlib.md5(joined.encode("utf-8")).hexdigest()
 
 
@@ -730,7 +731,7 @@ class SyncOrchestrator:
         table via a throwaway READ-ONLY connection opened directly on
         ``db_file`` (``SELECT * FROM "<table>"`` — the identical
         expression the legacy master view uses,
-        ``SELECT * FROM {source}."{table}"``) rather than ATTACHing the
+        ``SELECT * FROM <source>.<table>``) rather than ATTACHing the
         extract onto the long-lived DuckLake writer connection.
 
         That choice is deliberate, not cosmetic:
@@ -863,7 +864,7 @@ class SyncOrchestrator:
                     # tables. `tests/test_orchestrator_ducklake.py`'s
                     # bounded-memory test exists specifically to catch that
                     # regression.
-                    arrow_batches = ro.sql(f'SELECT * FROM "{table_name}"').to_arrow_reader(  # noqa: F841
+                    arrow_batches = ro.sql(f"SELECT * FROM {quote_ident(table_name)}").to_arrow_reader(  # noqa: F841
                         batch_size=_DUCKLAKE_INGEST_BATCH_SIZE
                     )
                 except Exception as e:
@@ -903,14 +904,19 @@ class SyncOrchestrator:
 
                 try:
                     if not schema_created:
-                        write_conn.execute(f'CREATE SCHEMA IF NOT EXISTS lake."{source_name}"')
+                        # `source_name` is a SCHEMA name inside the `lake`
+                        # catalog here, so it is quoted — unlike its other role
+                        # in this module as a bare ATTACH alias (`{source_name}.`
+                        # at :1006 and in _attach_and_create_views).
+                        write_conn.execute(f"CREATE SCHEMA IF NOT EXISTS lake.{quote_ident(source_name)}")
                         schema_created = True
                     write_conn.execute(
-                        f'CREATE OR REPLACE TABLE lake."{source_name}"."{table_name}" AS SELECT * FROM arrow_batches'
+                        f"CREATE OR REPLACE TABLE lake.{quote_ident(source_name)}.{quote_ident(table_name)} "
+                        f"AS SELECT * FROM arrow_batches"
                     )
                     write_conn.execute(
-                        f'CREATE OR REPLACE VIEW lake."main"."{table_name}" AS '
-                        f'SELECT * FROM lake."{source_name}"."{table_name}"'
+                        f'CREATE OR REPLACE VIEW lake."main".{quote_ident(table_name)} AS '
+                        f"SELECT * FROM lake.{quote_ident(source_name)}.{quote_ident(table_name)}"
                     )
                     tables.append(table_name)
                 except Exception as e:
@@ -1002,7 +1008,11 @@ class SyncOrchestrator:
                     continue
                 try:
                     write_conn.execute(
-                        f'CREATE OR REPLACE VIEW lake."main"."{name}" AS SELECT * FROM {source_name}."{name}"'
+                        # `source_name` stays BARE — here it is the ATTACH alias,
+                        # not a schema inside `lake`. See the CREATE SCHEMA above
+                        # for the other role.
+                        f'CREATE OR REPLACE VIEW lake."main".{quote_ident(name)} AS '
+                        f"SELECT * FROM {source_name}.{quote_ident(name)}"
                     )
                     created_remote_names.add(name)
                 except Exception as e:
@@ -1044,7 +1054,7 @@ class SyncOrchestrator:
             if view_name in expected_names or not _validate_identifier(view_name, "table_name"):
                 continue
             try:
-                write_conn.execute(f'DROP VIEW IF EXISTS lake."main"."{view_name}"')
+                write_conn.execute(f'DROP VIEW IF EXISTS lake."main".{quote_ident(view_name)}')
                 logger.info("DuckLake reconcile: dropped stale lake.main view %s", view_name)
             except Exception as e:
                 logger.warning("DuckLake reconcile: could not drop stale lake.main view %s: %s", view_name, e)
@@ -1136,7 +1146,16 @@ class SyncOrchestrator:
                         claimed_pairs.append((source_name, table_name))
 
                 try:
-                    conn.execute(f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM {source_name}."{table_name}"')
+                    conn.execute(
+                        # `source_name` is the ATTACH alias and stays BARE, matching
+                        # every other use of it in this module (`ATTACH … AS
+                        # {source_name}`, `FROM {source_name}._meta`). Quoting it
+                        # resolves identically in DuckDB, but the sweep that
+                        # introduced quotes here was overreach — the alias is not
+                        # an identifier this module owns.
+                        f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS "
+                        f"SELECT * FROM {source_name}.{quote_ident(table_name)}"
+                    )
                     tables.append(table_name)
                 except Exception as e:
                     # Per-row catch so one bad row doesn't drop the rest of
@@ -1250,7 +1269,7 @@ class SyncOrchestrator:
                             try:
                                 safe_path = str(parquet_path).replace("'", "''")
                                 conn.execute(
-                                    f'CREATE OR REPLACE VIEW "{table_id}" AS '
+                                    f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS "
                                     f"SELECT * FROM read_parquet('{safe_path}')"
                                 )
                                 tables.append(table_id)
@@ -1510,7 +1529,7 @@ class SyncOrchestrator:
             with open(parquet_path, "rb") as f:
                 for chunk in iter(lambda: f.read(8192), b""):
                     h.update(chunk)
-            row_count = conn.execute(f'SELECT COUNT(*) FROM "{table_id}"').fetchone()[0]
+            row_count = conn.execute(f"SELECT COUNT(*) FROM {quote_ident(table_id)}").fetchone()[0]
             sync_state_repo().update_sync(
                 table_id=table_id,
                 rows=int(row_count or 0),

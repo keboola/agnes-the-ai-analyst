@@ -23,22 +23,15 @@ import duckdb
 import yaml
 
 from src.db import _open_duckdb
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
 
-def quote_ident(name: str) -> str:
-    """Quote a SQL identifier, escaping embedded double-quotes.
-
-    Security audit F1: column names reaching the profiler originate from a
-    ``DESCRIBE`` of a parquet materialized from an attacker-uploaded collection
-    file, so they are untrusted. Wrapping a name in bare ``"..."`` without
-    doubling any embedded ``"`` lets a column named ``x") AS a, (SELECT ...) AS "b``
-    break out of the quoted identifier and execute arbitrary SQL against the
-    profiler's DuckDB. Doubling ``"`` per the SQL standard closes that hole.
-    Every ``f'"{col}"'`` interpolation in this module MUST route through here.
-    """
-    return '"' + str(name).replace('"', '""') + '"'
+# Re-exported: `quote_ident` moved to src/sql_ident.py in the 2026-08-05 audit
+# follow-up so every module can reach it, not just this one. Existing importers
+# (`from src.profiler import quote_ident`) keep working unchanged.
+__all__ = ["quote_ident"]
 
 
 # ---------------------------------------------------------------------------

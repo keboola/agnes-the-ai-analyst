@@ -32,6 +32,7 @@ from src.duckdb_conn import _open_duckdb
 from src.identifier_validation import validate_quoted_identifier
 from src.repositories.mcp_sources import MCPSourceRepository
 from src.repositories.tool_registry import MATERIALIZE, ToolRegistryRepository
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -544,9 +545,8 @@ def _create_view(conn: duckdb.DuckDBPyConnection, table_name: str, parquet_path:
     # so we inline the path. parquet_path comes from output_dir_for_source()
     # which derives from mcp_sources.name (DB-enforced unique) + the
     # exposed_name we control — no user-supplied path components.
-    safe_name = table_name.replace('"', '""')
     safe_path = str(parquet_path).replace("'", "''")
-    conn.execute(f"CREATE OR REPLACE VIEW \"{safe_name}\" AS SELECT * FROM read_parquet('{safe_path}')")
+    conn.execute(f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM read_parquet('{safe_path}')")
 
 
 # ── extraction ──────────────────────────────────────────────────────────────

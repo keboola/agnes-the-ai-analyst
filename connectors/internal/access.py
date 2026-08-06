@@ -29,6 +29,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -364,7 +365,7 @@ def _materialized_internal_duckdb(refs, user, is_admin):
             for table_id in refs:
                 table = INTERNAL_TABLES_BY_ID[table_id]
                 where_clause = build_filter_clause(table, user, is_admin)
-                q = f'SELECT * FROM "{table.source_table}" {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}'
+                q = f"SELECT * FROM {quote_ident(table.source_table)} {where_clause} LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
                 result = pg.exec_driver_sql(q)
                 col_names = list(result.keys())
                 fetched = result.mappings().all()
@@ -378,7 +379,7 @@ def _materialized_internal_duckdb(refs, user, is_admin):
                 # references still resolve (COUNT/GROUP BY return empty).
                 src_df = pd.DataFrame(list(fetched)) if fetched else pd.DataFrame(columns=col_names)
                 conn.register("_pg_src_df", src_df)
-                conn.execute(f'CREATE TABLE "{table.source_table}" AS SELECT * FROM _pg_src_df')
+                conn.execute(f"CREATE TABLE {quote_ident(table.source_table)} AS SELECT * FROM _pg_src_df")
                 conn.unregister("_pg_src_df")
         return conn, conn.close
     except Exception:
@@ -425,7 +426,7 @@ def _materialized_internal_duckdb_from_duckdb(refs, user, is_admin):
                     f"add a more selective WHERE clause"
                 )
             mem.register("_src_df", src_df)
-            mem.execute(f'CREATE TABLE "{table.source_table}" AS SELECT * FROM _src_df')
+            mem.execute(f"CREATE TABLE {quote_ident(table.source_table)} AS SELECT * FROM _src_df")
             mem.unregister("_src_df")
         return mem, mem.close
     except Exception:
