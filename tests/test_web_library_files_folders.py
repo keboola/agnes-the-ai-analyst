@@ -147,11 +147,12 @@ def test_group_headers_are_sticky_and_replace_one_another(seeded_app):
 
 
 def test_grid_view_drops_the_frame_and_the_filled_band(seeded_app):
-    """The frame and the filled sticky band are TABLE chrome. In grid view the
-    cards carry their own border and background, so the list frame is dropped,
-    the group header goes transparent and unpadded, and it stands off its cards
-    by the grid's own gap. Which view is on is read off the projected grid being
-    visible, so the styling needs no JS of its own."""
+    """The frame and the FILL are TABLE chrome. In grid view the cards carry
+    their own border and background, so the list frame is dropped, the group
+    header goes transparent and unpadded, and it stands off its cards by the
+    grid's own gap. Which view is on is read off the projected grid being
+    visible, so the styling needs no JS of its own. What does NOT come off is
+    the pinning — see the sticky test below."""
     tok = seeded_app["admin_token"]
     _folder(seeded_app, "Grid Chrome Deck", tok)
 
@@ -159,19 +160,75 @@ def test_grid_view_drops_the_frame_and_the_filled_band(seeded_app):
     grid_on = ":has(> .fbar-grid:not([hidden]))"
     # The frame goes.
     assert ".lib-list:has(> .lib-group > .fbar-grid:not([hidden]))" in text
-    # The band goes transparent, unpinned, unbordered — and off the cards.
+    # The band goes transparent and unbordered — and off the cards by the grid's
+    # own gap, which is a token both that padding and the veil's ramp read.
     assert f".lib-group{grid_on} > .lib-band" in text
-    assert "position: static; background: none; border-bottom: 0; box-shadow: none;" in text
-    assert "margin-bottom: 14px;" in text
+    assert "background: none; border-bottom: 0; box-shadow: none;" in text
+    assert "--lib-band-gap: 14px;" in text
+    assert "padding-top: var(--lib-band-gap);" in text
     # No hover fill either — that would put the filled bar back.
     assert f".lib-group{grid_on} > .lib-band .fbar-grouptoggle" in text
     assert "padding-left: 0; padding-right: 0; background: none;" in text
     # Folded → header only, no gap kept for cards that aren't shown.
     assert f".lib-group.is-collapsed{grid_on} > .lib-band" in text
-    # Separate blocks rather than bands of one list.
-    assert f".lib-group{grid_on} + .lib-group" in text
-    # …while table view keeps its frame and its sticky band.
+    # …while table view keeps its frame.
     assert ".lib-list { border: 1px solid var(--ds-border);" in text
+
+
+def test_grid_view_keeps_the_sticky_header_and_veils_it(seeded_app):
+    """Grid view pins its group headers exactly as the table does — same box
+    (the group's own section), same offset (the viewport top), so switching view
+    doesn't move the header. Two things make it work over cards rather than rows:
+
+    · BOTH gaps — band-to-cards and group-to-group — are padding on the GRID,
+      and while the grid is folded away the band carries a gap of its own so a
+      run of folded groups doesn't close up to bare headings 40px apart. It
+      takes the narrower `--lib-band-gap` for that: the wider group gap is sized
+      to clear a bordered card's bottom edge, and a folded group has no card.
+      Everywhere it is PADDING, never a margin and never on the group: a sticky
+      box is confined to its parent's CONTENT box, so group padding does not
+      extend the pin and a bottom margin shortens it; either way the outgoing
+      header unpins early and leaves a strip of page with no header on it.
+    · a frosted veil instead of a fill — a wash of the surface the page actually
+      paints (`--ds-surface`, what the index shell puts behind the list, NOT
+      `--ds-bg`, which would read as a grey bar over a white page) plus a blur,
+      ramped out at both ends, on a pseudo-element so `backdrop-filter` does not
+      become the containing block for the cards' fixed row menus.
+    """
+    tok = seeded_app["admin_token"]
+    _folder(seeded_app, "Grid Sticky Deck", tok)
+
+    text = seeded_app["client"].get("/library", headers=_auth(tok)).text
+    css = text.split("</style>")[0]
+    grid_on = ":has(> .fbar-grid:not([hidden]))"
+    # ONE sticky rule, both views — grid never unpins the band.
+    assert ".lib-band { position: sticky; top: 0;" in text
+    assert "position: static" not in css
+    # Both gaps sit inside the grid, so the group's content box runs right up to
+    # the next group's band and the handoff is exact.
+    assert f".lib-group{grid_on} > .fbar-grid" in text
+    assert "--lib-group-gap: 22px;" in text
+    assert "padding-bottom: var(--lib-group-gap);" in text
+    assert f".lib-group{grid_on}:last-child > .fbar-grid {{ padding-bottom: 0; }}" in text
+    # Folded, the band carries the narrower gap in the grid's place — 54px of
+    # pitch rather than a bare 40 — and the last group still trails nothing.
+    assert f".lib-group.is-collapsed{grid_on} > .lib-band" in text
+    assert "padding-bottom: var(--lib-band-gap);" in text
+    assert f".lib-group.is-collapsed{grid_on}:last-child > .lib-band" in text
+    # Neither of the two things that would shorten the pin may come back.
+    assert f".lib-group{grid_on} + .lib-group" not in text
+    assert "margin-bottom: var(--lib-band-gap)" not in css
+    assert "margin-bottom: var(--lib-group-gap)" not in css
+    # The veil: pseudo-element, behind the type, blurred, ramped at both ends,
+    # and washed in the colour the page itself paints.
+    assert f".lib-group{grid_on} > .lib-band::before" in text
+    assert "backdrop-filter: blur(8px);" in text
+    assert "background: color-mix(in srgb, var(--ds-surface) 92%, transparent);" in text
+    assert "--lib-veil-up: 10px;" in text
+    assert "--lib-veil-down: var(--lib-band-gap);" in text
+    assert "mask-image: linear-gradient(to bottom, transparent 0, black var(--lib-veil-up)," in text
+    # Reduced transparency gets the readability without the glass.
+    assert "@media (prefers-reduced-transparency: reduce)" in text
 
 
 def test_group_header_carries_label_count_and_hint(seeded_app):
@@ -762,8 +819,15 @@ def test_file_inside_a_folder_has_its_own_detail_page(seeded_app):
     assert r.status_code == 200
     # It names the file, links back to its folder, and shows its OWN sharing.
     assert f"/library/{col['slug']}" in r.text
-    assert "lfd-vis--private" in r.text
-    assert "Share this file" in r.text
+    # The visibility chip is the SHARED `detail.visibility_chip(…)` component
+    # now (`.detail-vis`), not a page-local `.lfd-vis` — sharing is a concept
+    # every resource has, so every detail page draws it the same way.
+    assert "detail-vis--private" in r.text
+    # …and the chip is the CONTROL: it opens the shared sharing dialog for this
+    # file's own resource, which is what "share an individual file" means here.
+    assert 'data-share-type="corpus_file"' in r.text
+    assert f'data-share-id="{fid}"' in r.text
+    assert "js/components/share_dialog.js" in r.text
 
 
 def test_file_detail_uses_the_shared_detail_scaffold(seeded_app):
@@ -786,7 +850,7 @@ def test_file_detail_uses_the_shared_detail_scaffold(seeded_app):
     assert ">Sharing<" in text
     # Neither an ask box nor an upload zone.
     assert "Ask this file" not in text
-    assert "Upload files" not in text
+    assert "Add files" not in text
     assert 'id="lib-drop"' not in text
 
 
@@ -849,6 +913,73 @@ def test_a_single_file_can_be_shared_without_its_folder(seeded_app):
     # And the Library shows the file's own state.
     text = c.get("/library", headers=_auth(tok)).text
     assert 'data-share-type="corpus_file"' in text
+
+
+def test_detail_pages_make_the_sharing_badge_the_control(seeded_app, monkeypatch):
+    """One sharing control per page, and it is the badge — the same thing the
+    Library row's badge is. The "Manage sharing" button that sat beside it in
+    the rail, and the header item that duplicated it, are gone: both pointed at
+    `/library?share=…`, a URL no route handles, so the badge is now the only
+    control AND the only place the state is stated."""
+    monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+    tok = seeded_app["admin_token"]
+    col = _folder(seeded_app, "Badge Control Folder", tok)
+    fid = _files(seeded_app, col["id"], tok)[0]["file_id"]
+    c = seeded_app["client"]
+
+    for url, rtype, rid in (
+        (f"/library/{col['slug']}", "collection", col["id"]),
+        (f"/library/{col['slug']}/f/{fid}", "corpus_file", fid),
+    ):
+        text = c.get(url, headers=_auth(tok)).text
+        assert "detail-vis--editable" in text, url
+        assert "data-share-open" in text, url
+        assert f'data-share-type="{rtype}"' in text, url
+        assert f'data-share-id="{rid}"' in text, url
+        # The dialog the badge opens is the shared component, not page markup.
+        assert "js/components/share_dialog.js" in text, url
+        assert 'id="shareModal"' not in text, url
+        # No redundant second control, and no dead sharing URL anywhere.
+        assert "Manage sharing" not in text, url
+        assert "?share=" not in text, url
+
+
+def test_sharing_badge_is_a_read_out_when_the_caller_cannot_reshare(seeded_app, monkeypatch):
+    """A badge that opens a dialog whose save would 404 is worse than a plain
+    read-out, so the control is only rendered for a caller who owns the item.
+    An admin-owned collection granted to the analyst's group is readable by
+    them — and re-shareable by nobody but its owner."""
+    import re
+
+    monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    tok = seeded_app["admin_token"]
+    col = _folder(seeded_app, "Granted Folder", tok)
+
+    conn = get_system_db()
+    groups = UserGroupsRepository(conn)
+    grp = groups.get_by_name("readers-badge") or groups.create(
+        name="readers-badge", description="t", created_by="admin1"
+    )
+    UserGroupMembersRepository(conn).add_member("analyst1", grp["id"], source="admin", added_by="admin1")
+    ResourceGrantsRepository(conn).create(
+        group_id=grp["id"], resource_type="collection", resource_id=col["id"], assigned_by="admin1"
+    )
+
+    text = seeded_app["client"].get(f"/library/{col['slug']}", headers=_auth(seeded_app["analyst_token"])).text
+    # A plain read-out (`<span>`), not the control (`<button>`) — matched on the
+    # markup, since the scaffold's stylesheet always carries the editable rule.
+    chip = re.search(r'<(span|button)[^>]*class="detail-vis[^"]*"', text)
+    assert chip, "the reader still learns who can see this"
+    assert chip.group(1) == "span"
+    assert "detail-vis--editable" not in chip.group(0)
+    assert "data-share-open" not in text
+    # Nothing to open, so the dialog is not shipped either.
+    assert "js/components/share_dialog.js" not in text
 
 
 def test_per_file_sharing_is_owner_scoped(seeded_app):

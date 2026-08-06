@@ -21,6 +21,7 @@ read by nothing. ``/api/sharing/skill/...`` must 404 rather than pretend.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 
 def _auth(token: str) -> dict:
@@ -446,33 +447,52 @@ def test_library_add_actions_live_behind_one_menu(seeded_app):
     assert 'class="cbn cbn--bar"' not in head
 
 
-def test_search_and_new_ride_the_page_header(seeded_app):
-    """The two WHOLE-PAGE controls — search and "+ Add" — sit in the page header
-    on the title's row, not in the toolbar and not on the count row: neither one
-    narrows or reorders the list the way the toolbar's controls do."""
+def test_search_and_new_ride_the_toolbar(seeded_app):
+    """Search and "+ Add" sit in the toolbar dock by default — search first in
+    the controls row, "+ Add" last — and NOT in the page header.
+
+    They used to ride the header, on the reasoning that they act on the whole
+    Library rather than on the list the toolbar narrows. The header scrolls away,
+    so that put the two most-reached-for controls in the one place that leaves the
+    viewport, and a scroll-driven script had to ferry the real nodes into the dock
+    and back. The dock is on screen at every scroll position, so it is the only
+    home either control needs.
+    """
     # One item, so the type sections actually render — they are what bounds the
     # count row below (an empty Library renders no `data-lib-sec`).
     _create_collection(seeded_app, "Row Anchor", seeded_app["admin_token"])
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
 
-    # Both live inside `.lib-head`, which the connect banner closes — so both
-    # land ahead of the banner, and everything below the header comes after it.
+    # The header holds the title block and nothing else: no search, no "+ Add",
+    # and no leftover action row for a script to observe.
     head = text.split('class="lib-head"', 1)[1].split('class="cbn cbn--bar"', 1)[0]
-    assert 'id="lib-search"' in head
-    assert 'id="lib-new-btn"' in head
-    assert 'id="lib-new-menu"' in head
+    assert 'id="lib-search"' not in head
+    assert 'id="lib-new-btn"' not in head
+    assert 'class="lib-actions"' not in text
 
-    # The toolbar keeps every list control and no search box, and both its rows
-    # centre now that the one flex-grow child has left. Bounded by the dock's
-    # own closing markup rather than by the chips row — the chips sit ABOVE the
-    # bar, so slicing to `id="lib-chips"` would run to the end of the document
-    # and assert nothing.
-    assert 'class="fbar fbar--center"' in text
-    assert 'class="fbar-chips fbar-chips--center"' in text
-    bar = text.split('class="fbar fbar--center"', 1)[1].split("</div></div>", 1)[0]
-    assert 'id="lib-search"' not in bar
-    for kept in ('id="lib-filter-btn"', 'id="lib-sort"', 'class="fbar-view"'):
+    # The controls row carries both, at its two ends, with the list controls
+    # between them. Bounded by the dock's own closing markup rather than by the
+    # chips row — the chips sit ABOVE the bar, so slicing to `id="lib-chips"`
+    # would run to the end of the document and assert nothing.
+    bar = text.split('class="fbar" role="group"', 1)[1].split("</div></div>", 1)[0]
+    for kept in (
+        'id="lib-search"',
+        'id="lib-filter-btn"',
+        'id="lib-sort"',
+        'class="fbar-view"',
+        'id="lib-new-btn"',
+        'id="lib-new-menu"',
+    ):
         assert kept in bar
+    assert bar.index('id="lib-search"') < bar.index('id="lib-filter-btn"')
+    assert bar.index('class="fbar-view"') < bar.index('id="lib-new-btn"')
+    # The search box keeps its own landmark now that the bar around it is a
+    # `group` rather than a `search`.
+    assert 'class="fbar__search" role="search"' in bar
+    # The bar takes no `--center`: search is a flex control, so there is no free
+    # space for centring to distribute. The chips row above it still centres.
+    assert 'class="fbar fbar--center"' not in text
+    assert 'class="fbar-chips fbar-chips--center"' in text
 
     # The count row carries the count alone.
     row = text.split('class="lib-section-head"', 1)[1].split("data-lib-sec=", 1)[0]
@@ -481,80 +501,159 @@ def test_search_and_new_ride_the_page_header(seeded_app):
 
     # Page order: header → dock → count row → groups, and INSIDE the dock the
     # applied-filter chips come before the controls that produced them.
-    assert text.index('class="lib-head"') < text.index('class="lib-dock"')
-    assert text.index('class="lib-dock"') < text.index('id="lib-chips"')
-    assert text.index('id="lib-chips"') < text.index('class="fbar fbar--center"')
-    assert text.index('class="fbar fbar--center"') < text.index('class="lib-section-head"')
+    assert text.index('class="lib-head"') < text.index('class="fbar-dock"')
+    assert text.index('class="fbar-dock"') < text.index('id="lib-chips"')
+    assert text.index('id="lib-chips"') < text.index('class="fbar" role="group"')
+    assert text.index('class="fbar" role="group"') < text.index('class="lib-section-head"')
     assert text.index('class="lib-section-head"') < text.index("data-lib-sec=")
 
 
+FILTER_TOOLBAR_CSS = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "css" / "filter_toolbar.css"
+
+
+def _css_rule(sheet: str, selector: str, containing: str = "") -> str:
+    """The declaration block of the rule matching ``selector``, and ``containing``.
+
+    Splits on braces rather than searching for ``f"{selector} {{"``: the veil's
+    three layers share one comma-separated box rule, so a plain string search for
+    ``.fbar-dock__veil::after {`` matches that rule's last selector line instead
+    of the layer's own block. ``containing`` then picks between the several rules
+    a selector legitimately has — the shared box versus that layer's own blur.
+    """
+    for chunk in sheet.split("}"):
+        if "{" not in chunk:
+            continue
+        head, body = chunk.rsplit("{", 1)
+        head = re.sub(r"/\*.*?\*/", "", head, flags=re.S)
+        if selector in {s.strip() for s in head.split(",")} and containing in body:
+            return body
+    raise AssertionError(f"no rule for {selector!r} containing {containing!r}")
+
+
 def test_toolbar_is_a_floating_bottom_dock(seeded_app):
-    """The filter/sort controls ride a fixed card pinned to the bottom of the
-    viewport, with the applied-filter chips as its TOP row.
+    """The filter/sort controls ride the SHARED dock component (`.fbar-dock` in
+    filter_toolbar.css — /chats renders the same one), with the applied-filter
+    chips as the card's TOP row.
 
     Four things make that work and are worth pinning, because each one silently
     breaks something a caller can see:
 
-      * both rows live in ONE card (`.lib-dock__card`), chips first;
-      * the list reserves room below itself, or the dock covers its last rows;
+      * both rows live in ONE card (`.fbar-dock__card`), chips first;
+      * the FOOTER reserves room below itself — clearance on the list alone
+        leaves the footer as the one element stuck under the card at the bottom
+        of the scroll, fully covered and unreachable;
       * every menu the dock opens is re-anchored upward — a menu still hanging
-        off `top: 100%` renders below the viewport floor;
-      * `.lib-actions` keeps a reserved height, since the script moves its two
-        controls into the dock and observes the box they left behind.
+        off `top: 100%` renders below the viewport floor. That includes the
+        page's own "+ Add" menu, which is not one of the `.fbar-*` family;
+      * the frosted veil saturates at the VIEWPORT FLOOR and fades its blur
+        RADIUS across three stacked layers. Both halves were real bugs: a band
+        that reached full strength at the card's top edge drew a visible line
+        across the page there, and fading one uniformly-blurred layer's opacity
+        ghosted a sharp copy under a blurred one and saturated on a line too.
     """
     _create_collection(seeded_app, "Dock Anchor", seeded_app["admin_token"])
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
 
     # One card, chips row first, controls row second.
-    card = text.split('class="lib-dock__card"', 1)[1].split('class="lib-section-head"', 1)[0]
-    assert card.index('id="lib-chips"') < card.index('class="fbar fbar--center"')
+    card = text.split('class="fbar-dock__card"', 1)[1].split('class="lib-section-head"', 1)[0]
+    assert card.index('id="lib-chips"') < card.index('class="fbar" role="group"')
 
-    css = text.split("{% endblock %}", 1)[0]
-    assert "position: fixed;" in text.split(".lib-dock {", 1)[1].split("}", 1)[0]
-    # Room below the list for the card to float over.
-    assert "padding-bottom: 132px" in css
-    # Upward-opening menus, both of them.
-    assert ".lib-dock .fbar-menu {" in css and ".lib-dock .lib-new__menu {" in css
-    for rule in (".lib-dock .fbar-menu {", ".lib-dock .lib-new__menu {"):
+    shared = FILTER_TOOLBAR_CSS.read_text(encoding="utf-8")
+    assert "position: fixed;" in shared.split(".fbar-dock {", 1)[1].split("}", 1)[0]
+    # The whole page — footer included — scrolls clear of the dock.
+    assert "body:has(.fbar-dock) footer { margin-bottom:" in shared
+    # The fade above the card needs ROOM — it is the distance over which the
+    # dissolve happens, and a short one is what made earlier versions read as a
+    # drawn line rather than as a gradient. Generous distance, faint effect.
+    assert 'class="fbar-dock__veil"' in text
+    reach = int(shared.split("--fbar-dock-reach:", 1)[1].split("px", 1)[0].strip())
+    assert 32 <= reach <= 72, f"fade distance {reach}px is outside the dissolve range"
+    # The band is anchored to the VIEWPORT, not to the frame, and bottoms out at
+    # the floor. That is the no-visible-edge guard: full strength happens off the
+    # bottom of the screen, where no live content sits beside it to compare
+    # against, so the only on-screen transition is the long dissolve at the top.
+    band = _css_rule(shared, ".fbar-dock__veil", containing="position: fixed")
+    assert "bottom: 0;" in band, "the band must reach the viewport floor"
+    # Its height is a formula, so the dissolve keeps its shape when the chips row
+    # makes the card taller.
+    for part in ("--fbar-dock-reach", "--fbar-dock-inset", "--fbar-dock-card", "--fbar-dock-chips"):
+        assert part in band.split("height:", 1)[1].split(";", 1)[0]
+    # Rail-aware, because the dock's stacking context sits above the rail and a
+    # band at left: 0 would blur the sidebar.
+    assert 'html[data-ui-layout="rail"] .fbar-dock__veil { left: 240px; }' in shared
+
+    # Three layers, each a stronger blur admitted over a shorter distance. That
+    # is what fades the RADIUS; one masked layer only fades opacity and leaves a
+    # ghosted copy saturating on a visible line.
+    radii, held_off, stops = [], [], []
+    for layer in (".fbar-dock__veil", ".fbar-dock__veil::before", ".fbar-dock__veil::after"):
+        block = _css_rule(shared, layer, containing="backdrop-filter: blur(")
+        radii.append(float(block.split("backdrop-filter: blur(", 1)[1].split("px", 1)[0]))
+        held_off.append("transparent 35%" in block or "transparent 55%" in block)
+        # Every ramp saturates at the band's own end — the viewport floor.
+        assert "black 100%)" in block
+        # A SMOOTHSTEP, not a two-stop line: the intermediate stops keep the slope
+        # shallow at both ends, and a steep end is what reads as an edge.
+        ramp = block.split("mask-image: linear-gradient(to bottom,", 1)[1]
+        stops.append(ramp.count("color-mix(in srgb, black"))
+    assert radii == sorted(radii), f"layers must climb in blur radius, got {radii}"
+    # The peak is the FLOOR's strength, which is off-screen; what must stay true
+    # is that it is bounded and that the layers climb toward it.
+    assert max(radii) <= 6, f"peak blur crept up to {max(radii)}px"
+    assert all(n >= 2 for n in stops), f"every ramp needs intermediate stops, got {stops}"
+    # The two stronger layers are absent from the top of the band.
+    assert held_off[1] and held_off[2], "the stronger layers must be held off the top"
+
+    # Exactly one layer carries the tint, and it dissolves upward from nothing.
+    tinted = [
+        layer
+        for layer in (".fbar-dock__veil", ".fbar-dock__veil::before", ".fbar-dock__veil::after")
+        if "background:" in _css_rule(shared, layer, containing="backdrop-filter: blur(")
+    ]
+    assert tinted == [".fbar-dock__veil"], f"one tint layer, got {tinted}"
+    assert "background: linear-gradient(to bottom,\n    transparent 0," in band
+    # Upward-opening menus: the shared one, and the page's own "+ Add".
+    page_css = text.split("{% endblock %}", 1)[0]
+    for rule, css in ((".fbar-dock .fbar-menu {", shared), (".fbar-dock .lib-new__menu {", page_css)):
         block = css.split(rule, 1)[1].split("}", 1)[0]
         assert "top: auto;" in block
         assert "bottom: calc(100%" in block
-    # The header keeps the row its two controls leave behind.
-    assert "min-height: 38px" in css.split(".lib-actions {", 1)[1].split("}", 1)[0]
 
 
 def test_dock_card_hugs_its_controls_in_every_state(seeded_app):
     """The card is sized by what is in it, always.
 
-    It used to take a definite `min(900px, 100%)` once search and "+ Add" docked
-    into it, and push those two onto its edges with a pair of auto margins, so
-    the list controls would stay on the card's centre line. With a handful of
-    middle controls that left ~300px of free space for the margins to absorb and
-    the dock rendered as a wide empty bar with a button stranded at each end. A
-    floating card has nothing beside it to line up with, so there is no centre
-    line to hold — only one consistent gap between its own controls.
+    It used to take a definite `min(900px, 100%)` in the state where search and
+    "+ Add" were in it, and push those two onto its edges with a pair of auto
+    margins, so the list controls would stay on the card's centre line. With a
+    handful of middle controls that left ~300px of free space for the margins to
+    absorb and the dock rendered as a wide empty bar with a button stranded at
+    each end. A floating card has nothing beside it to line up with, so there is
+    no centre line to hold — only one consistent gap between its own controls.
 
     Keeping it intrinsic is also what gives the resize animation something to
     interpolate: with a definite width most state changes moved nothing."""
     _create_collection(seeded_app, "Dock Hug", seeded_app["admin_token"])
-    css = (
+    page_css = (
         seeded_app["client"]
         .get("/library", headers=_auth(seeded_app["admin_token"]))
         .text.split("{% endblock %}", 1)[0]
     )
+    shared = FILTER_TOOLBAR_CSS.read_text(encoding="utf-8")
 
-    # No definite width in the docked state, and no arms to pad it out.
-    assert ".lib-dock.has-page-actions .lib-dock__card { width:" not in css
-    for gap_maker in (
-        ".lib-dock .lib-head__search { margin-right: auto; }",
-        ".lib-dock .lib-new { margin-left: auto;",
+    # No definite width, and no arms to pad it out.
+    assert ".fbar-dock__card { width:" not in shared
+    for css, gap_maker in (
+        (shared, ".fbar-dock__card .fbar__search { margin-right: auto; }"),
+        (page_css, ".fbar-dock .lib-new { margin-left: auto;"),
     ):
         assert gap_maker not in css, f"auto margin reopens the whitespace hole: {gap_maker}"
-    # "+ Add" is content-sized, not given the search's basis.
-    assert ".lib-dock .lib-new { flex: 0 0 auto; }" in css
+    # Search takes a shrinkable basis in the dock; "+ Add" is content-sized.
+    assert ".fbar-dock__card .fbar__search { flex: 0 1 240px;" in shared
+    assert ".fbar-dock .lib-new { flex: 0 0 auto; }" in page_css
 
     # The card still animates between the shapes it hugs into.
-    assert "animating = true" in css or "libDockCard.animate(" in css
+    assert "animating = true" in page_css or "libDockCard.animate(" in page_css
 
 
 def test_library_title_carries_no_setup_caveat(seeded_app):
@@ -582,58 +681,101 @@ def test_library_title_carries_no_setup_caveat(seeded_app):
     # The title stands alone, directly ahead of the lede.
     assert "<h1>Library</h1>" in text
     assert text.index("<h1>Library</h1>") < text.index('class="lede"')
-    # Where the caveat IS allowed to live: the head-notes stack, after the lede.
-    # If it ever moves back onto the heading, the two bans above catch it.
-    assert text.index('class="lede"') < text.index('class="lib-soon lib-soon--warn"')
+    # Where the note lives now: beside the item count, as list metadata. Not a
+    # panel, not a row above the list, and not a pill on the h1 (the two bans
+    # above still catch that).
+    assert 'class="lib-count-note"' in text
+    assert ">More coming soon<" in text
+    assert text.index('class="lede"') < text.index('class="lib-count-note"')
+    # It reads as GROWTH, not as a caveat: no warn vocabulary, no "incomplete",
+    # and no cue to explain itself away. The Library is being filled, which is
+    # good news — dressing good news in amber is what the old versions got wrong.
+    assert "lib-strip" not in text
+    assert "lib-soon" not in text
+    # Copy checks run against the VISIBLE page: the page-local <style> block
+    # documents the wording this replaced, and a whole-document substring search
+    # would match that commentary rather than anything a reader sees.
+    body = re.sub(r"<(style|script)\b.*?</\1>", "", text, flags=re.S | re.I)
+    assert "may be incomplete" not in body
+    assert "still being prepared" not in body
+    assert "What this means" not in body
+    # The elaboration is reachable without hover: fast tooltip + accessible name.
+    note = text[text.index('class="lib-count-note"') :]
+    note = note[: note.index("</span>")]
+    assert "data-tip=" in note
+    assert "aria-label=" in note
 
 
-def test_data_apps_note_is_an_info_banner_below_the_list(seeded_app):
-    """The Data apps caveat is an INFO BANNER in the page's head-notes stack — not
-    a `.pnote` (which would open the page on the one kind you cannot have), and
-    not a band inside `.lib-list` (which dressed a roadmap note in the chrome of
-    the inventory, so it read as a sixth openable section).
+def test_more_coming_note_is_a_sibling_of_the_count_not_a_child(seeded_app):
+    """The note sits BESIDE `#lib-item-count`, never inside it.
 
-    It moved from below the inventory into `.lib-headnotes` so the head closes on
-    ONE block of asides rather than stranding a note at the foot of a long list.
-    What still matters, and is what this asserts, is that it is outside the
-    list's frame and carries none of the group machinery."""
-    _create_collection(seeded_app, "Soon Banner Anchor", seeded_app["admin_token"])
+    Not a style preference — a correctness constraint. The shared filter toolbar
+    rewrites that element's text on every facet change (`count: { el:
+    '#lib-item-count', noun: 'item' }`), rendering e.g. "14 of 41 items". Anything
+    nested inside the count is destroyed by the first click of a filter, and the
+    failure is invisible server-side: the page ships correct HTML and loses the
+    note only once the user interacts. So the structure is pinned here.
+    """
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
-    assert 'class="lib-soon__badge">Coming soon<' in text
-    assert 'aria-label="Data apps — coming soon"' in text
-    # The old notice's copy in full — including "Nothing to do yet", which the
-    # badge alone cannot say.
-    assert "Hosted apps that run next to your data will live here too." in text
-    assert "This is still in the works" in text
+
+    count_at = text.index('id="lib-item-count"')
+    note_at = text.index('class="lib-count-note"')
+    assert count_at < note_at, "the note follows the count"
+
+    # The count element closes BEFORE the note opens — i.e. they are siblings.
+    count_close = text.index("</span>", count_at)
+    assert count_close < note_at, (
+        "the note is nested inside #lib-item-count; the filter toolbar's count "
+        "rewrite will delete it on the first facet click"
+    )
+    # Both inside the one count row.
+    head_at = text.index('class="lib-section-head"')
+    assert head_at < count_at
+
+
+def test_data_apps_schedule_is_a_badge_on_the_files_band(seeded_app):
+    """Data apps ship INTO Files first, so the schedule rides the Files band's own
+    label — not a panel in the page head.
+
+    It has been three things now, and each move was for the same reason: a
+    roadmap note must not be mistaken for inventory, and must not cost the
+    inventory its space. It was a band inside the list (read as a sixth openable
+    section), then an info banner in the head-notes stack (which, stacked under
+    the prep caveat, put ~200px of un-actionable reading above the first row).
+    A badge on the section the kind will actually appear in says the same thing
+    for one line of chrome, and deletes itself when the kind ships.
+
+    `group_toggle()` renders it, so the table band and the grid band both carry
+    it from one place — that shared macro is the point, and is why there is no
+    per-layout assertion here."""
+    _create_collection(seeded_app, "Soon Badge Anchor", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+
+    # The badge, on a band label, with the full sentence reachable — `data-tip`
+    # for pointer + keyboard, `aria-label` for a screen reader. Never `title`.
+    assert 'class="fbar-group__soon"' in text
+    assert ">Data apps coming soon<" in text
+    assert "Hosted apps that run next to your data will appear here." in text
     assert "link an existing one" in text
     assert "Nothing to do yet." in text
-    # In the head-notes stack, OUTSIDE the list's frame: after the lede, before
-    # the list opens, so it cannot be read as one of the list's own sections.
-    assert 'class="lib-headnotes"' in text
-    assert (
-        text.index('class="lede"')
-        < text.index('class="lib-headnotes"')
-        < text.index('class="lib-soon"')
-        < text.index('class="lib-list"')
-        # every group section opens after it (the class attribute, so the page's
-        # own `.lib-group` CSS and JS further down don't count)
-        < text.rindex('class="fbar-group lib-group')
-    )
-    # One banner, not one per page state: the stocked and empty branches share it.
-    assert text.count('class="lib-soon"') == 1
-    # Not inventory: no section key, no count, no collapse toggle.
-    banner = text[text.index('class="lib-soon"') :]
-    banner = banner[: banner.index("</div>")]
-    for group_machinery in ("data-lib-sec", "lib-group", "data-sec-toggle", "data-sec-count"):
-        assert group_machinery not in banner
-    # It states its genre with the info vocabulary + a leading rule no band or
-    # card on this page wears, and drops the band chrome it used to borrow (the
-    # glyph-column inset that lined it up with the five real sections).
-    assert "background: var(--ds-info-bg);" in text
-    assert "border-left: 3px solid var(--ds-info-line);" in text
-    assert "padding: 11px 16px 11px 42px" not in text
-    # The loud page-local banner it replaced is gone, markup and CSS both.
+
+    badge_at = text.index('class="fbar-group__soon"')
+    badge = text[badge_at : text.index("</span>", badge_at)]
+    assert "data-tip=" in badge
+    assert "aria-label=" in badge
+
+    # It is INSIDE the list now, on the Files band — after the list opens, and
+    # inside a group toggle rather than floating in the page head.
+    assert text.index('class="lib-list"') < badge_at
+    toggle_at = text.rindex('class="fbar-grouptoggle"', 0, badge_at)
+    toggle = text[toggle_at:badge_at]
+    assert 'data-sec-toggle="files"' in toggle, "the badge belongs to the Files band"
+
+    # The panels it replaced are gone — markup and CSS both.
+    assert "lib-soon" not in text
     assert "lib-apps" not in text
+    # One badge, not one per page state.
+    assert text.count('class="fbar-group__soon"') == 1
 
 
 # ---------------------------------------------------------------------------

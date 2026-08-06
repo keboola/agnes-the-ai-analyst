@@ -29,22 +29,13 @@
 {{ detail.styles() }}
 <link rel="stylesheet" href="{{ static_url('css/file_preview.css') }}">
 <script src="{{ static_url('js/file_preview.js') }}" defer></script>
-<style>
-  /* Visibility chip — same vocabulary (and tokens) as the Library table. */
-  .lfd-vis {
-    display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
-    font-size: 11.5px; font-weight: 700; border-radius: var(--ds-radius-pill);
-    border: 1px solid var(--ds-border); background: var(--ds-surface-dim); color: var(--ds-text-muted);
-  }
-  .lfd-vis--shared, .lfd-vis--workspace {
-    color: var(--ds-primary); background: var(--ds-primary-light);
-    border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent);
-  }
-  .lfd-vis svg { width: 12px; height: 12px; }
-  {# Indexing state is a `detail.status(…)` pill in the rail now, and the
-     prose in the main column says the same thing in a sentence — so the
-     three one-off ink classes this page used to colour it with are gone. #}
-</style>
+{# The visibility badge IS this file's sharing control, so the page ships the
+   dialog behind it — only for a caller who may re-share the file. #}
+{% if can_share %}{{ detail.share_assets() }}{% endif %}
+{# No page-local CSS. The visibility chip this page used to own (`.lfd-vis`)
+   is `detail.visibility_chip(…)` in the shared scaffold — sharing is a
+   concept every resource has, so it is drawn by one component rather than
+   re-specified per page. Indexing state is a `detail.status(…)` pill. #}
 {% endblock %}
 
 {% block content %}
@@ -59,31 +50,31 @@
 {% set _status_tone = {'indexed': 'ok', 'rejected': 'danger', 'pending': ''}[_status_kind] %}
 {% set _status_label = 'Indexed' if _status == 'indexed' else ('Rejected' if _status == 'rejected' else ('Needs review' if _status == 'needs_review' else _status|capitalize)) %}
 
-{# One definition of the visibility chip — the editorial layout shows it in the
-   rail's Sharing block, the legacy layout in its Sharing card, and the two must
-   not be able to describe the same file differently. #}
-{% macro lfd_visibility_chip() %}
-<span class="lfd-vis lfd-vis--{{ file_visibility }}" id="lfd-vis-chip">
-  {% if file_visibility == 'private' %}
-  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9" rx="2" stroke="currentColor" stroke-width="1.9"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.9"/></svg>Private
-  {% elif file_visibility == 'workspace' %}
-  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Workspace
-  {% else %}
-  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="6" cy="12" r="2.6" stroke="currentColor" stroke-width="1.9"/><circle cx="18" cy="18" r="2.6" stroke="currentColor" stroke-width="1.9"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6" stroke="currentColor" stroke-width="1.9"/></svg>Shared
-  {% endif %}
-</span>
-{% endmacro %}
+{# The sharing note — one sentence, rendered in the rail's Sharing block under
+   the editorial layout and in the legacy Sharing card, so the two placements
+   can never describe the same file differently. #}
+{% set _share_note %}
+  This file has its own sharing, separate from
+  <a href="/library/{{ collection.slug }}">{{ _collection_name }}</a>.
+  Sharing the collection shares everything in it; sharing this file shares only
+  this file. Move it between collections by dragging it in the Library.
+{% endset %}
+{# What the badge opens: this FILE's sharing (resource type `corpus_file`),
+   never the folder's. `note` is the one sentence the dialog repeats, so the
+   caller is told which of the two they are changing at the moment they change
+   it. None for a caller who may not re-share — then the badge is a read-out. #}
+{% set _share = {'type': 'corpus_file', 'id': file.id, 'title': file.filename,
+                 'note': 'This file is shared on its own — the ' ~ _collection_name
+                         ~ ' collection is not affected.'} if can_share else None %}
 
 {% set _meta = [{'icon': 'file', 'text': (_type or 'File') ~ (' · ' ~ file_size_display if file_size_display else '')}] %}
 {% if file.created_at %}{% set _ = _meta.append({'icon': 'clock', 'text': 'Added ' ~ file.created_at.isoformat()[:10]}) %}{% endif %}
 
 {# Secondary actions leave the header for the overflow menu, so Preview is
-   the only prominent control on the page. #}
+   the only prominent control on the page. Sharing is not among them — the
+   rail's badge is the control, and a second entry point behind a chevron is
+   the redundancy this page had. #}
 {% set _menu_items = [{'label': 'Open collection', 'href': '/library/' ~ collection.slug, 'icon': 'file'}] %}
-{% if can_share %}
-  {% set _ = _menu_items.append({'label': 'Share this file', 'icon': 'share',
-                                 'href': '/library?share=' ~ file.id ~ '&type=corpus_file'}) %}
-{% endif %}
 {% set _menu %}{{ detail.menu(_menu_items) }}{% endset %}
 
 {% call detail.hero(
@@ -95,9 +86,6 @@
      is to see the file. It opens the same modal a row click opens on the
      collection page (file_preview.js), so the file looks the same either way. #}
   {{ ds.button('Preview', variant='primary', id='lfd-preview-btn') }}
-  {% if can_share and not detail.redesign %}
-    {{ ds.button('Share this file', variant='secondary', href='/library?share=' ~ file.id ~ '&type=corpus_file') }}
-  {% endif %}
   {{ detail.ask_agnes('Tell me what is in ' ~ file.filename ~ ' from the ' ~ _collection_name ~ ' collection.') }}
 {% endcall %}
 
@@ -169,13 +157,10 @@
 {{ detail.section_close() }}
 
 {{ detail.section_open('Sharing', icon='key') }}
-  {{ lfd_visibility_chip() }}
-  <p class="detail-side__note">
-    This file has its own sharing, separate from
-    <a href="/library/{{ collection.slug }}">{{ _collection_name }}</a>.
-    Sharing the collection shares everything in it; sharing this file shares only
-    this file. Move it between collections by dragging it in the Library.
-  </p>
+  {# The badge is the control on this path too — the legacy page has no rail,
+     but it has the same one place a reader looks for "who can see this". #}
+  {{ detail.visibility_chip(file_visibility, id='lfd-vis-chip', share=_share) }}
+  <p class="detail-side__note">{{ _share_note }}</p>
 {{ detail.section_close() }}
 
 {% endif %}
@@ -186,7 +171,10 @@
    instances are entitled to see unchanged. #}
 {% if detail.redesign %}
 
-{{ detail.side_open('File information', icon='info') }}
+{# Unlabelled, like every other facts block in the system: each row names its
+   own value ("Format PDF", "Size 2.1 MB"), so "File information" over the top
+   labelled a block that was already fully labelled. #}
+{{ detail.side_open('') }}
   {{ detail.side_rows([
        {'key': 'Collection', 'html': True,
         'val': '<a href="/library/' ~ collection.slug ~ '">' ~ _collection_name ~ '</a>'},
@@ -198,15 +186,7 @@
      ]) }}
 {{ detail.side_close() }}
 
-{{ detail.side_open('Sharing', icon='share') }}
-  {{ lfd_visibility_chip() }}
-  {% if can_share %}
-  <div class="detail-side__actions detail-side__actions--spaced">
-    {{ ds.button('Share this file', variant='secondary', size='sm',
-                 href='/library?share=' ~ file.id ~ '&type=corpus_file') }}
-  </div>
-  {% endif %}
-{{ detail.side_close() }}
+{{ detail.side_sharing(file_visibility, share=_share, chip_id='lfd-vis-chip') }}
 
 {{ detail.side_open('In this collection', icon='layers') }}
   {{ detail.related([
