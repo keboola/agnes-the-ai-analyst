@@ -106,12 +106,20 @@ class PullResult:
     stack_sync: object = None
 
 
-# Dots are allowed: `app/api/admin.py` derives a table_id from an admin-supplied
-# display name via `.strip().lower().replace(" ", "_")`, which preserves dots, so
-# `orders.v2` is a legitimate registered id. `_safe_manifest_tables` rejects the
-# path-meaningful dot spellings (`.`, `..`, leading dot) separately — the regex
-# alone would admit them.
-_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
+# Knowledge corpus ids, digest slugs and memory item ids: no dots. Each is
+# spliced into a request path (`/api/knowledge/artifacts/{cid}/download`) as well
+# as a local filename, and none of them has a legitimate dotted spelling.
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+
+# Registered table ids DO have a legitimate dotted spelling: `app/api/admin.py`
+# derives a table_id from an admin-supplied display name via
+# `.strip().lower().replace(" ", "_")`, which preserves dots, so `orders.v2` is a
+# real registered id. Kept separate from `_SAFE_ID_RE` rather than widening it —
+# that regex is shared by three unrelated validation sites, and dot-tolerance
+# there buys nothing while letting `..`-style values into a URL path segment.
+# `_safe_manifest_tables` still rejects the path-meaningful dot spellings
+# (`.`, `..`, leading dot) separately; the charset alone would admit them.
+_SAFE_TABLE_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
 
 
 def _safe_manifest_tables(raw: dict) -> tuple[dict, list[str]]:
@@ -121,7 +129,7 @@ def _safe_manifest_tables(raw: dict) -> tuple[dict, list[str]]:
     (``<tid>.parquet`` and its ``.verify.tmp`` sidecar under
     ``<workspace>/server/parquet/``) and a DuckDB view identifier. This file
     already gates collection ids, doc slugs and item ids through
-    ``_SAFE_ID_RE``; the manifest table id was the one that was missed
+    their own charset regexes; the manifest table id was the one that was missed
     (2026-08-05 audit, F-4b).
 
     Honest severity: the server is the analyst's own authenticated Agnes
@@ -138,7 +146,7 @@ def _safe_manifest_tables(raw: dict) -> tuple[dict, list[str]]:
     dropped: list[str] = []
     for tid, info in (raw or {}).items():
         # `.`/`..`/leading-dot pass the charset check but are path-meaningful.
-        if not isinstance(tid, str) or tid.startswith(".") or not _SAFE_ID_RE.match(tid):
+        if not isinstance(tid, str) or tid.startswith(".") or not _SAFE_TABLE_ID_RE.match(tid):
             dropped.append(tid)
             continue
         kept[tid] = info
@@ -1448,7 +1456,7 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
         try:
             views = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'").fetchall()
             for (view_name,) in views:
-                conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+                conn.execute(f"DROP VIEW IF EXISTS {quote_ident(view_name)}")
         except Exception:
             pass
 

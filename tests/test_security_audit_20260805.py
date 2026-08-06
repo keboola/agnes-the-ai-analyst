@@ -329,24 +329,65 @@ def test_f2_scrub_runs_even_when_ref_validation_rejects_the_row(tmp_path, monkey
 
 # ── F-4: every quoted SQL identifier routes through quote_ident ──
 
-# Statement positions where a bare `"{var}"` is an IDENTIFIER, not a literal.
+# The SHAPE of a hand-quoted identifier: a double quote that lives *inside* a
+# string literal and wraps an interpolation — `f'"{col}"'`, `f"… \"{col}\" …"`.
+# The negative lookbehind drops the one false family the shape alone can't
+# distinguish: an f-string whose entire body is one expression (`f"{value}"`),
+# where the quotes are the literal's own delimiters.
 #
-# Two alternatives, and the second one is load-bearing:
-#   1. a keyword, optionally followed by a qualifier prefix — `FROM "{t}"`,
-#      `FROM lake."{t}"`
-#   2. ANY dot immediately before the quote — `lake."{schema}"."{table}"`,
-#      `{source_name}."{name}"`
+# This is deliberately POSITION-BLIND, and that is the whole point. Two earlier
+# versions of this guard keyed off where the quote sat — first "a keyword before
+# it", then "a keyword or a dot before it" — and each time the emptiness of the
+# allowlist was an artifact of not looking:
+#   * `DROP VIEW IF EXISTS "{name}"` — ` IF EXISTS ` sits between the keyword and
+#     the quote, so the keyword branch never fired. Four live sites.
+#   * `f'"{col}" = ?'` — a predicate column with no keyword and no dot anywhere
+#     near it. That one was a real injection: the allow-list upstream only
+#     checked that the column EXISTS (`DESCRIBE` output), and for a
+#     collection-ingested table the column name is whatever an uploaded file's
+#     header said, unsanitized (src/ingest/tabular.py COPYs the reader's output
+#     straight to parquet). A header of `x") OR 1=1 --` passed the allow-list and
+#     then broke out of the quotes.
+#   * Five more sites built the quoted fragment on its own line
+#     (`", ".join(f'"{c}"' …)`), so no content heuristic — not "a SQL verb
+#     somewhere on the line" either — can see them. Position and content are
+#     both dead ends; only the shape is reliable.
 #
-# The first version of this guard had only alternative 1, so it could not see a
-# qualified name whose quoted part follows a dot. That blind spot sat in exactly
-# the multi-part-identifier class this sweep is about, and it made the guard's
-# own "allowlist is empty" claim true only by not looking. Caught in review, not
-# by the test — which is the point of writing it down here.
-_IDENT_POSITION_RE = r'(?:(?:VIEW|TABLE|DESCRIBE|FROM|INTO|JOIN)\s+[\w.]*|\.)\\?"\{'
+# The cost of scanning by shape is that legitimate non-SQL uses of the same shape
+# now surface, so the allowlist below is NOT empty — it is a list of families,
+# each with the reason it is not a SQL identifier. An honest allowlist beats a
+# vacuously empty one: a new unexplained `"{…}"` fails this test.
+_QUOTED_IDENT_SHAPE_RE = r'(?<![fFrRbB])\\?"\{[^{}"]*\}\\?"'
+
+# (family regex, why this shape is not a SQL identifier). A hit is excused only
+# if it matches one of these.
+_NON_SQL_QUOTED_FAMILIES: list[tuple[str, str]] = [
+    (r"require_resource_access\(", 'FastAPI path-template argument, e.g. "{collection_id}"'),
+    (r'(?i)content-disposition|filename="\{', "HTTP header: quotes are RFC 6266 filename syntax"),
+    (r"(?i)etag", "HTTP entity tag: quotes are part of the ETag grammar (RFC 7232)"),
+    (r'"\{\}"', "empty JSON object as a literal default / json.loads fallback"),
+    (r'\.replace\("\{', "template placeholder substitution, not SQL"),
+    (r'<\w+[^>]*="\{', "HTML/XML attribute value"),
+    (r"launch_cmd", "shell/batch command quoting in the launcher shortcut"),
+    (r'", "\.join\(f\'"\{n\}": \{n\}\'', "building a Python dict literal for generated code"),
+    (r'agnes search "\{', "CLI help text showing a quoted search term"),
+    (r'label = f\'"\{query\}"\'', "CLI display label for a quoted search term"),
+    (r"return f'\"\{escaped\}\"'", "dotenv value quoting (see the escaping above it)"),
+    (r"vocab_list", "LLM prompt: a quoted vocabulary list, never executed"),
+    (r"header_line", "CSV header row, not SQL"),
+    (r'project = "\{jira_project\}"', "JQL string literal, not a SQL identifier"),
+    (r'database "\{dbname\}" does not exist', "substring match against a Postgres error message"),
+    (r"^src/sql_ident\.py:", "the module's own docstrings, which quote the shape they forbid"),
+    (r'server_default="\{\}"', "Alembic/SQLAlchemy column default of an empty JSON object"),
+    (r'env: str = "\{\}"', "repository signature default of an empty JSON object"),
+    (r'#.*"\{', "comment describing the shape"),
+    (r'resource_metadata="\{', "WWW-Authenticate challenge parameter (RFC 9728)"),
+    (r"^app/web/setup_instructions\.py:", "copy-paste CLI instructions and their placeholder tokens"),
+]
 
 
 def test_f4_no_bare_quoted_identifier_interpolation():
-    """Ratchet: the allowlist is empty and must stay empty.
+    """Ratchet: every hand-quoted identifier is either gone or explained.
 
     ``-P``, not ``-E``. git grep's ``-E`` is POSIX ERE, where ``\\s`` degrades to
     a literal ``s`` — the ``-E`` form of this pattern matches NOTHING and the
@@ -354,10 +395,11 @@ def test_f4_no_bare_quoted_identifier_interpolation():
     guard was first written during the 2026-08-05 audit follow-up, and it was
     caught in review rather than by the test.
     """
+    import re
     import subprocess
 
     proc = subprocess.run(
-        ["git", "grep", "-nP", _IDENT_POSITION_RE, "--", "*.py"],
+        ["git", "grep", "-nP", _QUOTED_IDENT_SHAPE_RE, "--", "*.py"],
         capture_output=True,
         text=True,
     )
@@ -365,7 +407,34 @@ def test_f4_no_bare_quoted_identifier_interpolation():
     # `"/tests/" not in ln` filter would never fire.
     hits = [ln for ln in proc.stdout.splitlines() if ln and not ln.startswith("tests/")]
 
-    assert hits == [], "bare-quoted SQL identifier(s) — route through quote_ident:\n" + "\n".join(hits)
+    compiled = [(re.compile(pat), reason) for pat, reason in _NON_SQL_QUOTED_FAMILIES]
+    unexplained = [ln for ln in hits if not any(rx.search(ln) for rx, _ in compiled)]
+
+    assert unexplained == [], (
+        "hand-quoted SQL identifier(s) — route through quote_ident, or add a family to "
+        "_NON_SQL_QUOTED_FAMILIES with the reason it is not an identifier:\n" + "\n".join(unexplained)
+    )
+
+
+def test_f4_no_dead_exemption_families():
+    """Shrinks-only: an exemption family that matches nothing must be deleted.
+
+    Without this, the allowlist rots into a list of shapes nobody uses, and the
+    next reader can't tell which entries are load-bearing.
+    """
+    import re
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "grep", "-nP", _QUOTED_IDENT_SHAPE_RE, "--", "*.py"],
+        capture_output=True,
+        text=True,
+    )
+    hits = [ln for ln in proc.stdout.splitlines() if ln and not ln.startswith("tests/")]
+
+    dead = [pat for pat, _ in _NON_SQL_QUOTED_FAMILIES if not any(re.search(pat, ln) for ln in hits)]
+
+    assert dead == [], "exemption family matches nothing — delete it from _NON_SQL_QUOTED_FAMILIES:\n" + "\n".join(dead)
 
 
 def test_f4_quote_ident_reexported_from_profiler():
@@ -381,13 +450,36 @@ def test_f4_quote_ident_reexported_from_profiler():
 
 
 def test_f4b_safe_id_re_rejects_traversal_and_injection():
-    from cli.lib.pull import _SAFE_ID_RE
+    """Two regexes, deliberately: only table ids may carry a dot.
 
-    assert _SAFE_ID_RE.match("orders_v2")
-    assert _SAFE_ID_RE.match("orders.v2")  # dots are legitimate — admin-derived ids carry them
+    The first version of F-4b widened the single shared ``_SAFE_ID_RE`` so a
+    dotted table id (``orders.v2``) would pass. That also relaxed the three
+    consumers that have nothing to do with table ids — knowledge corpus id,
+    digest slug, memory item id — each of which is spliced into a request path
+    (``/api/knowledge/artifacts/{cid}/download``), where a value like ``..``
+    silently normalizes away and the request hits a different endpoint. None of
+    those three has a legitimate dotted spelling, so the dot-tolerance belongs
+    to table ids alone. Caught in review on #1181.
+    """
+    from cli.lib.pull import _SAFE_ID_RE, _SAFE_TABLE_ID_RE
+
+    # Shared/strict: no dots at all, so no dot-based path trickery downstream.
+    assert _SAFE_ID_RE.match("corpus_v2")
+    assert not _SAFE_ID_RE.match("orders.v2")
+    assert not _SAFE_ID_RE.match("..")
     assert not _SAFE_ID_RE.match("../../.ssh/authorized_keys")
     assert not _SAFE_ID_RE.match('x" AS y, (SELECT 1) AS "z')
     assert not _SAFE_ID_RE.match("a/b")
+
+    # Table ids: dots are legitimate — admin-derived ids carry them.
+    assert _SAFE_TABLE_ID_RE.match("orders_v2")
+    assert _SAFE_TABLE_ID_RE.match("orders.v2")
+    assert not _SAFE_TABLE_ID_RE.match("../../.ssh/authorized_keys")
+    assert not _SAFE_TABLE_ID_RE.match('x" AS y, (SELECT 1) AS "z')
+    assert not _SAFE_TABLE_ID_RE.match("a/b")
+    # The charset alone admits these; _safe_manifest_tables rejects them
+    # separately (leading dot), which the next test pins.
+    assert _SAFE_TABLE_ID_RE.match("..")
 
 
 def test_f4b_pull_skips_unsafe_manifest_table_ids():

@@ -22,6 +22,7 @@ pytest.importorskip("mcp", reason="mcp SDK not installed")
 
 from src.db import get_analytics_db, get_system_db
 from src.repositories.table_registry import TableRegistryRepository
+from src.sql_ident import quote_ident
 
 
 def _seed_view_and_registry(rows: list[dict]) -> dict:
@@ -169,3 +170,53 @@ def test_query_table_400_for_limit_zero(seeded_app):
         json={"filter": {}, "limit": 0},
     )
     assert r.status_code == 400
+
+
+def test_query_table_filter_column_name_cannot_break_out_of_its_quotes(seeded_app):
+    """A column whose NAME carries a quote is an identifier, not SQL.
+
+    The filter allow-list upstream only checks that the column exists in the
+    view's ``DESCRIBE`` output — it never constrained the characters in the
+    name. Column names for a collection-ingested table are whatever the
+    uploaded file's header said: ``src/ingest/tabular.py`` COPYs the reader's
+    output straight to parquet with no renaming. So a header of
+    ``x") OR 1=1 --`` becomes a real column, passes the allow-list, and — while
+    the WHERE clause was built as ``f'"{col}" = ?'`` — closed the quoted
+    identifier and appended its own predicate.
+
+    Asserting "no 500" is not enough: a successful break-out yields a valid
+    query too. The test pins the semantics instead — the filter must behave
+    like a filter on that column, so a non-matching value returns nothing.
+    ``OR 1=1`` would return every row.
+    """
+    evil = 'x") OR 1=1 --'
+    table_id = f"tt_{uuid.uuid4().hex[:8]}"
+
+    a_conn = get_analytics_db()
+    a_conn.execute(
+        f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS "
+        f"SELECT 'keep' AS {quote_ident(evil)} UNION ALL SELECT 'other' AS {quote_ident(evil)}"
+    )
+    sys_conn = get_system_db()
+    TableRegistryRepository(sys_conn).register(
+        id=table_id, name=table_id, folder=None,
+        sync_strategy="full_refresh", registered_by="system_seed",
+    )
+    sys_conn.close()
+
+    def _query(value: str):
+        return seeded_app["client"].post(
+            f"/api/mcp/query-table/{table_id}",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+            json={"filter": {evil: value}, "limit": 10},
+        )
+
+    # The column really is queryable under its hostile name.
+    hit = _query("keep")
+    assert hit.status_code == 200, hit.text
+    assert hit.json()["row_count"] == 1
+
+    # And it filters. Pre-fix this returned both rows via the injected OR 1=1.
+    miss = _query("no-such-value")
+    assert miss.status_code == 200, miss.text
+    assert miss.json()["row_count"] == 0

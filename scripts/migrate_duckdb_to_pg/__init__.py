@@ -273,7 +273,7 @@ def reset_target_state_tables(pg_engine: Engine) -> int:
             len(present),
         )
         if present:
-            quoted = ", ".join(f'"{t.name}"' for t in present)
+            quoted = ", ".join(quote_ident(t.name) for t in present)
             conn.execute(sa.text(f"TRUNCATE {quoted} CASCADE"))
     return discarded
 

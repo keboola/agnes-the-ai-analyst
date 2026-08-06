@@ -30,8 +30,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from src.sql_ident import quote_ident
-
 log = logging.getLogger(__name__)
 
 
@@ -638,6 +636,7 @@ def copy_pg_to_pg(
         _substitute_default,
     )
     from src.db_pg import Base
+    from src.sql_ident import quote_ident
 
     def _row_to_dict(row, cols, array_cols, jsonb_cols, default_cols):
         d: dict[str, Any] = {}
@@ -779,8 +778,10 @@ def _content_hash_sample(
 
     import sqlalchemy as sa
 
-    pk_order = ", ".join(f'"{c}"' for c in pk_cols)
-    sel_cols = ", ".join(f'"{c}"' for c in non_pk_cols)
+    from src.sql_ident import quote_ident
+
+    pk_order = ", ".join(quote_ident(c) for c in pk_cols)
+    sel_cols = ", ".join(quote_ident(c) for c in non_pk_cols)
     sql = sa.text(
         f"SELECT {sel_cols} FROM {quote_ident(table_name)} ORDER BY {pk_order} LIMIT {int(sample_size)}"
     )
@@ -809,6 +810,7 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
 
     from scripts.migrate_duckdb_to_pg import _PK_COLUMNS
     from src.db_pg import Base
+    from src.sql_ident import quote_ident
 
     diffs: list[dict] = []
     source = _bounded_engine(source_url)
@@ -885,6 +887,7 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
     import sqlalchemy as sa
 
     from src.db_pg import Base
+    from src.sql_ident import quote_ident
 
     diffs: list[dict] = []
     tables = [t.name for t in Base.metadata.sorted_tables]
