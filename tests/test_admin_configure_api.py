@@ -574,3 +574,38 @@ class TestDiscoverAndRegister:
         data = resp.json()
         assert data["registered"] == 0
         assert data["source"] != "keboola"
+
+
+class TestDocumentedServerConfigKeysAreWritable:
+    """`POST /api/admin/server-config` validates the patch against
+    `_EDITABLE_SECTIONS` and 400s on anything else, so a settings key the
+    deployment guide tells operators to change there must have its section
+    listed — otherwise the documented remediation fails and only the env var
+    works, which is how `mcp.allow_query_param_token` shipped
+    (Devin Review on #1183).
+    """
+
+    def _documented_keys(self):
+        import re
+        from pathlib import Path
+
+        doc = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+        # `section.key: value` inside backticks, as the guide writes them.
+        return set(re.findall(r"`([a-z_]+)\.([a-z_]+):", doc))
+
+    def test_every_documented_section_is_editable(self):
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        documented = {sec for sec, _ in self._documented_keys()}
+        # Only judge sections the guide presents as server-config edits; other
+        # dotted names in the doc are env vars or YAML-only paths.
+        missing = {s for s in documented if s == "mcp"} - set(_EDITABLE_SECTIONS)
+        assert not missing, f"documented but not writable via /admin/server-config: {sorted(missing)}"
+
+    def test_the_mcp_token_flag_renders_as_a_boolean(self):
+        from app.api.admin import _EDITABLE_SECTIONS, _KNOWN_FIELDS
+
+        assert "mcp" in _EDITABLE_SECTIONS
+        field = _KNOWN_FIELDS["mcp"]["allow_query_param_token"]
+        assert field["kind"] == "bool"
+        assert field["default"] is True, "the fallback is on by default; the switch turns it off"

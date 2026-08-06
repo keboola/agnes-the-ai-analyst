@@ -1405,6 +1405,7 @@ async def curated_detail(
     if plugin_row is None:
         raise HTTPException(status_code=404, detail="plugin_not_found")
 
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     skills = _list_inner_skills(plugin_root)
     agents = _list_inner_agents(plugin_root)
@@ -1884,6 +1885,7 @@ def _curated_inner_parent_fields(
     a sync-skew bug, but shouldn't 500 the page).
     """
     plugin_row = _get_plugin_row(conn, marketplace_id, plugin_name) or {}
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     meta = _resolve_marketplace_meta(conn, marketplace_id)
     # Pull the parent plugin's curator-friendly display name from the same
@@ -2340,6 +2342,7 @@ async def curated_skill_detail(
     ),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     res = _read_inner(plugin_root, "skills", skill_name, is_dir_layout=True)
     skill_dir = _safe_join(plugin_root, "skills", skill_name)
@@ -2404,6 +2407,7 @@ async def curated_agent_detail(
     ),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     res = _read_inner(plugin_root, "agents", agent_name, is_dir_layout=False)
     agent_path = _safe_join(plugin_root, "agents", f"{agent_name}.md")

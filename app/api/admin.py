@@ -307,6 +307,12 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "guardrails",
     "marketplace",
     "connectors",
+    # The token-in-URL fallback switch is an operator decision, and
+    # docs/DEPLOYMENT.md tells operators to make it here — but this tuple is
+    # what POST /api/admin/server-config validates against, so without the
+    # section the documented remediation 400s and only the env var works
+    # (Devin Review on #1183).
+    "mcp",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -339,6 +345,19 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # end-to-end so subagents 2-4 only have to add registry entries — they
 # don't need to touch admin_server_config.html.
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
+    "mcp": {
+        "allow_query_param_token": {
+            "kind": "bool",
+            "default": True,
+            "hint": (
+                "Accept an MCP access token in the `?token=` query string as "
+                "well as the Authorization header. Convenient for clients that "
+                "cannot set headers, but a URL travels through proxy logs, "
+                "browser history and Referer headers, so turn it off once every "
+                "client you use sends the header."
+            ),
+        },
+    },
     "instance": {
         # UI theme — flips `<html data-theme="...">` so the
         # design-system tokens (`--ds-*`) switch palettes via CSS

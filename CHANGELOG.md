@@ -20,48 +20,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-### Security
-
-## [0.78.5] - 2026-08-05
-
-### Added
-
-### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
-
-### Security
-
-- **The MCP SSE `?token=` auth fallback can now be turned off.** The transport
-  accepts a bearer token as a query parameter for clients that cannot set an
-  `Authorization` header on a GET; when a client uses it, that long-lived PAT
-  lands in the access log of every intermediary on the path (CWE-598). The new
-  `mcp.allow_query_param_token` flag (`AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN`)
-  **defaults to `true`, so nothing changes on upgrade** — but an operator whose
-  clients all send the header can now eliminate the exposure outright instead of
-  relying on proxy log redaction. Every connection snippet Agnes hands out is
-  already header-based (the `?token=` snippet was removed in the 2026-07-24 audit
-  follow-up), so for most instances this is safe to turn off; the existing
-  one-time CWE-598 warning tells you whether anything is still using it.
-  `docs/DEPLOYMENT.md` covers both the flag and the proxy-redaction fallback for
-  instances that must keep it on.
-
-## [0.78.4] - 2026-08-05
-
-### Added
-
-### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
-
 - **`quote_ident` moved to `src/sql_ident.py`; 54 bare-quoted SQL identifiers now
   route through it** — across the connectors, the orchestrator, the query API,
   the CLI and the DuckDB→Postgres migration tooling, all still building
@@ -91,8 +49,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   table id was missed. Unsafe ids are skipped with a warning on stderr rather
   than collected as errors, so one bad id cannot make every subsequent pull exit
   non-zero — including from the SessionStart hook.
+- **The MCP SSE `?token=` auth fallback can now be turned off.** The transport
+  accepts a bearer token as a query parameter for clients that cannot set an
+  `Authorization` header on a GET; when a client uses it, that long-lived PAT
+  lands in the access log of every intermediary on the path (CWE-598). The new
+  `mcp.allow_query_param_token` flag (`AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN`)
+  **defaults to `true`, so nothing changes on upgrade** — but an operator whose
+  clients all send the header can now eliminate the exposure outright instead of
+  relying on proxy log redaction. Every connection snippet Agnes hands out is
+  already header-based (the `?token=` snippet was removed in the 2026-07-24 audit
+  follow-up), so for most instances this is safe to turn off; the existing
+  one-time CWE-598 warning tells you whether anything is still using it.
+  `docs/DEPLOYMENT.md` covers both the flag and the proxy-redaction fallback for
+  instances that must keep it on.
 
-## [0.78.3] - 2026-08-05
+## [0.79.1] - 2026-08-06
 
 ### Added
 
@@ -112,10 +83,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   wholesale into the served `marketplace.zip` / `marketplace.git` tree. Names are
   now rejected at manifest ingest (`read_plugins`) and every constructed path is
   contained to the marketplaces root — the two layers the security playbook §6
-  requires, and which the sibling asset-mirror path already had. Three call sites
-  build that path (`src/marketplace_filter.py` ×2 and the v2 skills endpoint,
-  whose output goes straight into an HTTP response body); all three now share one
-  rule, `src.marketplace.is_safe_plugin_name`, so they cannot drift apart again.
+  requires, and which the sibling asset-mirror path already had. Every call site
+  that builds that path now shares one rule (`src.marketplace.is_safe_plugin_name`,
+  applied via `_reject_unsafe_segment`) so they cannot drift apart again — the two
+  in `src/marketplace_filter.py`, the v2 skills endpoint whose output goes straight
+  into an HTTP response body, and the curated detail / skill-detail / agent-detail
+  endpoints plus their shared parent-fields helper, which relied on `_safe_join`
+  re-anchoring on an already-escaped plugin root.
 - **Symlinked files in plugin content are no longer packaged.** The ZIP backend,
   the git backend, the ETag walk and the Store-bundle walk all traversed plugin
   directories with a bare `rglob` and read through symlinks; the cowork packager
@@ -138,6 +112,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Hardened `plugin.json` component-key resolution in the ZIP packager: a
   curator-supplied path is now contained to the plugin directory instead of being
   joined and walked as given.
+
+## [0.79.0] - 2026-08-05
+
+### Added
+
+- Cloud chat runs without an E2B account: `chat.provider: docker` spawns each session in a local Docker container instead of a cloud microVM, so a self-hosted instance no longer loses chat entirely for want of E2B keys. Same feature set — web chat, Slack, the agent API, headless runs and artifact harvest are unchanged. Docker access stays behind the `apps-runner` sidecar (still the only process holding the socket) over a new token-gated `/sandboxes/*` API; the gateway never touches `/var/run/docker.sock`. The per-session workspace is **bind-mounted** rather than uploaded, which removes the 100 MB `chat.e2b_workspace_max_bytes` cap and the per-spawn tarball, and makes files the agent writes persist on the host — note that concurrent sessions of the same user therefore share one workspace, and agent-created `node_modules`/`.venv` now survive the session; co-drive sessions still mount only their ephemeral directory. Pause maps to `docker pause` (memory survives while the daemon does, not across a host reboot — the next attach then produces a fresh sandbox with restored conversation context). Sandboxes run non-root with `cap_drop: ALL`, `no-new-privileges`, pids/memory/CPU limits, a capped allowlist of mounts and an image-prefix allowlist; no secret enters the container env. Agent-profile sessions never get the shared workspace mount — only their data symlink targets (snapshots writable, the rest read-only), so a profiled agent cannot rewrite the user's shared settings/hook files. New keys: `chat.docker_image`, `docker_network`, `docker_mem_limit`, `docker_cpus`, `docker_pids_limit`, `docker_egress_mode` (`open` | `none`; hostname-level allowlisting is E2B-only), `docker_max_total_sandboxes`. Requires the operator-built sandbox image (`app/initial_workspace_default/docker-sandbox/`), the `apps` compose profile, and `AGNES_INTERNAL_URL`/`SERVER_URL` pointing at a container-reachable address — boot gates refuse to start chat with actionable log lines otherwise. Operator walkthrough, including an honest E2B-vs-Docker comparison: `docs/cloud-chat.md`.
+
+### Changed
+
+- The chat sandbox's `agnes` CLI wheel and restored-conversation transcript are now staged for every sandbox provider, not only for providers that also upload the workspace. Only the workspace tarball itself remains tied to that decision. E2B behavior is unchanged.
+- `/admin/chat/secrets/test` ("Test connections" in server config) reports the sandbox credential for the configured provider: the E2B key on an E2B instance, a Docker daemon + image probe on a self-hosted one, instead of a permanently failing E2B row. The chat readiness list on the same page is provider-aware too — rows render from the server's readiness payload (`APPS_RUNNER_TOKEN`/`chat.docker_image` on a docker instance) instead of a fixed E2B-only set.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+- Deflaked `test_state_rejects_tampered_signature`: flipping the final base64url
+  char of an itsdangerous signature silently decodes to the same bytes whenever
+  only the discarded padding bits differ (trailing `Y` vs `a` — ~6% of signing
+  timestamps), so the "tampered" state verified fine. The test now flips
+  full-data chars at three non-final signature positions.
+
+### Security
+- Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). The re-check reduces every spelling of an address to one set of rules first — IPv4-mapped (`::ffff:169.254.169.254`), 6to4 and Teredo answers are unwrapped to the IPv4 address a dual-stack host would actually reach, and the unspecified address (`0.0.0.0`, `::`), multicast and reserved ranges are refused outright. Ignoring the proxy env is not a bypass — the internal network has no other route. Docker never reconciles the `internal` flag on a network that already exists, so a sandbox start refuses with `network_not_internal` rather than silently running without that layer if a same-named non-internal bridge is left over; remove it and it is recreated correctly. Plain-HTTP proxying authorizes every request rather than only the first on a connection — proxy clients pool per-proxy, not per-destination, so keep-alive is not offered upstream and a request's body is forwarded by its declared length (chunked request bodies are refused, having no length to bound the forward by). Closes the "hostname-level allowlisting is E2B-only" gap.
 
 ## [0.78.2] - 2026-08-05
 

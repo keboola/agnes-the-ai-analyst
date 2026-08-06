@@ -1641,8 +1641,11 @@ def test_claude_base_cmd_windows_cmd_shim_routes_through_cmd(monkeypatch):
 
 
 def _script_origin(recorder, clone: Path, url: str) -> None:
+    # `config --get`, matching production: `remote get-url` expands
+    # url.<base>.insteadOf rewrite rules, which would make the mismatch guard
+    # see a host change that never happened on a corporate-mirror host.
     recorder.script(
-        ("git", "-C", str(clone), "remote", "get-url", "origin"),
+        ("git", "-C", str(clone), "config", "--get", "remote.origin.url"),
         stdout=url + "\n",
     )
 

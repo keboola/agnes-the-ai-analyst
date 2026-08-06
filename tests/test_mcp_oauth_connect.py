@@ -136,8 +136,15 @@ def test_state_rejects_tampered_signature(monkeypatch):
     monkeypatch.setenv("TESTING", "1")
     monkeypatch.setenv("JWT_SECRET_KEY", "a" * 32)
     state = sign_connect_state("src_1", "user_1", "nonce_1")
-    with pytest.raises(ConnectStateInvalid):
-        verify_connect_state(state[:-1] + ("a" if state[-1] != "a" else "b"))
+    body, sig = state.rsplit(".", 1)
+    # Tamper only non-final signature chars: each carries 6 signature bits, so
+    # the decoded bytes are guaranteed to change. The FINAL base64url char
+    # holds 2 discarded padding bits — flipping it can decode to the very same
+    # signature (trailing "Y" vs "a"), which made this test flaky per-run.
+    for pos in sorted({0, len(sig) // 2, len(sig) - 2}):
+        tampered_sig = sig[:pos] + ("a" if sig[pos] != "a" else "b") + sig[pos + 1 :]
+        with pytest.raises(ConnectStateInvalid):
+            verify_connect_state(f"{body}.{tampered_sig}")
 
 
 def test_state_rejects_expired(monkeypatch):

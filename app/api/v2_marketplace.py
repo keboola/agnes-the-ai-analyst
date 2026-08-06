@@ -78,6 +78,14 @@ def _skills_for_plugin(
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.is_file():
             continue
+        # Symlinks are excluded from the packaged tree (`_iter_files`,
+        # `escapes_base`) because curator-supplied content is adversarial and a
+        # link can point anywhere on the volume. This endpoint puts the file's
+        # bytes straight into an HTTP response body, so it is the one place
+        # where following one would be worst — and it was still doing it
+        # (Devin Review on #1180).
+        if skill_dir.is_symlink() or skill_md.is_symlink():
+            continue
         try:
             text = skill_md.read_text(encoding="utf-8", errors="replace")
         except OSError:

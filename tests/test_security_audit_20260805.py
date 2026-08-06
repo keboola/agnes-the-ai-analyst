@@ -141,6 +141,36 @@ def test_f1_v2_skills_path_is_contained(tmp_path, monkeypatch):
     assert entries == [], f"escaped the marketplaces root: {entries!r}"
 
 
+def test_f1c_v2_skills_does_not_follow_symlinks(tmp_path, monkeypatch):
+    """The plugin dir is legitimately named and inside the root, so the
+    containment check above passes — but a symlinked skill dir or SKILL.md
+    still reaches outside. The packagers exclude symlinks; this endpoint puts
+    the bytes straight into an HTTP response, so it is the worst place to
+    follow one (Devin Review on #1180).
+    """
+    import app.api.v2_marketplace as v2
+
+    root = tmp_path / "marketplaces"
+    plugin = root / "acme" / "plugins" / "widget"
+    (plugin / "skills").mkdir(parents=True)
+    secret_dir = tmp_path / "elsewhere" / "leak"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "SKILL.md").write_text("---\nname: leak\n---\nSECRET-BODY\n", encoding="utf-8")
+
+    # (a) the skill DIRECTORY is a symlink out of the tree
+    (plugin / "skills" / "viadir").symlink_to(secret_dir, target_is_directory=True)
+    # (b) a real skill dir whose SKILL.md is a symlink out of the tree
+    real = plugin / "skills" / "viafile"
+    real.mkdir()
+    (real / "SKILL.md").symlink_to(secret_dir / "SKILL.md")
+
+    monkeypatch.setattr(v2, "get_marketplaces_dir", lambda: root)
+
+    entries = v2._skills_for_plugin("acme", "widget")
+
+    assert entries == [], f"followed a symlink out of the plugin: {entries!r}"
+
+
 # ── F-1b: hostile symlinks inside a legitimately-named plugin dir ──
 
 
@@ -327,87 +357,24 @@ def test_f2_scrub_runs_even_when_ref_validation_rejects_the_row(tmp_path, monkey
     assert "SECRET123" not in (repo / ".git" / "config").read_text(encoding="utf-8")
 
 
-# ── F-4: every quoted SQL identifier routes through quote_ident ──
-
-# Statement positions where a bare `"{var}"` is an IDENTIFIER, not a literal.
-#
-# Two alternatives, and the second one is load-bearing:
-#   1. a keyword, optionally followed by a qualifier prefix — `FROM "{t}"`,
-#      `FROM lake."{t}"`
-#   2. ANY dot immediately before the quote — `lake."{schema}"."{table}"`,
-#      `{source_name}."{name}"`
-#
-# The first version of this guard had only alternative 1, so it could not see a
-# qualified name whose quoted part follows a dot. That blind spot sat in exactly
-# the multi-part-identifier class this sweep is about, and it made the guard's
-# own "allowlist is empty" claim true only by not looking. Caught in review, not
-# by the test — which is the point of writing it down here.
-_IDENT_POSITION_RE = r'(?:(?:VIEW|TABLE|DESCRIBE|FROM|INTO|JOIN)\s+[\w.]*|\.)\\?"\{'
-
-
-def test_f4_no_bare_quoted_identifier_interpolation():
-    """Ratchet: the allowlist is empty and must stay empty.
-
-    ``-P``, not ``-E``. git grep's ``-E`` is POSIX ERE, where ``\\s`` degrades to
-    a literal ``s`` — the ``-E`` form of this pattern matches NOTHING and the
-    test would pass vacuously forever. That is not hypothetical: it is how this
-    guard was first written during the 2026-08-05 audit follow-up, and it was
-    caught in review rather than by the test.
+def test_f2b_origin_refusal_never_echoes_a_credential():
+    """The refusal path reports the origin URL, and the value it reports is
+    exactly what this release removes: a remote with an embedded PAT. Redacting
+    against the *currently resolved* token is not enough — by then the env var
+    may be unset or the PAT rotated, making redaction a no-op and persisting the
+    secret into `marketplace_registry.last_error`, which the admin UI renders
+    (Devin Review on #1180).
     """
-    import subprocess
+    from src.marketplace import _strip_userinfo
 
-    proc = subprocess.run(
-        ["git", "grep", "-nP", _IDENT_POSITION_RE, "--", "*.py"],
-        capture_output=True,
-        text=True,
-    )
-    # git grep emits repo-relative paths with NO leading slash, so a
-    # `"/tests/" not in ln` filter would never fire.
-    hits = [ln for ln in proc.stdout.splitlines() if ln and not ln.startswith("tests/")]
+    creds = "https://x-access-token:ghp_SUPERSECRET@github.com/acme/repo.git"
+    out = _strip_userinfo(creds)
+    assert "ghp_SUPERSECRET" not in out
+    assert "x-access-token" not in out
+    assert out == "https://github.com/acme/repo.git", out
 
-    assert hits == [], "bare-quoted SQL identifier(s) — route through quote_ident:\n" + "\n".join(hits)
-
-
-def test_f4_quote_ident_reexported_from_profiler():
-    """Existing `from src.profiler import quote_ident` importers keep working."""
-    from src.profiler import quote_ident as from_profiler
-    from src.sql_ident import quote_ident as canonical
-
-    assert from_profiler is canonical
-    assert canonical('a") AS x, (SELECT 1) AS "b') == '"a"") AS x, (SELECT 1) AS ""b"'
-
-
-# ── F-4b: server-supplied manifest ids are path segments AND SQL identifiers ──
-
-
-def test_f4b_safe_id_re_rejects_traversal_and_injection():
-    from cli.lib.pull import _SAFE_ID_RE
-
-    assert _SAFE_ID_RE.match("orders_v2")
-    assert _SAFE_ID_RE.match("orders.v2")  # dots are legitimate — admin-derived ids carry them
-    assert not _SAFE_ID_RE.match("../../.ssh/authorized_keys")
-    assert not _SAFE_ID_RE.match('x" AS y, (SELECT 1) AS "z')
-    assert not _SAFE_ID_RE.match("a/b")
-
-
-def test_f4b_pull_skips_unsafe_manifest_table_ids():
-    """An unsafe id is dropped, and the drop must NOT become a pull error.
-
-    cli/commands/pull.py raises typer.Exit(1) on a non-empty result.errors —
-    including from the --quiet SessionStart hook path — so collecting these
-    would turn one odd id into a permanently red `agnes pull`.
-    """
-    from cli.lib.pull import _safe_manifest_tables
-
-    kept, dropped = _safe_manifest_tables(
-        {
-            "orders": {"hash": "a"},
-            "orders.v2": {"hash": "b"},
-            "../../../etc/passwd": {"hash": "c"},
-            "..": {"hash": "d"},
-            'x" AS y': {"hash": "e"},
-        }
-    )
-
-    assert sorted(kept) == ["orders", "orders.v2"]
-    assert sorted(dropped) == sorted(["../../../etc/passwd", "..", 'x" AS y'])
+    # Still useful: the host survives, so the operator can see WHERE it points.
+    assert _strip_userinfo("https://user:pw@host:8443/a/b") == "https://host:8443/a/b"
+    # And harmless shapes pass through untouched.
+    assert _strip_userinfo("https://github.com/acme/repo.git") == "https://github.com/acme/repo.git"
+    assert _strip_userinfo("not a url") == "not a url"

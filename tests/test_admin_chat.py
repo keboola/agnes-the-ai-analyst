@@ -8,6 +8,7 @@ Three tests per the plan:
 
 from __future__ import annotations
 
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock
 
 import duckdb
@@ -15,13 +16,12 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from src.db import _ensure_schema
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user
 from app.chat.config import ChatConfig
 from app.chat.manager import ChatManager
 from app.chat.persistence import ChatRepository
-
+from src.db import _ensure_schema
 
 TEST_ADMIN = {"id": "admin1", "email": "admin@test.com", "is_admin": True}
 TEST_USER = {"id": "user1", "email": "alice@test.com", "is_admin": False}
@@ -47,8 +47,8 @@ def _make_mock_manager(repo: ChatRepository) -> ChatManager:
 
 
 def _make_app(*, as_admin: bool = True) -> tuple[FastAPI, ChatRepository]:
-    from app.api.chat import router as chat_router
     from app.api.admin_chat import router as admin_chat_router
+    from app.api.chat import router as chat_router
 
     app = FastAPI()
     app.include_router(chat_router)
@@ -135,7 +135,7 @@ def test_admin_lists_active_sessions(api_client: TestClient, logged_in_admin):
     a WebSocket attach (see ChatManager.attach). Here we inject a mock live
     session directly into the manager to test the endpoint shape.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
     from unittest.mock import MagicMock
 
     from app.chat.manager import LiveSession, SinkEntry
@@ -147,7 +147,7 @@ def test_admin_lists_active_sessions(api_client: TestClient, logged_in_admin):
 
     # Inject the session into the manager's _live dict as if it were attached.
     mgr = api_client.app.state.chat_manager
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     mgr._live[chat_id] = LiveSession(
         chat_id=chat_id,
         user_email="admin@test.com",
@@ -355,3 +355,50 @@ def test_admin_debug_forbidden_for_non_admin(
     """Debug endpoint is admin-only (guards counter introspection)."""
     r = api_client_non_admin.get("/admin/chat/some-id/debug")
     assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Provider-aware "test connections"
+# ---------------------------------------------------------------------------
+
+
+def test_test_connections_probes_e2b_for_the_e2b_provider(api_client: TestClient, logged_in_admin, monkeypatch):
+    api_client.app.state.chat_config = ChatConfig(enabled=True, provider="e2b", e2b_template_id="agnes-chat")
+    monkeypatch.setattr(
+        "app.api.admin_chat.test_e2b_key",
+        AsyncMock(return_value={"ok": True, "detail": "E2B API key valid"}),
+    )
+    monkeypatch.setattr(
+        "app.api.admin_chat.test_anthropic_key",
+        AsyncMock(return_value={"ok": True, "detail": "Anthropic API key valid"}),
+    )
+    body = api_client.post("/admin/chat/secrets/test").json()
+    assert body["e2b_api_key"]["ok"] is True
+    assert "docker_sandbox" not in body
+
+
+def test_test_connections_probes_the_docker_sandbox_for_the_docker_provider(
+    api_client: TestClient, logged_in_admin, monkeypatch
+):
+    """A self-hosted instance has no E2B account — the surface must report the
+    sidecar/daemon/image instead, not a red row for a key it will never use."""
+    api_client.app.state.chat_config = ChatConfig(enabled=True, provider="docker", docker_image="agnes-chat-sandbox:1")
+    probe = AsyncMock(return_value={"ok": True, "detail": "docker sandbox runner ready"})
+    monkeypatch.setattr("app.api.admin_chat.test_docker_sandbox", probe)
+    monkeypatch.setattr(
+        "app.api.admin_chat.test_anthropic_key",
+        AsyncMock(return_value={"ok": True, "detail": "Anthropic API key valid"}),
+    )
+    body = api_client.post("/admin/chat/secrets/test").json()
+    assert body["docker_sandbox"] == {"ok": True, "detail": "docker sandbox runner ready"}
+    assert "e2b_api_key" not in body
+    probe.assert_awaited_once_with("agnes-chat-sandbox:1")
+
+
+def test_readiness_reports_docker_rows(api_client: TestClient, logged_in_admin, monkeypatch):
+    monkeypatch.delenv("APPS_RUNNER_TOKEN", raising=False)
+    api_client.app.state.chat_config = ChatConfig(enabled=True, provider="docker")
+    body = api_client.get("/admin/chat/readiness").json()
+    assert body["provider"] == "docker"
+    assert body["secrets"]["apps_runner_token"]["required"] is True
+    assert "apps_runner_token" in body["missing"]

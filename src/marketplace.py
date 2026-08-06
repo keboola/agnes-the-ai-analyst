@@ -120,7 +120,12 @@ def is_valid_ref(ref: str) -> bool:
 # ${DATA_DIR}/marketplaces/<slug>/.git/config — on BOTH the clone and the
 # `remote set-url` update path — from where it survives into every backup and
 # volume snapshot. Security playbook §7.
-_CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
+# The username is pinned to `x-access-token`, the value the URL-embedded form
+# this replaced also sent. Most hosts ignore it for token auth, but GitHub App
+# installation tokens are documented as requiring exactly this — and this copy
+# talks to arbitrary curator-supplied upstreams, so a bare `x` would have been
+# a silent upgrade regression for that credential class (Devin Review on #1180).
+_CREDENTIAL_HELPER = '!f() { printf "username=x-access-token\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
 def _git_env(token: Optional[str] = None) -> dict:
@@ -162,6 +167,26 @@ def _credential_args(repo_url: str, token: Optional[str]) -> List[str]:
         "-c",
         f"credential.{parts.scheme}://{host}.helper={_CREDENTIAL_HELPER}",
     ]
+
+
+def _strip_userinfo(url: str) -> str:
+    """``url`` with any ``user:pass@`` removed, structurally.
+
+    Not token-dependent, unlike ``_redact``: the value we most need to sanitise
+    is a remote that still embeds a PAT from before this release, and the token
+    we would redact against may be rotated or unset by then — leaving redaction
+    a no-op and putting the credential somewhere durable. Callers persist error
+    text into ``marketplace_registry.last_error``, which the admin UI renders
+    (Devin Review on #1180).
+    """
+    try:
+        parts = urlparse(url)
+    except ValueError:
+        return "<unparseable url>"
+    if not parts.hostname:
+        return url
+    netloc = parts.hostname + (f":{parts.port}" if parts.port else "")
+    return f"{parts.scheme}://{netloc}{parts.path}" if parts.scheme else f"{netloc}{parts.path}"
 
 
 def _redact(s: str, token: str) -> str:
@@ -317,7 +342,28 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
                 clone_args += [url, str(target)]
                 _run_git(clone_args, url=url, token=token)
         else:
-            # `remote set-url` already ran above, credential-free.
+            # `remote set-url` ran above — but best-effort, so it may have been
+            # skipped by a stale .git/config.lock, a read-only config after a
+            # volume restore, or a missing `origin`. Everything below fetches
+            # from `origin`, so an unverified assumption here means the sync can
+            # report success against the PREVIOUS repository — or against an
+            # origin that still embeds a PAT, defeating the very scrub this
+            # release advertises. Confirm it, and fail loudly if not
+            # (Devin Review on #1180).
+            # `config --get`, NOT `remote get-url`: the latter expands
+            # `url.<base>.insteadOf` rules (documented behaviour), so on a host
+            # with a corporate-mirror rewrite it returns the rewritten URL while
+            # `set-url` stored the original — a guaranteed mismatch that would
+            # abort every sync on those deployments, even though the fetch would
+            # have gone to the right place. We wrote the raw value, so we compare
+            # the raw value (Devin Review on #1180).
+            current = _run_git(["config", "--get", "remote.origin.url"], cwd=target).stdout.strip()
+            if current != url:
+                raise RuntimeError(
+                    f"git {action} refused: origin is {_strip_userinfo(current)!r}, not the configured "
+                    f"{_strip_userinfo(url)!r} — could not re-point the checkout, so a fetch here would "
+                    "silently pull from the wrong remote"
+                )
             if pinned_sha:
                 _checkout_pinned_sha(target, pinned_sha, url=url, token=token)
             else:

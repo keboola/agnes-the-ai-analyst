@@ -67,7 +67,10 @@ _EXIT_MARKETPLACE_DRIFT = 20
 # command. Reads the PAT from $AGNES_TOKEN — set in the subprocess env only,
 # never on the command line — and emits the credential protocol's two
 # key=value lines on stdout.
-_CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
+# Same username as the server-side twin. This copy only ever talks to Agnes's
+# own marketplace endpoint, which ignores it, but keeping the two identical
+# means neither can be "fixed" in isolation later (Devin Review on #1180).
+_CREDENTIAL_HELPER = '!f() { printf "username=x-access-token\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
 # Hang-guards for network git calls. Without GIT_TERMINAL_PROMPT=0, an auth
@@ -117,7 +120,12 @@ def _credential_args(origin: Optional[str] = None) -> list[str]:
     """
     origin = origin or configured_marketplace_origin()
     if not origin:
-        return ["-c", f"credential.helper={_CREDENTIAL_HELPER}"]
+        # The empty reset belongs here too — arguably most of all, since this
+        # branch cannot scope the helper to a host. git APPENDS helpers, so
+        # without the reset an inherited system/global helper (osxkeychain,
+        # libsecret) answers first and its stale saved credential is what git
+        # uses, instead of the workspace token (Devin Review on #1180).
+        return ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"]
     return [
         "-c",
         "credential.helper=",
@@ -134,10 +142,18 @@ _configured_marketplace_host = configured_marketplace_host
 
 
 def _origin_url() -> Optional[str]:
-    """The clone's `origin` remote URL, or None when it can't be read."""
+    """The clone's `origin` remote URL as STORED, or None when unreadable.
+
+    `config --get`, not `remote get-url`: the latter expands
+    `url.<base>.insteadOf` rewrite rules, so on a host with a corporate-mirror
+    rule it reports the mirror while the clone was made against the original.
+    The mismatch guard would then see a host change that never happened and
+    re-clone on every run. Sibling of the same fix in `src/marketplace.py`
+    (Devin Review on #1180).
+    """
     try:
         result = subprocess.run(
-            ["git", "-C", str(CLONE_DIR), "remote", "get-url", "origin"],
+            ["git", "-C", str(CLONE_DIR), "config", "--get", "remote.origin.url"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -162,7 +178,15 @@ def _origin_host_mismatch() -> Optional[tuple[str, str]]:
     determined: no configured host, unreadable origin, or a filesystem-path
     origin (no scheme/host — local test setups).
     """
-    expected = _configured_marketplace_host()
+    # Compared on `scheme://host[:port]`, the SAME key git's credential config
+    # is scoped by (`credential.https://host.helper`) and the same value
+    # `_credential_args` uses. Host-only comparison let a scheme flip through:
+    # an origin still on `http://host` passes the guard, while the helper is
+    # registered for `https://host`, so git asks about a scope that has no
+    # helper and — with GIT_TERMINAL_PROMPT=0 — fails to auth instead of using
+    # the workspace PAT. Judging the guard and the helper by one notion is what
+    # keeps them from drifting (Devin Review on #1180).
+    expected = configured_marketplace_origin()
     if not expected:
         return None
     origin = _origin_url()
@@ -171,10 +195,10 @@ def _origin_host_mismatch() -> Optional[tuple[str, str]]:
     parsed = urlparse(origin)
     if not parsed.scheme or not parsed.hostname:
         return None
-    origin_host = parsed.netloc.split("@", 1)[-1]
-    if origin_host.lower() == expected.lower():
+    origin_scoped = f"{parsed.scheme}://{parsed.netloc.split('@', 1)[-1]}"
+    if origin_scoped.lower() == expected.lower():
         return None
-    return origin_host, expected
+    return origin_scoped, expected
 
 
 def _claude_base_cmd() -> Optional[list[str]]:
