@@ -466,7 +466,7 @@ const SECTION_META = {
   },
   connectors: {
     title: "Connector params",
-    help: "Per-tenant connector params served by /api/connectors/params and written into every analyst's .env by `agnes init`. Keys are connector slugs from the seed manifest (plus `globals`). Secret VALUES don't belong here — use *_ENV keys naming the server env var.",
+    help: "Per-tenant connector params served by /api/connectors/params and written into every analyst's .env by `agnes init`. Keys are connector slugs from the seed manifest (plus `globals`). Values pass through verbatim — connector app credentials like the GWS OAuth client secret (an app identifier, not a user credential) belong here as plain values; *_ENV pointer keys are legacy.",
   },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);

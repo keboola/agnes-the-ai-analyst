@@ -279,8 +279,10 @@ class TestProfileSensitiveLeakage:
 
 class TestClaudeSetupPreview:
     """/install and /dashboard render a visible, read-only preview of the
-    'Setup a new Claude Code' clipboard payload. The real token is never
-    rendered into the HTML — only a styled placeholder is.
+    'Setup a new Claude Code' clipboard payload. The real login token is
+    delivered out-of-band (see /home's Step 4) and never appears in this
+    preview at all — there's no `{token}` placeholder left to substitute
+    or mask.
     """
 
     def test_install_preview_visible_for_signed_in_user(self, web_client, admin_cookie):
@@ -291,11 +293,13 @@ class TestClaudeSetupPreview:
         resp = web_client.get("/setup", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
-        # Preview card + placeholder token render
+        # Preview card renders; no token placeholder to render any more.
         assert "setup-preview-pre" in body
         assert "What Claude Code will receive" in body
-        assert "&lt;will be generated on click&gt;" in body
-        assert 'class="placeholder-token"' in body
+        assert "&lt;will be generated on click&gt;" not in body
+        assert 'class="placeholder-token"' not in body
+        assert "{token}" not in body
+        assert "eyJ" not in body
         # Setup payload text substituted with real server URL. The wheel URL
         # must be under /cli/wheel/ (uv tool install rejects a bare .whl alias
         # because it validates the PEP 427 filename in the URL before fetch).

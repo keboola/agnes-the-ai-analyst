@@ -73,6 +73,16 @@ _EXIT_MARKETPLACE_DRIFT = 20
 _CREDENTIAL_HELPER = '!f() { printf "username=x-access-token\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
+# `-c credential.helper=X` APPENDS to git's credential-helper chain — it
+# does not replace helpers configured at system/global scope, and git
+# consults the chain in config order (system -> global -> command line).
+# On Windows the stock Git installer wires Git Credential Manager
+# globally, so GCM ran FIRST — and when it has nothing stored for the
+# marketplace host it pops an interactive GUI dialog instead of quietly
+# yielding (GIT_TERMINAL_PROMPT=0 silences only git's own terminal
+# prompt, not GCM's window). The leading EMPTY helper resets the chain,
+# making the env-based helper above the only one consulted. Use these
+# args on every network git call.
 # Hang-guards for network git calls. Without GIT_TERMINAL_PROMPT=0, an auth
 # failure (e.g. the clone's origin points at a previous instance whose host
 # rejects this workspace's PAT) makes git fall back to an interactive

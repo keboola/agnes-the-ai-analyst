@@ -235,12 +235,14 @@ def test_params_gws_server_credentials_injected(client_with_admin, monkeypatch):
     assert body["params"]["connector-gws"] == {
         "AGNES_GWS_CLIENT_ID": "123456789012-abc.apps.googleusercontent.com",
         "AGNES_GWS_PROJECT_ID": "123456789012",
+        # The fallback ships the client-secret VALUE (a Desktop-app
+        # OAuth client secret is an app identifier, not a user
+        # credential) so the analyst-side skill can self-serve…
+        "AGNES_GWS_CLIENT_SECRET": "GOCSPX-test-secret-value",
+        # …and keeps the legacy pointer next to it for backward
+        # compatibility with seed skills that read the pointer shape.
         "AGNES_GWS_CLIENT_SECRET_ENV": "AGNES_GWS_CLIENT_SECRET",
     }
-    # The endpoint's contract: secret VALUES never transit — only the
-    # *name* of the env var holding the secret. Assert on the raw body
-    # so a future serializer change can't sneak the value through.
-    assert "GOCSPX-test-secret-value" not in resp.text
 
 
 def test_params_overlay_wins_over_server_gws(client_with_admin, monkeypatch):
@@ -273,6 +275,7 @@ def test_params_overlay_wins_over_server_gws(client_with_admin, monkeypatch):
     assert gws["AGNES_GWS_CLIENT_ID"] == "999-overlay.apps.googleusercontent.com"
     # …server-resolved keys fill the gaps.
     assert gws["AGNES_GWS_PROJECT_ID"] == "123456789012"
+    assert gws["AGNES_GWS_CLIENT_SECRET"] == "GOCSPX-test-secret-value"
     assert gws["AGNES_GWS_CLIENT_SECRET_ENV"] == "AGNES_GWS_CLIENT_SECRET"
 
 
