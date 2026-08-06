@@ -3243,6 +3243,23 @@ async def library_page(
         "data_package": "Governed data you can query.",
         "memory_domain": "Curated organizational knowledge.",
     }
+    #: Marker for a kind that will land INSIDE an existing section rather than
+    #: getting its own. Data apps ship into Files first, so the schedule rides
+    #: the Files band's own label — a badge next to the heading, not a panel in
+    #: the page head. A roadmap note is worth a word where the thing will
+    #: appear; it is not worth a paragraph above the inventory the reader came
+    #: for. Rendered by `group_toggle`, so the table and the grid pick it up
+    #: from one place.
+    _SECTION_SOON = {
+        "files": "Data apps coming soon",
+    }
+    _SECTION_SOON_TIP = {
+        "files": (
+            "Hosted apps that run next to your data will appear here. You'll be "
+            "able to build them with Agnes or link an existing one. Nothing to "
+            "do yet."
+        ),
+    }
     #: Each section wears the SAME accent its members' detail pages wear, so a
     #: type is recognizable by colour before the label is read. Values are the
     #: `--ds-kind-*` vocabulary the detail hero resolves through
@@ -3278,6 +3295,8 @@ async def library_page(
                 "key": key,
                 "label": _SECTION_LABELS.get(key) or (rows[0]["type_label"] + "s"),
                 "hint": _SECTION_HINTS.get(key, ""),
+                "soon": _SECTION_SOON.get(key, ""),
+                "soon_tip": _SECTION_SOON_TIP.get(key, ""),
                 "rows": _section_rows(key, rows),
                 "kind": kind,
                 "glyph": glyph,
@@ -3312,8 +3331,8 @@ async def library_page(
             request.query_params.get("section") if request.query_params.get("section") in _SECTION_LABELS else ""
         ),
         # Arrive with "In stack only" already pressed — /library?stack=in_stack.
-        # The chat empty state's Stack status line ("Agnes is using N knowledge
-        # sources and M capabilities from your Stack") points here instead of at
+        # The chat empty state's Stack status line ("Using N knowledge sources
+        # and M capabilities from your Stack") points here instead of at
         # the de-railed /stack page (#1088); this list spans every kind that
         # page did, and the toggle narrows it to what the line counts. The value
         # is compared against the facet's one legal value, so what reaches the
@@ -3729,7 +3748,10 @@ async def library_detail(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Collection detail — files + per-file processing status + search box."""
+    from app.api.store import _resolve_owner_display
     from app.auth.access import can_access_collection
+    from app.resource_types import ResourceType
+    from app.services.library_sharing import visibility_for
 
     col = file_corpora_repo().get_by_slug(slug)
     # Return 404 for both "missing" and "access denied" so an unprivileged
@@ -3742,7 +3764,22 @@ async def library_detail(
     if not is_admin and not can_access_collection(user["id"], col["id"], conn):
         raise HTTPException(status_code=404, detail="collection_not_found")
     files = corpus_files_repo().list_for_corpus(col["id"])
-    ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collection=col, files=files)
+    # Owner + sharing are rail facts on every resource detail page (see the page
+    # contract in macros/_detail.html); the collection page was the one artefact
+    # surface that stated neither, so "who can see this folder?" was only
+    # answerable from the Library table it was opened from.
+    owner_id = col.get("created_by")
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_admin,
+        collection=col,
+        files=files,
+        owner_name=(_resolve_owner_display(owner_id) if owner_id else None),
+        collection_visibility=visibility_for(ResourceType.COLLECTION.value, col["id"]),
+        can_share=is_admin or owner_id == user["id"],
+    )
     return templates.TemplateResponse(request, "library_detail.html", ctx)
 
 

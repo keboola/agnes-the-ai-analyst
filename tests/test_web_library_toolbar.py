@@ -414,3 +414,37 @@ def test_toolbar_sort_select_is_grid_only(seeded_app):
     assert "if (sortWrapEl && sortBtns.length) sortWrapEl.hidden = !grid;" in js
     # The header drives the accessible sorted state, not colour alone.
     assert "th.setAttribute('aria-sort'" in js
+
+
+def test_long_category_gets_its_own_search_field(seeded_app):
+    """A tag vocabulary runs to dozens of values, and past ~10 rows a category
+    popover is a list you scroll rather than one you read — so the engine injects
+    a search field (and a "No matches" line) into any popover holding more than
+    CAT_SEARCH_MIN options. Injected from the row count in JS, never authored in
+    a template, so every page and every future facet inherits it; a short
+    category (Optional / Required) stays a plain list."""
+    js = seeded_app["client"].get("/static/js/filter_toolbar.js").text
+    assert "var CAT_SEARCH_MIN = 10;" in js
+    assert "function setupCatSearch(cat)" in js
+    assert "if (opts.length <= CAT_SEARCH_MIN) return;" in js
+    # It narrows the OPTIONS of one category, not the page's rows.
+    assert "e.el.hidden = !hit;" in js
+    # The tally is a count, not part of a name — searching "1" must not match
+    # every option on the page.
+    assert "'.fbar-menu__opt-text'" in js
+    # Height changed under a viewport-placed popover, so it is re-placed.
+    assert "placeSubmenu(cat);" in js
+    # Narrowing to nothing is silent for a screen reader unless it is announced.
+    assert "none.setAttribute('role', 'status');" in js
+    # Escape with a query clears the field; only an empty field lets the outer
+    # handler close the menu.
+    assert "if (e.key === 'Escape' && input.value)" in js
+    # Focus outranks the hover grace period — typing must not lose the popover.
+    assert "if (cat.contains(document.activeElement)) return;" in js
+
+    css = seeded_app["client"].get("/static/css/filter_toolbar.css").text
+    # The field stays reachable while its results scroll.
+    assert ".fbar-cat__search {" in css
+    assert "position: sticky; top: -6px;" in css
+    # `.fbar-menu__opt` sets display:flex, which beats the UA's [hidden] rule.
+    assert ".fbar-menu__opt[hidden] { display: none; }" in css
