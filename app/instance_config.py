@@ -249,6 +249,16 @@ FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
         description="Flea-market upload LLM security-review pipeline. Grandfathered on by default.",
     ),
     FeatureFlag(
+        name="chat_approvals",
+        config_keys=("chat", "approvals_enabled"),
+        env_var="AGNES_CHAT_APPROVALS_ENABLED",
+        default=True,
+        description=(
+            "Interactive approval prompts for ask-flagged chat tool calls. Off makes the "
+            "sandbox gate deny instantly instead of waiting for a human."
+        ),
+    ),
+    FeatureFlag(
         name="chat",
         config_keys=("chat", "enabled"),
         env_var="AGNES_CHAT_ENABLED",
@@ -266,8 +276,8 @@ FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
         name="library_show_unverified_trust",
         config_keys=("library", "show_unverified_trust"),
         env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-        default=True,
-        description="Show the 'Community' trust marker for unverified Store items in the Library. On by default — every row states its provenance (Organization / Verified / Community); set false to restore the older look where an unverified item is marked by the absence of a marker.",
+        default=False,
+        description="Show the 'Community' trust marker for unverified Store items in the Library. Off by default so existing instances keep their look after an upgrade (an unverified item is marked by the absence of a marker); set true to state all three provenance levels (Organization / Verified / Community) positively on every row.",
     ),
 )
 
@@ -1193,24 +1203,22 @@ def get_guardrails_enabled() -> bool:
 def get_store_verification_enabled() -> bool:
     """Whether the org-verification axis is offered on this instance.
 
-    Reads ``store.verification_enabled``. **Defaults to True.**
+    Reads ``store.verification_enabled``. **Defaults to False.**
 
-    It defaulted to False for exactly one reason: with no reviewer, nothing is
-    ever verified, so a negative marker prints on every card and says nothing —
-    the same rotting promise as a permanent "In review" badge. That reasoning
-    held while the Library marked only the *absence* of verification. It stops
-    holding now that the Library states all three levels positively
-    (Organization / Verified / Community, see ``library.show_unverified_trust``):
-    "Community" is a true statement about an item nobody has reviewed, on an
-    instance with a reviewer or without one, and leaving verification off would
-    strand every user-authored item at Community with no admin action able to
-    move it.
+    Off by default for upgrade parity: an existing instance must not grow a
+    verification workflow (author-facing "Request verification" buttons,
+    admin "Verify" / "Request changes" strips on item detail) out of a routine
+    upgrade nobody opted into — with no reviewer appointed, every request
+    would rot at "pending" and the negative marker would print on every card
+    while saying nothing. Instances that adopt the trust vocabulary set this
+    to True together with ``library.show_unverified_trust``, which makes all
+    three levels (Organization / Verified / Community) positive statements
+    and gives the admin action a reason to exist.
 
-    Set it to False on an instance that does not want the axis offered at all;
-    the verify endpoints then 400 and the author-facing "Request verification"
-    button disappears, as before.
+    When False the verify endpoints 400 and the author-facing "Request
+    verification" button disappears.
     """
-    return bool(get_value("store", "verification_enabled", default=True))
+    return bool(get_value("store", "verification_enabled", default=False))
 
 
 def get_guardrails_llm_provider_ready() -> bool:

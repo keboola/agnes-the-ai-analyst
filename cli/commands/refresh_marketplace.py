@@ -42,7 +42,12 @@ import typer
 
 from cli.config import get_server_url, get_token
 from cli.error_render import render_error
-from cli.lib.marketplace import CLONE_DIR, MARKETPLACE_NAME, configured_marketplace_host
+from cli.lib.marketplace import (
+    CLONE_DIR,
+    MARKETPLACE_NAME,
+    configured_marketplace_host,
+    configured_marketplace_origin,
+)
 
 
 refresh_marketplace_app = typer.Typer(help="Reconcile the workspace plugins with the user's current Agnes stack.")
@@ -62,7 +67,10 @@ _EXIT_MARKETPLACE_DRIFT = 20
 # command. Reads the PAT from $AGNES_TOKEN — set in the subprocess env only,
 # never on the command line — and emits the credential protocol's two
 # key=value lines on stdout.
-_CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
+# Same username as the server-side twin. This copy only ever talks to Agnes's
+# own marketplace endpoint, which ignores it, but keeping the two identical
+# means neither can be "fixed" in isolation later (Devin Review on #1180).
+_CREDENTIAL_HELPER = '!f() { printf "username=x-access-token\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
 # Hang-guards for network git calls. Without GIT_TERMINAL_PROMPT=0, an auth
@@ -85,6 +93,47 @@ def _git_env(token: Optional[str] = None) -> dict[str, str]:
     return env
 
 
+def _credential_args(origin: Optional[str] = None) -> list[str]:
+    """``-c`` flags wiring the helper for the configured marketplace host only.
+
+    An unscoped ``credential.helper`` hands the PAT to whatever host git ends up
+    asking about — including a redirect target, since ``http.followRedirects``
+    defaults on. Scoping keeps the workspace PAT from reaching a third party a
+    misconfigured or hostile redirect points at.
+
+    The scope comes from configuration (``configured_marketplace_origin``), not
+    from the clone's actual ``origin``: a clone whose origin has drifted to a
+    different host — the case ``_origin_host_mismatch`` warns about — must not
+    receive this PAT. Reading config also keeps this off the subprocess path,
+    which matters on the SessionStart hook.
+
+    The generic empty reset comes FIRST: git APPENDS helpers, so without it an
+    inherited system/global helper answers before ours.
+
+    Falls back to the unscoped form when no origin is configured — losing auth
+    entirely would break `agnes update` on the SessionStart path, which is worse
+    than the exposure this narrows.
+
+    Server-side twin: ``src.marketplace._credential_args``. Kept local rather
+    than imported so this module stays free of an import-time dependency on the
+    server package.
+    """
+    origin = origin or configured_marketplace_origin()
+    if not origin:
+        # The empty reset belongs here too — arguably most of all, since this
+        # branch cannot scope the helper to a host. git APPENDS helpers, so
+        # without the reset an inherited system/global helper (osxkeychain,
+        # libsecret) answers first and its stale saved credential is what git
+        # uses, instead of the workspace token (Devin Review on #1180).
+        return ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"]
+    return [
+        "-c",
+        "credential.helper=",
+        "-c",
+        f"credential.{origin}.helper={_CREDENTIAL_HELPER}",
+    ]
+
+
 # Promoted to `cli.lib.marketplace.configured_marketplace_host` so `agnes init`
 # can derive the same host without importing a private symbol. Kept as a
 # module-level alias for existing callers (e.g. `_origin_host_mismatch`) and
@@ -93,10 +142,18 @@ _configured_marketplace_host = configured_marketplace_host
 
 
 def _origin_url() -> Optional[str]:
-    """The clone's `origin` remote URL, or None when it can't be read."""
+    """The clone's `origin` remote URL as STORED, or None when unreadable.
+
+    `config --get`, not `remote get-url`: the latter expands
+    `url.<base>.insteadOf` rewrite rules, so on a host with a corporate-mirror
+    rule it reports the mirror while the clone was made against the original.
+    The mismatch guard would then see a host change that never happened and
+    re-clone on every run. Sibling of the same fix in `src/marketplace.py`
+    (Devin Review on #1180).
+    """
     try:
         result = subprocess.run(
-            ["git", "-C", str(CLONE_DIR), "remote", "get-url", "origin"],
+            ["git", "-C", str(CLONE_DIR), "config", "--get", "remote.origin.url"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -121,7 +178,15 @@ def _origin_host_mismatch() -> Optional[tuple[str, str]]:
     determined: no configured host, unreadable origin, or a filesystem-path
     origin (no scheme/host — local test setups).
     """
-    expected = _configured_marketplace_host()
+    # Compared on `scheme://host[:port]`, the SAME key git's credential config
+    # is scoped by (`credential.https://host.helper`) and the same value
+    # `_credential_args` uses. Host-only comparison let a scheme flip through:
+    # an origin still on `http://host` passes the guard, while the helper is
+    # registered for `https://host`, so git asks about a scope that has no
+    # helper and — with GIT_TERMINAL_PROMPT=0 — fails to auth instead of using
+    # the workspace PAT. Judging the guard and the helper by one notion is what
+    # keeps them from drifting (Devin Review on #1180).
+    expected = configured_marketplace_origin()
     if not expected:
         return None
     origin = _origin_url()
@@ -130,10 +195,10 @@ def _origin_host_mismatch() -> Optional[tuple[str, str]]:
     parsed = urlparse(origin)
     if not parsed.scheme or not parsed.hostname:
         return None
-    origin_host = parsed.netloc.split("@", 1)[-1]
-    if origin_host.lower() == expected.lower():
+    origin_scoped = f"{parsed.scheme}://{parsed.netloc.split('@', 1)[-1]}"
+    if origin_scoped.lower() == expected.lower():
         return None
-    return origin_host, expected
+    return origin_scoped, expected
 
 
 def _claude_base_cmd() -> Optional[list[str]]:
@@ -387,8 +452,7 @@ def _bootstrap_clone(token: str) -> bool:
         result = subprocess.run(
             [
                 "git",
-                "-c",
-                f"credential.helper={_CREDENTIAL_HELPER}",
+                *_credential_args(),
                 "clone",
                 clean_url,
                 str(CLONE_DIR),
@@ -550,8 +614,7 @@ def _git_fetch_only(token: str) -> bool:
     env = _git_env(token)
     fetch_cmd = [
         "git",
-        "-c",
-        f"credential.helper={_CREDENTIAL_HELPER}",
+        *_credential_args(),
         "-C",
         str(CLONE_DIR),
         "fetch",
@@ -599,8 +662,7 @@ def _remote_head_sha(token: str) -> Optional[str]:
     env = _git_env(token)
     cmd = [
         "git",
-        "-c",
-        f"credential.helper={_CREDENTIAL_HELPER}",
+        *_credential_args(),
         "-C",
         str(CLONE_DIR),
         "ls-remote",

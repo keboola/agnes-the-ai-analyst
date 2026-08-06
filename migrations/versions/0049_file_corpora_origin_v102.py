@@ -1,6 +1,6 @@
 """add file_corpora.origin (uploaded | generated)
 
-Mirrors DuckDB ``_v108_to_v109``. ``origin`` records artefact provenance for
+Mirrors DuckDB ``_v109_to_v110``. ``origin`` records artefact provenance for
 the Artefacts toolbar's Source facet: every existing artefact is
 user-uploaded, so the column defaults to ``'uploaded'``; the future
 agent-generated-artefact writer sets ``'generated'``.
@@ -11,6 +11,12 @@ Revision ID: 0049_file_corpora_origin_v102
 Revises: 0048_mcp_connect_hint_heal_v101
 Create Date: 2026-07-28
 
+
+Filename/version-suffix note: the ``_vNNN`` suffix in this module's
+FILENAME reflects an older restack of the DuckDB ladder and is frozen —
+the revision id is the deployed alembic_version key and renaming would
+only move the mismatch around. The ``Mirrors DuckDB`` line above is the
+authoritative mapping.
 """
 
 from __future__ import annotations

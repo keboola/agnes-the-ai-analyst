@@ -115,3 +115,52 @@ def test_admin_delete_secret_clears_shared_vault_both_backends(seeded_app_both):
     assert shared_secrets_repo().has(sid) is False, (
         f"[{seeded_app_both['backend']}] shared secret survived admin delete"
     )
+
+
+# ---------------------------------------------------------------------------
+# decrypt failure (vault key rotated) — both vault scopes, both backends.
+# Both repos read through app.secrets_vault.decrypt_optional; these pin the
+# contract that a stale row degrades to None (never raises) and that the
+# WARNING still names the column that failed.
+# ---------------------------------------------------------------------------
+
+
+def test_shared_secret_decrypt_failure_returns_none_both_backends(_env, monkeypatch, caplog):
+    import logging
+
+    from cryptography.fernet import Fernet
+
+    from src.repositories import shared_secrets_repo
+
+    repo = shared_secrets_repo()
+    repo.upsert("src_rot", "encrypted-under-key-a")
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode("ascii"))
+    with caplog.at_level(logging.WARNING, logger="app.secrets_vault"):
+        assert repo.get("src_rot") is None, (
+            f"[{_env}] undecryptable shared secret must read as absent so the caller can fall back to the env-var path"
+        )
+    # The row is still there — only unreadable. has() must not start lying.
+    assert repo.has("src_rot") is True, f"[{_env}] has() should still see the stale row"
+    assert "mcp_secrets.secret_value_enc[src_rot]" in caplog.text, (
+        f"[{_env}] decrypt warning does not identify the column: {caplog.text!r}"
+    )
+
+
+def test_per_user_secret_decrypt_failure_returns_none_both_backends(_env, monkeypatch, caplog):
+    import logging
+
+    from cryptography.fernet import Fernet
+
+    from src.repositories import per_user_secrets_repo
+
+    repo = per_user_secrets_repo()
+    repo.upsert("src_pu_rot", "user1", "encrypted-under-key-a")
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode("ascii"))
+    with caplog.at_level(logging.WARNING, logger="app.secrets_vault"):
+        assert repo.get("src_pu_rot", "user1") is None, f"[{_env}] undecryptable per-user secret must read as absent"
+    assert repo.has("src_pu_rot", "user1") is True, f"[{_env}] has() should still see the stale row"
+    assert "mcp_user_secrets.secret_value_enc[src_pu_rot/user1]" in caplog.text, (
+        f"[{_env}] decrypt warning does not identify the column: {caplog.text!r}"
+    )

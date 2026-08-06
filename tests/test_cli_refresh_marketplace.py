@@ -818,11 +818,20 @@ def test_bootstrap_clone_failure_exits_nonzero(
     )
 
     monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "fresh_marketplace")
-    # F7: the clone now runs as `git -c credential.helper=<...> clone <url> <dir>`,
-    # so match the failure on the full 4-element prefix (won't collide with the
-    # `git -c <...> -C <dir> fetch` path, whose 4th token is `-C`, not `clone`).
+    # F7 + 2026-08-05 F-2: the clone runs as
+    # `git -c credential.helper= -c credential.<origin>.helper=<...> clone <url> <dir>`
+    # — a generic reset followed by a host-scoped helper. Match the failure on
+    # the full 6-element prefix (won't collide with the `… -C <dir> fetch` path,
+    # whose 6th token is `-C`, not `clone`).
     recorder.script(
-        ("git", "-c", f"credential.helper={rm_module._CREDENTIAL_HELPER}", "clone"),
+        (
+            "git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            f"credential.https://agnes.example.com.helper={rm_module._CREDENTIAL_HELPER}",
+            "clone",
+        ),
         returncode=1,
         stderr="fatal: TLS error",
     )
@@ -1632,8 +1641,11 @@ def test_claude_base_cmd_windows_cmd_shim_routes_through_cmd(monkeypatch):
 
 
 def _script_origin(recorder, clone: Path, url: str) -> None:
+    # `config --get`, matching production: `remote get-url` expands
+    # url.<base>.insteadOf rewrite rules, which would make the mismatch guard
+    # see a host change that never happened on a corporate-mirror host.
     recorder.script(
-        ("git", "-C", str(clone), "remote", "get-url", "origin"),
+        ("git", "-C", str(clone), "config", "--get", "remote.origin.url"),
         stdout=url + "\n",
     )
 
@@ -1823,9 +1835,7 @@ def test_reconcile_never_prunes_on_empty_manifest(
     # with_clone seeds an empty manifest by default.
     recorder.script(
         ("claude", "plugin", "list", "--json"),
-        stdout=_plugin_list_json(
-            [{"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)}]
-        ),
+        stdout=_plugin_list_json([{"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)}]),
     )
     result = runner.invoke(refresh_marketplace_app, [])
     assert result.exit_code == 0, result.output

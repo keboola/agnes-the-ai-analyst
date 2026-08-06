@@ -1,6 +1,6 @@
 """data_packages.publisher_kind — stored trust axis, replacing derived `curated`
 
-Mirrors DuckDB ``_v112_to_v113``. Adds ``publisher_kind`` ('user' |
+Mirrors DuckDB ``_v113_to_v114``. Adds ``publisher_kind`` ('user' |
 'organization') to ``data_packages``, the same stored axis ``store_entities``
 has carried since v104, so a package and a skill make the same trust claim the
 same way and every surface can render one shared marker.
@@ -26,6 +26,12 @@ Create Date: 2026-08-03
 Note on the revision id: ``alembic_version.version_num`` is ``VARCHAR(32)``,
 so keep new ids short (see 0051_store_publisher_v104's note).
 
+
+Filename/version-suffix note: the ``_vNNN`` suffix in this module's
+FILENAME reflects an older restack of the DuckDB ladder and is frozen —
+the revision id is the deployed alembic_version key and renaming would
+only move the mismatch around. The ``Mirrors DuckDB`` line above is the
+authoritative mapping.
 """
 
 from __future__ import annotations

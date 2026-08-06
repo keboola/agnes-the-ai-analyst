@@ -990,7 +990,9 @@ def test_v99_db_migrates_to_v100_adds_sync_state_parts(tmp_path):
 # is normally added by. A DB that climbed the branch's OLD numbering is stamped
 # past these version numbers, so every one of these steps is skipped forever.
 _STRANDED = {
-    "chat_sessions": ["agent_id"],  # _v100_to_v101
+    # relay_protocol_version: _v97_to_v98's main-side half, dropped on DBs that
+    # climbed the branch ladder (its _v97_to_v98 replaced the body wholesale).
+    "chat_sessions": ["agent_id", "relay_protocol_version"],  # _v100_to_v101, _v97_to_v98
     "personal_access_tokens": ["agent_id", "surface"],  # _v100_to_v101, _v105_to_v106
     "sync_state": ["parts"],  # _v99_to_v100
     "data_apps": [  # _v98_to_v99 + _v107_to_v108
@@ -1063,8 +1065,8 @@ def _strand(conn):
         conn.execute(sql)
 
 
-def test_v113_db_stranded_by_renumbering_is_healed(tmp_path):
-    """A DB stamped v113 under the paper-theme branch's OLD step numbering is
+def test_v114_db_stranded_by_renumbering_is_healed(tmp_path):
+    """A DB stamped at the head under the paper-theme branch's OLD step numbering is
     missing every column added by the main-side steps that renumbering shifted
     underneath it — most visibly ``chat_sessions.agent_id``, which 500s every
     chat read and write with ``Binder Error: ... agent_id``.
@@ -1079,7 +1081,7 @@ def test_v113_db_stranded_by_renumbering_is_healed(tmp_path):
     _ensure_schema(conn)
     _strand(conn)
     # Stamped at the head under the old numbering — the whole point of the bug.
-    conn.execute("UPDATE schema_version SET version = 113")
+    conn.execute("UPDATE schema_version SET version = 114")
     conn.execute("INSERT INTO sync_state (table_id, rows, hash, status) VALUES ('keep', 7, 'h', 'ok')")
     conn.close()
 
@@ -1098,14 +1100,14 @@ def test_v113_db_stranded_by_renumbering_is_healed(tmp_path):
     conn.close()
 
 
-def test_v113_heal_is_idempotent_on_healthy_db(tmp_path):
+def test_v114_heal_is_idempotent_on_healthy_db(tmp_path):
     """The heal must be a no-op for DBs that climbed the ladder cleanly — it
-    runs on every instance that upgrades past 113, not just the stranded ones.
+    runs on every instance that upgrades past 114, not just the stranded ones.
     """
     db_path = tmp_path / "healthy.duckdb"
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
-    conn.execute("UPDATE schema_version SET version = 113")
+    conn.execute("UPDATE schema_version SET version = 114")
     conn.close()
 
     conn = duckdb.connect(str(db_path))
@@ -1117,7 +1119,7 @@ def test_v113_heal_is_idempotent_on_healthy_db(tmp_path):
     conn.close()
 
 
-def test_v113_heal_lets_a_stranded_db_mint_tokens_again(tmp_path):
+def test_v114_heal_lets_a_stranded_db_mint_tokens_again(tmp_path):
     """`personal_access_tokens.surface` (_v105_to_v106) is stranded by the same
     renumbering, and every PAT mint names it — including the CLI sign-in
     exchange. Healing chat but not this would fix the browser and leave the
@@ -1126,7 +1128,7 @@ def test_v113_heal_lets_a_stranded_db_mint_tokens_again(tmp_path):
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
     _strand(conn)
-    conn.execute("UPDATE schema_version SET version = 113")
+    conn.execute("UPDATE schema_version SET version = 114")
     conn.close()
 
     conn = duckdb.connect(str(db_path))
@@ -1142,7 +1144,7 @@ def test_v113_heal_lets_a_stranded_db_mint_tokens_again(tmp_path):
     conn.close()
 
 
-def test_v113_heal_flushes_its_ddl_to_the_main_db_file(tmp_path):
+def test_v114_heal_flushes_its_ddl_to_the_main_db_file(tmp_path):
     """The post-migration CHECKPOINT sits inside `if current < SCHEMA_VERSION`,
     and a stranded DB is stamped AT the head — so on exactly the databases these
     heals exist for it never runs, and their ALTER TABLE ... ADD COLUMN
@@ -1157,7 +1159,7 @@ def test_v113_heal_flushes_its_ddl_to_the_main_db_file(tmp_path):
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
     _strand(conn)
-    conn.execute("UPDATE schema_version SET version = 113")
+    conn.execute("UPDATE schema_version SET version = 114")
     conn.close()
 
     healer = duckdb.connect(str(db_path))
@@ -1176,7 +1178,7 @@ def test_v113_heal_flushes_its_ddl_to_the_main_db_file(tmp_path):
 def test_every_stranded_column_is_covered_by_some_heal():
     """Derives the repair list from the ladder instead of trusting it.
 
-    The renumbering strands every column added by a step in the v98..v112
+    The renumbering strands every column added by a step in the v97..v113
     window. `stranded` is hand-maintained, and it drifted twice — first missing
     `personal_access_tokens.surface`, then three more — each time shipping a
     repair that fixed one screen and left another broken. This asserts the
@@ -1191,17 +1193,17 @@ def test_every_stranded_column_is_covered_by_some_heal():
     adds: dict[tuple[str, str], list[str]] = {}
     for m in re.finditer(r"^def _v(\d+)_to_v(\d+)\(conn.*?(?=^def )", src, re.S | re.M):
         lo = int(m.group(1))
-        if not 98 <= lo <= 112:
+        if not 97 <= lo <= 113:
             continue
         for table, col in re.findall(r"ALTER TABLE\s+(\w+)\s+ADD COLUMN(?:\s+IF NOT EXISTS)?\s+(\w+)", m.group(0)):
             adds.setdefault((table, col), []).append(f"_v{m.group(1)}_to_v{m.group(2)}")
 
-    declared = {
-        (t, c)
-        for t, c in re.findall(
-            r'\(\s*"(\w+)",\s*"(\w+)",\s*"[^"]*"\s*\)', src.split("stranded = [")[1].split("\n    ]")[0]
-        )
-    }
+    # Strip comments first: a tuple surviving only inside a `# …` line must
+    # count as UNdeclared, or deleting the real entry while keeping its
+    # commented tombstone silently satisfies this guard.
+    _block = src.split("stranded = [")[1].split("\n    ]")[0]
+    _block = re.sub(r"#[^\n]*", "", _block)
+    declared = {(t, c) for t, c in re.findall(r'\(\s*"(\w+)",\s*"(\w+)",\s*"[^"]*"\s*\)', _block)}
     # agents is rebuilt wholesale by _heal_legacy_agents_table from the
     # canonical DDL, so its columns need no entry in `stranded`.
     uncovered = {k: v for k, v in adds.items() if k not in declared and k[0] != "agents"}

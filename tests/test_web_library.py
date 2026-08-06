@@ -1,6 +1,7 @@
 """Web UI routes for Collections — /library and /library/{slug}."""
 
 from __future__ import annotations
+import pytest
 
 import io
 
@@ -10,6 +11,14 @@ _LIB_GLYPH = "M9 7h6l4 4v9"  # two overlapping sheets — a collection (detail h
 # In the Library's Files TABLE a collection wears a folder glyph instead: there
 # it sits beside loose files and takes drops, so it reads as the container it is.
 _FOLDER_GLYPH = "M4 7.5A1.5 1.5 0 0 1 5.5 6"
+
+
+@pytest.fixture(autouse=True)
+def _rail_layout(monkeypatch):
+    """This file exercises the RAIL redesign's unified /library. Topnav keeps
+    the legacy collections page (the /catalog pattern) — guarded by
+    tests/test_ui_layout_theme.py::TestDefaultContentParity."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
 
 
 def _auth(token: str) -> dict:
@@ -221,6 +230,26 @@ def test_library_lists_only_accessible(seeded_app):
     assert r.status_code == 200
     # analyst1 has no grants → no rows for it, but the page still renders
     assert "Hidden From Analyst" not in r.text
+
+
+def test_legacy_library_lists_only_accessible_on_topnav(seeded_app, monkeypatch):
+    """The topnav /library branch is DISTINCT code (main's pre-merge handler:
+    get_accessible_ids filter + admin bypass + collection cards) and it is what
+    every default instance runs — its RBAC filter needs its own pin, not just
+    the rail twin above (this file's autouse fixture forces rail everywhere
+    else)."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+    c = seeded_app["client"]
+    _create(seeded_app, "Hidden From Analyst Legacy")
+
+    r = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+    assert r.status_code == 200
+    assert "Your collections" in r.text, "topnav must render the legacy page"
+    # analyst1 has no COLLECTION grant → the row must be filtered out…
+    assert "Hidden From Analyst Legacy" not in r.text
+    # …while the admin bypass still lists it.
+    a = c.get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert "Hidden From Analyst Legacy" in a.text
 
 
 def test_single_file_artefact_presents_as_file(seeded_app, monkeypatch):

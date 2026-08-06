@@ -1,6 +1,6 @@
 """agents builder superset columns
 
-Mirrors DuckDB ``_v110_to_v111``. Combines the paper-theme agent-builder's
+Mirrors DuckDB ``_v111_to_v112``. Combines the paper-theme agent-builder's
 authored fields onto main's canonical ``agents`` table so both the
 agent-as-API backend (main) and the /agents builder (paper-theme) read one
 table:
@@ -22,6 +22,12 @@ Create Date: 2026-07-29
 Note on the revision id: ``alembic_version.version_num`` is ``VARCHAR(32)``,
 so keep new ids short (see 0051_store_publisher_v104's note).
 
+
+Filename/version-suffix note: the ``_vNNN`` suffix in this module's
+FILENAME reflects an older restack of the DuckDB ladder and is frozen —
+the revision id is the deployed alembic_version key and renaming would
+only move the mismatch around. The ``Mirrors DuckDB`` line above is the
+authoritative mapping.
 """
 
 from __future__ import annotations

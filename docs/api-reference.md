@@ -719,6 +719,8 @@ section for the full operator flow. CLI: `agnes admin analytics migrate
 - /api/admin/mcp-sources/{source_id}/classify
 - /api/admin/mcp-sources/{source_id}/introspect
 - /api/admin/mcp-sources/{source_id}/materialize
+- /api/admin/mcp-sources/{source_id}/oauth/client
+- /api/admin/mcp-sources/{source_id}/oauth/register
 - /api/admin/mcp-sources/{source_id}/secret
 - /api/admin/mcp-sources/{source_id}/test
 
@@ -1215,11 +1217,22 @@ Relevance-ranked search uses DuckDB FTS BM25 with an ILIKE fallback.
 
 ### `/api/mcp` — MCP passthrough and per-table query
 
+Outbound MCP OAuth connect flow (2026-07-30 spec §3, PR 2): `GET
+.../oauth/authorize` (human-only, grant-gated) 302s the caller's browser to
+the upstream authorization server; `GET /api/mcp/oauth-client/callback`
+(deliberately outside the `/api/mcp/sources/*` prefix — see the spec's
+routing note) redeems the code and redirects to `/me/connections`; `DELETE
+.../oauth/connection` drops the caller's stored token. `agnes mcp connect` /
+`agnes mcp disconnect` are the CLI equivalents.
+
+- /api/mcp/oauth-client/callback
 - /api/mcp/passthrough/tools
 - /api/mcp/passthrough/tools/{tool_id}/call
 - /api/mcp/query-table/{table_id}
 - /api/mcp/sources/{source_id}/my-secret
 - /api/mcp/sources/{source_id}/my-secret/test
+- /api/mcp/sources/{source_id}/oauth/authorize
+- /api/mcp/sources/{source_id}/oauth/connection
 
 ### `/api/mcp-connect` — Headless MCP client setup
 
@@ -1232,6 +1245,7 @@ interactive OAuth browser flow. The token is returned once and must be saved by 
 
 - /api/me/display-name
 - /api/me/effective-access
+- /api/me/elevation
 - /api/me/home-stats
 - /api/me/onboarded
 - /api/me/stats/queries
@@ -1355,10 +1369,11 @@ Two orthogonal axes on a store entity, both separate from `visibility_status`:
 | `POST /api/store/entities/{id}/verification/request` | owner | Asks the org to review. `409 not_discoverable` while nobody else can see the item. |
 
 Both verification endpoints return `404 verification_disabled` unless
-`store.verification_enabled` is true (**default true**). Set it to `false` on an
-instance that does not want the axis offered at all; note that with it off no
-user-authored item can ever leave the Community trust level, since there is no
-admin action to verify one.
+`store.verification_enabled` is true (**default false** — upgrade parity: an
+existing instance does not grow a verification workflow out of a routine
+upgrade). Enable it together with `library.show_unverified_trust`; with it off
+no user-authored item can ever leave the Community trust level, since there is
+no admin action to verify one.
 
 `publisher_kind` is **stored**, never derived from the owner's Admin-group
 membership: group membership is mutable and re-synced from the identity

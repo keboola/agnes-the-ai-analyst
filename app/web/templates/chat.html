@@ -151,11 +151,12 @@
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </a>
 
-    {# Chat-driven onboarding progress. chat_onboarding.js loads the per-user
-       journey state from /api/chat/journey and renders the five steps here;
-       stays hidden until that state resolves (and once every step is done the
-       user can still see it marked complete). #}
-    <div id="chat-journey" class="cloud-chat-journey" hidden></div>
+    {# No journey checklist here: the chat-driven onboarding layer (checklist,
+       greeting, auto-launched tour) ships with the rail redesign, where it
+       lives in _app_rail.html's onboarding card. The topnav sidebar reads
+       exactly as it did before the redesign — chat_onboarding.js boots only
+       under the rail chrome (IS_RAIL gate), so nothing writes here either.
+       Guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity. #}
   </aside>
   {% endif %}
 
@@ -290,10 +291,14 @@
       {% endif %}
       {# "+" button + its upload menu, wrapped together in a position:relative
          anchor so the popover attaches to the BUTTON (not the whole form).
-         Sits at the LEADING edge of the composer, left of the textarea — in
-         rail inside the .cloud-chat-composer pill, in topnav as the form
-         grid's first column.  aria-haspopup="menu" + aria-expanded are
-         toggled by chat.js to reflect the open state for screen readers. #}
+         Sits at the LEADING edge of the composer, left of the textarea,
+         inside the .cloud-chat-composer pill. RAIL-ONLY: the upload menu
+         ships with the redesign; the default topnav composer reads exactly
+         as before the redesign (guarded by tests/test_ui_layout_theme.py::
+         TestDefaultContentParity). chat.js null-guards #chat-plus-btn, so
+         the absent markup is inert there. aria-haspopup="menu" +
+         aria-expanded are toggled by chat.js for screen readers. #}
+      {% if ui_layout == 'rail' %}
       <span class="cloud-chat-plus-wrap">
         <button type="button" id="chat-plus-btn"
                 class="cloud-chat-plus-btn"
@@ -326,6 +331,7 @@
           </li>
         </ul>
       </span>
+      {% endif %}
       {% if ui_layout == 'rail' %}
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes anything... (try: summarize revenue trends)" rows="1"></textarea>
       {% else %}
@@ -589,9 +595,11 @@
       {{ knowledge_layer_banner(orient_label='See how ' ~ (instance_brand_short or 'Agnes') ~ ' works') }}
     </div>
 
-    {# Keboola credit — pinned to the very bottom of the page. #}
+    {# Footer credit — pinned to the very bottom of the page. Config-driven
+       (INSTANCE_COPYRIGHT): the public distribution carries no vendor
+       branding — an instance puts its own name here via config. #}
     <footer class="cloud-chat-empty-foot">
-      {% include '_footer_keboola.html' %}
+      <p class="footer-copy">&copy; {{ now().year if now is defined else 2026 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
     </footer>
     {% endif %}
   </section>
@@ -610,7 +618,11 @@
   </script>
   {# window.chatRowMenu — shared "⋮" row menu (Pin/Unpin · Rename · Delete),
      also loaded by _app_rail.html; the component self-guards against running
-     twice. Classic + defer so it is defined before chat.js builds any row. #}
+     twice. Classic + defer so it is defined before chat.js builds any row.
+     RAIL-ONLY: the row menu ships with the redesign; chat.js null-guards
+     window.chatRowMenu, so topnav rows simply render without the "⋮". #}
+  {% if ui_layout == 'rail' %}
   <script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>
+  {% endif %}
   <script type="module" src="{{ static_url('js/chat.js') }}"></script>
 {% endblock %}

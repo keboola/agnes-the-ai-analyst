@@ -217,6 +217,132 @@ def _chat_e2b_template_id_ok(chat_config) -> bool:
     return False
 
 
+def _chat_harness_ok(chat_config) -> bool:
+    """Refuse an explicitly configured ``chat.harness`` outside the
+    ``APPROVED_HARNESSES`` allowlist (app/chat/harness.py seam).
+
+    Explicit-invalid refuses at boot; the runner separately degrades an
+    *inherited* unknown id to the default (version-skew tolerance).
+    """
+    if not chat_config.enabled:
+        return True
+    from app.chat.harness import APPROVED_HARNESSES
+
+    harness = getattr(chat_config, "harness", "claude-code")
+    if harness in APPROVED_HARNESSES:
+        return True
+    logging.getLogger("app.main").error(
+        "chat.harness=%r is not an approved harness (approved: %s); "
+        "refusing to spawn ChatManager. Fix chat.harness in instance.yaml.",
+        harness,
+        ", ".join(APPROVED_HARNESSES),
+    )
+    return False
+
+
+def _chat_docker_rails_url_ok(chat_config) -> bool:
+    """Refuse ``chat.provider=docker`` without a container-reachable rails URL.
+
+    ``agnes_server_url()`` falls back to ``http://127.0.0.1:8000`` when neither
+    ``SERVER_URL`` nor ``AGNES_INTERNAL_URL`` is set. Inside a container's own
+    network namespace that address is the *sandbox*, not Agnes, so every
+    brokered call (the sandbox's only network dependency) would fail with a
+    connection error deep inside a user's chat. Never silently default around
+    it — fail at boot with the fix in the log line.
+
+    Returns True when chat is disabled or the provider is not ``docker``.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "docker":
+        return True
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    url = (os.environ.get("SERVER_URL") or os.environ.get("AGNES_INTERNAL_URL") or "").strip()
+    log = logging.getLogger("app.main")
+    if not url:
+        log.error(
+            "chat.enabled=true with provider=docker requires SERVER_URL or "
+            "AGNES_INTERNAL_URL to be set to a URL the sandbox container can "
+            "reach (e.g. AGNES_INTERNAL_URL=http://app:8000 under compose, or "
+            "http://host.docker.internal:8000 on a bare host); refusing to "
+            "spawn ChatManager",
+        )
+        return False
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    if host in ("127.0.0.1", "localhost", "::1", "0.0.0.0") or host.startswith("127."):
+        log.error(
+            "chat.enabled=true with provider=docker but the sandbox rails URL "
+            "is loopback (%s) — inside the sandbox's network namespace that is "
+            "the sandbox itself, not Agnes. Set AGNES_INTERNAL_URL to a "
+            "container-reachable address; refusing to spawn ChatManager",
+            url,
+        )
+        return False
+    if url.lower().startswith("https://"):
+        # Not a refusal — a public-CA cert verifies fine from the sandbox —
+        # but the common self-hosted shape (reverse proxy with a private-CA
+        # cert) fails every brokered call, and even a valid public origin
+        # routes sandbox↔Agnes traffic out through the proxy. docs/cloud-chat.md
+        # says to prefer the plain-HTTP internal address.
+        log.warning(
+            "provider=docker: the sandbox rails URL resolves to an https:// "
+            "origin (%s). If that certificate is from a private CA the "
+            "in-sandbox relay will reject it (no CA-bundle knob) and every "
+            "brokered call will fail — prefer AGNES_INTERNAL_URL with the "
+            "plain-HTTP internal address (e.g. http://app:8000)",
+            url,
+        )
+    return True
+
+
+async def _chat_docker_sandbox_ok(chat_config) -> bool:
+    """Refuse ``chat.provider=docker`` when the sandbox runner isn't usable.
+
+    Probes the apps-runner sidecar (the only process holding the Docker socket)
+    for daemon reachability + the configured image. A present-but-unbuilt setup
+    otherwise only surfaces at the first user's spawn.
+
+    Never raises: a transport failure is a refusal with an actionable log line,
+    mirroring the e2b gates' behavior.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "docker":
+        return True
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    from app.chat.sandbox_runner_client import SandboxRunnerClient
+
+    image = getattr(chat_config, "docker_image", "") or ""
+    try:
+        # Short deadline: this runs inline in the lifespan, and the client's
+        # 60 s default would stall the whole server start on a black-holing
+        # sidecar address — long enough to trip container health checks.
+        # 8 s matches the admin test-connections probe for the same sidecar.
+        result = await SandboxRunnerClient(timeout=8.0).probe(image)
+    except Exception as exc:  # noqa: BLE001 — classify, never break the lifespan
+        logging.getLogger("app.main").error(
+            "chat.enabled=true with provider=docker but the apps-runner sidecar "
+            "is unreachable (%s). Start it with `docker compose --profile apps up "
+            "-d apps-runner` (or `python -m services.apps_runner` on a bare host) "
+            "and set APPS_RUNNER_URL/APPS_RUNNER_TOKEN; refusing to spawn ChatManager",
+            exc,
+        )
+        return False
+    if not result.get("ok"):
+        logging.getLogger("app.main").error(
+            "chat.enabled=true with provider=docker but the sandbox runner is not "
+            "ready: %s. Build the image from app/initial_workspace_default/"
+            "docker-sandbox/ and set chat.docker_image; refusing to spawn ChatManager",
+            result.get("detail", "unknown"),
+        )
+        return False
+    return True
+
+
 class _SelectiveGZipMiddleware:
     """GZipMiddleware wrapper that skips a set of path prefixes.
 
@@ -299,6 +425,7 @@ from app.api.admin_source_connections import router as source_connections_admin_
 from app.api.mcp_passthrough import router as mcp_passthrough_router
 from app.api.mcp_per_table import router as mcp_per_table_router
 from app.api.mcp_user_secrets import router as mcp_user_secrets_router
+from app.api.mcp_oauth_connect import router as mcp_oauth_connect_router
 from app.api.memory_domains import router as memory_domains_router
 from app.api.knowledge_digests import router as knowledge_digests_router
 from app.api.recipes import (
@@ -542,18 +669,23 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     2 days on prod) and a non-graceful exit puts days of user/PAT/grant
     writes at the mercy of a cross-version WAL replay. CHECKPOINT runs in
     a worker thread — it can block while DuckDB flushes a large WAL.
+    Threaded calls go through ``to_thread_drain_on_cancel`` so shutdown
+    cancellation waits for an in-flight CHECKPOINT/read instead of letting
+    the lifespan's ``close_system_db()`` race it (see that helper's
+    docstring in ``app/api/health_probes.py``).
     """
+    from app.api.health_probes import to_thread_drain_on_cancel
     from app.secrets import reapply_all_overlay_tokens_from_vault
     from src.db import checkpoint_operational_db, checkpoint_system_db
 
     while True:
         await asyncio.sleep(interval_s)
         try:
-            await asyncio.to_thread(checkpoint_system_db)
+            await to_thread_drain_on_cancel(checkpoint_system_db)
             # operational.duckdb is a second long-lived singleton with the same
             # unbounded-WAL exposure; both accessors no-op when their singleton
             # isn't open, so this is cheap on every backend.
-            await asyncio.to_thread(checkpoint_operational_db)
+            await to_thread_drain_on_cancel(checkpoint_operational_db)
         except Exception:
             # checkpoint_*_db already swallow DB errors; this guards the loop
             # itself (e.g. to_thread failure) so it never dies.
@@ -566,7 +698,7 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
             # app.secrets.persist_overlay_token's FLUSHALL note. Cheap:
             # no-ops instantly when the vault isn't configured, otherwise one
             # small indexed table scan plus a handful of decrypts.
-            await asyncio.to_thread(reapply_all_overlay_tokens_from_vault)
+            await to_thread_drain_on_cancel(reapply_all_overlay_tokens_from_vault)
         except Exception:
             logger.exception("vault overlay periodic re-read failed; loop continues")
 
@@ -1287,12 +1419,13 @@ async def lifespan(app):
             if not role_enabled(Role.GATEWAY):
                 logger.info("chat: disabled in this process (role split; gateway role owns chat)")
                 app.state.chat_manager = None
-            elif app.state.chat_config.provider != "e2b":
+            elif app.state.chat_config.provider not in ("e2b", "docker"):
                 logger.error(
-                    "chat.provider=%r is not supported — only 'e2b' is "
-                    "accepted in production (per Q7 owner decision, "
-                    "MockE2BProvider was dropped). Set chat.provider: e2b "
-                    "in instance.yaml or flip chat.enabled: false.",
+                    "chat.provider=%r is not supported — the accepted values are "
+                    "'e2b' (cloud microVMs) and 'docker' (self-hosted containers "
+                    "via the apps-runner sidecar; see docs/cloud-chat.md). There "
+                    "is deliberately no mock provider. Set chat.provider: e2b or "
+                    "docker in instance.yaml, or flip chat.enabled: false.",
                     app.state.chat_config.provider,
                 )
                 app.state.chat_manager = None
@@ -1331,10 +1464,19 @@ async def lifespan(app):
             elif not _chat_e2b_template_id_ok(app.state.chat_config):
                 # Fatal already logged inside the helper.
                 app.state.chat_manager = None
+            elif not _chat_harness_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
+            elif not _chat_docker_rails_url_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
+            # Last of the gates: the only one that does network I/O.
+            elif not await _chat_docker_sandbox_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
             else:
                 from typing import Optional
                 from app.chat.workdir import WorkdirManager
-                from app.chat.e2b_provider import E2BProvider
                 from app.chat.manager import ChatManager, agnes_server_url
                 from app.version import APP_VERSION as _APP_VERSION_CHAT
 
@@ -1387,21 +1529,64 @@ async def lifespan(app):
                     render_workspace_prompt=_render_workspace_prompt,
                     marketplace_sha_debounce_seconds=app.state.chat_config.marketplace_sha_debounce_seconds,
                 )
-                # E2B sandboxes are capped at 1 hour (3600 s) by the platform.
-                # If chat.max_session_seconds is higher (default 4 h), clamp here
-                # so AsyncSandbox.create() doesn't 400. The idle reaper / per-tool
-                # caps still enforce shorter limits as configured; this just
-                # prevents the spawn call from failing fast on the upper bound.
-                E2B_SANDBOX_MAX_SECONDS = 3600
-                provider = E2BProvider(
-                    api_key=os.environ.get("E2B_API_KEY", ""),
-                    template_id=app.state.chat_config.e2b_template_id or "",
-                    sandbox_timeout_seconds=min(
-                        app.state.chat_config.max_session_seconds,
-                        E2B_SANDBOX_MAX_SECONDS,
-                    ),
-                    egress_allow_out=app.state.chat_config.egress_allow_out,
-                )
+                if app.state.chat_config.provider == "docker":
+                    from app.chat.docker_provider import DockerSandboxProvider
+
+                    if _chat_coordination_backend() == "redis":
+                        # Not a refusal: single-host role-split (api/gateway/
+                        # worker on one daemon) is supported and looks the
+                        # same from here. What docs/cloud-chat.md rules out is
+                        # multi-HOST gateways — each host's daemon only sees
+                        # its own containers, so cross-gateway takeover cannot
+                        # destroy the other host's sandbox. Boot can't tell
+                        # the two apart; say it loudly and continue.
+                        logging.getLogger("app.main").warning(
+                            "provider=docker with coordination.backend=redis: "
+                            "multi-HOST gateways are unsupported with the docker "
+                            "provider (each host's daemon only sees its own "
+                            "containers; cross-gateway takeover cannot reach the "
+                            "other host's sandbox — see docs/cloud-chat.md "
+                            "Limitations). Single-host role-split is fine.",
+                        )
+                    # No lifetime clamp: a local container has no platform cap,
+                    # so chat.max_session_seconds (default 4 h) applies as
+                    # configured and the idle/lifetime reapers enforce it.
+                    provider = DockerSandboxProvider(
+                        image=app.state.chat_config.docker_image,
+                        network=app.state.chat_config.docker_network,
+                        mem_limit=app.state.chat_config.docker_mem_limit,
+                        cpus=app.state.chat_config.docker_cpus,
+                        pids_limit=app.state.chat_config.docker_pids_limit,
+                        egress_mode=app.state.chat_config.docker_egress_mode,
+                        egress_proxy_url=app.state.chat_config.docker_egress_proxy_url,
+                        max_total_sandboxes=app.state.chat_config.docker_max_total_sandboxes,
+                    )
+                    # Allowlist mode fails silently and totally when the app's
+                    # config and the compose-owned proxy sidecar disagree, so
+                    # say which knob is wrong at startup instead of leaving an
+                    # operator to work back from "no egress at all".
+                    from app.chat.config import egress_compose_mismatches
+
+                    for _mismatch in egress_compose_mismatches(app.state.chat_config):
+                        logger.warning("chat egress: %s", _mismatch)
+                else:
+                    from app.chat.e2b_provider import E2BProvider
+
+                    # E2B sandboxes are capped at 1 hour (3600 s) by the platform.
+                    # If chat.max_session_seconds is higher (default 4 h), clamp here
+                    # so AsyncSandbox.create() doesn't 400. The idle reaper / per-tool
+                    # caps still enforce shorter limits as configured; this just
+                    # prevents the spawn call from failing fast on the upper bound.
+                    E2B_SANDBOX_MAX_SECONDS = 3600
+                    provider = E2BProvider(
+                        api_key=os.environ.get("E2B_API_KEY", ""),
+                        template_id=app.state.chat_config.e2b_template_id or "",
+                        sandbox_timeout_seconds=min(
+                            app.state.chat_config.max_session_seconds,
+                            E2B_SANDBOX_MAX_SECONDS,
+                        ),
+                        egress_allow_out=app.state.chat_config.egress_allow_out,
+                    )
                 mgr = ChatManager(
                     provider=provider,
                     workdir_mgr=workdir_mgr,
@@ -1417,11 +1602,17 @@ async def lifespan(app):
                     if int(os.environ.get("UVICORN_WORKERS", "1")) <= 1 and _chat_is_all_in_one()
                     else "multi-worker/replica (coordination.backend=redis)"
                 )
+                _chat_sandbox_desc = (
+                    f"image={app.state.chat_config.docker_image}, egress={app.state.chat_config.docker_egress_mode}"
+                    if app.state.chat_config.provider == "docker"
+                    else f"template={app.state.chat_config.e2b_template_id}"
+                )
                 logger.info(
-                    "chat.enabled: ChatManager started (provider=e2b, "
-                    "template=%s, idle_ttl=%ds, concurrency_per_user=%d, "
+                    "chat.enabled: ChatManager started (provider=%s, "
+                    "%s, idle_ttl=%ds, concurrency_per_user=%d, "
                     "topology=%s)",
-                    app.state.chat_config.e2b_template_id,
+                    app.state.chat_config.provider,
+                    _chat_sandbox_desc,
                     app.state.chat_config.idle_ttl_seconds,
                     app.state.chat_config.concurrency_per_user,
                     _chat_topology,
@@ -1528,83 +1719,98 @@ async def lifespan(app):
 
     async with streamable_session_manager_lifespan(app):
         yield
-    if _checkpoint_task is not None:
-        _checkpoint_task.cancel()
-        try:
-            await _checkpoint_task
-        except (asyncio.CancelledError, Exception):
-            pass  # shutdown path — close_system_db() below does the final CHECKPOINT
-    _canary_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await _canary_task
-    if _worker_task is not None:
-        _worker_task.cancel()
+    # Start the shared drain budget before cancelling anything: the loops
+    # cancelled below drain their in-flight DB call, and they must share one
+    # bound rather than get a full one each (see health_probes._drain_budget_s).
+    from app.api.health_probes import begin_shutdown
+
+    begin_shutdown()
+    try:
+        if _checkpoint_task is not None:
+            _checkpoint_task.cancel()
+            try:
+                await _checkpoint_task
+            except (asyncio.CancelledError, Exception):
+                pass  # shutdown path — close_system_db() below does the final CHECKPOINT
+        _canary_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await _worker_task
-    # Cancelling the lease task runs run_with_lease's own cancellation path
-    # (stop() the dispatcher if held, then lease_release) — see
-    # app/coordination/leases.py and _start_slack_socket_transport above.
-    _socket_lease_task = getattr(app.state, "slack_socket_lease_task", None)
-    if _socket_lease_task is not None:
-        _socket_lease_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await _socket_lease_task
-    # Unsubscribe from the cache-invalidate channel — see the subscribe call
-    # earlier in this function for why it's unconditional/non-role-gated.
-    _cache_invalidate_unsubscribe = getattr(app.state, "cache_invalidate_unsubscribe", None)
-    if _cache_invalidate_unsubscribe is not None:
+            await _canary_task
+        if _worker_task is not None:
+            _worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _worker_task
+        # Cancelling the lease task runs run_with_lease's own cancellation path
+        # (stop() the dispatcher if held, then lease_release) — see
+        # app/coordination/leases.py and _start_slack_socket_transport above.
+        _socket_lease_task = getattr(app.state, "slack_socket_lease_task", None)
+        if _socket_lease_task is not None:
+            _socket_lease_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _socket_lease_task
+        # Unsubscribe from the cache-invalidate channel — see the subscribe call
+        # earlier in this function for why it's unconditional/non-role-gated.
+        _cache_invalidate_unsubscribe = getattr(app.state, "cache_invalidate_unsubscribe", None)
+        if _cache_invalidate_unsubscribe is not None:
+            try:
+                _cache_invalidate_unsubscribe()
+            except Exception:
+                logger.exception("cache-invalidate unsubscribe failed (non-fatal)")
+        # Unsubscribe from the env-overlay-changed channel — see the subscribe
+        # call earlier in this function.
+        _env_overlay_unsubscribe = getattr(app.state, "env_overlay_unsubscribe", None)
+        if _env_overlay_unsubscribe is not None:
+            try:
+                _env_overlay_unsubscribe()
+            except Exception:
+                logger.exception("env-overlay-changed unsubscribe failed (non-fatal)")
         try:
-            _cache_invalidate_unsubscribe()
+            from src.observability import get_posthog
+
+            get_posthog().shutdown()
         except Exception:
-            logger.exception("cache-invalidate unsubscribe failed (non-fatal)")
-    # Unsubscribe from the env-overlay-changed channel — see the subscribe
-    # call earlier in this function.
-    _env_overlay_unsubscribe = getattr(app.state, "env_overlay_unsubscribe", None)
-    if _env_overlay_unsubscribe is not None:
+            logger.exception("PostHog shutdown failed")
+        # Flush any buffered llm_usage rows (broker Task 8 — batched ledger
+        # writes) BEFORE the system DB closes, so a graceful shutdown doesn't
+        # drop the tail of usage the accumulator hadn't hit a size/age
+        # threshold for yet.
         try:
-            _env_overlay_unsubscribe()
+            from app.api.broker_agent_policy import usage_accumulator
+
+            usage_accumulator.flush()
         except Exception:
-            logger.exception("env-overlay-changed unsubscribe failed (non-fatal)")
-    try:
-        from src.observability import get_posthog
+            logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
+        from src.db import close_analytics_db, close_operational_db, close_system_db
 
-        get_posthog().shutdown()
-    except Exception:
-        logger.exception("PostHog shutdown failed")
-    # Flush any buffered llm_usage rows (broker Task 8 — batched ledger
-    # writes) BEFORE the system DB closes, so a graceful shutdown doesn't
-    # drop the tail of usage the accumulator hadn't hit a size/age
-    # threshold for yet.
-    try:
-        from app.api.broker_agent_policy import usage_accumulator
+        close_system_db()
+        close_analytics_db()
+        # operational.duckdb (CLI-auth / Slack-binding codes) is a separate
+        # long-lived DuckDB singleton — CHECKPOINT + close it too so its WAL is
+        # folded on graceful shutdown (on Postgres it is the only written DuckDB
+        # file; the checkpoint loop folds it periodically, and this closes it
+        # cleanly on the way out).
+        close_operational_db()
+        # DuckLake reader/writer singletons (wave-2G Task 5) — mirrors the
+        # subprocess-handoff path (src.db.close_singleton_connections(), used
+        # before a DB-migrator subprocess spawns) which already closes these;
+        # graceful process shutdown needs the same release so an open catalog
+        # ATTACH (a held libpq connection on a Postgres catalog, or an
+        # exclusive file lock on a DuckDB-file catalog) doesn't linger past
+        # this process's lifetime. Safe to call unconditionally: a no-op when
+        # analytics.backend is legacy or no DuckLake session was ever opened.
+        try:
+            from src.ducklake_session import close_ducklake_sessions
 
-        usage_accumulator.flush()
-    except Exception:
-        logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
-    from src.db import close_analytics_db, close_operational_db, close_system_db
+            close_ducklake_sessions()
+        except Exception:
+            logger.exception("close_ducklake_sessions failed during shutdown (non-fatal)")
 
-    close_system_db()
-    close_analytics_db()
-    # operational.duckdb (CLI-auth / Slack-binding codes) is a separate
-    # long-lived DuckDB singleton — CHECKPOINT + close it too so its WAL is
-    # folded on graceful shutdown (on Postgres it is the only written DuckDB
-    # file; the checkpoint loop folds it periodically, and this closes it
-    # cleanly on the way out).
-    close_operational_db()
-    # DuckLake reader/writer singletons (wave-2G Task 5) — mirrors the
-    # subprocess-handoff path (src.db.close_singleton_connections(), used
-    # before a DB-migrator subprocess spawns) which already closes these;
-    # graceful process shutdown needs the same release so an open catalog
-    # ATTACH (a held libpq connection on a Postgres catalog, or an
-    # exclusive file lock on a DuckDB-file catalog) doesn't linger past
-    # this process's lifetime. Safe to call unconditionally: a no-op when
-    # analytics.backend is legacy or no DuckLake session was ever opened.
-    try:
-        from src.ducklake_session import close_ducklake_sessions
+    finally:
+        # Paired with begin_shutdown() in a finally: any step above can
+        # raise, and leaving the budget marked spent would silently strip
+        # the drain from the rest of this process's life.
+        from app.api.health_probes import end_shutdown
 
-        close_ducklake_sessions()
-    except Exception:
-        logger.exception("close_ducklake_sessions failed during shutdown (non-fatal)")
+        end_shutdown()
 
 
 def _is_truthy_env(name: str) -> bool:
@@ -1704,6 +1910,33 @@ def create_app() -> FastAPI:
         # request.app.debug).
         debug=False,
     )
+
+    @app.middleware("http")
+    async def _admin_elevation(request, call_next):
+        # Admin elevation consent gate (app/auth/elevation.py): stamp the
+        # request-scoped paused/elevated flag from the cookie (or instance
+        # default) before any authorization runs, reset after. Only ever
+        # REDUCES privilege — see the module docstring.
+        from app.auth.elevation import (
+            ELEVATION_COOKIE,
+            reset_for_request,
+            resolve_from_cookie,
+            set_paused_for_request,
+        )
+
+        token = set_paused_for_request(
+            resolve_from_cookie(
+                request.cookies.get(ELEVATION_COOKIE),
+                # Bearer callers (CLI/PAT/service tokens) have no cookie jar
+                # to re-elevate with — the instance-wide default must not
+                # apply to them (an explicit paused cookie still would).
+                bearer_auth=request.headers.get("authorization", "").lower().startswith("bearer "),
+            )
+        )
+        try:
+            return await call_next(request)
+        finally:
+            reset_for_request(token)
 
     @app.middleware("http")
     async def _add_version_headers(request, call_next):
@@ -2195,6 +2428,7 @@ def create_app() -> FastAPI:
     app.include_router(source_connections_admin_router)
     app.include_router(mcp_passthrough_router)
     app.include_router(mcp_user_secrets_router)
+    app.include_router(mcp_oauth_connect_router)
     app.include_router(mcp_per_table_router)
     app.include_router(memory_domains_router)
     app.include_router(knowledge_digests_router)

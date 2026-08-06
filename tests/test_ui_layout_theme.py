@@ -521,13 +521,16 @@ class TestRailOptIn:
         assert resp.status_code == 200
         assert 'data-theme="paper"' in resp.text
 
-    def test_paper_keeps_keboola_credit_and_orb(self, web_client, admin_cookie, monkeypatch):
-        """The default-safety gate must not kill the redesign's own footer:
-        under paper the Keboola credit + orb favicon still render."""
+    def test_paper_footer_is_config_driven_and_keeps_the_orb(self, web_client, admin_cookie, monkeypatch):
+        """The redesign carries no vendor branding: the paper footer renders the
+        same config-driven copyright as every other chrome (an instance puts its
+        own name there via INSTANCE_COPYRIGHT), while the orb favicon — a
+        neutral product mark — stays redesign-only."""
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert "<b>Keboola</b>" in resp.text
+        assert "AI Harness" in resp.text
+        assert "<b>Keboola</b>" not in resp.text
         assert "img/agnes-orb.png" in resp.text
 
 
@@ -1915,3 +1918,141 @@ class TestDetailPageTemplateIsShared:
             assert "detail.store_menu(" in open(page).read(), (
                 f"{page} must reach the Edit/Archive/Hard-delete ladder through the shared macro"
             )
+
+
+class TestDefaultContentParity:
+    """Topnav keeps the pre-redesign PAGES, not just the chrome.
+
+    The catalog already does this (classic ``catalog.html`` on topnav,
+    ``catalog_unified.html`` under rail); these tests extend the same
+    contract to the other surfaces the redesign rewrote in place, so a
+    default instance's upgrade changes nothing it renders:
+
+    - ``/library``: the legacy "Your collections" page vs the unified Library
+    - ``/marketplace``: the two-shelf Curated/Flea page vs one Browse shelf
+    - ``/chat``: no composer "+" upload menu, no journey checklist, no
+      conversation row menu, no auto-launched tour outside the rail layout
+    """
+
+    def test_topnav_library_is_the_legacy_collections_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/library", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "Your collections" in resp.text, "topnav /library must stay the legacy collections page"
+        assert 'id="lib-search"' not in resp.text, "unified Library toolbar leaked into topnav"
+
+    def test_rail_library_is_the_unified_library(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/library", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="lib-search"' in resp.text
+        assert "Your collections" not in resp.text
+
+    def test_topnav_marketplace_keeps_the_curated_and_flea_shelves(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/marketplace", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'data-tab="flea"' in resp.text, "topnav /marketplace must keep the Curated/Flea tab split"
+        assert "data-count-browse" not in resp.text, "unified Browse shelf leaked into topnav"
+
+    def test_rail_marketplace_is_one_browse_shelf(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/marketplace", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "data-count-browse" in resp.text
+        assert 'data-tab="flea"' not in resp.text
+
+    def _chat(self, web_client, admin_cookie):
+        """GET /chat with chat enabled AND explicitly granted to the Admin
+        group — ``can_chat`` (the rail card's gate) deliberately reads the
+        explicit grant, not god-mode."""
+        import uuid
+
+        from src.db import get_system_db
+
+        web_client.app.state.chat_config = SimpleNamespace(enabled=True)
+        conn = get_system_db()
+        try:
+            gid = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()[0]
+            already = conn.execute(
+                "SELECT 1 FROM resource_grants WHERE group_id = ? AND resource_type = 'chat'", [gid]
+            ).fetchone()
+            if not already:
+                conn.execute(
+                    "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
+                    "requirement, assigned_at, assigned_by) "
+                    "VALUES (?, ?, 'chat', 'chat', 'available', CURRENT_TIMESTAMP, 'test')",
+                    [str(uuid.uuid4()), gid],
+                )
+        finally:
+            conn.close()
+        return web_client.get("/chat", cookies=admin_cookie)
+
+    def test_topnav_chat_has_no_upload_menu_journey_or_row_menu(self, web_client, admin_cookie, monkeypatch):
+        """The redesign's chat additions are rail-only. A topnav instance's
+        composer, sidebar and conversation rows read exactly as before."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = self._chat(web_client, admin_cookie)
+        assert resp.status_code == 200
+        # Positive anchors first: prove the REAL chat page rendered (a future
+        # redirect away from topnav /chat must not turn the negatives vacuous),
+        # and pin the classic composer shape.
+        assert 'id="chat-input"' in resp.text
+        assert 'rows="2"' in resp.text, "topnav composer keeps the classic two-row textarea"
+        assert 'id="chat-plus-menu"' not in resp.text, "composer + upload menu leaked into topnav"
+        assert 'id="chat-journey"' not in resp.text, "journey checklist leaked into topnav"
+        assert "chat_row_menu.js" not in resp.text, "conversation row menu leaked into topnav"
+
+    def test_rail_chat_keeps_upload_menu_journey_and_row_menu(self, web_client, admin_cookie, monkeypatch):
+        """Under rail the additions stay: the composer "+" menu and the row
+        menu in the page, the journey checklist as the rail's own
+        ``railGetStarted`` card (chat.html's ``#chat-journey`` div is the
+        TOPNAV sidebar's slot — rail never renders it)."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = self._chat(web_client, admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="chat-plus-menu"' in resp.text
+        assert 'id="railGetStarted"' in resp.text
+        assert "chat_row_menu.js" in resp.text
+
+    def test_topnav_composer_grid_keeps_two_columns(self):
+        """The redesign widened `.cloud-chat-form`'s grid to three columns for
+        the rail composer's leading "+" button. On topnav that button no
+        longer renders, and a 3-column grid with two children drops the
+        textarea into the content-sized `auto` column — a visibly narrower
+        input (caught by the screenshot audit). The BASE rule is the topnav
+        contract: two columns, exactly as before the redesign; rail lays its
+        composer out with its own flex rules and never reads this grid."""
+        from pathlib import Path
+
+        css = Path("app/web/static/css/chat.css").read_text()
+        import re
+
+        m = re.search(r"^\.cloud-chat-form \{(.*?)^\}", css, re.S | re.M)
+        assert m, "base .cloud-chat-form rule missing"
+        assert "grid-template-columns: 1fr auto;" in m.group(1), (
+            "base composer grid must stay two-column (textarea + actions) — "
+            'rail-only columns belong under html[data-ui-layout="rail"]'
+        )
+
+    def test_chat_onboarding_module_is_rail_gated(self):
+        """chat.js statically imports chat_onboarding.js, so the module loads
+        on every chrome — the gate has to live in its behavior. Pin the seam:
+        the module reads ``data-ui-layout`` off the root element and its boot
+        path early-returns off the rail, so topnav gets no journey fetch, no
+        greeting bubbles, and no auto-launched coach-mark tour."""
+        from pathlib import Path
+
+        src = Path("app/web/static/js/chat_onboarding.js").read_text()
+        assert 'dataset.uiLayout === "rail"' in src, (
+            "chat_onboarding.js must derive IS_RAIL from the chrome layout attribute"
+        )
+        # Both boot paths (initChatOnboarding + mountJourneyPanel) must
+        # early-return off the rail — a name surviving in a comment is not a
+        # gate, so pin the return statements themselves.
+        assert len(re.findall(r"if \(!IS_RAIL\) return", src)) >= 2, (
+            "both chat_onboarding.js boot paths must early-return when the chrome is not rail"
+        )

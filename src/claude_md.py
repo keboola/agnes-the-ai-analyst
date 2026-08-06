@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
-from jinja2 import Environment, StrictUndefined
+from src.prompt_render import make_prompt_env
 
 from app.instance_config import (
     get_data_source_type,
@@ -227,7 +227,7 @@ def compute_default_claude_md(
     On TemplateError, raises — callers that want graceful fallback should catch.
     """
     source = _load_default_template()
-    env = Environment(undefined=StrictUndefined, autoescape=False)
+    env = make_prompt_env()
     template = env.from_string(source)
     return template.render(**build_claude_md_context(conn, user=user, server_url=server_url))
 
@@ -255,6 +255,6 @@ def render_claude_md(
 
     content, _mode = resolve_prompt("workspace", conn)
     source = content if content else _load_default_template()
-    env = Environment(undefined=StrictUndefined, autoescape=False)
+    env = make_prompt_env()
     template = env.from_string(source)
     return template.render(**build_claude_md_context(conn, user=user, server_url=server_url))

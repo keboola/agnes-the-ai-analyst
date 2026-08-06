@@ -337,7 +337,7 @@ other.
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **108** (auto-migrated from any earlier version on startup — see `src/db.py`; the authoritative constant is `SCHEMA_VERSION` there).
+Current schema version: **109** (auto-migrated from any earlier version on startup — see `src/db.py`; the authoritative constant is `SCHEMA_VERSION` there).
 
 | Table | Purpose |
 |-------|---------|
@@ -580,6 +580,11 @@ app-repo contract as Keboola's existing Data Apps product. Full design:
   calls over a token-gated internal HTTP API (`src/data_apps/runner_client.py`
   is the app-side client). Image name is allowlisted, mounts are fixed
   per-slug paths — no arbitrary image or volume ever reaches `docker run`.
+  The same sidecar carries the chat-sandbox API when `chat.provider: docker`
+  (`services/apps_runner/sandbox_api.py`, client
+  `app/chat/sandbox_runner_client.py`): a separate route prefix with its own
+  image allowlist, its own container-name confinement, and per-mount
+  validation, so the chat gateway also stays off the socket.
 - **Ingress proxy** (`app/api/data_apps_proxy.py`): reverse-proxies
   `/apps/<slug>/…` (and, when `data_apps.subdomain_base` is configured,
   `<slug>.<subdomain_base>`) to the running container, RBAC-gated the same

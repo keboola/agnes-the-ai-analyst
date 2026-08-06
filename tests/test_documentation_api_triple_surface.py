@@ -477,7 +477,25 @@ _LIBRARY_SHARING_REASON = (
 _DATA_APPS_PREVIEW_GRANT_REASON = (
     "preview-grant mints the in-chat iframe cookie for the web chat surface; chat-only, no CLI/MCP analogue (spec §7)"
 )
-
+_OAUTH_CONNECT_BROWSER_REASON = (
+    "outbound MCP OAuth sources connect flow (2026-07-30 spec §3, PR 2) — a "
+    "browser-navigation OAuth authorize/callback pair, explicitly named in "
+    "CONTRIBUTING.md's API-coverage exemption list alongside health checks "
+    "and webhooks ('health checks, webhooks, OAuth callbacks, and "
+    "internal/SSE routes'). `agnes mcp connect <source>` opens the "
+    "authorize URL in the user's own browser but there is no MCP tool "
+    "analogue — a tool call cannot open a browser or receive a 3rd-party "
+    "redirect, and the flow is human-only (deny_principal) by design."
+)
+_OAUTH_DISCONNECT_REASON = (
+    "outbound MCP OAuth sources disconnect (2026-07-30 spec §3, PR 2) — "
+    "drops the caller's OWN stored token, deny_principal (human-only), same "
+    "treatment as the grandfathered DELETE …/my-secret sibling on this same "
+    "router: CLI-reachable (`agnes mcp disconnect`), no MCP tool. An "
+    "agent-invokable tool that could sever its owner's upstream credential "
+    "out from under a live session is the same class of self-service "
+    "identity operation the my-secret endpoints were never MCP-exposed for."
+)
 _EXEMPT: dict[str, str] = {
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
@@ -488,6 +506,13 @@ _EXEMPT: dict[str, str] = {
     "/api/agents/{agent_id}": _AGENTS_REGISTRY_REASON,
     "/api/sharing/groups": _LIBRARY_SHARING_REASON,
     "/api/sharing/{resource_type}/{resource_id}": _LIBRARY_SHARING_REASON,
+    "/api/me/elevation": (
+        "admin elevation consent gate — sets the browser-session cookie the "
+        "elevation middleware reads; structurally a web-browser surface (the "
+        "CLI has no cookie jar to carry the state across invocations, and "
+        "Bearer-authenticated calls are exempt from the instance default by "
+        "design), so no CLI/MCP analogue"
+    ),
     "/api/v1/agents/{agent_id}": _AGENT_DETAIL_REASON,
     "/api/v1/agents/{agent_id}/scope": _AGENT_SCOPE_REASON,
     "/api/v1/agents/{agent_id}/tokens": _AGENT_TOKENS_REASON,
@@ -503,6 +528,26 @@ _EXEMPT: dict[str, str] = {
     "/api/v1/sessions/{session_id}/memories": _AGENT_MEMORY_WRITE_REASON,
     "/api/v1/agents/{agent_id}/memories": _AGENT_MEMORY_ADMIN_REASON,
     "/api/v1/agents/{agent_id}/memories/{memory_id}": _AGENT_MEMORY_ADMIN_REASON,
+    # Outbound MCP OAuth sources (2026-07-30 spec §2, PR 1): CLI-reachable
+    # (`agnes admin mcp source oauth-register` / `oauth-client`) but no MCP
+    # analogue — one-time admin provisioning of Agnes's own OAuth client at
+    # an upstream source's authorization server, not an agent-facing
+    # data/tool operation. Mirrors the grandfathered …/secret vault-write
+    # endpoint on this same router (also CLI-only by the same reasoning).
+    "/api/admin/mcp-sources/{source_id}/oauth/register": (
+        "CLI-reachable (`agnes admin mcp source oauth-register`); never MCP-exposed "
+        "per CONTRIBUTING.md → 'API coverage (REST × CLI × MCP)' → 'Standing "
+        "exemption — admin credential-provisioning writes'"
+    ),
+    "/api/admin/mcp-sources/{source_id}/oauth/client": (
+        "CLI-reachable (`agnes admin mcp source oauth-client`); never MCP-exposed "
+        "per CONTRIBUTING.md → 'API coverage (REST × CLI × MCP)' → 'Standing "
+        "exemption — admin credential-provisioning writes'"
+    ),
+    # Outbound MCP OAuth sources connect flow (2026-07-30 spec §3, PR 2).
+    "/api/mcp/sources/{source_id}/oauth/authorize": _OAUTH_CONNECT_BROWSER_REASON,
+    "/api/mcp/oauth-client/callback": _OAUTH_CONNECT_BROWSER_REASON,
+    "/api/mcp/sources/{source_id}/oauth/connection": _OAUTH_DISCONNECT_REASON,
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
         "(companion to register-table's defer_rebuild for bulk onboarding); no "

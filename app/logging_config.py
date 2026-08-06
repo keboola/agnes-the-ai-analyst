@@ -57,6 +57,36 @@ def _replica_id_safe() -> str:
         return "-"
 
 
+class _OAuthCallbackQueryRedactFilter(logging.Filter):
+    """Strip the query string from uvicorn access-log lines for the outbound
+    MCP OAuth connect callback (2026-07-30 outbound MCP OAuth sources spec
+    §6) — that query string carries ``code`` (a single-use authorization
+    code) and ``state`` (opaque but still worth not persisting verbatim in
+    logs). No such log-redaction control exists elsewhere in this module
+    before this filter; it's new code, not an existing assumption.
+
+    Uvicorn's h11/httptools protocols log the access line as
+    ``'%s - "%s %s HTTP/%s" %d'`` with
+    ``record.args = (client_addr, method, path_with_query_string,
+    http_version, status)`` — this rewrites ``args[2]`` in place, dropping
+    everything from ``?`` onward, whenever the path (query stripped) is the
+    callback route. Any other shape of ``record.args`` (a different uvicorn
+    version, a non-access logger) is left untouched.
+    """
+
+    CALLBACK_PATH = "/api/mcp/oauth-client/callback"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2].split("?", 1)[0]
+            if path == self.CALLBACK_PATH:
+                new_args = list(args)
+                new_args[2] = path
+                record.args = tuple(new_args)
+        return True
+
+
 def setup_logging(service: str | None = None, level: str | None = None) -> None:
     """Configure root logger. Idempotent.
 
@@ -90,7 +120,9 @@ def setup_logging(service: str | None = None, level: str | None = None) -> None:
 
     handler.addFilter(_RequestIdFilter())
     logging.basicConfig(level=lvl, handlers=[handler], force=True)
-    logging.getLogger("uvicorn.access").setLevel(logging.INFO if debug else logging.WARNING)
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.setLevel(logging.INFO if debug else logging.WARNING)
+    access_logger.addFilter(_OAuthCallbackQueryRedactFilter())
     logging.getLogger("httpx").setLevel(logging.WARNING)
     _CONFIGURED = True
 

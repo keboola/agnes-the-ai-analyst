@@ -219,9 +219,14 @@ def ask_usage(
         )
 
     dialect = "postgresql" if use_pg() else "duckdb"
-    extractor = AnthropicExtractor(api_key=api_key, model=_ASK_MODEL)
-    t0 = time.monotonic()
     try:
+        # Constructed inside the error boundary: the SDK import is deferred
+        # to first use, so client construction is a failure point too — an
+        # escaped exception here would surface as an unhandled 500 instead
+        # of this endpoint's documented LLM-failure response. t0 is taken
+        # after construction so the reported llm_ms stays the API call.
+        extractor = AnthropicExtractor(api_key=api_key, model=_ASK_MODEL)
+        t0 = time.monotonic()
         llm_out = extractor.extract_json(
             prompt=build_prompt(question),
             max_tokens=1024,

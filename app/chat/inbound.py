@@ -193,8 +193,14 @@ async def publish_inbound(chat_id: str, text: str, *, slack: Optional[dict] = No
     return await _publish_entry(chat_id, payload)
 
 
-async def publish_control(chat_id: str, command: str, *, reason: Optional[str] = None) -> int:
-    """Append a CONTROL command (``"kill"`` / ``"cancel"``) to ``chat_id``'s
+async def publish_control(
+    chat_id: str,
+    command: str,
+    *,
+    reason: Optional[str] = None,
+    extra: Optional[dict] = None,
+) -> int:
+    """Append a CONTROL command (``"kill"`` / ``"cancel"`` / ``"approval"``) to ``chat_id``'s
     inbound stream, for the owning gateway's consumer to execute against
     its LOCAL session (``ChatManager._inbound_consumer_loop`` dispatches
     ``type == "control"`` entries to the local ``kill``/``cancel`` instead
@@ -212,6 +218,10 @@ async def publish_control(chat_id: str, command: str, *, reason: Optional[str] =
     payload: dict = {"type": "control", "command": command}
     if reason:
         payload["reason"] = reason
+    if extra:
+        # command-specific fields (e.g. "approval" carries request_id +
+        # decision); reserved keys can't be clobbered
+        payload.update({k: v for k, v in extra.items() if k not in payload and k not in ("type", "seq")})
     return await _publish_entry(chat_id, payload)
 
 

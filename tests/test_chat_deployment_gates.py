@@ -26,12 +26,12 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.main as main_mod
 from tests.test_chat_api import api_client_chat_disabled, logged_in_user  # noqa: F401
-
 
 # ---------------------------------------------------------------------------
 # Helpers for test_multi_worker_disables_chat
@@ -319,3 +319,141 @@ def test_chat_e2b_gates_bypassed_for_non_e2b_provider(monkeypatch):
     cfg = ChatConfig(enabled=True, provider="something_else")
     assert _chat_e2b_api_key_ok(cfg) is True
     assert _chat_e2b_template_id_ok(cfg) is True
+    # A docker deployment has no E2B account at all — neither gate may fire.
+    docker_cfg = ChatConfig(enabled=True, provider="docker")
+    assert _chat_e2b_api_key_ok(docker_cfg) is True
+    assert _chat_e2b_template_id_ok(docker_cfg) is True
+
+
+# ---------------------------------------------------------------------------
+# Docker-provider gates (self-hosted sandbox)
+# ---------------------------------------------------------------------------
+
+
+def _docker_cfg(**over):
+    from app.chat.config import ChatConfig
+
+    kwargs = {"enabled": True, "provider": "docker"}
+    kwargs.update(over)
+    return ChatConfig(**kwargs)
+
+
+def test_docker_gates_bypassed_for_e2b_provider(monkeypatch):
+    """Symmetry with the e2b gates: an e2b deployment must not be refused for
+    lacking a sidecar or a non-loopback rails URL."""
+    import asyncio
+
+    from app.chat.config import ChatConfig
+    from app.main import _chat_docker_rails_url_ok, _chat_docker_sandbox_ok
+
+    monkeypatch.delenv("SERVER_URL", raising=False)
+    monkeypatch.delenv("AGNES_INTERNAL_URL", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True, provider="e2b", e2b_template_id="agnes-chat")
+    assert _chat_docker_rails_url_ok(cfg) is True
+    assert asyncio.run(_chat_docker_sandbox_ok(cfg)) is True
+
+
+def test_docker_gates_skipped_when_chat_disabled(monkeypatch):
+    import asyncio
+
+    from app.main import _chat_docker_rails_url_ok, _chat_docker_sandbox_ok
+
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = _docker_cfg(enabled=False)
+    assert _chat_docker_rails_url_ok(cfg) is True
+    assert asyncio.run(_chat_docker_sandbox_ok(cfg)) is True
+
+
+def test_docker_refuses_without_a_rails_url(monkeypatch):
+    """No SERVER_URL / AGNES_INTERNAL_URL → agnes_server_url() would fall back
+    to loopback, which inside the sandbox's netns is the sandbox itself. Fail
+    fast instead of shipping a dead AGNES_SERVER."""
+    from app.main import _chat_docker_rails_url_ok
+
+    monkeypatch.delenv("SERVER_URL", raising=False)
+    monkeypatch.delenv("AGNES_INTERNAL_URL", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    assert _chat_docker_rails_url_ok(_docker_cfg()) is False
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000", "http://localhost:8000", "http://[::1]:8000"])
+def test_docker_refuses_a_loopback_rails_url(monkeypatch, url):
+    from app.main import _chat_docker_rails_url_ok
+
+    monkeypatch.setenv("SERVER_URL", url)
+    monkeypatch.delenv("AGNES_INTERNAL_URL", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    assert _chat_docker_rails_url_ok(_docker_cfg()) is False
+
+
+def test_docker_accepts_an_internal_url(monkeypatch):
+    """The compose-network pattern data apps already use."""
+    from app.main import _chat_docker_rails_url_ok
+
+    monkeypatch.delenv("SERVER_URL", raising=False)
+    monkeypatch.setenv("AGNES_INTERNAL_URL", "http://app:8000")
+    monkeypatch.delenv("TESTING", raising=False)
+    assert _chat_docker_rails_url_ok(_docker_cfg()) is True
+
+
+def test_docker_refuses_when_the_sidecar_probe_fails(monkeypatch):
+    """Unreachable sidecar / missing image → chat disabled with an actionable
+    log line, never a crash."""
+    import asyncio
+
+    import app.main as main_mod
+
+    monkeypatch.delenv("TESTING", raising=False)
+
+    class _FailingClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def probe(self, image=""):
+            return {"ok": False, "detail": f"sandbox image {image} not present on the Docker host"}
+
+    monkeypatch.setattr("app.chat.sandbox_runner_client.SandboxRunnerClient", _FailingClient)
+    assert asyncio.run(main_mod._chat_docker_sandbox_ok(_docker_cfg())) is False
+
+
+def test_docker_accepts_a_healthy_sidecar(monkeypatch):
+    import asyncio
+
+    import app.main as main_mod
+
+    monkeypatch.delenv("TESTING", raising=False)
+    seen = {}
+
+    class _OkClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def probe(self, image=""):
+            seen["image"] = image
+            return {"ok": True, "detail": "docker sandbox runner ready"}
+
+    monkeypatch.setattr("app.chat.sandbox_runner_client.SandboxRunnerClient", _OkClient)
+    assert asyncio.run(main_mod._chat_docker_sandbox_ok(_docker_cfg(docker_image="agnes-chat-sandbox:1"))) is True
+    assert seen["image"] == "agnes-chat-sandbox:1"
+
+
+def test_docker_sandbox_probe_survives_an_unreachable_sidecar(monkeypatch):
+    """A transport error is a refusal, not an exception out of the lifespan."""
+    import asyncio
+
+    import app.main as main_mod
+
+    monkeypatch.delenv("TESTING", raising=False)
+
+    class _BoomClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def probe(self, image=""):
+            from app.chat.sandbox_runner_client import SandboxRunnerUnavailable
+
+            raise SandboxRunnerUnavailable("connection refused")
+
+    monkeypatch.setattr("app.chat.sandbox_runner_client.SandboxRunnerClient", _BoomClient)
+    assert asyncio.run(main_mod._chat_docker_sandbox_ok(_docker_cfg())) is False

@@ -79,6 +79,22 @@ running; a hard kill at that point leaves the job 'running' with a
 lease that later expires and is recovered via ``claim_next()``'s reclaim
 path, or — if attempts are already exhausted by then — this module's own
 ``reap_exhausted()`` sweep.
+
+The bounded drain above covers *handler* futures only. Every jobs-table DB
+call this module makes — the poll-path ``claim_next``/``reap_exhausted``/
+``heartbeat`` and the shutdown-path ``complete``/``fail``/``get`` inside
+``_drain_in_flight`` — goes through ``to_thread_drain_on_cancel``
+(``app/api/health_probes.py``) instead: cancellation waits for the
+in-flight single-statement call rather than orphaning its thread, so
+``app/main.py``'s lifespan can't proceed to ``close_system_db()`` while a
+jobs-table statement is still executing — the same
+abandoned-thread-vs-DB-close race the canary/checkpoint loops drain
+against, just with a millisecond window instead of a CHECKPOINT-sized one.
+
+Those drains all draw from one budget shared across the whole shutdown
+(see ``_drain_budget_s``), so cancelling the checkpoint loop, then the
+canary loop, then this one cannot stack a full timeout each and overrun
+the container's stop_grace_period.
 """
 
 from __future__ import annotations
@@ -87,11 +103,13 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import math
 import os
 import socket
 import time
 
 from app.job_correlation import bind_request_id, unbind_request_id
+from app.api.health_probes import to_thread_drain_on_cancel
 from app.observability import metrics as obs_metrics
 from app.worker import wakeup
 from app.worker.registry import HEAVY_LANE, JOB_KINDS, LIGHT_LANE, JobKind
@@ -127,10 +145,17 @@ def _drain_timeout_s() -> float:
     if raw is None:
         return _DEFAULT_DRAIN_TIMEOUT_S
     try:
-        return max(float(raw), 0.0)
+        value = float(raw)
     except ValueError:
+        value = None
+    # inf/nan parse fine but make the bound meaningless: inf restores the
+    # unbounded wait this exists to prevent, and nan poisons every
+    # comparison it feeds. Treat them as a misconfiguration, not a setting
+    # (review finding on #1140).
+    if value is None or not math.isfinite(value):
         logger.warning("worker: invalid AGNES_WORKER_DRAIN_TIMEOUT_S=%r, using default", raw)
         return _DEFAULT_DRAIN_TIMEOUT_S
+    return max(value, 0.0)
 
 
 def _jobs_repo():
@@ -239,7 +264,7 @@ async def _heartbeat_loop(job_id: str, worker_id: str, lease_token: str, lease_s
     while True:
         await asyncio.sleep(interval)
         try:
-            ok = await asyncio.to_thread(_jobs_repo().heartbeat, job_id, worker_id, lease_token, lease_seconds)
+            ok = await to_thread_drain_on_cancel(_jobs_repo().heartbeat, job_id, worker_id, lease_token, lease_seconds)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -321,7 +346,7 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             # Persist the outcome before recording it in metrics — if `.fail()`
             # itself raises, this propagates without ever having reported an
             # outcome that was never actually persisted.
-            finalized = await asyncio.to_thread(
+            finalized = await to_thread_drain_on_cancel(
                 _jobs_repo().fail,
                 job["id"],
                 worker_id,
@@ -349,7 +374,9 @@ async def _run_one(job: dict, kind: JobKind, worker_id: str, in_flight: dict[str
             # `handler_result` is the handler's return value — `None` for
             # every kind except `agent_response` (Task 9), which returns a
             # result dict `complete()` merges into `payload_json["result"]`.
-            mutated = await asyncio.to_thread(_jobs_repo().complete, job["id"], worker_id, lease_token, handler_result)
+            mutated = await to_thread_drain_on_cancel(
+                _jobs_repo().complete, job["id"], worker_id, lease_token, handler_result
+            )
             obs_metrics.record_job_duration(job["kind"], "done", time.monotonic() - started_at)
             if mutated:
                 # `complete()` returns `False` for the same stale-lease
@@ -406,7 +433,7 @@ async def _lane_slot(
             # to the claimed job's actual kind.lease_seconds (heartbeat reads
             # the kind fresh after claiming, below).
             max_lease = max((JOB_KINDS[name].lease_seconds for name in kinds), default=120)
-            job = await asyncio.to_thread(
+            job = await to_thread_drain_on_cancel(
                 _jobs_repo().claim_next,
                 kinds=kinds,
                 worker_id=worker_id,
@@ -438,7 +465,7 @@ async def _lane_slot(
                     job["id"],
                 )
                 obs_metrics.record_job_failure(job["kind"], "no-registered-handler")
-                await asyncio.to_thread(
+                await to_thread_drain_on_cancel(
                     _jobs_repo().fail,
                     job["id"],
                     worker_id,
@@ -473,7 +500,7 @@ async def _reap_loop(poll_interval_s: float) -> None:
     """
     while True:
         try:
-            reaped = await asyncio.to_thread(_jobs_repo().reap_exhausted)
+            reaped = await to_thread_drain_on_cancel(_jobs_repo().reap_exhausted)
             if reaped:
                 logger.info("worker: reaped %d stuck job(s) (lease expired at max attempts)", len(reaped))
                 for job in reaped:
@@ -496,7 +523,7 @@ async def _notify_in_flight_agent_response(job_id: str, status: str) -> None:
     "finalization (complete/fail) failed" error for a job whose outcome was
     already durably persisted."""
     try:
-        job_row = await asyncio.to_thread(_jobs_repo().get, job_id)
+        job_row = await to_thread_drain_on_cancel(_jobs_repo().get, job_id)
         if job_row is not None:
             _notify_agent_response_webhooks(job_row, status)
     except Exception:
@@ -505,15 +532,24 @@ async def _notify_in_flight_agent_response(job_id: str, status: str) -> None:
         )
 
 
-async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -> None:
+async def _drain_in_flight(
+    in_flight: dict[str, _InFlightJob], worker_id: str, *, budget_s: float | None = None
+) -> None:
     """Bounded shutdown drain: wait on every handler future handed off by
     ``_run_one`` (see module docstring) for up to
     ``AGNES_WORKER_DRAIN_TIMEOUT_S`` seconds, finalizing whichever finish
     in time and logging (without finalizing) whichever don't.
+
+    ``budget_s`` lets the caller pass what is LEFT of one shutdown-wide
+    budget rather than granting a fresh full one. worker_loop does that:
+    its straggler wait and this drain run back to back, so two independent
+    45s bounds would sum past the 60s stop_grace_period and get the
+    container SIGKILLed mid-drain — the outcome these bounds exist to avoid
+    (review finding on #1140).
     """
     if not in_flight:
         return
-    timeout = _drain_timeout_s()
+    timeout = _drain_timeout_s() if budget_s is None else max(budget_s, 0.0)
     logger.info(
         "worker %s: shutdown draining %d in-flight job(s) (timeout=%.0fs): %s",
         worker_id,
@@ -569,7 +605,7 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                         entry.kind_name,
                         exc_info=exc,
                     )
-                    finalized = await asyncio.to_thread(
+                    finalized = await to_thread_drain_on_cancel(
                         _jobs_repo().fail,
                         job_id,
                         entry.worker_id,
@@ -586,7 +622,7 @@ async def _drain_in_flight(in_flight: dict[str, _InFlightJob], worker_id: str) -
                         await _notify_in_flight_agent_response(job_id, "failed")
                 else:
                     handler_result = fut.result()
-                    mutated = await asyncio.to_thread(
+                    mutated = await to_thread_drain_on_cancel(
                         _jobs_repo().complete, job_id, entry.worker_id, entry.lease_token, handler_result
                     )
                     obs_metrics.record_job_duration(entry.kind_name, "done", duration)
@@ -640,14 +676,61 @@ async def worker_loop(*, worker_id: str, poll_interval_s: float = 5.0) -> None:
         # Defensive: make sure every child is actually cancelled/awaited
         # even if gather() returned early for a reason other than our own
         # cancellation (e.g. one task raised and gather fails fast while
-        # siblings are still running).
+        # siblings are still running). Skip tasks already processing a
+        # cancellation (`cancelling() > 0`): they are mid-drain in
+        # `to_thread_drain_on_cancel`, and a second cancel would interrupt
+        # that drain and re-orphan the in-flight DB thread — the exact race
+        # the drain exists to prevent.
         for t in tasks:
-            if not t.done():
+            if not t.done() and t.cancelling() == 0:
                 t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Bounded: skipping the second cancel for a task that is mid-drain is
+        # right, but it means a task which somehow lost its cancellation is
+        # never asked again — and an unbounded wait on it would hang shutdown
+        # forever, the very symptom this change removes. The drains inside
+        # those tasks are themselves bounded by the shared DB-drain budget,
+        # so this only has to outlast that — the worker's own (larger) drain
+        # knob does. Past it we log and let shutdown proceed.
+        #
+        # NOTE this whole block is inert on the ordinary cancellation path:
+        # cancelling the awaiter of a gather() cancels each child but does not
+        # resolve the gather future until every child is actually done, so we
+        # arrive here with all tasks complete. It earns its keep only when
+        # gather() failed fast because a child raised, leaving siblings live
+        # (review findings on #1140).
+        # ONE budget for the whole worker shutdown: the straggler wait below
+        # and the in-flight drain after it run back to back, so giving each
+        # its own full bound would stack past the container's grace period.
+        shutdown_deadline = time.monotonic() + _drain_timeout_s()
+        finished, still_running = await asyncio.wait(
+            tasks, timeout=max(shutdown_deadline - time.monotonic(), 0.0)
+        )
+        for t in finished:
+            # asyncio.wait, unlike gather(return_exceptions=True), does not
+            # retrieve results — an unconsumed exception would be dropped
+            # here and only resurface as "Task exception was never retrieved"
+            # at GC, losing a real shutdown-path failure.
+            if t.cancelled():
+                continue
+            exc = t.exception()
+            if exc is not None:
+                logger.warning(
+                    "worker %s: lane task %s failed during shutdown: %s",
+                    worker_id,
+                    t.get_name(),
+                    type(exc).__name__,
+                    exc_info=exc,
+                )
+        for t in still_running:
+            logger.warning(
+                "worker %s: lane task %s did not stop within the shutdown budget; abandoning it "
+                "(it may still touch the DB after this returns)",
+                worker_id,
+                t.get_name(),
+            )
         # Every lane slot has now stopped claiming new work. Any handler
         # that was mid-flight when its slot got cancelled was handed off
         # into `in_flight` (see _run_one) instead of being abandoned —
         # drain it here, bounded, before this function returns and
         # app/main.py proceeds to close the DB singletons.
-        await _drain_in_flight(in_flight, worker_id)
+        await _drain_in_flight(in_flight, worker_id, budget_s=shutdown_deadline - time.monotonic())

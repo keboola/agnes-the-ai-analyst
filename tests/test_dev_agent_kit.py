@@ -134,6 +134,20 @@ def test_conventions_skill_exists_and_lists_playbooks():
         assert f"references/{pb}.md" in text, f"SKILL.md must list references/{pb}.md"
 
 
+def test_wayfinder_skill_exists_and_hands_off():
+    skill = SKILLS_DIR / "agnes-wayfinder" / "SKILL.md"
+    assert skill.exists(), "agnes-wayfinder/SKILL.md must exist"
+    fm = read_frontmatter(skill)
+    assert fm.get("name") == "agnes-wayfinder", "skill name must match dir"
+    assert "description" in fm, "skill must declare a description"
+    text = skill.read_text(encoding="utf-8")
+    # The map is a pre-plan artifact: it must name where it lives and where it
+    # hands off, or it becomes a parallel build process competing with the kit.
+    assert "docs/superpowers/maps/" in text, "wayfinder must name the map location"
+    assert "superpowers:writing-plans" in text, "wayfinder must hand off to writing-plans"
+    assert "/agnes-build" in text, "wayfinder must hand off to /agnes-build"
+
+
 @pytest.mark.parametrize("pb", ["connector", "repo-parity", "migration"])
 def test_backend_playbooks_exist(pb):
     path = CONVENTIONS / "references" / f"{pb}.md"

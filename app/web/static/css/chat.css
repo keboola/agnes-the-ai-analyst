@@ -1068,11 +1068,17 @@ pre.code-block-wrap code .hljs-deletion {
      the empty-state panel sits at top with a clean gap below. */
   margin: auto auto var(--space-4);
   display: grid;
-  /* Three columns: leading "+" upload button, textarea, trailing actions. */
-  grid-template-columns: auto 1fr auto;
+  /* Two columns: textarea + trailing actions — the pre-redesign topnav
+     layout, byte-compatible with a composer that has no leading "+" button
+     (the upload menu is rail-only markup, and rail lays its composer out
+     with its own flex rules under html[data-ui-layout="rail"], never this
+     grid). A third `auto` column here with only two children would drop the
+     textarea into the content-sized column — a visibly narrower input.
+     Guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity. */
+  grid-template-columns: 1fr auto;
   align-items: end;
   gap: var(--space-2);
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   max-width: var(--chat-reading-width);
   width: calc(100% - var(--space-12));
   border: 1px solid var(--ds-border);
@@ -1681,7 +1687,7 @@ html[data-ui-layout="rail"] .cloud-chat-capabilities {
   padding: 34px 20px 6px;
 }
 /* Empty-state layout order: greeting → composer → suggestions → banner →
-   Keboola credit (very bottom). The primary entry point (greeting + composer)
+   footer credit (very bottom). The primary entry point (greeting + composer)
    leads the page; the Knowledge Layer banner sits below the suggested actions,
    and the credit pins to the very bottom (its own auto top-margin). Fixed
    orders work in both states: in an active conversation the greeting + extras +
@@ -1791,7 +1797,7 @@ html[data-ui-layout="rail"] #chat-capabilities .klb-hub-label--lead .klb-hub-cap
   justify-content: center;
 }
 
-/* Keboola credit — pinned to the very bottom (margin-top:auto). No divider. */
+/* Footer credit — pinned to the very bottom (margin-top:auto). No divider. */
 html[data-ui-layout="rail"] .cloud-chat-empty-foot {
   flex: 0 0 auto;
   margin-top: auto;
@@ -1900,7 +1906,7 @@ html[data-ui-layout="rail"] .cloud-chat-main { position: relative; }
    The base shell height (calc(100dvh - 72px)) assumes the 72px top nav
    that the rail layout doesn't have, leaving a 72px grey strip below the
    chat. Make the chat container a full-height flex column so the shell
-   fills the viewport. The Keboola footer lives INSIDE the empty-state card
+   fills the viewport. The footer credit lives INSIDE the empty-state card
    (see .cloud-chat-empty-foot below), not as a page-level bar, so the
    global chat footer stays hidden. */
 html[data-ui-layout="rail"] body.chat-page-body .container {
@@ -2950,4 +2956,68 @@ html[data-ui-layout="rail"] .cloud-chat-shell.has-thread .cloud-chat-main::after
   border-radius: var(--radius-sm);
   background: var(--ds-surface);
   border: 1px solid var(--ds-border);
+}
+
+/* --- Approval gate card (approval_request / approval_resolved frames) --- */
+.cloud-chat-approval {
+  border-color: var(--ds-accent-warn-line);
+  background: var(--ds-accent-warn-bg);
+}
+
+.cloud-chat-approval-cmd {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--ds-code-bg);
+  color: var(--ds-code-ink);
+  overflow-x: auto;
+}
+
+.cloud-chat-approval-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  align-items: center;
+}
+
+.cloud-chat-approval-btn {
+  padding: 4px var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  cursor: pointer;
+  font: inherit;
+}
+
+.cloud-chat-approval-btn.is-allow {
+  border-color: var(--ds-accent-success-line);
+  color: var(--ds-accent-success-ink);
+}
+
+.cloud-chat-approval-btn.is-deny {
+  border-color: var(--ds-accent-danger-line);
+  color: var(--ds-accent-danger-ink);
+}
+
+.cloud-chat-approval-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cloud-chat-approval-outcome {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 0.85em;
+}
+
+.cloud-chat-approval-outcome.is-allow {
+  background: var(--ds-accent-success-bg);
+  color: var(--ds-accent-success-ink);
+  border: 1px solid var(--ds-accent-success-line);
+}
+
+.cloud-chat-approval-outcome.is-deny {
+  background: var(--ds-accent-danger-bg);
+  color: var(--ds-accent-danger-ink);
+  border: 1px solid var(--ds-accent-danger-line);
 }

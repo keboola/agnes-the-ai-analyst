@@ -5,8 +5,9 @@ Covers the three axes this feature keeps deliberately separate:
 * **Publisher** — who stands behind an item. Stored, admin-set, and the basis
   for the unified Browse shelf that replaced the Curated / Flea tabs.
 * **Verification** — the org's *advisory* verdict on a user-published item.
-  Must never gate a read, is per-instance (on by default, opt-out-able), and
-  never renders a negative label.
+  Must never gate a read, is per-instance (off by default — an opt-in enabled
+  together with `library.show_unverified_trust`), and never renders a
+  negative label.
 * **Required** — "In stack, locked", admissible only on organization-published
   items.
 
@@ -203,8 +204,7 @@ def test_invalid_facet_values_are_rejected(fresh_db):
 
 
 def test_verification_endpoints_absent_when_disabled(fresh_db, monkeypatch):
-    """The axis is on by default now that the Library states all three trust levels
-    positively, but an instance can still opt out entirely — and opting out must
+    """The axis is opt-in per instance, and disabled — the default — must
     remove the endpoints, not merely hide the buttons that call them."""
     monkeypatch.setattr("app.instance_config.get_store_verification_enabled", lambda: False, raising=False)
     from src.db import close_system_db, get_system_db
@@ -500,9 +500,7 @@ def test_browse_merges_both_sources_with_exact_totals(fresh_db):
         conn.close()
         close_system_db()
 
-    r = _client().get(
-        "/api/marketplace/items?tab=browse&page_size=50", cookies={"access_token": anna_sess}
-    )
+    r = _client().get("/api/marketplace/items?tab=browse&page_size=50", cookies={"access_token": anna_sess})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["total"] == 2
@@ -554,14 +552,10 @@ def test_browse_verification_facet_excludes_curated(fresh_db):
 
     client = _client()
     cookies = {"access_token": anna_sess}
-    unverified = client.get(
-        "/api/marketplace/items?tab=browse&verification=unverified", cookies=cookies
-    )
+    unverified = client.get("/api/marketplace/items?tab=browse&verification=unverified", cookies=cookies)
     assert unverified.status_code == 200, unverified.text
     assert [i["id"] for i in unverified.json()["items"]] == ["flea-e1"]
-    verified = client.get(
-        "/api/marketplace/items?tab=browse&verification=verified", cookies=cookies
-    )
+    verified = client.get("/api/marketplace/items?tab=browse&verification=verified", cookies=cookies)
     assert verified.status_code == 200, verified.text
     assert verified.json()["total"] == 0
 
@@ -577,17 +571,15 @@ def test_browse_categories_endpoint_accepts_the_new_tab(fresh_db):
         conn.close()
         close_system_db()
 
-    r = _client().get(
-        "/api/marketplace/categories?tab=browse", cookies={"access_token": anna_sess}
-    )
+    r = _client().get("/api/marketplace/categories?tab=browse", cookies={"access_token": anna_sess})
     assert r.status_code == 200, r.text
     assert any(c["name"] == "Productivity" for c in r.json()["items"])
 
 
 def test_show_unverified_trust_global_respects_the_off_switch(monkeypatch):
-    """The Community marker's opt-out must hold on EVERY surface.
+    """The Community marker's instance switch must hold on EVERY surface.
 
-    `show_unverified_trust` is an opt-out, and it is resolved by a Jinja global
+    `show_unverified_trust` is resolved by a Jinja global
     (`app.web.router._show_unverified_trust`) rather than threaded through each
     route's context. That is deliberate: it briefly rode
     `library_show_unverified_trust|default(true)` in
@@ -605,19 +597,22 @@ def test_show_unverified_trust_global_respects_the_off_switch(monkeypatch):
     monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
     assert _show_unverified_trust()
 
-    # Absent config is the documented on-by-default, so every row states its
-    # provenance unless an operator opts out.
+    # Absent config is the documented off-by-default (upgrade parity): an
+    # existing instance keeps its look until an operator opts into the
+    # positive trust vocabulary.
     monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
-    assert _show_unverified_trust()
+    assert not _show_unverified_trust()
 
 
 def test_no_template_applies_a_jinja_default_to_the_unverified_trust_flag():
     """Guard the bug class, not just the one line that had it.
 
-    A `|default(...)` on an OPT-OUT flag inverts its meaning wherever the
-    variable is missing: the fallback wins and the operator's "off" is ignored,
-    silently. Opt-IN flags do not have this hazard, which is why this guard names
-    one flag rather than banning the filter.
+    A `|default(...)` on this flag lets a stray template literal override the
+    operator's setting wherever the variable is missing — when the flag was
+    briefly opt-out, exactly that happened, and with today's off-by-default a
+    `|default(true)` would silently resurrect the markers on every default
+    instance. The flag must resolve through the central
+    `show_unverified_trust_enabled()` global, never per-template fallbacks.
     """
     from pathlib import Path
 
@@ -628,7 +623,8 @@ def test_no_template_applies_a_jinja_default_to_the_unverified_trust_flag():
             if "show_unverified_trust" in line and "default(" in line:
                 offenders.append(f"{path}:{lineno}: {line.strip()[:100]}")
     assert not offenders, (
-        "show_unverified_trust is an opt-out flag; a Jinja default() makes the off "
-        "switch ignorable on any route that omits the variable. Call the "
-        "show_unverified_trust_enabled() global instead:\n" + "\n".join(offenders)
+        "show_unverified_trust must never take a per-template Jinja default() — "
+        "a stray literal overrides the operator's setting on any route that "
+        "omits the variable. Call the show_unverified_trust_enabled() global "
+        "instead:\n" + "\n".join(offenders)
     )

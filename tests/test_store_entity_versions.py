@@ -2945,6 +2945,12 @@ class TestDetailTrustBadgeAndManageRegion:
         _, cookies = _create_user(web_client, f"trust-{label}@x.com")
         eid = upload(web_client, cookies, name=f"trust{label}")
 
+        # The Community marker is opt-in (`library.show_unverified_trust`,
+        # default off for upgrade parity — the default itself is guarded in
+        # test_web_library_store_entities.py). What THIS test pins is where
+        # the claim renders once an instance opts in: the hero title row,
+        # not the retired source badge.
+        monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
         paper = self._get(web_client, cookies, eid, "paper", monkeypatch)
         # The marker rides the TITLE ROW, rendered server-side by the shared
         # hero like every other detail page. It used to live in a <template>
