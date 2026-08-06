@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional
@@ -44,6 +45,7 @@ import duckdb
 
 from app.auth.access import _user_group_ids
 from app.utils import get_marketplaces_dir, get_store_dir
+from src.marketplace import is_safe_plugin_name
 from src.repositories import (
     marketplace_plugins_repo,
     resource_grants_repo,
@@ -51,6 +53,31 @@ from src.repositories import (
     user_groups_repo,
     user_store_installs_repo,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _contained_plugin_dir(root: Path, slug: str, name: str) -> Optional[Path]:
+    """``root/slug/plugins/name``, or None when that escapes ``root``.
+
+    Layer 2 behind ``is_safe_plugin_name``'s ingest rejection — security playbook
+    §6 requires both. Rows written by an older Agnes version, or edited directly
+    in the DB, never passed the ingest check, and this is the last point before
+    the path reaches ``rglob`` + ``read_bytes`` in the ZIP and git packagers.
+    ``resolve()`` also collapses a symlinked ``plugins/<name>`` pointing out of
+    the tree, which the regex alone cannot see.
+
+    The name is used unstripped: rows in ``marketplace_plugins`` were already
+    stripped by ``_refresh_plugin_cache``, so the strict helper is correct here.
+    """
+    if not is_safe_plugin_name(name):
+        return None
+    candidate = root / slug / "plugins" / name
+    try:
+        candidate.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return candidate
 
 
 def required_store_entity_keys(conn: duckdb.DuckDBPyConnection | None, user_id: str | None) -> set[str]:
@@ -215,7 +242,14 @@ def resolve_allowed_plugins(conn: duckdb.DuckDBPyConnection, user: dict) -> List
         marketplace_id = row["marketplace_id"]
         name = row["name"]
         slug = marketplace_id  # registry.id IS the slug (see src/marketplace.py)
-        plugin_dir = root / slug / "plugins" / name
+        plugin_dir = _contained_plugin_dir(root, slug, name)
+        if plugin_dir is None:
+            logger.warning(
+                "marketplace %s: skipping granted plugin %r — name is not a contained path segment",
+                slug,
+                name,
+            )
+            continue
         result.append(
             {
                 "marketplace_id": marketplace_id,
@@ -295,7 +329,13 @@ def _bundle_files(bundle_dirs: list[Path]) -> list[tuple[str, Path]]:
     for src in bundle_dirs:
         if not src.is_dir():
             continue
+        bases = [src.resolve()]
         for f in sorted(p for p in src.rglob("*") if p.is_file()):
+            # F-1b: guard here rather than in each caller — _bundle_files feeds
+            # _compute_bundle_version, the ZIP packager, the git backend and the
+            # cowork packager, so one check covers all four.
+            if escapes_base(f, bases):
+                continue
             rel_parts = f.relative_to(src).parts
             if rel_parts and rel_parts[0] == _BUNDLE_EXCLUDE_DIR:
                 continue
@@ -402,7 +442,14 @@ def _entries_for_grant_keys(keys: frozenset[str]) -> List[dict]:
         name = row["name"]
         if f"{slug}/{name}" not in keys or row.get("admin_disabled"):
             continue
-        plugin_dir = root / slug / "plugins" / name
+        plugin_dir = _contained_plugin_dir(root, slug, name)
+        if plugin_dir is None:
+            logger.warning(
+                "marketplace %s: skipping granted plugin %r — name is not a contained path segment",
+                slug,
+                name,
+            )
+            continue
         out.append(
             {
                 "marketplace_id": slug,
@@ -611,8 +658,58 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def escapes_base(path: Path, bases: Iterable[Path]) -> bool:
+    """True if ``path`` is a symlink or resolves outside EVERY base in ``bases``.
+
+    Plugin content is curator-controlled. ``Path.rglob`` does not recurse into
+    symlinked directories, but it DOES yield a symlinked *file*, and
+    ``read_bytes()`` follows it — so a plugin containing ``leak.txt`` pointing at
+    an absolute path exfiltrates that file into the served ZIP / git tree even
+    when the plugin's own name is perfectly legitimate. ``cowork_packager`` has
+    guarded this since it shipped; the ZIP and git backends and this module's
+    ETag walk did not (2026-08-05 audit, F-1b).
+
+    Rejecting every symlink outright, rather than only out-of-base ones, is what
+    carries the defense: a symlinked file is refused no matter where it points.
+    The repo ships no symlinks anywhere, so nothing legitimate breaks. The base
+    comparison is the cheap second half, for a path that reaches outside without
+    being a symlink itself.
+
+    On bases, and the division of labour that makes this safe: callers pass the
+    RESOLVED content directory being walked, not a global root. A ``plugin_dir``
+    that is itself a symlink would re-anchor this check on the escaped target —
+    the classic defeat, which ``app/api/marketplace.py:_reject_unsafe_segment``
+    documents as audit L1 — but that case never reaches here, because
+    ``_contained_plugin_dir`` refuses to produce a ``plugin_dir`` that escapes
+    the marketplaces root. Layer A stops a symlinked directory; this is layer B
+    and stops symlinked files inside a legitimate one.
+
+    Deliberately NOT anchored on a config-derived global root. ``plugin_dir`` is
+    an absolute path the caller supplies; a global anchor silently drops every
+    file whenever the two disagree (bind-mounted ``/data``, a symlinked data dir,
+    any test or dev override), which turns a hardening measure into a
+    served-marketplace-goes-empty outage.
+    """
+    try:
+        if path.is_symlink():
+            return True
+        resolved = path.resolve()
+    except OSError:
+        return True
+    for base in bases:
+        try:
+            if resolved.is_relative_to(base.resolve()):
+                return False
+        except OSError:
+            continue
+    return True
+
+
 def _iter_files(root: Path) -> List[Path]:
-    return sorted(p for p in root.rglob("*") if p.is_file())
+    # Base resolved once — escapes_base runs per file and this is the ETag hot
+    # path (AGNES_MARKETPLACE_ETAG_TTL, default 120s).
+    bases = [root.resolve()]
+    return sorted(p for p in root.rglob("*") if p.is_file() and not escapes_base(p, bases))
 
 
 def compute_etag(plugins: Iterable[dict]) -> str:

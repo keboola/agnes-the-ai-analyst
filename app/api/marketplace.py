@@ -19,7 +19,6 @@ so a user without the RBAC grant gets a 403 even on direct URL hit.
 from __future__ import annotations
 
 import logging
-import re
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
@@ -49,6 +48,7 @@ from src.repositories import (
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
+from src.marketplace import is_safe_plugin_name
 from src.marketplace_filter import (
     required_plugin_keys,
     resolve_allowed_plugins,
@@ -1619,6 +1619,7 @@ async def curated_detail(
     if plugin_row is None:
         raise HTTPException(status_code=404, detail="plugin_not_found")
 
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     skills = _list_inner_skills(plugin_root)
     agents = _list_inner_agents(plugin_root)
@@ -2015,9 +2016,6 @@ async def curated_uninstall(
 # ---------------------------------------------------------------------------
 
 
-_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
 def _reject_unsafe_segment(*segments: str) -> None:
     """404 on a path segment that could escape its intended root.
 
@@ -2027,9 +2025,15 @@ def _reject_unsafe_segment(*segments: str) -> None:
     ``.../plugins/<name>``); a ``..`` there escapes the marketplaces dir and
     ``_safe_join`` then re-anchors on the ESCAPED root, so the traversal guard
     is defeated (audit L1). Enforce a strict slug and explicitly reject ``..``.
+
+    The rule itself lives in ``src.marketplace.is_safe_plugin_name`` so this
+    serve-time check, the ingest check (``read_plugins``), the path containment
+    (``marketplace_filter._contained_plugin_dir``) and the asset mirror cannot
+    drift apart. It deliberately does not strip, so an unstripped segment such
+    as ``"acme "`` stays rejected here exactly as before.
     """
     for seg in segments:
-        if seg == ".." or not _SAFE_SEGMENT_RE.match(seg or ""):
+        if not is_safe_plugin_name(seg or ""):
             raise HTTPException(status_code=404, detail="not_found")
 
 
@@ -2095,6 +2099,7 @@ def _curated_inner_parent_fields(
     a sync-skew bug, but shouldn't 500 the page).
     """
     plugin_row = _get_plugin_row(conn, marketplace_id, plugin_name) or {}
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     meta = _resolve_marketplace_meta(conn, marketplace_id)
     # Pull the parent plugin's curator-friendly display name from the same
@@ -2551,6 +2556,7 @@ async def curated_skill_detail(
     ),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     res = _read_inner(plugin_root, "skills", skill_name, is_dir_layout=True)
     skill_dir = _safe_join(plugin_root, "skills", skill_name)
@@ -2615,6 +2621,7 @@ async def curated_agent_detail(
     ),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    _reject_unsafe_segment(marketplace_id, plugin_name)
     plugin_root = Path(get_marketplaces_dir()) / marketplace_id / "plugins" / plugin_name
     res = _read_inner(plugin_root, "agents", agent_name, is_dir_layout=False)
     agent_path = _safe_join(plugin_root, "agents", f"{agent_name}.md")

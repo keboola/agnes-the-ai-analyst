@@ -286,6 +286,56 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 - **Contract guard against the light-only-tint bug class** (`tests/test_design_system_contract.py`): every `--ds-*-soft` token is declared once in the global `:root` with no `data-theme="dark"` override, so filling with one and inking with `--ds-text-*` yields invisible text under dark — the connect-banner bug fixed above. The guard parses every shipped stylesheet plus each template's inline `<style>` (flattening `@media` wrappers), and fails when a rule fills with a light-only `-soft` tint, ink that flips with the theme is drawn on that element or a descendant/BEM child of it, and the same stylesheet ships no `[data-theme="dark"]` override for it. Correct pairings stay quiet by construction: a tint inked with a deep accent (`.ag-instack` → `--ds-agnes`), `--ds-text-inverse` on a solid fill, and rules already scoped to any `[data-theme="…"]`. Four unit tests pin the detector against synthetic CSS — including the exact pre-fix `.cbn` shape — so it can't rot into a vacuous pass; removing the shipped fix makes it fail with `.cbn (fill --ds-agnes-soft; ink from .cbn-title)`.
 
+## [0.79.1] - 2026-08-06
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- **Marketplace plugin names are validated as single path segments.** A plugin
+  `name` in a registered marketplace's `.claude-plugin/marketplace.json` is used
+  verbatim as the `plugins/<name>` directory segment, and that directory is read
+  wholesale into the served `marketplace.zip` / `marketplace.git` tree. Names are
+  now rejected at manifest ingest (`read_plugins`) and every constructed path is
+  contained to the marketplaces root — the two layers the security playbook §6
+  requires, and which the sibling asset-mirror path already had. Every call site
+  that builds that path now shares one rule (`src.marketplace.is_safe_plugin_name`,
+  applied via `_reject_unsafe_segment`) so they cannot drift apart again — the two
+  in `src/marketplace_filter.py`, the v2 skills endpoint whose output goes straight
+  into an HTTP response body, and the curated detail / skill-detail / agent-detail
+  endpoints plus their shared parent-fields helper, which relied on `_safe_join`
+  re-anchoring on an already-escaped plugin root.
+- **Symlinked files in plugin content are no longer packaged.** The ZIP backend,
+  the git backend, the ETag walk and the Store-bundle walk all traversed plugin
+  directories with a bare `rglob` and read through symlinks; the cowork packager
+  had guarded this since it shipped. All now share
+  `marketplace_filter.escapes_base`. A plugin directory that is itself a symlink
+  is stopped by the containment layer above, before any walk begins.
+- **The marketplace sync credential no longer touches argv or disk.** Server-side
+  sync built `https://x-access-token:<PAT>@host/…` and handed it to `git clone` /
+  `git remote set-url`, exposing the token in `/proc/<pid>/cmdline` and writing it
+  in plaintext into `${DATA_DIR}/marketplaces/<slug>/.git/config`, where it
+  persisted into backups and volume snapshots. The initial-workspace template sync
+  used the same helper and had the same exposure. Both now pass the token through
+  a per-invocation, **host-scoped** `credential.helper` reading `$AGNES_TOKEN`
+  from the subprocess environment (security playbook §7);
+  `agnes refresh-marketplace` gains the same host scoping, so a redirect can no
+  longer draw the workspace PAT to a third-party host. **Existing `.git/config`
+  files are scrubbed automatically on the next sync** — including for rows whose
+  sync currently fails validation. Operators who consider the token exposed
+  should rotate it.
+- Hardened `plugin.json` component-key resolution in the ZIP packager: a
+  curator-supplied path is now contained to the plugin directory instead of being
+  joined and walked as given.
+
 ## [0.79.0] - 2026-08-05
 ### Added
 

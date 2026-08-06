@@ -472,20 +472,26 @@ def test_checkout_pinned_sha_falls_back_when_direct_fetch_rejected(tmp_path, mon
     sha = "b" * 40
 
     calls = []
+    tokened = []
 
-    def fake_run_git(args, cwd=None):
+    def fake_run_git(args, cwd=None, *, url=None, token=None):
         calls.append(list(args))
+        tokened.append(token)
         if args[:2] == ["fetch", "--depth"] and args[-1] == sha:
             raise subprocess.CalledProcessError(128, ["git", *args], stderr="not our ref")
         return subprocess.CompletedProcess(["git", *args], 0, stdout="", stderr="")
 
     with patch.object(marketplace_mod, "_run_git", side_effect=fake_run_git):
-        marketplace_mod._checkout_pinned_sha(target, sha)
+        marketplace_mod._checkout_pinned_sha(target, sha, url="https://example.com/r.git", token="T")
 
     assert calls[0] == ["fetch", "--depth", "1", "origin", sha]
     # shallow (no .git/shallow file created in this fixture) -> plain fetch
     assert calls[1] == ["fetch", "origin"]
     assert calls[2] == ["checkout", "--detach", sha]
+    # Both network calls carry the token — the fallback fetch is the one a
+    # SHA-pinned private marketplace depends on, and it was easy to miss.
+    assert tokened[0] == "T"
+    assert tokened[1] == "T"
 
 
 # ---------------------------------------------------------------------------
@@ -493,20 +499,61 @@ def test_checkout_pinned_sha_falls_back_when_direct_fetch_rejected(tmp_path, mon
 # ---------------------------------------------------------------------------
 
 
-def test_authenticated_url():
-    from src.marketplace import _authenticated_url
+def test_credential_args_are_host_scoped():
+    """Replaces test_authenticated_url: the PAT is wired per-host, not embedded.
 
-    # No token → identity
-    assert _authenticated_url("https://example.com/x.git", "") == "https://example.com/x.git"
-    # HTTPS + token → x-access-token scheme
-    out = _authenticated_url("https://example.com/org/repo.git", "secret123")
-    assert out == "https://x-access-token:secret123@example.com/org/repo.git"
-    # With port
-    out = _authenticated_url("https://host:8443/repo.git", "t")
-    assert out == "https://x-access-token:t@host:8443/repo.git"
-    # Non-HTTPS (file://) → unchanged
-    assert _authenticated_url("file:///tmp/repo.git", "t") == "file:///tmp/repo.git"
-    assert _authenticated_url("http://host/repo.git", "t") == "http://host/repo.git"
+    Mirrors the old test's case table (no token, https, https+port, non-https)
+    so the same boundaries stay covered after the 2026-08-05 audit's F-2 fix.
+    """
+    from src.marketplace import _CREDENTIAL_HELPER, _credential_args
+
+    # No token → no flags at all
+    assert _credential_args("https://example.com/x.git", "") == []
+    # HTTPS + token → generic reset first, then a host-scoped helper
+    args = _credential_args("https://example.com/org/repo.git", "secret123")
+    assert args[:2] == ["-c", "credential.helper="]
+    assert args[2] == "-c"
+    assert args[3] == f"credential.https://example.com.helper={_CREDENTIAL_HELPER}"
+    # The token itself never appears on argv
+    assert not any("secret123" in a for a in args)
+    # With port → scoping keeps the port
+    args = _credential_args("https://host:8443/repo.git", "t")
+    assert args[3].startswith("credential.https://host:8443.helper=")
+    # Non-HTTPS → no flags (git would not use an https-scoped helper anyway)
+    assert _credential_args("file:///tmp/repo.git", "t") == []
+    assert _credential_args("http://host/repo.git", "t") == []
+
+
+def test_sync_never_puts_token_on_git_argv(clean_env, fake_remote, monkeypatch):
+    """Clone AND update paths must both keep the PAT out of the command line.
+
+    `fake_remote` yields a file:// URL, so this cannot exercise real HTTPS auth;
+    the argv assertion is what it CAN prove, and it fails on the pre-fix code
+    because `_authenticated_url` embedded the token in the clone argument. The
+    on-disk half is covered by
+    tests/test_security_audit_20260805.py::test_f2_scrub_strips_credentials_from_existing_config.
+    """
+    from src import marketplace as mp
+
+    monkeypatch.setenv("ACME_MARKETPLACE_TOKEN", "SECRET123")
+    calls: list[list[str]] = []
+    real = mp._run_git
+
+    def spy(args, cwd=None, **kw):
+        calls.append(list(args))
+        return real(args, cwd, **kw)
+
+    monkeypatch.setattr(mp, "_run_git", spy)
+
+    spec = {"id": "acme", "url": fake_remote["url"], "token_env": "ACME_MARKETPLACE_TOKEN"}
+    mp._sync_spec(spec)  # clone
+    mp._sync_spec(spec)  # update
+
+    flat = [arg for call in calls for arg in call]
+    assert not any("SECRET123" in a for a in flat), f"token on argv: {calls!r}"
+
+    config = mp.get_marketplaces_dir() / "acme" / ".git" / "config"
+    assert "SECRET123" not in config.read_text(encoding="utf-8")
 
 
 def test_is_valid_slug():
