@@ -267,19 +267,25 @@ def _set_publisher_kind(entity_id: str, kind: str) -> None:
     )
 
 
-def test_unverified_community_marker_absent_by_default(seeded_app, monkeypatch):
-    """Default behavior is upgrade parity: an unverified item is marked by the
-    ABSENCE of a marker, exactly as before the trust vocabulary existed, so a
-    routine upgrade never changes how existing rows read. Instances opt into
-    the positive Organization / Verified / Community statements via
-    `library.show_unverified_trust` (see the opt-in test below)."""
+def test_unverified_community_marker_present_by_default(seeded_app, monkeypatch):
+    """No row is left silently unlabelled: with nothing configured, an unverified
+    item states its provenance like the other two levels do.
+
+    This asserted the opposite until the default flipped. The old rationale was
+    upgrade parity — but the whole vocabulary is gated to paper (`mark()` renders
+    nothing without `paper=True`), so a default blue instance grows no markers
+    regardless of this flag, and off bought parity nowhere. What it did buy was a
+    Library where Organization and Verified rows carried a marker and every
+    unverified row carried none, which reads as the markers being broken rather
+    than as a third provenance level. The escape hatch is the next test.
+    """
     monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
-    _entity(owner="admin", owner_name="admin", etype="skill", name="Default Off Skill", status="approved")
+    _entity(owner="admin", owner_name="admin", etype="skill", name="Default On Skill", status="approved")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
-    row = _row(text, "Default Off Skill")
+    row = _row(text, "Default On Skill")
     assert row, "approved skill must appear in library"
-    assert "ds-trust--community" not in row
+    assert "ds-trust--community" in row
 
 
 def test_unverified_chip_absent_when_flag_explicitly_off(seeded_app, monkeypatch):

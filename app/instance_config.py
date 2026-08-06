@@ -276,8 +276,8 @@ FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
         name="library_show_unverified_trust",
         config_keys=("library", "show_unverified_trust"),
         env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-        default=False,
-        description="Show the 'Community' trust marker for unverified Store items in the Library. Off by default so existing instances keep their look after an upgrade (an unverified item is marked by the absence of a marker); set true to state all three provenance levels (Organization / Verified / Community) positively on every row.",
+        default=True,
+        description="Show the 'Community' trust marker for unverified Store items in the Library, so all three provenance levels (Organization / Verified / Community) are stated positively and no row is left silently unlabelled. On by default: the whole trust vocabulary is already gated to the paper theme (every `mark()` callsite passes `paper=is_paper()`), so upgrade parity for a default blue instance comes from that gate, not from this flag — leaving it off only suppressed the third level on the opt-in look that exists to state all three. Set false for the older silent reading, where an unverified item is marked by the ABSENCE of a marker.",
     ),
     FeatureFlag(
         name="mcp_query_param_token",

@@ -597,11 +597,12 @@ def test_show_unverified_trust_global_respects_the_off_switch(monkeypatch):
     monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
     assert _show_unverified_trust()
 
-    # Absent config is the documented off-by-default (upgrade parity): an
-    # existing instance keeps its look until an operator opts into the
-    # positive trust vocabulary.
+    # Absent config is ON: the Library states all three provenance levels rather
+    # than leaving every unverified row bare. Upgrade parity for a default blue
+    # instance comes from the paper gate on `mark()`, not from this flag — see
+    # tests/test_feature_flags.py::test_positive_trust_vocabulary_is_on_by_default.
     monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
-    assert not _show_unverified_trust()
+    assert _show_unverified_trust()
 
 
 def test_no_template_applies_a_jinja_default_to_the_unverified_trust_flag():
@@ -609,10 +610,12 @@ def test_no_template_applies_a_jinja_default_to_the_unverified_trust_flag():
 
     A `|default(...)` on this flag lets a stray template literal override the
     operator's setting wherever the variable is missing — when the flag was
-    briefly opt-out, exactly that happened, and with today's off-by-default a
-    `|default(true)` would silently resurrect the markers on every default
-    instance. The flag must resolve through the central
-    `show_unverified_trust_enabled()` global, never per-template fallbacks.
+    briefly opt-out, exactly that happened. The hazard is symmetric and survives
+    the default flipping on: a `|default(false)` now silently suppresses the
+    markers on an instance that never asked for the silent reading, just as a
+    `|default(true)` used to resurrect them on one that had disabled them. The
+    flag must resolve through the central `show_unverified_trust_enabled()`
+    global, never per-template fallbacks.
     """
     from pathlib import Path
 

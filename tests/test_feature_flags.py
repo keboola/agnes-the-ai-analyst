@@ -111,9 +111,23 @@ class TestFeatureFlagsRegistry:
         by_name = {f.name: f for f in ic.FEATURE_FLAGS}
         assert by_name["chat"].default is False
         assert by_name["data_apps"].default is False
-        # Upgrade parity: the positive trust vocabulary is an opt-in — an
-        # existing instance must not grow Community markers out of an upgrade.
-        assert by_name["library_show_unverified_trust"].default is False
+
+    def test_positive_trust_vocabulary_is_on_by_default(self):
+        """The Library states all three provenance levels, not two and a silence.
+
+        This flag was off, on an upgrade-parity rationale that the paper gate
+        already delivers: every `mark()` callsite passes `paper=is_paper()` and
+        the macro renders nothing without it, so a default blue instance grows no
+        markers whatever this flag says (pinned by
+        tests/test_ui_layout_theme.py::test_default_instance_renders_no_ds_trust_marker
+        and ::test_default_theme_renders_no_trust_markers_on_populated_rows).
+        Off therefore bought no parity — it only withheld the third level from
+        the one look built to state all three, so Organization and Verified rows
+        wore a marker and every unverified row was left bare, which reads as
+        markers being broken rather than as a provenance level.
+        """
+        by_name = {f.name: f for f in ic.FEATURE_FLAGS}
+        assert by_name["library_show_unverified_trust"].default is True
 
     def test_entries_carry_a_description(self):
         for flag in ic.FEATURE_FLAGS:
@@ -273,3 +287,30 @@ def test_chat_approvals_reports_the_value_the_gate_actually_uses(tmp_path, monke
     monkeypatch.setenv("AGNES_CHAT_APPROVALS_ENABLED", "1")
     effective, source = admin_mod._chat_flag_runtime_view(flag)
     assert effective is True and source == "env"
+
+
+def test_no_read_site_restates_the_library_trust_default_as_a_literal():
+    """The registry entry must BE the default, not a fourth opinion about it.
+
+    Three call sites resolve `library.show_unverified_trust` — the Jinja global
+    `_show_unverified_trust`, the /library route, and the store-item detail route
+    — and each once carried its own `default=False`. The docstring asked them not
+    to drift, which is documentation, not a mechanism: flipping the registry entry
+    changed nothing at all, because all three overrode it. They now read
+    `_LIBRARY_TRUST_DEFAULT`, which is derived from the registry.
+    """
+    import re
+    from pathlib import Path
+
+    text = Path("app/web/router.py").read_text(encoding="utf-8")
+    # Every resolution of this flag, with whatever it passes for `default=`.
+    blocks = re.findall(
+        r'env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",\s*\n\s*default=([^,\n]+),',
+        text,
+    )
+    assert len(blocks) == 3, f"expected 3 read sites, found {len(blocks)}: {blocks}"
+    offenders = [b for b in blocks if b.strip() != "_LIBRARY_TRUST_DEFAULT"]
+    assert not offenders, (
+        "these read sites restate the default as a literal instead of using "
+        f"_LIBRARY_TRUST_DEFAULT: {offenders}"
+    )
