@@ -583,33 +583,58 @@
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  /* Funnel chip on each inner card — lifted from marketplace.html
+  /* Funnel chip on a bundle's contents — lifted from marketplace.html
      `.mp-card .inv-chip`, re-scoped to the plugin detail surface so
      listing-card rules can evolve independently. Same colour mapping
-     so users carry mental model from listing → detail. */
-  .plugin-detail .inner-card .inv-chip {
+     so users carry mental model from listing → detail.
+
+     Scoped to the PAGE, not to `.inner-card`: `buildInnerCardChip()` emits the
+     same chip into two different structures — the legacy photo card's body and
+     the redesigned object row's trailing meta slot (`.detail-object__meta`).
+     Under the old `.inner-card ...` scope the redesigned row matched none of
+     these rules, so the inline SVGs fell back to their intrinsic replaced-element
+     box and rendered at 160px apiece. Anything nested under `.plugin-detail`
+     that carries `.inv-chip` gets the same chip; the hero's telemetry strip is
+     `.hero-telemetry` with no wrapper, so it keeps its own larger treatment. */
+  .plugin-detail .inv-chip {
     display: flex; align-items: center; gap: 8px;
     margin-top: 8px;
     font-size: 11.5px; color: var(--text-secondary);
     line-height: 1.4;
   }
-  .plugin-detail .inner-card .inv-chip-left {
+  .plugin-detail .inv-chip-left {
     display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
   }
-  .plugin-detail .inner-card .inv-chip > span,
-  .plugin-detail .inner-card .inv-chip-left > span {
+  .plugin-detail .inv-chip > span,
+  .plugin-detail .inv-chip-left > span {
     display: inline-flex; align-items: center; gap: 3px;
     white-space: nowrap;
   }
-  .plugin-detail .inner-card .inv-chip .seg-installed { margin-left: auto; }
-  .plugin-detail .inner-card .inv-chip svg {
+  .plugin-detail .inv-chip .seg-installed { margin-left: auto; }
+  .plugin-detail .inv-chip svg {
     width: 13px; height: 13px; flex-shrink: 0;
   }
-  .plugin-detail .inner-card .inv-chip .seg-installed > svg { color: var(--ds-accent-warn-line); }
-  .plugin-detail .inner-card .inv-chip .seg-active    > svg { color: var(--ds-accent-success-line); }
-  .plugin-detail .inner-card .inv-chip .seg-calls     > svg { color: var(--ds-orange); }
-  .plugin-detail .inner-card .inv-chip .trend-up   { color: var(--ds-accent-success-ink); font-weight: 600; }
-  .plugin-detail .inner-card .inv-chip .trend-down { color: var(--ds-accent-danger-ink); font-weight: 600; }
+  .plugin-detail .inv-chip .seg-installed > svg { color: var(--ds-accent-warn-line); }
+  .plugin-detail .inv-chip .seg-active    > svg { color: var(--ds-accent-success-line); }
+  .plugin-detail .inv-chip .seg-calls     > svg { color: var(--ds-orange); }
+  .plugin-detail .inv-chip .trend-up   { color: var(--ds-accent-success-ink); font-weight: 600; }
+  .plugin-detail .inv-chip .trend-down { color: var(--ds-accent-danger-ink); font-weight: 600; }
+  /* In the object row the chip is the row's trailing meta, not a line under a
+     card's description: it is content-sized and right-aligned, so it wants no
+     top margin, and its segments should wrap toward the trailing edge rather
+     than stretch the row when the viewport is narrow. */
+  .plugin-detail .detail-object__meta .inv-chip {
+    margin-top: 0; flex-wrap: wrap; justify-content: flex-end;
+  }
+  /* The name and its telemetry stop sharing a line comfortably well before the
+     panel itself runs out of room — the chip is ~220px of nowrap segments, so
+     on a phone it squeezes the name to two words. Drop it onto its own line,
+     indented past the glyph so it still reads as belonging to the row. */
+  @media (max-width: 640px) {
+    .plugin-detail .detail-object { flex-wrap: wrap; }
+    .plugin-detail .detail-object__meta { margin-left: 44px; }
+    .plugin-detail .detail-object__meta .inv-chip { justify-content: flex-start; }
+  }
 
   /* Tables (commands, hooks, mcps) */
   .plugin-detail .substruct table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1627,7 +1652,9 @@
     // same relationship, so they get the same component; the photo-card grid
     // below stays as the legacy rendering.
     if (root.dataset.redesign) {
-      const rows = items.map(it => `
+      const rows = items.map(it => {
+        const chip = buildInnerCardChip(it);
+        return `
         <li style="--kind: var(--ds-kind-${type}); --kind-soft: var(--ds-kind-${type}-soft);">
           <a class="detail-object" href="${esc(it.detail_url || '#')}">
             <span class="detail-object__glyph" aria-hidden="true">${deriveInitials(it.name, type)}</span>
@@ -1638,9 +1665,10 @@
               </span>
               ${it.description ? `<span class="detail-object__desc">${esc(it.description)}</span>` : ''}
             </span>
-            ${buildInnerCardChip(it) ? `<span class="detail-object__meta">${buildInnerCardChip(it)}</span>` : ''}
+            ${chip ? `<span class="detail-object__meta">${chip}</span>` : ''}
           </a>
-        </li>`).join('');
+        </li>`;
+      }).join('');
       return `
         <div class="substruct">
           <div class="head">

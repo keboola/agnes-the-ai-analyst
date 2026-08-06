@@ -887,3 +887,29 @@ def test_light_only_tint_detector_flattens_media_queries() -> None:
     """A rule inside `@media` is audited like any other — nesting is not a hole."""
     nested = "@media (max-width: 620px) {" + _REGRESSION_CSS + "}"
     assert len(light_only_tint_offenders(nested, {"--ds-agnes-soft"})) == 1
+
+
+def test_plugin_detail_chip_icons_are_sized_wherever_the_chip_renders() -> None:
+    """`buildInnerCardChip()` emits ONE chip into TWO structures — the legacy
+    photo card's body and the redesigned object row's trailing meta slot — so its
+    stylesheet must be scoped to the page, not to `.inner-card`.
+
+    The regression: the redesign moved the chip into `.detail-object__meta`,
+    outside `.inner-card`, and the whole rule block (including
+    `width: 13px; height: 13px` on the inline SVGs) stopped matching. Inline SVG
+    with a `viewBox` and no dimensions falls back to the intrinsic
+    replaced-element box, so each glyph rendered at ~160px — three of them across
+    the row, in a chip meant to be 13px punctuation.
+    """
+    src = (TEMPLATES / "marketplace_plugin_detail.html").read_text()
+    # The redesigned renderer really does put the chip outside `.inner-card` —
+    # if this changes, the rest of this test is asserting about nothing. Matched
+    # loosely (bare call or hoisted local) so this stays a check on WHERE the
+    # chip lands, not on how the renderer spells it.
+    assert re.search(r'class="detail-object__meta">\$\{\s*(?:chip|buildInnerCardChip\(it\))\s*\}', src), (
+        "the object-row renderer no longer wraps the chip in .detail-object__meta"
+    )
+    assert ".plugin-detail .inv-chip svg" in src, "the chip's SVG size rule is missing"
+    assert ".inner-card .inv-chip" not in src, (
+        "chip rules are scoped to .inner-card again — the object-row chip loses all of them, including the SVG size"
+    )
