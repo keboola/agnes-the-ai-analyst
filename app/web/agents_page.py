@@ -15,9 +15,10 @@ shadow `/agents`.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.auth.dependencies import get_current_user
+from app.instance_config import get_agent_profiles_enabled
 from app.web.router import _chrome_ctx, templates
 from src.repositories import agent_memories_repo, agents_repo
 
@@ -56,7 +57,7 @@ def _memories_for_panel(agent_id: str) -> list[dict]:
 @router.get("/agents", response_class=HTMLResponse)
 async def agents_page(request: Request, user: dict = Depends(get_current_user)):
     if not get_agent_profiles_enabled():
-        return RedirectResponse("/")
+        return RedirectResponse("/", status_code=302)
     rows = agents_repo().list_for_user(user["id"])
     agents = [
         {
