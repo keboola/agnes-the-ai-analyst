@@ -22,6 +22,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.79.1] - 2026-08-06
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
 - **Marketplace plugin names are validated as single path segments.** A plugin
   `name` in a registered marketplace's `.claude-plugin/marketplace.json` is used
   verbatim as the `plugins/<name>` directory segment, and that directory is read
