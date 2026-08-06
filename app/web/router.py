@@ -3105,6 +3105,7 @@ async def library_page(
             # `GET /api/marketplace/items` computes its `installed` flag from,
             # is what keeps the two surfaces from drifting again.
             from app.api.marketplace import _curated_stack_sets
+            from app.api.store import ORGANIZATION_PUBLISHER_LABEL
 
             plugin_in_stack, plugin_required = _curated_stack_sets(None, uid)
             for pl in marketplace_plugins_repo().list_all():
@@ -3125,12 +3126,29 @@ async def library_page(
                     origin_label="Shared with you",
                     added=None,
                     meta_text=pl.get("category") or "",
-                    owner_label="Your workspace",
+                    # A curated plugin is served off an admin-registered
+                    # marketplace: the organization stands behind it, exactly as
+                    # `/api/marketplace/items` reports it (`publisher_kind=
+                    # "organization"`, `publisher_name=ORGANIZATION_PUBLISHER_LABEL`).
+                    # The Library used to call the same item "Your workspace" and
+                    # emit no trust marker, so the one class of item that IS
+                    # organization-published was the one class showing no
+                    # Organization marker — the two surfaces contradicted each
+                    # other on the same row.
+                    owner_label=ORGANIZATION_PUBLISHER_LABEL,
                     # The tier is real for plugins too, so the Optional/Required
                     # facet slices them the way it slices data packages.
                     requirement=("required" if key in plugin_required else "optional"),
                 )
                 row = items[-1]
+                # Same three fields the store-entity rows carry, so the trust
+                # marker macro reads one vocabulary across every Library row.
+                # A curated plugin has no per-item verification state — the
+                # organization publishing it outranks verification anyway (see
+                # `level_for()` in macros/_trustmark.html).
+                row["publisher_kind"] = "organization"
+                row["verified"] = False
+                row["trust_level"] = "org"
                 # Same endpoint both ways: POST subscribes, DELETE unsubscribes
                 # (`curated_install` / `curated_uninstall`). The Library's toggle
                 # is kind-agnostic — it POSTs/DELETEs whatever the row names.

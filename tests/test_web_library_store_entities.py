@@ -543,3 +543,68 @@ def test_row_publishes_its_real_sharing_label_for_the_card_to_print(seeded_app):
     private = _row(text, "Kept Back")
     assert private
     assert 'data-sharing="Private"' in private
+
+
+# ---------------------------------------------------------------------------
+# A curated plugin is organization-published — on EVERY surface
+# ---------------------------------------------------------------------------
+
+
+def _granted_curated_plugin(*, marketplace_id: str, name: str, user_id: str) -> None:
+    """Seed a curated plugin off an admin-registered marketplace, granted to a
+    group ``user_id`` belongs to — the shape the Library lists it in."""
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    conn = get_system_db()
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url) VALUES (?, 'Curated Co', 'https://example.com/r.git')",
+        [marketplace_id],
+    )
+    conn.execute(
+        "INSERT INTO marketplace_plugins (marketplace_id, name, description, is_system) "
+        "VALUES (?, ?, 'A curated plugin', FALSE)",
+        [marketplace_id, name],
+    )
+    groups = UserGroupsRepository(conn)
+    grp = groups.get_by_name(f"grp-{name}") or groups.create(name=f"grp-{name}", description="t", created_by="t")
+    UserGroupMembersRepository(conn).add_member(user_id, grp["id"], source="admin", added_by="t")
+    ResourceGrantsRepository(conn).create(
+        group_id=grp["id"],
+        resource_type="marketplace_plugin",
+        resource_id=f"{marketplace_id}/{name}",
+        assigned_by="admin",
+    )
+    conn.close()
+
+
+def test_curated_plugin_row_is_marked_organization_published(seeded_app):
+    """A curated plugin comes off a marketplace an ADMIN registered, so the
+    organization stands behind it — and `/api/marketplace/items` says exactly
+    that (``publisher_kind="organization"``, publisher "Your organization").
+
+    The Library used to disagree with itself here: it called the same plugin
+    "Your workspace" and set none of the three trust fields the row's marker
+    reads, so the one class of item that genuinely IS organization-published was
+    the one class wearing no Organization marker. Worse, the absence was not
+    neutral — on an instance with ``library.show_unverified_trust`` on, every
+    OTHER plugin and skill wore a marker, so the org-published one read as the
+    least-vouched-for thing on the page.
+    """
+    _granted_curated_plugin(marketplace_id="org-curated", name="curated-kit", user_id="analyst1")
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row(text, "curated-kit")
+    assert row, "granted curated plugin missing from the Library"
+    assert "ds-trust--org" in row
+    assert "Published by your organization." in row
+    # The Owner column names the ORGANIZATION, the same words /marketplace uses
+    # (app.api.store.ORGANIZATION_PUBLISHER_LABEL) — not the generic workspace.
+    assert "Your organization" in row
+    assert "Your workspace" not in row
+    # Organization outranks verification, and a curated plugin has no per-item
+    # verification state to promote it with. Never both markers on one row.
+    assert "ds-trust--verified" not in row
+    assert "ds-trust--community" not in row
