@@ -22,8 +22,101 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- **`quote_ident` moved to `src/sql_ident.py`; every hand-quoted SQL identifier
+  now routes through it** — across the connectors, the orchestrator, the query
+  API, the CLI and the DuckDB→Postgres migration tooling, all still building
+  `f'"{name}"'` by hand. Several were already escaping correctly inline and are
+  converted only so the ratchet guard has one shape to match; none of the
+  conversions changes the emitted SQL for an identifier that passes the existing
+  validation gates. ATTACH aliases (`kbc`, `bq`, and the orchestrator's
+  per-source alias) are deliberately left unquoted — they are catalog names, not
+  identifiers this code owns. `src.profiler` re-exports the function, so existing
+  importers are unchanged.
+  The guard in `tests/test_security_audit_20260805.py` matches the *shape* of a
+  hand-quoted identifier anywhere in a string literal, rather than its position
+  in the statement. Two earlier versions keyed off position — "a keyword before
+  the quote", then "a keyword or a dot" — and each time an empty allowlist was an
+  artifact of not looking: `DROP VIEW IF EXISTS "{name}"` has ` IF EXISTS `
+  between the keyword and the quote, and a predicate column (`f'"{col}" = ?'`)
+  has neither a keyword nor a dot near it. Scanning by shape surfaces the
+  legitimate non-SQL uses of the same shape too (HTTP `Content-Disposition` and
+  `ETag` values, template placeholders, HTML attributes, empty-JSON defaults), so
+  the allowlist is no longer empty — it is a list of families, each carrying the
+  reason it is not an identifier. A second guard deletes a family that stops
+  matching anything, so the list can only shrink.
+
+- Test fixtures use `example.com` instead of a specific deployment's hostname,
+  per the vendor-agnostic rule in `CLAUDE.md`.
+
+- `.gitignore` now ignores a `.venv` **symlink**, not just a directory. Parallel
+  worktrees symlink the main checkout's venv (`scripts/dev/worktree-spawn.sh`),
+  and a trailing-slash pattern matches directories only — so every such worktree
+  carried an untracked `.venv`.
+
 ### Security
 
+- **A filter column name could break out of its quotes on
+  `POST /api/mcp/query-table/{table_id}`.** The endpoint's allow-list only
+  checked that the filter column exists in the view's `DESCRIBE` output; it never
+  constrained the characters in the name. Column names for a collection-ingested
+  table are whatever the uploaded file's header said — `src/ingest/tabular.py`
+  COPYs the reader's output straight to parquet without renaming — so a header of
+  `x") OR 1=1 --` became a real column, satisfied the allow-list, and then closed
+  the hand-built `f'"{col}" = ?'` identifier and appended its own predicate.
+  Reaching it needs permission to upload a file into a collection and to query
+  the derived table. The column name now routes through `quote_ident` like every
+  other identifier; a regression test asserts the filter still *filters* (a
+  non-matching value returns no rows), because a successful break-out produces a
+  perfectly valid query and would pass a "no 500" check.
+
+- **`agnes pull` validates table ids from the server manifest.** A manifest table
+  id becomes both a filesystem path segment (`<id>.parquet` plus its sidecar) and
+  a DuckDB view identifier on the analyst's machine. The same charset gate
+  already covered collection ids, doc slugs and item ids in that module; the
+  table id was missed. Table ids get their own dot-tolerant pattern rather than
+  widening the shared one — admin-derived ids legitimately contain dots
+  (`orders.v2`), while the other three consumers are spliced into request paths
+  where a dotted value normalizes away. Unsafe ids are skipped with a warning on
+  stderr rather than collected as errors, so one bad id cannot make every
+  subsequent pull exit non-zero — including from the SessionStart hook.
+
+## [0.79.2] - 2026-08-06
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Local snapshots no longer stop resolving after a pull. `_rebuild_duckdb_views` drops every view and re-created only those backed by a parquet under `server/parquet`; snapshots live in `user/snapshots`, so `agnes pull` destroyed their views and nothing put them back. Because the SessionStart hook runs a pull, a snapshot became unqueryable at the start of the next Claude Code session, reporting `Table with name <snapshot> does not exist` while `agnes snapshot list` (which reads the meta sidecars off disk) still listed it as present. Snapshot views are now re-registered as part of the rebuild, after the server-parquet loop so a registered table still wins a name collision. The fix is self-healing: a workspace whose snapshot views were already destroyed gets them back on the next pull, with no user action. A snapshot is not registered under a table id the analyst is no longer authorized for, or that turned `server_only` — `agnes snapshot create` with no `--as` names the file after its source table, and re-registering it would let the bare id resolve to stale snapshot rows after de-authorization instead of erroring. The parquet stays on disk and stays reachable through its snapshot path; only the bare id stops resolving. Withholding is scoped to ids that really did resolve locally before this pull, and the decision is remembered in `sync_state` rather than recomputed: the evidence (an id's sync_state row) is deleted by the prune itself, so a freshly-derived set would withhold the name on the pull that removes the parquet and release it on the next one. An id that was never downloaded — a `query_mode='remote'` table, or any table outside the caller's own stack, which for an admin is most of the instance — is therefore never withheld, keeping the documented snapshot-a-remote-table-then-query-it-by-name flow working; a table that vanished from the manifest entirely (full revocation) IS withheld, which the manifest-only rule missed. A name is released once its table resolves locally again. Any withheld name is reported on `PullResult.snapshot_views_blocked` and surfaced on every path that can take one: printed by `agnes pull` with the `--as` workaround, in its `--json` output, in the `agnes update` run report (which persists to `.claude/agnes/update.log` — the SessionStart hook runs `agnes update` detached with stdout and stderr discarded, so this is the only channel the automatic refresh has), and in the MCP `pull` response. The analyst is told rather than left to discover a missing table later.
+
+- An install-prompt override saved before the PAT handoff moved to `--token-file` is no longer served: Jinja2 leaves a single-brace `{token}` untouched, so such a template wrote the literal string `{token}` into `~/.agnes/token` and every setup attempt failed to authenticate. The save-time guards only inspect new writes, so the check now sits at the render seam — a stored override carrying the retired placeholder is ignored in favour of the built-in default, with a log line telling the operator to re-save it.
+
+- The /home install guide no longer strands users whose freshly installed Claude Code CLI is invisible to the terminal they installed it in: the official step-1 installer runs `claude install` as a child process, which can only write the User PATH to the registry (Windows) or shell rc files (macOS/Linux) — never the already-open terminal's PATH — so step 4's `claude` launch failed with "command not found" right after a successful install. Step 1's command is now a self-healing check-install-verify one-liner that keeps the user in the same terminal: an already-working `claude` skips installation entirely, an installed-but-not-on-PATH binary is fixed by prepending `~/.local/bin` to the current session's PATH (the pasted command runs in the user's own shell, so it can do what the child-process installer cannot) without re-downloading, and only a truly missing CLI runs the official installer; a trailing `claude --version` proves success in every branch. Step 4 now checks for `claude` before touching anything: when the CLI is missing it prints one actionable line (run step 1 in this terminal, paste again) and writes nothing — no 90-day plaintext token left on disk for a flow that stopped, the retry paste rewrites it; when present, the token write (still success-gated) and launch proceed as before. Its copy also notes the one-time browser sign-in on first launch.
+- The optional-connector ask in the install prompt now reads `(yes/no)` instead of `(Y/n)`: the de-escalated block header requires a clear yes and treats declining/deferring as valid skips, so the capital-Y "Enter means yes" convention contradicted it — a user accepting the implied default would have had the tool silently skipped. The seed-repo contract's documented ask shape follows suit.
+- `/setup`'s pointer to the login-token step no longer dead-ends users who already finished onboarding (e.g. setting up a second machine): the /home install guide — including the "launch Claude" step that writes `~/.agnes/token` — is hidden once setup completes, so the copy now names the "Mark me as offboarded" button on /home as the way to bring it back. The generated install prompt's expired-token recovery note — which sends the user back to that same hidden step — now names the same button. `agnes onboarded status`'s /home-scrape fallback now anchors on the onboarded-only offboard strip's container markup instead of the button label — the label phrase newly appears inside the embedded install prompt, which the not-onboarded page also renders, so a text marker would misreport a fresh user as onboarded.
+- `agnes update` no longer treats a zero-work session push as proof that the saved credential works: a push with nothing to upload deliberately makes no server request, yet its step reported `ok`, so a run where the workspace and pull steps failed auth could still delete the leftover `~/.agnes/token` — the exact input the expired-credential recovery (`agnes init --force --token-file ~/.agnes/token`) needs. The no-op push now reports `skipped`, and the bootstrap file survives until a step completes a real authenticated round-trip.
+- The retired `{token}` placeholder is now blocked on the install prompt's git path too, not just the editor save: `bind-git` rejects binding a file that carries it, and the Initial Workspace Template sync's render dry-run red-flags a synced seed whose `install-prompt/template.md.tmpl` still embeds it (rendered literally, the legacy heredoc would write the string `{token}` into every analyst's `~/.agnes/token` and fail every `agnes init`). The legacy `PUT /api/admin/welcome-template` editor — which writes the same repository backing the install prompt — enforces the same rejection instead of bypassing it, and the dry-run's hard error is scoped to seeds the install prompt actually renders: it scans the file the prompt is git-bound to — `bind-git` accepts any repo-relative path, so a prompt bound to a non-canonical file is checked too, not just the canonical template — and an editor-mode prompt or a bundled-fallback hit degrades to a warning. The seed-repo contract's tile-block section was also realigned with the de-escalated renderer output ("If the user agrees, follow this outline:").
+- The generated install prompt reworded its force-style phrasing (`REFUSE`, `PROCEED SILENTLY`, "verbatim", "mandatory", default-yes asks, piped shell installers) into neutral, calm guidance — Claude Code's safety layer was increasingly stalling mid-install on the old wording. Added a banned-phrase regression guard (`tests/test_install_prompt_banned_phrases.py`) plus dev tooling (`scripts/dev/render_prompt.py`, `scripts/dev/check_prompt.py`) to catch a re-introduction.
+- The optional-connectors step's trailer sent the agent straight to Confirm, skipping the Restart-Claude step in between — installed plugins, MCP servers, and hooks never got reloaded before the summary. It now forwards to Restart-Claude. The install prompt also gained: a verification line after `agnes init` confirming `~/.agnes/token` was actually consumed (surfaced in the Confirm summary too); explicit permission for one combined AskUserQuestion covering all optional connectors instead of one ask per tool; an instruction to announce the install directory immediately in step 2b and post brief one-line progress notes as later steps complete; and a reworded step-5 marketplace header that no longer hard-claims no plugins are granted (the CLI reads the live manifest at install time).
+- The `GET /api/connectors/params` server-resolved GWS fallback shipped only an `AGNES_GWS_CLIENT_SECRET_ENV` pointer naming a shell env var that nothing on analyst laptops populates — so the connector-gws skill's operator-provisioned fast path never worked end-to-end and every analyst fell through to the manual GCP-project walkthrough (or a confusing "do you have the secret?" ask). The fallback now ships the client-secret value itself (`AGNES_GWS_CLIENT_SECRET`), resolved per-request from server env / admin vault / `instance.yaml`, while keeping the legacy `*_ENV` pointer alongside it for backward compatibility with older seed skills; a Google Desktop-app OAuth client secret is an app identifier rather than a user credential, and the value lands only in the analyst's git-ignored `.claude/agnes/.env` (0600). The bundled connector-gws seed skill was updated in step: it reads the value from the params file via a transform script that keeps the value out of the session transcript, refreshes the params file once via `agnes update` when the value is missing (legacy pointer-only files), and only then falls back to the operator/manual branch. Overlay-set keys still win over the server-resolved ones; `*_ENV` pointer keys remain a pass-through legacy shape. Admin UI hints, `instance.yaml.example`, and the API/seed-contract docs no longer steer operators toward the dead pointer convention.
+- After a successful clipboard Retry in /home's "launch Claude" step, the stale "Clipboard access was blocked" notice — including its reveal-the-token button — is now cleared; it previously stayed on screen and invited a pointless plain-text token reveal.
+- The "Got it" button in /home's "Setup script copied to clipboard" modal wrapped its label onto two lines: the modal footer is a space-between flex row whose long left-hand note squeezed the button. The button no longer shrinks or wraps.
+- On Windows, `agnes refresh-marketplace` (and the `agnes init`/`agnes update` paths that call it) could pop an interactive Git Credential Manager dialog asking for credentials for the Agnes host: `git -c credential.helper=<inline>` *appends* to git's helper chain rather than replacing it, so the globally configured GCM was consulted first and showed its GUI when it had nothing stored (`GIT_TERMINAL_PROMPT=0` only suppresses git's terminal prompt, not GCM's window). Network git calls now reset the helper chain with a leading empty `credential.helper=` entry so the PAT-bearing env-based helper is the only one consulted; the dialog no longer appears (dismissing it had let the flow continue, so this was friction, not breakage).
+- On a fully clean machine the installing assistant sometimes opened with a blanket "install software from an unknown domain?" confirmation because the prompt carried no provenance context. The preamble now states the verifiable facts — the prompt is the final step of the same install guide that saved the login token, and whether the host is trusted is the user's org's call (verifiable with IT) — so the assistant can ground its first-contact trust decision instead of guessing; the ask/no-ask judgment stays with the assistant. Step 2b's prepared-workspace whitelist also grew a `bash.exe.stackdump` entry (a harmless Git Bash crash-dump leftover on Windows) so its presence no longer triggers the "anything else" branch's confirmation ask.
+- The install guide's OS tabs (macOS/Linux vs Windows) now switch page-wide with one click instead of per step. Each step's tabs were independent, so a Windows user who picked Windows in step 1 still got the bash command from step 4's masked copy button — an invisible mismatch that only surfaced when the pasted line failed in PowerShell.
+- /home's Windows Step 4 command wrote `~/.agnes/token` with `Set-Content -Encoding utf8`, which under Windows PowerShell 5 (the stock `powershell.exe` the guide points at) emits a UTF-8 BOM; `agnes init --token-file` read the file as plain UTF-8 and `str.strip()` does not remove U+FEFF, so the bearer token was silently corrupted and the init sign-in failed. The copied command now writes via `[IO.File]::WriteAllText` (BOM-free on PowerShell 5 and 7 alike), and the CLI reader now decodes `utf-8-sig` so token files already written with a BOM keep working. The clipboard-blocked reveal fallback also scrubs the token from its textarea before the dialog leaves the DOM.
+### Removed
+
+### Internal
+
+### Security
+
+- `agnes update` now removes a leftover `~/.agnes/token` once an authenticated step in the same run proved the saved credential works — on the reconcile path nothing ever consumed the bootstrap file, so a re-running analyst kept a live plaintext 90-day credential on disk indefinitely. When no step authenticates (offline, expired credential), the file is kept on purpose: it is the input for the `agnes init --force --token-file` recovery. Complementary tightening in `agnes init --token-file`: an ABSENT file still falls back to the saved credential (consumed-by-earlier-init is benign), but a file that exists and cannot be read is again a hard error — silently proceeding would authenticate with a possibly-expired saved credential and blame the server.
+- Review follow-ups on the token handoff: the bundled reference install-prompt template (`src/_bundled_seed/install-prompt/template.md.tmpl`) no longer references `{token}` — it mirrors the built-in prompt's token-free shape (guard on `~/.agnes/token`, `agnes init --token-file`) — and saving an install-prompt override that still carries `{token}` is now rejected at save time with guidance (the renderer stopped substituting it, so such an override would emit the literal string and break every install). The Windows Step 4 command now launches Claude only after the token write succeeded; the clipboard-blocked Retry re-attempts only the clipboard write instead of minting a fresh 90-day token per click, and the reveal fallback's modal now steers the command to the terminal (pasting it into the Claude Code chat would record the token in the transcript).
+- Install-prompt guidance fixes: the expired-credential recovery now names the working command (`agnes init --force --token-file …` — plain `agnes init` refuses once `.claude/init-complete` exists, and `agnes update` reuses the expired saved credential); the "token file consumed" check applies only to the `agnes init` branch (on the `agnes update` reconcile path the file legitimately survives, and the check no longer reads as a shell failure); and the missing-token preflight treats a machine as reconciled only with a saved credential present — a globally installed CLI alone no longer skips the stop. `agnes init --token-file` with a missing file now falls back to `AGNES_TOKEN` / the saved credential instead of aborting (a file that exists but cannot be read stays a hard error — see the `agnes update` bullet above). Dashboard and advanced-setup copy no longer promise a token-bearing setup script; stale docstrings about clipboard/DOM isolation now state the actual boundary.
+- The generated install prompt no longer embeds the analyst's raw access token: the `Personal access token: {token}` preamble line and the `~/.agnes/token` heredoc in the `agnes init` step are gone, replaced by a guard (`test -s ~/.agnes/token`, fresh-install vs. reconcile aware) that assumes the token was already saved to `~/.agnes/token` by an earlier step of the web onboarding flow, before the prompt was generated. `agnes init --token-file` still reads it and removes it once the credential is saved to `~/.config/agnes/token.json`. The token value now never has to appear in the prompt text, a browser clipboard, or a pasted chat transcript. `docs/seed-repo-contract.md` and the banned-phrase regression guard were updated accordingly (`{token}` / a literal JWT fragment are now banned from the rendered body).
+- The web half of the same change: `/home`'s install guide now hands the token to the machine via a copied shell command (Step 4, "Launch Claude — we'll hand it your login first" / "Save your login token") instead of embedding it in the setup script — the command saves the token to `~/.agnes/token` and, when auto-mode is on, launches Claude in the same line. The visible command always shows a masked placeholder; the real token is minted only in memory at copy time and never written into the page. Step 5's "Copy install script to clipboard" no longer mints or carries any token at all. `/setup`'s single-page flow got the matching treatment.
 ## [0.79.1] - 2026-08-06
 
 ### Added
@@ -44,6 +137,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   wholesale into the served `marketplace.zip` / `marketplace.git` tree. Names are
   now rejected at manifest ingest (`read_plugins`) and every constructed path is
   contained to the marketplaces root — the two layers the security playbook §6
+  requires, and which the sibling asset-mirror path already had. Three call sites
+  build that path (`src/marketplace_filter.py` ×2 and the v2 skills endpoint,
+  whose output goes straight into an HTTP response body); all three now share one
+  rule, `src.marketplace.is_safe_plugin_name`, so they cannot drift apart again.
   requires, and which the sibling asset-mirror path already had. Every call site
   that builds that path now shares one rule (`src.marketplace.is_safe_plugin_name`,
   applied via `_reject_unsafe_segment`) so they cannot drift apart again — the two

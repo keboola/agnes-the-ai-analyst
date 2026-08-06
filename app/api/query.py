@@ -7,39 +7,38 @@ import re
 import time
 from typing import Optional
 
+import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
-import duckdb
-
-from app.auth.access import is_user_admin
-from app.auth.dependencies import get_current_user, _get_db
-from app.auth.session_principal import PRINCIPAL_TYPES
-from app.instance_config import get_value
-from connectors.internal.access import (
-    InternalAccessError,
-    execute_internal_query,
-    find_internal_refs,
-    is_internal_table,
-)
-
-from src.repositories import (
-    audit_repo,
-    table_registry_repo,
-)
-from src.audit_helpers import client_kind_from_user
-from src.db import get_analytics_db_readonly
-from src.rbac import get_accessible_tables
-from src.remote_query import _strip_leading_sql_comments
 
 # Imported at module level so tests can monkeypatch via
 # `app.api.query._bq_dry_run_bytes` without resolving lazy imports inside
 # the handler (reaches the patched attribute on each call). Same for
 # get_bq_access — sibling module, dep direction doesn't matter (both are
 # leaves under app.api).
-from app.api.v2_quota import _build_quota_tracker, QuotaExceededError
+from app.api.v2_quota import QuotaExceededError, _build_quota_tracker
 from app.api.v2_scan import _bq_dry_run_bytes
-from connectors.bigquery.access import get_bq_access, BqAccessError, run_bq_query_to_arrow
+from app.auth.access import is_user_admin
+from app.auth.dependencies import _get_db, get_current_user
+from app.auth.session_principal import PRINCIPAL_TYPES
+from app.instance_config import get_value
+from connectors.bigquery.access import BqAccessError, get_bq_access, run_bq_query_to_arrow
 from connectors.bigquery.labels import job_labels_for
+from connectors.internal.access import (
+    InternalAccessError,
+    execute_internal_query,
+    find_internal_refs,
+    is_internal_table,
+)
+from src.audit_helpers import client_kind_from_user
+from src.db import get_analytics_db_readonly
+from src.rbac import get_accessible_tables
+from src.remote_query import _strip_leading_sql_comments
+from src.repositories import (
+    audit_repo,
+    table_registry_repo,
+)
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -497,9 +496,16 @@ def _run_internal_query(
 # Functions that take `FROM` as an *argument separator* rather than a clause
 # keyword: `EXTRACT(YEAR FROM ts)`, `SUBSTRING(s FROM 2)`, `TRIM(… FROM s)`.
 # The identifier following that FROM is a column, not a table.
-_FROM_AS_ARGUMENT_FUNCS = frozenset({
-    "extract", "substring", "substr", "trim", "overlay", "position",
-})
+_FROM_AS_ARGUMENT_FUNCS = frozenset(
+    {
+        "extract",
+        "substring",
+        "substr",
+        "trim",
+        "overlay",
+        "position",
+    }
+)
 
 # One dotted-path segment: bare, double-quoted, or backticked. A backticked
 # segment may itself contain dots, since a whole quoted FQN is a single token.
@@ -665,7 +671,7 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
             # `FROM unnest(...)` / `FROM generate_series(...)`: a function
             # call producing inline rows, not a relation.
             continue
-        table = _normalize_table_path(sql[match.start(1):match.end(1)])
+        table = _normalize_table_path(sql[match.start(1) : match.end(1)])
         if table:
             # Lowercase: registry ids are lowercased at registration, so
             # `from Orders` must not tag `table:Orders` and then read as
@@ -1194,7 +1200,9 @@ def _build_materialized_hint(row: dict) -> str:
         # BigQuery: `bq."dataset"."table"`; Keboola: `kbc."bucket"."table"`.
         # Pick the alias by source_type so the hint is copy-pasteable.
         alias = "bq" if (row.get("source_type") or "") == "bigquery" else "kbc"
-        direct_hint = f' or query the source directly via {alias}."{bucket}"."{source_table}"'
+        # Not executed — a copy-pasteable hint. Routed through quote_ident anyway
+        # so the suggestion stays valid SQL when a name contains a quote.
+        direct_hint = f" or query the source directly via {alias}.{quote_ident(bucket)}.{quote_ident(source_table)}"
     return (
         f"Table {tid!r} is registered as query_mode='materialized' but is "
         f"not yet materialized in this instance's analytics views. Run "
@@ -1363,7 +1371,7 @@ def _bq_guardrail_inputs(
                 [],
                 {
                     "reason": "bq_path_not_registered",
-                    "path": f'bq."{bucket_raw}"."{source_table_raw}"',
+                    "path": f"bq.{quote_ident(bucket_raw)}.{quote_ident(source_table_raw)}",
                     "hint": (
                         "Direct bq.* references must point to a registered table. "
                         "Register via `agnes admin register-table` or use the "
@@ -1382,7 +1390,7 @@ def _bq_guardrail_inputs(
                     [],
                     {
                         "reason": "bq_path_access_denied",
-                        "path": f'bq."{bucket_raw}"."{source_table_raw}"',
+                        "path": f"bq.{quote_ident(bucket_raw)}.{quote_ident(source_table_raw)}",
                         "registered_as": row["name"],
                     },
                 )

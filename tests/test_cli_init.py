@@ -247,6 +247,82 @@ def test_init_deletes_bootstrap_token_file(tmp_path, monkeypatch):
     assert not token_file.exists(), "~/.agnes/token should be deleted after init"
 
 
+def test_init_token_file_unreadable_but_present_hard_fails(tmp_path, monkeypatch):
+    """An ABSENT --token-file falls back to the saved credential (the file
+    was consumed by an earlier init — benign). A file that EXISTS but cannot
+    be read is a real error: silently falling back would authenticate with a
+    possibly-expired saved credential and blame the server. A directory in
+    the token-file's place triggers exactly that read failure portably.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    bad = home / ".agnes" / "token"
+    bad.mkdir(parents=True)  # a DIRECTORY named token — read_text raises, path exists
+
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token-file",
+            str(bad),
+            "--workspace",
+            str(tmp_path / "ws"),
+        ],
+    )
+    assert result.exit_code == 1
+    # The error renderer wraps long hints at terminal width, which can split
+    # the phrase across lines — normalize whitespace before matching.
+    assert "could not be read" in " ".join(result.output.split())
+
+
+def test_init_token_file_strips_windows_powershell_bom(tmp_path, monkeypatch):
+    """/home's Windows Step 4 command writes ~/.agnes/token via PowerShell;
+    Windows PowerShell 5 emits UTF-8 *with BOM* for `-Encoding utf8` (older
+    copies of the guide, or a user retyping the command with `utf8`). A plain
+    utf-8 read keeps U+FEFF glued to the token — str.strip() does not remove
+    it — and the bearer header is silently corrupted. The reader must strip
+    the BOM so the stored credential is the clean token.
+    """
+    import json
+
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg_dir = tmp_path / "_cfg"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(cfg_dir))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    bootstrap_dir = home / ".agnes"
+    bootstrap_dir.mkdir()
+    token_file = bootstrap_dir / "token"
+    token_file.write_bytes(b"\xef\xbb\xbf" + b"eyJ-bootstrap-pat\n")
+
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token-file",
+            str(token_file),
+            "--workspace",
+            str(tmp_path / "ws"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    saved = json.loads((cfg_dir / "token.json").read_text(encoding="utf-8"))
+    stored = saved.get("token") or next(iter(saved.values()))
+    assert stored == "eyJ-bootstrap-pat", f"BOM survived into the credential: {stored!r}"
+
+
 def test_init_succeeds_when_bootstrap_token_absent(tmp_path, monkeypatch):
     """The bootstrap-token cleanup is best-effort: init must still succeed
     when ~/.agnes/token was never created (e.g. --token / AGNES_TOKEN path)."""
@@ -1068,3 +1144,43 @@ def test_init_writes_shortcut_and_reports_it(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert (home / ".local" / "bin" / "testbrand").exists()
     assert "Shortcut" in result.output or "testbrand" in result.output
+
+
+def test_init_absent_token_file_note_points_at_the_likely_cause(tmp_path, monkeypatch):
+    """The sibling of the hard-fail case above. An absent --token-file stays a
+    soft fallback on purpose — templates pass the flag unconditionally. But in
+    expired-credential recovery, absent means the fresh token was never
+    written, and the fallback then retries with the expired one, so the failure
+    surfaces as a server-side auth error that reads like the server's fault.
+    The note has to name that cause while we still know it
+    (Devin Review on #1139).
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.setenv("AGNES_TOKEN", "eyJ-from-env")
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    missing = home / ".agnes" / "token"  # never created
+
+    result = runner.invoke(
+        init_app,
+        [
+            "--server-url",
+            "http://x",
+            "--token-file",
+            str(missing),
+            "--workspace",
+            str(tmp_path / "ws"),
+        ],
+    )
+
+    # Soft fallback preserved — it still ran with AGNES_TOKEN.
+    assert result.exit_code == 0, result.output
+    out = " ".join(result.output.split())  # the renderer wraps at terminal width
+    assert "does not exist" in out
+    assert "expired" in out, "the note does not mention the expired-credential case"
+    assert "/home" in out, "the note does not point back at the token step"

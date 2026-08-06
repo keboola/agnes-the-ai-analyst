@@ -360,6 +360,37 @@ def test_source_toggle_to_git_requires_iwt(admin_client):
     assert r.json()["detail"]["kind"] == "iwt_not_configured"
 
 
+def test_bind_git_rejects_token_placeholder_for_install(admin_client, monkeypatch):
+    """Git-bound content never passes the editor save guard (PUT is refused
+    with prompt_in_git_mode), so bind-git itself must reject an install file
+    that still carries the retired `{token}` placeholder."""
+    client, token = admin_client
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+
+    seed = {
+        "install-prompt/legacy.md.tmpl": "curl -H {token} … writes it to ~/.agnes/token",
+        "install-prompt/clean.md.tmpl": "reads ~/.agnes/token via --token-file",
+    }
+    monkeypatch.setattr(iw, "resolve_seed_file", lambda rel: (seed[rel], "iwt") if rel in seed else None)
+
+    r = client.post(
+        "/api/admin/prompts/install/bind-git",
+        headers=_hdr(token),
+        json={"git_path": "install-prompt/legacy.md.tmpl"},
+    )
+    assert r.status_code == 400, r.text
+    assert "{token}" in r.json()["detail"]
+
+    r = client.post(
+        "/api/admin/prompts/install/bind-git",
+        headers=_hdr(token),
+        json={"git_path": "install-prompt/clean.md.tmpl"},
+    )
+    assert r.status_code == 200, r.text
+
+
 def test_bind_git_requires_iwt(admin_client):
     client, token = admin_client
     r = client.post(
@@ -669,3 +700,23 @@ def test_build_zip_renders_overlay_for_user(tmp_path, monkeypatch):
         conn.close()
     files = _zip_names_and_content(data)
     assert files["CLAUDE.md"] == "Workspace for alice@example.com"
+
+
+def test_install_prompt_save_rejects_token_placeholder():
+    """`{token}` stopped being substituted when the PAT handoff moved to
+    /home step 4 — an override still carrying it would emit the literal
+    string and every analyst's init would authenticate with garbage. The
+    save-time validator must reject it with actionable guidance.
+    """
+    from fastapi import HTTPException
+
+    from app.api.prompts import _validate_template
+
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_template("install", "Set up.\nPersonal access token: {token}\n")
+    assert exc_info.value.status_code == 400
+    assert "{token}" in str(exc_info.value.detail)
+    assert "~/.agnes/token" in str(exc_info.value.detail)
+
+    # The token-free shape stays saveable.
+    _validate_template("install", "Set up.\nagnes init --token-file ~/.agnes/token\n")

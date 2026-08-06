@@ -30,6 +30,8 @@ import duckdb
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from src.sql_ident import quote_ident
+
 log = logging.getLogger(__name__)
 
 
@@ -51,8 +53,9 @@ def _build_json_columns() -> frozenset[tuple[str, str]]:
     treatment in ``_build_insert`` + the ``json.dumps`` wrapper in the
     copy loop.
     """
-    import src.models  # noqa: F401 — registers all models on Base
     from sqlalchemy.dialects.postgresql import JSONB
+
+    import src.models  # noqa: F401 — registers all models on Base
     from src.db_pg import Base
 
     out: set[tuple[str, str]] = set()
@@ -180,8 +183,9 @@ def _substitute_default(value: Any, default: Any, *, column_name: str = "") -> A
     """
     if value is not None:
         return value
+    from datetime import date, datetime, timezone
+
     from sqlalchemy.schema import DefaultClause
-    from datetime import datetime, timezone, date
 
     if isinstance(default, DefaultClause):
         sql = str(default.arg).upper()
@@ -209,8 +213,9 @@ def _array_columns_for(table_name: str) -> set[str]:
     duplicate maintenance burden of a hand-curated registry like
     ``_JSON_COLUMNS``.
     """
-    import src.models  # noqa: F401 — ensures every model is imported
     from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
+
+    import src.models  # noqa: F401 — ensures every model is imported
     from src.db_pg import Base
 
     table = Base.metadata.tables.get(table_name)
@@ -342,7 +347,7 @@ class GenericCopyTask:
         for _col in _duck_only:
             try:
                 _non_null = duck_conn.execute(
-                    f'SELECT COUNT(*) FROM "{self.table_name}" WHERE "{_col}" IS NOT NULL'
+                    f"SELECT COUNT(*) FROM {quote_ident(self.table_name)} WHERE {quote_ident(_col)} IS NOT NULL"
                 ).fetchone()[0]
             except Exception:
                 _non_null = 0
@@ -425,7 +430,7 @@ class GenericCopyTask:
                 # FK column not part of the copied column set — nothing to check.
                 continue
             try:
-                parent_ids = {r[0] for r in duck_conn.execute(f'SELECT "{parent_pk}" FROM "{parent_table}"').fetchall()}
+                parent_ids = {r[0] for r in duck_conn.execute(f"SELECT {quote_ident(parent_pk)} FROM {quote_ident(parent_table)}").fetchall()}
             except Exception:
                 # Parent table absent in the DuckDB source — can't determine
                 # orphans here; leave the rows and let PG's FK be the backstop.
@@ -530,7 +535,7 @@ class GenericCopyTask:
         for child_col, (parent_table, parent_pk) in self.fk_parents.items():
             try:
                 row = duck_conn.execute(
-                    f'SELECT "{child_col}" FROM "{self.source_table}" WHERE "id" = ?',
+                    f'SELECT {quote_ident(child_col)} FROM {quote_ident(self.source_table)} WHERE "id" = ?',
                     [pk_val],
                 ).fetchone()
             except Exception:
@@ -542,7 +547,7 @@ class GenericCopyTask:
                 continue
             try:
                 exists = duck_conn.execute(
-                    f'SELECT 1 FROM "{parent_table}" WHERE "{parent_pk}" = ?',
+                    f"SELECT 1 FROM {quote_ident(parent_table)} WHERE {quote_ident(parent_pk)} = ?",
                     [val],
                 ).fetchone()
             except Exception:
