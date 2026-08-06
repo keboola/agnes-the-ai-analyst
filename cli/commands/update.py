@@ -128,6 +128,17 @@ def _step_bootstrap_token_cleanup(report: list[dict]) -> None:
         exists = False
     if not exists:
         return  # nothing to clean; no report noise
+    # This gate is load-bearing beyond "did anything work". On /home step 4 the
+    # bootstrap token is written and `claude` launched on the same line, so the
+    # SessionStart hook's detached `agnes update` can reach this cleanup seconds
+    # later — before the user has pasted the step-5 install script. The flow
+    # still converges only because of three things: on a fresh machine
+    # `_resolve_workspace()` returns None so no authenticated step runs and this
+    # code is never reached; `agnes init --token-file` falls back to the saved
+    # credential when the file is gone; and a zero-work push classifies as
+    # `skipped`, not success, so expired-credential recovery does not trip the
+    # gate either. Relaxing any of those turns this into deleting a token the
+    # user is about to need (Devin Review on #1139).
     proven = any(
         step.get("stage") in ("workspace", "push", "pull") and step.get("status") not in ("error", "skipped")
         for step in report
