@@ -75,6 +75,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- Deflaked `test_state_rejects_tampered_signature`: flipping the final base64url
+  char of an itsdangerous signature silently decodes to the same bytes whenever
+  only the discarded padding bits differ (trailing `Y` vs `a` — ~6% of signing
+  timestamps), so the "tampered" state verified fine. The test now flips
+  full-data chars at three non-final signature positions.
+
 ### Security
 - Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). The re-check reduces every spelling of an address to one set of rules first — IPv4-mapped (`::ffff:169.254.169.254`), 6to4 and Teredo answers are unwrapped to the IPv4 address a dual-stack host would actually reach, and the unspecified address (`0.0.0.0`, `::`), multicast and reserved ranges are refused outright. Ignoring the proxy env is not a bypass — the internal network has no other route. Docker never reconciles the `internal` flag on a network that already exists, so a sandbox start refuses with `network_not_internal` rather than silently running without that layer if a same-named non-internal bridge is left over; remove it and it is recreated correctly. Plain-HTTP proxying authorizes every request rather than only the first on a connection — proxy clients pool per-proxy, not per-destination, so keep-alive is not offered upstream and a request's body is forwarded by its declared length (chunked request bodies are refused, having no length to bound the forward by). Closes the "hostname-level allowlisting is E2B-only" gap.
 
