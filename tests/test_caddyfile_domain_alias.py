@@ -71,9 +71,20 @@ def test_only_browser_navigation_gets_the_notice_page():
     )
 
 
-def test_notice_page_carries_the_deep_link_and_no_css_braces():
-    """`respond` substitutes placeholders in the body, so a CSS rule's braces
-    would be read as placeholder syntax — every style must be inline."""
+def test_notice_page_has_no_css_braces_and_never_reflects_the_uri():
+    """Two separate constraints on the `respond` body.
+
+    `respond` substitutes placeholders, so a CSS rule's braces would read as
+    placeholder syntax — every style must be inline.
+
+    And `{uri}` must NOT appear: Go leaves the query string raw in
+    `RequestURI()`, so reflecting it into an `href=`/`content=` attribute lets
+    `?x="><…>` inject markup into a response served by the LEGACY hostname —
+    an origin browsers still hold cookies for during the migration. The deep
+    link is not worth a reflected-XSS vector there; the non-browser branch
+    still carries `{uri}`, but in a Location header, where it cannot become
+    markup (Devin Review on #1182).
+    """
     block = _alias_block(_CADDYFILE.read_text())
     respond = block[block.find("respond <<HTML") :]
     assert "<style" not in respond, (
@@ -81,8 +92,11 @@ def test_notice_page_carries_the_deep_link_and_no_css_braces():
         "in a respond body and CSS braces read as placeholder syntax; use "
         "inline style attributes"
     )
-    assert respond.count("https://{$DOMAIN:localhost}{uri}") >= 2, (
-        "the notice page must carry {uri} into BOTH the meta refresh and the link, so a deep link survives the hop"
+    html_end = respond.find("HTML 200")
+    body = respond[:html_end] if html_end > 0 else respond
+    assert "{uri}" not in body, (
+        "the notice page reflects the request URI into HTML — the raw query "
+        "string makes that a markup-injection vector on the legacy origin"
     )
 
 

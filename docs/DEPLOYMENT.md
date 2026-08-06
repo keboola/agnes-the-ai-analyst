@@ -155,11 +155,25 @@ certificate error rather than landing on the new address. Set `DOMAIN_ALIAS`
 to the hostname you are leaving and Caddy serves it too, with its own cert:
 
 - **Browser navigation** (`GET`/`HEAD` with `Accept: text/html`) gets a notice
-  page naming the new address, with the deep link preserved and an automatic
-  forward after 15 s. A silent redirect would never prompt anyone to update
-  their bookmark, so the old name would stay in circulation until it died.
-- **Everything else** — the CLI, MCP clients, `agnes pull` — gets a plain 301
-  onto the same path on `DOMAIN`.
+  page naming the new address, with an automatic forward after 15 s. A silent
+  redirect would never prompt anyone to update their bookmark, so the old name
+  would stay in circulation until it died. The page links to `DOMAIN`'s root
+  rather than the deep path on purpose: the request URI carries a raw query
+  string, and reflecting it into the HTML of a page served by the *legacy*
+  origin — one browsers still hold cookies for — would be a markup-injection
+  vector.
+- **Everything else** — the CLI, MCP clients, `agnes pull` — gets a **308**
+  (permanent, method- and body-preserving; a 301 would turn a `POST` into a
+  `GET` with the body dropped, breaking `agnes push` and MCP JSON-RPC).
+
+  Be clear about what that buys, though: the `agnes` CLI does **not** follow
+  redirects (`cli/client.py` builds its `httpx.Client` without
+  `follow_redirects`, and the parquet download path refuses them outright), and
+  even a client that did would have `Authorization` stripped on a cross-host
+  hop. So for the CLI the alias converts a TLS-handshake failure into a legible
+  HTTP error — an improvement, but not transparent operation. **Repoint CLI and
+  connector configs at `DOMAIN`;** the alias buys time to notice, not a reprieve
+  from the work.
 
 ```
 DOMAIN=agnes.new.example.com

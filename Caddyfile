@@ -205,9 +205,17 @@
 		header Content-Type "text/html; charset=utf-8"
 		# Deliberately no <style> block: Caddy substitutes placeholders in a
 		# `respond` body, and a CSS rule's braces read as placeholder syntax.
-		# Every style here is therefore an inline attribute. {$DOMAIN} is
-		# resolved once at config-parse time; {uri} is per-request, so a deep
-		# link keeps its path through both the meta refresh and the button.
+		# Every style here is therefore an inline attribute.
+		#
+		# {$DOMAIN} is resolved once at config-parse time and is the ONLY
+		# placeholder here. {uri} is deliberately absent: Go leaves the query
+		# string raw in RequestURI(), so reflecting it into an href= or
+		# content= attribute lets `?x="><…>` inject markup into a response
+		# served by the legacy hostname — an origin browsers still hold
+		# cookies for during the migration. The deep link is not worth a
+		# reflected-XSS vector on that origin; the non-browser branch below
+		# still carries {uri} in a Location header, where it cannot become
+		# markup (Devin Review on #1182).
 		respond <<HTML
 			<!doctype html>
 			<html lang="en">
@@ -215,14 +223,14 @@
 			<meta charset="utf-8">
 			<meta name="viewport" content="width=device-width,initial-scale=1">
 			<title>This address has moved</title>
-			<meta http-equiv="refresh" content="15;url=https://{$DOMAIN:localhost}{uri}">
+			<meta http-equiv="refresh" content="15;url=https://{$DOMAIN:localhost}/">
 			</head>
 			<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f6f7f9;color:#1b1f24;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
 			<main style="max-width:32rem;padding:2rem">
 			<p style="margin:0 0 .5rem;font-size:.75rem;letter-spacing:.09em;text-transform:uppercase;color:#6b7280">Address changed</p>
 			<h1 style="margin:0 0 1rem;font-size:1.5rem;font-weight:600;line-height:1.3">This instance has moved to a new address</h1>
 			<p style="margin:0 0 1.5rem;line-height:1.6;color:#374151">You reached it on its old hostname. That name still answers for now, but it stops working once the old DNS record is retired.</p>
-			<p style="margin:0 0 1.5rem"><a href="https://{$DOMAIN:localhost}{uri}" style="display:inline-block;padding:.7rem 1.15rem;border-radius:.5rem;background:#2563eb;color:#fff;font-weight:600;text-decoration:none">Continue to {$DOMAIN:localhost}</a></p>
+			<p style="margin:0 0 1.5rem"><a href="https://{$DOMAIN:localhost}/" style="display:inline-block;padding:.7rem 1.15rem;border-radius:.5rem;background:#2563eb;color:#fff;font-weight:600;text-decoration:none">Continue to {$DOMAIN:localhost}</a></p>
 			<p style="margin:0;line-height:1.6;font-size:.9rem;color:#6b7280">Please update anything still pointing here: browser bookmarks, the <code>server</code> entry in your <code>agnes</code> CLI config, and any connector configured with this hostname. Taking you there automatically in 15 seconds.</p>
 			</main>
 			</body>
@@ -238,9 +246,12 @@
 	# body; {uri} carries path + query through unchanged
 	# (Devin Review on #1182).
 	#
-	# What no redirect can fix: clients strip Authorization when following one
-	# cross-host, so API callers still need repointing. Browser-grade safety
-	# net, not a transparent API proxy — see docs/DEPLOYMENT.md.
+	# What no redirect can fix: the `agnes` CLI does not follow redirects at all
+	# (`cli/client.py` omits `follow_redirects`; the parquet path refuses them),
+	# and a client that did would lose Authorization on a cross-host hop. So for
+	# the CLI this turns a TLS failure into a legible HTTP error rather than
+	# working transparently. Browser-grade safety net; API callers still need
+	# repointing — see docs/DEPLOYMENT.md.
 	handle {
 		redir https://{$DOMAIN:localhost}{uri} 308
 	}
