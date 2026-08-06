@@ -475,6 +475,11 @@ def require_agent_profiles_enabled() -> None:
     Does NOT gate the in-process mechanisms a disabled instance must keep
     running — default-agent seeding, chat attribution to the default agent,
     the broker's agent policy — none of those call through these routers.
+    One broker-replayed call DOES land here: the in-sandbox "remember" tool
+    (``POST /api/v1/sessions/{id}/memories`` on ``agent_memory``). That is
+    intended — memory notebooks are agent-profile surface — and the sandbox
+    prompt stops advertising the tool when the flag is off
+    (``app.chat.agent_profile``), so a well-behaved agent never hits the 403.
     """
     from app.instance_config import get_agent_profiles_enabled
 
