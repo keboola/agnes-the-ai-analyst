@@ -59,3 +59,26 @@ def configured_marketplace_host() -> Optional[str]:
     if not parsed.scheme or not parsed.hostname:
         return None
     return parsed.netloc.split("@", 1)[-1]
+
+
+def configured_marketplace_origin() -> Optional[str]:
+    """``scheme://host[:port]`` for the configured marketplace, or None.
+
+    Same resolution as ``configured_marketplace_host``, but keeps the scheme —
+    git's credential config is keyed by scheme AND host
+    (``credential.https://host.helper``), so the host alone can't scope a helper.
+
+    Deriving the scope from configuration rather than from the clone's actual
+    ``origin`` is deliberate: if origin has drifted to a different host (the case
+    ``_origin_host_mismatch`` exists to detect), that host must NOT receive this
+    workspace's PAT.
+    """
+    base = os.environ.get("AGNES_MARKETPLACE_URL", "").strip()
+    if not base:
+        from cli.config import load_config
+
+        base = os.environ.get("AGNES_SERVER") or load_config().get("server") or ""
+    parsed = urlparse(base)
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc.split('@', 1)[-1]}"

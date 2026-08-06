@@ -48,14 +48,10 @@ MARKETPLACE_NAME = "agnes"
 # AGNES_MARKETPLACE_ETAG_TTL=<seconds> for tests / tighter staleness bounds;
 # set 0 to disable.
 _ETAG_CACHE_TTL = int(os.environ.get("AGNES_MARKETPLACE_ETAG_TTL", "120"))
-_ETAG_CACHE: Optional[TTLCache] = (
-    TTLCache(maxsize=512, ttl=_ETAG_CACHE_TTL) if _ETAG_CACHE_TTL > 0 else None
-)
+_ETAG_CACHE: Optional[TTLCache] = TTLCache(maxsize=512, ttl=_ETAG_CACHE_TTL) if _ETAG_CACHE_TTL > 0 else None
 _ETAG_CACHE_LOCK = threading.Lock()
 MARKETPLACE_OWNER = {"name": "Agnes"}
-MARKETPLACE_DESCRIPTION = (
-    "Aggregated per-user Claude Code marketplace — served by Agnes"
-)
+MARKETPLACE_DESCRIPTION = "Aggregated per-user Claude Code marketplace — served by Agnes"
 DETERMINISTIC_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
@@ -178,16 +174,22 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
                 )
             )
             from src.marketplace_filter import _bundle_files
+
             for rel, abs_path in _bundle_files(plugin["bundle_dirs"]):
-                members.append(
-                    (f"plugins/{prefix}/{rel}", abs_path.read_bytes())
-                )
+                members.append((f"plugins/{prefix}/{rel}", abs_path.read_bytes()))
             continue
 
         plugin_dir = plugin["plugin_dir"]
         if plugin_dir is None or not plugin_dir.is_dir():
             continue
+        # F-1b: resolved once per plugin — escapes_base runs per file.
+        plugin_bases = [plugin_dir.resolve()]
         for f in sorted(p for p in plugin_dir.rglob("*") if p.is_file()):
+            # F-1b: a symlinked file in curator-controlled plugin content would
+            # otherwise be read through and served. A symlinked plugin_dir is
+            # stopped earlier, by marketplace_filter._contained_plugin_dir.
+            if marketplace_filter.escapes_base(f, plugin_bases):
+                continue
             rel_parts = f.relative_to(plugin_dir).parts
             # v32: strip Agnes-only files (`.agnes/**` and `marketplace-metadata.json`)
             # from the synth Claude Code marketplace so user instances never
@@ -216,11 +218,24 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
 _PLUGIN_COMPONENT_KEYS = ("skills", "agents", "commands", "hooks")
 
 
-def _dir_has_real_files(d) -> bool:
-    """True if ``d`` is a directory containing at least one non-dotfile."""
-    if not d.is_dir():
+def _dir_has_real_files(d, base) -> bool:
+    """True if ``d`` is a directory under ``base`` containing a non-dotfile.
+
+    ``d`` is built from a curator-controlled ``plugin.json`` value, so without
+    the containment check a crafted ``"skills": "../../../etc"`` turns this into
+    a directory-existence oracle and an unbounded ``rglob`` outside the plugin.
+    Adjacent to the 2026-08-05 audit's F-1b rather than part of it, but it is the
+    same class in a function this change already touches.
+    """
+    try:
+        resolved = d.resolve()
+        if not resolved.is_relative_to(base):
+            return False
+    except OSError:
         return False
-    return any(p.is_file() and not p.name.startswith(".") for p in d.rglob("*"))
+    if not resolved.is_dir():
+        return False
+    return any(p.is_file() and not p.name.startswith(".") for p in resolved.rglob("*"))
 
 
 def _sanitize_served_plugin_json(raw: bytes, plugin_dir) -> bytes:
@@ -234,13 +249,17 @@ def _sanitize_served_plugin_json(raw: bytes, plugin_dir) -> bytes:
     if not isinstance(data, dict):
         return raw
     dropped = False
+    try:
+        base = plugin_dir.resolve()
+    except OSError:
+        return raw
     for key in _PLUGIN_COMPONENT_KEYS:
         val = data.get(key)
         # Only handle the string-path form (e.g. "./agents"); leave arrays /
         # other shapes untouched — a populated dir or explicit list is valid.
         if not isinstance(val, str):
             continue
-        if not _dir_has_real_files(plugin_dir / val):
+        if not _dir_has_real_files(plugin_dir / val, base):
             data.pop(key, None)
             dropped = True
     if not dropped:
@@ -268,17 +287,10 @@ def _write_zip_entry(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
 
 
 def _etag_cache_key(plugins: List[dict]) -> tuple:
-    return tuple(
-        sorted(
-            (p["prefixed_name"], p.get("version") or "", str(p["plugin_dir"]))
-            for p in plugins
-        )
-    )
+    return tuple(sorted((p["prefixed_name"], p.get("version") or "", str(p["plugin_dir"])) for p in plugins))
 
 
-def compute_etag_for_user(
-    conn: duckdb.DuckDBPyConnection, user: dict
-) -> Tuple[str, List[dict]]:
+def compute_etag_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Tuple[str, List[dict]]:
     """Resolve the user's served plugin set (admin grants minus opt-outs,
     plus Store installs) and compute its content-addressed ETag.
 

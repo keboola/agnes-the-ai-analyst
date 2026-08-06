@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from app.utils import get_initial_workspace_dir
-from src.marketplace import _authenticated_url, _redact
+from src.marketplace import _credential_args, _git_env, _redact, _scrub_credentialed_remote
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +79,21 @@ class TemplateValidationError(ValueError):
     """
 
 
-def _run_git(args: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+def _run_git(
+    args: List[str],
+    cwd: Optional[Path] = None,
+    *,
+    url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> subprocess.CompletedProcess:
+    """Run git with the PAT supplied via the environment, never on argv.
+
+    Same contract as ``src.marketplace._run_git`` and sharing its helpers — this
+    module syncs the initial-workspace template repo, which takes a PAT the same
+    way the marketplace sync does (2026-08-05 audit, F-2).
+    """
+    env = _git_env(token)
+    args = [*_credential_args(url or "", token), *args]
     return subprocess.run(
         ["git", *args],
         cwd=str(cwd) if cwd else None,
@@ -173,11 +186,14 @@ def sync_template(
 
     token = os.environ.get(token_env, "") if token_env else ""
     target = get_initial_workspace_dir()
-    auth_url = _authenticated_url(url, token)
     is_git = (target / ".git").is_dir()
     action = "update" if is_git else "clone"
 
     with _sync_lock:
+        # F-2 upgrade path: clean a credentialed remote written by a pre-fix
+        # Agnes before doing anything else with this checkout.
+        if is_git:
+            _scrub_credentialed_remote(target, url)
         try:
             if not is_git:
                 if target.exists():
@@ -186,12 +202,11 @@ def sync_template(
                 clone_args = ["clone", "--depth", "1"]
                 if branch:
                     clone_args += ["--branch", branch]
-                clone_args += [auth_url, str(target)]
-                _run_git(clone_args)
+                clone_args += [url, str(target)]
+                _run_git(clone_args, url=url, token=token)
             else:
-                _run_git(["remote", "set-url", "origin", auth_url], cwd=target)
                 ref = branch or "HEAD"
-                _run_git(["fetch", "--depth", "1", "origin", ref], cwd=target)
+                _run_git(["fetch", "--depth", "1", "origin", ref], cwd=target, url=url, token=token)
                 _run_git(["reset", "--hard", "FETCH_HEAD"], cwd=target)
             sha = _run_git(["rev-parse", "HEAD"], cwd=target).stdout.strip()
         except subprocess.CalledProcessError as e:
