@@ -83,7 +83,8 @@ class FakeDocker:
         # containers.list(all=True) vs. networks.list(names=[...]) share
         # this one method, same as the real client aliases both APIs to `self`.
         if names is not None:
-            return [n for n in names if n in self.networks_created]
+            # Docker's `name` filter is a SUBSTRING match.
+            return [n for n in self.networks_created if any(w in n for w in names)]
         if filters and "name" in filters:
             wanted = filters["name"]
             return [c for c in self.by_name.values() if c.name in wanted]
@@ -294,3 +295,17 @@ def test_up_keeps_container_path_when_not_containerized(client, monkeypatch):
     assert r.status_code == 200
     _, kw = fake.run_calls[-1]
     assert str(tmp / "apps" / "s") in kw["volumes"]
+
+
+def test_up_creates_the_apps_network_despite_a_substring_named_leftover(client):
+    """Docker's `name` network filter is a SUBSTRING match, so a host that has
+    run chat's allowlist egress mode (which leaves `agnes-apps-internal`)
+    would answer the lookup for `agnes-apps` with that other network — and the
+    app's own network would never be created, failing every run afterwards."""
+    c, fake, tmp = client
+    fake.networks_created.add("agnes-apps-internal")
+
+    r = c.post("/apps/s/up", headers={"X-Runner-Token": "tok"}, json={"spec": SPEC(tmp), "config_json": {}})
+
+    assert r.status_code == 200
+    assert "agnes-apps" in fake.networks_created

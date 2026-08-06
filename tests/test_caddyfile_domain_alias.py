@@ -42,7 +42,7 @@ def _alias_block(text: str) -> str:
 
 def test_alias_block_redirects_to_the_primary_domain():
     block = _alias_block(_CADDYFILE.read_text())
-    assert "redir https://{$DOMAIN:localhost}{uri} permanent" in block, (
+    assert "redir https://{$DOMAIN:localhost}{uri} 308" in block, (
         "the DOMAIN_ALIAS block must 301 onto {$DOMAIN} carrying {uri} (path + query) through unchanged"
     )
 
@@ -104,3 +104,33 @@ def test_startup_script_omits_the_env_line_when_unset():
         "only when the variable is UNSET"
     )
     assert "$DOMAIN_ALIAS_LINE" in tpl, "the guarded line must reach the .env heredoc"
+
+
+def test_the_redirect_preserves_method_and_body():
+    """A 301 on a POST is re-issued by clients as a GET with the body dropped.
+    This feature exists to keep `agnes push` and MCP JSON-RPC — both POSTs —
+    working through a domain cutover, so a 301 would break exactly what it
+    promises to carry. 308 is equally permanent and preserves both
+    (Devin Review on #1182)."""
+    from pathlib import Path
+
+    caddy = Path("Caddyfile").read_text(encoding="utf-8")
+    assert "{uri} 308" in caddy, "the alias redirect must be 308, not 301/permanent"
+    assert "{uri} permanent" not in caddy, "301 drops POST bodies"
+
+
+def test_the_alias_cannot_be_set_equal_to_the_domain():
+    """Two site blocks with the same address make Caddy refuse to parse its
+    config, which takes the PRIMARY site down on the next reload — so this is
+    rejected at plan time, and again in the startup script for a value that
+    reached the instance another way."""
+    from pathlib import Path
+
+    tf = Path("infra/modules/customer-instance/variables.tf").read_text(encoding="utf-8")
+    assert tf.count("domain_alias must differ from") >= 1
+    # both carriers of the field are covered
+    assert "var.prod_instance.domain_alias" in tf
+    assert "for i in var.dev_instances" in tf
+
+    sh = Path("infra/modules/customer-instance/startup-script.sh.tpl").read_text(encoding="utf-8")
+    assert '[ "$DOMAIN_ALIAS" != "$DOMAIN" ]' in sh, "startup script writes the line without checking"

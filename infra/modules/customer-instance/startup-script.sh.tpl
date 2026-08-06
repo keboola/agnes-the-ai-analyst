@@ -354,9 +354,16 @@ fi
 # Caddy's `{$DOMAIN_ALIAS:localhost:8081}` fallback applies when the variable is
 # UNSET, but an empty-but-set value substitutes an EMPTY site address and Caddy
 # refuses to parse the config — which would take the primary site down too.
+# Equal to DOMAIN is the other way to break the same thing: two site blocks
+# with the same address, which Caddy also refuses to parse — taking the primary
+# site down on the next recreate/reload. Terraform rejects it at plan time; this
+# guard covers a value that reached the instance some other way (Devin Review
+# on #1182).
 DOMAIN_ALIAS_LINE=""
-if [ -n "$DOMAIN_ALIAS" ]; then
+if [ -n "$DOMAIN_ALIAS" ] && [ "$DOMAIN_ALIAS" != "$DOMAIN" ]; then
     DOMAIN_ALIAS_LINE="DOMAIN_ALIAS=$DOMAIN_ALIAS"
+elif [ -n "$DOMAIN_ALIAS" ]; then
+    echo "WARN: domain_alias equals domain ($DOMAIN) — ignoring it; two site blocks with one address would stop Caddy from starting" >&2
 fi
 
 # Preserve operator overrides on AGNES_TAG. Rationale: this script

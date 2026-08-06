@@ -276,7 +276,13 @@ def sandbox_up(name: str, payload: dict = Body(...), x_runner_token: str | None 
 
     network = str(spec.get("network") or "")
     if network:
-        existing_nets = client.networks.list(names=[network])
+        # Docker's `name` network filter is a SUBSTRING match, so a request
+        # for `agnes-apps` also matches `agnes-apps-internal` — left as-is
+        # that both skips creating a network that does not exist (every
+        # spawn then 502s on an unknown network) and runs the Internal check
+        # below against a network the sandbox will never join
+        # (Devin Review on #1148).
+        existing_nets = [n for n in client.networks.list(names=[network]) if getattr(n, "name", n) == network]
         if not existing_nets:
             net_kwargs: dict = {"driver": "bridge"}
             if spec.get("internal_network"):

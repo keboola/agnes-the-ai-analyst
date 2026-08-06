@@ -167,6 +167,19 @@ is retired. Caddy cannot take both names from one variable (Caddyfile env
 substitution is token-level, so `DOMAIN="a.example.com, b.example.com"` parses
 as a single malformed address), which is why this is a separate knob.
 
+The redirect is a **308**, not a 301, so `POST`/`PUT`/`PATCH` keep their method
+and body — clients re-issue a 301 as a `GET` with the body dropped, which would
+break `agnes push` and MCP JSON-RPC, the two things this knob exists to carry
+through a cutover. What a redirect cannot fix: clients strip `Authorization`
+when following one to a different host, so API callers still have to be
+repointed at the new hostname. Treat the alias as a browser-grade safety net
+that buys you time, not a transparent API proxy.
+
+`DOMAIN_ALIAS` must differ from `DOMAIN`. Setting them equal gives Caddy two
+site blocks with the same address, which it refuses to parse — taking the
+primary site down on the next reload, not just the alias. Terraform rejects it
+at plan time and the startup script ignores it with a warning.
+
 The alias site carries no `tls` directive, so automatic HTTPS picks the issuer
 per name — which means the legacy name gets its certificate from public ACME
 even when `CADDY_TLS` points the primary site elsewhere. On a **corporate-PKI

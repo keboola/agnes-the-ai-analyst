@@ -22,7 +22,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
 
@@ -42,6 +42,11 @@ PLUGIN_MANIFEST_REL = Path(".claude-plugin") / "marketplace.json"
 _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
+# One filesystem-safe path segment. Used with `fullmatch` (see
+# `is_safe_plugin_name`) — no anchors here, so `$`'s trailing-newline
+# tolerance can't creep in.
+_SAFE_PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+
 
 class MarketplaceNotFound(Exception):
     """Raised when a marketplace id is not present in the registry."""
@@ -49,6 +54,37 @@ class MarketplaceNotFound(Exception):
 
 def is_valid_slug(slug: str) -> bool:
     return bool(_SLUG_RE.match(slug or ""))
+
+
+def is_safe_plugin_name(name: object) -> bool:
+    """True iff ``name`` is EXACTLY one filesystem-safe path segment.
+
+    A plugin ``name`` comes from a registered marketplace's
+    ``.claude-plugin/marketplace.json`` — curator- and supply-chain-controlled,
+    so adversarial. It is used verbatim as the ``plugins/<name>`` segment under
+    ``${DATA_DIR}/marketplaces/<slug>/``, and that directory is walked and read
+    wholesale into the served ZIP / git tree. A ``/`` or ``..`` escapes the
+    marketplaces root and turns the PAT-gated marketplace endpoints into an
+    arbitrary-file-read primitive.
+
+    Deliberately does NOT strip. The serve-time callers
+    (``app/api/marketplace.py``, ``src/marketplace_asset_mirror.py``) match the
+    raw segment and then use that same raw value to build a path; stripping here
+    would silently widen those checks. Callers whose value IS stripped downstream
+    (``read_plugins`` → ``_refresh_plugin_cache``) strip before calling.
+
+    ``fullmatch``, not ``match``: ``$`` also matches before a trailing newline,
+    so ``match`` would accept ``"acme\\n"``.
+
+    Security playbook §6 mandates BOTH layers — reject here at ingest so a bad
+    row never reaches the DB, and contain at use in
+    ``marketplace_filter._contained_plugin_dir``.
+    """
+    if not isinstance(name, str):
+        return False
+    if name in ("..", "."):
+        return False
+    return bool(_SAFE_PLUGIN_NAME_RE.fullmatch(name))
 
 
 def is_full_sha(ref: str) -> bool:
@@ -73,29 +109,116 @@ def is_valid_ref(ref: str) -> bool:
     return bool(_REF_RE.match(ref))
 
 
-def _authenticated_url(repo_url: str, token: str) -> str:
-    """Inject a PAT into an HTTPS URL as the x-access-token user.
+# Per-invocation git credential helper. `!<command>` runs the rest as a shell
+# command; it reads the PAT from $AGNES_TOKEN — set in the subprocess env only,
+# never on the command line — and emits the credential protocol's two key=value
+# lines on stdout.
+#
+# Replaces the previous `https://x-access-token:<PAT>@host/...` URL (2026-08-05
+# audit, F-2). That form put the token on argv, where any co-tenant process reads
+# it out of /proc/<pid>/cmdline, AND persisted it in plaintext into
+# ${DATA_DIR}/marketplaces/<slug>/.git/config — on BOTH the clone and the
+# `remote set-url` update path — from where it survives into every backup and
+# volume snapshot. Security playbook §7.
+# The username is pinned to `x-access-token`, the value the URL-embedded form
+# this replaced also sent. Most hosts ignore it for token auth, but GitHub App
+# installation tokens are documented as requiring exactly this — and this copy
+# talks to arbitrary curator-supplied upstreams, so a bare `x` would have been
+# a silent upgrade regression for that credential class (Devin Review on #1180).
+_CREDENTIAL_HELPER = '!f() { printf "username=x-access-token\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
-    Non-HTTPS URLs (file://, ssh://, http://) and empty tokens pass through
-    unchanged. Result is only ever used as a git remote — never logged.
+
+def _git_env(token: Optional[str] = None) -> dict:
+    """Environment for git subprocesses: never prompt, optional PAT."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    if token:
+        env["AGNES_TOKEN"] = token
+    return env
+
+
+def _credential_args(repo_url: str, token: Optional[str]) -> List[str]:
+    """``-c`` flags wiring the credential helper for THIS repo's host only.
+
+    Host-scoped rather than global: an unscoped ``credential.helper`` answers
+    with the PAT for any host git ends up asking about — including a redirect
+    target, since ``http.followRedirects`` is on by default. The URL-embedded
+    form this replaces was at least pinned to its own host, so an unscoped port
+    would have been a regression on that axis.
+
+    The generic empty reset comes FIRST: git APPENDS helpers, so without it an
+    inherited system/global helper (e.g. osxkeychain) answers before ours.
+    Verified with ``git credential fill`` — an empty reset placed after the real
+    helper wipes it and auth fails.
+
+    Returns ``[]`` for non-HTTPS URLs (``file://``, ``ssh://``) and empty tokens,
+    matching the old ``_authenticated_url`` pass-through.
     """
     if not token:
-        return repo_url
+        return []
     parts = urlparse(repo_url)
     if parts.scheme != "https" or not parts.hostname:
-        return repo_url
-    netloc = f"x-access-token:{token}@{parts.hostname}"
+        return []
+    host = parts.hostname
     if parts.port:
-        netloc = f"{netloc}:{parts.port}"
-    return urlunparse((parts.scheme, netloc, parts.path, parts.params, parts.query, parts.fragment))
+        host = f"{host}:{parts.port}"
+    return [
+        "-c",
+        "credential.helper=",
+        "-c",
+        f"credential.{parts.scheme}://{host}.helper={_CREDENTIAL_HELPER}",
+    ]
+
+
+def _strip_userinfo(url: str) -> str:
+    """``url`` with any ``user:pass@`` removed, structurally.
+
+    Not token-dependent, unlike ``_redact``: the value we most need to sanitise
+    is a remote that still embeds a PAT from before this release, and the token
+    we would redact against may be rotated or unset by then — leaving redaction
+    a no-op and putting the credential somewhere durable. Callers persist error
+    text into ``marketplace_registry.last_error``, which the admin UI renders
+    (Devin Review on #1180).
+    """
+    try:
+        parts = urlparse(url)
+    except ValueError:
+        return "<unparseable url>"
+    if not parts.hostname:
+        return url
+    netloc = parts.hostname + (f":{parts.port}" if parts.port else "")
+    return f"{parts.scheme}://{netloc}{parts.path}" if parts.scheme else f"{netloc}{parts.path}"
 
 
 def _redact(s: str, token: str) -> str:
     return s.replace(token, "***") if token and s else s
 
 
-def _run_git(args: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+def _scrub_credentialed_remote(target: Path, url: str) -> None:
+    """Reset ``origin`` to the credential-free ``url``.
+
+    Upgrade path: instances that synced before F-2 was fixed already have the PAT
+    sitting in ``.git/config``. Resetting the remote on every sync cleans those in
+    place on the next scheduled run — no operator action, no migration script.
+
+    Best-effort: a failure here must not fail the sync, which is why it swallows
+    rather than propagates.
+    """
+    try:
+        _run_git(["remote", "set-url", "origin", url], cwd=target)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        logger.warning("marketplace: could not reset origin url in %s: %s", target, e)
+
+
+def _run_git(
+    args: List[str],
+    cwd: Optional[Path] = None,
+    *,
+    url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> subprocess.CompletedProcess:
+    """Run git with the PAT supplied via the environment, never on argv."""
+    env = _git_env(token)
+    args = [*_credential_args(url or "", token), *args]
     return subprocess.run(
         ["git", *args],
         cwd=str(cwd) if cwd else None,
@@ -107,7 +230,13 @@ def _run_git(args: List[str], cwd: Optional[Path] = None) -> subprocess.Complete
     )
 
 
-def _checkout_pinned_sha(target: Path, sha: str) -> None:
+def _checkout_pinned_sha(
+    target: Path,
+    sha: str,
+    *,
+    url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> None:
     """Resolve a full-length commit-SHA pin into `target`'s working tree.
 
     Tries a direct shallow fetch of the SHA first (`git fetch --depth 1
@@ -125,7 +254,7 @@ def _checkout_pinned_sha(target: Path, sha: str) -> None:
     left exactly as it was when this raises.
     """
     try:
-        _run_git(["fetch", "--depth", "1", "origin", sha], cwd=target)
+        _run_git(["fetch", "--depth", "1", "origin", sha], cwd=target, url=url, token=token)
         _run_git(["checkout", "--detach", "FETCH_HEAD"], cwd=target)
         return
     except subprocess.CalledProcessError:
@@ -135,7 +264,9 @@ def _checkout_pinned_sha(target: Path, sha: str) -> None:
     fetch_args = ["fetch", "origin"]
     if is_shallow:
         fetch_args.insert(1, "--unshallow")
-    _run_git(fetch_args, cwd=target)
+    # Also a network call — a private marketplace 401s here without the token,
+    # which is exactly the SHA-pinned path this fallback exists to serve.
+    _run_git(fetch_args, cwd=target, url=url, token=token)
     _run_git(["checkout", "--detach", sha], cwd=target)
 
 
@@ -168,6 +299,17 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"marketplace id {slug!r} invalid (must match [a-z0-9][a-z0-9_-]{{0,63}})")
     if not url:
         raise ValueError(f"marketplace {slug!r}: url is required")
+
+    target = get_marketplaces_dir() / slug
+    is_git = (target / ".git").is_dir()
+
+    # F-2 upgrade path, deliberately ahead of the ref validation below: a spec
+    # that fails that validation raises and never reaches the sync body, so a row
+    # with a malformed ref would keep a pre-fix credentialed remote in
+    # .git/config indefinitely — until an admin noticed and fixed the row.
+    if is_git:
+        _scrub_credentialed_remote(target, url)
+
     if branch and ref:
         raise ValueError(f"marketplace {slug!r}: branch and ref are mutually exclusive")
     if ref and not is_valid_ref(ref):
@@ -180,9 +322,6 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     # clone) — this is the single "checkout target" for that shared path.
     checkout_ref = pinned_tag or branch
 
-    target = get_marketplaces_dir() / slug
-    auth_url = _authenticated_url(url, token)
-    is_git = (target / ".git").is_dir()
     action = "update" if is_git else "clone"
 
     try:
@@ -194,21 +333,42 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
                 # A commit SHA isn't a valid `--branch` name for git clone —
                 # shallow-clone the default branch first, then resolve the
                 # pin below (shared with the update path).
-                _run_git(["clone", "--depth", "1", auth_url, str(target)])
-                _checkout_pinned_sha(target, pinned_sha)
+                _run_git(["clone", "--depth", "1", url, str(target)], url=url, token=token)
+                _checkout_pinned_sha(target, pinned_sha, url=url, token=token)
             else:
                 clone_args = ["clone", "--depth", "1"]
                 if checkout_ref:
                     clone_args += ["--branch", checkout_ref]
-                clone_args += [auth_url, str(target)]
-                _run_git(clone_args)
+                clone_args += [url, str(target)]
+                _run_git(clone_args, url=url, token=token)
         else:
-            _run_git(["remote", "set-url", "origin", auth_url], cwd=target)
+            # `remote set-url` ran above — but best-effort, so it may have been
+            # skipped by a stale .git/config.lock, a read-only config after a
+            # volume restore, or a missing `origin`. Everything below fetches
+            # from `origin`, so an unverified assumption here means the sync can
+            # report success against the PREVIOUS repository — or against an
+            # origin that still embeds a PAT, defeating the very scrub this
+            # release advertises. Confirm it, and fail loudly if not
+            # (Devin Review on #1180).
+            # `config --get`, NOT `remote get-url`: the latter expands
+            # `url.<base>.insteadOf` rules (documented behaviour), so on a host
+            # with a corporate-mirror rewrite it returns the rewritten URL while
+            # `set-url` stored the original — a guaranteed mismatch that would
+            # abort every sync on those deployments, even though the fetch would
+            # have gone to the right place. We wrote the raw value, so we compare
+            # the raw value (Devin Review on #1180).
+            current = _run_git(["config", "--get", "remote.origin.url"], cwd=target).stdout.strip()
+            if current != url:
+                raise RuntimeError(
+                    f"git {action} refused: origin is {_strip_userinfo(current)!r}, not the configured "
+                    f"{_strip_userinfo(url)!r} — could not re-point the checkout, so a fetch here would "
+                    "silently pull from the wrong remote"
+                )
             if pinned_sha:
-                _checkout_pinned_sha(target, pinned_sha)
+                _checkout_pinned_sha(target, pinned_sha, url=url, token=token)
             else:
                 fetch_ref = checkout_ref or "HEAD"
-                _run_git(["fetch", "--depth", "1", "origin", fetch_ref], cwd=target)
+                _run_git(["fetch", "--depth", "1", "origin", fetch_ref], cwd=target, url=url, token=token)
                 _run_git(["reset", "--hard", "FETCH_HEAD"], cwd=target)
         sha = _run_git(["rev-parse", "HEAD"], cwd=target).stdout.strip()
     except subprocess.CalledProcessError as e:
@@ -243,7 +403,24 @@ def read_plugins(slug: str) -> List[Dict[str, Any]]:
     plugins = data.get("plugins") if isinstance(data, dict) else None
     if not isinstance(plugins, list):
         return []
-    return [p for p in plugins if isinstance(p, dict) and p.get("name")]
+    out: List[Dict[str, Any]] = []
+    for p in plugins:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name")
+        if not name:
+            continue
+        # Validate the STRIPPED form: _refresh_plugin_cache strips before writing
+        # the row, so that is the value that later becomes a path segment.
+        if not is_safe_plugin_name(str(name).strip()):
+            logger.warning(
+                "marketplace %s: dropping plugin with unsafe name %r (not a single path segment)",
+                slug,
+                name,
+            )
+            continue
+        out.append(p)
+    return out
 
 
 def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:

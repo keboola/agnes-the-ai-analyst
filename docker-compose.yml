@@ -74,10 +74,13 @@ services:
     # image's DuckDB version differs from the old container's, since
     # WAL replay across versions trips on internal assertions.
     stop_grace_period: 60s
+    # Also joins agnes-apps-internal so chat sandboxes under
+    # docker_egress_mode none/allowlist (their ONLY network) can still
+    # reach the rails URL (AGNES_INTERNAL_URL=http://app:8000).
     # Joins agnes-apps so the app can reach data-app runtime containers
     # directly (e.g. readiness probes); apps-runner is the only process
     # that talks to the Docker socket, but the app shares the network.
-    networks: [default, agnes-apps]
+    networks: [default, agnes-apps, agnes-apps-internal]
 
   # One-shot: run extractor then rebuild orchestrator views
   extract:
@@ -191,6 +194,29 @@ services:
     mem_limit: 256m
     cpus: 0.25
 
+  # Egress policy for chat.docker_egress_mode=allowlist: dual-homed on the
+  # sandboxes' internal network (their ONLY network — no route out, so the
+  # network is the enforcement layer) and the default bridge (its own way
+  # out). Sandboxes point HTTP(S)_PROXY here; the proxy enforces the
+  # hostname allowlist with a post-resolution IP re-check
+  # (services/egress_proxy/authz.py — DNS-rebinding/metadata protection).
+  egress-proxy:
+    build: .
+    command: python -m services.egress_proxy
+    container_name: agnes-egress-proxy
+    profiles: ["chat-docker-egress"]
+    environment:
+      # Comma-separated hostnames (exact or *.suffix). Keep in sync with
+      # chat.docker_egress_allow_hosts in instance.yaml — the proxy is the
+      # enforcing copy.
+      - EGRESS_ALLOW_HOSTS=${EGRESS_ALLOW_HOSTS:-}
+      - EGRESS_LISTEN=0.0.0.0:3128
+      - EGRESS_BLOCK_PRIVATE=${EGRESS_BLOCK_PRIVATE:-1}
+    networks: [default, agnes-apps-internal]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+
   telegram-bot:
     build: .
     command: python -m services.telegram_bot
@@ -267,3 +293,10 @@ networks:
   default: {}
   agnes-apps:
     name: agnes-apps
+  # Internal (no route out) network chat sandboxes join under
+  # docker_egress_mode none/allowlist. Named to match what the sandbox
+  # sidecar derives (chat.docker_network + "-internal"), so the
+  # egress-proxy service above and the sandboxes land on the same bridge.
+  agnes-apps-internal:
+    name: agnes-apps-internal
+    internal: true

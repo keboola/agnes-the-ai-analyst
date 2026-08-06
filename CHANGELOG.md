@@ -12,9 +12,73 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- Cloud chat runs without an E2B account: `chat.provider: docker` spawns each session in a local Docker container instead of a cloud microVM, so a self-hosted instance no longer loses chat entirely for want of E2B keys. Same feature set — web chat, Slack, the agent API, headless runs and artifact harvest are unchanged. Docker access stays behind the `apps-runner` sidecar (still the only process holding the socket) over a new token-gated `/sandboxes/*` API; the gateway never touches `/var/run/docker.sock`. The per-session workspace is **bind-mounted** rather than uploaded, which removes the 100 MB `chat.e2b_workspace_max_bytes` cap and the per-spawn tarball, and makes files the agent writes persist on the host — note that concurrent sessions of the same user therefore share one workspace, and agent-created `node_modules`/`.venv` now survive the session; co-drive sessions still mount only their ephemeral directory. Pause maps to `docker pause` (memory survives while the daemon does, not across a host reboot — the next attach then produces a fresh sandbox with restored conversation context). Sandboxes run non-root with `cap_drop: ALL`, `no-new-privileges`, pids/memory/CPU limits, a capped allowlist of mounts and an image-prefix allowlist; no secret enters the container env. Agent-profile sessions never get the shared workspace mount — only their data symlink targets (snapshots writable, the rest read-only), so a profiled agent cannot rewrite the user's shared settings/hook files. New keys: `chat.docker_image`, `docker_network`, `docker_mem_limit`, `docker_cpus`, `docker_pids_limit`, `docker_egress_mode` (`open` | `none`; hostname-level allowlisting is E2B-only), `docker_max_total_sandboxes`. Requires the operator-built sandbox image (`app/initial_workspace_default/docker-sandbox/`), the `apps` compose profile, and `AGNES_INTERNAL_URL`/`SERVER_URL` pointing at a container-reachable address — boot gates refuse to start chat with actionable log lines otherwise. Operator walkthrough, including an honest E2B-vs-Docker comparison: `docs/cloud-chat.md`.
-
 - Domain migrations keep the old hostname working: set `DOMAIN_ALIAS` to the name you are moving away from and Caddy serves it alongside `DOMAIN` — its own certificate, every request answered with a 301 onto the same path on `DOMAIN`. Without it the old name fails the TLS handshake the moment `DOMAIN` changes, so bookmarks, `agnes` CLI configs and MCP connector URLs break with a certificate error instead of following the move. Unset (the default) the block is inert — it resolves to a non-published localhost port and, carrying no `tls` directive, is served an internal certificate silently rather than retrying a public one once a minute forever. Exposed on the `customer-instance` module as a per-VM `domain_alias` field on `prod_instance` / `dev_instances`; drop it once the old DNS record is retired. Cutover checklist — including the three things that do *not* follow `DOMAIN` (`SERVER_URL`/`public_url`, the Google OAuth client's redirect URIs, and already-connected MCP clients): `docs/DEPLOYMENT.md` → "Migrating to a new domain".
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.79.1] - 2026-08-06
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- **Marketplace plugin names are validated as single path segments.** A plugin
+  `name` in a registered marketplace's `.claude-plugin/marketplace.json` is used
+  verbatim as the `plugins/<name>` directory segment, and that directory is read
+  wholesale into the served `marketplace.zip` / `marketplace.git` tree. Names are
+  now rejected at manifest ingest (`read_plugins`) and every constructed path is
+  contained to the marketplaces root — the two layers the security playbook §6
+  requires, and which the sibling asset-mirror path already had. Every call site
+  that builds that path now shares one rule (`src.marketplace.is_safe_plugin_name`,
+  applied via `_reject_unsafe_segment`) so they cannot drift apart again — the two
+  in `src/marketplace_filter.py`, the v2 skills endpoint whose output goes straight
+  into an HTTP response body, and the curated detail / skill-detail / agent-detail
+  endpoints plus their shared parent-fields helper, which relied on `_safe_join`
+  re-anchoring on an already-escaped plugin root.
+- **Symlinked files in plugin content are no longer packaged.** The ZIP backend,
+  the git backend, the ETag walk and the Store-bundle walk all traversed plugin
+  directories with a bare `rglob` and read through symlinks; the cowork packager
+  had guarded this since it shipped. All now share
+  `marketplace_filter.escapes_base`. A plugin directory that is itself a symlink
+  is stopped by the containment layer above, before any walk begins.
+- **The marketplace sync credential no longer touches argv or disk.** Server-side
+  sync built `https://x-access-token:<PAT>@host/…` and handed it to `git clone` /
+  `git remote set-url`, exposing the token in `/proc/<pid>/cmdline` and writing it
+  in plaintext into `${DATA_DIR}/marketplaces/<slug>/.git/config`, where it
+  persisted into backups and volume snapshots. The initial-workspace template sync
+  used the same helper and had the same exposure. Both now pass the token through
+  a per-invocation, **host-scoped** `credential.helper` reading `$AGNES_TOKEN`
+  from the subprocess environment (security playbook §7);
+  `agnes refresh-marketplace` gains the same host scoping, so a redirect can no
+  longer draw the workspace PAT to a third-party host. **Existing `.git/config`
+  files are scrubbed automatically on the next sync** — including for rows whose
+  sync currently fails validation. Operators who consider the token exposed
+  should rotate it.
+- Hardened `plugin.json` component-key resolution in the ZIP packager: a
+  curator-supplied path is now contained to the plugin directory instead of being
+  joined and walked as given.
+
+## [0.79.0] - 2026-08-05
+
+### Added
+
+- Cloud chat runs without an E2B account: `chat.provider: docker` spawns each session in a local Docker container instead of a cloud microVM, so a self-hosted instance no longer loses chat entirely for want of E2B keys. Same feature set — web chat, Slack, the agent API, headless runs and artifact harvest are unchanged. Docker access stays behind the `apps-runner` sidecar (still the only process holding the socket) over a new token-gated `/sandboxes/*` API; the gateway never touches `/var/run/docker.sock`. The per-session workspace is **bind-mounted** rather than uploaded, which removes the 100 MB `chat.e2b_workspace_max_bytes` cap and the per-spawn tarball, and makes files the agent writes persist on the host — note that concurrent sessions of the same user therefore share one workspace, and agent-created `node_modules`/`.venv` now survive the session; co-drive sessions still mount only their ephemeral directory. Pause maps to `docker pause` (memory survives while the daemon does, not across a host reboot — the next attach then produces a fresh sandbox with restored conversation context). Sandboxes run non-root with `cap_drop: ALL`, `no-new-privileges`, pids/memory/CPU limits, a capped allowlist of mounts and an image-prefix allowlist; no secret enters the container env. Agent-profile sessions never get the shared workspace mount — only their data symlink targets (snapshots writable, the rest read-only), so a profiled agent cannot rewrite the user's shared settings/hook files. New keys: `chat.docker_image`, `docker_network`, `docker_mem_limit`, `docker_cpus`, `docker_pids_limit`, `docker_egress_mode` (`open` | `none`; hostname-level allowlisting is E2B-only), `docker_max_total_sandboxes`. Requires the operator-built sandbox image (`app/initial_workspace_default/docker-sandbox/`), the `apps` compose profile, and `AGNES_INTERNAL_URL`/`SERVER_URL` pointing at a container-reachable address — boot gates refuse to start chat with actionable log lines otherwise. Operator walkthrough, including an honest E2B-vs-Docker comparison: `docs/cloud-chat.md`.
 
 ### Changed
 
@@ -27,7 +91,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- Deflaked `test_state_rejects_tampered_signature`: flipping the final base64url
+  char of an itsdangerous signature silently decodes to the same bytes whenever
+  only the discarded padding bits differ (trailing `Y` vs `a` — ~6% of signing
+  timestamps), so the "tampered" state verified fine. The test now flips
+  full-data chars at three non-final signature positions.
+
 ### Security
+- Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). The re-check reduces every spelling of an address to one set of rules first — IPv4-mapped (`::ffff:169.254.169.254`), 6to4 and Teredo answers are unwrapped to the IPv4 address a dual-stack host would actually reach, and the unspecified address (`0.0.0.0`, `::`), multicast and reserved ranges are refused outright. Ignoring the proxy env is not a bypass — the internal network has no other route. Docker never reconciles the `internal` flag on a network that already exists, so a sandbox start refuses with `network_not_internal` rather than silently running without that layer if a same-named non-internal bridge is left over; remove it and it is recreated correctly. Plain-HTTP proxying authorizes every request rather than only the first on a connection — proxy clients pool per-proxy, not per-destination, so keep-alive is not offered upstream and a request's body is forwarded by its declared length (chunked request bodies are refused, having no length to bound the forward by). Closes the "hostname-level allowlisting is E2B-only" gap.
 
 ## [0.78.2] - 2026-08-05
 

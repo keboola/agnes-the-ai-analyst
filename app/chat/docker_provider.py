@@ -41,6 +41,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 # Reused rather than re-implemented: the queue-backed reader is the exact
 # StreamReader shim ChatManager's pump expects, and its readline() buffering is
@@ -48,6 +49,7 @@ from typing import Any
 from app.chat.e2b_provider import SANDBOX_WORKDIR, _StreamReaderAdapter
 
 # Module-level so unit tests can ``patch("app.chat.docker_provider.SandboxRunnerClient")``.
+from app.chat.config import sandbox_can_reach_directly
 from app.chat.sandbox_runner_client import SandboxRunnerClient
 from app.chat.workdir import WORKSPACE_LINK_ENTRIES
 
@@ -312,10 +314,16 @@ class DockerSandboxProvider:
         Always-set resource bounds (D7) — local sandboxes contend with the
         gateway host, unlike E2B's offloaded compute.
     egress_mode:
-        ``open`` (normal bridge, internet reachable) or ``none`` (an
-        ``internal`` bridge: only containers on that network are reachable).
-        Hostname-level allowlisting — E2B's ``allow_out`` parity — is out of
-        scope for v1 and honestly declared as such in docs/cloud-chat.md.
+        ``open`` (normal bridge, internet reachable), ``none`` (an
+        ``internal`` bridge: only containers on that network are reachable),
+        or ``allowlist`` (the ``none`` internal bridge PLUS the
+        services/egress_proxy sidecar: HTTP(S)_PROXY env points sandboxes
+        at the proxy, which enforces the hostname allowlist with a
+        post-resolution IP re-check — E2B ``allow_out`` parity, with
+        DNS-rebinding/metadata protection E2B doesn't have).
+    egress_proxy_url:
+        Where sandboxes find the proxy in ``allowlist`` mode; must resolve
+        on the internal network (compose service name).
     max_total_sandboxes:
         Host-wide ceiling checked at spawn, on top of ``concurrency_per_user``.
     """
@@ -331,6 +339,7 @@ class DockerSandboxProvider:
         cpus: float = 1.0,
         pids_limit: int = 512,
         egress_mode: str = "open",
+        egress_proxy_url: str = "",
         max_total_sandboxes: int = 10,
         upload_runner: bool = True,
     ) -> None:
@@ -340,6 +349,7 @@ class DockerSandboxProvider:
         self._cpus = cpus
         self._pids_limit = pids_limit
         self._egress_mode = egress_mode
+        self._egress_proxy_url = egress_proxy_url
         self._max_total_sandboxes = max_total_sandboxes
         self._upload_runner = upload_runner
         self._client = SandboxRunnerClient()
@@ -347,9 +357,52 @@ class DockerSandboxProvider:
     # --- spec building --------------------------------------------------
 
     def _network_name(self) -> str:
-        if self._egress_mode == "none":
+        # ``allowlist`` rides the same internal bridge as ``none`` — the
+        # network itself is the enforcement layer (no route out); the
+        # egress-proxy sidecar dual-homed onto it is the policy layer.
+        if self._egress_mode in ("none", "allowlist"):
             return f"{self._network}{INTERNAL_NETWORK_SUFFIX}"
         return self._network
+
+    def _egress_env(self, spawn_env: "dict[str, str] | None" = None) -> dict[str, str]:
+        """Proxy env for ``allowlist`` mode (empty otherwise).
+
+        Cooperative for well-behaved tools (curl, pip, git, httpx all
+        honor these); a tool that ignores them gets no route, not open
+        egress. NO_PROXY keeps loopback (the in-sandbox broker relay)
+        and the Agnes server itself (reached directly over the shared
+        internal network, per ``AGNES_SERVER``) off the proxy.
+        """
+        if self._egress_mode != "allowlist" or not self._egress_proxy_url:
+            return {}
+        no_proxy = ["127.0.0.1", "localhost"]
+        server = (spawn_env or {}).get("AGNES_SERVER", "")
+        if server:
+            host = urlparse(server).hostname
+            # Only bypass the proxy for a host the sandbox can actually reach
+            # directly — i.e. one on the shared internal network. NO_PROXY
+            # takes PRECEDENCE over the proxy env, so listing a public host
+            # here forces a direct connection that a no-route-out network can
+            # never make, and the operator cannot recover by allowlisting it.
+            # `agnes_server_url()` prefers SERVER_URL (public, set on most
+            # deployments for OAuth) over AGNES_INTERNAL_URL, so that is the
+            # common case, not an exotic one (Devin Review on #1148).
+            #
+            # "Directly reachable" is defined once in app/chat/config.py and
+            # shared with the boot check, so the two cannot drift: a dotless
+            # service name, the docker host alias, or a private IP literal.
+            if host and host not in no_proxy and sandbox_can_reach_directly(host):
+                no_proxy.append(host)
+        p = self._egress_proxy_url
+        joined = ",".join(no_proxy)
+        return {
+            "HTTP_PROXY": p,
+            "HTTPS_PROXY": p,
+            "http_proxy": p,
+            "https_proxy": p,
+            "NO_PROXY": joined,
+            "no_proxy": joined,
+        }
 
     @staticmethod
     def _workspace_dir(workdir: Path) -> Path | None:
@@ -489,9 +542,11 @@ class DockerSandboxProvider:
             "image": self._image,
             "labels": {OWNER_LABEL: "1", SESSION_LABEL: chat_id},
             "network": self._network_name(),
-            "internal_network": self._egress_mode == "none",
-            # Passed through verbatim — see the module docstring.
-            "env": dict(env),
+            "internal_network": self._egress_mode in ("none", "allowlist"),
+            # Passed through verbatim — see the module docstring. The
+            # allowlist-mode proxy vars ride along; the spawn env stays
+            # secret-free either way (guard-pinned).
+            "env": {**self._egress_env(env), **dict(env)},
             "cmd": list(argv),
             "working_dir": SANDBOX_WORKDIR,
             "user": self._container_user(workdir),

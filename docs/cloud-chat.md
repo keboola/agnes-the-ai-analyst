@@ -392,10 +392,18 @@ already-delivered frames).
 |---|---|
 | `open` (default) | normal bridge — the sandbox can reach the internet, so in-sandbox `pip install` / `npm install` work. Weaker than E2B's per-hostname allowlist. |
 | `none` | the sandbox joins an `internal` Docker network (`<docker_network>-internal`) with no route off the host. Stronger than E2B — but the Agnes app must also be attached to that network for the rails to work, and in-sandbox package installs stop working. |
+| `allowlist` | the `none` internal network **plus** the `services/egress_proxy` sidecar dual-homed onto it (compose profile `chat-docker-egress`). Sandboxes get `HTTP(S)_PROXY` pointed at the proxy and may reach exactly `chat.docker_egress_allow_hosts` (exact names or `*.suffix` wildcards) — each connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and connects to the vetted address, closing the DNS-rebinding gap; cloud metadata endpoints stay blocked even if listed. The proxy env is cooperative, but ignoring it is not a bypass: the internal network has no other route out. E2B `allow_out` parity, with rebinding protection E2B doesn't have. **Requires the rails URL to be internally reachable** — the sandbox's `NO_PROXY` carries whatever host `AGNES_SERVER` resolves to, so a public `SERVER_URL` would be forced onto a direct connection the no-route-out network cannot make. Use `AGNES_INTERNAL_URL` (e.g. `http://app:8000` under compose), as the rest of this page already instructs. |
 
-**Hostname-level allowlisting (`chat.egress_allow_out`) is not implemented for
-this provider.** That key is E2B-only. The in-workspace PreToolUse hook still
-applies in both modes, and it is fail-open by design.
+To enable `allowlist` mode under Compose: set `chat.docker_egress_mode:
+allowlist` + `chat.docker_egress_allow_hosts` in `instance.yaml`, export
+`EGRESS_ALLOW_HOSTS` (the same list, comma-separated — the proxy is the
+enforcing copy), and start the stack with `--profile chat-docker-egress`.
+The `app` service already joins `agnes-apps-internal`, so the rails URL
+(`AGNES_INTERNAL_URL=http://app:8000`) keeps working — the provider adds
+it to `NO_PROXY` automatically.
+
+**The E2B key `chat.egress_allow_out` remains E2B-only.** The in-workspace
+PreToolUse hook still applies in all modes as defense-in-depth.
 
 ### Isolation
 

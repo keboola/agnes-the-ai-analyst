@@ -187,8 +187,16 @@
 	# certs on disk) that sets DOMAIN_ALIAS should instead put both names on
 	# one SAN cert — this block would try public ACME for the legacy name.
 
-	# 301, not 302: this is a permanent move, and the redirect is what
-	# teaches clients (and their caches) the new origin. {uri} carries path
-	# + query through unchanged.
-	redir https://{$DOMAIN:localhost}{uri} permanent
+	# 308, not 301: both are permanent and equally cacheable, but a 301 on a
+	# POST/PUT/PATCH is re-issued by clients as a GET with the body dropped
+	# (browsers, requests, httpx — long-standing behaviour). This feature
+	# exists to keep `agnes push` and MCP JSON-RPC working through a cutover,
+	# and those are POSTs, so a 301 would break exactly what it promises to
+	# carry. 308 preserves method and body (Devin Review on #1182).
+	#
+	# Note what a redirect cannot fix: clients strip Authorization when
+	# following one cross-host, so API callers still have to be repointed at
+	# the new hostname. This is a browser-grade safety net, not a transparent
+	# API proxy — see docs/DEPLOYMENT.md.
+	redir https://{$DOMAIN:localhost}{uri} 308
 }
