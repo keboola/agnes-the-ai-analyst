@@ -43,6 +43,56 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Install-prompt guidance fixes: the expired-credential recovery now names the working command (`agnes init --force --token-file …` — plain `agnes init` refuses once `.claude/init-complete` exists, and `agnes update` reuses the expired saved credential); the "token file consumed" check applies only to the `agnes init` branch (on the `agnes update` reconcile path the file legitimately survives, and the check no longer reads as a shell failure); and the missing-token preflight treats a machine as reconciled only with a saved credential present — a globally installed CLI alone no longer skips the stop. `agnes init --token-file` with a missing file now falls back to `AGNES_TOKEN` / the saved credential instead of aborting (a file that exists but cannot be read stays a hard error — see the `agnes update` bullet above). Dashboard and advanced-setup copy no longer promise a token-bearing setup script; stale docstrings about clipboard/DOM isolation now state the actual boundary.
 - The generated install prompt no longer embeds the analyst's raw access token: the `Personal access token: {token}` preamble line and the `~/.agnes/token` heredoc in the `agnes init` step are gone, replaced by a guard (`test -s ~/.agnes/token`, fresh-install vs. reconcile aware) that assumes the token was already saved to `~/.agnes/token` by an earlier step of the web onboarding flow, before the prompt was generated. `agnes init --token-file` still reads it and removes it once the credential is saved to `~/.config/agnes/token.json`. The token value now never has to appear in the prompt text, a browser clipboard, or a pasted chat transcript. `docs/seed-repo-contract.md` and the banned-phrase regression guard were updated accordingly (`{token}` / a literal JWT fragment are now banned from the rendered body).
 - The web half of the same change: `/home`'s install guide now hands the token to the machine via a copied shell command (Step 4, "Launch Claude — we'll hand it your login first" / "Save your login token") instead of embedding it in the setup script — the command saves the token to `~/.agnes/token` and, when auto-mode is on, launches Claude in the same line. The visible command always shows a masked placeholder; the real token is minted only in memory at copy time and never written into the page. Step 5's "Copy install script to clipboard" no longer mints or carries any token at all. `/setup`'s single-page flow got the matching treatment.
+## [0.79.1] - 2026-08-06
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- **Marketplace plugin names are validated as single path segments.** A plugin
+  `name` in a registered marketplace's `.claude-plugin/marketplace.json` is used
+  verbatim as the `plugins/<name>` directory segment, and that directory is read
+  wholesale into the served `marketplace.zip` / `marketplace.git` tree. Names are
+  now rejected at manifest ingest (`read_plugins`) and every constructed path is
+  contained to the marketplaces root — the two layers the security playbook §6
+  requires, and which the sibling asset-mirror path already had. Every call site
+  that builds that path now shares one rule (`src.marketplace.is_safe_plugin_name`,
+  applied via `_reject_unsafe_segment`) so they cannot drift apart again — the two
+  in `src/marketplace_filter.py`, the v2 skills endpoint whose output goes straight
+  into an HTTP response body, and the curated detail / skill-detail / agent-detail
+  endpoints plus their shared parent-fields helper, which relied on `_safe_join`
+  re-anchoring on an already-escaped plugin root.
+- **Symlinked files in plugin content are no longer packaged.** The ZIP backend,
+  the git backend, the ETag walk and the Store-bundle walk all traversed plugin
+  directories with a bare `rglob` and read through symlinks; the cowork packager
+  had guarded this since it shipped. All now share
+  `marketplace_filter.escapes_base`. A plugin directory that is itself a symlink
+  is stopped by the containment layer above, before any walk begins.
+- **The marketplace sync credential no longer touches argv or disk.** Server-side
+  sync built `https://x-access-token:<PAT>@host/…` and handed it to `git clone` /
+  `git remote set-url`, exposing the token in `/proc/<pid>/cmdline` and writing it
+  in plaintext into `${DATA_DIR}/marketplaces/<slug>/.git/config`, where it
+  persisted into backups and volume snapshots. The initial-workspace template sync
+  used the same helper and had the same exposure. Both now pass the token through
+  a per-invocation, **host-scoped** `credential.helper` reading `$AGNES_TOKEN`
+  from the subprocess environment (security playbook §7);
+  `agnes refresh-marketplace` gains the same host scoping, so a redirect can no
+  longer draw the workspace PAT to a third-party host. **Existing `.git/config`
+  files are scrubbed automatically on the next sync** — including for rows whose
+  sync currently fails validation. Operators who consider the token exposed
+  should rotate it.
+- Hardened `plugin.json` component-key resolution in the ZIP packager: a
+  curator-supplied path is now contained to the plugin directory instead of being
+  joined and walked as given.
+
 ## [0.79.0] - 2026-08-05
 
 ### Added

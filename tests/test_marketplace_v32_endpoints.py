@@ -248,12 +248,20 @@ def test_curated_asset_endpoint_blocks_path_traversal(seeded_app, monkeypatch, t
 def test_reject_unsafe_segment_blocks_dotdot(seeded_app):
     """Audit L1: a ``..`` (or ``/``/``\\``) marketplace_id/plugin_name escapes
     the marketplaces dir (``marketplaces/..`` → DATA_DIR) and _safe_join then
-    re-anchors on the escaped root. The segment guard must reject it (404)."""
+    re-anchors on the escaped root. The segment guard must reject it (404).
+
+    The trailing-newline and bare-``.`` cases are 2026-08-05 audit follow-ups:
+    the previous ``re.match()`` against a ``^…$`` pattern accepted ``"acme\\n"``
+    (Python's ``$`` also matches immediately before a trailing newline) and the
+    explicit ``seg == ".."`` check missed both ``"."`` and ``"..\\n"``. The
+    delegation to ``is_safe_plugin_name`` (``fullmatch`` + explicit ``.``/``..``
+    rejection) closed all three; these cases keep them closed.
+    """
     from fastapi import HTTPException
 
     from app.api.marketplace import _reject_unsafe_segment
 
-    for bad in ("..", "a/b", "a\\b", "", "foo/../bar"):
+    for bad in ("..", "a/b", "a\\b", "", "foo/../bar", "acme\n", ".", "..\n", "acme "):
         with pytest.raises(HTTPException) as ei:
             _reject_unsafe_segment(bad)
         assert ei.value.status_code == 404, bad
