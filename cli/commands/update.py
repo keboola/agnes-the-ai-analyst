@@ -611,13 +611,23 @@ def _step_pull(workspace: Path, *, server_url: str, token: str, quiet: bool, rep
     if getattr(result, "errors", None):
         report.append({"stage": "pull", "status": "error", "detail": list(result.errors)})
     else:
-        report.append(
-            {
-                "stage": "pull",
-                "status": "ok",
-                "detail": f"{result.tables_updated} tables, {result.parquets_total} parquets",
-            }
-        )
+        detail = f"{result.tables_updated} tables, {result.parquets_total} parquets"
+        # The SessionStart hook runs THIS command, detached, with stdout and
+        # stderr both sent to /dev/null — so a name withheld from a snapshot is
+        # taken on a path where nothing the pull prints can ever be seen. The
+        # run report is the only durable channel (it lands in
+        # `.claude/agnes/update.log`), so it has to carry the withheld names or
+        # the analyst meets "Table with name <x> does not exist" with no
+        # explanation anywhere (#1129 review).
+        withheld = list(getattr(result, "snapshot_views_blocked", []) or [])
+        if withheld:
+            shown = ", ".join(sorted(withheld)[:5])
+            more = f" (+{len(withheld) - 5} more)" if len(withheld) > 5 else ""
+            detail += (
+                f"; withheld {len(withheld)} snapshot name(s) now owned by a table you can no longer "
+                f"read locally: {shown}{more} — re-create with `agnes snapshot create <table> --as <name>`"
+            )
+        report.append({"stage": "pull", "status": "ok", "detail": detail})
 
 
 # --------------------------------------------------------------------------- #
