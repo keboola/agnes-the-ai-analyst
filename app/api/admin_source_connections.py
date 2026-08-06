@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -85,6 +87,11 @@ def master_secret_key(connection_id: str) -> str:
     a separate slot from the plain storage token (see ``SecretBody.kind``).
     Shared with the semantic-layer sync (which requires a master token)."""
     return f"{connection_id}:master"
+
+
+def _log_host(stack_url: str) -> str:
+    """Hostname of a connection's stack_url for log lines (never the token)."""
+    return urlsplit(stack_url).hostname or stack_url
 
 
 def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -354,7 +361,14 @@ async def set_connection_secret(
             # two named types map to a 502 storage_api_error; an unrelated
             # programming error should surface as a 500, not be mistaken for
             # an upstream outage.
-            raise HTTPException(status_code=502, detail=f"storage_api_error: {client._redact(exc)}") from exc
+            redacted = client._redact(exc)
+            logger.warning(
+                "master-token preflight failed for connection %s (%s): %s",
+                connection_id,
+                _log_host(stack_url),
+                redacted,
+            )
+            raise HTTPException(status_code=502, detail=f"storage_api_error: {redacted}") from exc
         if not info.get("isMasterToken"):
             # Reuse require_master_token's exact message rather than duplicating
             # it — it already fetched isMasterToken, so hand it the cached
@@ -419,23 +433,51 @@ async def test_connection(
         # so a stored-but-now-rebound host is caught, not just at store time.
         _validate_stack_url(config, required=True)
     except HTTPException as exc:
-        return {"ok": False, "error": exc.detail if isinstance(exc.detail, str) else "invalid stack_url"}
+        err = exc.detail if isinstance(exc.detail, str) else "invalid stack_url"
+        logger.info("connection test for %s: failed — %s", connection_id, err)
+        return {"ok": False, "error": err}
     stack_url = (config.get("stack_url") or "").rstrip("/")
 
     token = _resolve_token(connection_id, row)
     if not token:
+        logger.info(
+            "connection test for %s (%s): failed — no token available",
+            connection_id,
+            _log_host(stack_url),
+        )
         return {"ok": False, "error": "no token available (vault empty, token_env unset)"}
 
     url = f"{stack_url}/v2/storage?exclude=components"
+    # Outcome log lines carry the status/reason but never the response body —
+    # a proxy-echoed token must not land in server logs (the body still goes
+    # to the admin client, same as before).
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, headers={"X-StorageApi-Token": token})
         if resp.status_code == 200:
             data = resp.json()
             project_name = data.get("owner", {}).get("name") or data.get("name") or ""
+            logger.info(
+                "connection test for %s (%s): ok — project %r",
+                connection_id,
+                _log_host(stack_url),
+                project_name,
+            )
             return {"ok": True, "project_name": project_name}
+        logger.info(
+            "connection test for %s (%s): failed — HTTP %d",
+            connection_id,
+            _log_host(stack_url),
+            resp.status_code,
+        )
         return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
     except Exception as exc:
+        logger.info(
+            "connection test for %s (%s): failed — %s",
+            connection_id,
+            _log_host(stack_url),
+            str(exc)[:300],
+        )
         return {"ok": False, "error": str(exc)[:300]}
 
 
@@ -481,6 +523,7 @@ async def list_connection_tables(
         )
 
     client = KeboolaStorageClient(url=stack_url, token=token)
+    started = time.monotonic()
     try:
         buckets = await run_in_threadpool(client.list_buckets)
         tables = await run_in_threadpool(client.list_tables)
@@ -489,7 +532,24 @@ async def list_connection_tables(
         # raise requests.RequestException, not StorageApiError — without the
         # second arm they fall through to the catch-all 500 with no upstream
         # context. Same 502 + token-aware redaction as the /secret preflight.
-        raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {client._redact(exc)}") from exc
+        # The WARNING keeps a server-side trail: unlike the catch-all path
+        # this replaced, an HTTPException is otherwise not logged at all.
+        redacted = client._redact(exc)
+        logger.warning(
+            "tables listing failed for connection %s (%s): %s",
+            connection_id,
+            _log_host(stack_url),
+            redacted,
+        )
+        raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {redacted}") from exc
+    logger.info(
+        "tables listing for connection %s (%s): %d buckets, %d tables in %.1fs",
+        connection_id,
+        _log_host(stack_url),
+        len(buckets),
+        len(tables),
+        time.monotonic() - started,
+    )
 
     tables_by_bucket: Dict[str, List[Dict[str, Any]]] = {}
     for t in tables:

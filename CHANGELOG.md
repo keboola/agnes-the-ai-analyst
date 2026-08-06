@@ -16,7 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- `GET /api/admin/source-connections/{id}/tables` (the "Add data source" wizard's table picker) now maps transport-level Storage API failures — DNS errors, refused connections, read timeouts, TLS errors — to the same 502 `keboola_storage_api_error` response as non-2xx API replies, instead of letting them fall through to the catch-all handler as an uninformative 500. The error detail rides the client's token-aware redaction, matching the master-secret preflight's existing behavior.
+- `GET /api/admin/source-connections/{id}/tables` (the "Add data source" wizard's table picker) now maps transport-level Storage API failures — DNS errors, refused connections, read timeouts, TLS errors — to the same 502 `keboola_storage_api_error` response as non-2xx API replies, instead of letting them fall through to the catch-all handler as an uninformative 500. The error detail rides the client's token-aware redaction, matching the master-secret preflight's existing behavior. The admin connection probes also gained a server-side log trail: `POST .../test` logs every outcome (previously fully silent), the tables listing logs bucket/table counts and duration on success, and both 502 paths (tables listing, master-token preflight) log a token-redacted WARNING — an `HTTPException` is otherwise invisible in server logs, unlike the catch-all 500 the tables one replaced.
 
 ### Removed
 
