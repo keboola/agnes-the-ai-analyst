@@ -160,7 +160,7 @@ def _build_select(
     where_parts: List[str] = []
     params: List[Any] = []
     for col, val in filter_dict.items():
-        where_parts.append(f'"{col}" = ?')
+        where_parts.append(f"{quote_ident(col)} = ?")
         params.append(val)
 
     where_clause = " WHERE " + " AND ".join(where_parts) if where_parts else ""

@@ -907,13 +907,29 @@ def test_step_push_reports_uploaded_counts(monkeypatch):
     assert calls == [{"quiet": False, "as_json": True, "dry_run": False}]
 
 
-def test_step_push_omits_local_md_when_not_uploaded(monkeypatch):
+def test_step_push_zero_work_reports_skipped_not_ok(monkeypatch):
+    """A push with nothing to upload makes NO HTTP request (the capability
+    probe is gated on having work), so it must not report `ok` — the
+    bootstrap-token cleanup treats a non-error/non-skipped push as proof the
+    saved credential works and would otherwise delete the ~/.agnes/token
+    recovery input on a run where workspace/pull failed auth."""
     _stub_push(monkeypatch, json.dumps({"sessions": 0, "local_md": False, "errors": []}))
 
     report: list[dict] = []
     upd._step_push(report=report)
 
-    assert report == [{"stage": "push", "status": "ok", "detail": "0 session(s)"}]
+    assert report == [{"stage": "push", "status": "skipped", "detail": "nothing to upload; no server request made"}]
+
+
+def test_step_push_local_md_only_still_counts_as_ok(monkeypatch):
+    """Uploading only CLAUDE.local.md is a real authenticated request, so
+    it keeps reporting `ok` (and thus proves the saved credential)."""
+    _stub_push(monkeypatch, json.dumps({"sessions": 0, "local_md": True, "errors": []}))
+
+    report: list[dict] = []
+    upd._step_push(report=report)
+
+    assert report == [{"stage": "push", "status": "ok", "detail": "0 session(s) + CLAUDE.local.md"}]
 
 
 def test_step_push_skipped_when_another_push_holds_lock(monkeypatch):
@@ -1069,3 +1085,76 @@ def test_marketplace_no_drift_prune_is_silent_under_quiet(monkeypatch, tmp_path,
     cfg = json.loads((ws / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert "ghost@agnes" not in cfg["enabledPlugins"]
     assert cfg["enabledPlugins"]["superpowers@claude-plugins-official"] is True
+
+
+class TestBootstrapTokenCleanup:
+    """`_step_bootstrap_token_cleanup` — the reconcile-path answer to the
+    plaintext `~/.agnes/token` leftover: step 4 of the web guide writes it,
+    only `agnes init` consumed it, so a re-running analyst kept a live
+    90-day credential on disk indefinitely. The cleanup deletes it once an
+    authenticated step proved the SAVED credential works, and keeps it when
+    nothing did (it is the recovery input for `agnes init --force`).
+    """
+
+    def _home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".agnes").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        import pathlib
+
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: home))
+        return home
+
+    def test_removes_file_after_proven_auth_step(self, tmp_path, monkeypatch):
+        home = self._home(tmp_path, monkeypatch)
+        token_file = home / ".agnes" / "token"
+        token_file.write_text("eyJ-leftover", encoding="utf-8")
+        from cli.commands.update import _step_bootstrap_token_cleanup
+
+        report = [{"stage": "pull", "status": "ok", "detail": "x"}]
+        _step_bootstrap_token_cleanup(report)
+        assert not token_file.exists()
+        assert any(s["stage"] == "bootstrap-token" and s["status"] == "ok" for s in report)
+
+    def test_keeps_file_without_authenticated_step(self, tmp_path, monkeypatch):
+        home = self._home(tmp_path, monkeypatch)
+        token_file = home / ".agnes" / "token"
+        token_file.write_text("eyJ-leftover", encoding="utf-8")
+        from cli.commands.update import _step_bootstrap_token_cleanup
+
+        report = [
+            {"stage": "workspace", "status": "error", "detail": "401"},
+            {"stage": "pull", "status": "skipped", "detail": "no token"},
+        ]
+        _step_bootstrap_token_cleanup(report)
+        assert token_file.exists(), "recovery input must survive an unproven run"
+        assert any(s["stage"] == "bootstrap-token" and s["status"] == "skipped" for s in report)
+
+    def test_keeps_file_when_only_finished_step_was_noop_push(self, tmp_path, monkeypatch):
+        """Expired saved credential (workspace + pull error) and no new
+        transcripts: the zero-work push made no request and reports skipped,
+        so nothing authenticated ran — the fresh bootstrap token from the
+        install guide's step 4 must survive for
+        `agnes init --force --token-file`."""
+        home = self._home(tmp_path, monkeypatch)
+        token_file = home / ".agnes" / "token"
+        token_file.write_text("eyJ-fresh", encoding="utf-8")
+        from cli.commands.update import _step_bootstrap_token_cleanup
+
+        report = [
+            {"stage": "workspace", "status": "error", "detail": "401"},
+            {"stage": "push", "status": "skipped", "detail": "nothing to upload; no server request made"},
+            {"stage": "pull", "status": "error", "detail": "401"},
+        ]
+        _step_bootstrap_token_cleanup(report)
+        assert token_file.exists(), "a no-op push must not count as credential proof"
+        assert any(s["stage"] == "bootstrap-token" and s["status"] == "skipped" for s in report)
+
+    def test_noop_without_file(self, tmp_path, monkeypatch):
+        self._home(tmp_path, monkeypatch)
+        from cli.commands.update import _step_bootstrap_token_cleanup
+
+        report = [{"stage": "pull", "status": "ok", "detail": "x"}]
+        _step_bootstrap_token_cleanup(report)
+        assert not any(s["stage"] == "bootstrap-token" for s in report)

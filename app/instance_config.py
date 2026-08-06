@@ -346,19 +346,19 @@ def get_public_url() -> str:
 def get_gws_oauth_credentials() -> dict:
     """Pre-configured Google Workspace CLI OAuth client (client_id + secret).
 
-    When set, /home renders a connector prompt that tells the analyst (and
-    Claude) to export `GOOGLE_WORKSPACE_CLI_CLIENT_ID` and
-    `GOOGLE_WORKSPACE_CLI_CLIENT_SECRET` and skip the "create your own GCP
-    project" walkthrough — the operator has already provisioned a shared
-    OAuth app for the instance. When unset, the prompt falls back to the
-    manual `gws auth setup` flow.
+    Consumer: the server-resolved GWS fallback in ``GET
+    /api/connectors/params`` (:func:`app.api.connectors.get_params`).
+    When this resolves to a configured client, the fallback merges the
+    equivalent ``connector-gws`` params — client id, secret value,
+    optional project id — into the response, `agnes init` writes them
+    into the analyst's ``.claude/agnes/.env``, and the connector-gws
+    seed skill skips the "create your own GCP project" walkthrough.
+    When unset, the skill falls back to its manual setup branch.
 
     OAuth client_id + secret here are app identifiers for an installed
-    "Desktop app" OAuth client, not a per-user secret. They're rendered
-    into the public /home page on purpose — they identify the OAuth app,
-    and the redirect-URI / scope guardrails on the GCP-side OAuth client
-    are what enforce safety. Treat them like a publishable bundle ID,
-    not a credential.
+    "Desktop app" OAuth client, not a per-user secret — the redirect-URI
+    / scope guardrails on the GCP-side OAuth client are what enforce
+    safety. Treat them like a publishable bundle ID, not a credential.
 
     Resolution order (env-overrides-yaml, mirrors :func:`get_home_route`):
 
@@ -700,9 +700,11 @@ def get_instance_custom_preamble() -> str:
 
     ``{instance_brand}`` (and the other server-side placeholders substituted
     by :func:`app.web.setup_instructions.resolve_lines`) are honored inside
-    the preamble, but it MUST NOT contain literal ``{server_url}`` /
-    ``{token}`` — those are only substituted at click time in the JS
-    clipboard flow, not in the preamble body.
+    the preamble, but it MUST NOT contain a literal ``{server_url}`` (that
+    one is substituted at click time in the JS clipboard flow, not in the
+    preamble body) and MUST NOT reference ``{token}`` at all — the token is
+    no longer a prompt placeholder anywhere; it is handed off via /home's
+    step 4 into ``~/.agnes/token``.
 
     Resolution: ``AGNES_INSTANCE_CUSTOM_PREAMBLE`` env > ``instance.custom_preamble``
     YAML > ``""``. Mirrors :func:`get_instance_overview`.

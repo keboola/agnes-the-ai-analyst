@@ -957,9 +957,10 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "kind": "object",
             "hint": (
                 "Instance-wide params written to every analyst's .env "
-                "(e.g. AGNES_INSTANCE_BRAND). Secret VALUES don't belong "
-                "here — use *_ENV keys naming the env var that holds the "
-                "secret."
+                "(e.g. AGNES_INSTANCE_BRAND). Keep user credentials and "
+                "server-side secrets out of globals; connector app "
+                "identifiers (e.g. the GWS OAuth client secret) belong "
+                "under their per-connector section as plain values."
             ),
         },
     },

@@ -111,7 +111,7 @@ def drop_cmd(name: str):
         if local_db.exists():
             conn = _open_duckdb(str(local_db))
             try:
-                conn.execute(f'DROP VIEW IF EXISTS "{name}"')
+                conn.execute(f"DROP VIEW IF EXISTS {quote_ident(name)}")
             finally:
                 conn.close()
     typer.echo(f"Dropped {name}")

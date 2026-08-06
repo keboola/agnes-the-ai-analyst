@@ -1,31 +1,58 @@
 Set up the BRAND CLI on this machine.
 
 Server: {server_url}
-Personal access token: {token}
-(Just generated; treat it as a secret.)
+
+Your login token is already saved on this machine at ~/.agnes/token
+(written by step 4 of the install guide at {server_url}). The steps
+below only reference that file path — never print the token, echo
+it, or paste it into this chat.
+
+This prompt is the final step of the install guide at {server_url} —
+the same guide whose previous step saved the login token above. Whether
+that host is trusted is the user's org's call, and they can verify it
+with their IT if unsure; the decisions this setup still needs from them
+(install location, which optional tools to connect) come up inside the
+steps below.
 
 Run these, in order. The script is idempotent — safe to re-run if a step
 fails partway through.
 
-FIRST, check whether this machine already ran this setup: if the target
-workspace contains `.claude/init-complete` (or `agnes --version` already
-works), you are RECONCILING an existing install, not starting fresh —
-still run every step in order (each converges to the desired state
-rather than reinstalling), but expect 'already configured' outcomes and
-do NOT treat them as errors. Leftover state from a previous instance
-(e.g. an old marketplace clone) is handled by the steps themselves.
+Before you start, check whether this machine already ran this setup: if
+the target workspace contains `.claude/init-complete` (or `agnes
+--version` already works), this is a reconcile of an existing install,
+not a fresh start. Run every step in order anyway — each converges to
+the desired state rather than reinstalling — and treat 'already
+configured' outcomes as success, not as errors. Leftover state from a
+previous instance (e.g. an old marketplace clone) is handled by the
+steps themselves.
 
-If a step fails with an unfamiliar error, paste the
-exact error back and stop. Do NOT improvise around TLS errors by disabling
-verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`,
-`git -c http.sslVerify=false`, etc.) — those are dead ends that hide the
-real problem.
+First, a quick check: run `test -s ~/.agnes/token`.
+  - If the file exists, continue with step 1.
+  - If it is missing and this machine was already set up (the checks
+    above say reconcile) AND a saved credential exists (`test -s
+    ~/.config/agnes/token.json`), that's fine: the token file is
+    consumed and removed by the first `agnes init`, and later runs use
+    the saved credential. Continue. A working `agnes --version` alone
+    is NOT enough — the CLI may be installed globally while this
+    machine has never signed in.
+  - If it is missing on a fresh install, stop here — tell the user
+    to open {server_url}/home and run step 4 (the step that saves
+    your login token to ~/.agnes/token — its exact title differs
+    per instance), then paste this script again.
+
+If a step fails with an unfamiliar error, paste the exact error back and
+stop. If the failure is a TLS error, look for the cause — corporate
+proxy, internal CA, clock skew — rather than lowering certificate
+verification; turning verification off hides the problem instead of
+solving it.
 
 1) Install the CLI:
    uv tool install --force {server_url}/cli/wheel/agnes-X.Y.Z-py3-none-any.whl
 
-   If uv is not installed yet:
-     curl -LsSf https://astral.sh/uv/install.sh | sh
+   If uv is not installed yet, install it from the official instructions at
+   https://docs.astral.sh/uv/ — on Windows `winget install --id=astral-sh.uv`,
+   on macOS `brew install uv`. If you use the shell installer instead,
+   download it to a file and show it to me before running it.
 
    If `agnes --version` fails after install because ~/.local/bin is not on PATH:
      export PATH="$HOME/.local/bin:$PATH"
@@ -40,49 +67,50 @@ real problem.
    The /home page's "Step 2 — pick a folder" recommended
        mkdir -p ~/Desktop/WORKSPACE && cd ~/Desktop/WORKSPACE
    but the install works in any workspace folder the user prepared.
-   Decide where to install using the three branches below — do NOT
-   silently `mkdir`/`cd` anywhere, and do NOT treat the user's current
-   cwd as a mistake unless it lands in the REFUSE list.
+   Decide where to install using the three branches below. Do not
+   create or change directories on your own — say what you intend to
+   do and let the user confirm. A cwd outside the unsafe list below is
+   not a mistake.
 
    Run:
        pwd
 
-   2a) REFUSE — these paths are never safe to install into. STOP and
-       tell the user verbatim:
+   2a) Unsafe targets — home and system directories. Explain to the
+       user, in your own words, why you are not installing there:
 
-           "I won't install BRAND into <pwd> — it's a home or
-           system directory and the install would scatter .claude/,
-           .agnes/, AGNES_WORKSPACE.md and marketplace clones across
-           it. Please pick a workspace folder (e.g. ~/Desktop/WORKSPACE
-           or ~/work/WORKSPACE), cd into it, and re-paste this
-           script from there."
+       Cover these points: the install would scatter `.claude/`,
+       `.agnes/`, `AGNES_WORKSPACE.md` and marketplace clones across a
+       home or system directory; a workspace folder such as
+       ~/Desktop/WORKSPACE or ~/work/WORKSPACE is the right
+       target; the user should cd there and re-run this script.
 
-       Then stop — no `mkdir`, no `cd`, no further steps. The refuse
-       list is exact match on:
+       Then stop — no `mkdir`, no `cd`, no further steps. The list of
+       directories to avoid is an exact match on:
            $HOME    /    /tmp    /etc    /usr    /var    /opt
            /root    /bin    /sbin    /boot    /sys    /proc
 
-   2b) PROCEED SILENTLY — if the cwd is a prepared workspace, just
-       continue to step 3 without prompting. The whitelisted artefacts
-       a prepared workspace may already hold are:
+   2b) Prepared workspace — if the cwd is already prepared, tell the
+       user right away which directory you are installing into, then
+       continue to step 3. The whitelisted artefacts a prepared
+       workspace may already hold are:
            .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md
-       To check, run (fixed-string match, no regex):
+           bash.exe.stackdump
+       (the last one is a harmless Git Bash crash-dump leftover on
+       Windows — safe to install over). To check, run (fixed-string
+       match, no regex):
 
-           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md | head -1
+           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md -e bash.exe.stackdump | head -1
 
        If the output is empty (cwd is empty OR contains only the
        whitelisted artefacts above) → the user clearly prepared this
        folder; continue to step 3 in <pwd>. Remember <pwd> as the
        install dir for step 9.
 
-   2c) CONFIRM — for any other cwd (unrelated content present), tell
-       the user verbatim, exactly once:
-
-           "I'll install BRAND in <pwd>. Reply 'ok' to
-           continue here, 'default' to install in ~/Desktop/WORKSPACE
-           instead, or 'abort' to stop. (For a different custom path:
-           type /exit, `cd` to where you want it, then run `claude`
-           again and re-paste this script.)"
+   2c) Anything else — the directory holds unrelated content.
+       Summarise what is in it and ask, once, whether to install here,
+       in ~/Desktop/WORKSPACE instead, or not at all. Mention
+       that a different custom path means leaving the session, cd-ing
+       there, and re-running this script.
 
        Wait for the user's reply.
          - 'ok' / 'yes' / 'install here' / Enter → continue to step 3
@@ -92,36 +120,56 @@ real problem.
                        Then continue to step 3 in the new cwd.
                        Remember ~/Desktop/WORKSPACE as the install
                        dir for step 9.
-         - 'abort' / anything else → stop without making any changes.
-                       Do NOT run `mkdir`, do NOT `cd`, do NOT continue.
+         - 'abort' / anything else → stop without making any changes:
+                       no `mkdir`, no `cd`, no further steps.
+
+   Through the rest of the steps below, post a brief one-line progress
+   note as each step finishes, so the user has visibility instead of
+   sitting silent for minutes.
 
 3) Bootstrap your BRAND workspace in this directory.
-   Write the PAT to a file FIRST, then run `agnes init` with
-   `--token-file`. Passing the JWT inline via `--token "eyJ..."`
-   puts the token in the command-line argv; piping it through a file
-   keeps it out of the command-line argv entirely.
+   The token was saved to ~/.agnes/token by step 4 of the install
+   guide, so there is nothing to write here — `agnes init
+   --token-file` reads it directly (never on the command line) and
+   removes the file once the credential is saved to
+   ~/.config/agnes/token.json:
 
-   mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'
-{token}
-AGNES_PAT
    agnes init --server-url "{server_url}" --token-file ~/.agnes/token --workspace .
 
-   ALREADY INSTALLED? If `.claude/init-complete` already exists in this
-   directory, the workspace is initialised and `agnes init` will refuse.
-   Run `agnes update` instead — it uses your SAVED credentials (no token
-   needed) and converges the CLI, workspace template, plugins and data,
-   repairing anything broken. Template/default workspace files you edited
-   are backed up to `<name>.bak.<ts>` before being updated; Agnes-owned
+   If `.claude/init-complete` already exists in this directory, the
+   workspace is initialised and `agnes init` will refuse — that is
+   expected. Run `agnes update` instead — it uses your SAVED
+   credentials (no token needed) and converges the CLI, workspace
+   template, plugins and data, repairing anything broken.
+   Template/default workspace files you edited are backed up to
+   `<name>.bak.<ts>` before being updated; Agnes-owned
    hooks/statusLine/commands are re-applied on top. Then skip to step 4.
-   (If `agnes update` fails on auth because your saved token expired, run
-   `agnes init --force --server-url "{server_url}" --token-file ~/.agnes/token`
-   — `agnes init` always needs an explicit --server-url; this refreshes
-   the token and now backs up your edited template files before updating.)
+   (If `agnes update` fails on auth because your saved token expired:
+   the saved credential lives in ~/.config/agnes/token.json. Re-run
+   step 4 on {server_url}/home to save a fresh token — /home hides
+   the install guide (and its step 4) once onboarding completes, so
+   press its "Mark me as offboarded" button at the bottom to bring
+   the guide back — then run
+   `agnes init --force --server-url "{server_url}" --token-file ~/.agnes/token --workspace .`
+   — the --force is what makes init re-read the fresh token file;
+   plain `agnes init` refuses once `.claude/init-complete` exists.)
 
    This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),
    writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code
    SessionStart/End hooks (auto-refresh), and runs an initial `agnes pull`
    so your DuckDB views are ready.
+
+   If you ran `agnes init` above, verify the token file was consumed:
+   test -f ~/.agnes/token && echo "token file STILL PRESENT" || echo "token file consumed"
+
+   `agnes init` deletes ~/.agnes/token once the credential is saved; if
+   the file still exists after `agnes init`, the deletion failed and a
+   plaintext access token is left on disk — tell the user to remove it
+   manually. After the `agnes update` reconcile path this check does
+   not apply the same way: `agnes update` removes a leftover
+   ~/.agnes/token only after an authenticated step proved the saved
+   credential works — if the update could not reach the server, the
+   file stays as the input for the recovery command above.
 
 4) Verify the data is queryable:
    agnes catalog
@@ -135,7 +183,7 @@ AGNES_PAT
 
    If `git --version` fails ("command not found" or similar), install git:
      - macOS:   brew install git
-     - Windows: winget install --id Git.Git -e --source winget --silent
+     - Windows: winget install --id Git.Git -e --source winget
      - Linux:   sudo apt-get install git    OR    sudo dnf install git
 
    If `claude --version` fails, install Claude Code:
@@ -144,14 +192,14 @@ AGNES_PAT
 
    Then re-run both `--version` checks to confirm before continuing.
 
-6) Register the Agnes Claude Code marketplace (no plugin grants visible when this prompt was generated):
+6) Register the Agnes Claude Code marketplace (no plugin grants were visible when this prompt was generated — the CLI reads the live manifest, so anything granted since will still install):
    # `agnes refresh-marketplace --bootstrap` does:
    #   1. clone the per-user marketplace bare repo to ~/.agnes/marketplace
    #   2. strip the PAT from the cloned origin URL (refreshes use a
    #      per-invocation git credential helper, not the URL)
    #   3. best-effort chmod 700/600 on POSIX (no-op on Windows NTFS)
    #   4. `claude plugin marketplace add ~/.agnes/marketplace`
-   #   5. install every plugin the live manifest grants this account (none were visible when this prompt was generated; anything granted since still installs here)
+   #   5. install every plugin the live manifest grants this account (per the header above, none were visible at render time)
    # Idempotent — re-runs over an existing clone do fetch+reset+reconcile
    # via the same path the SessionStart hook uses. A leftover clone from
    # a PREVIOUS instance (origin pointing at another host) is detected
@@ -180,8 +228,10 @@ AGNES_PAT
 7) Run diagnostics:
    agnes diagnose
 
-   This should print "Overall: healthy". `db_schema: unknown` and
-   `data: 0 tables` are NORMAL in two cases:
+   Expect "Overall: healthy" on a clean instance; "degraded" driven
+   only by informational or data-freshness sub-checks is not an
+   install problem. `db_schema: unknown` and `data: 0 tables` are
+   normal in two cases:
      - fresh install (no tables registered yet), and
      - non-admin roles (e.g. `analyst`) that don't have grants to read
        the system schema even on populated instances.
@@ -189,15 +239,17 @@ AGNES_PAT
 
 8) Connect the user's tools (last interactive ask before Confirm):
 
-   For each tool below, ask the user verbatim: "Set up <NAME> now? (Y/n)".
-   Treat empty/Enter as YES — the default is install. Only skip when the
-   user types an explicit "no" / "n" / "skip". Wait for each answer
-   before moving to the next. The prompts below are idempotent and
-   safe to re-run if anything goes sideways.
+   For each tool below, tell the user what it does and what access it
+   needs, then ask whether to set it up — one combined question covering
+   all the tools is fine; don't start setting a tool up until its answer
+   has arrived. If the answer is anything other than a clear yes, skip
+   that tool — declining and deferring are both valid answers. The
+   prompts below are idempotent and safe to re-run if anything goes
+   sideways.
 
    a) Asana — Read tasks and projects, comment, create updates — Claude works alongside your project boards without leaving the terminal.
-      Ask: "Set up Asana now? (Y/n)"
-      If yes (default) — follow this inline prompt verbatim:
+      Ask: "Set up Asana now? (yes/no)"
+      If the user agrees, follow this outline:
 
       Set up an Asana Personal Access Token for Claude Code. Walk me through it step by step.
 
@@ -240,8 +292,8 @@ AGNES_PAT
 
 
    b) Atlassian (Jira / Confluence) — Read and write Jira issues, search Confluence pages — Claude pulls ticket context and posts updates without leaving the workspace.
-      Ask: "Set up Atlassian (Jira / Confluence) now? (Y/n)"
-      If yes (default) — follow this inline prompt verbatim:
+      Ask: "Set up Atlassian (Jira / Confluence) now? (yes/no)"
+      If the user agrees, follow this outline:
 
       Set up Atlassian (Jira + Confluence) API access for Claude Code. Walk me through it step by step.
 
@@ -318,16 +370,16 @@ AGNES_PAT
 
 
    c) Google Workspace — Drive, Calendar, Gmail, Docs, Sheets, Chat — Claude reads and acts across your work account via the official `gws` CLI.
-      Ask: "Set up Google Workspace now? (Y/n)"
-      If yes (default) — follow this inline prompt verbatim:
+      Ask: "Set up Google Workspace now? (yes/no)"
+      If the user agrees, follow this outline:
 
       Set up Google Workspace access for Claude Code using the official `gws` CLI from https://github.com/googleworkspace/cli (install steps: README → Installation). The npm path is what we'll use because (a) it's the README's documented convenience path, (b) it works the same on macOS / Linux / WSL / Windows, and (c) it can run with zero admin rights when Node is managed by `nvm` (Unix) or `fnm` (Windows).
 
-      Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when `gws` is already installed and authed. If any step fails with an unfamiliar error, paste the exact error back and stop — don't half-finish. Do NOT improvise around TLS errors by disabling verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, npm `strict-ssl=false`, etc.) — those mask the real problem.
+      Ground rules: this is idempotent — safe to re-run, the precheck below short-circuits when `gws` is already installed and authed. If any step fails with an unfamiliar error, paste the exact error back and stop — don't half-finish. If a TLS error appears, find its cause — corporate proxy, internal CA, clock skew — rather than lowering certificate verification; that masks the problem instead of solving it.
 
-      YOU run every command via your Bash tool. Do NOT print install commands and ask me to type them. Only stop and ask me when I have to (a) approve an OAuth consent screen in a browser, (b) make a product decision (Cloud project name), or (c) paste OAuth client credentials Google shows me.
+      Run the commands yourself via your Bash tool, but show me what you are about to run before anything that installs software or writes credentials. Stop and ask whenever I have to approve an OAuth consent screen in a browser, make a product decision (Cloud project name), or supply OAuth client credentials.
 
-      0. Precheck — skip the rest if Google Workspace is already connected. Run `command -v gws` AND `gws auth status` AND a low-impact verify call: `gws drive files list --params '{"pageSize": 1}' && gws chat spaces list --params '{"pageSize": 1}'`. If both succeed, the gws CLI is installed AND authed AND the Chat scope is present. Print "✅ Google Workspace ready — connected as <email from `gws auth status`>. Drive + Chat scopes verified." and STOP. If `gws drive` succeeds but `gws chat` fails with 403/PERMISSION_DENIED, the user authed without `--full` previously — skip to step 6 (re-login with widened scopes), do NOT re-install. If either call fails with `Caller does not have required permission to use project …` / `serviceusage.serviceUsageConsumer`, the stored `client_secret.json` carries a non-empty `project_id` (older installs wrote one) — edit `~/.config/gws/client_secret.json` (`%APPDATA%\gws\client_secret.json` on native Windows) so `installed.project_id` is `""`, then re-run the two verify calls; the saved token stays valid, do NOT re-install or re-auth. Only walk steps 1–5 (install + OAuth client setup) when `command -v gws` itself fails.
+      0. Precheck — skip the rest if Google Workspace is already connected. Run `command -v gws` AND `gws auth status` AND a low-impact verify call: `gws drive files list --params '{"pageSize": 1}' && gws chat spaces list --params '{"pageSize": 1}'`. If both succeed, the gws CLI is installed AND authed AND the Chat scope is present. Print "✅ Google Workspace ready — connected as <email from `gws auth status`>. Drive + Chat scopes verified." and stop. (The account e-mail is the `user` field of the `gws auth status` output — not `user_email` or `account`.) If `gws drive` succeeds but `gws chat` fails with 403/PERMISSION_DENIED, the user authed without `--full` previously — skip to step 6 (re-login with widened scopes), don't re-install. If either call fails with `Caller does not have required permission to use project …` / `serviceusage.serviceUsageConsumer`, the stored `client_secret.json` carries a non-empty `project_id` (older installs wrote one) — edit `~/.config/gws/client_secret.json` (`%APPDATA%\gws\client_secret.json` on native Windows) so `installed.project_id` is `""`, then re-run the two verify calls; the saved token stays valid, don't re-install or re-auth. Only walk steps 1–5 (install + OAuth client setup) when `command -v gws` itself fails.
 
       1. Detect my OS (`uname -s` → Darwin / Linux, or PowerShell `$env:OS` → Windows_NT). On Linux check `grep -qi microsoft /proc/version` and treat WSL as Linux.
 
@@ -337,19 +389,19 @@ AGNES_PAT
 
          Unix (macOS / Linux / WSL):
          a. Check `command -v node && node --version` — if 18+ already, skip.
-         b. Otherwise install nvm into ~/.nvm: `curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash`. The installer writes to ~/.nvm and appends shellenv to ~/.bashrc / ~/.zshrc — no sudo. Source it for the current shell: `export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"`.
+         b. Otherwise offer to install nvm into ~/.nvm, and install it only after I agree. Download the installer to a file and show me the command before running it: `curl -fL -o /tmp/nvm-install.sh https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh`, then run `bash /tmp/nvm-install.sh`. The installer writes to ~/.nvm and appends shellenv to ~/.bashrc / ~/.zshrc — no sudo. Source it for the current shell: `export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"`.
          c. `nvm install --lts && nvm use --lts`. Verify `node --version` shows v20.x or v22.x.
 
          Native Windows (NOT WSL):
          a. Check `node --version` — if 18+, skip.
-         b. Install fnm to user profile (no admin): run `winget install Schniz.fnm --scope user --accept-source-agreements --accept-package-agreements`. If winget triggers UAC, fall back to the manual zip from https://github.com/Schniz/fnm/releases/latest — extract `fnm.exe` to `$HOME\.local\bin\` and add that dir to my user PATH via `[Environment]::SetEnvironmentVariable('Path', "$env:Path;$HOME\.local\bin", 'User')`.
+         b. Install fnm to user profile (no admin): run `winget install Schniz.fnm --scope user` (show me the command first). If winget triggers UAC, fall back to the manual zip from https://github.com/Schniz/fnm/releases/latest — extract `fnm.exe` to `$HOME\.local\bin\` and add that dir to my user PATH via `[Environment]::SetEnvironmentVariable('Path', "$env:Path;$HOME\.local\bin", 'User')`.
          c. `fnm install --lts; fnm use lts-latest`. `fnm env --use-on-cd | Out-String | Invoke-Expression` to source it for the current shell.
 
       4. Install `gws` via npm — runs as my user because Node is managed by nvm/fnm, so the global prefix lives inside ~/.nvm/versions/node/<v>/lib/ (Unix) or ~/.fnm/.../lib/ (Windows). No sudo, no UAC, no `npm config set prefix` workaround needed.
 
          a. `npm install -g @googleworkspace/cli` (run via Bash tool). Wait for it. If npm fails (network, registry, peer-dep), report the exact stderr and pause — don't half-finish.
 
-         b. nvm/fnm Node + npm-installed binaries land under ~/.nvm/versions/node/<v>/bin/ — only on PATH when nvm is sourced interactively. YOUR Bash tool runs non-interactive subshells that do NOT source ~/.zshrc or ~/.bashrc, so `gws` and `node` will appear "not found" on the very next call. Symlink them into ~/.local/bin (which is on PATH in every shell context) right after install:
+         b. nvm/fnm Node + npm-installed binaries land under ~/.nvm/versions/node/<v>/bin/ — only on PATH when nvm is sourced interactively. YOUR Bash tool runs non-interactive subshells that do not source ~/.zshrc or ~/.bashrc, so `gws` and `node` will appear "not found" on the very next call. Symlink them into ~/.local/bin (which is on PATH in every shell context) right after install:
             `mkdir -p ~/.local/bin`
             `ln -sf "$(command -v gws)" ~/.local/bin/gws`
             `ln -sf "$(command -v node)" ~/.local/bin/node`
@@ -363,30 +415,100 @@ AGNES_PAT
 
          **Branch A — operator OAuth app provisioned** (`AGNES_GWS_CLIENT_ID` is set in the params file above):
 
-         Skip `gws auth setup` entirely. Do NOT use environment variables (Claude Code's security layer redacts vars containing the substring "SECRET" from non-interactive subshells, so the env-var approach is unreliable). Instead, write the credentials directly to the file `gws auth status` reads as `credential_source`:
+         Skip `gws auth setup` entirely. Environment variables are not a workable carrier either: Claude Code's security layer redacts vars whose name contains the substring "SECRET" from non-interactive subshells. What works is writing the file `gws auth status` reports as `credential_source` directly.
 
-         Read `AGNES_GWS_CLIENT_ID` and the secret from the params file. (`AGNES_GWS_PROJECT_ID` may also be present — older seeds copied it into `client_secret.json`; deliberately do NOT use it, see the `project_id` note below.) The secret may appear in either of two shapes: `AGNES_GWS_CLIENT_SECRET=<value>` directly in the file (operator put the value in the server's `connectors:` overlay), or `AGNES_GWS_CLIENT_SECRET_ENV=<name>` — a pointer to a shell env var holding the value. Check the file first, then the env var it names. If neither yields a value, ask the user / operator for it (do NOT echo it back).
+         One property shapes how that file gets written: the client secret value stays out of the session transcript. Sessions upload to the Agnes server on `agnes push`, and a value that never enters the model's context can't land there. So the file is built by a small script that reads `.claude/agnes/.env` itself — no Write tool carrying the value, no `echo`/`cat` of the value, and the failure paths report the reason without it. The script's whole output is one line: `✅ GWS client config written (client id …<last chars>)` or `❌ <reason>`.
 
-         Use the Write tool to create `~/.config/gws/client_secret.json` (or `%APPDATA%\gws\client_secret.json` on native Windows) with EXACTLY the schema Google Cloud Console exports — the gws CLI's Rust struct rejects partial files with "Invalid client_secret.json format: missing field 'project_id'". All fields below are mandatory, and `project_id` must be present but EMPTY (`""`): a non-empty value makes `gws` send an `x-goog-user-project` header on every API call, and Google then requires each analyst to hold `roles/serviceusage.serviceUsageConsumer` on the operator's GCP project — the operator's own account works, every other analyst gets "Caller does not have required permission to use project …". With `""` the header is dropped and quota bills to the OAuth client's own project, no per-user IAM grant needed:
-         {
-           "installed": {
-             "client_id": "<AGNES_GWS_CLIENT_ID from .env>",
+         These credentials identify the operator-provisioned OAuth app rather than any individual analyst — closer to a publishable bundle key than a per-user credential — so the goal here is transcript hygiene, not secrecy theatre. The per-user grant is collected in step 6.
+
+         Take the first of these three that applies:
+
+         **A1 — the params file carries a value** (`AGNES_GWS_CLIENT_SECRET=<something>` in `./.claude/agnes/.env`). This is the normal case on a current install: the Agnes server writes the value into the params file. Run the transform below, then continue with `gws auth status` and step 6.
+
+         **A2 — the key is there but carries no value, or is absent entirely.** Usually a params file written before the server started delivering the value (it may still carry the legacy `AGNES_GWS_CLIENT_SECRET_ENV=<name>` pointer, which nothing on the laptop populates — read it as a leftover key and move on). Refresh the params file once with `agnes update --quiet`, then read `.claude/agnes/.env` again. If the value is now present, go to A1.
+
+         **A3 — still no value after the refresh.** The instance has no GWS OAuth app provisioned yet, so the params file has nothing to deliver. Continue with Branch B below.
+
+         The file the transform writes uses the schema Google Cloud Console exports — the gws CLI's Rust struct rejects partial files with "Invalid client_secret.json format: missing field 'project_id'", so every field below is present. `project_id` is present and empty (`""`) on purpose: a non-empty value makes `gws` send an `x-goog-user-project` header on every API call, and Google then requires each analyst to hold `roles/serviceusage.serviceUsageConsumer` on the operator's GCP project — the operator's own account works, every other analyst gets "Caller does not have required permission to use project …". With `""` the header is dropped and quota bills to the OAuth client's own project, no per-user IAM grant needed. (`AGNES_GWS_PROJECT_ID` may also sit in the params file — older seeds copied it in here; leaving it out is the fix for exactly that error.)
+
+         Transform, macOS / Linux / WSL / Git Bash — run it through your Bash tool from the workspace root:
+
+         ```bash
+         python3 - <<'PY'
+         import json, os, pathlib, sys
+
+         env_path = pathlib.Path(".claude/agnes/.env")
+         vals = {}
+         for raw in env_path.read_text(encoding="utf-8").splitlines():
+             line = raw.strip()
+             if not line or line.startswith("#") or "=" not in line:
+                 continue
+             key, value = line.split("=", 1)
+             vals[key.strip()] = value.strip().strip('"').strip("'")
+
+         client_id = vals.get("AGNES_GWS_CLIENT_ID", "")
+         secret = vals.get("AGNES_GWS_CLIENT_SECRET", "")
+         if not client_id or not secret:
+             missing = " and ".join(n for n, v in (("client id", client_id), ("secret", secret)) if not v)
+             print(f"❌ no {missing} value in {env_path} — see A2")
+             sys.exit(1)
+
+         cfg_dir = pathlib.Path(os.path.expanduser("~/.config/gws"))
+         cfg_dir.mkdir(parents=True, exist_ok=True)
+         os.chmod(cfg_dir, 0o700)
+         cfg = cfg_dir / "client_secret.json"
+         cfg.write_text(json.dumps({"installed": {
+             "client_id": client_id,
              "project_id": "",
              "auth_uri": "https://accounts.google.com/o/oauth2/auth",
              "token_uri": "https://oauth2.googleapis.com/token",
              "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-             "client_secret": "<AGNES_GWS_CLIENT_SECRET from the params file, or from the env var AGNES_GWS_CLIENT_SECRET_ENV names>",
-             "redirect_uris": ["http://localhost"]
-           }
-         }
+             "client_secret": secret,
+             "redirect_uris": ["http://localhost"],
+         }}, indent=2) + "\n", encoding="utf-8")
+         os.chmod(cfg, 0o600)
+         print(f"✅ GWS client config written (client id …{client_id[-12:]})")
+         PY
+         ```
 
-         Then `mkdir -p ~/.config/gws && chmod 700 ~/.config/gws && chmod 600 ~/.config/gws/client_secret.json`. Verify by running `gws auth status` — it should report this file as `credential_source` without complaining about missing fields. The values identify the OAuth app, not me; treat the secret like a publishable bundle key, not a per-user credential.
+         Transform, native Windows (PowerShell) — same shape, `%APPDATA%\gws` instead of `~/.config/gws`, ACLs instead of chmod:
+
+         ```powershell
+         $envFile = ".claude\agnes\.env"
+         $vals = @{}
+         foreach ($raw in Get-Content $envFile) {
+           $line = $raw.Trim()
+           if (-not $line -or $line.StartsWith('#') -or ($line -notmatch '=')) { continue }
+           $parts = $line.Split('=', 2)
+           $vals[$parts[0].Trim()] = $parts[1].Trim().Trim('"').Trim("'")
+         }
+         $clientId = $vals['AGNES_GWS_CLIENT_ID']; $secret = $vals['AGNES_GWS_CLIENT_SECRET']
+         if (-not $clientId -or -not $secret) { Write-Output "❌ no client id or secret value in $envFile — see A2"; exit 1 }
+         $dir = Join-Path $env:APPDATA 'gws'
+         New-Item -ItemType Directory -Force -Path $dir | Out-Null
+         $cfg = Join-Path $dir 'client_secret.json'
+         [ordered]@{ installed = [ordered]@{
+           client_id = $clientId
+           project_id = ''
+           auth_uri = 'https://accounts.google.com/o/oauth2/auth'
+           token_uri = 'https://oauth2.googleapis.com/token'
+           auth_provider_x509_cert_url = 'https://www.googleapis.com/oauth2/v1/certs'
+           client_secret = $secret
+           redirect_uris = @('http://localhost')
+         } } | ConvertTo-Json -Depth 4 | Set-Content -Path $cfg -Encoding utf8
+         icacls $cfg /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+         Write-Output "✅ GWS client config written (client id …$($clientId.Substring([Math]::Max(0, $clientId.Length - 12))))"
+         ```
+
+         The snippets read the params file at `./.claude/agnes/.env`; when the workspace resolution above landed somewhere else (home-directory fallback, `workspace_root` from the agnes config), point `env_path` / `$envFile` at that path instead.
+
+         On `✅`, run `gws auth status` — it reports the written file as `credential_source` and no longer complains about missing fields — then go to step 6. On `❌`, the reason is in the line itself; A2 and A3 above cover the two ways the value can be absent. If a snippet fails for some other reason (unreadable params file, unwritable config dir), report that error and pause rather than retrying blind.
 
          **Branch B — no operator OAuth app provisioned** (`AGNES_GWS_CLIENT_ID` absent in the params file — after checking BOTH the workspace and home locations above):
 
-         FIRST, offer the operator path — do NOT jump straight into the Google Cloud console walkthrough. Most analysts are not GCP admins and cannot finish it. Tell me: the BRAND operator hasn't provisioned a shared Google OAuth app yet; the fastest fix is to ask them to provision it ONCE for the whole instance (server env vars `AGNES_GWS_CLIENT_ID` + `AGNES_GWS_CLIENT_SECRET`, the admin vault, or the `connectors:` / `instance.gws` section of `instance.yaml` — documented in the Agnes server's `config/instance.yaml.example`). After the operator confirms, I re-run `agnes init` and this skill — it will then take the ~2-minute Branch A. Ask me explicitly: "Message your operator and pause here (recommended), or continue with the manual Google Cloud walkthrough yourself (~20 min, needs permission to create a GCP project + OAuth client)?" Pause and STOP here unless I explicitly choose the manual walkthrough.
+         First, offer the operator path — don't jump straight into the Google Cloud console walkthrough. Most analysts are not GCP admins and cannot finish it. Tell me: the BRAND operator hasn't provisioned a shared Google OAuth app yet; the fastest fix is to ask them to provision it ONCE for the whole instance (server env vars `AGNES_GWS_CLIENT_ID` + `AGNES_GWS_CLIENT_SECRET`, the admin vault, or the `connectors:` / `instance.gws` section of `instance.yaml` — documented in the Agnes server's `config/instance.yaml.example`). After the operator confirms, I re-run `agnes init` and this skill — it will then take the ~2-minute Branch A. Ask me explicitly: "Message your operator and pause here (recommended), or continue with the manual Google Cloud walkthrough yourself (~20 min, needs permission to create a GCP project + OAuth client)?" Pause and stop here unless I explicitly choose the manual walkthrough.
 
-         Manual walkthrough (only on my explicit choice): run `gws auth setup` for me. This is a one-time Google Cloud project config; gcloud is NOT required (when gcloud is absent, `gws auth setup` walks through the manual OAuth flow). Open the URL it prints in my default browser, then walk me through each click because I am NOT a GCP admin:
+         Manual walkthrough (only on my explicit choice): run `gws auth setup` for me. This is a one-time Google Cloud project config; gcloud is not required (when gcloud is absent, `gws auth setup` walks through the manual OAuth flow). Open the URL it prints in my default browser, then walk me through each click because I am not a GCP admin:
          a. Pick or create a Google Cloud project (free tier is fine).
          b. Enable the APIs the connector needs: Google Drive API, Google Calendar API, Gmail API. Tell me each menu click.
          c. Create an OAuth 2.0 client. Either "Desktop app" or "Web application" works. For Web application: add `http://localhost` (exact value — no port, no path, no trailing slash) to Authorized redirect URIs. Google's loopback exemption then matches the `http://localhost:<ephemeral-port>` redirect that `gws auth login` actually uses. Desktop app needs no URI registration.
@@ -394,11 +516,11 @@ AGNES_PAT
 
       6. Run `gws auth login --full` (no `--readonly` flag — Agnes uses full read + write access across Drive / Calendar / Gmail / Sheets / Docs / Chat so the agent can actually create, edit, and send on my behalf). The `--full` flag widens the default scope picker; without it Chat / People / Tasks scopes are silently dropped. One env var the loopback redirect needs is OAUTHLIB_INSECURE_TRANSPORT — set it in the SAME Bash invocation that runs login: `OAUTHLIB_INSECURE_TRANSPORT=1 gws auth login --full`. The CLI binds a local loopback server at `http://localhost:<random-port>` — an OS-assigned ephemeral port, NOT a fixed 8080 — and prints an OAuth URL. If this errors with `redirect_uri_mismatch`, the Cloud Console OAuth client is a Web application type that's missing the `http://localhost` entry in Authorized redirect URIs (no port, no path) — add that exact value and retry.
 
-         Capture the URL from gws's stdout. Before opening the browser, append the Chat write scopes (`https://www.googleapis.com/auth/chat.spaces` and `https://www.googleapis.com/auth/chat.messages`) to the URL's `scope=` query parameter — `--full` includes the readonly Chat scopes but NOT the read+write ones, and `gws chat ... send` calls fail without them. Decode the existing scope list, append the two URLs space-separated, re-encode, then open. Python one-liner via Bash tool:
+         Capture the URL from gws's stdout. Before opening the browser, tell me that two Chat write scopes need to be added to the consent URL — `https://www.googleapis.com/auth/chat.spaces` and `https://www.googleapis.com/auth/chat.messages` — because `--full` requests the readonly Chat scopes but not the read+write ones, and `gws chat ... send` calls fail without them. Add them only after I agree: decode the existing scope list, append the two URLs space-separated, re-encode. Python one-liner via Bash tool:
 
             `URL=$(printf '%s' "$URL" | python3 -c 'import sys,urllib.parse as u; q=u.urlparse(sys.stdin.read().strip()); p=u.parse_qs(q.query); s=set(p.get("scope",[""])[0].split()); s |= {"https://www.googleapis.com/auth/chat.spaces","https://www.googleapis.com/auth/chat.messages"}; p["scope"]=[" ".join(sorted(s))]; print(q._replace(query=u.urlencode(p, doseq=True, quote_via=u.quote)).geturl())')`
 
-         Then open the rewritten URL programmatically — do NOT print it to chat. Markdown line-wrapping in chat corrupts the long scope query string when the user copies it. Use your Bash tool: macOS `open "$URL"`, Linux/WSL `xdg-open "$URL"`, Windows `Start-Process "$URL"`. Detect OS first.
+         Show me the login URL and open it in the browser as well. (It is long — if you copy it by hand, line wrapping will corrupt the scope query string, so use the opened tab.) Use your Bash tool: macOS `open "$URL"`, Linux/WSL `xdg-open "$URL"`, Windows `Start-Process "$URL"`. Detect OS first.
 
          While the browser tab is loading, read each requested scope in plain language for me — full read + write across Drive, Calendar, Gmail, Chat, and the rest — so I know what I'm consenting to before I click Approve. Tell me I can revoke any time at https://myaccount.google.com/permissions if I change my mind.
 
@@ -406,25 +528,27 @@ AGNES_PAT
 
       7. Find where gws stored my credentials (`gws auth status` should show the path; typically ~/.config/gws/ on Unix, %APPDATA%\gws\ on Windows). chmod 600 on Unix; on native Windows, restrict ACLs to my user with `icacls "$creds_path" /inheritance:r /grant:r "$env:USERNAME:F"` — file is already in my user profile so this needs no admin.
 
-      8. Verify with two low-impact reads, one per scope group: `gws drive files list --params '{"pageSize": 1}'` (Drive scope landed) and `gws chat spaces list --params '{"pageSize": 1}'` (Chat scope landed). Treat exit code 0 from each invocation as success — do NOT pipe gws output into `python3 -c 'f"..."'` (f-string expressions reject backslashes in Python <3.12, so escaping `\"files\"` inside a shell-quoted f-string raises SyntaxError) and do NOT call `json.load(sys.stdin)` on the raw stream (gws may emit log lines or a banner before the JSON body, which trips `JSONDecodeError`). If you really need to count rows for diagnostics, write the stdout to a temp file first and parse it with a plain `json.loads(open(path).read())` inside a `try/except`. If both calls exit 0, print `✅ Google Workspace ready — connected as <my email from `gws auth status`>. Drive + Chat scopes verified.` (exact prefix — the final summary grep for it). On any failure, print `❌ Google Workspace setup failed: <which call failed (drive|chat)>, exit <code>. <one-line hint to fix (rotate creds | rerun gws auth login --full | etc.)>.` and stop. Never echo tokens, file/message metadata, or scope strings to chat.
+      8. Verify with two low-impact reads, one per scope group: `gws drive files list --params '{"pageSize": 1}'` (Drive scope landed) and `gws chat spaces list --params '{"pageSize": 1}'` (Chat scope landed). Treat exit code 0 from each invocation as success — don't pipe gws output into `python3 -c 'f"..."'` (f-string expressions reject backslashes in Python <3.12, so escaping `\"files\"` inside a shell-quoted f-string raises SyntaxError) and don't call `json.load(sys.stdin)` on the raw stream (gws may emit log lines or a banner before the JSON body, which trips `JSONDecodeError`). If you really need to count rows for diagnostics, write the stdout to a temp file first and parse it with a plain `json.loads(open(path).read())` inside a `try/except`. If both calls exit 0, print `✅ Google Workspace ready — connected as <my email from `gws auth status`>. Drive + Chat scopes verified.` (exact prefix — the final summary grep for it). On any failure, print `❌ Google Workspace setup failed: <which call failed (drive|chat)>, exit <code>. <one-line hint to fix (rotate creds | rerun gws auth login --full | etc.)>.` and stop. Never echo tokens, file/message metadata, or scope strings to chat.
 
       9. Remind me how to revoke later: `gws auth logout` clears local creds; the OAuth grant also appears at https://myaccount.google.com/permissions for Google-side revocation.
 
 
-   After all asks (regardless of answers) continue to step 10.
+   After all asks (regardless of answers) continue to step 9.
 
 9) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:
    Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/WORKSPACE` on the default path, or whatever cwd the user explicitly accepted with 'install here').
-   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + agnes-update SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.
+   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the SessionStart/End hooks that `agnes init` installed. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.
    Before step 10 (Confirm): after all the steps and asks above (whatever the answers), give me a short recap of what was installed or was already present — CLI, workspace files, hooks, marketplace plugins, connectors — so the outcome is clear, then continue.
 
 10) Confirm:
    Tell me "BRAND workspace is ready" and summarize:
    - `agnes --version` output
+   - If `agnes init` ran: confirmation that `~/.agnes/token` was consumed
+     (after the `agnes update` reconcile path the file may legitimately remain)
    - First few lines of `agnes catalog` (tables you can see)
    - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist
    - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks
    - The `agnes diagnose` overall status
    - Whether skills were copied or left on-demand
    - Confirmation that `~/.agnes/marketplace/.git/` exists (the marketplace clone) and that any granted plugins installed
-   - For each connector (Asana, Atlassian (Jira / Confluence), Google Workspace): the verbatim ✅ or ❌ line that the connector's verify step emitted earlier in this session (e.g. `✅ Asana ready — ...` or `❌ Atlassian setup failed: ...`). If the user declined a connector, say declined.
+   - For each connector (Asana, Atlassian (Jira / Confluence), Google Workspace): whether it was set up, failed, or declined — and for failures, the reason its verify step reported.

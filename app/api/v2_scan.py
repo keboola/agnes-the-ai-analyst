@@ -31,6 +31,7 @@ from app.api.v2_arrow import CONTENT_TYPE, arrow_to_ipc_bytes_capped
 from app.api.v2_quota import QuotaTracker, QuotaExceededError
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 from connectors.bigquery.labels import job_labels_for
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
@@ -161,7 +162,7 @@ def _quote_order_by_bq(entry: str) -> str:
 
 def _quote_order_by_duckdb(entry: str) -> str:
     parts = entry.strip().split()
-    return f'"{parts[0]}"' + ("" if len(parts) == 1 else " " + " ".join(parts[1:]))
+    return quote_ident(parts[0]) + ("" if len(parts) == 1 else " " + " ".join(parts[1:]))
 
 
 def _build_bq_sql(
@@ -505,7 +506,7 @@ def run_scan(
                 raise FileNotFoundError(req.table_id)
             local = _open_duckdb(":memory:")
             try:
-                projection = ", ".join(f'"{c}"' for c in req.select) if req.select else "*"
+                projection = ", ".join(quote_ident(c) for c in req.select) if req.select else "*"
                 sql = f"SELECT {projection} FROM read_parquet(?)"
                 if safe_where:
                     sql += f" WHERE {safe_where}"
