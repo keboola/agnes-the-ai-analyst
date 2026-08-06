@@ -167,6 +167,7 @@ def pull(
                     "tables_removed": result.tables_removed,
                     "parquets_total": result.parquets_total,
                     "rules_count": result.rules_count,
+                    "snapshot_views_blocked": list(getattr(result, "snapshot_views_blocked", []) or []),
                     # WF-4 (wave 2H) — provenance counters. `getattr` with a
                     # 0 default keeps this endpoint tolerant of duck-typed
                     # `PullResult` stand-ins in tests that predate these
@@ -185,6 +186,24 @@ def pull(
         if result.errors:
             raise typer.Exit(1)
         return
+
+    # Printed before the early returns so `--quiet` callers get it too. NOTE
+    # this is not the automatic path: the canonical SessionStart hook runs
+    # `agnes update --quiet` detached with stdout AND stderr to /dev/null, so
+    # nothing printed here reaches anyone on that path. `agnes update` carries
+    # the same names in its run report instead, which persists to
+    # `.claude/agnes/update.log` (#1129 review corrected an earlier comment
+    # here that claimed the hook forwards stderr — it does not).
+    withheld = list(getattr(result, "snapshot_views_blocked", []) or [])
+    if withheld:
+        shown = ", ".join(sorted(withheld)[:5])
+        more = f" (+{len(withheld) - 5} more)" if len(withheld) > 5 else ""
+        typer.echo(
+            f"Withheld {len(withheld)} snapshot name(s) that now belong to a table you can no\n"
+            f"longer read locally: {shown}{more}.\n"
+            "Re-create them under a different name (`agnes snapshot create <table> --as <name>`).",
+            err=True,
+        )
 
     if quiet:
         # Quiet mode is for the SessionStart hook — silent on success so
@@ -214,6 +233,7 @@ def pull(
     else:
         typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
+
 
     # WF-4 (wave 2H) — provenance summary. Only printed once a
     # `signed_url` has actually been used (an instance with no object
