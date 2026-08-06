@@ -39,6 +39,42 @@ class TableNotSyncedError(FileNotFoundError):
         self.detail = detail
 
 
+class TableNotPreviewableError(TableNotSyncedError):
+    """No local parquet, and there never will be one — by design, not by failure.
+
+    A ``query_mode='remote'`` row is queried at the source and a ``server_only``
+    row is deliberately skipped by ``agnes pull``, so neither is ever
+    materialized locally. Both used to fall into the not-synced branch and be
+    reported as "the first sync is pending or failing", sending an admin to hunt
+    a sync job that does not exist and never will (Devin Review on #1189).
+
+    Subclasses ``TableNotSyncedError`` so every existing catch and the endpoint's
+    404 mapping keep working unchanged; only the explanation differs.
+    """
+
+
+def _not_previewable_detail(table_id: str, *, server_only: bool, query_mode: str) -> str:
+    """Explain a row that is never local, and point at the way to read it.
+
+    Deliberately reuses the vocabulary `/api/v2/catalog`'s `_fetch_hint` already
+    shows for these rows ("server-only — not synced locally; query via
+    `agnes query --remote`") so the preview and the catalog do not describe the
+    same table two different ways.
+    """
+    if server_only:
+        why = "is server-only, so `agnes pull` never copies it to a local parquet"
+    else:
+        why = (
+            f"is registered with query_mode={query_mode or 'remote'!r}, so it is queried at "
+            "the source and never materialized locally"
+        )
+    return (
+        f"table {table_id!r} {why} — there is no local sample to preview, and no sync is "
+        f'pending. Read it server-side instead: `agnes query --remote "SELECT * FROM {table_id} '
+        'LIMIT 10"`.'
+    )
+
+
 def _not_synced_detail(table_id: str) -> str:
     """Explain a registered-but-dataless table, with the last sync error
     when sync_state recorded one."""
@@ -193,8 +229,22 @@ def build_sample(
 
         parquet = resolve_local_parquet(table_id, source_type)
         if parquet is None:
-            # The registry row exists (checked above) — this is "no data has
-            # landed", not "no such table".
+            # The registry row exists (checked above), so this is never "no such
+            # table" — but WHY there is no parquet decides what to tell the
+            # viewer. `server_only` / `query_mode='remote'` rows are never
+            # materialized locally by design; the same predicate gates the
+            # signed-URL path in `app/api/sync.py`.
+            query_mode = row.get("query_mode") or ""
+            if bool(row.get("server_only")) or query_mode == "remote":
+                raise TableNotPreviewableError(
+                    table_id,
+                    _not_previewable_detail(
+                        table_id,
+                        server_only=bool(row.get("server_only")),
+                        query_mode=query_mode,
+                    ),
+                )
+            # Genuinely "no data has landed yet".
             raise TableNotSyncedError(table_id, _not_synced_detail(table_id))
         c = _open_duckdb(":memory:")
         try:

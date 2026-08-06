@@ -437,3 +437,91 @@ class TestNotSyncedDetail:
             conn.close()
         assert exc_info.value.status_code == 404
         assert "no synced data yet" in exc_info.value.detail
+
+
+class TestByDesignNotLocalTablesDoNotBlameTheSync:
+    """A row that is never materialized locally must not be reported as a
+    pending or failing first sync.
+
+    `build_sample` special-cased only BigQuery non-materialized rows, so a
+    Keboola row registered `query_mode='remote'` — the shape this PR adds — and
+    any `server_only` row fell through to `resolve_local_parquet`, got `None`
+    legitimately, and were explained as "the first sync is pending or failing".
+    That sends an admin hunting a sync job that does not exist and never will
+    (Devin Review on #1189).
+    """
+
+    @staticmethod
+    def _register(conn, table_id, *, query_mode="remote", server_only=False):
+        from src.repositories.table_registry import TableRegistryRepository
+
+        TableRegistryRepository(conn).register(
+            id=table_id,
+            name=table_id,
+            source_type="keboola",
+            bucket="in.c-main",
+            source_table="orders",
+            query_mode=query_mode,
+            server_only=server_only,
+        )
+
+    def _detail_for(self, reload_db, table_id, **kw):
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register(conn, table_id, **kw)
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotPreviewableError) as exc_info:
+                v2_sample.build_sample(conn, user, table_id, n=5, bq=_bq())
+        finally:
+            conn.close()
+        return exc_info.value.detail
+
+    def test_remote_mode_row_is_not_described_as_a_pending_sync(self, reload_db):
+        detail = self._detail_for(reload_db, "kbc_remote", query_mode="remote")
+        assert "first sync" not in detail, detail
+        assert "no synced data yet" not in detail, detail
+        assert "query_mode='remote'" in detail
+        assert "--remote" in detail, "must point at the way to actually read it"
+
+    def test_server_only_row_is_not_described_as_a_pending_sync(self, reload_db):
+        detail = self._detail_for(
+            reload_db, "kbc_srv_only", query_mode="materialized", server_only=True
+        )
+        assert "first sync" not in detail, detail
+        assert "server-only" in detail
+        assert "--remote" in detail
+
+    def test_server_only_takes_precedence_over_query_mode_wording(self, reload_db):
+        """A row can be both; `server_only` is the more specific explanation and
+        matches what /api/v2/catalog's fetch_hint already says about it."""
+        detail = self._detail_for(
+            reload_db, "kbc_both", query_mode="remote", server_only=True
+        )
+        assert "server-only" in detail
+        assert "query_mode=" not in detail
+
+    def test_still_a_not_synced_error_so_existing_catches_and_the_404_hold(self, reload_db):
+        from app.api import v2_sample
+
+        assert issubclass(v2_sample.TableNotPreviewableError, v2_sample.TableNotSyncedError)
+        assert issubclass(v2_sample.TableNotPreviewableError, FileNotFoundError)
+
+    def test_a_genuinely_unsynced_local_row_still_blames_the_sync(self, reload_db):
+        """The regression guard for the fix itself: narrowing must not silence
+        the case the not-synced message was written for."""
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register(conn, "kbc_local_fresh", query_mode="materialized")
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
+                v2_sample.build_sample(conn, user, "kbc_local_fresh", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert not isinstance(exc_info.value, v2_sample.TableNotPreviewableError)
+        assert "no synced data yet" in exc_info.value.detail
