@@ -142,3 +142,45 @@ def test_zero_changes_is_noop(tmp_path, monkeypatch):
     assert result["rows"] == 2
     assert result["delta_rows"] == 0
     assert pq_path.read_bytes() == original_bytes  # untouched
+
+
+def test_legacy_bucket_prefixed_source_table_is_not_doubled(tmp_path, monkeypatch):
+    """A row registered by the pre-fix Data-sources wizard stored the FULL
+    Keboola id in source_table; composing `{bucket}.{source_table}` then
+    produced `in.c-crm.in.c-crm.company` and every Storage API export 404'd.
+    The incremental path must normalize at use, like the materialize/extract
+    paths do."""
+    from connectors.keboola.incremental import extract_incremental
+    from connectors.keboola.client import KeboolaClient
+
+    seen_ids = []
+
+    def fake_export(self, table_id, output_path, changed_since=None, **kw):
+        seen_ids.append(table_id)
+        Path(output_path).write_text("id,v\n1,10\n")
+        return {"exported_rows": 1}
+
+    fake_schema = pa.schema([pa.field("id", pa.int64()), pa.field("v", pa.int64())])
+
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "export_table", fake_export)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+    monkeypatch.setattr(KeboolaClient, "get_pandas_dtypes", lambda self, tid: {"id": "Int64", "v": "Int64"})
+    monkeypatch.setattr(KeboolaClient, "get_date_columns", lambda self, tid: [])
+
+    extract_incremental(
+        table_config={
+            "id": "in.c-crm.company", "name": "company",
+            "bucket": "in.c-crm",
+            "source_table": "in.c-crm.company",  # legacy wizard shape
+            "primary_key": ["id"], "incremental_window_days": 1,
+            "max_history_days": None,
+        },
+        parquet_path=tmp_path / "data" / "company.parquet",
+        last_sync=None,
+        keboola_url="https://kbc.example",
+        keboola_token="tok",
+        now=datetime(2026, 5, 7, tzinfo=timezone.utc),
+    )
+
+    assert seen_ids == ["in.c-crm.company"], seen_ids
