@@ -22,6 +22,7 @@ from app.auth.access import is_user_admin, require_admin
 from app.web.studio import STUDIO_DOMAINS, get_domain as get_studio_domain
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
+    FEATURE_FLAGS,
     get_instance_name,
     get_instance_subtitle,
     get_datasets,
@@ -336,6 +337,19 @@ def _is_paper_theme() -> bool:
 templates.env.globals["is_paper"] = _is_paper_theme
 
 
+# The ONE default behind `library.show_unverified_trust`, read off the registry
+# rather than restated at each read site. Three callsites resolve this flag (the
+# Jinja global below plus /library and the store-item detail route), and each
+# used to carry its own `default=False` literal — a comment asked them not to
+# drift, which is not a mechanism. Flipping the registry entry then changed
+# nothing, because all three overrode it. Sourcing the literal here means the
+# registry entry is the default, and `tests/test_feature_flags.py` pins it.
+_LIBRARY_TRUST_DEFAULT: bool = next(
+    (f.default for f in FEATURE_FLAGS if f.name == "library_show_unverified_trust"),
+    True,
+)
+
+
 def _show_unverified_trust() -> bool:
     """Whether the Community trust marker renders. Registered as a global for the
     same reason as `is_paper` above, and for one more that matters here: an
@@ -351,18 +365,22 @@ def _show_unverified_trust() -> bool:
     was at least visible. Resolving the flag here removes both failure modes,
     because there is no per-route value left to forget.
 
-    Same keys, env var and default as the two per-route callsites, so the three
-    cannot drift; re-read per call so an admin flipping it in
-    /admin/server-config takes effect without a restart."""
+    Same keys and env var as the two per-route callsites, and all three now take
+    their default from `_LIBRARY_TRUST_DEFAULT` (the registry entry) instead of
+    each restating a literal, so they cannot drift. Re-read per call so an admin
+    flipping it in /admin/server-config takes effect without a restart."""
     try:
         return feature_enabled(
             "library",
             "show_unverified_trust",
             env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-            default=False,
+            default=_LIBRARY_TRUST_DEFAULT,
         )
     except Exception:
-        return False
+        # Fall back to the declared default, not to a hardcoded off: the only way
+        # here is a malformed config, which is no reason to silently drop a
+        # provenance level the instance never asked to hide.
+        return _LIBRARY_TRUST_DEFAULT
 
 
 templates.env.globals["show_unverified_trust_enabled"] = _show_unverified_trust
@@ -3105,6 +3123,7 @@ async def library_page(
             # `GET /api/marketplace/items` computes its `installed` flag from,
             # is what keeps the two surfaces from drifting again.
             from app.api.marketplace import _curated_stack_sets
+            from app.api.store import ORGANIZATION_PUBLISHER_LABEL
 
             plugin_in_stack, plugin_required = _curated_stack_sets(None, uid)
             for pl in marketplace_plugins_repo().list_all():
@@ -3125,12 +3144,29 @@ async def library_page(
                     origin_label="Shared with you",
                     added=None,
                     meta_text=pl.get("category") or "",
-                    owner_label="Your workspace",
+                    # A curated plugin is served off an admin-registered
+                    # marketplace: the organization stands behind it, exactly as
+                    # `/api/marketplace/items` reports it (`publisher_kind=
+                    # "organization"`, `publisher_name=ORGANIZATION_PUBLISHER_LABEL`).
+                    # The Library used to call the same item "Your workspace" and
+                    # emit no trust marker, so the one class of item that IS
+                    # organization-published was the one class showing no
+                    # Organization marker — the two surfaces contradicted each
+                    # other on the same row.
+                    owner_label=ORGANIZATION_PUBLISHER_LABEL,
                     # The tier is real for plugins too, so the Optional/Required
                     # facet slices them the way it slices data packages.
                     requirement=("required" if key in plugin_required else "optional"),
                 )
                 row = items[-1]
+                # Same three fields the store-entity rows carry, so the trust
+                # marker macro reads one vocabulary across every Library row.
+                # A curated plugin has no per-item verification state — the
+                # organization publishing it outranks verification anyway (see
+                # `level_for()` in macros/_trustmark.html).
+                row["publisher_kind"] = "organization"
+                row["verified"] = False
+                row["trust_level"] = "org"
                 # Same endpoint both ways: POST subscribes, DELETE unsubscribes
                 # (`curated_install` / `curated_uninstall`). The Library's toggle
                 # is kind-agnostic — it POSTs/DELETEs whatever the row names.
@@ -3470,7 +3506,7 @@ async def library_page(
             "library",
             "show_unverified_trust",
             env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-            default=False,
+            default=_LIBRARY_TRUST_DEFAULT,
         ),
     )
     return templates.TemplateResponse(request, "library.html", ctx)
@@ -5272,7 +5308,7 @@ async def marketplace_flea_detail(
             "library",
             "show_unverified_trust",
             env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-            default=False,
+            default=_LIBRARY_TRUST_DEFAULT,
         ),
         quarantine_sub=quarantine_sub,
         edit_in_flight=edit_in_flight,
