@@ -47,6 +47,45 @@ def test_alias_block_redirects_to_the_primary_domain():
     )
 
 
+def test_only_browser_navigation_gets_the_notice_page():
+    """The notice page is for people; machine clients must get the 301.
+
+    Verified live: `Accept: text/html` GET → 200 HTML, default-Accept GET →
+    301, and `POST` with `Accept: text/html` → 301 (so a state-changing call
+    is never swallowed by an HTML page).
+    """
+    block = _alias_block(_CADDYFILE.read_text())
+    matcher = re.search(r"@browser\s*\{(.*?)\}", block, re.DOTALL)
+    assert matcher, "expected an @browser matcher scoping the notice page"
+    body = matcher.group(1)
+    assert re.search(r"^\s*method GET HEAD\s*$", body, re.MULTILINE), (
+        "the notice page must be scoped to GET/HEAD — a POST answered with "
+        "HTML instead of a redirect silently drops the request"
+    )
+    assert "header Accept *text/html*" in body, (
+        "the split between the notice page and the 301 must key on Accept: "
+        "text/html — browsers send it on navigation, API clients do not"
+    )
+    assert "handle @browser" in block and re.search(r"handle\s*\{", block), (
+        "expected both branches: `handle @browser` (notice) and a bare `handle` (301 fallback for everything else)"
+    )
+
+
+def test_notice_page_carries_the_deep_link_and_no_css_braces():
+    """`respond` substitutes placeholders in the body, so a CSS rule's braces
+    would be read as placeholder syntax — every style must be inline."""
+    block = _alias_block(_CADDYFILE.read_text())
+    respond = block[block.find("respond <<HTML") :]
+    assert "<style" not in respond, (
+        "no <style> block in the notice page — Caddy substitutes placeholders "
+        "in a respond body and CSS braces read as placeholder syntax; use "
+        "inline style attributes"
+    )
+    assert respond.count("https://{$DOMAIN:localhost}{uri}") >= 2, (
+        "the notice page must carry {uri} into BOTH the meta refresh and the link, so a deep link survives the hop"
+    )
+
+
 def test_alias_default_is_not_a_public_hostname():
     text = _CADDYFILE.read_text()
     m = re.search(r"^\{\$DOMAIN_ALIAS:([^}]*)\}", text, re.MULTILINE)
