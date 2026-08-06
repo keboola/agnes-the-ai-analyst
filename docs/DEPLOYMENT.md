@@ -240,6 +240,41 @@ path-scoped rule to drop or truncate the query string for
 `/api/mcp/oauth-client/callback` the same way you would for any other
 credential-bearing URL.
 
+#### Reverse-proxy access logs — MCP SSE `?token=`
+
+The MCP SSE transport accepts the bearer token as a `?token=` query parameter,
+a fallback for clients that cannot set an `Authorization` header on a GET. When
+a client uses it, the token — a long-lived PAT, not a single-use code — lands in
+the access log of every intermediary that records request URIs (CWE-598). Agnes
+logs a one-time warning naming this the first time the fallback is used, so
+check your logs for it.
+
+Two ways to handle it, in order of preference:
+
+1. **Turn the fallback off.** Every connection snippet Agnes hands out on the
+   MCP connect page is header-based — the `?token=` snippet was removed in the
+   2026-07-24 audit follow-up — so unless you have a hand-rolled client, nothing
+   in your fleet needs the parameter. Set `mcp.allow_query_param_token: false`
+   in `/admin/server-config` (or `AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN=false`); the
+   parameter is then ignored and such requests get a 401. This removes the
+   exposure rather than containing it. Default is `true` so an upgrade never
+   breaks a client that still relies on it — check for the one-time warning in
+   your logs before flipping it.
+
+   **Write `false`, `off`, `no`, or `0` — nothing else disables it.** Agnes's
+   flag parser treats every unrecognized string as truthy, so `disabled`,
+   `disable`, or `n` leave the fallback **on** with no error. That convention is
+   harmless for flags whose default is inert, but this one defaults to
+   permissive, so a typo silently keeps the exposure you were trying to remove.
+   Confirm the change took by reading the flag's `effective` value back from
+   `/admin/server-config` rather than trusting the save.
+2. **Keep it and redact.** If a client genuinely cannot set the header, add a
+   proxy rule that drops or masks the `token` query parameter for
+   `/api/mcp/*`, as above for the OAuth callback. Note this only covers *your*
+   proxy — the token still travels in the URL and can be captured anywhere else
+   on the path, so treat any PAT used this way as exposed and rotate it if the
+   log retention worries you.
+
 ### Upgrades (manual)
 
 ```bash

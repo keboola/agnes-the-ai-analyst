@@ -574,3 +574,111 @@ class TestDiscoverAndRegister:
         data = resp.json()
         assert data["registered"] == 0
         assert data["source"] != "keboola"
+
+
+class TestDocumentedServerConfigKeysAreWritable:
+    """`POST /api/admin/server-config` validates the patch against
+    `_EDITABLE_SECTIONS` and 400s on anything else, so a settings key the
+    deployment guide tells operators to change there must have its section
+    listed — otherwise the documented remediation fails and only the env var
+    works, which is how `mcp.allow_query_param_token` shipped
+    (Devin Review on #1183).
+    """
+
+    # Sections the deployment guide documents as `instance.yaml` / env-var edits
+    # rather than `/admin/server-config` edits, with the reason each one is not
+    # expected to be live-writable. A NEW documented section that is neither
+    # editable nor listed here fails the test below — that is the ratchet.
+    #
+    # The first version of this test filtered `documented` down to `{"mcp"}`
+    # before diffing, which meant it could only ever fail for the one flag it was
+    # written for while its docstring claimed a general rule. An exemption list
+    # with reasons is the honest form of the same intent (Devin Review on #1183).
+    _NOT_LIVE_WRITABLE = {
+        "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
+        "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
+        "chat": "needs the sandbox sidecar / compose profile to match, so a live flip would not take effect",
+        "data_apps": "gated on the `apps` compose profile, same reason",
+        "distribution": "documented as an `instance.yaml` + `AGNES_DISTRIBUTION_*` pair, object-store credentials included",
+    }
+
+    def _documented_keys(self):
+        import re
+        from pathlib import Path
+
+        # Anchored on this file, not the cwd: pytest invoked from anywhere else
+        # would otherwise make the test vacuous rather than fail.
+        doc_path = Path(__file__).resolve().parent.parent / "docs" / "DEPLOYMENT.md"
+        doc = doc_path.read_text(encoding="utf-8")
+        # `section.key: value` inside backticks, as the guide writes them.
+        return set(re.findall(r"`([a-z_]+)\.([a-z_]+):", doc))
+
+    def test_the_documented_key_scrape_finds_something(self):
+        """Guards the guard: a doc rewrite that changes the backtick convention
+        would silently empty `documented` and make the ratchet below pass on an
+        empty set."""
+        assert len(self._documented_keys()) >= 5
+
+    def test_every_documented_section_is_editable_or_explicitly_exempt(self):
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        documented = {sec for sec, _ in self._documented_keys()}
+        unaccounted = documented - set(_EDITABLE_SECTIONS) - set(self._NOT_LIVE_WRITABLE)
+        assert not unaccounted, (
+            "documented in DEPLOYMENT.md but neither writable via /admin/server-config "
+            f"nor listed in _NOT_LIVE_WRITABLE with a reason: {sorted(unaccounted)}"
+        )
+
+    def test_no_stale_exemption(self):
+        """Shrinks-only: a section that became editable must leave the list."""
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        stale = set(self._NOT_LIVE_WRITABLE) & set(_EDITABLE_SECTIONS)
+        assert not stale, f"now editable — drop from _NOT_LIVE_WRITABLE: {sorted(stale)}"
+
+    def test_the_mcp_token_flag_renders_as_a_boolean(self):
+        from app.api.admin import _EDITABLE_SECTIONS, _KNOWN_FIELDS
+
+        assert "mcp" in _EDITABLE_SECTIONS
+        field = _KNOWN_FIELDS["mcp"]["allow_query_param_token"]
+        assert field["kind"] == "bool"
+        assert field["default"] is True, "the fallback is on by default; the switch turns it off"
+
+
+class TestBooleanConfigFieldsAreNeverMasked:
+    """`_mask(False)` returns `"***"`, and the admin UI's bool renderer coerces
+    with `!!value` — so masking a boolean makes an OFF switch display as ON,
+    and the next "Save section" posts `true` and silently undoes the operator's
+    change. `mcp.allow_query_param_token` hit this because its name contains
+    the substring "token" (Devin Review on #1183).
+    """
+
+    def test_a_declared_boolean_is_not_treated_as_a_secret(self):
+        from app.api.admin import _is_secret_key
+
+        assert _is_secret_key("allow_query_param_token") is False
+        # ...while an actual credential still is.
+        assert _is_secret_key("keboola_token") is True
+        assert _is_secret_key("api_token") is True
+
+    def test_a_false_boolean_survives_redaction_verbatim(self):
+        from app.api.admin import _redact
+
+        out = _redact({"mcp": {"allow_query_param_token": False}})
+        assert out == {"mcp": {"allow_query_param_token": False}}, (
+            "masked to a truthy string — the UI would show the switch as ON"
+        )
+        # The masking that matters is untouched.
+        assert _redact({"data_source": {"api_token": "abc123"}}) == {"data_source": {"api_token": "***"}}
+
+    def test_every_registry_boolean_is_covered_not_just_this_one(self):
+        """Derived from `_KNOWN_FIELDS`, so a future boolean whose name happens
+        to contain a secret-looking substring is covered without anyone
+        remembering this failure mode."""
+        from app.api.admin import _KNOWN_FIELDS, _is_secret_key
+
+        bools = [
+            name for section in _KNOWN_FIELDS.values() for name, spec in section.items() if spec.get("kind") == "bool"
+        ]
+        assert bools, "no boolean fields in the registry — this guard would be vacuous"
+        assert [b for b in bools if _is_secret_key(b)] == []

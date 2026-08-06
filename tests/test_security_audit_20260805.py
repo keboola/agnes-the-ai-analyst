@@ -171,6 +171,43 @@ def test_f1c_v2_skills_does_not_follow_symlinks(tmp_path, monkeypatch):
     assert entries == [], f"followed a symlink out of the plugin: {entries!r}"
 
 
+def test_f1c_v2_skills_does_not_follow_a_symlinked_skills_dir():
+    """The INTERMEDIATE component, which the two leaf checks could not see.
+
+    The previous fix tested `skill_dir` and `skill_md` individually, so a curator
+    repo shipping `plugins/<name>/skills -> /elsewhere` passed `is_dir()` and
+    every real subdirectory below the link target was read and returned in the
+    HTTP response. Two rounds of per-component checks each closed the case that
+    had been pointed at and left the next one open; the walk now routes every
+    path through `escapes_base`, which is one rule for all of them
+    (Devin Review on #1183).
+    """
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import app.api.v2_marketplace as v2
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        root = tmp / "marketplaces"
+        plugin = root / "acme" / "plugins" / "widget"
+        plugin.mkdir(parents=True)
+
+        # A perfectly ordinary skills tree — but somewhere else on the volume.
+        outside = tmp / "elsewhere" / "skills"
+        (outside / "leak").mkdir(parents=True)
+        (outside / "leak" / "SKILL.md").write_text("---\nname: leak\n---\nSECRET-BODY\n", encoding="utf-8")
+
+        # The plugin dir and its name are legitimate; only `skills` is a link.
+        (plugin / "skills").symlink_to(outside, target_is_directory=True)
+
+        with patch.object(v2, "get_marketplaces_dir", lambda: root):
+            entries = v2._skills_for_plugin("acme", "widget")
+
+        assert entries == [], f"followed a symlinked skills dir: {entries!r}"
+
+
 # ── F-1b: hostile symlinks inside a legitimately-named plugin dir ──
 
 

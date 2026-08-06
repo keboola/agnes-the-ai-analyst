@@ -22,6 +22,48 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+## [0.80.1] - 2026-08-06
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+- **The v2 skills endpoint could serve file contents from outside the
+  marketplaces root.** `GET /api/v2/marketplace/.../skills` walks a plugin's
+  `skills/` tree and returns each `SKILL.md` body verbatim in the response. The
+  walk checked the leaf directory and the file for symlinks, but not the
+  intermediate `skills` component — so a curator repo shipping
+  `plugins/<name>/skills -> /somewhere/else` passed the `is_dir()` test and every
+  subdirectory below the link target was read and disclosed, even though the
+  plugin's own name was perfectly legitimate. Reaching it needs the ability to
+  register or push to an ingested marketplace repo. Every path on the walk now
+  routes through `escapes_base` — the same helper the ZIP and git packagers use,
+  which rejects any symlink outright and then checks resolved containment. Two
+  earlier rounds of this fix each closed the component that had been pointed at
+  and left the next one open; one rule for the whole walk is what ends that.
+
+- **The MCP SSE `?token=` auth fallback can now be turned off.** The transport
+  accepts a bearer token as a query parameter for clients that cannot set an
+  `Authorization` header on a GET; when a client uses it, that long-lived PAT
+  lands in the access log of every intermediary on the path (CWE-598). The new
+  `mcp.allow_query_param_token` flag (`AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN`)
+  **defaults to `true`, so nothing changes on upgrade** — but an operator whose
+  clients all send the header can now eliminate the exposure outright instead of
+  relying on proxy log redaction. Every connection snippet Agnes hands out is
+  already header-based (the `?token=` snippet was removed in the 2026-07-24 audit
+  follow-up), so for most instances this is safe to turn off; the existing
+  one-time CWE-598 warning tells you whether anything is still using it.
+  `docs/DEPLOYMENT.md` covers both the flag and the proxy-redaction fallback for
+  instances that must keep it on.
+
 ## [0.80.0] - 2026-08-06
 
 ### Added

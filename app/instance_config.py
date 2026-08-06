@@ -272,6 +272,18 @@ FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
         default=False,
         description="Hosted user web apps (data apps). New feature — off by default.",
     ),
+    FeatureFlag(
+        name="mcp_query_param_token",
+        config_keys=("mcp", "allow_query_param_token"),
+        env_var="AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN",
+        default=True,
+        description=(
+            "Accept the MCP bearer token as a ?token= query param on SSE GET, for clients "
+            "that cannot set headers. On by default (grandfathered). The token lands in every "
+            "request log when used (CWE-598) — turn this off if all your MCP clients send the "
+            "Authorization header."
+        ),
+    ),
 )
 
 

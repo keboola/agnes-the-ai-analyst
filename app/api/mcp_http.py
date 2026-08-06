@@ -103,6 +103,25 @@ for _name in _FOUNDATION_TOOL_NAMES:
 del _name
 
 
+def _query_param_token_allowed() -> bool:
+    """Whether the ``?token=`` auth fallback is accepted on SSE GET.
+
+    Resolved per request rather than cached at import: the value lives in the
+    ``/admin/server-config`` overlay, and an operator who turns the fallback off
+    after an incident should not have to restart the process for it to take
+    effect. ``feature_enabled`` reads the deep-merged config, which is itself
+    cached, so this is not a per-request disk hit.
+    """
+    from app.instance_config import feature_enabled
+
+    return feature_enabled(
+        "mcp",
+        "allow_query_param_token",
+        env_var="AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN",
+        default=True,
+    )
+
+
 _query_param_token_warned = False
 
 
@@ -136,8 +155,13 @@ class _AuthMiddleware:
         headers = {k.lower(): v for k, v in scope.get("headers", [])}
         auth = headers.get(b"authorization", b"").decode()
 
-        # Fallback: ?token= query param for clients that can't set headers on SSE GET
-        if not auth.lower().startswith("bearer "):
+        # Fallback: ?token= query param for clients that can't set headers on SSE GET.
+        #
+        # Operator-disablable since the 2026-08-05 audit (F-3). Default stays ON
+        # so no existing SSE client breaks, but an operator whose clients all
+        # send the Authorization header can remove the exposure outright instead
+        # of relying on the reverse proxy to redact the parameter from its logs.
+        if not auth.lower().startswith("bearer ") and _query_param_token_allowed():
             from urllib.parse import parse_qs
 
             qs = parse_qs(scope.get("query_string", b"").decode())

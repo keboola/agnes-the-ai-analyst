@@ -84,7 +84,7 @@ class TestFeatureEnabledResolutionOrder:
 class TestFeatureFlagsRegistry:
     def test_registry_covers_expected_flags(self):
         names = {f.name for f in ic.FEATURE_FLAGS}
-        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps"}
+        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps", "mcp_query_param_token"}
 
     def test_every_entry_resolves(self, monkeypatch):
         monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
@@ -165,7 +165,7 @@ class TestServerConfigFeatureFlagsInventory:
         flags = data["feature_flags"]
         assert isinstance(flags, list)
         names = {f["name"] for f in flags}
-        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps"}
+        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps", "mcp_query_param_token"}
         for f in flags:
             assert set(f.keys()) >= {"name", "effective", "source", "default", "env_var", "description"}
             assert f["source"] in ("env", "config", "default")
