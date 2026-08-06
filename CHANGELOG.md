@@ -20,15 +20,63 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-- **`quote_ident` moved to `src/sql_ident.py`; 54 bare-quoted SQL identifiers now
+- **`quote_ident` moved to `src/sql_ident.py`; every hand-quoted SQL identifier
+  now routes through it** — across the connectors, the orchestrator, the query
+  API, the CLI and the DuckDB→Postgres migration tooling, all still building
+  `f'"{name}"'` by hand. Several were already escaping correctly inline and are
+  converted only so the ratchet guard has one shape to match; none of the
+  conversions changes the emitted SQL for an identifier that passes the existing
+  validation gates. ATTACH aliases (`kbc`, `bq`, and the orchestrator's
+  per-source alias) are deliberately left unquoted — they are catalog names, not
+  identifiers this code owns. `src.profiler` re-exports the function, so existing
+  importers are unchanged.
+  The guard in `tests/test_security_audit_20260805.py` matches the *shape* of a
+  hand-quoted identifier anywhere in a string literal, rather than its position
+  in the statement. Two earlier versions keyed off position — "a keyword before
+  the quote", then "a keyword or a dot" — and each time an empty allowlist was an
+  artifact of not looking: `DROP VIEW IF EXISTS "{name}"` has ` IF EXISTS `
+  between the keyword and the quote, and a predicate column (`f'"{col}" = ?'`)
+  has neither a keyword nor a dot near it. Scanning by shape surfaces the
+  legitimate non-SQL uses of the same shape too (HTTP `Content-Disposition` and
+  `ETag` values, template placeholders, HTML attributes, empty-JSON defaults), so
+  the allowlist is no longer empty — it is a list of families, each carrying the
+  reason it is not an identifier. A second guard deletes a family that stops
+  matching anything, so the list can only shrink.
 
 - Test fixtures use `example.com` instead of a specific deployment's hostname,
+  per the vendor-agnostic rule in `CLAUDE.md`.
 
 - `.gitignore` now ignores a `.venv` **symlink**, not just a directory. Parallel
+  worktrees symlink the main checkout's venv (`scripts/dev/worktree-spawn.sh`),
+  and a trailing-slash pattern matches directories only — so every such worktree
+  carried an untracked `.venv`.
 
 ### Security
 
+- **A filter column name could break out of its quotes on
+  `POST /api/mcp/query-table/{table_id}`.** The endpoint's allow-list only
+  checked that the filter column exists in the view's `DESCRIBE` output; it never
+  constrained the characters in the name. Column names for a collection-ingested
+  table are whatever the uploaded file's header said — `src/ingest/tabular.py`
+  COPYs the reader's output straight to parquet without renaming — so a header of
+  `x") OR 1=1 --` became a real column, satisfied the allow-list, and then closed
+  the hand-built `f'"{col}" = ?'` identifier and appended its own predicate.
+  Reaching it needs permission to upload a file into a collection and to query
+  the derived table. The column name now routes through `quote_ident` like every
+  other identifier; a regression test asserts the filter still *filters* (a
+  non-matching value returns no rows), because a successful break-out produces a
+  perfectly valid query and would pass a "no 500" check.
+
 - **`agnes pull` validates table ids from the server manifest.** A manifest table
+  id becomes both a filesystem path segment (`<id>.parquet` plus its sidecar) and
+  a DuckDB view identifier on the analyst's machine. The same charset gate
+  already covered collection ids, doc slugs and item ids in that module; the
+  table id was missed. Table ids get their own dot-tolerant pattern rather than
+  widening the shared one — admin-derived ids legitimately contain dots
+  (`orders.v2`), while the other three consumers are spliced into request paths
+  where a dotted value normalizes away. Unsafe ids are skipped with a warning on
+  stderr rather than collected as errors, so one bad id cannot make every
+  subsequent pull exit non-zero — including from the SessionStart hook.
 
 ## [0.79.2] - 2026-08-06
 
