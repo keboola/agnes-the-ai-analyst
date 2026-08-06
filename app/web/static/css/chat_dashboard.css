@@ -45,48 +45,30 @@ html[data-ui-layout="rail"] .rdb-context {
 
 .rdb-context-ico {
     flex-shrink: 0;
-    width: 15px;
-    height: 15px;
-    color: var(--ds-assistant);
+    width: 14px;
+    height: 14px;
+    /* Damped toward the text colour — the glyph marks the line as context, it
+       is not an accent of its own. */
+    color: color-mix(in srgb, var(--ds-assistant) 65%, var(--ds-text-muted));
 }
 
+/* One link in the line ("Stack"), kept in the same muted register as the
+   sentence around it — a bright accent link on a status line reads as a
+   control and pulls attention off the suggested actions below. The dotted
+   underline is what marks it clickable; hover firms it up. */
 .rdb-context a {
-    color: var(--ds-assistant-dark);
+    color: var(--ds-text-secondary);
     font-weight: 600;
-    text-decoration: none;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 3px;
+    text-decoration-color: color-mix(in srgb, var(--ds-text-muted) 55%, transparent);
 }
 
 .rdb-context a:hover {
-    text-decoration: underline;
-}
-
-/* ── Orientation line ("New here? See how Agnes works") ───────────────────
-   Shares the Stack line's column and muted register — the two are the same kind
-   of thing, a quiet aside under the composer — but with no icon, so it reads as
-   the second of two notes rather than a second labelled row. The link takes the
-   primary accent (the Stack line's links are assistant-coloured because they
-   point at what Agnes is *using*; this one points at product documentation). */
-
-html[data-ui-layout="rail"] .rdb-orient {
-    align-self: center;
-    width: var(--rdb-col-narrow, 60%);
-    max-width: none;
-    min-width: 0;
-    margin: 0;
-    padding: 2px 2px 0;
-    font-size: 13px;
-    color: var(--ds-text-muted);
-    font-family: var(--ds-font);
-}
-
-.rdb-orient a {
-    color: var(--ds-primary-dark);
-    font-weight: 600;
-    text-decoration: none;
-}
-
-.rdb-orient a:hover {
-    text-decoration: underline;
+    color: var(--ds-assistant-dark);
+    text-decoration-style: solid;
+    text-decoration-color: currentColor;
 }
 
 /* ── Suggested next actions — a vertical list of guided-task items, one under

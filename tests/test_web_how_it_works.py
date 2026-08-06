@@ -468,9 +468,10 @@ def test_rail_orientation_entry_is_grouped_with_restart_onboarding(seeded_app, m
     assert activity < panel.index("app-user-menu-sep") < hiw
 
 
-# The chat dashboard's own first-run orientation line ("New here? See how Agnes
-# works") is guarded in tests/test_web_chat_empty_state.py, which has the rail +
-# chat-backend + chat-grant fixture that rendering /chat needs.
+# The chat dashboard's own first-run orientation link ("See how Agnes works",
+# under the Knowledge Layer hero's CTA) is guarded in
+# tests/test_web_chat_empty_state.py, which has the rail + chat-backend +
+# chat-grant fixture that rendering /chat needs.
 
 
 def test_page_uses_brand_short_not_a_hardcoded_name(page):

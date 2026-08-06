@@ -257,6 +257,35 @@ body.chat-page-body main { margin: 0; padding: 0; }
 }
 .cloud-chat-list:not(:empty) + .cloud-chat-sidebar-empty { display: none; }
 
+/* "View all chats" → /chats, at the foot of the conversations column. Quieter
+   than a conversation row (muted, one size down) because the rows above it are
+   the thing to read; the trailing chevron is what marks it as a destination. */
+.cloud-chat-sidebar-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--space-2) var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 8px;
+  /* Same 12.5px/600 as the rail's own "View all chats" row (rail.css) — one
+     link, two chromes, one type size. */
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ds-text-muted);
+  text-decoration: none;
+}
+.cloud-chat-sidebar-all svg { width: 13px; height: 13px; flex-shrink: 0; }
+.cloud-chat-sidebar-all:hover {
+  background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-sidebar-all:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+/* Mini rail — no room for a phrase, and the chevron alone would say nothing. */
+.cloud-chat-shell.is-mini .cloud-chat-sidebar-all { display: none; }
+
 /* ===== Sidebar mini-mode =====
    When ``.is-mini`` is on the shell, the sidebar collapses to a
    ~56px rail. Labels disappear; only icons + first-letter avatars

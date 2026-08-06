@@ -1,8 +1,8 @@
 """Web UI route — the ``/chat`` pre-conversation Dashboard (issue #896).
 
 The rail empty state is the Dashboard: greeting, the real composer, a
-"Agnes is using N knowledge sources and M capabilities from your Stack"
-context line, activity panels, and guided task starters. (Its ancestors —
+"Using N knowledge sources and M capabilities from your Stack" context
+line, activity panels, and guided task starters. (Its ancestors —
 the standalone ``/ask`` hero, then the ``/chat`` "Ask anything." hero with
 the "Operated by Agnes" pill — are retired.) The counts are the caller's
 ACTUAL Stack contents, matching the /stack page the line links to:
@@ -25,6 +25,17 @@ from types import SimpleNamespace
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _context_line(body: str) -> str:
+    """The ``<p class="rdb-context">`` paragraph's inner markup, whitespace
+    collapsed. Scoped so a count or a /library link elsewhere on the page can
+    never stand in for the status line itself."""
+    import re
+
+    line = body[body.index('<p class="rdb-context">') :]
+    line = line[: line.index("</p>")]
+    return re.sub(r"\s+", " ", line).strip()
 
 
 def _make_pkg(slug: str, name: str) -> str:
@@ -120,78 +131,91 @@ class TestChatEmptyStatePill:
         assert "Secure. Private. Always in sync." in body
         assert "Ask Agnes anything" in body
         assert 'id="rdb-actions"' in body
-        assert "Agnes is using" in body and "from your Stack" in body
+        assert "Using" in _context_line(body) and "from your" in _context_line(body)
         # The retired hero copy must be gone.
         assert "Ask anything." not in body
         assert "Operated by" not in body
         assert "Suggested questions" not in body
 
-    def test_context_line_links_to_library_in_stack_filter(self, seeded_app, monkeypatch):
-        """Both counts link to the Library with "In stack only" pre-applied, NOT
-        to /stack: My Stack is not a rail destination any more (#1088), so the
-        old href landed the caller on a page with no nav entry. /library renders
-        every kind that page did and the filter narrows it to what the line
-        counts."""
+    def test_context_line_links_the_word_stack_only(self, seeded_app, monkeypatch):
+        """ONE link in the line, on the word "Stack" — pointing at the Library
+        with "In stack only" pre-applied, NOT at /stack: My Stack is not a rail
+        destination any more (#1088), so the old href landed the caller on a page
+        with no nav entry. /library renders every kind that page did and the
+        filter narrows it to what the line counts.
+
+        The counts themselves are plain text. Linking each of them made a status
+        line read as a row of controls and put three targets in one 13px
+        sentence; "Stack" is the thing the reader would go look at.
+        """
         _enable_rail_chat(seeded_app, monkeypatch)
         pkg_id = _make_pkg("ctx-link-pkg", "Ctx link pkg")
         _grant("Admin", "data_package", pkg_id)
         resp = seeded_app["client"].get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text
-        body = resp.text
-        assert "Agnes is using" in body
-        # The status line's own markup — scoped so a stray /stack link elsewhere
-        # in the page can't pass this off as fixed.
-        line = body[body.index('<p class="rdb-context">') :]
-        line = line[: line.index("</p>")]
-        assert line.count('href="/library?stack=in_stack"') == 2
+        line = _context_line(resp.text)
+        assert line.count('href="/library?stack=in_stack"') == 1
+        assert '<a href="/library?stack=in_stack">Stack</a>' in line
         assert 'href="/stack"' not in line
+        # The counts are not links.
+        assert "knowledge source</a>" not in line and "knowledge sources</a>" not in line
 
-    def test_dashboard_carries_the_first_run_orientation_line(self, seeded_app, monkeypatch):
-        """ "New here? See how Agnes works" — the PROMINENT path to
-        /how-it-works, which the rail carries only as a quiet `.rail-meta` row in
-        its foot (_app_rail.html). A newcomer needs the explainer far more than a
-        returning user does, and the empty state is where their eyes already are.
-
-        Below the composer, not above it: directly over the input is the moment
-        of INTENT, and a navigate-away control was retired from there once
-        already (#1108's "Browse metrics & glossary"). Inside
-        `#chat-empty-extras`, so it retires with the rest of the dashboard as
-        soon as a conversation starts.
-        """
+    def test_below_the_input_is_context_only(self, seeded_app, monkeypatch):
+        """Below the composer carries the Stack status line and nothing else —
+        no onboarding, no marketing, no documentation link. The first-run
+        "See how Agnes works" path moved INTO the hero, under its CTA."""
         _enable_rail_chat(seeded_app, monkeypatch)
         resp = seeded_app["client"].get("/chat", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 200, resp.text
         body = resp.text
         extras = body[body.index('id="chat-empty-extras"') :]
         extras = extras[: extras.index('id="chat-empty-banner"')]
-        assert 'class="rdb-orient"' in extras
-        assert "New here?" in extras
-        assert 'href="/how-it-works"' in extras
-        assert "See how Agnes works" in extras  # brand-templated, seeded default
-        # Below the Stack status line it shares a register with — the two read as
-        # a pair of quiet notes under the input, in that order.
-        assert extras.index('class="rdb-context"') < extras.index('class="rdb-orient"')
-        # And it is NOT a third CTA in the hero, which keeps "Connect your tools"
-        # as its single action (see tests/test_ui_layout_theme.py).
-        assert "rdb-orient" not in body[: body.index('id="chat-empty-extras"')]
+        assert 'class="rdb-context"' in extras
+        for retired in ("rdb-orient", "New here?", 'href="/how-it-works"'):
+            assert retired not in extras, f"below-input area is not context-only: {retired}"
+
+    def test_hero_carries_the_first_run_orientation_link(self, seeded_app, monkeypatch):
+        """ "See how Agnes works" — the first-run path to /how-it-works, which
+        the rail otherwise carries only as a quiet `.rail-meta` row in its foot
+        (_app_rail.html). It sits directly under the hero's "Connect your tools"
+        CTA as a plain text link with an info glyph: an optional onboarding
+        action, deliberately NOT a second button (the retired outline secondary
+        is guarded in tests/test_ui_layout_theme.py).
+        """
+        _enable_rail_chat(seeded_app, monkeypatch)
+        resp = seeded_app["client"].get("/chat", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        lead = body[body.index('<div class="klb-lead">') :]
+        lead = lead[: lead.index("</div>")]
+        assert 'class="klb-orient"' in lead
+        assert 'href="/how-it-works"' in lead
+        assert "See how Agnes works" in lead  # brand-templated, seeded default
+        # Under the CTA, not above it — the green CTA stays the hero's lead action.
+        assert lead.index('class="klb-cta"') < lead.index('class="klb-orient"')
+        # Still not a button: no CTA row, no outline secondary.
+        assert 'class="klb-ctas"' not in body
+        assert "klb-cta-secondary" not in body
 
     def test_context_line_hidden_at_zero(self, seeded_app, monkeypatch):
         """analyst1 has no data/plugin grants → both counts are 0 and the
-        context line hides entirely ("Agnes is using 0 knowledge sources"
-        would read as broken). The CHAT grant only unlocks the route; it is
-        not a knowledge source, so it doesn't bump N."""
+        context line hides entirely ("Using 0 knowledge sources" would read as
+        broken). The CHAT grant only unlocks the route; it is not a knowledge
+        source, so it doesn't bump N."""
         _enable_rail_chat(seeded_app, monkeypatch)
         _grant("Everyone", "chat", "chat", users=["analyst1"])
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200, resp.text
-        assert "Agnes is using" not in resp.text
+        assert _context_line(resp.text) == '<p class="rdb-context">'
         # The rest of the dashboard still renders.
         assert 'id="rdb-actions"' in resp.text
 
     def test_context_line_reflects_rbac_grant(self, seeded_app, monkeypatch):
-        """A required data-package grant on the analyst's group bumps N —
-        the line appears, pluralized down to the singular "source" at N=1."""
+        """A required data-package grant on the analyst's group bumps N — the
+        line appears, pluralized down to the singular "source" at N=1. The
+        analyst has no capabilities, so that clause is omitted entirely rather
+        than rendered as "and 0 capabilities"."""
         _enable_rail_chat(seeded_app, monkeypatch)
         _grant("Everyone", "chat", "chat", users=["analyst1"])
         pkg_id = _make_pkg("ask-landing-pkg", "Ask landing pkg")
@@ -199,10 +223,12 @@ class TestChatEmptyStatePill:
         c = seeded_app["client"]
         resp = c.get("/chat", headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200, resp.text
-        assert "Agnes is using" in resp.text
-        assert ">1 knowledge source</a>" in resp.text
+        line = _context_line(resp.text)
+        assert "Using 1 knowledge source from your" in line
         # Singular, not plural — the plural fragment must be absent.
-        assert "1 knowledge sources</a>" not in resp.text
+        assert "1 knowledge sources" not in line
+        # Zero capabilities → no clause at all.
+        assert "capabilit" not in line
 
     def test_admin_counts_stack_not_catalog(self, seeded_app, monkeypatch):
         """The line reads the caller's ACTUAL Stack, not the whole catalog:
@@ -218,7 +244,7 @@ class TestChatEmptyStatePill:
         def _count() -> int:
             resp = c.get("/chat", headers=headers)
             assert resp.status_code == 200, resp.text
-            m = re.search(r">(\d+) knowledge source", resp.text)
+            m = re.search(r"(\d+) knowledge source", _context_line(resp.text))
             return int(m.group(1)) if m else 0
 
         before_n = _count()
@@ -237,9 +263,9 @@ class TestChatEmptyStatePill:
         """capability_count == 1 renders the singular "1 capability from your
         Stack" — and only SUBSCRIBED plugins count: RBAC resolves two
         plugins for the caller, one subscription row exists, so M == 1.
-        Assert the exact pill fragment — the empty-state DOM also carries
+        Asserted inside the status line — the empty-state DOM also carries
         an ``id="chat-capabilities"``, so a bare "capabilities" substring
-        check would be a false negative."""
+        check over the page would be a false negative."""
         from src import marketplace_filter
         from src.repositories import user_curated_subscriptions_repo
 
@@ -254,10 +280,25 @@ class TestChatEmptyStatePill:
         )
         user_curated_subscriptions_repo().subscribe("admin1", "mp1", "demo-plugin")
         c = seeded_app["client"]
-        resp = c.get("/chat", headers=_auth(seeded_app["admin_token"]))
+        headers = _auth(seeded_app["admin_token"])
+        # A subscribed package too, so both halves of the sentence are present
+        # and the "and" join is exercised.
+        pkg_id = _make_pkg("cap-plural-pkg", "Cap plural pkg")
+        assert (
+            c.post(
+                "/api/stack/subscribe",
+                headers=headers,
+                json={"resource_type": "data_package", "resource_id": pkg_id},
+            ).status_code
+            == 200
+        )
+        resp = c.get("/chat", headers=headers)
         assert resp.status_code == 200, resp.text
-        assert ">1 capability</a>" in resp.text
-        assert ">1 capabilities</a>" not in resp.text
+        line = _context_line(resp.text)
+        assert "1 capability from your" in line
+        assert "1 capabilities" not in line
+        # Non-zero → the clause joins the knowledge-source count with "and".
+        assert " and 1 capability" in line
 
     def test_requires_login(self, seeded_app):
         """Same auth gate as every other authenticated page — unauthenticated

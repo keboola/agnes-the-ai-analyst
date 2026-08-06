@@ -138,6 +138,19 @@
     <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
     <p id="cloud-chat-empty-state" class="cloud-chat-sidebar-empty">No conversations yet.</p>
 
+    {# The door to /chats — the surface that manages conversations (search, the
+       four views, per-row and bulk actions). Topnav's column is full-height and
+       uncapped, so unlike the rail's this link stands in for nothing that is
+       being hidden: it is here because managing a hundred chats is not something
+       a sidebar can do, and because without it the page would be unreachable in
+       this chrome. Its label carries no count and it never collapses the list —
+       it navigates. Hidden when the sidebar is collapsed to its mini rail (see
+       chat.css), where there is no room for a phrase. #}
+    <a class="cloud-chat-sidebar-all" href="/chats">
+      <span class="cloud-chat-sidebar-all-label">View all chats</span>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+
     {# Chat-driven onboarding progress. chat_onboarding.js loads the per-user
        journey state from /api/chat/journey and renders the five steps here;
        stays hidden until that state resolves (and once every step is done the
@@ -503,50 +516,39 @@
        once a conversation starts via the
        ``#chat-capabilities[hidden] ~ #chat-empty-extras`` rule. #}
     <div id="chat-empty-extras" class="cloud-chat-empty-extras">
-      {# Stack status line — flat under the composer (chat_dashboard.css).
-         Content renders (with a layers icon) whenever either count is
-         non-zero; at 0/0 the strip is just empty spacing. #}
+      {# Stack status line — flat under the composer (chat_dashboard.css). The
+         ONLY thing below the input: what context this conversation runs with.
+         No onboarding, no marketing, no docs link — those live in the hero.
+
+         One sentence, one link. "Stack" is what the reader would click to see
+         (or change) the context, so it carries the href; the counts are plain
+         text — making each count its own link turned a status line into a row
+         of controls and put three link targets in one 13px sentence.
+
+         Capabilities are omitted entirely at zero rather than rendered as
+         "and 0 capabilities", and the whole line hides at 0/0. #}
       <p class="rdb-context">
         {% if knowledge_source_count or capability_count %}
         <svg class="rdb-context-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-        {# Both counts link to the LIBRARY with its "In stack only" filter
-           already applied (`/library?stack=in_stack`), not to /stack: My Stack
-           is not a rail destination any more (#1088), so pointing at it landed
-           the caller on a surface with no nav entry and no active state. The
-           Library renders every kind that page did — data packages and memory
-           domains come from the SAME StackResolver.browse() read — and its
-           toggle narrows that list to exactly what this line is counting. #}
+        {# The link points at the LIBRARY with its "In stack only" filter already
+           applied (`/library?stack=in_stack`), not at /stack: My Stack is not a
+           rail destination any more (#1088), so pointing at it landed the caller
+           on a surface with no nav entry and no active state. The Library
+           renders every kind that page did — data packages and memory domains
+           come from the SAME StackResolver.browse() read — and its toggle
+           narrows that list to exactly what this line is counting. #}
         <span>
-          Agnes is using
-          <a href="/library?stack=in_stack">{{ knowledge_source_count }} knowledge source{{ '' if knowledge_source_count == 1 else 's' }}</a>
-          and
-          <a href="/library?stack=in_stack">{{ capability_count }} capabilit{{ 'y' if capability_count == 1 else 'ies' }}</a>
-          from your Stack
+          Using
+          {%- if knowledge_source_count %}
+          {{ knowledge_source_count }} knowledge source{{ '' if knowledge_source_count == 1 else 's' }}
+          {%- if capability_count %} and{% endif %}
+          {%- endif %}
+          {%- if capability_count %}
+          {{ capability_count }} capabilit{{ 'y' if capability_count == 1 else 'ies' }}
+          {%- endif %}
+          from your <a href="/library?stack=in_stack">Stack</a>
         </span>
         {% endif %}
-      </p>
-
-      {# Orientation line — the prominent first-run path to /how-it-works, which
-         the rail carries only as a quiet `.rail-meta` row in its foot
-         (_app_rail.html). Someone who has just arrived needs the explainer far
-         more than a returning user does, and this is where their eyes already
-         are; the rail row is for finding it again later.
-
-         Below the composer, not above it: directly over the input is the moment
-         of INTENT, and a control whose only function is to navigate away was
-         retired from there once already (the "Browse metrics & glossary" button,
-         #1108). Not in the hero either — its green "Connect your tools" CTA is
-         the one action up there, and the second outline CTA that used to sit
-         beside it was retired as competition (guarded in
-         tests/test_ui_layout_theme.py).
-
-         "New here?" does the self-selecting, so a returning reader skips the
-         line at a glance instead of re-reading an offer they have taken. Inside
-         #chat-empty-extras, so it disappears with the rest of the dashboard the
-         moment a conversation starts. #}
-      <p class="rdb-orient">
-        New here?
-        <a href="/how-it-works">See how {{ instance_brand_short or 'Agnes' }} works</a>
       </p>
 
       <div class="rdb">
@@ -578,7 +580,13 @@
        placed after #chat-capabilities in the DOM so the empty-state hide rule
        (#chat-capabilities[hidden] ~ …) still catches them. #}
     <div id="chat-empty-banner" class="cloud-chat-empty-banner">
-      {{ knowledge_layer_banner() }}
+      {# The first-run orientation link rides UNDER the hero's CTA (macro
+         param), not below the composer: under the input is where the reader's
+         context lives, and the hero is already the "what is this" block. It
+         stays a quiet text link so "Connect your tools" remains the one
+         action up there. Brand-templated here because the macro is imported
+         without context. #}
+      {{ knowledge_layer_banner(orient_label='See how ' ~ (instance_brand_short or 'Agnes') ~ ' works') }}
     </div>
 
     {# Keboola credit — pinned to the very bottom of the page. #}
