@@ -179,6 +179,41 @@ class TestKeboolaExtractor:
         finally:
             conn.close()
 
+    def test_local_extension_path_heals_bucket_prefixed_source_table(self, output_dir):
+        """The query_mode='local' extension path re-composes the same
+        kbc.<bucket>.<source_table> identifier, so a legacy wizard row would
+        COPY FROM kbc."in.c-crm"."in.c-crm.orders" — nonexistent. Normalizing
+        at use must make the extraction succeed against the bare name."""
+        from connectors.keboola.extractor import run
+
+        configs = [{
+            "name": "orders",
+            "bucket": "in.c-crm",
+            "source_table": "in.c-crm.orders",  # legacy wizard shape
+            "query_mode": "local",
+            "description": "Order data",
+        }]
+
+        def mock_attach_with_rows(conn, url, token):
+            conn.execute("ATTACH ':memory:' AS kbc")
+            conn.execute('CREATE SCHEMA kbc."in.c-crm"')
+            conn.execute('CREATE TABLE kbc."in.c-crm"."orders" (id INTEGER)')
+            conn.execute('INSERT INTO kbc."in.c-crm"."orders" VALUES (1), (2)')
+            return True
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=mock_attach_with_rows):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 1, result
+        assert result["tables_failed"] == 0, result
+        pq = Path(output_dir) / "data" / "orders.parquet"
+        assert pq.exists(), "extension path wrote no parquet"
+        c = duckdb.connect()
+        try:
+            assert c.execute(f"SELECT COUNT(*) FROM read_parquet('{pq}')").fetchone()[0] == 2
+        finally:
+            c.close()
+
     def test_remote_view_failure_does_not_abort_sibling_tables(self, output_dir):
         """An unresolvable remote view must degrade to tables_failed like every
         other branch. Unguarded it raised out of run(), skipped the atomic
