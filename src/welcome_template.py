@@ -263,6 +263,23 @@ def render_agent_prompt_banner(
 
     content, _mode = resolve_prompt("install", conn)
 
+    # An override written BEFORE the PAT handoff moved to `--token-file` still
+    # carries the retired `{token}` placeholder, and Jinja2 leaves a single-brace
+    # token untouched — so it would render literally and the user would save the
+    # string `{token}` as their credential, failing every setup attempt with an
+    # authentication error. The save-time guards only see NEW writes; stored
+    # content is never re-validated, which is why this belongs at the render
+    # seam. A template that cannot produce a working script is broken, so it
+    # takes the same documented path a TemplateError does: warn, fall back to
+    # the live default (Devin Review on #1139).
+    if content and "{token}" in content:
+        logger.warning(
+            "Install-prompt override references the retired `{token}` placeholder — "
+            "ignoring it and serving the built-in default. Re-save the prompt in "
+            "/admin/prompts (the PAT is delivered via --token-file now)."
+        )
+        content = None
+
     if content:
         # Admin-authored override — render as Jinja2, sanitize.
         # autoescape=False to match /setup rendering — the outer Jinja2 template

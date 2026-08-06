@@ -88,13 +88,15 @@
                 aria-label="I'm already set up — close this setup hero">&times;</button>
 
         {# Progress meta — visual hint that the wizard is bounded ("~15 min,
-           one-time, reversible"). Five steps total when home_automode is
-           enabled, four when it's disabled (the "Launch Claude with
-           auto-approve" step hides via {% if home_automode.show %}).
-           Pre-empt: when more steps land in future iterations, just
-           bump the total_steps default; per-step numbering inside
-           .install-block carries its own count already. #}
-        {% set total_steps = 5 if home_automode.show else 4 %}
+           one-time, reversible"). Always five steps now: Step 4 is the
+           credential-bearing "save your login token" step in BOTH
+           home_automode branches — it also launches Claude in one line
+           when home_automode.show is true, or is a standalone token-only
+           step when it's false (see the two variants below). Pre-empt:
+           when more steps land in future iterations, just bump the
+           total_steps default; per-step numbering inside .install-block
+           carries its own count already. #}
+        {% set total_steps = 5 %}
         <div class="setup-meta" aria-label="Setup overview">
             <span class="setup-chip">Step 1 of {{ total_steps }}</span>
             <span class="setup-chip-quiet">~15 min total</span>
@@ -115,12 +117,25 @@
                 <button type="button" role="tab" class="os-tab"
                         data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
+            {# The command self-heals the common failure modes in the SAME
+               terminal, so the user never has to reopen one:
+               1. `claude` already works → skips straight to the version check.
+               2. Installed but not on this session's PATH — the official
+                  installer delegates to `claude install`, a CHILD process,
+                  which can write the registry / rc files but never mutate
+                  the PATH of the already-open terminal → prepend
+                  ~/.local/bin to THIS session's PATH (the pasted command
+                  runs in the user's own shell, so it may do what the
+                  installer cannot) without re-downloading anything.
+               3. Truly missing → official installer, then the same PATH fix.
+               The trailing `claude --version` is the success check (and the
+               visible proof) in every branch. #}
             <div class="install-cmd" role="tabpanel" data-os-panel="unix">
-                <span class="multiline" id="install-cmd-claude-unix">curl -fsSL https://claude.ai/install.sh | bash</span>
+                <span class="multiline" id="install-cmd-claude-unix">command -v claude &gt;/dev/null 2&gt;&amp;1 || { [ -x "$HOME/.local/bin/claude" ] || curl -fsSL https://claude.ai/install.sh | bash; export PATH="$HOME/.local/bin:$PATH"; }; claude --version</span>
                 <button class="copy-btn" data-copy-target="install-cmd-claude-unix">Copy</button>
             </div>
             <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                <span class="multiline" id="install-cmd-claude-windows">irm https://claude.ai/install.ps1 | iex</span>
+                <span class="multiline" id="install-cmd-claude-windows">if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { if (-not (Test-Path "$env:USERPROFILE\.local\bin\claude.exe")) { irm https://claude.ai/install.ps1 | iex }; $env:Path = "$env:USERPROFILE\.local\bin;$env:Path" }; claude --version</span>
                 <button class="copy-btn" data-copy-target="install-cmd-claude-windows">Copy</button>
             </div>
 
@@ -131,8 +146,11 @@
             </div>
 
             <p class="step-lede" style="margin-top: 14px;">
-                Once it finishes, verify with <code>claude --version</code>, then sign in with <code>claude</code>
-                (one-time OAuth in your browser). Don't have a Claude license yet?
+                The command checks first — if Claude Code already works, nothing is installed.
+                When it prints a version number (e.g. <code>2.1.221 (Claude Code)</code>), you're done —
+                <strong>keep using this same terminal</strong> for the next steps.
+                Already using the Claude <em>desktop app</em>? That's a different thing — Claude Code
+                (this CLI) is what this command checks and installs. Don't have a Claude license yet?
                 <a href="/setup-advanced#claude-plan">Here's how to get one</a>
                 (Pro&nbsp;/&nbsp;Max&nbsp;5×&nbsp;/&nbsp;Max&nbsp;20×&nbsp;/&nbsp;Enterprise &mdash; Enterprise is the option for Finance and Legal).
             </p>
@@ -221,15 +239,64 @@
             </p>
         </div>
 
+        {# Step 4 — the credential-bearing step. In both branches the
+           visible command is masked with bullet characters; the real
+           token is minted (POST /auth/tokens, via mintAccessToken() in
+           _claude_setup_cta.jinja) and substituted only in memory, at
+           click time, by launchClaudeWithToken() — it never touches the
+           DOM or this markup. `data-cmd-template` on each
+           `.install-cmd-masked` span carries the real command shape with
+           a literal `{TOKEN}` marker (not a secret, just a format
+           string); `user-select: none` (home.css) plus the copy/cut
+           suppression wired in the page script below stop a stray
+           selection from copying the (non-functional) masked text. #}
         {% if home_automode.show %}
-        <div class="install-block">
+        <div class="install-block install-block-secret">
             <div class="step-num" aria-hidden="true"><span>4</span></div>
-            <div class="label">Launch Claude with auto-approve on</div>
-            <p class="step-lede">The next step pastes a setup script that runs ~20 shell commands. Launching Claude in <strong>auto mode</strong> lets its safety classifier auto-approve the safe ones (file edits and safe Bash), so the script runs mostly unattended — you may still get a prompt on a riskier command.</p>
-            <div class="install-cmd">
-                <span class="multiline" id="install-cmd-claude-auto">claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"</span>
-                <button class="copy-btn" data-copy-target="install-cmd-claude-auto">Copy</button>
+            <div class="label">Launch Claude — we'll hand it your login first</div>
+            <p class="step-lede">One click copies a single line: it saves your login token to a file on this computer, then starts Claude. Paste it into your <strong>terminal</strong> and press Enter. First launch opens a one-time browser sign-in to Claude.</p>
+
+            <div class="os-tabs" role="tablist" aria-label="Operating system">
+                <button type="button" role="tab" class="os-tab is-active"
+                        data-os-tab="unix" aria-selected="true">macOS / Linux</button>
+                <button type="button" role="tab" class="os-tab"
+                        data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
+            <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="unix">
+                {# The `claude` check runs FIRST; the token is written only
+                   when the flow can actually continue. A missing CLI leaves
+                   NOTHING behind — no 90-day plaintext credential sitting on
+                   disk for a flow that stopped (the very hygiene the
+                   bootstrap-token cleanup exists for); the retry paste
+                   rewrites the token anyway. The write-success gate before
+                   the launch is preserved inside the happy branch. #}
+                <span class="multiline install-cmd-masked" id="install-cmd-token-unix"
+                      data-cmd-template="if command -v claude &gt;/dev/null 2&gt;&amp;1; then umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '{TOKEN}' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;; else echo '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.'; fi"
+                      aria-label="Checks Claude Code is installed, then saves your login token to a file and launches Claude. If the CLI is missing, it prints guidance and saves nothing. The token itself is masked here and never shown on screen."
+                      draggable="false" tabindex="0">if command -v claude &gt;/dev/null 2&gt;&amp;1; then umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"; else echo '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.'; fi</span>
+            </div>
+            <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="windows" hidden>
+                <span class="multiline install-cmd-masked" id="install-cmd-token-windows"
+                      data-cmd-template="if (Get-Command claude -ErrorAction SilentlyContinue) { New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}'); if ($?) { claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot; } } else { Write-Host '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.' }"
+                      aria-label="Checks Claude Code is installed, then saves your login token to a file and launches Claude. If the CLI is missing, it prints guidance and saves nothing. The token itself is masked here and never shown on screen."
+                      draggable="false" tabindex="0">if (Get-Command claude -ErrorAction SilentlyContinue) { New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'); if ($?) { claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)" } } else { Write-Host '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.' }</span>
+            </div>
+
+            <div class="setup-cta-row">
+                <button type="button" id="launchClaudeBtn" class="btn-setup-warn" onclick="launchClaudeWithToken(this)">
+                    Copy launch command (includes your login)
+                </button>
+                <span class="setup-cta-meta">
+                    <span class="setup-cta-hint">Valid 90 days &middot; lands in your clipboard only &middot; we never show it on screen</span>
+                </span>
+            </div>
+            <div id="launchClaudeError" class="setup-error" role="alert" style="display:none;"></div>
+
+            <div class="callout-rec">
+                <strong>Why a file and not the chat?</strong>
+                Your login token stays on your own machine. Claude reads it from the file when it needs it — it never appears in the conversation.
+            </div>
+
             <div class="install-note">
                 Session-scoped — drops on next plain <code>claude</code>. Auto mode auto-approves actions its classifier judges safe (file edits and safe Bash commands); it is <em>not</em> a blanket skip, so Claude may still pause for a Yes/No on a command it considers risky. The <code>--allowedTools</code> part pre-approves the <code>agnes</code> CLI's own commands (<code>agnes init</code>, <code>agnes refresh-marketplace</code>, …) so the classifier never pauses on them — and <code>agnes init</code> writes the same allow-rules into the workspace's <code>.claude/settings.json</code>, so later plain <code>claude</code> sessions stay covered. Prefer to review each command? Run plain <code>claude</code> and press <strong>Shift + Tab</strong> to cycle on <strong>auto-accept edits</strong> (default → auto-accept edits → plan mode; footer shows <code>⏵⏵</code>). That covers file edits only, not Bash — expect ~20 prompt clicks during the next step.
             </div>
@@ -240,16 +307,58 @@ What can I help you with?
 &gt;</div>
             <p class="step-lede" style="margin-top: 12px;">
                 When you see the <code>&gt;</code> prompt, you're ready for the next step.
+                See <strong>"❌ Claude Code CLI not found"</strong> instead? Run step 1
+                in this terminal, then paste this command again.
             </p>
+        </div>
+        {% else %}
+        <div class="install-block install-block-secret">
+            <div class="step-num" aria-hidden="true"><span>4</span></div>
+            <div class="label">Save your login token</div>
+            <p class="step-lede">One click copies a single line: it saves your login token to a file on this computer. Paste it into your <strong>terminal</strong> and press Enter, then start Claude yourself with <code>claude</code>.</p>
+
+            <div class="os-tabs" role="tablist" aria-label="Operating system">
+                <button type="button" role="tab" class="os-tab is-active"
+                        data-os-tab="unix" aria-selected="true">macOS / Linux</button>
+                <button type="button" role="tab" class="os-tab"
+                        data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
+            </div>
+            <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="unix">
+                <span class="multiline install-cmd-masked" id="install-cmd-token-unix"
+                      data-cmd-template="umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '{TOKEN}' &gt; ~/.agnes/token"
+                      aria-label="Saves your login token to a file. The token itself is masked here and never shown on screen."
+                      draggable="false" tabindex="0">umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' &gt; ~/.agnes/token</span>
+            </div>
+            <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="windows" hidden>
+                <span class="multiline install-cmd-masked" id="install-cmd-token-windows"
+                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}')"
+                      aria-label="Saves your login token to a file. The token itself is masked here and never shown on screen."
+                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;')</span>
+            </div>
+
+            <div class="setup-cta-row">
+                <button type="button" id="launchClaudeBtn" class="btn-setup-warn" onclick="launchClaudeWithToken(this)">
+                    Copy save-token command (includes your login)
+                </button>
+                <span class="setup-cta-meta">
+                    <span class="setup-cta-hint">Valid 90 days &middot; lands in your clipboard only &middot; we never show it on screen</span>
+                </span>
+            </div>
+            <div id="launchClaudeError" class="setup-error" role="alert" style="display:none;"></div>
+
+            <div class="callout-rec">
+                <strong>Why a file and not the chat?</strong>
+                Your login token stays on your own machine. Claude reads it from the file when it needs it — it never appears in the conversation.
+            </div>
         </div>
         {% endif %}
 
         <div class="install-block">
-            <div class="step-num" aria-hidden="true"><span>{% if home_automode.show %}5{% else %}4{% endif %}</span></div>
+            <div class="step-num" aria-hidden="true"><span>5</span></div>
             <div class="label">Get the install script and paste it into Claude</div>
             <p class="step-lede">
-                Click the button below. {{ instance_brand_short }} generates a one-time install script
-                (with a 90-day login token) and copies it to your clipboard. Then paste it into the
+                Unchanged &mdash; except the script no longer carries your token. Click the button below.
+                {{ instance_brand_short }} copies the install script to your clipboard. Then paste it into the
                 Claude prompt{% if home_automode.show %} from Step&nbsp;4{% endif %} (<kbd>⌘</kbd>+<kbd>V</kbd> on macOS,
                 <kbd>Ctrl</kbd>+<kbd>V</kbd> on Windows) and hit Enter. The script installs ~20 things
                 (the marketplace, your team's plugins, data package definitions, hooks that keep
@@ -265,7 +374,7 @@ What can I help you with?
                     Copy install script to clipboard
                 </button>
                 <span class="setup-cta-meta">
-                    <span class="setup-cta-hint">Token valid 90 days · stays in clipboard only</span>
+                    <span class="setup-cta-hint">No token inside &mdash; safe to re-copy any time</span>
                 </span>
                 <details class="manual-fallback">
                     <summary>Or paste manually (preview the script)</summary>
@@ -275,7 +384,7 @@ What can I help you with?
                         {% endwith %}
                     </div>
                     <div class="install-note">
-                        The preview above is the exact text the button copies; the placeholder is replaced with a real token at click time. Don't create <code>~/Desktop/{{ workspace_dir }}/Projects/</code> manually — the bundled plugin offers to set it up after install.
+                        The preview above is the exact text the button copies — nothing is substituted at click time. Don't create <code>~/Desktop/{{ workspace_dir }}/Projects/</code> manually — the bundled plugin offers to set it up after install.
                     </div>
                 </details>
             </div>
@@ -696,7 +805,7 @@ What would you like to do?
             </li>
         </ol>
         <div class="cta-modal-foot">
-            <span class="meta">Token is in clipboard only — never displayed here.</span>
+            <span class="meta">No login token in this script — Step 4 already saved that to a file on your machine.</span>
             {{ ds.button('Got it', variant='primary', id='cta-modal-close') }}
         </div>
     </div>
@@ -734,12 +843,36 @@ What would you like to do?
     }
     document.querySelectorAll('.copy-btn[data-copy-target]').forEach(wireCopy);
 
+    // Step 4's masked command blocks (`.install-cmd-masked`) show bullet
+    // characters, never the real token — selecting/copying that text
+    // would only ever produce a non-functional line. `user-select: none`
+    // in home.css already stops mouse/keyboard/touch selection in
+    // supporting browsers; these `copy`/`cut` handlers are the
+    // belt-and-braces fallback for the rare engine that still lets a
+    // selection spanning this element through. The actual command (with
+    // the real token) only ever exists as an in-memory string inside
+    // `launchClaudeWithToken()` — it is never written back into the DOM.
+    document.querySelectorAll('.install-cmd-masked').forEach(function (el) {
+        el.addEventListener('copy', function (ev) { ev.preventDefault(); });
+        el.addEventListener('cut', function (ev) { ev.preventDefault(); });
+        // Some engines still let a drag that STARTS outside the element
+        // paint a selection across it despite user-select: none —
+        // suppress the selection at its source too.
+        el.addEventListener('selectstart', function (ev) { ev.preventDefault(); });
+        el.setAttribute('draggable', 'false');
+    });
+
     // OS tab switching. Flips both the command panel AND the
     // P0-1 terminal-howto body so the howto matches the active OS.
     document.querySelectorAll('.os-tab[data-os-tab]').forEach(function (tab) {
         tab.addEventListener('click', function () {
             var target = tab.getAttribute('data-os-tab');
-            var scope = tab.closest('.install-block') || document;
+            // Page-wide on purpose: the OS tabs repeat per step, but the OS
+            // does not change between steps — and Step 4's command is masked,
+            // so a stale per-step default (bash for a Windows user) would be
+            // invisible until the pasted line fails in PowerShell. One click
+            // anywhere selects the OS everywhere.
+            var scope = document;
             scope.querySelectorAll('.os-tab[data-os-tab]').forEach(function (t) {
                 var on = t.getAttribute('data-os-tab') === target;
                 t.classList.toggle('is-active', on);

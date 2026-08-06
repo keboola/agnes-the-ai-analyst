@@ -465,25 +465,56 @@ def init(
     # ------------------------------------------------------------------
     if token is None and token_file:
         try:
-            for line in Path(token_file).expanduser().read_text(encoding="utf-8").splitlines():
+            # utf-8-sig: Windows PowerShell 5 writes UTF-8 *with BOM* for
+            # `-Encoding utf8`; a plain utf-8 read keeps U+FEFF glued to the
+            # token (str.strip() does not remove it) and the bearer auth
+            # fails. utf-8-sig reads BOM-less files identically.
+            for line in Path(token_file).expanduser().read_text(encoding="utf-8-sig").splitlines():
                 line = line.strip()
                 if line:
                     token = line
                     break
         except OSError as exc:
+            # ABSENT file is benign: the install prompt always passes
+            # --token-file, but on a machine that already signed in the file
+            # was consumed by an earlier `agnes init` — the saved credential
+            # in ~/.config/agnes/token.json (fallback below) is the normal
+            # source then. A file that EXISTS but cannot be read is a real
+            # error (permissions, a directory in its place): silently falling
+            # back would authenticate with a possibly-expired saved credential
+            # and misattribute the failure to the server — exactly the
+            # expired-token recovery scenario, where the fresh token IS the
+            # file. Hard-fail that case.
+            if Path(token_file).expanduser().exists():
+                typer.echo(
+                    render_error(
+                        0,
+                        {
+                            "detail": {
+                                "kind": "partial_state",
+                                "hint": f"--token-file {token_file!r} exists but could not be read: {exc}",
+                            }
+                        },
+                    ),
+                    err=True,
+                )
+                raise typer.Exit(1)
+            # Deliberately a note, not a hard fail: templates pass
+            # --token-file unconditionally and the file legitimately may not
+            # exist when AGNES_TOKEN is set. But in the documented
+            # expired-credential recovery the ABSENT file means the fresh token
+            # was never written — and the fallback then retries with the
+            # expired one, so the failure surfaces as a server-side auth error
+            # that looks like the server's fault. Name the likely cause here,
+            # where we still know it (Devin Review on #1139).
             typer.echo(
-                render_error(
-                    0,
-                    {
-                        "detail": {
-                            "kind": "partial_state",
-                            "hint": f"--token-file {token_file!r} could not be read: {exc}",
-                        }
-                    },
-                ),
+                f"note: --token-file {token_file!r} does not exist; "
+                "falling back to AGNES_TOKEN / the saved credential. "
+                "If you are recovering an expired credential, that saved one is "
+                "the expired credential — re-run the 'Get your token' step on "
+                "/home so the file is written, then run this again.",
                 err=True,
             )
-            raise typer.Exit(1)
     if token is None:
         token = os.environ.get("AGNES_TOKEN", "").strip() or None
     if token is None:

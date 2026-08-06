@@ -466,7 +466,7 @@ const SECTION_META = {
   },
   connectors: {
     title: "Connector params",
-    help: "Per-tenant connector params served by /api/connectors/params and written into every analyst's .env by `agnes init`. Keys are connector slugs from the seed manifest (plus `globals`). Secret VALUES don't belong here — use *_ENV keys naming the server env var.",
+    help: "Per-tenant connector params served by /api/connectors/params and written into every analyst's .env by `agnes init`. Keys are connector slugs from the seed manifest (plus `globals`). Values pass through verbatim — connector app credentials like the GWS OAuth client secret (an app identifier, not a user credential) belong here as plain values; *_ENV pointer keys are legacy.",
   },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
@@ -1620,12 +1620,29 @@ async function chatReadinessLoad() {
     const r = await fetch(CHAT_API + "/readiness", { credentials: "include" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const s = await r.json();
-    const rows = [
-      ["ANTHROPIC_API_KEY", s.secrets.anthropic_api_key],
-      ["E2B_API_KEY", s.secrets.e2b_api_key],
-      ["JWT_SECRET_KEY", s.secrets.jwt_secret_key],
-      ["e2b_template_id", s.secrets.e2b_template_id],
-    ];
+    // Friendly labels for the readiness keys the server reports. The rows are
+    // driven by the payload (not a fixed list) so provider-specific entries —
+    // e.g. the docker provider's APPS_RUNNER_TOKEN / chat.docker_image — show
+    // up the moment the server returns them; an unknown future key falls back
+    // to its raw name rather than being dropped.
+    const CHAT_SECRET_LABELS = {
+      anthropic_api_key: "ANTHROPIC_API_KEY",
+      e2b_api_key: "E2B_API_KEY",
+      jwt_secret_key: "JWT_SECRET_KEY",
+      e2b_template_id: "e2b_template_id",
+      apps_runner_token: "APPS_RUNNER_TOKEN",
+      chat_docker_image: "chat.docker_image",
+    };
+    // Rows that echo plain config rather than secrets: they always carry a
+    // value (built-in defaults), so "set" is meaningless for them — show them
+    // only when the active provider actually requires them. Secret rows stay
+    // visible whenever set, so "you still have an E2B key configured" reads
+    // on a docker instance and vice versa. With chat disabled nothing is
+    // "required", so everything renders as setup guidance.
+    const CHAT_CONFIG_ROWS = new Set(["e2b_template_id", "chat_docker_image"]);
+    const rows = Object.entries(s.secrets || {})
+      .filter(([key, v]) => !s.enabled || v.required || (v.set && !CHAT_CONFIG_ROWS.has(key)))
+      .map(([key, v]) => [CHAT_SECRET_LABELS[key] || key, v]);
     const overall = !s.enabled
       ? '<span style="color: #888;">chat disabled in instance.yaml</span>'
       : (s.ready
@@ -1706,10 +1723,15 @@ async function chatTestSecrets(btn) {
     if (!r.ok) throw new Error("HTTP " + r.status);
     const b = await r.json();
     const fmt = (label, x) => `${x.ok ? "✓" : "✗"} ${label}: ${x.detail}`;
-    resultEl.innerHTML =
-      '<div>' + escHtml(fmt("E2B", b.e2b_api_key)) + '</div>' +
-      '<div>' + escHtml(fmt("Anthropic", b.anthropic_api_key)) + '</div>';
-    resultEl.style.color = (b.e2b_api_key.ok && b.anthropic_api_key.ok) ? "#2a8c4a" : "#c0392b";
+    // The sandbox row is provider-aware: e2b_api_key on an E2B deployment,
+    // docker_sandbox on a self-hosted one. Render whichever came back.
+    const rows = [
+      ["E2B", b.e2b_api_key],
+      ["Docker sandbox", b.docker_sandbox],
+      ["Anthropic", b.anthropic_api_key],
+    ].filter(([, x]) => x);
+    resultEl.innerHTML = rows.map(([label, x]) => '<div>' + escHtml(fmt(label, x)) + '</div>').join('');
+    resultEl.style.color = rows.every(([, x]) => x.ok) ? "#2a8c4a" : "#c0392b";
   } catch (e) {
     resultEl.textContent = "✗ " + e.message;
     resultEl.style.color = "#c0392b";

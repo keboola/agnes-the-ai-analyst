@@ -141,6 +141,36 @@ def test_f1_v2_skills_path_is_contained(tmp_path, monkeypatch):
     assert entries == [], f"escaped the marketplaces root: {entries!r}"
 
 
+def test_f1c_v2_skills_does_not_follow_symlinks(tmp_path, monkeypatch):
+    """The plugin dir is legitimately named and inside the root, so the
+    containment check above passes — but a symlinked skill dir or SKILL.md
+    still reaches outside. The packagers exclude symlinks; this endpoint puts
+    the bytes straight into an HTTP response, so it is the worst place to
+    follow one (Devin Review on #1180).
+    """
+    import app.api.v2_marketplace as v2
+
+    root = tmp_path / "marketplaces"
+    plugin = root / "acme" / "plugins" / "widget"
+    (plugin / "skills").mkdir(parents=True)
+    secret_dir = tmp_path / "elsewhere" / "leak"
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "SKILL.md").write_text("---\nname: leak\n---\nSECRET-BODY\n", encoding="utf-8")
+
+    # (a) the skill DIRECTORY is a symlink out of the tree
+    (plugin / "skills" / "viadir").symlink_to(secret_dir, target_is_directory=True)
+    # (b) a real skill dir whose SKILL.md is a symlink out of the tree
+    real = plugin / "skills" / "viafile"
+    real.mkdir()
+    (real / "SKILL.md").symlink_to(secret_dir / "SKILL.md")
+
+    monkeypatch.setattr(v2, "get_marketplaces_dir", lambda: root)
+
+    entries = v2._skills_for_plugin("acme", "widget")
+
+    assert entries == [], f"followed a symlink out of the plugin: {entries!r}"
+
+
 # ── F-1b: hostile symlinks inside a legitimately-named plugin dir ──
 
 
@@ -382,6 +412,7 @@ _NON_SQL_QUOTED_FAMILIES: list[tuple[str, str]] = [
     (r'env: str = "\{\}"', "repository signature default of an empty JSON object"),
     (r'#.*"\{', "comment describing the shape"),
     (r'resource_metadata="\{', "WWW-Authenticate challenge parameter (RFC 9728)"),
+    (r'"\{token\}"', "welcome-template placeholder, substituted at render time"),
     (r"^app/web/setup_instructions\.py:", "copy-paste CLI instructions and their placeholder tokens"),
 ]
 
@@ -503,3 +534,26 @@ def test_f4b_pull_skips_unsafe_manifest_table_ids():
 
     assert sorted(kept) == ["orders", "orders.v2"]
     assert sorted(dropped) == sorted(["../../../etc/passwd", "..", 'x" AS y'])
+
+
+def test_f2b_origin_refusal_never_echoes_a_credential():
+    """The refusal path reports the origin URL, and the value it reports is
+    exactly what this release removes: a remote with an embedded PAT. Redacting
+    against the *currently resolved* token is not enough — by then the env var
+    may be unset or the PAT rotated, making redaction a no-op and persisting the
+    secret into `marketplace_registry.last_error`, which the admin UI renders
+    (Devin Review on #1180).
+    """
+    from src.marketplace import _strip_userinfo
+
+    creds = "https://x-access-token:ghp_SUPERSECRET@github.com/acme/repo.git"
+    out = _strip_userinfo(creds)
+    assert "ghp_SUPERSECRET" not in out
+    assert "x-access-token" not in out
+    assert out == "https://github.com/acme/repo.git", out
+
+    # Still useful: the host survives, so the operator can see WHERE it points.
+    assert _strip_userinfo("https://user:pw@host:8443/a/b") == "https://host:8443/a/b"
+    # And harmless shapes pass through untouched.
+    assert _strip_userinfo("https://github.com/acme/repo.git") == "https://github.com/acme/repo.git"
+    assert _strip_userinfo("not a url") == "not a url"

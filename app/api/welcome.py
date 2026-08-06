@@ -152,6 +152,14 @@ async def admin_put_template(
             },
         )
 
+    # Retired-placeholder guard — the /api/admin/prompts editor rejects
+    # `{token}` at save time; this legacy endpoint writes the very same
+    # repository backing the install prompt kind, so it applies the same
+    # rejection (otherwise it would be a bypass).
+    from app.api.prompts import _reject_token_placeholder
+
+    _reject_token_placeholder(payload.content)
+
     # Validate with autoescape=False to match every runtime render path
     # (/setup page, preview endpoint, render_agent_prompt_banner). The
     # outer template applies escaping where needed via `| e`. StrictUndefined

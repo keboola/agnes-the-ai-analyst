@@ -3,17 +3,21 @@
    Two modes:
 
    * preview_mode=True  →  emits a read-only HTML <pre><code> block rendered
-                           with the real server_url and a visible placeholder
-                           for the token. Used inline on /dashboard and
-                           /setup so the reader can see exactly what will
+                           with the real server_url. Used inline on /dashboard
+                           and /setup so the reader can see exactly what will
                            land in their clipboard.
    * preview_mode=False →  emits the JS `SETUP_INSTRUCTIONS_TEMPLATE` array +
-                           `renderSetupInstructions(server, token)` function.
-                           Placed inside a <script> block; at click time the
-                           server-issued token is substituted for "{token}".
+                           `renderSetupInstructions(server)` function. Placed
+                           inside a <script> block.
 
    The lines themselves come from `app/web/setup_instructions.py` via the
    context variable `setup_instructions_lines`, so both modes stay in lockstep.
+
+   The rendered body deliberately never carries a `{token}` placeholder —
+   the access token is delivered out-of-band, saved to `~/.agnes/token`
+   before this prompt is generated (see setup_instructions.py's module
+   docstring and /home's Step 4). There is nothing left to substitute or
+   mask here.
 
    The .jinja extension is NOT in Jinja2's default autoescape list, so we
    explicitly run every piece of user-visible text through the `e` filter
@@ -21,13 +25,7 @@
 #}
 {% if preview_mode %}
 <pre class="setup-preview-pre"><code class="setup-preview-code">{% for line in setup_instructions_lines -%}
-{% set rendered = line.replace("{server_url}", server_url) -%}
-{% if "{token}" in rendered -%}
-{% set parts = rendered.split("{token}") -%}
-{{ parts[0] | e }}<span class="placeholder-token" aria-label="placeholder — real token is generated when you click the button">&lt;will be generated on click&gt;</span>{{ parts[1] | e }}
-{% else -%}
-{{ rendered | e }}
-{% endif -%}
+{{ line.replace("{server_url}", server_url) | e }}
 {% endfor %}</code></pre>
 {% else %}
 var SETUP_INSTRUCTIONS_TEMPLATE = [
@@ -36,9 +34,7 @@ var SETUP_INSTRUCTIONS_TEMPLATE = [
 {%- endfor %}
 ].join("\n");
 
-function renderSetupInstructions(serverUrl, token) {
-    return SETUP_INSTRUCTIONS_TEMPLATE
-        .split("{server_url}").join(serverUrl)
-        .split("{token}").join(token);
+function renderSetupInstructions(serverUrl) {
+    return SETUP_INSTRUCTIONS_TEMPLATE.split("{server_url}").join(serverUrl);
 }
 {% endif %}
