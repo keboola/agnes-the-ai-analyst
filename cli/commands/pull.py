@@ -187,12 +187,13 @@ def pull(
             raise typer.Exit(1)
         return
 
-    # A withheld name is exactly the kind of thing the SessionStart hook path
-    # must still report: that hook is what silently takes the name between
-    # sessions, so suppressing the notice there leaves the analyst with only
-    # the "Table with name <x> does not exist" this change set out to make
-    # diagnosable (#1129 review). Stderr, like the error path, which the
-    # canonical hook forwards.
+    # Printed before the early returns so `--quiet` callers get it too. NOTE
+    # this is not the automatic path: the canonical SessionStart hook runs
+    # `agnes update --quiet` detached with stdout AND stderr to /dev/null, so
+    # nothing printed here reaches anyone on that path. `agnes update` carries
+    # the same names in its run report instead, which persists to
+    # `.claude/agnes/update.log` (#1129 review corrected an earlier comment
+    # here that claimed the hook forwards stderr — it does not).
     withheld = list(getattr(result, "snapshot_views_blocked", []) or [])
     if withheld:
         shown = ", ".join(sorted(withheld)[:5])

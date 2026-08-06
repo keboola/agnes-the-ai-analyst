@@ -427,3 +427,43 @@ def test_no_authorization_filter_withholds_nothing_extra():
     there is nothing to judge de-authorization against."""
     server_tables = {"orders": {"query_mode": "local"}}
     assert _blocked(server_tables, authorized=None) == set()
+
+
+# ---------------------------------------------------------------------------
+# the withheld names have to reach the AUTOMATIC path (#1129 review)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResult:
+    tables_updated = 3
+    parquets_total = 7
+    errors: list = []
+    snapshot_views_blocked = ["orders", "web_sessions"]
+
+
+def test_update_run_report_carries_withheld_snapshot_names(monkeypatch, tmp_path):
+    """The SessionStart hook runs `agnes update --quiet` detached with stdout
+    AND stderr to /dev/null, so nothing `agnes pull` prints can be seen on the
+    path that actually takes the name. The run report persists to
+    `.claude/agnes/update.log`, so it is the only durable channel."""
+    import cli.commands.update as upd
+
+    monkeypatch.setattr(upd, "run_pull", lambda *a, **k: _FakeResult(), raising=False)
+    monkeypatch.setattr("cli.lib.pull.run_pull", lambda *a, **k: _FakeResult(), raising=False)
+
+    report: list = []
+    upd._step_pull(tmp_path, server_url="http://x", token="t", quiet=True, report=report)
+
+    entry = next(e for e in report if e["stage"] == "pull")
+    assert "orders" in entry["detail"], entry
+    assert "--as" in entry["detail"], "no recovery hint in the durable channel"
+
+
+def test_mcp_pull_response_carries_withheld_snapshot_names():
+    """An MCP caller has no stderr to read either."""
+    import inspect
+
+    import cli.mcp.server as srv
+
+    src = inspect.getsource(srv)
+    assert '"snapshot_views_blocked"' in src, "MCP pull response drops the withheld names"
