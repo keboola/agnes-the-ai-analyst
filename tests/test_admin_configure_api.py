@@ -609,3 +609,45 @@ class TestDocumentedServerConfigKeysAreWritable:
         field = _KNOWN_FIELDS["mcp"]["allow_query_param_token"]
         assert field["kind"] == "bool"
         assert field["default"] is True, "the fallback is on by default; the switch turns it off"
+
+
+class TestBooleanConfigFieldsAreNeverMasked:
+    """`_mask(False)` returns `"***"`, and the admin UI's bool renderer coerces
+    with `!!value` — so masking a boolean makes an OFF switch display as ON,
+    and the next "Save section" posts `true` and silently undoes the operator's
+    change. `mcp.allow_query_param_token` hit this because its name contains
+    the substring "token" (Devin Review on #1183).
+    """
+
+    def test_a_declared_boolean_is_not_treated_as_a_secret(self):
+        from app.api.admin import _is_secret_key
+
+        assert _is_secret_key("allow_query_param_token") is False
+        # ...while an actual credential still is.
+        assert _is_secret_key("keboola_token") is True
+        assert _is_secret_key("api_token") is True
+
+    def test_a_false_boolean_survives_redaction_verbatim(self):
+        from app.api.admin import _redact
+
+        out = _redact({"mcp": {"allow_query_param_token": False}})
+        assert out == {"mcp": {"allow_query_param_token": False}}, (
+            "masked to a truthy string — the UI would show the switch as ON"
+        )
+        # The masking that matters is untouched.
+        assert _redact({"data_source": {"api_token": "abc123"}}) == {"data_source": {"api_token": "***"}}
+
+    def test_every_registry_boolean_is_covered_not_just_this_one(self):
+        """Derived from `_KNOWN_FIELDS`, so a future boolean whose name happens
+        to contain a secret-looking substring is covered without anyone
+        remembering this failure mode."""
+        from app.api.admin import _KNOWN_FIELDS, _is_secret_key
+
+        bools = [
+            name
+            for section in _KNOWN_FIELDS.values()
+            for name, spec in section.items()
+            if spec.get("kind") == "bool"
+        ]
+        assert bools, "no boolean fields in the registry — this guard would be vacuous"
+        assert [b for b in bools if _is_secret_key(b)] == []

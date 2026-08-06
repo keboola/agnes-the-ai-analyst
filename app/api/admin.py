@@ -985,9 +985,33 @@ _SECRET_KEY_PATTERNS: tuple[str, ...] = (
 )
 
 
+def _declared_boolean_fields() -> frozenset[str]:
+    """Field names the registry declares as ``kind: "bool"``.
+
+    A boolean cannot be a credential, so these must never be masked — and the
+    consequence of masking one is worse than a cosmetic glitch. ``_mask(False)``
+    returns ``"***"``, the UI's bool renderer coerces with ``!!value``, and
+    ``!!"***"`` is ``true``: an operator who turned a switch OFF sees it ON and
+    the next "Save section" posts ``true``, silently undoing what they did.
+    That is exactly what happened to ``mcp.allow_query_param_token``, whose
+    name contains the substring "token" (Devin Review on #1183).
+
+    Derived from the registry rather than an allowlist so a future boolean is
+    covered without anyone remembering this failure mode.
+    """
+    return frozenset(
+        name
+        for section in _KNOWN_FIELDS.values()
+        for name, spec in section.items()
+        if spec.get("kind") == "bool"
+    )
+
+
 def _is_secret_key(key: str) -> bool:
     """True if a config key holds a credential and should be masked in audit logs."""
     k = key.lower()
+    if k in _declared_boolean_fields():
+        return False
     return any(pat in k for pat in _SECRET_KEY_PATTERNS)
 
 
