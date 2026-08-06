@@ -471,6 +471,47 @@ class TestSourceConnectionsTest:
         assert resp2.json()["ok"] is True
         assert f"connection test for {conn_id}" in caplog.text
         assert ": ok" in caplog.text
+        # Response-body content must never land in server logs — a fronting
+        # proxy that echoes the token into the body would otherwise leak it.
+        assert "Test Project" not in caplog.text
+
+    def test_test_endpoint_exception_log_redacts_token(self, seeded_app, caplog):
+        # The generic-exception outcome line must scrub the resolved token —
+        # httpx exception reprs don't include headers today, but the log line
+        # must not depend on that staying true.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={
+                "name": "test-keboola-testconn-exc-log",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        conn_id = resp.json()["id"]
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(side_effect=Exception("connect failed; X-StorageApi-Token: fake-token"))
+
+        with (
+            patch("app.api.admin_source_connections.httpx.AsyncClient", return_value=mock_client),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+            caplog.at_level("INFO", logger="app.api.admin_source_connections"),
+        ):
+            resp2 = c.post(f"{BASE}/{conn_id}/test", headers=_auth(token))
+
+        assert resp2.status_code == 200
+        assert resp2.json()["ok"] is False
+        assert f"connection test for {conn_id}" in caplog.text
+        assert "fake-token" not in caplog.text
+        assert "<redacted-storage-token>" in caplog.text
 
     def test_test_endpoint_missing_connection_returns_404(self, seeded_app):
         c = seeded_app["client"]
