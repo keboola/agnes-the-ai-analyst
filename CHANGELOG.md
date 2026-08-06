@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.81.0] - 2026-08-06
+
+### Added
+
 - The marketplace digest reports `distinct_installers` (people who installed at least one item in the period) alongside `new_installs` (install events), and `system_installs` for system-plugin subscriptions. `active_users` counts people while `new_installs` counts `(user x item)` rows, so the two were never comparable despite sitting side by side in the same KPI row; `distinct_installers` is the people-unit figure to read against `active_users`. The digest template states both definitions inline and tolerates a payload from an older server that omits the new keys.
 
 ### Changed
