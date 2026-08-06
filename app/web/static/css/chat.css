@@ -1039,11 +1039,17 @@ pre.code-block-wrap code .hljs-deletion {
      the empty-state panel sits at top with a clean gap below. */
   margin: auto auto var(--space-4);
   display: grid;
-  /* Three columns: leading "+" upload button, textarea, trailing actions. */
-  grid-template-columns: auto 1fr auto;
+  /* Two columns: textarea + trailing actions — the pre-redesign topnav
+     layout, byte-compatible with a composer that has no leading "+" button
+     (the upload menu is rail-only markup, and rail lays its composer out
+     with its own flex rules under html[data-ui-layout="rail"], never this
+     grid). A third `auto` column here with only two children would drop the
+     textarea into the content-sized column — a visibly narrower input.
+     Guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity. */
+  grid-template-columns: 1fr auto;
   align-items: end;
   gap: var(--space-2);
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   max-width: var(--chat-reading-width);
   width: calc(100% - var(--space-12));
   border: 1px solid var(--ds-border);

@@ -1739,6 +1739,11 @@ class TestDefaultContentParity:
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
         resp = self._chat(web_client, admin_cookie)
         assert resp.status_code == 200
+        # Positive anchors first: prove the REAL chat page rendered (a future
+        # redirect away from topnav /chat must not turn the negatives vacuous),
+        # and pin the classic composer shape.
+        assert 'id="chat-input"' in resp.text
+        assert 'rows="2"' in resp.text, "topnav composer keeps the classic two-row textarea"
         assert 'id="chat-plus-menu"' not in resp.text, "composer + upload menu leaked into topnav"
         assert 'id="chat-journey"' not in resp.text, "journey checklist leaked into topnav"
         assert "chat_row_menu.js" not in resp.text, "conversation row menu leaked into topnav"
@@ -1755,6 +1760,26 @@ class TestDefaultContentParity:
         assert 'id="railGetStarted"' in resp.text
         assert "chat_row_menu.js" in resp.text
 
+    def test_topnav_composer_grid_keeps_two_columns(self):
+        """The redesign widened `.cloud-chat-form`'s grid to three columns for
+        the rail composer's leading "+" button. On topnav that button no
+        longer renders, and a 3-column grid with two children drops the
+        textarea into the content-sized `auto` column — a visibly narrower
+        input (caught by the screenshot audit). The BASE rule is the topnav
+        contract: two columns, exactly as before the redesign; rail lays its
+        composer out with its own flex rules and never reads this grid."""
+        from pathlib import Path
+
+        css = Path("app/web/static/css/chat.css").read_text()
+        import re
+
+        m = re.search(r"^\.cloud-chat-form \{(.*?)^\}", css, re.S | re.M)
+        assert m, "base .cloud-chat-form rule missing"
+        assert "grid-template-columns: 1fr auto;" in m.group(1), (
+            "base composer grid must stay two-column (textarea + actions) — "
+            'rail-only columns belong under html[data-ui-layout="rail"]'
+        )
+
     def test_chat_onboarding_module_is_rail_gated(self):
         """chat.js statically imports chat_onboarding.js, so the module loads
         on every chrome — the gate has to live in its behavior. Pin the seam:
@@ -1764,5 +1789,12 @@ class TestDefaultContentParity:
         from pathlib import Path
 
         src = Path("app/web/static/js/chat_onboarding.js").read_text()
-        assert "dataset.uiLayout" in src, "chat_onboarding.js must read the chrome layout"
-        assert "IS_RAIL" in src, "chat_onboarding.js must gate its boot on the rail layout"
+        assert 'dataset.uiLayout === "rail"' in src, (
+            "chat_onboarding.js must derive IS_RAIL from the chrome layout attribute"
+        )
+        # Both boot paths (initChatOnboarding + mountJourneyPanel) must
+        # early-return off the rail — a name surviving in a comment is not a
+        # gate, so pin the return statements themselves.
+        assert len(re.findall(r"if \(!IS_RAIL\) return", src)) >= 2, (
+            "both chat_onboarding.js boot paths must early-return when the chrome is not rail"
+        )

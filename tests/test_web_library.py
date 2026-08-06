@@ -232,6 +232,26 @@ def test_library_lists_only_accessible(seeded_app):
     assert "Hidden From Analyst" not in r.text
 
 
+def test_legacy_library_lists_only_accessible_on_topnav(seeded_app, monkeypatch):
+    """The topnav /library branch is DISTINCT code (main's pre-merge handler:
+    get_accessible_ids filter + admin bypass + collection cards) and it is what
+    every default instance runs — its RBAC filter needs its own pin, not just
+    the rail twin above (this file's autouse fixture forces rail everywhere
+    else)."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+    c = seeded_app["client"]
+    _create(seeded_app, "Hidden From Analyst Legacy")
+
+    r = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+    assert r.status_code == 200
+    assert "Your collections" in r.text, "topnav must render the legacy page"
+    # analyst1 has no COLLECTION grant → the row must be filtered out…
+    assert "Hidden From Analyst Legacy" not in r.text
+    # …while the admin bypass still lists it.
+    a = c.get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert "Hidden From Analyst Legacy" in a.text
+
+
 def test_single_file_artefact_presents_as_file(seeded_app, monkeypatch):
     """One file in an artefact reads AS the file — single-document glyph,
     filename + size in the meta, "File" framing, never "a collection with 1

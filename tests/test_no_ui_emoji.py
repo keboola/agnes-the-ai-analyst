@@ -31,15 +31,29 @@ _EMOJI = re.compile("[\U0001f000-\U0001faff\U00002705\U000026a0\U0000fe0f]")
 ALLOWLIST: set[str] = set()
 
 
+# Frozen byte-for-byte copies of the pre-redesign pages, kept so a default
+# topnav instance renders exactly what it rendered before the redesign
+# (tests/test_ui_layout_theme.py::TestDefaultContentParity). They may not
+# drift — including cosmetic emoji sweeps — and they retire together with the
+# topnav chrome. A CLOSED set on purpose: a new template cannot dodge the ban
+# by taking a `_legacy` name (test_legacy_exemption_is_a_closed_set).
+LEGACY_FROZEN: set[str] = {"library_legacy.html", "marketplace_legacy.html"}
+
+
 def _in_scope(rel: str) -> bool:
-    # *_legacy.html are frozen byte-for-byte copies of the pre-redesign pages,
-    # kept so a default topnav instance renders exactly what it rendered before
-    # the redesign (tests/test_ui_layout_theme.py::TestDefaultContentParity).
-    # They may not drift — including cosmetic emoji sweeps — and they retire
-    # together with the topnav chrome. The ban governs the living templates.
-    if rel.endswith("_legacy.html"):
+    if rel in LEGACY_FROZEN:
         return False
     return rel not in ALLOWLIST
+
+
+def test_legacy_exemption_is_a_closed_set() -> None:
+    """Every `*_legacy.html` on disk must be one of the known frozen copies —
+    the exemption is for pinned pre-redesign pages, not a naming loophole."""
+    on_disk = {p.name for p in TEMPLATES.rglob("*_legacy.html")}
+    assert on_disk <= LEGACY_FROZEN, (
+        "unexpected *_legacy.html templates (either a naming dodge of the emoji "
+        f"ban, or extend LEGACY_FROZEN deliberately): {sorted(on_disk - LEGACY_FROZEN)}"
+    )
 
 
 def test_no_pictographic_emoji_in_user_facing_templates() -> None:

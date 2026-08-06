@@ -1198,12 +1198,12 @@ def test_every_stranded_column_is_covered_by_some_heal():
         for table, col in re.findall(r"ALTER TABLE\s+(\w+)\s+ADD COLUMN(?:\s+IF NOT EXISTS)?\s+(\w+)", m.group(0)):
             adds.setdefault((table, col), []).append(f"_v{m.group(1)}_to_v{m.group(2)}")
 
-    declared = {
-        (t, c)
-        for t, c in re.findall(
-            r'\(\s*"(\w+)",\s*"(\w+)",\s*"[^"]*"\s*\)', src.split("stranded = [")[1].split("\n    ]")[0]
-        )
-    }
+    # Strip comments first: a tuple surviving only inside a `# …` line must
+    # count as UNdeclared, or deleting the real entry while keeping its
+    # commented tombstone silently satisfies this guard.
+    _block = src.split("stranded = [")[1].split("\n    ]")[0]
+    _block = re.sub(r"#[^\n]*", "", _block)
+    declared = {(t, c) for t, c in re.findall(r'\(\s*"(\w+)",\s*"(\w+)",\s*"[^"]*"\s*\)', _block)}
     # agents is rebuilt wholesale by _heal_legacy_agents_table from the
     # canonical DDL, so its columns need no entry in `stranded`.
     uncovered = {k: v for k, v in adds.items() if k not in declared and k[0] != "agents"}
