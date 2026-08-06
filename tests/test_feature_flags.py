@@ -84,7 +84,7 @@ class TestFeatureEnabledResolutionOrder:
 class TestFeatureFlagsRegistry:
     def test_registry_covers_expected_flags(self):
         names = {f.name for f in ic.FEATURE_FLAGS}
-        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps", "mcp_query_param_token"}
+        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps", "mcp_query_param_token", "agent_profiles"}
 
     def test_every_entry_resolves(self, monkeypatch):
         monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
@@ -98,6 +98,7 @@ class TestFeatureFlagsRegistry:
         by_name = {f.name: f for f in ic.FEATURE_FLAGS}
         assert by_name["studio"].default is True
         assert by_name["guardrails"].default is True
+        assert by_name["agent_profiles"].default is True
 
     def test_new_flags_default_off(self):
         by_name = {f.name: f for f in ic.FEATURE_FLAGS}
@@ -134,6 +135,28 @@ class TestStudioEnabledBehaviorPreserved:
         assert ic.get_studio_enabled() is True
 
 
+class TestAgentProfilesEnabledBehaviorPreserved:
+    def test_default_true(self, monkeypatch):
+        monkeypatch.delenv("AGNES_AGENT_PROFILES_ENABLED", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
+        assert ic.get_agent_profiles_enabled() is True
+
+    def test_yaml_false(self, monkeypatch):
+        monkeypatch.delenv("AGNES_AGENT_PROFILES_ENABLED", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert ic.get_agent_profiles_enabled() is False
+
+    def test_env_overrides_yaml(self, monkeypatch):
+        monkeypatch.setenv("AGNES_AGENT_PROFILES_ENABLED", "0")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: True)
+        assert ic.get_agent_profiles_enabled() is False
+
+    def test_env_true_string(self, monkeypatch):
+        monkeypatch.setenv("AGNES_AGENT_PROFILES_ENABLED", "1")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert ic.get_agent_profiles_enabled() is True
+
+
 class TestGuardrailsEnabledBehaviorPreserved:
     def test_default_true(self, monkeypatch):
         monkeypatch.delenv("AGNES_GUARDRAILS_ENABLED", raising=False)
@@ -165,7 +188,7 @@ class TestServerConfigFeatureFlagsInventory:
         flags = data["feature_flags"]
         assert isinstance(flags, list)
         names = {f["name"] for f in flags}
-        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps", "mcp_query_param_token"}
+        assert names == {"studio", "guardrails", "chat", "chat_approvals", "data_apps", "mcp_query_param_token", "agent_profiles"}
         for f in flags:
             assert set(f.keys()) >= {"name", "effective", "source", "default", "env_var", "description"}
             assert f["source"] in ("env", "config", "default")

@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import exc as sa_exc
 
-from app.auth.access import is_user_admin
+from app.auth.access import is_user_admin, require_agent_profiles_enabled
 from app.auth.dependencies import _get_db, require_session_token
 from app.auth.jwt import create_access_token
 from src.object_store import object_store
@@ -47,7 +47,11 @@ from src.repositories import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
+router = APIRouter(
+    prefix="/api/v1/agents",
+    tags=["agents"],
+    dependencies=[Depends(require_agent_profiles_enabled)],
+)
 
 # Lowercase kebab-case, max 64 chars. "default" is reserved for the one
 # seeded-per-owner default agent (created via `agents_repo().get_or_create_default`,

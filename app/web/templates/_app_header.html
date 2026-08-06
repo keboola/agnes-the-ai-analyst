@@ -233,8 +233,12 @@
                    primary nav or the admin mega-menu (instance authoring of
                    agents is Studio's /admin/studio/agent). This is the page's
                    only nav entry point — guarded by
-                   tests/test_web_nav_agents.py. #}
+                   tests/test_web_nav_agents.py. Hidden when the
+                   instance-level toggle is off (`can_agent_profiles`, set by
+                   get_agent_profiles_enabled() in both chrome builders). #}
+                {% if can_agent_profiles %}
                 <a class="app-user-menu-item {% if _path == '/agents' %}is-active{% endif %}" role="menuitem" href="/agents">My agents</a>
+                {% endif %}
                 <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
