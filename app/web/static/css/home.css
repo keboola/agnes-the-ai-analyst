@@ -636,22 +636,6 @@
     font-family: inherit;
     font-size: inherit;
 }
-.home-mock .manual-preview-wrap .placeholder-token {
-    background: rgba(251, 191, 36, 0.20);
-    color: #FBBF24;
-    padding: 0 4px;
-    border-radius: 3px;
-    font-style: italic;
-}
-.home-mock .manual-preview-wrap .token-revealed {
-    background: rgba(16, 185, 129, 0.18);
-    color: #6EE7B7;
-    padding: 0 4px;
-    border-radius: 3px;
-    font-style: normal;
-    word-break: break-all;
-}
-
 /* In-hero (dark) variant: shown for not-onboarded users underneath the
    inline install steps inside the blue hero. */
 .home-mock .self-mark {
@@ -931,6 +915,10 @@
 /* `.cta-modal-foot button` styling moved onto `.btn.btn-primary`
    (rendered via `ds.button`). The canonical .btn-primary supplies the
    green-fill CTA pattern and the hover-darken behavior. */
+/* The foot is `space-between` flex with a long meta sentence on the
+   left; without these the button is the flex item that gives way and
+   its label wraps ("Got / it"). */
+.cta-modal-foot .btn { flex-shrink: 0; white-space: nowrap; }
 
 /* ─────────────────────────────────────────────────────────────────
    Reskin overlay — value-first intro hero, pillars, progress chip,
@@ -2288,3 +2276,81 @@
     .home-mock .install-block { padding-left: 0; }
     .home-mock .install-block .step-num { position: static; margin-bottom: 8px; }
 }
+
+/* ─────────────────────────────────────────────────────────────────
+   Step 4 — the credential-bearing "save your login token" step.
+   Reuses the existing .install-block / .step-num / .os-tabs /
+   .install-cmd / .callout-rec vocabulary; the only new pieces are the
+   masked-command non-selectability and a warn-accented button/step-num
+   so the step reads as visually distinct from the plain copy-paste
+   steps around it — same card shape, different accent. Colours come
+   from the existing --ds-warn-*/--ds-accent-warn-* tokens (the same
+   ones .callout-rec already uses), never raw hex. Appended at the end
+   of the file so its higher-specificity-equivalent selectors reliably
+   win over the earlier dark/light .install-block re-skins regardless
+   of source order elsewhere.
+   ───────────────────────────────────────────────────────────────── */
+
+/* The visible command text is always a masked placeholder — the real
+   token is built in memory by launchClaudeWithToken() and never written
+   into the DOM. user-select: none stops mouse/keyboard/touch selection
+   from producing a (non-functional) copy of the masked line in every
+   supporting engine; the copy/cut event handlers wired in the page
+   script are the fallback for the rest. */
+.install-cmd-masked {
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    cursor: default;
+}
+
+/* Drags that start in the block's padding (outside the masked span)
+   must not paint a selection across it either. */
+.install-cmd-secret {
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+/* Warn-accented step badge — same visual family as .callout-rec
+   (amber/warn), applied to the step-number circle so Step 4 reads as
+   "handle with care" at a glance without a different card shape. */
+.home-mock .install-block-secret .step-num {
+    background: var(--ds-warn-bg);
+    color: var(--ds-warn-ink);
+    border: 1px solid var(--ds-warn-line);
+}
+
+/* Warn-accented CTA — same structural shape as .btn-setup-primary,
+   coloured with the warn vocabulary instead of the brand primary so
+   the credential-bearing action reads as distinct from the plain
+   "copy install script" action in Step 5. */
+.home-mock .btn-setup-warn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    background: var(--ds-warn-line);
+    color: var(--ds-warn-ink);
+    border: 1px solid var(--ds-warn-line);
+    border-radius: 6px;
+    padding: 10px 22px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.home-mock .btn-setup-warn:hover {
+    background: var(--ds-warn-ink);
+    color: var(--ds-warn-bg);
+    border-color: var(--ds-warn-ink);
+}
+.home-mock .btn-setup-warn.copied {
+    background: var(--ds-accent-success-line);
+    color: #ffffff;
+    border-color: var(--ds-accent-success-line);
+}
+.home-mock .btn-setup-warn[disabled] { opacity: 0.7; cursor: wait; }

@@ -171,6 +171,43 @@ def test_f1c_v2_skills_does_not_follow_symlinks(tmp_path, monkeypatch):
     assert entries == [], f"followed a symlink out of the plugin: {entries!r}"
 
 
+def test_f1c_v2_skills_does_not_follow_a_symlinked_skills_dir():
+    """The INTERMEDIATE component, which the two leaf checks could not see.
+
+    The previous fix tested `skill_dir` and `skill_md` individually, so a curator
+    repo shipping `plugins/<name>/skills -> /elsewhere` passed `is_dir()` and
+    every real subdirectory below the link target was read and returned in the
+    HTTP response. Two rounds of per-component checks each closed the case that
+    had been pointed at and left the next one open; the walk now routes every
+    path through `escapes_base`, which is one rule for all of them
+    (Devin Review on #1183).
+    """
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import app.api.v2_marketplace as v2
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        root = tmp / "marketplaces"
+        plugin = root / "acme" / "plugins" / "widget"
+        plugin.mkdir(parents=True)
+
+        # A perfectly ordinary skills tree — but somewhere else on the volume.
+        outside = tmp / "elsewhere" / "skills"
+        (outside / "leak").mkdir(parents=True)
+        (outside / "leak" / "SKILL.md").write_text("---\nname: leak\n---\nSECRET-BODY\n", encoding="utf-8")
+
+        # The plugin dir and its name are legitimate; only `skills` is a link.
+        (plugin / "skills").symlink_to(outside, target_is_directory=True)
+
+        with patch.object(v2, "get_marketplaces_dir", lambda: root):
+            entries = v2._skills_for_plugin("acme", "widget")
+
+        assert entries == [], f"followed a symlinked skills dir: {entries!r}"
+
+
 # ── F-1b: hostile symlinks inside a legitimately-named plugin dir ──
 
 
@@ -355,6 +392,185 @@ def test_f2_scrub_runs_even_when_ref_validation_rejects_the_row(tmp_path, monkey
         mp._sync_spec({"id": "acme", "url": "https://example.com/acme.git", "ref": "bad..ref"})
 
     assert "SECRET123" not in (repo / ".git" / "config").read_text(encoding="utf-8")
+
+
+# ── F-4: every quoted SQL identifier routes through quote_ident ──
+
+# The SHAPE of a hand-quoted identifier: a double quote that lives *inside* a
+# string literal and wraps an interpolation — `f'"{col}"'`, `f"… \"{col}\" …"`.
+# The negative lookbehind drops the one false family the shape alone can't
+# distinguish: an f-string whose entire body is one expression (`f"{value}"`),
+# where the quotes are the literal's own delimiters.
+#
+# This is deliberately POSITION-BLIND, and that is the whole point. Two earlier
+# versions of this guard keyed off where the quote sat — first "a keyword before
+# it", then "a keyword or a dot before it" — and each time the emptiness of the
+# allowlist was an artifact of not looking:
+#   * `DROP VIEW IF EXISTS "{name}"` — ` IF EXISTS ` sits between the keyword and
+#     the quote, so the keyword branch never fired. Four live sites.
+#   * `f'"{col}" = ?'` — a predicate column with no keyword and no dot anywhere
+#     near it. That one was a real injection: the allow-list upstream only
+#     checked that the column EXISTS (`DESCRIBE` output), and for a
+#     collection-ingested table the column name is whatever an uploaded file's
+#     header said, unsanitized (src/ingest/tabular.py COPYs the reader's output
+#     straight to parquet). A header of `x") OR 1=1 --` passed the allow-list and
+#     then broke out of the quotes.
+#   * Five more sites built the quoted fragment on its own line
+#     (`", ".join(f'"{c}"' …)`), so no content heuristic — not "a SQL verb
+#     somewhere on the line" either — can see them. Position and content are
+#     both dead ends; only the shape is reliable.
+#
+# The cost of scanning by shape is that legitimate non-SQL uses of the same shape
+# now surface, so the allowlist below is NOT empty — it is a list of families,
+# each with the reason it is not a SQL identifier. An honest allowlist beats a
+# vacuously empty one: a new unexplained `"{…}"` fails this test.
+_QUOTED_IDENT_SHAPE_RE = r'(?<![fFrRbB])\\?"\{[^{}"]*\}\\?"'
+
+# (family regex, why this shape is not a SQL identifier). A hit is excused only
+# if it matches one of these.
+_NON_SQL_QUOTED_FAMILIES: list[tuple[str, str]] = [
+    (r"require_resource_access\(", 'FastAPI path-template argument, e.g. "{collection_id}"'),
+    (r'(?i)content-disposition|filename="\{', "HTTP header: quotes are RFC 6266 filename syntax"),
+    (r"(?i)etag", "HTTP entity tag: quotes are part of the ETag grammar (RFC 7232)"),
+    (r'"\{\}"', "empty JSON object as a literal default / json.loads fallback"),
+    (r'\.replace\("\{', "template placeholder substitution, not SQL"),
+    (r'<\w+[^>]*="\{', "HTML/XML attribute value"),
+    (r"launch_cmd", "shell/batch command quoting in the launcher shortcut"),
+    (r'", "\.join\(f\'"\{n\}": \{n\}\'', "building a Python dict literal for generated code"),
+    (r'agnes search "\{', "CLI help text showing a quoted search term"),
+    (r'label = f\'"\{query\}"\'', "CLI display label for a quoted search term"),
+    (r"return f'\"\{escaped\}\"'", "dotenv value quoting (see the escaping above it)"),
+    (r"vocab_list", "LLM prompt: a quoted vocabulary list, never executed"),
+    (r"header_line", "CSV header row, not SQL"),
+    (r'project = "\{jira_project\}"', "JQL string literal, not a SQL identifier"),
+    (r'database "\{dbname\}" does not exist', "substring match against a Postgres error message"),
+    (r"^src/sql_ident\.py:", "the module's own docstrings, which quote the shape they forbid"),
+    (r'server_default="\{\}"', "Alembic/SQLAlchemy column default of an empty JSON object"),
+    (r'env: str = "\{\}"', "repository signature default of an empty JSON object"),
+    (r'#.*"\{', "comment describing the shape"),
+    (r'resource_metadata="\{', "WWW-Authenticate challenge parameter (RFC 9728)"),
+    (r'"\{token\}"', "welcome-template placeholder, substituted at render time"),
+    (r"^app/web/setup_instructions\.py:", "copy-paste CLI instructions and their placeholder tokens"),
+]
+
+
+def test_f4_no_bare_quoted_identifier_interpolation():
+    """Ratchet: every hand-quoted identifier is either gone or explained.
+
+    ``-P``, not ``-E``. git grep's ``-E`` is POSIX ERE, where ``\\s`` degrades to
+    a literal ``s`` — the ``-E`` form of this pattern matches NOTHING and the
+    test would pass vacuously forever. That is not hypothetical: it is how this
+    guard was first written during the 2026-08-05 audit follow-up, and it was
+    caught in review rather than by the test.
+    """
+    import re
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "grep", "-nP", _QUOTED_IDENT_SHAPE_RE, "--", "*.py"],
+        capture_output=True,
+        text=True,
+    )
+    # git grep emits repo-relative paths with NO leading slash, so a
+    # `"/tests/" not in ln` filter would never fire.
+    hits = [ln for ln in proc.stdout.splitlines() if ln and not ln.startswith("tests/")]
+
+    compiled = [(re.compile(pat), reason) for pat, reason in _NON_SQL_QUOTED_FAMILIES]
+    unexplained = [ln for ln in hits if not any(rx.search(ln) for rx, _ in compiled)]
+
+    assert unexplained == [], (
+        "hand-quoted SQL identifier(s) — route through quote_ident, or add a family to "
+        "_NON_SQL_QUOTED_FAMILIES with the reason it is not an identifier:\n" + "\n".join(unexplained)
+    )
+
+
+def test_f4_no_dead_exemption_families():
+    """Shrinks-only: an exemption family that matches nothing must be deleted.
+
+    Without this, the allowlist rots into a list of shapes nobody uses, and the
+    next reader can't tell which entries are load-bearing.
+    """
+    import re
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "grep", "-nP", _QUOTED_IDENT_SHAPE_RE, "--", "*.py"],
+        capture_output=True,
+        text=True,
+    )
+    hits = [ln for ln in proc.stdout.splitlines() if ln and not ln.startswith("tests/")]
+
+    dead = [pat for pat, _ in _NON_SQL_QUOTED_FAMILIES if not any(re.search(pat, ln) for ln in hits)]
+
+    assert dead == [], "exemption family matches nothing — delete it from _NON_SQL_QUOTED_FAMILIES:\n" + "\n".join(dead)
+
+
+def test_f4_quote_ident_reexported_from_profiler():
+    """Existing `from src.profiler import quote_ident` importers keep working."""
+    from src.profiler import quote_ident as from_profiler
+    from src.sql_ident import quote_ident as canonical
+
+    assert from_profiler is canonical
+    assert canonical('a") AS x, (SELECT 1) AS "b') == '"a"") AS x, (SELECT 1) AS ""b"'
+
+
+# ── F-4b: server-supplied manifest ids are path segments AND SQL identifiers ──
+
+
+def test_f4b_safe_id_re_rejects_traversal_and_injection():
+    """Two regexes, deliberately: only table ids may carry a dot.
+
+    The first version of F-4b widened the single shared ``_SAFE_ID_RE`` so a
+    dotted table id (``orders.v2``) would pass. That also relaxed the three
+    consumers that have nothing to do with table ids — knowledge corpus id,
+    digest slug, memory item id — each of which is spliced into a request path
+    (``/api/knowledge/artifacts/{cid}/download``), where a value like ``..``
+    silently normalizes away and the request hits a different endpoint. None of
+    those three has a legitimate dotted spelling, so the dot-tolerance belongs
+    to table ids alone. Caught in review on #1181.
+    """
+    from cli.lib.pull import _SAFE_ID_RE, _SAFE_TABLE_ID_RE
+
+    # Shared/strict: no dots at all, so no dot-based path trickery downstream.
+    assert _SAFE_ID_RE.match("corpus_v2")
+    assert not _SAFE_ID_RE.match("orders.v2")
+    assert not _SAFE_ID_RE.match("..")
+    assert not _SAFE_ID_RE.match("../../.ssh/authorized_keys")
+    assert not _SAFE_ID_RE.match('x" AS y, (SELECT 1) AS "z')
+    assert not _SAFE_ID_RE.match("a/b")
+
+    # Table ids: dots are legitimate — admin-derived ids carry them.
+    assert _SAFE_TABLE_ID_RE.match("orders_v2")
+    assert _SAFE_TABLE_ID_RE.match("orders.v2")
+    assert not _SAFE_TABLE_ID_RE.match("../../.ssh/authorized_keys")
+    assert not _SAFE_TABLE_ID_RE.match('x" AS y, (SELECT 1) AS "z')
+    assert not _SAFE_TABLE_ID_RE.match("a/b")
+    # The charset alone admits these; _safe_manifest_tables rejects them
+    # separately (leading dot), which the next test pins.
+    assert _SAFE_TABLE_ID_RE.match("..")
+
+
+def test_f4b_pull_skips_unsafe_manifest_table_ids():
+    """An unsafe id is dropped, and the drop must NOT become a pull error.
+
+    cli/commands/pull.py raises typer.Exit(1) on a non-empty result.errors —
+    including from the --quiet SessionStart hook path — so collecting these
+    would turn one odd id into a permanently red `agnes pull`.
+    """
+    from cli.lib.pull import _safe_manifest_tables
+
+    kept, dropped = _safe_manifest_tables(
+        {
+            "orders": {"hash": "a"},
+            "orders.v2": {"hash": "b"},
+            "../../../etc/passwd": {"hash": "c"},
+            "..": {"hash": "d"},
+            'x" AS y': {"hash": "e"},
+        }
+    )
+
+    assert sorted(kept) == ["orders", "orders.v2"]
+    assert sorted(dropped) == sorted(["../../../etc/passwd", "..", 'x" AS y'])
 
 
 def test_f2b_origin_refusal_never_echoes_a_credential():

@@ -358,13 +358,6 @@
             word-break: break-word;
         }
         .setup-preview-code { font-family: inherit; font-size: inherit; }
-        .setup-preview-pre .placeholder-token {
-            background: rgba(249, 226, 175, 0.12);
-            color: #f9e2af;
-            padding: 0 4px;
-            border-radius: 3px;
-            font-style: italic;
-        }
         .manual-aside > summary {
             cursor: pointer;
             font-size: 13px;
@@ -661,10 +654,17 @@
             <div class="card-body">
                 {% if session.user %}
                 <p class="card-sub">
-                    One click generates a personal access token, assembles a
-                    complete setup script (install CLI, save token, verify),
-                    and copies it to your clipboard. Paste the result into
-                    Claude Code to finish.
+                    One click copies the setup script to your clipboard.
+                    Paste the result into Claude Code to finish. The script
+                    reads your login token from <code>~/.agnes/token</code>
+                    &mdash; save one first via step 4 of the /home install
+                    guide (the step that saves your login token &mdash; its
+                    exact title differs per instance); this page doesn't
+                    create it.
+                    Already finished onboarding (say, setting up a second
+                    machine)? /home hides the guide once setup completes
+                    &mdash; use its "Mark me as offboarded" button at the
+                    bottom to bring the guide (and its token step) back.
                 </p>
                 <button type="button"
                         id="setupClaudeBtn"
@@ -677,7 +677,7 @@
                     Setup a new Claude Code
                 </button>
                 <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
-                    Valid 90 days · token stays in your clipboard only.
+                    No login token inside &mdash; safe to re-copy any time.
                 </p>
                 <div id="setupClaudeError" class="oneclick-error" role="alert" style="display:none;"></div>
 
@@ -687,9 +687,8 @@
                         <span class="setup-preview-title">What Claude Code will receive</span>
                     </summary>
                     <p class="setup-preview-sub">
-                        Read-only preview. The real token is generated when you
-                        click the button above and is placed directly in your
-                        clipboard — it is never rendered on this page.
+                        Read-only preview — this is the exact text the button copies.
+                        Nothing is substituted at click time.
                     </p>
                     {% with preview_mode=True %}
                         {% include "_claude_setup_instructions.jinja" %}
@@ -967,11 +966,6 @@
         // so dashboard.html and install.html always render the same payload.
         {% include "_claude_setup_instructions.jinja" %}
 
-        function defaultTokenName() {
-            var stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-            return "Claude Code — " + stamp;
-        }
-
         function showSetupFallback(instructions) {
             var overlay = document.createElement('div');
             overlay.className = 'setup-fallback-overlay';
@@ -1002,67 +996,40 @@
             });
         }
 
-        window.setupNewClaude = async function setupNewClaude(btn) {
+        window.setupNewClaude = function setupNewClaude(btn) {
+            // The setup script no longer carries a login token (see
+            // app/web/setup_instructions.py's module docstring) — there is
+            // nothing left to mint or substitute here, just a static
+            // clipboard copy with {server_url} resolved.
             var errEl = document.getElementById('setupClaudeError');
             if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
             var origHTML = btn.innerHTML;
-            btn.disabled = true;
-            btn.textContent = 'Generating token…';
+            var instructions;
             try {
-                // Uniform PAT mint for everyone: scope=general,
-                // expires_in_days=90. The same `/auth/tokens` endpoint
-                // a user can already hit from the /me/profile UI — no
-                // role-locked endpoint, no per-role TTL clamp.
-                var tokenBody = { name: defaultTokenName(), expires_in_days: 90 };
-                var resp = await fetch('/auth/tokens', {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(tokenBody),
-                });
-                if (resp.status === 401) {
-                    window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
-                    return;
-                }
-                if (!resp.ok) {
-                    var detail = 'HTTP ' + resp.status;
-                    try {
-                        var body = await resp.json();
-                        if (body && body.detail) { detail = body.detail; }
-                    } catch (_) { /* non-JSON */ }
-                    throw new Error(detail);
-                }
-                var data = await resp.json();
-                if (!data || !data.token) {
-                    throw new Error('Server did not return a token.');
-                }
-                var serverUrl = window.location.origin;
-                var instructions = renderSetupInstructions(serverUrl, data.token);
-
-                try {
-                    await copyToClipboard(instructions);
-                    btn.textContent = 'Copied! Paste into Claude Code';
-                    btn.classList.add('copied');
-                    setTimeout(function() {
-                        btn.innerHTML = origHTML;
-                        btn.classList.remove('copied');
-                        btn.disabled = false;
-                    }, 3000);
-                } catch (clipErr) {
-                    btn.innerHTML = origHTML;
-                    btn.disabled = false;
-                    showSetupFallback(instructions);
-                }
+                instructions = renderSetupInstructions(window.location.origin);
             } catch (err) {
-                btn.innerHTML = origHTML;
-                btn.disabled = false;
                 if (errEl) {
                     errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
                     errEl.style.display = 'block';
                 } else {
-                    await alertModal('Setup failed: ' + (err && err.message ? err.message : err));
+                    alertModal('Setup failed: ' + (err && err.message ? err.message : err));
                 }
+                return;
             }
+            btn.disabled = true;
+            copyToClipboard(instructions).then(function () {
+                btn.textContent = 'Copied! Paste into Claude Code';
+                btn.classList.add('copied');
+                setTimeout(function() {
+                    btn.innerHTML = origHTML;
+                    btn.classList.remove('copied');
+                    btn.disabled = false;
+                }, 3000);
+            }).catch(function () {
+                btn.innerHTML = origHTML;
+                btn.disabled = false;
+                showSetupFallback(instructions);
+            });
         };
     })();
     </script>

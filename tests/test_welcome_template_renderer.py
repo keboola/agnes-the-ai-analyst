@@ -37,6 +37,7 @@ def _user(email="alice@example.com"):
 # Default (no override) → live setup script, not empty string
 # ---------------------------------------------------------------------------
 
+
 def test_returns_default_script_when_no_override(conn):
     """When no override is set, render_agent_prompt_banner returns the live
     unified setup script (not an empty string). Every caller — admin or
@@ -77,11 +78,14 @@ def test_compute_default_returns_setup_script(conn):
 
 
 def test_compute_default_server_url_placeholder_survives(conn):
-    """{server_url} and {token} are single-brace JS placeholders.
-    compute_default_agent_prompt must NOT replace them — they stay literal."""
+    """{server_url} is a single-brace JS placeholder. compute_default_agent_prompt
+    must NOT replace it — it stays literal. The access token is delivered
+    out-of-band (never a placeholder in the prompt body — see
+    app/web/setup_instructions.py's module docstring), so `{token}` must
+    never appear."""
     out = compute_default_agent_prompt(conn, user=_user(), server_url="https://example.com")
     assert "{server_url}" in out
-    assert "{token}" in out
+    assert "{token}" not in out
 
 
 def test_returns_empty_for_none_user_with_no_override(conn):
@@ -94,6 +98,7 @@ def test_returns_empty_for_none_user_with_no_override(conn):
 # ---------------------------------------------------------------------------
 # Override renders correctly
 # ---------------------------------------------------------------------------
+
 
 def test_renders_override(conn):
     WelcomeTemplateRepository(conn).set(
@@ -111,9 +116,7 @@ def test_renders_user_placeholder(conn):
         "<p>Hello {{ user.email }}</p>",
         updated_by="admin@example.com",
     )
-    out = render_agent_prompt_banner(
-        conn, user=_user("bob@example.com"), server_url="https://example.com"
-    )
+    out = render_agent_prompt_banner(conn, user=_user("bob@example.com"), server_url="https://example.com")
     assert "bob@example.com" in out
 
 
@@ -122,15 +125,14 @@ def test_renders_server_placeholder(conn):
         "<p>Server: {{ server.url }}</p>",
         updated_by="admin@example.com",
     )
-    out = render_agent_prompt_banner(
-        conn, user=_user(), server_url="https://myserver.example.com"
-    )
+    out = render_agent_prompt_banner(conn, user=_user(), server_url="https://myserver.example.com")
     assert "https://myserver.example.com" in out
 
 
 # ---------------------------------------------------------------------------
 # Anonymous user (user=None)
 # ---------------------------------------------------------------------------
+
 
 def test_renders_with_anonymous_user(conn):
     WelcomeTemplateRepository(conn).set(
@@ -145,6 +147,7 @@ def test_renders_with_anonymous_user(conn):
 # ---------------------------------------------------------------------------
 # Build context shape
 # ---------------------------------------------------------------------------
+
 
 def test_context_exposes_documented_keys():
     ctx = build_context(user=_user(), server_url="https://example.com")
@@ -177,6 +180,7 @@ def test_context_server_keys():
 # ---------------------------------------------------------------------------
 # HTML sanitization
 # ---------------------------------------------------------------------------
+
 
 def test_sanitize_strips_script_tag():
     html = '<p>Hello</p><script>alert("xss")</script>'
@@ -233,11 +237,10 @@ def test_sanitize_allows_safe_html():
 # Render failure → empty string (not exception)
 # ---------------------------------------------------------------------------
 
+
 def test_render_failure_falls_back_to_default_not_exception(conn):
     # StrictUndefined: referencing an unknown variable raises at render time.
-    WelcomeTemplateRepository(conn).set(
-        "{{ does_not_exist }}", updated_by="admin@example.com"
-    )
+    WelcomeTemplateRepository(conn).set("{{ does_not_exist }}", updated_by="admin@example.com")
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
     # Must not raise — falls back to the live default script (non-empty)
     assert out != ""
@@ -256,3 +259,26 @@ def test_sanitize_applied_after_render(conn):
     assert "<script>" not in out
     assert "evil" not in out
     assert "<p>safe content</p>" in out
+
+
+def test_a_stored_override_with_the_retired_token_placeholder_is_ignored(conn, caplog):
+    """The save-time guards only inspect NEW writes. An override saved before
+    the PAT handoff moved to `--token-file` still carries `{token}`, and Jinja2
+    leaves a single-brace token alone — so it would render literally and the
+    user would save the string `{token}` as their credential. Stored content is
+    never re-validated, so the render seam is where this has to be caught
+    (Devin Review on #1139).
+    """
+    WelcomeTemplateRepository(conn).set(
+        "mkdir -p ~/.agnes && cat > ~/.agnes/token <<'AGNES_PAT'\n{token}\nAGNES_PAT\n",
+        updated_by="admin@example.com",
+    )
+
+    out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
+
+    assert "{token}" not in out, "served an override that writes a literal placeholder as the credential"
+    # Fell back to the live default, which is the bash bootstrap script.
+    assert "agnes" in out
+    assert any("retired" in r.message.lower() or "retired" in str(r.msg).lower() for r in caplog.records), (
+        "the operator gets no log line explaining why their override was ignored"
+    )

@@ -71,7 +71,7 @@ def test_home_not_onboarded_user_sees_setup_view(fresh_db):
     assert resp.status_code == 200
     body = resp.text
     assert "install Claude Code" in body  # step 1 label
-    assert "install Agnes" in body  # step 2 label
+    assert "Pick a folder for" in body  # step 2 label
     assert "self-mark-btn" in body  # self-acknowledged escape hatch
     assert "setupClaudeBtn" in body  # primary one-click CTA from shared partial
 

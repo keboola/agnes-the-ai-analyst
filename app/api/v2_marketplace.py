@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from app.auth.access import _user_group_ids, is_user_admin
 from app.auth.dependencies import get_current_user
 from app.utils import get_marketplaces_dir
-from src.marketplace_filter import _contained_plugin_dir
+from src.marketplace_filter import _contained_plugin_dir, escapes_base
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
 from src.repositories import marketplace_plugins_repo
 
@@ -68,23 +68,28 @@ def _skills_for_plugin(
             marketplace_id,
         )
         return []
+    # Curator-supplied content is adversarial and this endpoint puts SKILL.md
+    # bytes straight into an HTTP response, so every path on the walk goes
+    # through the SAME helper the packagers use — `escapes_base`, which rejects
+    # any symlink outright and then checks resolved containment.
+    #
+    # It replaced two hand-rolled `is_symlink()` calls on `skill_dir` and
+    # `skill_md`. Those covered the leaf but not the intermediate: a curator repo
+    # shipping `plugins/<name>/skills -> /somewhere/else` still passed
+    # `is_dir()`, and every real subdirectory below the link target was then read
+    # and returned verbatim. Checking components one at a time is how that gap
+    # appeared twice; routing the whole walk through one rule is what closes it
+    # (Devin Review on #1183).
+    plugin_bases = [plugin_root.resolve()]
     skills_dir = plugin_root / "skills"
-    if not skills_dir.is_dir():
+    if escapes_base(skills_dir, plugin_bases) or not skills_dir.is_dir():
         return []
     out: List[SkillEntry] = []
     for skill_dir in sorted(skills_dir.iterdir()):
-        if not skill_dir.is_dir():
+        if escapes_base(skill_dir, plugin_bases) or not skill_dir.is_dir():
             continue
         skill_md = skill_dir / "SKILL.md"
-        if not skill_md.is_file():
-            continue
-        # Symlinks are excluded from the packaged tree (`_iter_files`,
-        # `escapes_base`) because curator-supplied content is adversarial and a
-        # link can point anywhere on the volume. This endpoint puts the file's
-        # bytes straight into an HTTP response body, so it is the one place
-        # where following one would be worst — and it was still doing it
-        # (Devin Review on #1180).
-        if skill_dir.is_symlink() or skill_md.is_symlink():
+        if escapes_base(skill_md, plugin_bases) or not skill_md.is_file():
             continue
         try:
             text = skill_md.read_text(encoding="utf-8", errors="replace")

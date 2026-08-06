@@ -104,6 +104,7 @@ from src.db import (
 )
 from src.duckdb_conn import _open_duckdb
 from src.orchestrator_security import escape_sql_string_literal
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -782,12 +783,12 @@ def _probe_or_repair_ducklake_pg_catalog(catalog_dsn: str, data_path: str) -> li
     if not missing_db:
         return [f"could not reach the DuckLake Postgres catalog at the configured DSN: {message}"]
 
-    create_cmd = f'CREATE DATABASE "{dbname}";'
+    create_cmd = f"CREATE DATABASE {quote_ident(dbname)};"
     admin_dsn = _dsn_with_database(catalog_dsn, "postgres")
     try:
         admin_conn = psycopg.connect(pg_dsn_to_libpq(admin_dsn), autocommit=True)
         try:
-            admin_conn.execute(f'CREATE DATABASE "{dbname}"')
+            admin_conn.execute(f"CREATE DATABASE {quote_ident(dbname)}")
         finally:
             admin_conn.close()
     except Exception as create_exc:

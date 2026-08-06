@@ -55,6 +55,7 @@ from app.auth.dependencies import get_current_user
 from app.services.journey import mark_journey
 from src.corpus_allowlist import classify
 from src.file_storage import delete_corpus_file, store_corpus_file
+from src.sql_ident import quote_ident
 from src.repositories import (
     corpus_chunks_repo,
     corpus_files_repo,
@@ -310,7 +311,7 @@ def _purge_derived_tabular_rows(corpus_id: str) -> None:
             try:
                 for table_id in deleted_ids:
                     safe_name = table_id.replace('"', '""')
-                    ec.execute(f'DROP VIEW IF EXISTS "{safe_name}"')
+                    ec.execute(f"DROP VIEW IF EXISTS {quote_ident(safe_name)}")
                     ec.execute("DELETE FROM _meta WHERE table_name = ?", [table_id])
             finally:
                 ec.close()
@@ -404,7 +405,7 @@ def _purge_derived_tabular_row_for_file(corpus_id: str, file_id: str) -> None:
                 for row in matching:
                     table_id = row["id"]
                     safe_name = table_id.replace('"', '""')
-                    ec.execute(f'DROP VIEW IF EXISTS "{safe_name}"')
+                    ec.execute(f"DROP VIEW IF EXISTS {quote_ident(safe_name)}")
                     ec.execute("DELETE FROM _meta WHERE table_name = ?", [table_id])
             finally:
                 ec.close()

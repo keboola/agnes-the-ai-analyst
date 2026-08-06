@@ -93,7 +93,13 @@ def status():
         typer.echo(f"could not determine status (status: {home.status_code})", err=True)
         raise typer.Exit(2)
     body_text = home.text or ""
-    if "Step 1 &amp; Step 2 done" in body_text or "Mark me as offboarded" in body_text:
+    # Anchor on the offboard strip's container class — plain markup that
+    # exists only in the template's onboarded-only branch. Not the button
+    # label (the phrase also appears inside the generated install prompt,
+    # which the NOT-onboarded /home embeds for the step-5 preview) and not
+    # the ds.button-generated id attribute (macro quoting/spelling is free
+    # to change under the design system).
+    if 'class="offboard-strip"' in body_text:
         typer.echo("onboarded: True")
     else:
         typer.echo("onboarded: False")

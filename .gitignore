@@ -83,6 +83,14 @@ dmypy.json
 .pyre/
 venv/
 .venv/
+# Without the slash-less form, a `.venv` SYMLINK is not ignored: a trailing
+# slash matches directories only, and git treats a symlink as a file. Parallel
+# worktrees symlink the main checkout's venv rather than building their own
+# (scripts/dev/worktree-spawn.sh), so every such worktree showed `.venv` as
+# untracked — one `git add -A` away from committing an absolute path to one
+# developer's machine.
+.venv
+venv
 env/
 ENV/
 env.bak/

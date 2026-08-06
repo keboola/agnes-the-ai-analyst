@@ -465,6 +465,10 @@ def pull(skip_materialize: bool = False) -> dict:
         # query access). Was missing in the original #594 (Devin Review).
         "tables_removed": result.tables_removed,
         "parquets_total": result.parquets_total,
+        # Same reason as `tables_removed`: a withheld snapshot name silently
+        # stops resolving, and an MCP caller has no other way to learn why
+        # (#1129 review).
+        "snapshot_views_blocked": list(getattr(result, "snapshot_views_blocked", []) or []),
         "errors": result.errors,
         # `PullResult.duration_s` is the wall-clock duration of the call.
         # Was historically referenced here as `result.elapsed_s` with a

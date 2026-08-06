@@ -1,8 +1,11 @@
 {tls_trust_block}Set up the {instance_brand} CLI on this machine.
 
 Server: {server_url}
-Personal access token: {token}
-(Just generated; treat it as a secret.)
+
+Your login token is already saved on this machine at ~/.agnes/token
+(written by step 4 of the install guide at {server_url}). The steps
+below only reference that file path — never print the token, echo
+it, or paste it into this chat.
 
 Run these, in order. The script is idempotent — safe to re-run if a step
 fails partway through. If a step fails with an unfamiliar error, paste the
@@ -73,16 +76,12 @@ real problem.
                        Do NOT run `mkdir`, do NOT `cd`, do NOT continue.
 
 3) Bootstrap your {instance_brand} workspace in this directory.
-   Write the PAT to a file FIRST, then run `agnes init` with
-   `--token-file`. Passing the JWT inline via `--token "eyJ..."`
-   sometimes trips Claude Code's auto-classifier (long bearer
-   token in a command line looks like a credential-exfil pattern);
-   piping the token through a file keeps it out of the command-
-   line argv entirely.
+   The token was saved to ~/.agnes/token by step 4 of the install
+   guide, so there is nothing to write here — `agnes init
+   --token-file` reads it directly (never on the command line, which
+   would trip Claude Code's auto-classifier) and removes the file
+   once the credential is saved to ~/.config/agnes/token.json:
 
-   mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'
-{token}
-AGNES_PAT
    agnes init --server-url "{server_url}" --token-file ~/.agnes/token --workspace .
 
    If Claude Code still blocks an `agnes` command (e.g. the

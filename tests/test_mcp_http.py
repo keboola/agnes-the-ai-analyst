@@ -128,6 +128,70 @@ class TestAuthMiddleware:
         asyncio.run(middleware(scope, None, None))
         assert reached, "?token= param did not reach inner app"
 
+    def test_query_param_token_can_be_disabled(self, seeded_app, monkeypatch):
+        """`mcp.allow_query_param_token=false` turns the fallback off (401).
+
+        F-3, 2026-08-05 audit: a token in the query string lands in every
+        request log (CWE-598). The fallback stays ON by default so no existing
+        SSE client breaks, but an operator whose clients all send the header
+        can eliminate the exposure outright rather than relying on proxy log
+        redaction.
+        """
+        import asyncio
+
+        from app.api.mcp_http import _AuthMiddleware
+
+        monkeypatch.setenv("AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN", "false")
+
+        tok = seeded_app["analyst_token"]
+        reached = []
+        sent = []
+
+        async def _inner_app(scope, receive, send):
+            reached.append(True)
+
+        async def _send(msg):
+            sent.append(msg)
+
+        middleware = _AuthMiddleware(_inner_app)
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/mcp/sse",
+            "query_string": f"token={tok}".encode(),
+            "headers": [],
+        }
+        asyncio.run(middleware(scope, None, _send))
+
+        assert not reached, "?token= reached the inner app with the flag off"
+        assert any(m.get("type") == "http.response.start" and m.get("status") == 401 for m in sent)
+
+    def test_header_auth_still_works_with_query_param_disabled(self, seeded_app, monkeypatch):
+        """Turning the fallback off must not touch the Authorization header path."""
+        import asyncio
+
+        from app.api.mcp_http import _AuthMiddleware
+
+        monkeypatch.setenv("AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN", "false")
+
+        tok = seeded_app["analyst_token"]
+        reached = []
+
+        async def _inner_app(scope, receive, send):
+            reached.append(True)
+
+        middleware = _AuthMiddleware(_inner_app)
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/mcp/sse",
+            "query_string": b"",
+            "headers": [(b"authorization", f"Bearer {tok}".encode())],
+        }
+        asyncio.run(middleware(scope, None, None))
+
+        assert reached, "header auth broke when the query-param fallback was disabled"
+
 
 # ── tool registration ────────────────────────────────────────────────────────────
 
@@ -813,8 +877,7 @@ class TestWireDescriptions:
         for t in mod.mcp._tool_manager.list_tools():
             assert t.description, f"{t.name} has no description"
             assert len(t.description) <= 500, (
-                f"{t.name}: {len(t.description)} chars (>500) — trim the "
-                f"docstring's first paragraph"
+                f"{t.name}: {len(t.description)} chars (>500) — trim the docstring's first paragraph"
             )
 
     def test_query_description_points_to_tool_docs(self):
@@ -831,9 +894,7 @@ class TestOutputGuard:
     def _query(self, mod, resp_data):
         with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
-            MC.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=_mock_resp(resp_data)
-            )
+            MC.return_value.__aenter__.return_value.post = AsyncMock(return_value=_mock_resp(resp_data))
             return _run(mod.query("SELECT x FROM t"))
 
     def test_query_over_cap_raises_with_guidance(self, monkeypatch):
@@ -861,8 +922,6 @@ class TestOutputGuard:
         wide = {"columns": [{"name": "x", "type": "VARCHAR", "blob": "z" * 5000}]}
         with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
-            MC.return_value.__aenter__.return_value.get = AsyncMock(
-                return_value=_mock_resp(wide)
-            )
+            MC.return_value.__aenter__.return_value.get = AsyncMock(return_value=_mock_resp(wide))
             with pytest.raises(MCPOutputTooLarge, match="rows"):
                 _run(mod.describe("t1"))

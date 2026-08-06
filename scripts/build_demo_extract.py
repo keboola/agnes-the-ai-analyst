@@ -3,9 +3,13 @@ _meta contract. Baked into the demo image; ATTACHed by the orchestrator at
 boot (AGNES_REBUILD_ON_BOOT). Vendor-neutral synthetic data only."""
 
 from __future__ import annotations
+
 import os
 from pathlib import Path
+
 import duckdb
+
+from src.sql_ident import quote_ident
 
 _TABLES = {
     "orders_demo": "Synthetic orders for the demo instance.",
@@ -73,7 +77,7 @@ def build_demo_extract(out_dir: str) -> str:
         # embedded table is byte-for-byte the distributed data.
         safe_pq = str(pq).replace("'", "''")
         ext.execute(
-            f'CREATE TABLE "{tname}" AS SELECT * FROM read_parquet(\'{safe_pq}\')'
+            f"CREATE TABLE {quote_ident(tname)} AS SELECT * FROM read_parquet('{safe_pq}')"
         )
     ext.close()
     gen.close()

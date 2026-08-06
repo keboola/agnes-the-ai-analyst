@@ -91,6 +91,7 @@ class TestFeatureFlagsRegistry:
             "chat_approvals",
             "data_apps",
             "library_show_unverified_trust",
+            "mcp_query_param_token",
         }
 
     def test_every_entry_resolves(self, monkeypatch):
@@ -182,6 +183,7 @@ class TestServerConfigFeatureFlagsInventory:
             "chat_approvals",
             "data_apps",
             "library_show_unverified_trust",
+            "mcp_query_param_token",
         }
         for f in flags:
             assert set(f.keys()) >= {"name", "effective", "source", "default", "env_var", "description"}

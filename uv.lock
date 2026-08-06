@@ -34,7 +34,7 @@ wheels = [
 
 [[package]]
 name = "agnes-the-ai-analyst"
-version = "0.79.0"
+version = "0.81.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

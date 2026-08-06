@@ -44,14 +44,15 @@ import duckdb
 from sqlalchemy.engine import Engine
 
 from scripts.migrate_duckdb_to_pg.tasks import (
+    _JSON_COLUMNS,  # re-exported for any external consumers
     EXPLICIT_TASKS,
     GenericCopyTask,
-    _JSON_COLUMNS,  # re-exported for any external consumers
-    _checksum,
     _build_insert,
+    _checksum,
     _normalize_for_pg,
     _resolved_columns,
 )
+from src.sql_ident import quote_ident
 
 log = logging.getLogger(__name__)
 
@@ -264,7 +265,7 @@ def reset_target_state_tables(pg_engine: Engine) -> int:
         present = [t for t in tables if t.name in existing]
         discarded = 0
         for t in present:
-            n = conn.execute(sa.text(f'SELECT COUNT(*) FROM "{t.name}"')).scalar()
+            n = conn.execute(sa.text(f"SELECT COUNT(*) FROM {quote_ident(t.name)}")).scalar()
             discarded += int(n or 0)
         log.info(
             "reset target before DuckDB→PG copy: discarding %d pre-existing "
@@ -274,7 +275,7 @@ def reset_target_state_tables(pg_engine: Engine) -> int:
             len(present),
         )
         if present:
-            quoted = ", ".join(f'"{t.name}"' for t in present)
+            quoted = ", ".join(quote_ident(t.name) for t in present)
             conn.execute(sa.text(f"TRUNCATE {quoted} CASCADE"))
     return discarded
 

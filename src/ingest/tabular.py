@@ -17,9 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-
 from src.duckdb_conn import _open_duckdb
 from src.repositories import table_registry_repo
+from src.sql_ident import quote_ident
 
 logger = logging.getLogger(__name__)
 
@@ -142,9 +142,8 @@ def ingest_tabular(
             "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
             [table_id, f"Uploaded file in collection {corpus_id}", rows, size_bytes, datetime.now(timezone.utc)],
         )
-        safe_name = table_id.replace('"', '""')
         safe_pq2 = str(parquet_path).replace("'", "''")
-        ec.execute(f"CREATE OR REPLACE VIEW \"{safe_name}\" AS SELECT * FROM read_parquet('{safe_pq2}')")
+        ec.execute(f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS SELECT * FROM read_parquet('{safe_pq2}')")
     finally:
         ec.close()
 

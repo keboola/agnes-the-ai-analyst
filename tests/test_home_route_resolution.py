@@ -278,17 +278,18 @@ def test_home_automode_env_can_hide(fresh_db, monkeypatch):
 
 
 def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
-    """The permission-mode step renders by default for the not-onboarded
-    /home view. The block is Step 3 (folder creation moved up to Step 2
-    so the user mkdir+cd's first, then this step launches Claude in that
-    directory with the right flag for Step 4's ~20 shell commands).
-    Label primarily recommends `claude --permission-mode auto` plus
-    `--allowedTools` rules that pre-approve the Agnes CLI's own commands
-    (explicit allow-rules resolve before the auto-mode classifier runs,
-    so `agnes init` / `agnes refresh-marketplace` never pause the setup
-    script), via the standard `.install-cmd` + copy-button affordance;
-    auto-accept-edits via Shift + Tab kept as the strict fallback for
-    users who want to review each command. The YOLO flag
+    """Step 4 is the credential-bearing step for the not-onboarded /home
+    view: it saves the login token to ~/.agnes/token AND (in this
+    home_automode=on branch) launches Claude in the same line, with the
+    right flag for Step 5's ~20 shell commands. Label leads with the
+    "hand it your login first" framing (Patch: PAT delivered out-of-band,
+    not embedded in the install script). The launch command still
+    recommends `claude --permission-mode auto` plus `--allowedTools`
+    rules that pre-approve the Agnes CLI's own commands (explicit
+    allow-rules resolve before the auto-mode classifier runs, so
+    `agnes init` / `agnes refresh-marketplace` never pause the setup
+    script); auto-accept-edits via Shift + Tab kept as the strict
+    fallback for users who want to review each command. The YOLO flag
     (`--dangerously-skip-permissions`) is no longer surfaced on /home."""
     monkeypatch.delenv("AGNES_HOME_SHOW_AUTOMODE", raising=False)
 
@@ -303,13 +304,13 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
 
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
-    # The `Step N —` prefix was dropped from labels (the step-number
-    # badge already carries the number); match the bare label text.
-    assert "Launch Claude with auto-approve on" in body
-    # Recommended path: auto mode + the Agnes CLI allow-rules (both
-    # spellings — see _AGNES_PERMISSION_ALLOW_RULES in cli/lib/hooks.py) plus
-    # the wheel installer (`uv tool install`) so Step 1's CLI install isn't
-    # blocked by a permission prompt.
+    assert "Launch Claude — we'll hand it your login first" in body
+    # The masked command's data-cmd-template carries the real shape
+    # (with a literal {TOKEN} marker, not a secret) — recommended path:
+    # auto mode + the Agnes CLI allow-rules (both spellings — see
+    # _AGNES_PERMISSION_ALLOW_RULES in cli/lib/hooks.py) plus the wheel
+    # installer (`uv tool install`) so Step 1's CLI install isn't blocked
+    # by a permission prompt.
     assert (
         'claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"' in body
     )
@@ -317,9 +318,18 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
     assert "--dangerously-skip-permissions" not in body
     # Strict fallback: Shift + Tab → auto-accept-edits.
     assert "Shift + Tab" in body
+    # The launch command is masked — never the real token — and the
+    # real-value substitution happens only in memory, client-side.
+    assert "install-cmd-masked" in body
+    assert "data-cmd-template=" in body
+    assert "{TOKEN}" in body
+    assert "eyJ" not in body
 
 
-def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
+def test_home_hides_automode_launch_tail_when_env_off(fresh_db, monkeypatch):
+    """With automode off, Step 4 still saves the token (its own step) but
+    does NOT launch Claude in the same command — that branch's command
+    has no `claude --permission-mode auto` tail."""
     monkeypatch.setenv("AGNES_HOME_SHOW_AUTOMODE", "0")
 
     from src.db import get_system_db, close_system_db
@@ -334,6 +344,13 @@ def test_home_hides_automode_block_when_env_off(fresh_db, monkeypatch):
     c = _client()
     body = c.get("/home", cookies={"access_token": sess}).text
     assert "Step 4 — Launch Claude with auto-approve on" not in body
+    assert "Launch Claude — we'll hand it your login first" not in body
+    # The token-only Step 4 still renders, without the launch tail.
+    assert "Save your login token" in body
+    assert "data-cmd-template=" in body
+    assert "{TOKEN}" in body
+    assert "claude --permission-mode auto" not in body
+    assert "eyJ" not in body
 
 
 def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):

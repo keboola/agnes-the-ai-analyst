@@ -92,17 +92,17 @@ def test_discovery_metadata_uses_request_host_when_env_unset(seeded_app, monkeyp
     from app.main import create_app
     from starlette.testclient import TestClient
 
-    client = TestClient(create_app(), base_url="https://agnes.keboola.com")
+    client = TestClient(create_app(), base_url="https://agnes.example.com")
     r = client.get("/.well-known/oauth-authorization-server")
     assert r.status_code == 200, r.text
     meta = r.json()
-    assert meta["issuer"] == "https://agnes.keboola.com/api/mcp/http"
-    assert meta["authorization_endpoint"] == "https://agnes.keboola.com/api/mcp/http/authorize"
+    assert meta["issuer"] == "https://agnes.example.com/api/mcp/http"
+    assert meta["authorization_endpoint"] == "https://agnes.example.com/api/mcp/http/authorize"
 
     r = client.get("/.well-known/oauth-protected-resource/api/mcp/http")
     assert r.status_code == 200, r.text
     pr = r.json()
-    assert pr["resource"] == "https://agnes.keboola.com/api/mcp/http"
+    assert pr["resource"] == "https://agnes.example.com/api/mcp/http"
 
 
 def test_unauthenticated_mcp_www_authenticate_uses_request_host(seeded_app, monkeypatch):
@@ -112,7 +112,7 @@ def test_unauthenticated_mcp_www_authenticate_uses_request_host(seeded_app, monk
     from app.main import create_app
     from starlette.testclient import TestClient
 
-    client = TestClient(create_app(), base_url="https://agnes.keboola.com")
+    client = TestClient(create_app(), base_url="https://agnes.example.com")
     r = client.post(
         MCP_ENDPOINT,
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
@@ -120,7 +120,7 @@ def test_unauthenticated_mcp_www_authenticate_uses_request_host(seeded_app, monk
     )
     assert r.status_code == 401
     www = r.headers.get("www-authenticate", "")
-    assert 'resource_metadata="https://agnes.keboola.com/.well-known/oauth-protected-resource/api/mcp/http"' in www
+    assert 'resource_metadata="https://agnes.example.com/.well-known/oauth-protected-resource/api/mcp/http"' in www
 
 
 def test_unauthenticated_mcp_returns_401_challenge(seeded_app):

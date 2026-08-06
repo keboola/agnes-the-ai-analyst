@@ -13,11 +13,12 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 import duckdb
 
-from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from connectors.bigquery.auth import BQMetadataAuthError, get_metadata_token
+from src.sql_ident import quote_ident
 
 
 def _pin_session_utc(conn):
@@ -35,10 +36,10 @@ def _pin_session_utc(conn):
     return conn
 
 
+from src.identifier_validation import validate_identifier, validate_quoted_identifier
 from src.sql_safe import (
     validate_project_id as _validate_project_id,
 )
-from src.identifier_validation import validate_identifier, validate_quoted_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -589,7 +590,7 @@ def _persist_materialized_inner_view(
                 # and only creates a master view when an inner object
                 # exists by the same name. read_parquet() is hot per-call,
                 # so the master view path goes through the same disk.
-                ext_conn.execute(f"CREATE OR REPLACE VIEW \"{table_id}\" AS SELECT * FROM read_parquet('{safe_path}')")
+                ext_conn.execute(f"CREATE OR REPLACE VIEW {quote_ident(table_id)} AS SELECT * FROM read_parquet('{safe_path}')")
                 ext_conn.execute("COMMIT")
             except Exception:
                 try:
@@ -828,7 +829,7 @@ def _init_extract_locked(
                             project_id,
                         )
                         continue
-                    view_sql = f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM bq."{dataset}"."{source_table}"'
+                    view_sql = f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS SELECT * FROM bq.{quote_ident(dataset)}.{quote_ident(source_table)}"
                     conn.execute(view_sql)
                 elif entity_type in ("VIEW", "MATERIALIZED_VIEW"):
                     # `dataset` and `source_table` are validated above by
@@ -847,7 +848,7 @@ def _init_extract_locked(
                     # cross-project just fine when the SA on ``project_id``
                     # has BQ Data Viewer on ``fqn_project``.
                     view_sql = (
-                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                        f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS "
                         f"SELECT * FROM bigquery_query('{project_id}', '{bq_inner_escaped}')"
                     )
                     conn.execute(view_sql)

@@ -839,10 +839,13 @@ studio:
 # time so the user isn't asked for org-specific values that the operator
 # already knows.
 #
-# **Never put secret VALUES here.** Use the `*_ENV` convention to name the
-# shell env var that holds the secret on the Agnes server (and on the
-# user's machine for any per-user secrets). The .env.agnes file carries
-# the env-var NAMES; the actual secret lives in the shell env.
+# Values pass through to analysts verbatim. Connector APP credentials —
+# e.g. the GWS Desktop-app OAuth client secret, an app identifier rather
+# than a user credential — belong here as plain values. Keep per-USER
+# secrets out; those are collected on the analyst's machine by the
+# connector skills. The legacy `*_ENV` convention (shipping the NAME of a
+# shell env var instead of the value) still passes through unchanged, but
+# nothing populates such env vars on analyst laptops — prefer values.
 #
 # Resolution order: `globals` (instance-wide) beats per-connector keys on
 # name collision. Empty `connectors:` block → empty .env.agnes (the API
@@ -866,7 +869,7 @@ studio:
 #     ATLASSIAN_BASE_URL: https://acme.atlassian.net
 #   connector-gws:
 #     AGNES_GWS_CLIENT_ID: 1234-abcd.apps.googleusercontent.com
-#     AGNES_GWS_CLIENT_SECRET_ENV: AGNES_GWS_CLIENT_SECRET  # secret VALUE lives in shell env
+#     AGNES_GWS_CLIENT_SECRET: GOCSPX-xxxxxxxxxxxxxx
 #     # AGNES_GWS_PROJECT_ID is legacy — the bundled connector-gws skill
 #     # ignores it (a non-empty project_id in client_secret.json makes the
 #     # gws CLI send x-goog-user-project, which requires every analyst to

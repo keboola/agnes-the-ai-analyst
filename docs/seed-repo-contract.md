@@ -112,7 +112,7 @@ connector:
 ---
 
 <SKILL.md body — the wizard prose that Claude Code executes when the
-analyst accepts the tile's "Set up <Vendor> now? (Y/n)" ask>
+analyst accepts the tile's "Set up <Vendor> now? (yes/no)" ask>
 ```
 
 **Validation rules** (enforced by `src/connectors_manifest.py`):
@@ -127,8 +127,9 @@ analyst accepts the tile's "Set up <Vendor> now? (Y/n)" ask>
   value moves the connector out of the optional Y/n tile list into a
   separate numbered **"Install required tools"** step rendered between
   diagnose and the optional tiles: no per-tool ask, and the prompt
-  instructs the agent to finish every required tool (verbatim ✅/❌
-  line) before moving on. A bad value never rejects the entry.
+  instructs the agent to finish every required tool (its ✅/❌ verify
+  line is echoed in the Confirm summary) before moving on. A bad value
+  never rejects the entry.
 - Invalid blocks (missing required field, wrong type, parse error) skip
   the entire connector entry with an `audit_log` warning. The rest of
   the manifest still renders — one bad seed commit can't take down
@@ -162,6 +163,18 @@ Two consequences for operators:
 The `globals:` block bypasses the allowlist (it's not slug-scoped) and
 is always emitted as-is.
 
+Value shape: params are plain `KEY: value` string pairs, passed through
+to the analyst's `.claude/agnes/.env` verbatim. That includes connector
+app credentials — the server-resolved GWS fallback ships
+`AGNES_GWS_CLIENT_SECRET: <value>` (a Desktop-app OAuth client secret
+is an app identifier, not a user credential; the seed's `.gitignore`
+covers `.claude/agnes/`). The `*_ENV` convention — shipping the NAME of
+a shell env var instead of the value — is legacy: the GWS fallback still
+emits the pointer alongside the value for backward compatibility, and an
+operator-set pointer passes through unchanged, but nothing populates
+such env vars on analyst laptops, so seed skills should read values from
+the params file first.
+
 ---
 
 ## 5. `install-prompt/template.md.tmpl` placeholders
@@ -173,7 +186,6 @@ The Agnes server substitutes the following placeholders at render time
 | Placeholder                | Replaced by                                          |
 |----------------------------|------------------------------------------------------|
 | `{server_url}`             | Browser-side at click time (JS clipboard renderer)   |
-| `{token}`                  | Browser-side at click time (analyst's PAT)           |
 | `{wheel_filename}`         | Server-side (real PEP 427 filename of the wheel)     |
 | `{server_host}`            | Server-side (bare host, no scheme)                   |
 | `{workspace_dir}`          | Server-side (`workspace_dir_name` from instance.yaml)|
@@ -183,6 +195,18 @@ The Agnes server substitutes the following placeholders at render time
 | `{marketplace_block}`      | Server-side — plugin-grant-aware step 6 body         |
 | `{connector_tiles}`        | Server-side — generated from manifest scan           |
 | `{ca_bundle_finale_bullet}`| Server-side — extra bullet when `has_ca` is true     |
+
+**`{token}` is NOT a placeholder.** The analyst's access token is
+deliberately never embedded in the install-prompt body — it is written to
+`~/.agnes/token` out-of-band, by an earlier step of the web onboarding
+flow (the "launch Claude" step that saves the token before the prompt is
+generated — implemented by `/home`'s step 4: `home_not_onboarded.html` +
+the shared `_claude_setup_cta.jinja` partial), so the raw value never
+has to appear in the prompt text or a pasted chat transcript. A seed's
+`template.md.tmpl` MUST NOT reference a `{token}` placeholder or inline a
+literal token/JWT example; the prompt instead carries a guard
+(`test -s ~/.agnes/token`) and reads the file via
+`agnes init --token-file ~/.agnes/token`.
 
 A missing placeholder is rendered literally (no error). This is
 deliberate — a typo in the template surfaces as visible text in the
@@ -201,8 +225,8 @@ For each manifest entry, the server renders this exact markdown block:
 
 ```
    {letter}) {display_name} — {short_summary}
-      Ask: "Set up {display_name} now? (Y/n)"
-      If yes (default) — follow this inline prompt verbatim:
+      Ask: "Set up {display_name} now? (yes/no)"
+      If the user agrees, follow this outline:
 
       {SKILL.md body, indented 6 spaces, frontmatter stripped, {instance_brand} substituted}
 ```
@@ -217,7 +241,7 @@ line:
 
 ```
    {letter}) {display_name} — {short_summary}
-      Follow this inline prompt verbatim:
+      Follow this inline prompt:
 
       {SKILL.md body, same indent/substitution rules as above}
 ```
