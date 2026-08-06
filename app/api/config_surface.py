@@ -112,6 +112,13 @@ _KNOB_CATALOGUE: list[dict[str, Any]] = [
         "yaml_path": "studio.enabled",
         "default": True,
     },
+    {
+        "key": "agent_profiles_enabled",
+        "resolver": "get_agent_profiles_enabled",
+        "env_var": "AGNES_AGENT_PROFILES_ENABLED",
+        "yaml_path": "agent_profiles.enabled",
+        "default": True,
+    },
     # Onboarding & /home
     {
         "key": "home_route",

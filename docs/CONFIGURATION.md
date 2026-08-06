@@ -79,6 +79,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
 | Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
 | Expose the authoring Studio (`/admin/studio*` incl. the admin moderation queue, plus the public suggestion API). `false` hides the nav/palette entries, redirects the routes home, and 403s the suggestion API | `AGNES_STUDIO_ENABLED` | `studio.enabled` | `true` | `get_studio_enabled()` |
+| Expose agent profiles (`/agents` builder, `/api/v1/agents*` management + runtime API, `agnes agent`/`agnes chat` CLI). `false` hides the nav/palette entries, redirects `/agents` home, and 403s the API with `agent_profiles_disabled`; internal mechanisms (default-agent seeding, chat attribution, broker agent policy) keep running and data survives re-enabling | `AGNES_AGENT_PROFILES_ENABLED` | `agent_profiles.enabled` | `true` | `get_agent_profiles_enabled()` |
 | Legacy theme block (colors/fonts) | — | `theme` | `{}` | `get_theme()` |
 
 ### Onboarding & `/home`
