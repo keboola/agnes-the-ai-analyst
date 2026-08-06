@@ -3,9 +3,9 @@
    switch in base_ds.html; topnav instances never load this partial.
 
    IA: the rail is TWO fixed zones with the conversation list between them.
-   Top — New chat, then the caller's most recent conversations directly under
-   it (no "Chats" heading; the rows ARE the section), filling the free space and
-   scrolling inside it. Bottom — the browse destinations Library · Agents, then
+   Top — New chat, then the caller's conversations in two collapsible sections
+   (Pinned · Recent), closing on a "View all chats" link to /chats. Bottom —
+   the browse destinations Library · Agents, then
    Admin behind a divider, then the onboarding card, then the profile pinned to
    the very bottom. The Studio dropdown and the Marketplace entry have both
    been retired from the rail; /catalog and the Skill/Plugin builders remain
@@ -121,34 +121,140 @@
         </a>
     </div>
 
-    {# Recent conversations — the caller's latest chats, rendered directly under
-       New chat with NO section heading: at 3–5 rows the titles read as the
-       continuation of the chat zone, and a "Chats" label above them was pure
-       chrome. This is the ONLY conversation history in the rail layout (the
-       chat page's own Conversations column is retired there).
+    {# Conversations — the caller's chats in TWO collapsible sections, Pinned
+       above Recent, with "View all chats" under them. The rail is a WORKING SET
+       now, not the whole history: what you have pinned, the handful you touched
+       most recently, and a door to the surface that manages the rest (/chats,
+       templates/chats.html).
+
+       Why the feed is capped again, having had its cap deliberately removed:
+       the cap that went away was a cap with nowhere to go — five rows and a
+       "Show more" toggle whose only job was to undo a limit we had imposed, on a
+       list that was already bounded by the column's own geometry. This one is a
+       cap with a DESTINATION. A 240px column can put you back into yesterday's
+       work; it cannot answer "which of these did the Finance agent run" or "get
+       rid of the twenty I abandoned", and a scroll box that fills with a hundred
+       titles reads as the only answer there is. Capped at
+       RAIL_RECENT_LIMIT rows (rail_history.js — chat.js keeps its own copy of the
+       constant for the /chat renderer), so the rail always fits its two fixed
+       zones and the page owns the long tail. Pinned is NOT capped: it is
+       hand-curated and small by construction, and silently hiding a pin would
+       break the one promise pinning makes.
+
+       Why two sections rather than the one list with a hoisted "Pinned" group
+       header it replaces: the two lists answer different questions. Pinned is a
+       small, hand-curated shelf you return to; Recent is a purely chronological
+       feed. As sibling groups inside one list they were told apart only by a
+       header that scrolled away, and neither could be put away when
+       you didn't need it — a caller with nine pins had to scroll past all nine
+       to reach yesterday's work, and a caller who lives in their pins had to
+       keep the whole feed on screen underneath them. A section each, with a
+       disclosure, lets either one own the space.
+
+       Anatomy of a section header: the same quiet uppercase label the group
+       headers already used (10.5px/700, `--ds-text-muted`) promoted to a
+       <button>, with the rail's existing disclosure caret directly AFTER the
+       label — rotated the way Admin's is (down = open). Beside the word rather
+       than pushed to the rail's right edge: at the edge it read as a second
+       column of controls, and the caret's job is to say "this label opens", so
+       it belongs against the label. The button still spans the full width, so
+       the hit area is the whole line. No fill, no border, no divider, and no
+       count: it stays a LABEL that happens to be operable, not a fourth row
+       treatment competing with the nav rows above and below.
 
          • The <ul id="chat-list"> + #cloud-chat-empty-state ids are the same
            the chat page used, so on /chat chat.js owns this list unchanged —
            live inserts, active-row highlight, delete, and the Cmd+K palette all
-           keep working, now rendering into the rail.
+           keep working, now rendering into the rail. <ul id="pinned-chat-list">
+           is the new half of that contract: both renderers route pinned rows
+           there instead of emitting a "Pinned" group header.
          • On every OTHER rail page chat.js isn't loaded, so js/rail_history.js
            fetches /api/chat/sessions and renders the same rows, wiring each to
-           /chat?session=<id>. It bails on /chat (chat.js is authoritative there).
-         • There is NO truncation and no "View all chats" / "Show less" toggle.
-           The list simply fills the space between the two zones and scrolls
-           inside .rail-history-body, so the bottom zone (Library · Agents ·
-           Admin, the onboarding card, profile) never moves. The toggle was
-           redundant by construction: this region is already exactly the rail's
-           free space, so capping the list at five rows on top of that showed
-           five on a screen with room for nine and then offered a button to
-           reveal rows that already fitted. Scrolling is the affordance. #}
+           /chat?session=<id>. It bails on /chat for the ROWS (chat.js is
+           authoritative there) but owns the sections' open/closed state on every
+           rail page, /chat included.
+         • #rail-pinned starts `hidden` and is unhidden by whichever renderer
+           runs, only once it has pinned rows to show — a "Pinned" header over
+           nothing is the dead chrome the single-list version was trying to
+           avoid. Recent stands down under the mirror-image condition (pins exist
+           and the feed is empty), where its header would stand over nothing and
+           its empty state would read "No conversations yet." untruthfully; with
+           nothing anywhere, Recent stays and shows exactly that.
+         • Both sections live inside the one scroll box (.rail-history-body) that
+           fills the space between the two zones, so the bottom zone (Library ·
+           Agents · Admin, the onboarding card, profile) never moves. Collapsing
+           is the user putting a section away; the cap on Recent is ours, and it
+           is honest about it — "View all chats" is always the row under the
+           lists, not a "Show more" that expands in place. #}
     <section class="rail-history" id="rail-history">
         <div class="rail-history-body" id="rail-history-body">
-            <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
-            {# Starts hidden; chat.js (/chat) and rail_history.js (elsewhere)
-               both unhide it only once a fetch resolves with zero sessions, so
-               "No conversations yet" never flashes before the list loads. #}
-            <p id="cloud-chat-empty-state" class="rail-history-empty" hidden>No conversations yet.</p>
+            {# Pinned — hidden until there is something in it (see above). #}
+            <section class="rail-chatsec" id="rail-pinned" hidden>
+                <h2 class="rail-chatsec-hd-wrap">
+                    <button type="button" class="rail-chatsec-hd" id="rail-pinned-toggle"
+                            aria-expanded="true" aria-controls="rail-pinned-body">
+                        <span class="rail-chatsec-txt">Pinned</span>
+                        <svg class="rail-chatsec-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                </h2>
+                <div class="rail-chatsec-body" id="rail-pinned-body">
+                    <ul id="pinned-chat-list" class="cloud-chat-list" role="list"></ul>
+                </div>
+            </section>
+
+            {# "Recent", not "Chats": the label has to say that this list is a
+               slice, or the "View all chats" row below it reads as a second way
+               to the same thing. #}
+            <section class="rail-chatsec" id="rail-chats">
+                <h2 class="rail-chatsec-hd-wrap">
+                    <button type="button" class="rail-chatsec-hd" id="rail-chats-toggle"
+                            aria-expanded="true" aria-controls="rail-chats-body">
+                        <span class="rail-chatsec-txt">Recent</span>
+                        <svg class="rail-chatsec-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                </h2>
+                <div class="rail-chatsec-body" id="rail-chats-body">
+                    <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
+                    {# Starts hidden; chat.js (/chat) and rail_history.js
+                       (elsewhere) both unhide it only once a fetch resolves with
+                       zero sessions, so "No conversations yet" never flashes
+                       before the list loads. #}
+                    <p id="cloud-chat-empty-state" class="rail-history-empty" hidden>No conversations yet.</p>
+                </div>
+
+            </section>
+
+            {# The door to /chats — the last thing IN the scroll box, so it sits
+               directly under the last recent row and moves with it.
+
+               It was briefly pinned to the foot of the whole region instead,
+               which on a tall window left it a hand's width below the list,
+               reading as a fourth nav item stranded above the profile. It is a
+               sibling of the two sections rather than a child of Recent for one
+               reason: `railSectionsSync` can hide either section (Pinned with no
+               pins; Recent when everything is pinned), and the way to the page
+               must survive both.
+
+               A quiet `.rail-history-all` link, deliberately NOT a `.rail-i`
+               destination row: Library, Agents and Admin are places you go to
+               work, and a fourth row of that weight under the conversation list
+               would compete with the conversations themselves. It is also not a
+               "Show more" — it navigates rather than expanding, which is the
+               whole difference from the five-row toggle this rail used to carry.
+
+               It takes NO active state on /chats. The `.on` tint means "the thing
+               you are looking at is in this list", and that page IS the whole
+               list — highlighting the link would put a second you-are-here marker
+               in a column whose rows already carry one for the open conversation.
+
+               Starts hidden and is revealed by railSectionsSync
+               (rail_history.js) once there is at least one conversation: with
+               none, the empty state above already says so and an offer to view
+               all of nothing is noise. #}
+            <a class="rail-history-all" id="rail-view-all-chats" href="/chats" hidden>
+                <span>View all chats</span>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </a>
         </div>
     </section>
     {% endif %}{# /can_chat — end of zone 1 #}
@@ -409,10 +515,9 @@
 
                    Its old objection (a product explainer buried in the account
                    menu is undiscoverable) is answered elsewhere now: the chat
-                   dashboard's empty state carries a labelled "New here? See how
-                   {brand} works" line under the composer (chat.html), which is
-                   the prominent first-run path. This entry is the find-it-again
-                   one. NOT `can_chat`-gated, unlike its neighbour: a caller with
+                   dashboard's Knowledge Layer hero carries a "See how {brand}
+                   works" link under its CTA (chat.html), which is the prominent
+                   first-run path. This entry is the find-it-again one. NOT `can_chat`-gated, unlike its neighbour: a caller with
                    no chat grant needs the orientation more than anyone.
 
                    "Start over onboarding" — the way back to the checklist once
@@ -455,10 +560,10 @@
    chromes. Defer keeps it non-blocking. #}
 <script src="{{ static_url('app.js') }}" defer></script>
 <script src="{{ static_url('js/global_search.js') }}" defer></script>
-{# Populates the rail's recent-chats list on every page EXCEPT /chat (where
-   chat.js owns #chat-list) and truncates it to the newest few rows on ALL rail
-   pages. Self-guards on body.chat-page-body, so loading it globally is safe.
-   Only needed when the caller can chat. #}
+{# Fills the Pinned + Chats lists on every page EXCEPT /chat (where chat.js owns
+   the rows), and owns the two sections' collapse state + counts on ALL rail
+   pages, /chat included. Self-guards on body.chat-page-body, so loading it
+   globally is safe. Only needed when the caller can chat. #}
 {# window.chatRowMenu — the shared "⋮" row menu (Pin/Unpin · Rename · Delete)
    both history renderers use. Must be defined before a row is BUILT, not before
    this file's scripts parse: rows are built after an async sessions fetch, so

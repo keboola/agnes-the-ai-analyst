@@ -59,16 +59,29 @@ def test_renderers_no_longer_carry_inline_row_action_buttons():
         assert "cloud-chat-list-del" not in js, f"{path} still emits the old inline delete button"
 
 
-def test_menu_offers_exactly_pin_rename_delete():
-    """The three actions, in order."""
+def test_menu_offers_pin_rename_delete_with_archive_optional_between():
+    """Pin · Rename · Delete is the base set, in that order.
+
+    Archive (or Restore, on an archived row) is spliced in BETWEEN Rename and
+    Delete — after the harmless actions, before the irreversible one — and only
+    where the caller passes the handler. The two rail renderers don't: neither
+    lists archived conversations, so archiving from there would put a chat
+    somewhere the caller cannot see it again. /chats does (chats_page.js), which
+    is the surface that can list and undo the state."""
     js = _read(MENU_JS)
     ids = re.findall(r'id:\s*"([a-z]+)"', js)
-    assert ids == ["pin", "rename", "delete"], f"expected Pin/Rename/Delete, got {ids}"
+    assert ids == ["pin", "rename", "restore", "archive", "delete"], f"unexpected action set: {ids}"
     assert '"Unpin" : "Pin"' in js, "the pin item must flip its verb on a pinned row"
     assert '"Rename"' in js
     assert '"Delete"' in js
-    # Delete is the only destructive one and must be marked as such.
+    # Archive and Restore are mutually exclusive per row, chosen from its state.
+    assert "s.archived && opts.onRestore" in js
+    assert "!s.archived && opts.onArchive" in js
+    # Delete is the only destructive one and must be marked as such — Archive
+    # explicitly is not: it is reversible, and dressing the two alike is how a
+    # caller learns to fear the safe one (or trust the other).
     assert re.search(r'label:\s*"Delete",\s*danger:\s*true', js)
+    assert not re.search(r'label:\s*"Archive",[^}]*danger', js)
 
 
 def test_menu_is_a_single_global_and_runs_only_once():
@@ -119,11 +132,32 @@ def test_both_renderers_stamp_data_pinned_and_render_a_pin_flag():
         assert "cloud-chat-pin-flag" in js, f"{path} must mark a pinned row"
 
 
-def test_both_renderers_hoist_a_pinned_group():
+def test_both_renderers_separate_the_pinned_conversations():
+    """A pinned conversation is never left inline among the dated ones — but
+    WHERE it goes now depends on the chrome, so each renderer is checked against
+    the contract it actually implements:
+
+      - rail: pinned rows are rendered into the Pinned SECTION's own list
+        (<ul id="pinned-chat-list">, _app_rail.html) — a collapsible section
+        with its own header, so no group header is emitted for them.
+      - topnav: unchanged, pinned rows are hoisted into a leading "Pinned"
+        group inside the single #chat-list.
+
+    chat.js serves both, hence both strings; rail_history.js only ever runs
+    under rail."""
     for path in _RENDERERS:
         js = _read(path)
-        assert '"Pinned"' in js, f"{path} must label the hoisted group"
-        assert "pinnedGroup" in js, f"{path} must flag the group for the header class"
+        assert "pinned-chat-list" in js, f"{path} must render pinned rows into the Pinned section"
+    chat_js = _read(CHAT_JS)
+    assert '"Pinned"' in chat_js, "topnav must still label its hoisted group"
+    assert "pinnedGroup" in chat_js, "topnav must still flag that group for the header class"
+    # ...and the rail path must not go through the date grouping at all, or a
+    # pinned chat would appear in both the section and the feed. It renders a
+    # capped, ungrouped Recent feed of the UNPINNED rows instead — which is what
+    # retired the `hoistPinned` opt-out this used to assert.
+    assert "s => !s.pinned" in chat_js, "the rail feed must exclude the pinned rows"
+    assert "hoistPinned" not in chat_js, "the grouping helper is topnav-only now — no rail opt-out to pass"
+    assert "pinnedGroup" not in _read(RAIL_JS), "the rail renderer has no pinned GROUP any more"
 
 
 def test_both_renderers_call_the_pin_endpoint_with_put():
@@ -132,21 +166,26 @@ def test_both_renderers_call_the_pin_endpoint_with_put():
         assert "/pin" in js and '"PUT"' in js, f"{path} must PUT the pin endpoint"
 
 
-# --- No truncation to be exempt from ------------------------------------
+# --- A pin can never be hidden ------------------------------------------
 
 
-def test_nothing_truncates_the_list_any_more():
-    """The pin feature originally had to carve an exemption out of the rail's
-    five-row collapsed list: pins were exempt from truncation and did not spend
-    its budget, so a pin could never be hidden. That whole apparatus is gone —
-    the list fills the rail's free space and scrolls — which means the exemption
-    has nothing left to except and a pin simply cannot be hidden.
+def test_the_recent_cap_never_reaches_the_pins():
+    """The rail's recent feed is capped again (RAIL_RECENT_LIMIT), now that
+    "View all chats" → /chats gives the cap a destination — but the cap applies
+    to the DATED feed only. Pinned rows live in their own uncapped section, and
+    hiding one would break the single promise pinning makes.
 
-    Asserted as an absence so the exemption logic can't quietly return without
-    the truncation it depended on."""
+    This is not the old apparatus coming back: no truncation pass, no
+    MutationObserver, no persisted expanded-state, and no per-row `hidden` —
+    the renderer simply slices the list it draws. Both absences are asserted so
+    the machinery cannot return under cover of the cap."""
     js = _read(RAIL_JS)
-    assert "RECENT_LIMIT" not in js
-    assert "li.hidden" not in js
+    assert "li.hidden" not in js, "no per-row hiding — the cap is a slice, not a truncation pass"
+    assert "new MutationObserver" not in js, "the truncation observer must stay retired"
+    # The cap is applied to the DATED feed and to nothing else; the pinned list
+    # is filled from its own unsliced collection.
+    assert "for (const s of dated.slice(0, RAIL_RECENT_LIMIT))" in js
+    assert "for (const s of pinned) pinnedList.appendChild" in js, "pins must never be capped"
 
 
 # --- Rename / Delete flows ---------------------------------------------

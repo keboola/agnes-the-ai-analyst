@@ -131,19 +131,21 @@ html[data-ui-layout="rail"] .rail {
     font-family: var(--ds-font);
 }
 
-/* The bottom padding is deliberately small (8px, not the 18px it carried
-   first): the logo and New chat point at the SAME surface — the logo's href is
-   `home_route`, which defaults to /dashboard → /chat, exactly where `#new-chat`
-   goes — so an 18px trough between them read as two unrelated zones when they
-   are one. Tight, the brand mark and the control below it group, and the
-   conversation list starts a row higher. In the ≤1024px bar the same value also
-   fixes the logo sitting visually high on the logo+toggle row, where the
-   asymmetric 6/18 was never intended. */
+/* 14px below the wordmark — between the 8px this carried while the rail had no
+   section labels and the 18px of its first version. The 8px was tuned for a
+   logo sitting directly above New chat, where a deep trough read as two
+   unrelated zones when they are one surface (the logo's href is `home_route`,
+   which defaults to /dashboard → /chat, exactly where `#new-chat` goes). With
+   Pinned/Chats labels below, the top of the rail carries more structure and the
+   wordmark needs to stop reading as part of the first row. Still asymmetric on
+   purpose: the mark keeps its 6px above.
+   The ≤1024px bar overrides it back to 8px — there the logo shares a row with
+   the collapse toggle, and extra bottom padding sits it visually high. */
 html[data-ui-layout="rail"] .rail-logo {
     display: flex;
     align-items: center;
     gap: 9px;
-    padding: 6px 8px 8px;
+    padding: 6px 8px 14px;
     color: var(--ds-text-primary);
     text-decoration: none;
     flex-shrink: 0;
@@ -312,22 +314,21 @@ html[data-ui-layout="rail"] .rail-i-label {
    and ink are unused here (every resting row is `--ds-text-secondary`/500, so
    `--ds-text-primary`/600 is available and costs no colour). */
 
-/* Separates New chat from the list below it. The rail's own 2px gap read as
-   "next row in the same list"; 8px is all the separation the two need.
-   Deliberately NOT a heading — a "Chats" label above the recents was tried and
-   retired as pure chrome (#896), and whitespace does the same job without
-   spending a row of vertical space. */
+/* Separates New chat from the conversations below it. The rail's own 2px gap
+   read as "next row in the same list"; 8px is all the separation the two need —
+   and it is now the only thing between the verb and the first section label, so
+   the label needs no top margin of its own (.rail-chatsec:first-child below). */
 html[data-ui-layout="rail"] .rail-nav-top {
     margin-bottom: 8px;
 }
 
-/* ── Recent conversations ──────────────────────────────────────────────
-   The chat zone's list, sitting directly under New chat with NO heading row —
-   the titles are the section. It occupies the slack between the two fixed
-   zones, so the bottom zone stays pinned to the foot however long the list
-   gets. The <ul id="chat-list"> reuses the chat page's ids/classes so chat.js
-   renders straight into it on /chat; rail_history.js fills it on every other
-   page. Nothing truncates it — see .rail-history-body. */
+/* ── Conversations ─────────────────────────────────────────────────────
+   Two collapsible sections — Pinned, then Chats — inside ONE scroll box. The
+   region occupies the slack between the two fixed zones, so the bottom zone
+   stays pinned to the foot however long the lists get. The <ul id="chat-list">
+   reuses the chat page's ids/classes so chat.js renders straight into it on
+   /chat; rail_history.js fills it (and <ul id="pinned-chat-list">) on every
+   other page. Nothing truncates either list — see .rail-history-body. */
 html[data-ui-layout="rail"] .rail-history {
     min-height: 0;
     display: flex;
@@ -407,6 +408,104 @@ html[data-ui-layout="rail"] .rail-history-body.is-fade-bottom {
     html[data-ui-layout="rail"] .rail-history-body {
         -webkit-mask-image: none;
                 mask-image: none;
+    }
+}
+
+/* ── The two sections (Pinned · Chats) ─────────────────────────────────
+   Both live inside the single scroll box above — deliberately NOT one fixed
+   pinned block over a scrolling feed. A second scroll container in a 240px
+   column means two scrollbars, two fade masks and a pinned block whose height
+   has to be capped by guesswork; one scroll box with a collapsible header per
+   section gets the same control into the user's hands and costs no geometry.
+
+   Whitespace does the separating, as everywhere else in the rail: no dividers
+   (see test_admin_is_the_only_divided_group — Admin owns the nav's only rule
+   line) and no fills. 18px between sections — a step up from the 14px the group
+   headers this replaces used, because these are now two independent things
+   rather than two groups of one list, and the gap is the only thing saying so. */
+html[data-ui-layout="rail"] .rail-chatsec {
+    display: block;
+}
+
+html[data-ui-layout="rail"] .rail-chatsec + .rail-chatsec {
+    margin-top: 18px;
+}
+
+/* The 8px under New chat is already the gap above the first label. */
+html[data-ui-layout="rail"] .rail-chatsec:first-child {
+    margin-top: 0;
+}
+
+/* The <h2> exists for document structure only (the button inside it is the
+   control) — strip the heading's own type and spacing entirely. */
+html[data-ui-layout="rail"] .rail-chatsec-hd-wrap {
+    margin: 0;
+    font: inherit;
+}
+
+/* Section label — a LABEL that happens to be operable, not a row. Hence no
+   background in any state, no border, and the same 9px left padding as the
+   conversation rows below it so the label and the titles share one left edge.
+   Hover/focus spend INK (muted → secondary), which is the one channel still
+   free: the accent belongs to the active conversation and the neutral wash to
+   hovering an actual row, so a header that filled on hover would read as a
+   selectable row (see the COLOUR RULE at the top of this file). */
+html[data-ui-layout="rail"] .rail-chatsec-hd {
+    display: flex;
+    align-items: center;
+    /* Caret sits against the label (see below), so this is the only gap. */
+    gap: 3px;
+    width: 100%;
+    padding: 3px 9px 6px;
+    border: none;
+    background: none;
+    border-radius: 6px;
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+}
+
+html[data-ui-layout="rail"] .rail-chatsec-hd:hover {
+    color: var(--ds-text-secondary);
+}
+
+html[data-ui-layout="rail"] .rail-chatsec-hd:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Same type as the group headers this promotes — the rail already reads this
+   size/weight/tracking as "label for what follows". */
+html[data-ui-layout="rail"] .rail-chatsec-txt {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+/* Disclosure caret — the rail's existing idiom, rotated the same way as
+   Admin's (down = open, right = collapsed), one size quieter than Admin's 15px
+   because this is a label and that is a nav row.
+   Deliberately NOT pushed to the rail's right edge with `margin-left: auto`:
+   out there it read as a second column of controls next to the conversation
+   rows' own "⋮", and what it actually annotates is the word beside it. The
+   button still spans the full width, so the hit area is the whole line. */
+html[data-ui-layout="rail"] .rail-chatsec-caret {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    transform: rotate(90deg);
+    transition: transform 0.18s var(--ds-ease-standard, ease);
+}
+
+html[data-ui-layout="rail"] .rail-chatsec.is-collapsed .rail-chatsec-caret {
+    transform: rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html[data-ui-layout="rail"] .rail-chatsec-caret {
+        transition: none;
     }
 }
 
@@ -569,30 +668,13 @@ html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn:focus-visible {
     }
 }
 
-/* Group headers — bind to the group below.
-   Under rail there are at most TWO of these: "Pinned" (when the caller has
-   pins) and "Older". The five date buckets topnav still uses (Today /
-   Yesterday / Earlier this week / Earlier this month / Older) were cut here
-   because each header costs a full row — the 14px margin plus the line plus
-   the 4px is about the 34px row height — and in seven rows of free space that
-   put three labels among five titles. See _groupSessionsByDate in chat.js for
-   the split. The margin is worth paying now that it separates the recent block
-   from the archive rather than groups of one from each other. */
-html[data-ui-layout="rail"] .rail-history .cloud-chat-list-group-header {
-    display: block;
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    color: var(--ds-text-muted);
-    padding: 0 9px 4px;
-    margin-top: 14px;
-    cursor: default;
-}
-
-html[data-ui-layout="rail"] .rail-history .cloud-chat-list-group-header:first-child {
-    margin-top: 2px;
-}
+/* No date-group header rules here any more, and none should come back: neither
+   renderer emits one under rail. The region is now the pinned shelf plus a
+   RAIL_RECENT_LIMIT-row "Recent" feed closing on "View all chats" (see
+   rail_history.js), and at five rows a date boundary labels a boundary the list
+   is too short to have — the last one standing, "Older", sat inside a section
+   already labelled "Recent". The five buckets topnav still uses are styled by
+   its own sheet; `_groupSessionsByDate` in chat.js is topnav-only now. */
 
 /* Two rules used to live here and are deliberately gone with the truncation:
    an `li[hidden] { display: none }` restatement (the row/header rules above set
@@ -612,6 +694,60 @@ html[data-ui-layout="rail"] .rail-history-empty {
 
 html[data-ui-layout="rail"] .rail-history .cloud-chat-list:not(:empty) + .rail-history-empty {
     display: none;
+}
+
+/* ── "View all chats" → /chats ─────────────────────────────────────────
+   The last thing INSIDE the scroll box, so it sits directly under the last
+   recent row and travels with it. (It was briefly pinned to the foot of the
+   region, which on a tall window left it a hand's width under the list, reading
+   as a nav item stranded above the profile.) `margin-top` is small on purpose:
+   it belongs to the list above it, not to the space below.
+
+   Deliberately quieter than a `.rail-i`: the recents are the thing to read, and
+   a fourth full-weight destination row hanging off them would compete with the
+   conversations. So it takes the section HEADERS' voice — the same muted ink,
+   one size down from a row, nothing in the leading slot — and earns its place
+   with a trailing chevron, the rail's own "this goes somewhere" mark (see
+   .rail-getstarted-chev).
+
+   It obeys the rail's COLOUR RULE by spending nothing: a neutral wash on hover,
+   and NO active state. `.on` means "the thing you are looking at is in this
+   list", and /chats is the whole list — so an accent here would be a second
+   you-are-here marker in a column whose rows already carry one. */
+html[data-ui-layout="rail"] .rail-history-all {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0 0;
+    padding: 6px 9px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ds-text-muted);
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .rail-history-all[hidden] {
+    display: none;
+}
+
+html[data-ui-layout="rail"] .rail-history-all svg {
+    width: 13px;
+    height: 13px;
+    /* Pinned to the label, not to the rail's right edge: at the edge it would
+       read as a second column of controls beside the conversation rows. */
+    flex-shrink: 0;
+}
+
+html[data-ui-layout="rail"] .rail-history-all:hover {
+    background: var(--rail-hover-bg);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-history-all:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
 }
 
 /* ── Admin ────────────────────────────────────────────────────────────
@@ -1427,6 +1563,34 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
        right-hand gap. */
     html[data-ui-layout="rail"] .rail-nav-top {
         margin-bottom: 0;
+    }
+
+    /* The column's 14px under the wordmark is air above the first section
+       label. Here the logo shares a row with the collapse toggle, where the
+       same value reads as the mark sitting high in its own row. */
+    html[data-ui-layout="rail"] .rail-logo {
+        padding-bottom: 8px;
+    }
+
+    /* The conversations region is sized by the COLUMN layout's free space:
+       `.rail-history: flex: 1 1 auto` over a body with `flex-basis: 0`, which
+       resolves to a real height only inside the rail's fixed viewport height.
+       Here `.rail` is an auto-height bar, so there is no free space to grow
+       into and the whole region collapsed to 0 — Pinned and Chats were rendered
+       and then clipped to nothing, i.e. the expanded bar showed every nav row
+       and no conversations at all (which the collapse toggle's own contract
+       says it should).
+
+       Content-driven height instead, capped so a long history can't push the
+       nav rows and the profile off a phone screen: the lists still scroll
+       inside the same box, with the same fade. */
+    html[data-ui-layout="rail"] .rail-history {
+        flex: 0 0 auto;
+    }
+
+    html[data-ui-layout="rail"] .rail-history-body {
+        flex: 0 1 auto;
+        max-height: 45vh;
     }
 
     /* The row layout has nothing to collapse to — every nav item, the Chats

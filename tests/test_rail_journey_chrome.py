@@ -289,8 +289,14 @@ def test_history_list_is_resolved_at_its_use_site():
     # identifiers to explain the breakage, and a guard that forbids a file from
     # documenting its own history is a guard that gets deleted.
     code = _strip_js_comments(js)
-    for orphan in ("listEl", "toggleTxt", "applyTruncation", "RECENT_LIMIT", "EXPANDED_KEY"):
+    # `RAIL_RECENT_LIMIT` is deliberately NOT in this list: the recent feed is
+    # capped again now that "View all chats" → /chats gives the cap somewhere to
+    # go, and that constant is declared and consumed in this file. The orphans
+    # below belong to the *truncation machinery* (a two-state list with an
+    # in-place expander), which stays retired.
+    for orphan in ("listEl", "toggleTxt", "applyTruncation", "EXPANDED_KEY"):
         assert orphan not in code, f"{orphan} was deleted with the truncation block — nothing may reference it"
+    assert "RAIL_RECENT_LIMIT" in code, "the cap must be a named constant, not a literal in the slice"
 
 
 def test_every_chrome_context_builder_supplies_the_brand_the_rail_renders():
