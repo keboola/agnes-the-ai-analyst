@@ -88,6 +88,46 @@ def fake_storage_client_csv():
     return client
 
 
+# ---- source_table normalization (pre-fix wizard rows) ----------------------
+
+
+def test_normalize_source_table_strips_bucket_prefix():
+    from connectors.keboola.storage_api import normalize_source_table
+
+    assert normalize_source_table("in.c-sales", "in.c-sales.orders") == "orders"
+    # already bare → unchanged
+    assert normalize_source_table("in.c-sales", "orders") == "orders"
+    # different bucket prefix is NOT stripped (not ours to touch)
+    assert normalize_source_table("in.c-sales", "in.c-other.orders") == "in.c-other.orders"
+    # bucket-name-as-substring must not trigger (prefix match includes the dot)
+    assert normalize_source_table("in.c-sales", "in.c-sales2.orders") == "in.c-sales2.orders"
+    # degenerate inputs pass through
+    assert normalize_source_table("", "in.c-sales.orders") == "in.c-sales.orders"
+    assert normalize_source_table("in.c-sales", "") == ""
+
+
+def test_materialize_query_heals_source_table_with_bucket_prefix(tmp_path, fake_storage_client_parquet):
+    """Rows registered by the pre-fix Data-sources wizard stored the FULL
+    Keboola table id in source_table; composing the export id then doubled
+    the bucket (`in.c-sales.in.c-sales.orders`) and every export 404'd.
+    The materialize path must strip the prefix at use so those rows heal
+    without re-registration."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="orders",
+        bucket="in.c-sales",
+        source_table="in.c-sales.orders",  # full id, as the pre-fix wizard stored it
+        source_query=None,
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    call_args = fake_storage_client_parquet.prepare_export.call_args
+    assert call_args.args[0] == "in.c-sales.orders"  # NOT in.c-sales.in.c-sales.orders
+
+
 # ---- default parquet path --------------------------------------------------
 
 

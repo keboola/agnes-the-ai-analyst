@@ -278,12 +278,26 @@ def materialize_query(
         FILE_TYPE_PARQUET,
         ExportFilter,
         KeboolaStorageClient,
+        normalize_source_table,
     )
 
     if storage_client is None:
         if not (keboola_url and keboola_token):
             raise ValueError("materialize_query requires either storage_client or (keboola_url + keboola_token)")
         storage_client = KeboolaStorageClient(url=keboola_url, token=keboola_token)
+
+    # Heal rows whose source_table carries the bucket prefix (written by the
+    # pre-fix Data-sources wizard) — composing the export id below would
+    # otherwise double the bucket and 404 on a nonexistent table id.
+    bare_source_table = normalize_source_table(bucket, source_table)
+    if bare_source_table != source_table:
+        logger.info(
+            "materialize %s: source_table %r carried the bucket prefix; using %r",
+            table_id,
+            source_table,
+            bare_source_table,
+        )
+        source_table = bare_source_table
 
     # Filter spec is optional. Admin can register a row with no
     # source_query at all (= full-table export), or with a JSON object
@@ -1103,11 +1117,15 @@ def _extract_via_legacy(
         ExportFilter,
         KeboolaStorageClient,
         get_temp_root,
+        normalize_source_table,
         warn_if_scratch_survived,
     )
 
     bucket = tc.get("bucket", "")
-    source_table = tc.get("source_table", tc["name"])
+    # normalize_source_table: a row whose source_table carries the bucket
+    # prefix (pre-fix wizard registration) would double the bucket in the
+    # export id below.
+    source_table = normalize_source_table(bucket, tc.get("source_table", tc["name"]))
     table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
 
     # Pull column-level metadata for typed parquet (v27 typed-parquet fix).

@@ -26,6 +26,39 @@ _sample_cache = TTLCache(maxsize=512, ttl_seconds=3600)
 _MAX_N = 100
 
 
+class TableNotSyncedError(FileNotFoundError):
+    """Registered row exists but no local data has landed yet.
+
+    Subclasses FileNotFoundError so every existing catch keeps working; the
+    endpoint maps it to a 404 whose detail explains the pending/failing
+    first sync instead of the misleading bare "table not found" (which reads
+    as "registration failed" to the admin who just registered it)."""
+
+    def __init__(self, table_id: str, detail: str):
+        super().__init__(table_id)
+        self.detail = detail
+
+
+def _not_synced_detail(table_id: str) -> str:
+    """Explain a registered-but-dataless table, with the last sync error
+    when sync_state recorded one."""
+    detail = (
+        f"table {table_id!r} is registered but has no synced data yet — "
+        "the first sync is pending or failing (see the sync status on "
+        "Admin → Tables)"
+    )
+    try:
+        from src.repositories import sync_state_repo
+
+        state = sync_state_repo().get_table_state(table_id) or {}
+        err = state.get("error") or ""
+        if err:
+            detail += f"; last sync error: {str(err)[:300]}"
+    except Exception:
+        logger.debug("sync_state lookup failed for %s while building sample 404 detail", table_id)
+    return detail
+
+
 def _sanitize_for_json(obj):
     """Recursively replace NaN / ±inf floats with None so the response
     survives JSON serialization. FastAPI's default encoder rejects these
@@ -160,7 +193,9 @@ def build_sample(
 
         parquet = resolve_local_parquet(table_id, source_type)
         if parquet is None:
-            raise FileNotFoundError(table_id)
+            # The registry row exists (checked above) — this is "no data has
+            # landed", not "no such table".
+            raise TableNotSyncedError(table_id, _not_synced_detail(table_id))
         c = _open_duckdb(":memory:")
         try:
             df = c.execute(
@@ -226,6 +261,8 @@ def sample(
             )
         except Exception:
             logger.exception("audit_log write failed on error path for catalog.sample; continuing")
+        if isinstance(exc, TableNotSyncedError):
+            raise HTTPException(status_code=404, detail=exc.detail)
         if isinstance(exc, FileNotFoundError):
             raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
         if isinstance(exc, PermissionError):

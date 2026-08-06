@@ -367,3 +367,73 @@ class TestBqAccessErrors:
         assert captured["billing_project"] == "billing-proj"
         # FROM clause uses data project (where the table actually lives)
         assert "`data-proj.ds.bq_view`" in captured["bq_sql"]
+
+
+class TestNotSyncedDetail:
+    """Registered-but-dataless tables must explain the pending/failing first
+    sync instead of the misleading bare "table not found" (which reads as
+    "registration failed" to the admin who just registered the table)."""
+
+    @staticmethod
+    def _register_keboola_row(conn, table_id):
+        from src.repositories.table_registry import TableRegistryRepository
+
+        TableRegistryRepository(conn).register(
+            id=table_id,
+            name=table_id,
+            source_type="keboola",
+            bucket="in.c-main",
+            source_table="orders",
+            query_mode="materialized",
+        )
+
+    def test_registered_but_unsynced_table_explains_pending_sync(self, reload_db):
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_keboola_row(conn, "kbc_fresh")
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
+                v2_sample.build_sample(conn, user, "kbc_fresh", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert "no synced data yet" in exc_info.value.detail
+        assert "kbc_fresh" in exc_info.value.detail
+
+    def test_last_sync_error_included_when_recorded(self, reload_db):
+        from app.api import v2_sample
+        from src.repositories.sync_state import SyncStateRepository
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_keboola_row(conn, "kbc_broken")
+            SyncStateRepository(conn).set_error(
+                "kbc_broken", "GET .../export-async -> HTTP 404: nonexistent table"
+            )
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
+                v2_sample.build_sample(conn, user, "kbc_broken", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert "last sync error" in exc_info.value.detail
+        assert "HTTP 404" in exc_info.value.detail
+
+    def test_endpoint_maps_not_synced_detail_to_404(self, reload_db):
+        """The route handler must surface TableNotSyncedError.detail — not the
+        generic `table '…' not found` message."""
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_keboola_row(conn, "kbc_endpoint")
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(HTTPException) as exc_info:
+                v2_sample.sample(table_id="kbc_endpoint", n=5, user=user, conn=conn, bq=_bq())
+        finally:
+            conn.close()
+        assert exc_info.value.status_code == 404
+        assert "no synced data yet" in exc_info.value.detail

@@ -12,9 +12,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Admin "Browse & register tables" now works with bucket-scoped (custom access) Keboola tokens: when the project-wide `/buckets` + `/tables` listings are refused, the endpoint falls back to enumerating the token's own `bucketPermissions` per bucket, so the picker shows exactly the buckets the token can read. The response carries a `scope` field (`"project"` or `"token_buckets"`) and the picker renders a note when the listing is token-limited. Upstream listing failures are logged with the connection id, and network-level errors (DNS, refused connection, TLS) surface as a clean 502 `keboola_storage_api_error` detail instead of a generic 500.
+
 ### Changed
 
 ### Fixed
+
+- The Data-sources wizard registered Keboola tables with the full `bucket.table` id in `source_table` (alongside the separate `bucket` field), so the sync path re-composed `bucket.bucket.table` — every wizard-registered table's materialize then targeted a nonexistent upstream table id and the catalog preview reported "not found". The wizard now sends the bare in-bucket name, and the extract/materialize paths additionally strip a legacy bucket prefix at use (`normalize_source_table`), so rows registered before the fix heal on their next sync without re-registration. The catalog table-detail page applies the same normalization to the displayed source id.
+- Catalog "Preview data" on a registered table whose data hasn't landed yet now explains that the first sync is pending or failing — including the last recorded sync error when there is one — instead of the misleading bare "table not found".
 
 ### Removed
 

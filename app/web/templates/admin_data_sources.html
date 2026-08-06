@@ -198,6 +198,14 @@
     padding-top: 10px; border-top: 1px solid var(--border, var(--ds-border));
   }
   .ds-browse-error { font-size: 12px; color: var(--ds-accent-danger-ink); }
+  .ds-scope-note {
+    font-size: 12px;
+    color: var(--ds-accent-info-ink);
+    background: var(--ds-accent-info-bg);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-bottom: 10px;
+  }
 
   /* Modal (wizard) — mirrors /admin/datasource-credentials */
   .ds-modal-overlay {
@@ -691,10 +699,19 @@ async function toggleBrowse(id) {
       panel.innerHTML = `<div class="ds-browse-error">Failed to list tables: ${_esc(data.detail || String(r.status))}</div>`;
       return;
     }
-    panel.innerHTML = _renderBucketPicker(id, data.buckets || []);
+    panel.innerHTML = _scopeNote(data) + _renderBucketPicker(id, data.buckets || []);
   } catch (e) {
     panel.innerHTML = `<div class="ds-browse-error">Request failed.</div>`;
   }
+}
+
+function _scopeNote(data) {
+  // Server marks bucket-scoped (custom access) tokens whose listing came
+  // from the token's own bucketPermissions rather than the project-wide
+  // listing — tell the admin the picker is intentionally partial.
+  return data && data.scope === "token_buckets"
+    ? `<div class="ds-scope-note">Bucket-scoped token — showing only the buckets this token can read.</div>`
+    : "";
 }
 
 function _renderBucketPicker(connId, buckets) {
@@ -702,16 +719,27 @@ function _renderBucketPicker(connId, buckets) {
     return `<div class="ds-empty">No buckets/tables visible to this token.</div>`;
   }
   const groups = buckets.map((b, bi) => {
-    const rows = (b.tables || []).map((t, ti) => `
+    const rows = (b.tables || []).map((t, ti) => {
+      // register-table stores bucket and the BARE in-bucket table name in
+      // separate columns; the sync path re-composes `bucket.table`. Keboola's
+      // /tables returns `t.id` as the FULL id (`bucket.table`), so strip the
+      // bucket prefix here — sending the full id doubles the bucket at
+      // export time and the materialize 404s on a nonexistent table.
+      const bare = (t.id && b.id && t.id.startsWith(b.id + "."))
+        ? t.id.slice(b.id.length + 1)
+        : (t.name || t.id || "");
+      return `
       <div class="ds-table-row">
         <label>
           <input type="checkbox" class="ds-table-checkbox" data-conn="${connId}"
-                 data-bucket="${_esc(b.id)}" data-table-id="${_esc(t.id)}" data-table-name="${_esc(t.name)}">
+                 data-bucket="${_esc(b.id)}" data-table-id="${_esc(t.id)}" data-table-name="${_esc(t.name)}"
+                 data-table-bare="${_esc(bare)}">
           <span class="ds-table-name">${_esc(t.name)}</span>
         </label>
         <span class="ds-table-rows">${(t.rows ?? 0).toLocaleString()} rows</span>
         <span class="ds-table-status" id="ds-tstatus-${connId}-${bi}-${ti}"></span>
-      </div>`).join("");
+      </div>`;
+    }).join("");
     return `
       <div class="ds-bucket-group">
         <div class="ds-bucket-title">${_esc(b.name || b.id)} <span class="ds-bucket-stage">${_esc(b.stage || "")}</span></div>
@@ -750,7 +778,9 @@ async function registerSelected(connId) {
           name: cb.dataset.tableName,
           source_type: "keboola",
           bucket: cb.dataset.bucket,
-          source_table: cb.dataset.tableId,
+          // BARE in-bucket name — the full `bucket.table` id here doubled
+          // the bucket when the sync path re-composed the export id.
+          source_table: cb.dataset.tableBare || cb.dataset.tableName,
           query_mode: "materialized",
           connection_id: connId,
           description: `Added via the Data sources wizard (#755)`,
@@ -920,7 +950,7 @@ async function _loadWizardTables(connId) {
       body.innerHTML = `<div class="ds-browse-error">Failed to list tables: ${_esc(data.detail || String(r.status))}</div>`;
       return;
     }
-    body.innerHTML = _renderBucketPicker(connId, data.buckets || []);
+    body.innerHTML = _scopeNote(data) + _renderBucketPicker(connId, data.buckets || []);
     // The picker's own "Register selected" button is redundant with the
     // modal's footer button — hide it here to avoid two triggers.
     const inlineBtn = body.querySelector(".ds-browse-actions .btn-primary");

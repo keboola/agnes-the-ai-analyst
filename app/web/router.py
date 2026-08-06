@@ -1754,6 +1754,16 @@ async def catalog_table_detail(
     if not table:
         raise HTTPException(status_code=404, detail="table_not_found")
 
+    # Display healing: rows written by the pre-fix Data-sources wizard carry
+    # the full `bucket.table` id in source_table; the template renders
+    # `bucket`.`source_table`, which would double the bucket prefix. The sync
+    # path strips the prefix at use (normalize_source_table) — mirror it here
+    # so the page shows the id the export actually targets.
+    if table.get("bucket") and table.get("source_table"):
+        from connectors.keboola.storage_api import normalize_source_table
+
+        table = {**table, "source_table": normalize_source_table(table["bucket"], table["source_table"])}
+
     # Find every package that includes this table; gate access on
     # admin god-mode OR a grant on ANY of those packages. Resolve the
     # caller's accessible DATA_PACKAGE set ONCE (was a per-package
