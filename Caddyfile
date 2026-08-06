@@ -145,14 +145,22 @@
 	}
 }
 
-# Legacy-domain redirect, for the window of a domain migration. Set
+# Legacy-domain handler, for the window of a domain migration. Set
 # DOMAIN_ALIAS to a hostname you are moving AWAY from: Caddy then serves that
-# name too (its own cert) and answers every request with a 301 to the same
-# path on DOMAIN. Without it the old name fails the TLS handshake the moment
-# DOMAIN changes — old bookmarks, `agnes` CLI configs pointing at `server`,
-# and MCP connector URLs all break with a certificate error rather than
-# landing on the new address. Drop the variable once the old DNS record is
-# retired.
+# name too, with its own cert, instead of failing the TLS handshake the moment
+# DOMAIN changes — which is what would otherwise break old bookmarks, `agnes`
+# CLI configs pointing at `server`, and MCP connector URLs, with a certificate
+# error rather than a path onto the new address. Drop the variable once the
+# old DNS record is retired.
+#
+# Two audiences, two answers. A person arriving in a browser gets a short
+# notice page telling them the address changed and what still points at the
+# old one — a silent 301 moves them along but never tells them to update the
+# bookmark, so the old name stays in circulation right up until it dies.
+# Everything else — the CLI, MCP clients, `agnes pull` — gets the plain 301,
+# because an HTML notice served to a machine client is just a confusing parse
+# error. The split is on `Accept: text/html`, which browsers send on
+# navigation and API clients do not.
 #
 # Why a second site block and not `DOMAIN="new.example.com, old.example.com"`:
 # Caddyfile env substitution is token-level, so a comma list inside ONE
@@ -187,16 +195,53 @@
 	# certs on disk) that sets DOMAIN_ALIAS should instead put both names on
 	# one SAN cert — this block would try public ACME for the legacy name.
 
-	# 308, not 301: both are permanent and equally cacheable, but a 301 on a
-	# POST/PUT/PATCH is re-issued by clients as a GET with the body dropped
-	# (browsers, requests, httpx — long-standing behaviour). This feature
-	# exists to keep `agnes push` and MCP JSON-RPC working through a cutover,
-	# and those are POSTs, so a 301 would break exactly what it promises to
-	# carry. 308 preserves method and body (Devin Review on #1182).
+	# Browser navigation → the notice page. HEAD is included so a probe sees
+	# the same status as the GET it precedes.
+	@browser {
+		method GET HEAD
+		header Accept *text/html*
+	}
+	handle @browser {
+		header Content-Type "text/html; charset=utf-8"
+		# Deliberately no <style> block: Caddy substitutes placeholders in a
+		# `respond` body, and a CSS rule's braces read as placeholder syntax.
+		# Every style here is therefore an inline attribute. {$DOMAIN} is
+		# resolved once at config-parse time; {uri} is per-request, so a deep
+		# link keeps its path through both the meta refresh and the button.
+		respond <<HTML
+			<!doctype html>
+			<html lang="en">
+			<head>
+			<meta charset="utf-8">
+			<meta name="viewport" content="width=device-width,initial-scale=1">
+			<title>This address has moved</title>
+			<meta http-equiv="refresh" content="15;url=https://{$DOMAIN:localhost}{uri}">
+			</head>
+			<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f6f7f9;color:#1b1f24;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+			<main style="max-width:32rem;padding:2rem">
+			<p style="margin:0 0 .5rem;font-size:.75rem;letter-spacing:.09em;text-transform:uppercase;color:#6b7280">Address changed</p>
+			<h1 style="margin:0 0 1rem;font-size:1.5rem;font-weight:600;line-height:1.3">This instance has moved to a new address</h1>
+			<p style="margin:0 0 1.5rem;line-height:1.6;color:#374151">You reached it on its old hostname. That name still answers for now, but it stops working once the old DNS record is retired.</p>
+			<p style="margin:0 0 1.5rem"><a href="https://{$DOMAIN:localhost}{uri}" style="display:inline-block;padding:.7rem 1.15rem;border-radius:.5rem;background:#2563eb;color:#fff;font-weight:600;text-decoration:none">Continue to {$DOMAIN:localhost}</a></p>
+			<p style="margin:0;line-height:1.6;font-size:.9rem;color:#6b7280">Please update anything still pointing here: browser bookmarks, the <code>server</code> entry in your <code>agnes</code> CLI config, and any connector configured with this hostname. Taking you there automatically in 15 seconds.</p>
+			</main>
+			</body>
+			</html>
+			HTML 200
+	}
+
+	# Everything else — API clients, the CLI, MCP. 308, not 301: both are
+	# permanent and equally cacheable, but clients re-issue a 301 on
+	# POST/PUT/PATCH as a GET with the body dropped, and this branch is
+	# precisely the one carrying `agnes push` and MCP JSON-RPC. A 301 here
+	# would break what the alias exists to carry. 308 preserves method and
+	# body; {uri} carries path + query through unchanged
+	# (Devin Review on #1182).
 	#
-	# Note what a redirect cannot fix: clients strip Authorization when
-	# following one cross-host, so API callers still have to be repointed at
-	# the new hostname. This is a browser-grade safety net, not a transparent
-	# API proxy — see docs/DEPLOYMENT.md.
-	redir https://{$DOMAIN:localhost}{uri} 308
+	# What no redirect can fix: clients strip Authorization when following one
+	# cross-host, so API callers still need repointing. Browser-grade safety
+	# net, not a transparent API proxy — see docs/DEPLOYMENT.md.
+	handle {
+		redir https://{$DOMAIN:localhost}{uri} 308
+	}
 }

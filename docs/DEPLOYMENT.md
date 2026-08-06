@@ -152,8 +152,14 @@ Changing `DOMAIN` alone makes the old hostname fail the TLS handshake the
 moment Caddy reloads — old bookmarks, `agnes` CLI configs (the `server` key in
 `~/.config/agnes/config.json`), and MCP connector URLs break with a
 certificate error rather than landing on the new address. Set `DOMAIN_ALIAS`
-to the hostname you are leaving and Caddy serves it too, with its own cert,
-answering every request with a 301 onto `DOMAIN`:
+to the hostname you are leaving and Caddy serves it too, with its own cert:
+
+- **Browser navigation** (`GET`/`HEAD` with `Accept: text/html`) gets a notice
+  page naming the new address, with the deep link preserved and an automatic
+  forward after 15 s. A silent redirect would never prompt anyone to update
+  their bookmark, so the old name would stay in circulation until it died.
+- **Everything else** — the CLI, MCP clients, `agnes pull` — gets a plain 301
+  onto the same path on `DOMAIN`.
 
 ```
 DOMAIN=agnes.new.example.com
