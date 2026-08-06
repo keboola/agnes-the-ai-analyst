@@ -16,6 +16,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- `GET /api/admin/source-connections/{id}/tables` (the "Add data source" wizard's table picker) now maps transport-level Storage API failures — DNS errors, refused connections, read timeouts, TLS errors — to the same 502 `keboola_storage_api_error` response as non-2xx API replies, instead of letting them fall through to the catch-all handler as an uninformative 500. The error detail rides the client's token-aware redaction, matching the master-secret preflight's existing behavior.
+
 ### Removed
 
 ### Internal

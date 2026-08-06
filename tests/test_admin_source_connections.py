@@ -22,6 +22,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import requests
 from cryptography.fernet import Fernet
 
 from app.secrets_vault import _reset_ephemeral_key_for_tests
@@ -543,6 +544,53 @@ class TestSourceConnectionsTables:
             resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
 
         assert resp.status_code == 502
+
+    def test_tables_endpoint_transport_error_returns_502(self, seeded_app):
+        # DNS failures, refused connections and timeouts surface from the
+        # requests-based client as requests.RequestException subclasses, NOT
+        # StorageApiError — they must map to the same 502 with upstream
+        # context, not fall through to the catch-all 500 handler.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-transport-error")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=requests.exceptions.ConnectionError(
+                    "HTTPSConnectionPool(host='connection.example.com', port=443): Max retries exceeded"
+                ),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 502
+        detail = resp.json()["detail"]
+        assert detail.startswith("keboola_storage_api_error:")
+        assert "Max retries exceeded" in detail
+
+    def test_tables_endpoint_transport_error_redacts_token(self, seeded_app):
+        # The resolved storage token must appear in the simulated failure so
+        # this exercises the client's redaction rather than trivially passing
+        # (same rationale as test_master_secret_storage_api_outage).
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-transport-redact")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=requests.exceptions.ReadTimeout("read timed out; X-StorageApi-Token: fake-token"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert "fake-token" not in resp.text
 
     def test_tables_endpoint_requires_admin(self, seeded_app):
         c = seeded_app["client"]

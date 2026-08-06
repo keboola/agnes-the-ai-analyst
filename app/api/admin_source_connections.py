@@ -484,8 +484,12 @@ async def list_connection_tables(
     try:
         buckets = await run_in_threadpool(client.list_buckets)
         tables = await run_in_threadpool(client.list_tables)
-    except StorageApiError as exc:
-        raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
+    except (StorageApiError, requests.RequestException) as exc:
+        # Transport failures (DNS, refused connection, read timeout, TLS)
+        # raise requests.RequestException, not StorageApiError — without the
+        # second arm they fall through to the catch-all 500 with no upstream
+        # context. Same 502 + token-aware redaction as the /secret preflight.
+        raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {client._redact(exc)}") from exc
 
     tables_by_bucket: Dict[str, List[Dict[str, Any]]] = {}
     for t in tables:
