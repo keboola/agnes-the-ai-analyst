@@ -621,6 +621,21 @@ _EXEMPT: dict[str, str] = {
         "conversations, the same column the Haiku auto-title writes; no "
         "analyst CLI/MCP analogue"
     ),
+    # Chats page (/chats) archive lifecycle. Same class as pin/title: these
+    # manage how the WEB inventory presents the caller's own conversations.
+    # Archived is the name the plain DELETE's long-standing soft-archive state
+    # finally gets (plus the way back); permanent is the actual row+messages
+    # delete. Neither has a CLI/MCP analogue — `agnes chat <slug>` streams a
+    # session, it does not curate the caller's history inventory.
+    "/api/chat/sessions/{chat_id}/archived": (
+        "web chats-page affordance — archives/restores one of the caller's "
+        "own conversations (the plain DELETE's soft-archive state, named and "
+        "reversible); no analyst CLI/MCP analogue"
+    ),
+    "/api/chat/sessions/{chat_id}/permanent": (
+        "web chats-page affordance — permanently deletes one of the caller's "
+        "own conversations and its messages; no analyst CLI/MCP analogue"
+    ),
     # Keboola glossary import (2026-07-17 design). `/api/glossary/search`
     # carries the triple-surface contract in _COHORT; list and get-by-id are
     # thin REST reads with no dedicated MCP tool (an agent resolves a term by

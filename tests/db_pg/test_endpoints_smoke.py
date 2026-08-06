@@ -1923,6 +1923,9 @@ KNOWN_UNTESTED = {
     "GET /catalog/r/{slug}",
     "GET /catalog/t/{table_id}",
     "GET /chat",
+    # Chats inventory page — rendering, filters, row states and bulk actions
+    # covered by tests/test_web_chats_page.py.
+    "GET /chats",
     "GET /corporate-memory",
     "GET /dashboard",
     "GET /docs",
@@ -2202,6 +2205,12 @@ KNOWN_UNTESTED = {
     # the caller's own session; tested in tests/test_chat_pin_conversations.py.
     "PUT /api/chat/sessions/{chat_id}/pin",
     "PUT /api/chat/sessions/{chat_id}/title",
+    # Chats page (/chats) archive lifecycle — archive/restore and permanent
+    # delete, self-scoped writes on the caller's own session (404, never 403);
+    # behaviour covered in tests/test_web_chats_page.py on both backends'
+    # session repos (tests/db_pg/test_chat_pg.py), not parameter-free.
+    "PUT /api/chat/sessions/{chat_id}/archived",
+    "DELETE /api/chat/sessions/{chat_id}/permanent",
     "POST /api/chat/sessions/{chat_id}/ticket",
     "POST /api/chat/{session_id}/fork",
     "POST /api/chat/{session_id}/invite",

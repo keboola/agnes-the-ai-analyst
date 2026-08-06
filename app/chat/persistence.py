@@ -237,6 +237,48 @@ class ChatRepository:
             return
         self._conn.execute("UPDATE chat_sessions SET archived = TRUE WHERE id = ?", [chat_id])
 
+    def restore_session(self, chat_id: str) -> None:
+        """Un-archive a session — the way back from the Chats page's Archived
+        filter.
+
+        ``archive_session`` has always been a soft delete (``archived = TRUE``),
+        but until the Chats page there was no surface that listed archived rows,
+        so there was nothing to restore them FROM and no route back. Idempotent:
+        restoring a live session is a no-op UPDATE.
+
+        Safe post-``chat_messages`` like ``set_title`` / ``set_pinned``:
+        ``archived`` is not part of any secondary index on ``chat_sessions`` (see
+        the module docstring's DuckDB 1.5.3 FK+index note).
+        """
+        if self._sessions_pg is not None:
+            self._sessions_pg.restore_session(chat_id)
+            return
+        self._conn.execute("UPDATE chat_sessions SET archived = FALSE WHERE id = ?", [chat_id])
+
+    def hard_delete_session(self, chat_id: str) -> bool:
+        """Permanently delete ONE session and its messages. Returns whether a
+        row was there to delete.
+
+        The single-session sibling of ``hard_delete_user_sessions`` (the
+        account-wipe path), added for the Chats page: with Archive now a
+        reversible state of its own, Delete has to mean something different from
+        it, and "delete" that leaves the row in the table is the kind of promise
+        a UI must not make.
+
+        Child rows go first in the same order the account-wipe uses — DuckDB has
+        no ``ON DELETE CASCADE``, so the FKs on ``chat_session_participants``
+        and ``chat_messages`` would block the parent delete while either exists.
+        """
+        if self._sessions_pg is not None:
+            return self._sessions_pg.hard_delete_session(chat_id)
+        row = self._conn.execute("SELECT 1 FROM chat_sessions WHERE id = ?", [chat_id]).fetchone()
+        if row is None:
+            return False
+        self._conn.execute("DELETE FROM chat_session_participants WHERE session_id = ?", [chat_id])
+        self._conn.execute("DELETE FROM chat_messages WHERE session_id = ?", [chat_id])
+        self._conn.execute("DELETE FROM chat_sessions WHERE id = ?", [chat_id])
+        return True
+
     def set_title(self, chat_id: str, title: str) -> None:
         """Persist a new title for a session. Safe to call after
         ``chat_messages`` rows exist — ``title`` is not part of any

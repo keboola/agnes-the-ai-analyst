@@ -6663,6 +6663,185 @@ def _is_debug() -> bool:
     return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 
 
+def _chats_rows(request: Request, user: dict) -> tuple[list[dict], dict[str, int], list[tuple]]:
+    """Project the caller's conversations into Chats-page rows.
+
+    Returns ``(rows, bucket_counts, agent_options)``. Rows are what the template
+    renders and the client-side toolbar filters over; ``bucket_counts`` fills the
+    four segment badges; ``agent_options`` is the Filter menu's Agent category.
+
+    Scope is the caller's OWN sessions — archived ones included, because the page
+    is the only surface that can list and undo that state — plus co-drive
+    sessions someone else owns and shared with them (``shared_with_me``). Those
+    last ones are read-only here: pin / rename / archive / delete are all
+    owner-only server-side (404 for anyone else), so the row offers none of them
+    rather than showing four controls that would fail.
+    """
+    repo = getattr(request.app.state, "chat_repo", None)
+    if repo is None:
+        return [], {"all": 0, "pinned": 0, "shared": 0, "archived": 0}, []
+
+    email = user.get("email") or ""
+    try:
+        own = repo.list_sessions(email, include_archived=True)
+    except Exception:
+        logger.exception("/chats: listing own sessions failed")
+        own = []
+    # Co-drive sessions the caller takes part in. The owner is a participant of
+    # their own co-session too (see fork_session_as_co_session), so this list
+    # overlaps `own` — dedupe on id and keep the owned reading, which is the one
+    # that carries the row actions.
+    try:
+        shared_with_me = [s for s in repo.list_sessions_for_participant(email) if s.user_email != email]
+    except Exception:
+        logger.exception("/chats: listing shared sessions failed")
+        shared_with_me = []
+
+    # Agent id → its name, so the Agent column reads as a name rather than an id.
+    # A session predating the v96 `agents` table (or forked as a co-session) has
+    # no agent_id at all; those rows say "Default agent", which is what ran them.
+    from src.repositories import agents_repo
+
+    agent_names: dict[str, str] = {}
+    try:
+        for a in agents_repo().list_for_user(user.get("id") or ""):
+            agent_names[a["id"]] = a.get("name") or "Agent"
+    except Exception:
+        logger.exception("/chats: resolving agent names failed")
+
+    SURFACE_LABELS = {
+        "web": "Web",
+        "slack_dm": "Slack DM",
+        "slack_thread": "Slack thread",
+        "api": "API",
+    }
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for s, owned in [(s, True) for s in own] + [(s, False) for s in shared_with_me]:
+        if s.id in seen:
+            continue
+        seen.add(s.id)
+        pinned = owned and s.pinned_at is not None
+        archived = bool(s.archived)
+        shared = bool(s.is_co_session) or not owned
+        # The segment set (see filter_toolbar.js `segments.multi`). `all` is a
+        # real token, not a wildcard, which is what keeps archived conversations
+        # out of every other view without a special case in the engine. Archived
+        # is deliberately exclusive: an archived chat is put away, so it should
+        # not also be sitting in Pinned.
+        buckets = ["archived"] if archived else ["all"]
+        if not archived:
+            if pinned:
+                buckets.append("pinned")
+            if shared:
+                buckets.append("shared")
+        agent_label = agent_names.get(s.agent_id or "", "Default agent")
+        updated = s.last_message_at or s.started_at
+        title = (s.title or "").strip() or "Untitled chat"
+        rows.append(
+            {
+                "id": s.id,
+                "title": title,
+                "href": f"/chat?session={quote(s.id, safe='')}",
+                "agent_label": agent_label,
+                "agent_key": agent_label.lower(),
+                "surface": s.surface.value,
+                "surface_label": SURFACE_LABELS.get(s.surface.value, "Web"),
+                # No message count: it says nothing about WHICH conversation a
+                # row is, and as a column of small numbers it was the kind of
+                # furniture that made the list read as a table.
+                "updated_iso": updated.isoformat() if updated else "",
+                "pinned": pinned,
+                "archived": archived,
+                "shared": shared,
+                "owned": owned,
+                "buckets": "|".join(buckets),
+                # What the page's search box matches on — lowercased here so the
+                # engine's own lowercased query is a plain substring test.
+                "search": " ".join([title, agent_label, SURFACE_LABELS.get(s.surface.value, "")]).lower(),
+            }
+        )
+
+    # Pinned first, then most-recent-first — the same order the rail's list uses,
+    # so the page opens on the ordering the caller already knows. One `reverse`
+    # covers both keys because both want descending (True before False, and ISO
+    # 8601 sorts lexicographically). Archived rows keep their recency order
+    # inside their own segment.
+    rows.sort(key=lambda r: (r["pinned"], r["updated_iso"] or ""), reverse=True)
+
+    counts = {
+        "all": sum(1 for r in rows if not r["archived"]),
+        "pinned": sum(1 for r in rows if r["pinned"] and not r["archived"]),
+        "shared": sum(1 for r in rows if r["shared"] and not r["archived"]),
+        "archived": sum(1 for r in rows if r["archived"]),
+    }
+
+    # Facet options carry the UNFILTERED tally per value, matching how every
+    # other Filter menu in the app counts (see the Library's categories).
+    agent_tally: dict[str, int] = {}
+    for r in rows:
+        agent_tally[r["agent_label"]] = agent_tally.get(r["agent_label"], 0) + 1
+    agent_options = [(label.lower(), label, n) for label, n in sorted(agent_tally.items())]
+    return rows, counts, agent_options
+
+
+@router.get("/chats", response_class=HTMLResponse)
+async def chats_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Chats — the caller's conversations, in one manageable list.
+
+    The rail carries New chat, the pinned shelf and a handful of recent
+    conversations; past that a 240px column cannot answer "where is the analysis
+    I ran three weeks ago" or "clear out everything I started and abandoned".
+    This page is that surface, and it deliberately reuses the Library's
+    structure — prominent search in the header, one filter/sort dock, scannable
+    rows — so the two inventories read as the same product.
+
+    Same gate as /chat: chat has to be enabled AND the caller must hold the chat
+    grant; both failures bounce home rather than 403, matching the chat page (the
+    rail hides the link for them too, so this guards a direct URL hit).
+
+    Rendering is server-side; search, the four segments (All / Pinned / Shared /
+    Archived), the Agent + Source facets, sort, the table ⇄ grid switch, the
+    row actions and the bulk bar are all client-side over those rows
+    (static/js/chats_page.js).
+    """
+    if not request.app.state.chat_config.enabled:
+        return RedirectResponse("/")
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+
+    if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
+        return RedirectResponse("/")
+
+    rows, counts, agent_options = _chats_rows(request, user)
+    surface_tally: dict[str, tuple[str, int]] = {}
+    for r in rows:
+        key = r["surface"]
+        label, n = surface_tally.get(key, (r["surface_label"], 0))
+        surface_tally[key] = (label, n + 1)
+    surface_options = [(k, label, n) for k, (label, n) in sorted(surface_tally.items())]
+
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        current_user=user,
+        chat_rows=rows,
+        chat_bucket_counts=counts,
+        chat_agent_options=agent_options,
+        # Only offered when it can change the list: a caller who has only ever
+        # used the web composer would get a one-option category that filters
+        # nothing.
+        chat_surface_options=surface_options if len(surface_options) > 1 else [],
+    )
+    return templates.TemplateResponse(request, "chats.html", ctx)
+
+
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_page(
     request: Request,
@@ -6690,8 +6869,8 @@ async def chat_page(
     if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
         return RedirectResponse("/")
     # Rail pre-conversation state = the Dashboard (issue #896): greeting,
-    # the real composer, a "Agnes is using N knowledge sources and M
-    # capabilities from your Stack" context line, activity panels, and
+    # the real composer, a "Using N knowledge sources and M capabilities
+    # from your Stack" context line, activity panels, and
     # guided task starters — rendered by chat.html's rail empty-state
     # blocks and hidden the moment a conversation starts. The counts are
     # the caller's ACTUAL Stack contents (same reads as the /stack page

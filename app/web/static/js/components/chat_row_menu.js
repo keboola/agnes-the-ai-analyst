@@ -2,18 +2,27 @@
  * chat_row_menu.js — the "⋮" overflow menu on a conversation row.
  *
  * The history list has TWO renderers (chat.js on /chat, rail_history.js
- * everywhere else — see rail_history.js's header for why). Row actions used to
- * be inline icon buttons, which meant every new action cost horizontal space in
- * a ~250px rail and had to be duplicated twice. This is the shared owner
- * instead: both renderers ask for a trigger button and hand over three
- * callbacks. Actions are Pin/Unpin, Rename, Delete.
+ * everywhere else — see rail_history.js's header for why), and a THIRD surface
+ * lists the same conversations as a table (chats_page.js on /chats). Row actions
+ * used to be inline icon buttons, which meant every new action cost horizontal
+ * space in a ~250px rail and had to be duplicated per renderer. This is the
+ * shared owner instead: every caller asks for a trigger button and hands over
+ * callbacks. Actions are Pin/Unpin, Rename, Delete — plus, where the caller
+ * supplies the handler, Archive or Restore.
  *
  * Exposes ONE global so a classic script and an ES module can both use it:
  *
- *   window.chatRowMenu.trigger({ session, onPin, onRename, onDelete })
+ *   window.chatRowMenu.trigger({ session, onPin, onRename, onDelete,
+ *                                onArchive?, onRestore? })
  *       -> HTMLButtonElement to append to the row
  *   window.chatRowMenu.close()   -> close whatever is open (renderers call
  *                                   this before wiping the list)
+ *
+ * `onArchive` / `onRestore` are OPTIONAL and mutually exclusive per row: the
+ * menu offers Archive on a live conversation and Restore on an archived one,
+ * and offers neither where the caller passes neither (the rail and the chat page
+ * have no surface that lists archived rows, so archiving there would put a
+ * conversation somewhere the caller cannot see it again).
  *
  * Contract: call it from render/event code, never at top-level parse time —
  * same rule _app_scripts.html documents for confirmModal. Both loaders use
@@ -62,6 +71,21 @@
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
       'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/>' +
+      "</svg>",
+    // A box with a lid — the "put it away" glyph, deliberately nothing like the
+    // bin above it: Archive is reversible and Delete is not, so the two must not
+    // read as variations of the same action.
+    archive:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M4 8h16M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M4 8V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v3M10 13h4"/>' +
+      "</svg>",
+    // The same box, with the arrow coming back out of it.
+    restore:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M4 8h16M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M4 8V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v3"/>' +
+      '<path d="M12 17v-5m0 0-2 2m2-2 2 2"/>' +
       "</svg>",
   };
 
@@ -157,32 +181,54 @@
   }
 
   /** Build the ⋮ button for one row. `session` is the row's session object
-   *  (`{id, title, pinned}`); the three callbacks do the actual work and own
+   *  (`{id, title, pinned, archived}`); the callbacks do the actual work and own
    *  their own error reporting + re-render. */
   function makeTrigger(opts) {
-    const s = opts.session || {};
-    const name = s.title || "this conversation";
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "chat-rowmenu-btn";
     btn.setAttribute("aria-haspopup", "menu");
     btn.setAttribute("aria-expanded", "false");
-    btn.setAttribute("aria-label", `More actions for ${name}`);
     btn.title = "More actions";
     btn.innerHTML = KEBAB_SVG;
 
-    const actions = [
-      { id: "pin", label: s.pinned ? "Unpin" : "Pin", run: () => opts.onPin(!s.pinned) },
-      { id: "rename", label: "Rename", run: () => opts.onRename() },
-      { id: "delete", label: "Delete", danger: true, run: () => opts.onDelete() },
-    ];
+    // Read `opts.session` at OPEN time, never at build time. The two rail
+    // renderers rebuild every row after every action, so a snapshot worked for
+    // them; /chats updates a row IN PLACE (a reload there would throw away the
+    // search + filters the caller used to find it), so a snapshot would leave
+    // the menu offering "Pin" on a row it had just pinned.
+    const state = () => opts.session || {};
+    const label = () => state().title || "this conversation";
+    btn.setAttribute("aria-label", `More actions for ${label()}`);
+
+    function buildActions() {
+      const s = state();
+      const actions = [
+        { id: "pin", label: s.pinned ? "Unpin" : "Pin", run: () => opts.onPin(!s.pinned) },
+        { id: "rename", label: "Rename", run: () => opts.onRename() },
+      ];
+      // Archive / Restore sits between Rename and Delete — after the harmless
+      // actions, before the irreversible one, and next to the action it is most
+      // likely to be mistaken for. Which of the two shows follows the row's own
+      // state, so one wiring covers a conversation on both sides of archiving.
+      if (s.archived && opts.onRestore) {
+        actions.push({ id: "restore", label: "Restore", run: () => opts.onRestore() });
+      } else if (!s.archived && opts.onArchive) {
+        actions.push({ id: "archive", label: "Archive", run: () => opts.onArchive() });
+      }
+      actions.push({ id: "delete", label: "Delete", danger: true, run: () => opts.onDelete() });
+      return actions;
+    }
 
     btn.addEventListener("click", (e) => {
       // The row itself is a button (opens/navigates to the conversation) —
       // without this the menu would open and the row would fire too.
       e.preventDefault();
       e.stopPropagation();
-      open(btn, actions);
+      // Re-stamped from the live row: a renamed conversation must not keep
+      // announcing its old name to a screen reader.
+      btn.setAttribute("aria-label", `More actions for ${label()}`);
+      open(btn, buildActions());
     });
     // Same reason, for the row's own Enter/Space keydown handler.
     btn.addEventListener("keydown", (e) => {

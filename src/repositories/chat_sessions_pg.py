@@ -155,6 +155,31 @@ class ChatSessionPgRepository:
                 {"id": chat_id},
             )
 
+    def restore_session(self, chat_id: str) -> None:
+        """Un-archive a session. Mirrors ``ChatRepository.restore_session`` —
+        idempotent, and the way back from the Chats page's Archived filter."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE chat_sessions SET archived = FALSE WHERE id = :id"),
+                {"id": chat_id},
+            )
+
+    def hard_delete_session(self, chat_id: str) -> bool:
+        """Permanently delete ONE session; returns whether a row existed.
+
+        Mirrors ``ChatRepository.hard_delete_session``. Postgres has
+        ``ON DELETE CASCADE`` on both child tables (``chat_messages`` in
+        migration 0015, ``chat_session_participants`` in 0017), so the deletes
+        the DuckDB sibling has to spell out happen here for free — the
+        observable contract is identical.
+        """
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text("DELETE FROM chat_sessions WHERE id = :id"),
+                {"id": chat_id},
+            )
+        return bool(result.rowcount)
+
     def set_title(self, chat_id: str, title: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
