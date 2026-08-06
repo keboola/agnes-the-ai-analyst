@@ -19,6 +19,16 @@
        search:  { el: '#af-search', attr: 'data-search' },
        segments:{ container: '#af-own', attr: 'data-ownership',
                   expand: { mine: ['mine', 'shared_by_me'] } },
+       // …or, when the segments are NOT mutually exclusive (a chat can be
+       // both pinned and shared), `multi: true` reads the attribute as a
+       // pipe-separated SET and keeps a row whose set contains the selected
+       // segment — the same shape `facets[].multi` uses. `all` then stops
+       // being a wildcard and becomes an ordinary token every row that
+       // belongs in the default view carries, which is what lets a bucket
+       // (archived) be excluded from it without a special case:
+       //   segments:{ container: '#ch-seg', attr: 'data-buckets', multi: true }
+       //   <tr data-buckets="all|pinned">  <tr data-buckets="archived">
+       segments:{ container: '#ch-seg', attr: 'data-buckets', multi: true },
        facets:  [ { key: 'type', attr: 'data-type', label: 'Type' },
                   { key: 'origin', attr: 'data-origin', label: 'Source' },
                   // A binary condition, not a category: on = keep only rows
@@ -106,15 +116,27 @@
     // ── state ──
     var segValue = 'all';
     var segExpand = (cfg.segments && cfg.segments.expand) || {};
+    // Non-exclusive segments: the row's attribute is a pipe-separated SET
+    // rather than one value (see the usage block above).
+    var segMulti = !!(cfg.segments && cfg.segments.multi);
     var facetState = {};                 // key -> Set(values)
     facets.forEach(function (f) { facetState[f.key] = new Set(); });
 
     // ── matching ──
     function segMatch(row) {
-      if (segValue === 'all') return true;
-      var v = row.getAttribute(cfg.segments.attr);
+      if (!cfg.segments) return true;
+      // `all` is a wildcard only for exclusive segments. With `multi` it is a
+      // real token, so a row that doesn't carry it (an archived chat) stays out
+      // of the default view — which is the whole point of the mode.
+      if (segValue === 'all' && !segMulti) return true;
+      var raw = row.getAttribute(cfg.segments.attr) || '';
       var allowed = segExpand[segValue] || [segValue];
-      return allowed.indexOf(v) !== -1;
+      if (!segMulti) return allowed.indexOf(raw) !== -1;
+      var have = raw.split('|');
+      for (var i = 0; i < have.length; i++) {
+        if (have[i] && allowed.indexOf(have[i]) !== -1) return true;
+      }
+      return false;
     }
     function facetMatch(row) {
       // AND across facets, OR within a facet's selected values.
@@ -311,6 +333,87 @@
       pop.style.top = Math.round(top) + 'px';
     }
 
+    // ── Searching WITHIN a category ─────────────────────────────────────────
+    //    Past a handful of options a category stops being a list you read and
+    //    becomes one you scroll (a tag vocabulary runs to dozens), so finding a
+    //    value you can already name costs a scan. Categories longer than
+    //    CAT_SEARCH_MIN therefore grow a filter field at the top of their own
+    //    popover, injected here rather than in the templates so every page — and
+    //    every future facet — inherits it from the row count alone.
+    //
+    //    It narrows the OPTIONS, never the rows: checking a hidden-by-search box
+    //    is impossible anyway, and the field is scoped to one popover, so the
+    //    toolbar's own search box keeps its single meaning (search the list).
+    var CAT_SEARCH_MIN = 10;
+
+    function setupCatSearch(cat) {
+      var pop = qs('.fbar-cat__pop', cat);
+      if (!pop) return;
+      var opts = qsa('.fbar-menu__opt', pop);
+      if (opts.length <= CAT_SEARCH_MIN) return;
+
+      // The text each option is matched on, read once off the DOM: the option's
+      // own label minus the trailing tally, which is a count and not part of any
+      // name (searching "1" must not match every option on the page).
+      var entries = opts.map(function (opt) {
+        var txt = (opt.querySelector('.fbar-menu__opt-text') || opt).textContent || '';
+        return { el: opt, text: txt.toLowerCase().trim() };
+      });
+
+      var label = qs('.fbar-cat__label', cat);
+      var name = (label && (label.textContent || '').trim()) || cat.getAttribute('data-cat') || '';
+      var wrap = document.createElement('div');
+      wrap.className = 'fbar-cat__search';
+      var input = document.createElement('input');
+      input.type = 'search';
+      input.className = 'fbar-cat__searchinput';
+      input.placeholder = 'Search…';
+      input.autocomplete = 'off';
+      //: The placeholder stays generic (a category name doesn't always read as
+      //: an object — "Search optional / required…"), so the accessible name is
+      //: where the field says WHICH options it filters.
+      input.setAttribute('aria-label', 'Search ' + (name || 'filter') + ' options');
+      wrap.appendChild(input);
+      var none = document.createElement('div');
+      none.className = 'fbar-cat__none';
+      //: A sighted reader sees the list empty out; `status` is how a screen
+      //: reader is told the same thing, since narrowing to nothing is otherwise
+      //: silent — options just stop being there.
+      none.setAttribute('role', 'status');
+      none.textContent = 'No matches';
+      none.hidden = true;
+
+      function filterOpts() {
+        var q = (input.value || '').trim().toLowerCase();
+        var shown = 0;
+        entries.forEach(function (e) {
+          var hit = !q || e.text.indexOf(q) !== -1;
+          e.el.hidden = !hit;
+          if (hit) shown++;
+        });
+        none.hidden = shown !== 0;
+        // The popover just changed height, and it is placed against the viewport
+        // — re-run the placer or a category near the bottom would keep the top it
+        // was measured for and hang off the screen as it shrinks and grows.
+        placeSubmenu(cat);
+      }
+      input.addEventListener('input', filterOpts);
+      // Escape with a query in the field means "undo the narrowing", not "close
+      // the menu" — the outer Escape handler (which closes it) only gets the key
+      // once there is nothing left here to clear.
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && input.value) {
+          e.stopPropagation();
+          input.value = '';
+          filterOpts();
+        }
+      });
+
+      pop.insertBefore(wrap, pop.firstChild);
+      pop.appendChild(none);
+      cat._search = input;
+    }
+
     // The one way to open or close a category, so the placer runs however the
     // submenu was reached — hover, click, keyboard focus, or a chip.
     function setCatOpen(cat, open) {
@@ -342,7 +445,10 @@
       openMenu(true);
       var cat = qs('.fbar-cat[data-cat="' + key + '"]', menuEl);
       qsa('.fbar-cat', menuEl).forEach(function (c) { setCatOpen(c, c === cat); });
-      var first = qs('input[data-facet="' + key + '"]', cat || menuEl);
+      // A long category opens with the caret in its search field: the reader came
+      // here to change a selection they can name, and on that list finding the
+      // value is the work. Short ones focus the first option, as before.
+      var first = (cat && cat._search) || qs('input[data-facet="' + key + '"]', cat || menuEl);
       if (first) first.focus();
     }
 
@@ -689,7 +795,14 @@
       }
       function scheduleClose(cat) {
         cancelClose();
-        closeTimer = setTimeout(function () { setCatOpen(cat, false); }, 140);
+        closeTimer = setTimeout(function () {
+          // Focus outranks hover: a category being TYPED IN (its search field) or
+          // tabbed through must not disappear because the pointer drifted off it.
+          // Without this, reaching for a long category's options with the mouse
+          // and then typing was a race against the 140ms grace period.
+          if (cat.contains(document.activeElement)) return;
+          setCatOpen(cat, false);
+        }, 140);
       }
       function openOnly(cat) {
         cancelClose();
@@ -697,6 +810,7 @@
         setCatOpen(cat, true);
       }
       cats.forEach(function (cat) {
+        setupCatSearch(cat);
         cat.addEventListener('mouseenter', function () { openOnly(cat); });
         cat.addEventListener('mouseleave', function () { scheduleClose(cat); });
         var pop = qs('.fbar-cat__pop', cat);

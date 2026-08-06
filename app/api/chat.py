@@ -237,6 +237,87 @@ async def rename_session(
     return {"id": chat_id, "title": title}
 
 
+async def _kill_quietly(request: Request, chat_id: str, *, reason: str) -> None:
+    """Stop a session's sandbox if there is a manager to ask, and never fail for
+    it.
+
+    Archiving and deleting are BOOKKEEPING on a row; stopping the runner is
+    tidying up after it. So a missing manager (chat configured but no provider
+    wired — the common local/dev shape) must not turn "archive this conversation"
+    into a 503, and neither must a kill that throws. ``_get_manager`` is the
+    right guard for the endpoints that need a live sandbox to do their job at
+    all; these two do not.
+    """
+    mgr = getattr(request.app.state, "chat_manager", None)
+    if mgr is None:
+        return
+    try:
+        await mgr.kill(chat_id, reason=reason)
+    except Exception:
+        logger.exception("kill on %s failed for %s", reason, chat_id)
+
+
+class ArchiveSessionBody(BaseModel):
+    archived: bool
+
+
+@router.put("/sessions/{chat_id}/archived")
+async def set_session_archived(
+    chat_id: str,
+    body: ArchiveSessionBody,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Archive or restore a conversation from the Chats page (/chats).
+
+    ``DELETE /sessions/{chat_id}`` has always been a soft delete (it flips
+    ``archived`` and kills the sandbox), but nothing listed archived rows, so
+    the state had no name in the UI and no way back. This is the explicit,
+    two-directional route: ``{"archived": true}`` archives (killing the sandbox
+    exactly as the DELETE path does — an archived conversation must not keep a
+    sandbox warm), ``{"archived": false}`` restores.
+
+    Ownership-gated like every sibling per-session route: 404, never 403, so the
+    endpoint cannot be used to probe for other users' session ids. Idempotent in
+    both directions.
+    """
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    if body.archived:
+        await _kill_quietly(request, chat_id, reason="user_archive")
+        repo.archive_session(chat_id)
+    else:
+        repo.restore_session(chat_id)
+    return {"id": chat_id, "archived": body.archived}
+
+
+@router.delete("/sessions/{chat_id}/permanent", status_code=204)
+async def delete_session_permanently(
+    chat_id: str,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Permanently delete a conversation and its messages.
+
+    The counterpart to the reversible archive above: with Archive a named state
+    the Chats page can list and undo, Delete has to mean the row is gone. The
+    plain ``DELETE /sessions/{chat_id}`` keeps its long-standing soft-archive
+    behavior — every existing caller (the chat page and rail row menus) is
+    unchanged.
+
+    Same ownership gate (404, never 403) and the same sandbox kill first: the
+    row is about to go, so a runner still holding it would be orphaned.
+    """
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    await _kill_quietly(request, chat_id, reason="user_delete")
+    repo.hard_delete_session(chat_id)
+
+
 @router.get("/skills")
 async def list_skills(
     user: dict = Depends(require_chat_access),

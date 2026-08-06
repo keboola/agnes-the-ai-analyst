@@ -12,6 +12,10 @@
 {{ detail.styles() }}
 <link rel="stylesheet" href="{{ static_url('css/file_preview.css') }}">
 <script src="{{ static_url('js/file_preview.js') }}" defer></script>
+{# The sharing badge in the rail IS the sharing control, so the page ships the
+   dialog behind it. Only for a caller who may re-share this collection —
+   otherwise the badge stays a read-out and there is nothing to load. #}
+{% if can_share %}{{ detail.share_assets() }}{% endif %}
 <style>
   /* Drop zone */
   .drop {
@@ -28,6 +32,9 @@
   .drop__sub { font-size: 0.78rem; color: var(--ds-text-secondary); }
   .drop input[type="file"] { display: none; }
   .drop__actions { display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-2); }
+  /* The promotion note under the drop zone (single-file artefacts only). */
+  .drop__note { margin: var(--space-3) 0 0; font-size: 0.8rem; color: var(--ds-text-secondary); }
+  .drop__note strong { color: var(--ds-text-primary); font-weight: var(--font-semibold); }
 
   /* File list */
   .files { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -99,9 +106,28 @@
    this collection is actually usable yet. #}
 {% set _indexed = (files or []) | selectattr('processing_status', 'equalto', 'indexed') | list | length %}
 
+{# Secondary actions live in the overflow menu, so the header carries the one
+   action a reader would take — the same rule every other detail page follows.
+   Under the editorial layout sharing is NOT one of them: the rail's Sharing
+   badge IS the control (as it is on every Library row), so an item here would
+   be a second entry point to the same dialog, hidden behind a chevron.
+
+   The legacy layout has no rail — and so no badge — so there it keeps its one
+   sharing entry point. It opens the same dialog the badge opens; it used to
+   link to `/library?share=…`, a URL nothing handles, which is why sharing a
+   collection from its own page never worked. #}
+{% set _menu_items = [] %}
+{% if can_share and not detail.redesign %}
+  {% set _ = _menu_items.append({
+       'label': 'Manage sharing', 'icon': 'share',
+       'attrs': 'data-share-open data-share-type="collection" data-share-id="'
+                ~ (collection.id | e) ~ '" data-share-title="' ~ (_title | e) ~ '"'}) %}
+{% endif %}
+{% set _menu %}{% if _menu_items %}{{ detail.menu(_menu_items) }}{% endif %}{% endset %}
+
 {% call detail.hero(
      kind=_kind, glyph=_hero_glyph, name=_title,
-     type_label=_noun|capitalize,
+     type_label=_noun|capitalize, menu=_menu|trim,
      description=_desc, compact=True,
      meta=_meta, back_href=_back, back_label=_back_label) %}
   {{ detail.ask_agnes('Search the ' ~ _title ~ ' ' ~ _noun ~ ' and answer from its files.') }}
@@ -111,24 +137,10 @@
 
 {# No in-page ask/search box: a detail page presents its entity (like the data
    package / plugin / table pages), and asking happens in chat via the hero's
-   Ask Agnes action. Uploading stays here — it targets a COLLECTION, so it is
-   this page's affordance and never the individual file page's. #}
-{{ detail.section_open('Upload files', icon='file') }}
-  <label class="drop" id="lib-drop">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V6M8 10l4-4 4 4"/><path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/></svg>
-    <div class="drop__hint"><strong>Drop files here</strong> or click to choose</div>
-    <div class="drop__sub">PDF, Office, CSV/Excel, images — indexed automatically</div>
-    <input id="lib-files" type="file" multiple aria-label="Files to upload">
-    <div class="drop__actions">
-      <span class="drop__sub" id="lib-file-count"></span>
-      {{ ds.button("Upload", variant="primary", attrs='id="lib-upload-btn" type="button"') }}
-    </div>
-  </label>
-{{ detail.section_close() }}
-
+   Ask Agnes action. #}
 {{ detail.section_open('Files', icon='file') }}
   {% if not files %}
-    {{ detail.empty('No files yet — drop some above.', icon='file') }}
+    {{ detail.empty('No files yet — drop some below.', icon='file') }}
   {% else %}
   <div class="files">
     {% for f in files %}
@@ -182,13 +194,49 @@
   {% endif %}
 {{ detail.section_close() }}
 
+{# Uploading targets a COLLECTION, so it is this page's affordance and never
+   the individual file page's — and it comes AFTER the file list: the page
+   leads with what is in the artefact, then offers to grow it. On a one-file
+   artefact growing it is a real change of shape (file → collection), so the
+   drop zone says so before the reader acts, instead of surprising them with
+   a promoted "collection" afterwards. #}
+{{ detail.section_open('Add files', icon='file') }}
+  <label class="drop" id="lib-drop">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V6M8 10l4-4 4 4"/><path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/></svg>
+    <div class="drop__hint"><strong>Drop files here</strong> or click to choose</div>
+    <div class="drop__sub">PDF, Office, CSV/Excel, images — indexed automatically</div>
+    <input id="lib-files" type="file" multiple aria-label="Files to upload">
+    <div class="drop__actions">
+      <span class="drop__sub" id="lib-file-count"></span>
+      {{ ds.button("Upload", variant="primary", attrs='id="lib-upload-btn" type="button"') }}
+    </div>
+  </label>
+  {% if _single %}
+    <p class="drop__note">
+      Adding more files turns this file into a <strong>collection</strong> —
+      it keeps its name and sharing, and every file stays searchable.
+    </p>
+  {% endif %}
+{{ detail.section_close() }}
+
 {{ detail.aside_open() }}
 {# The rail's content is redesign-only: on the legacy path there is no
    rail, and appending these as extra sections would change a page default
    instances are entitled to see unchanged. #}
 {% if detail.redesign %}
 
-{# No "Type" row — the header badge already says Collection / File. #}
+{# Rail order is the shared page contract (see macros/_detail.html): the prose
+   leads, because a reader who has not been told what this IS has no use for
+   "3 files"; then the facts, then who owns it, then who else can see it. #}
+{% if collection.description %}
+{{ detail.side_open('About this ' ~ _noun, icon='book') }}
+  <div class="detail-prose detail-side__prose">{{ collection.description }}</div>
+{{ detail.side_close() }}
+{% endif %}
+
+{# Unlabelled — every row names its own value, so a heading over the top
+   labelled a block that was already fully labelled. No "Type" row either: the
+   header badge already says Collection / File. #}
 {% set _rows = [{'key': 'Files', 'val': (_n|string) if _n else 'None yet'}] %}
 {% if _n %}
   {# "Searchable" is the number that decides whether this collection is usable
@@ -197,20 +245,42 @@
                            'val': detail.status(_indexed|string ~ ' of ' ~ _n,
                                                 'ok' if _indexed == _n else 'warn')|trim}) %}
 {% endif %}
-{{ detail.side_open((_noun|capitalize) ~ ' information', icon='info') }}
+{% if collection.created_at %}
+  {% set _ = _rows.append({'key': 'Created', 'val': collection.created_at.isoformat()[:10]}) %}
+{% endif %}
+{{ detail.side_open('') }}
   {{ detail.side_rows(_rows) }}
 {{ detail.side_close() }}
 
-{% if collection.description %}
-{{ detail.side_open('About', icon='book') }}
-  <div class="detail-prose">{{ collection.description }}</div>
+{% if owner_name %}
+{{ detail.side_open('Owner', icon='user') }}
+  {{ detail.owner(owner_name) }}
 {{ detail.side_close() }}
 {% endif %}
+
+{# Sharing sits in the same rail position, and is drawn by the same component,
+   as it is on the file page — the two used to disagree about whether a
+   collection even had a visibility worth stating. #}
+{# Count-aware, like the noun itself: "sharing the file shares every file in
+   it" is what the blind noun-swap used to say about a one-file artefact. #}
+{% set _share_note %}
+  {% if _single %}
+    Sharing covers this file. If it grows into a collection, the same sharing
+    covers every file added to it.
+  {% else %}
+    Sharing the collection shares every file in it. Individual files can also be
+    shared on their own from their own page.
+  {% endif %}
+{% endset %}
+{{ detail.side_sharing(collection_visibility,
+                       note=_share_note,
+                       share=({'type': 'collection', 'id': collection.id,
+                               'title': _title} if can_share else None)) }}
 
 {{ detail.side_open('How this is used', icon='spark') }}
   <p class="detail-prose">
     Every indexed file here is searchable by your agents. Ask Agnes a question and
-    it answers from this {{ _noun }}; sharing the {{ _noun }} shares everything in it.
+    it answers from this {{ _noun }}.
   </p>
 {{ detail.side_close() }}
 

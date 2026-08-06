@@ -203,7 +203,7 @@ def test_library_detail_renders_for_admin(seeded_app):
     r = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 200
     assert "DetailUI Demo" in r.text
-    assert "Upload files" in r.text
+    assert "Add files" in r.text
     # A detail page presents its entity — no in-page ask/search box (the hero's
     # Ask Agnes action carries asking into chat instead).
     assert "Ask this collection" not in r.text
@@ -274,6 +274,25 @@ def test_single_file_artefact_presents_as_file(seeded_app, monkeypatch):
     assert "report.pdf" in det  # filename surfaced in the hero meta
     assert _DOC_GLYPH in det  # single-document hero glyph
     assert "Ask this file" not in det  # detail pages carry no in-page ask box
+
+
+def test_upload_box_follows_the_file_list_and_explains_promotion(seeded_app):
+    """The page leads with what is IN the artefact; adding to it comes after
+    (Files section above the Add-files drop zone). On a one-file artefact the
+    drop zone also says what uploading does — it turns the file into a
+    collection — so the change of shape never surprises. A real collection
+    needs no such warning."""
+    c = seeded_app["client"]
+    col = _create(seeded_app, "Order Demo")
+    _upload(seeded_app, col["id"], "solo.pdf", b"%PDF-1.4 x", "application/pdf")
+
+    det = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["admin_token"])).text
+    assert det.index("Files</h2>") < det.index("Add files</h2>")
+    assert "turns this file into a" in det
+
+    _upload(seeded_app, col["id"], "second.txt", b"more", "text/plain")
+    det = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["admin_token"])).text
+    assert "turns this file into a" not in det
 
 
 def test_multi_file_artefact_presents_as_collection(seeded_app, monkeypatch):

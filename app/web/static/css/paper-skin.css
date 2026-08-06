@@ -435,3 +435,235 @@ html[data-theme="paper"] .owner-actions .btn-danger[disabled] {
     border-color: var(--ds-border-light);
     color: var(--ds-text-muted);
 }
+
+/* Hero pill row: wrap BETWEEN pills, never inside one. The trust marker is a
+   wider label than the `Flea` badge it replaced, so on a phone the row's last
+   pill ("Updated 4 days ago") was left breaking across three lines mid-phrase
+   instead of moving down whole. The row already wraps; the pills just have to
+   stop being wrappable themselves. */
+html[data-theme="paper"] .detail-hero .pills > .pill {
+    white-space: nowrap;
+}
+
+/* ── Manage region ────────────────────────────────────────────────────
+   The owner/admin blocks on a marketplace detail page — submission status,
+   publisher + verification, versions, and the action strip — are one
+   audience's tools, and they used to render as three different containers
+   plus a bare button row: a hex-coloured banner, a sunken bordered strip, a
+   white bordered card, and the hairline strip above. Nothing said they
+   belonged together, so they read as unrelated boxes wedged between the
+   header and the content.
+
+   They become one region: a single hairline and one small-caps label, then
+   label/content ROWS rather than nested boxes — the same "sections are not
+   boxes" language the rest of the paper detail page speaks. The label column
+   is what makes four rows read as one thing, so each block's own heading is
+   pulled into it (`Actions`, `Publisher`, `Versions`, and the status
+   heading) instead of floating above its own card.
+
+   `.manage-region` only exists on paper — the template gates the wrapper on
+   `is_paper()`, so every selector here is dead on a blue instance and the
+   four blocks render there exactly as they always have. */
+html[data-theme="paper"] .manage-region {
+    --manage-label-col: 132px;
+    margin: 36px 0 32px;
+    border-top: 1px solid var(--ds-border);
+}
+
+html[data-theme="paper"] .manage-region__head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px 0 4px;
+}
+
+html[data-theme="paper"] .manage-region__label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .manage-region__hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ds-text-muted);
+}
+
+/* Row rhythm. The separator is a border-TOP on each row, not a bottom: these
+   blocks are interleaved with the `<style>` and `<script>` tags that carry
+   their behaviour, so `:last-child` is a hidden <script> and a bottom border
+   would leave a hairline dangling under the final row. Leading edges also
+   mean the region self-corrects when a row is absent — an entity with no
+   version history, or an approved one with no status row, still ends cleanly. */
+html[data-theme="paper"] .manage-region > .vis-banner,
+html[data-theme="paper"] .manage-region > .owner-actions,
+html[data-theme="paper"] .manage-region > .trust-strip,
+html[data-theme="paper"] .manage-region > .versions-card {
+    margin: 0;
+    padding: 14px 0;
+    background: none;
+    border: 0;
+    border-top: 1px solid var(--ds-border-light);
+    border-radius: 0;
+    font-size: 13px;
+}
+
+/* Shared label column. Each block already carries a heading in its first
+   child; this puts them all in one column instead of stacking them above
+   their own former cards. */
+html[data-theme="paper"] .manage-region > .vis-banner,
+html[data-theme="paper"] .manage-region > .versions-card {
+    display: grid;
+    grid-template-columns: var(--manage-label-col) minmax(0, 1fr);
+    gap: 2px 16px;
+    align-items: start;
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner > h3,
+html[data-theme="paper"] .manage-region > .versions-card > h3 {
+    grid-column: 1;
+    grid-row: 1;
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner > :not(h3),
+html[data-theme="paper"] .manage-region > .versions-card > :not(h3) {
+    grid-column: 2;
+    min-width: 0;
+}
+
+/* The two flex rows already lead with their label — they only need the
+   column width and a left-aligned start, not a grid. */
+html[data-theme="paper"] .manage-region > .owner-actions,
+html[data-theme="paper"] .manage-region > .trust-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+}
+
+html[data-theme="paper"] .manage-region > .owner-actions > .owner-actions__label,
+html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__label {
+    flex: 0 0 calc(var(--manage-label-col) - 16px);
+    margin-right: 16px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+/* Destructive controls sit at the far end of their row, away from Edit —
+   the same reason the danger pair only commits to colour on hover. */
+html[data-theme="paper"] .manage-region > .owner-actions > .btn-danger:first-of-type {
+    margin-left: auto;
+}
+
+/* Verification actions keep their right-hand placement; the note wraps to
+   its own line under the publisher rather than squeezing the buttons. */
+html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__actions {
+    margin-left: auto;
+}
+
+html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__note {
+    flex: 1 1 100%;
+    margin-left: calc(var(--manage-label-col));
+    color: var(--ds-text-secondary);
+}
+
+/* ── Status row vs. real problem ──────────────────────────────────────
+   `hidden` and `overridden` are steady states: nothing to fix, so they get
+   the same quiet row every other entry in this region gets. A submission
+   still under review, or blocked with findings, is the one thing here that
+   IS urgent — it keeps an accent fill and spans the full width, because its
+   body is a findings list rather than a one-line value. Undifferentiated
+   loudness was the old banner's real failure: `hidden` shouted in exactly
+   the voice `blocked_llm` needed. */
+html[data-theme="paper"] .manage-region > .vis-banner.hidden {
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner.pending,
+html[data-theme="paper"] .manage-region > .vis-banner.blocked {
+    display: block;
+    margin: 14px 0;
+    padding: 14px 16px;
+    border: 1px solid;
+    border-radius: var(--ds-radius-md);
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner.pending {
+    background: var(--ds-accent-warn-bg);
+    border-color: var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner.blocked {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+
+/* A broken-out banner keeps a real heading rather than the column's
+   small-caps label — it is a notice again, not a row. */
+html[data-theme="paper"] .manage-region > .vis-banner.pending > h3,
+html[data-theme="paper"] .manage-region > .vis-banner.blocked > h3 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    color: inherit;
+}
+
+/* Versions table: the card's own borders go with the box; the rows keep
+   their hairlines so the table still reads as tabular. */
+html[data-theme="paper"] .manage-region > .versions-card table {
+    margin: 0;
+}
+
+html[data-theme="paper"] .manage-region > .versions-card th {
+    padding-top: 0;
+}
+
+/* Below the label column's useful width, every row stacks. The fixed
+   flex-basis on the labels has to go too, or it keeps reserving 116px of a
+   320px viewport for one word. */
+@media (max-width: 640px) {
+    html[data-theme="paper"] .manage-region > .vis-banner,
+    html[data-theme="paper"] .manage-region > .versions-card {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    html[data-theme="paper"] .manage-region > .vis-banner > h3,
+    html[data-theme="paper"] .manage-region > .versions-card > h3,
+    html[data-theme="paper"] .manage-region > .vis-banner > :not(h3),
+    html[data-theme="paper"] .manage-region > .versions-card > :not(h3) {
+        grid-column: 1;
+    }
+
+    html[data-theme="paper"] .manage-region > .owner-actions > .owner-actions__label,
+    html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__label {
+        flex: 1 1 100%;
+        margin-right: 0;
+    }
+
+    html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__note {
+        margin-left: 0;
+    }
+
+    html[data-theme="paper"] .manage-region > .owner-actions > .btn-danger:first-of-type,
+    html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__actions {
+        margin-left: 0;
+    }
+}

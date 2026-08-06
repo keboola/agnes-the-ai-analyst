@@ -9,15 +9,20 @@
 // other page chat.js isn't loaded, so we fetch the caller's sessions and render
 // the same rows, wiring each to a /chat?session=<id> navigation.
 //
-// Nothing here truncates the list. It fills the free space between the rail's
-// two fixed zones and scrolls inside it, in one state — see the note further
-// down for why the old five-row cap and its "View all chats" toggle were
-// redundant, and what went away with them.
+// The recent feed is CAPPED (RAIL_RECENT_LIMIT) and closes on a "View all chats"
+// link to /chats. Pins are never capped. See the note further down for why this
+// is not the five-row cap that was deliberately removed.
 //
 // Pinning is server-side state (`chat_sessions.pinned_at`, PUT
-// /api/chat/sessions/{id}/pin). Pinned rows are hoisted into a leading "Pinned"
-// group on BOTH paths — which is why chat.js stamps `data-pinned="1"` on its own
-// rows too.
+// /api/chat/sessions/{id}/pin). Pinned rows go into their OWN section — the
+// <ul id="pinned-chat-list"> above the feed — on BOTH paths, which is why
+// chat.js routes its rows the same way and stamps `data-pinned="1"` on them too.
+//
+// The two sections (Pinned · Chats) are collapsible, and THIS file owns that on
+// every rail page including /chat: the open/closed state (localStorage), the
+// aria wiring, and which of the two sections renders at all. chat.js
+// only has to call window.railChatSections.sync() after it re-renders. See the
+// section block below and the markup notes in _app_rail.html.
 //
 // Row actions (Pin/Unpin · Rename · Delete) live behind one "⋮" menu owned by
 // js/components/chat_row_menu.js, shared with chat.js so both renderers offer
@@ -27,24 +32,31 @@
 (function () {
   "use strict";
 
-  // ---- No truncation, and no "View all chats" toggle --------------------
-  // Both are gone, and the reason they were redundant is worth recording so
-  // they don't come back. `.rail-history` already occupies exactly the free
-  // space between the two fixed zones and `.rail-history-body` scrolls inside
-  // it, so the list was ALWAYS bounded by the column's own geometry. Capping it
-  // at 5 rows on top of that meant a laptop with room for nine showed five and
-  // then offered a button to reveal rows that already fitted — a control whose
-  // whole job was to undo a limit we imposed ourselves.
+  // ---- The recent feed is a working set, not the history ----------------
+  // This IS a cap, and the rail had one removed on purpose, so the difference
+  // matters: that one had nowhere to go. It showed five rows on a laptop with
+  // room for nine and then offered a "Show more" button whose only job was to
+  // undo a limit we had imposed ourselves — plus a truncation pass, a
+  // MutationObserver, a persisted expanded-state, date-header hiding, a "never
+  // truncate the active row" case and a pins-are-exempt budget to maintain it.
+  // None of that comes back.
   //
-  // Deleting it took the truncation pass, its MutationObserver, the
-  // localStorage expanded-state, the date-header hiding, the "never truncate
-  // the active row" special case and the pins-are-exempt budget with it: none
-  // of those rules had anything to describe once the list simply fills its
-  // space and scrolls. Scrolling is also the more discoverable affordance —
-  // every conversation list in every comparable product works this way.
+  // What justifies a cap now is that there is a DESTINATION: /chats
+  // (templates/chats.html) lists every conversation with search, the four
+  // views, sorting, per-row actions and bulk actions. With that page in place
+  // the rail's job narrows to "put me back into what I was doing", which is a
+  // handful of rows and the pins — and an uncapped scroll box full of a hundred
+  // titles actively works against it, because it reads as the only list there
+  // is. So: this many recent rows, then the link.
   //
-  // Date group headers now always render (they were hidden only while
-  // truncated), and the pinned group needs no special handling.
+  // Pins are NOT capped. The shelf is hand-curated and small by construction,
+  // and hiding a pin would break the one promise pinning makes.
+  //
+  // Date group headers are gone with the long feed — "Older" over a five-row
+  // list bounded at the top by "Recent" was labelling a boundary the list is too
+  // short to have. chat.js keeps the full five-bucket set for the TOPNAV
+  // sidebar, which is a full-height column that genuinely needs them.
+  const RAIL_RECENT_LIMIT = 5;
 
   // ---- Mobile/tablet nav collapse (row layout, ≤1024px) --------------
   // Below 1024px the rail becomes a wrapping top bar with nowhere to collapse
@@ -126,6 +138,11 @@
   // Wired BEFORE the /chat bail, like the nav collapse and the onboarding
   // popover above: chat.js owns the ROWS on /chat, but the scroll container is
   // the same element on every rail page and no other script touches it.
+  // Assigned inside the block below and called from the section-collapse
+  // handler too: collapsing or opening a section changes what is scrollable, so
+  // the fade flags have to be recomputed immediately rather than waiting for the
+  // ResizeObserver to notice a box that may not have changed size.
+  let syncHistoryFade = () => {};
   const histBody = document.getElementById("rail-history-body");
   if (histBody) {
     // A pixel of slack at both ends. Fractional scroll offsets (browser zoom,
@@ -139,6 +156,7 @@
       histBody.classList.toggle("is-fade-top", histBody.scrollTop > EPS);
       histBody.classList.toggle("is-fade-bottom", max > EPS && histBody.scrollTop < max - EPS);
     };
+    syncHistoryFade = syncFade;
     histBody.addEventListener("scroll", syncFade, { passive: true });
     // Observe the boxes rather than syncing once at load: the rows arrive from
     // an async fetch (on BOTH renderers), rename/delete/pin change the list's
@@ -148,11 +166,110 @@
     if (typeof ResizeObserver === "function") {
       const ro = new ResizeObserver(syncFade);
       ro.observe(histBody);
-      const histList = document.getElementById("chat-list");
-      if (histList) ro.observe(histList);
+      for (const id of ["chat-list", "pinned-chat-list"]) {
+        const histList = document.getElementById(id);
+        if (histList) ro.observe(histList);
+      }
     }
     syncFade();
   }
+
+  // ---- Collapsible sections (Pinned · Chats) ---------------------------
+  // Wired BEFORE the /chat bail, like the nav collapse, the onboarding popover
+  // and the scroll fade: chat.js owns the ROWS on /chat, but the sections are
+  // rail chrome and have exactly one owner on every rail page. chat.js reaches
+  // this through `window.railChatSections.sync()` after it re-renders.
+  //
+  // The open/closed state is per-section and persisted, because it is a
+  // statement about how the caller works ("I live in my pins", "hide the feed
+  // while I'm in the Library") rather than a per-page detail — and losing it on
+  // every navigation would make the disclosure feel broken. localStorage, not
+  // the server: it is per-device chrome state, like the theme choice and the
+  // topnav sidebar's own collapse.
+  const SECTIONS = [
+    {
+      key: "pinned",
+      sec: "rail-pinned",
+      toggle: "rail-pinned-toggle",
+      body: "rail-pinned-body",
+      list: "pinned-chat-list",
+    },
+    {
+      key: "chats",
+      sec: "rail-chats",
+      toggle: "rail-chats-toggle",
+      body: "rail-chats-body",
+      list: "chat-list",
+    },
+  ];
+  const SEC_KEY = (key) => `agnes.rail.chatsec.${key}`;
+
+  function isSecOpen(key) {
+    // Default OPEN: a first-time caller must see their conversations without
+    // discovering a disclosure first. Only an explicit "0" closes a section.
+    try {
+      return localStorage.getItem(SEC_KEY(key)) !== "0";
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function railSectionsSync() {
+    // Row counts first: whether a section renders at all depends on the OTHER
+    // one. A "Pinned" header over nothing is dead chrome, so Pinned appears only
+    // once it has rows; and Chats hides when its feed is empty but pins exist,
+    // because its header would then stand over nothing while its empty state
+    // ("No conversations yet.") would be plainly false. With nothing pinned and
+    // nothing in the feed, Chats stays and shows that empty state — the one
+    // thing a first-run rail should say.
+    const rowsIn = (id) => {
+      const el = document.getElementById(id);
+      return el ? el.querySelectorAll("li[data-id]").length : 0;
+    };
+    const pinnedRows = rowsIn("pinned-chat-list");
+    // "View all chats" appears once there IS a conversation to view: with none,
+    // the empty state above it already says so and an offer to view all of
+    // nothing is noise. Owned here rather than in render() because chat.js
+    // (which renders the rows on /chat) reaches this file only through
+    // railChatSections.sync() — one owner for every piece of the section chrome.
+    const viewAll = document.getElementById("rail-view-all-chats");
+    if (viewAll) viewAll.hidden = pinnedRows + rowsIn("chat-list") === 0;
+    for (const s of SECTIONS) {
+      const sec = document.getElementById(s.sec);
+      const toggle = document.getElementById(s.toggle);
+      const body = document.getElementById(s.body);
+      if (!sec || !toggle || !body) continue;
+      const rows = rowsIn(s.list);
+      sec.hidden = s.key === "pinned" ? rows === 0 : rows === 0 && pinnedRows > 0;
+      const open = isSecOpen(s.key);
+      body.hidden = !open;
+      sec.classList.toggle("is-collapsed", !open);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    syncHistoryFade();
+  }
+
+  for (const s of SECTIONS) {
+    const toggle = document.getElementById(s.toggle);
+    if (!toggle) continue;
+    toggle.addEventListener("click", () => {
+      const next = !isSecOpen(s.key);
+      try {
+        localStorage.setItem(SEC_KEY(s.key), next ? "1" : "0");
+      } catch (_) {
+        /* private mode / quota — the toggle still works for this page */
+      }
+      railSectionsSync();
+    });
+  }
+
+  // The seam chat.js binds to on /chat (it owns the rows there, this file owns
+  // the chrome). Published unconditionally so load order between the two scripts
+  // cannot matter: chat.js guards the call.
+  window.railChatSections = { sync: railSectionsSync };
+  // Apply the persisted state before any rows arrive, so a collapsed section
+  // never flashes open on load.
+  railSectionsSync();
 
   // /chat is chat.js's turf for the LIST — bail so we never double-render or
   // fight it (the nav collapse + onboarding popover above are wired for both).
@@ -166,6 +283,11 @@
   const list = document.getElementById("chat-list");
   if (!list) return; // no chat grant / history section not rendered
 
+  // The Pinned section's own list. Absent only if this partial ever renders
+  // without it — the renderer then falls back to putting pinned rows at the head
+  // of the feed, which is where they used to live.
+  const pinnedList = document.getElementById("pinned-chat-list");
+
   const emptyEl = document.getElementById("cloud-chat-empty-state");
 
   // ---- Fetch helper ---------------------------------------------------
@@ -178,62 +300,6 @@
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     if (r.status === 204 || r.headers.get("content-length") === "0") return null;
     return r.json();
-  }
-
-  // ---- Grouping -------------------------------------------------------
-  // Mirrors chat.js's _groupSessionsByDate under RAIL so the list reads
-  // identically on /chat and everywhere else: Pinned first (if any), then an
-  // unlabelled recent bucket (rolling 7 days), then Older. Empty buckets are
-  // dropped. The server already sorts sessions pinned-first and then
-  // most-recent-first.
-  //
-  // Only two buckets, where there were five. The rail gives this list about
-  // seven rows between its two fixed zones, and each header costs a full row
-  // (rail.css: 14px margin + line + 4px ≈ the 34px row height) — so Today /
-  // Yesterday / Earlier this week / Earlier this month / Older put THREE
-  // headers among five titles and spent more than a third of the visible list
-  // labelling groups of one. The labels were also redundant with the ordering,
-  // which is strictly most-recent-first. What survives is the one boundary the
-  // ordering cannot express: past "Older", search rather than scroll.
-  //
-  // chat.js keeps all five under TOPNAV, where the conversations column is
-  // full-height and the labels are what make twenty titles scannable. This
-  // file only ever runs under rail, so it needs no branch.
-  //
-  // Pinned conversations are HOISTED out of their date bucket rather than
-  // duplicated — a chat is either under Pinned or under its date, never both.
-  // Pinned keeps its label: it is the only group that breaks the chronology,
-  // so it is the only one that cannot be inferred from position.
-  function groupByDate(sessions) {
-    const now = new Date();
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
-    // Rolling 7 days rather than the ISO week that used to bound "Earlier this
-    // week": a week boundary means Friday's work drops into the archive when
-    // you sit down on Monday, which is exactly when you want it.
-    const startOfRecent = new Date(startOfToday);
-    startOfRecent.setDate(startOfRecent.getDate() - 6); // today included
-
-    const groups = [
-      { label: null, items: [], threshold: startOfRecent },
-      { label: "Older", items: [], threshold: new Date(0), boundaryLabel: true },
-    ];
-    const pinned = { label: "Pinned", items: [], pinnedGroup: true };
-    for (const s of sessions) {
-      if (s.pinned) {
-        pinned.items.push(s);
-        continue;
-      }
-      const ts = s.last_message_at || s.started_at;
-      const d = ts ? new Date(ts) : new Date(0);
-      for (const g of groups) {
-        if (d >= g.threshold) {
-          g.items.push(s);
-          break;
-        }
-      }
-    }
-    return [pinned, ...groups].filter((g) => g.items.length > 0);
   }
 
   // ---- Row rendering --------------------------------------------------
@@ -323,24 +389,22 @@
     // a row it no longer belongs to.
     if (window.chatRowMenu) window.chatRowMenu.close();
     list.innerHTML = "";
-    for (const group of groupByDate(sessions)) {
-      // Same two suppressions as chat.js's _renderSidebar: a null label is the
-      // deliberately unlabelled recent bucket, and the "Older" BOUNDARY label
-      // is dropped when nothing renders above it — a boundary with nothing on
-      // the near side just tells someone returning after a month that all
-      // their work is old. "Pinned" always renders.
-      if (group.label && !(group.boundaryLabel && list.childElementCount === 0)) {
-        const header = document.createElement("li");
-        header.className = "cloud-chat-list-group-header";
-        // Marks the hoisted "Pinned" group for rail.css.
-        if (group.pinnedGroup) header.classList.add("is-pinned-group");
-        header.setAttribute("role", "presentation");
-        header.textContent = group.label;
-        list.appendChild(header);
-      }
-      for (const s of group.items) list.appendChild(makeRow(s));
+    // Pinned rows go to the Pinned section; everything else to the dated feed.
+    // Without that section's list they fall back to the head of the feed, which
+    // is the pre-sections behavior (the server already sorts pinned-first).
+    const pinned = pinnedList ? sessions.filter((s) => s.pinned) : [];
+    const dated = pinnedList ? sessions.filter((s) => !s.pinned) : sessions;
+    if (pinnedList) {
+      pinnedList.innerHTML = "";
+      for (const s of pinned) pinnedList.appendChild(makeRow(s));
     }
+    // The server already sorts pinned-first then most-recent-first, so the head
+    // of this list IS the most recent work — no grouping, no headers, and the
+    // rest is one click away in /chats (see RAIL_RECENT_LIMIT above).
+    for (const s of dated.slice(0, RAIL_RECENT_LIMIT)) list.appendChild(makeRow(s));
     if (emptyEl) emptyEl.hidden = sessions.length > 0;
+    // Reveal/hide each section for what it now holds, and re-apply its state.
+    railSectionsSync();
   }
 
   async function setPinned(id, pinned) {

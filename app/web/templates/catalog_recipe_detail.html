@@ -95,7 +95,8 @@
 {# Redesign-only — see THE GATING RULE in macros/_detail.html. #}
 {% if detail.redesign %}
 
-{{ detail.side_open('Recipe information', icon='info') }}
+{# Unlabelled, like every other facts block in the system. #}
+{{ detail.side_open('') }}
   {{ detail.side_rows([
        {'key': 'Tables', 'val': (related_tables|length|string) if related_tables else 'None linked'},
        {'key': 'SQL template', 'val': 'Authored' if recipe.sql_template else 'Not yet authored'},

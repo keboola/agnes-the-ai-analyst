@@ -155,18 +155,16 @@
 {# Example questions #}
 {% if sample_questions %}
 {{ detail.section_open('Example questions you can ask Agnes', icon='spark') }}
-  <ul class="detail-questions">
-    {% for q in sample_questions %}
-    <li><a href="/chat?q={{ q | urlencode }}">{{ detail.ico('spark') }}<span>{{ q }}</span>{{ detail.ico('back') }}</a></li>
-    {% endfor %}
-  </ul>
+  {{ detail.questions(sample_questions) }}
 {{ detail.section_close() }}
 {% endif %}
 
 {{ detail.aside_open() }}
 {% if detail.redesign %}
 
-{{ detail.side_open('Table information', icon='info') }}
+{# Unlabelled, like every other facts block in the system — each row names
+   its own value. #}
+{{ detail.side_open('') }}
   {# No "Type" row — the header badge already says Table.
      The identifier is `stacked`: it is a long mono token in a 296px rail, and
      right-aligning it against its label broke it mid-word ("mock_revenue_invo

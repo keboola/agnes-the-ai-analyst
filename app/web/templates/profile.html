@@ -42,7 +42,8 @@
      --ds-primary. */
 
   /* ── Head band: identity-led ── */
-  .pf-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 2px 0 0; padding-bottom: 24px; }
+  /* Identity only — no action side any more, so no `space-between`. */
+  .pf-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin: 2px 0 0; padding-bottom: 24px; }
   .pf-id { display: flex; align-items: center; gap: 14px; min-width: 0; }
   .pf-ava { width: 52px; height: 52px; border-radius: 14px; background: var(--ds-agnes-soft); color: var(--ds-agnes); display: grid; place-items: center; flex-shrink: 0; font-size: 18px; font-weight: 700; letter-spacing: 0.02em; }
   .pf-id-txt { min-width: 0; }
@@ -50,7 +51,6 @@
   .pf-name-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 0; }
   .pf-head h1 { font-size: 24px; margin: 0; overflow-wrap: anywhere; }
   .pf-head-mail { font-size: 14px; color: var(--ds-text-secondary); margin: 4px 0 0; word-break: break-all; }
-  .pf-head-acts { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-top: 4px; }
 
   /* Inline display-name editor. Lives in the head now, on the name it edits
      — it used to sit in an "Account" card two sections below the title. */
@@ -68,6 +68,17 @@
                  border-radius: var(--ds-radius-btn); border: 1px solid var(--ds-border);
                  background: var(--ds-surface); color: var(--ds-text-secondary); }
   .pf-edit-btn:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
+  /* The "open the editor" affordance is an icon, not a word: it sits on the h1
+     line next to the name it edits, where the pencil is unambiguous and a
+     28px square stays quieter than the 24px heading beside it. Save/Cancel
+     keep their labels — those two commit or discard, and an icon pair there
+     would be a guess. */
+  .pf-edit-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+                  width: 28px; height: 28px; padding: 0; cursor: pointer;
+                  border-radius: var(--ds-radius-btn); border: 1px solid var(--ds-border);
+                  background: var(--ds-surface); color: var(--ds-text-muted); }
+  .pf-edit-icon svg { width: 15px; height: 15px; }
+  .pf-edit-icon:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
   .pf-name-err { display: none; font-size: 12.5px; color: var(--ds-accent-danger-ink); margin: 6px 0 0; }
 
   /* ── Two-column body, same split as the builder ──
@@ -155,12 +166,25 @@
   .pf-pv-row:last-child { border-bottom: none; }
   .pf-pv-k { color: var(--ds-text-secondary); flex-shrink: 0; }
   .pf-pv-v { color: var(--ds-text-primary); font-weight: 550; text-align: right; min-width: 0; word-break: break-word; }
-  .pf-links { list-style: none; margin: 0; padding: 0; }
-  .pf-link { display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 13px; font-weight: 600; color: var(--ds-text-primary); text-decoration: none; border-bottom: 1px solid var(--ds-border); }
-  .pf-links li:last-child .pf-link { border-bottom: none; }
-  .pf-link:hover { background: var(--ds-surface-dim); color: var(--ds-primary); }
+  /* Three separate buttons, NOT a hairline-separated list inside one card.
+     Read as a list, the three rows looked like the aside's own read-only
+     `.pf-pv-row` key/values one card above them — same card, same hairlines,
+     nothing saying "press me". Each is now its own bordered, rounded, shadowed
+     surface with a trailing chevron: the gap between them is what makes three
+     targets legible as three targets, and the arrow is what says each one
+     leaves the page. */
+  .pf-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .pf-link { display: flex; align-items: center; gap: 10px; padding: 12px 13px; font-size: 13px; font-weight: 600;
+             color: var(--ds-text-primary); text-decoration: none;
+             background: var(--ds-surface); border: 1px solid var(--ds-border);
+             border-radius: var(--ds-radius-btn); box-shadow: var(--ds-shadow-sm); }
+  .pf-link:hover { background: var(--ds-surface-dim); border-color: var(--ds-primary); color: var(--ds-primary); }
   .pf-link svg { width: 15px; height: 15px; color: var(--ds-text-muted); flex-shrink: 0; }
   .pf-link:hover svg { color: var(--ds-primary); }
+  /* `margin-left:auto` on the arrow, not `flex:1` on the label — the label
+     wraps to two lines at a narrow aside, and a stretched label would drag the
+     arrow off the first line's baseline. */
+  .pf-link-go { margin-left: auto; }
 
   /* The troubleshooting partial still emits the shared `.empty-state`; give it
      the section body's own rhythm so it doesn't inherit the retired
@@ -195,7 +219,10 @@
       <div class="pf-name-row">
         <span class="pf-name-view" id="pf-name-view">
           <h1 id="pf-name-text">{{ user.name or "—" }}</h1>
-          <button type="button" class="pf-edit-btn" onclick="pfEditName()" aria-label="Edit display name">Edit</button>
+          <button type="button" class="pf-edit-icon" onclick="pfEditName()"
+                  aria-label="Edit display name" title="Edit display name">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
         </span>
         <span class="pf-name-edit" id="pf-name-edit" aria-label="Edit display name form">
           <input type="text" id="pf-name-input" class="pf-name-input"
@@ -209,13 +236,13 @@
       <p class="pf-name-err" id="pf-name-err" role="alert"></p>
     </div>
   </div>
-  {# One head action. "My stack" briefly sat here too — /stack is NOT a
-     destination in this IA (#1088, demoted out of the rail), and the Library's
-     own "In stack only" toggle answers the same question against a superset of
-     the same rows. The Elsewhere list below links that view instead. #}
-  <div class="pf-head-acts">
-    <a class="cc-btn" href="/me/activity">Activity</a>
-  </div>
+  {# No head actions. The head's only job is to say whose account this is (and
+     let you rename it) — its one button was "Activity", which the Elsewhere
+     buttons in the aside already link, so the head was spending the page's most
+     prominent slot on a duplicate. "My stack" briefly sat here too — /stack is
+     NOT a destination in this IA (#1088, demoted out of the rail), and the
+     Library's own "In stack only" toggle answers the same question against a
+     superset of the same rows; Elsewhere links that view instead. #}
 </div>
 {% endblock %}
 
@@ -489,17 +516,16 @@
     </div>
     <div>
       <h3>Elsewhere</h3>
-      <div class="pf-pv-card">
-        {# `/library?stack=in_stack` — NOT `/stack`. The Stack page is no
-           longer a destination in this IA (#1088); the Library's "In stack
-           only" toggle arrives pressed on that deep link and reads the same
-           StackResolver.browse() rows. #}
-        <ul class="pf-links" role="list">
-          <li><a class="pf-link" href="/me/activity">{{ ico.icon('rows', 15) }}<span>Your activity &amp; sessions</span></a></li>
-          <li><a class="pf-link" href="/library?stack=in_stack">{{ ico.icon('package', 15) }}<span>What Agnes is using</span></a></li>
-          <li><a class="pf-link" href="/library">{{ ico.icon('folder', 15) }}<span>Library</span></a></li>
-        </ul>
-      </div>
+      {# No wrapping `.pf-pv-card` — each link IS its own card now.
+         `/library?stack=in_stack` — NOT `/stack`. The Stack page is no
+         longer a destination in this IA (#1088); the Library's "In stack
+         only" toggle arrives pressed on that deep link and reads the same
+         StackResolver.browse() rows. #}
+      <ul class="pf-links" role="list">
+        <li><a class="pf-link" href="/me/activity">{{ ico.icon('rows', 15) }}<span>Your activity &amp; sessions</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
+        <li><a class="pf-link" href="/library?stack=in_stack">{{ ico.icon('package', 15) }}<span>What Agnes is using</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
+        <li><a class="pf-link" href="/library">{{ ico.icon('folder', 15) }}<span>Library</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
+      </ul>
     </div>
   </aside>
 </div>

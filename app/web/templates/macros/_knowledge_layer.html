@@ -43,6 +43,8 @@
                                 subcopy='Connect your favorite AI tools and work with the same company knowledge—without switching.',
                                 primary_label='Connect your tools',
                                 primary_href='/how-it-works#connect',
+                                orient_label='See how Agnes works',
+                                orient_href='/how-it-works',
                                 tools=None) %}
 <section class="klb" aria-label="{{ headline_1 }} {{ headline_2 }}">
   {# Decorative background layers — a faint dotted field fading in from the
@@ -69,6 +71,19 @@
         {{ primary_label }}
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7V3.5M15 7V3.5M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </a>
+      {# Optional onboarding link, directly under the CTA. Deliberately a plain
+         text link with an info glyph — not a second button: the hero keeps ONE
+         action ("Connect your tools"), and an outline secondary beside it was
+         retired as competition (guarded in tests/test_ui_layout_theme.py). The
+         CTA's and sub-copy's top margins give back what it takes (style-custom
+         .css), so the lead column stays shorter than the chips column beside
+         it and the hero's height is unchanged. #}
+      {% if orient_href and orient_label %}
+      <a class="klb-orient" href="{{ orient_href }}">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v5.5M12 7.9v.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        {{ orient_label }}
+      </a>
+      {% endif %}
     </div>
 
     {# CENTER — the Agnes orb, the visual anchor: glow + dotted halo ring. #}

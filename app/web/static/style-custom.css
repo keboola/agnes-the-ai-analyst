@@ -597,7 +597,11 @@ html[data-ui-layout="rail"] body.detail-page footer {
     color: transparent;
 }
 .klb-sub {
-    margin: 12px 0 0;
+    /* 12px → 10px, and .klb-cta's lead 20px → 14px: the two together buy back
+       exactly the 30px the onboarding link under the CTA costs, so the lead
+       column stays shorter than the chips column and the hero's height is
+       unchanged (312px at 1280px wide, measured with and without the link). */
+    margin: 10px 0 0;
     max-width: 460px;
     font-size: 14.5px;
     line-height: 1.5;
@@ -605,7 +609,7 @@ html[data-ui-layout="rail"] body.detail-page footer {
 }
 .klb-cta {
     display: inline-flex; align-items: center; gap: 8px;
-    margin-top: 20px;
+    margin-top: 14px;  /* see .klb-sub — the height budget for .klb-orient */
     padding: 10px 14px;
     border-radius: var(--ds-radius-pill, 999px);
     background: var(--ds-primary); color: var(--ds-text-inverse);
@@ -617,6 +621,25 @@ html[data-ui-layout="rail"] body.detail-page footer {
 .klb-cta svg { width: 15px; height: 15px; }
 .klb-cta:hover { background: var(--ds-primary-dark); }
 .klb-cta:active { transform: translateY(1px); }
+
+/* Optional onboarding link under the CTA — muted, unfilled, smaller than the
+   sub-copy, so it reads as an aside the reader may take rather than a second
+   action competing with "Connect your tools". Its 8px lead plus the 6px taken
+   off .klb-cta and the 2px off .klb-sub is the whole 30px it costs — the lead
+   column stays under the chips column's height, so the hero does not grow. */
+.klb-orient {
+    /* Block-level (fit-content) so it starts its own line under the inline-flex
+       CTA without a wrapper element. */
+    display: flex; align-items: center; gap: 6px;
+    width: fit-content;
+    margin-top: 8px;
+    font-size: 13px; font-weight: 500;
+    color: var(--ds-text-muted);
+    text-decoration: none;
+    transition: color var(--ds-motion-fast, 120ms) var(--ds-ease-standard, ease);
+}
+.klb-orient svg { width: 14px; height: 14px; flex-shrink: 0; opacity: .85; }
+.klb-orient:hover { color: var(--ds-text-secondary); text-decoration: underline; }
 
 /* CENTER — the orb, visual anchor: glow + dotted halo ring, gentle float.
    Nudged down a touch so its centre sits at the optical midpoint of the
@@ -712,6 +735,8 @@ html[data-ui-layout="rail"] body.detail-page footer {
     }
     .klb-lead { max-width: 540px; }
     .klb-sub { max-width: none; margin-left: auto; margin-right: auto; }
+    /* Centred with the rest of the stacked lead. */
+    .klb-orient { margin-left: auto; margin-right: auto; }
     .klb-decor-dots { display: none; }
     .klb-connectors { display: none; }
     .klb-chips { flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: center; }

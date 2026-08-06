@@ -663,3 +663,97 @@ def test_list_sessions_orders_pinned_first(_chat_env):
     ids2 = [s.id for s in repo.list_sessions("u@example.com")]
     assert ids2[:2] == [newest.id, older.id], "most-recently-pinned leads the pinned block"
     assert ids2[2] == newer.id
+
+
+# ---------------------------------------------------------------------------
+# Dual-backend contract: archive → restore → permanent delete
+# ---------------------------------------------------------------------------
+# The three states the /chats page exposes. They need a contract test because
+# the two backends reach the same endpoint by different means: DuckDB has no
+# ON DELETE CASCADE, so `hard_delete_session` deletes the participant and
+# message rows itself, while Postgres relies on the FKs from migrations 0015 and
+# 0017. A caller must not be able to tell.
+
+
+def test_archive_and_restore_roundtrip(_chat_env):
+    """``archive_session`` / ``restore_session`` move one flag, both ways, and
+    both are idempotent. Restore is what makes the page's Archived view an
+    actual state rather than a one-way door — before it there was no way back
+    from the long-standing soft delete."""
+    repo = _chat_env
+    s = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    assert repo.get_session(s.id).archived is False
+
+    repo.archive_session(s.id)
+    assert repo.get_session(s.id).archived is True
+    # Archived rows leave the default listing but must still be readable, or the
+    # Archived view has nothing to show.
+    assert s.id not in {x.id for x in repo.list_sessions("u@example.com")}
+    assert s.id in {x.id for x in repo.list_sessions("u@example.com", include_archived=True)}
+
+    repo.restore_session(s.id)
+    assert repo.get_session(s.id).archived is False
+    assert s.id in {x.id for x in repo.list_sessions("u@example.com")}
+
+    # Idempotent in both directions.
+    repo.restore_session(s.id)
+    assert repo.get_session(s.id).archived is False
+    repo.archive_session(s.id)
+    repo.archive_session(s.id)
+    assert repo.get_session(s.id).archived is True
+
+
+def test_archive_and_restore_after_messages(_chat_env):
+    """The production order — a conversation is archived long after it has
+    messages. Same DuckDB 1.5.3 FK+index guard as the pin tests above: were
+    ``archived`` ever indexed, this UPDATE would raise a false FK violation."""
+    repo = _chat_env
+    s = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    repo.append_message(session_id=s.id, role="user", content="hello")
+    repo.append_message(session_id=s.id, role="assistant", content="hi")
+
+    repo.archive_session(s.id)
+    assert repo.get_session(s.id).archived is True
+    repo.restore_session(s.id)
+    assert repo.get_session(s.id).archived is False
+    # The rollup survives the round trip — archiving is not a data change.
+    assert repo.get_session(s.id).message_count == 2
+
+
+def test_hard_delete_session_takes_its_children_and_nothing_else(_chat_env):
+    """One session and its messages go; its neighbour is untouched. The return
+    value says whether there was a row to delete, so a caller can tell a
+    successful delete from a missing id (the API turns the second case into a
+    404)."""
+    repo = _chat_env
+    doomed = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    keeper = repo.create_session(user_email="u@example.com", surface=Surface.WEB)
+    for sid in (doomed.id, keeper.id):
+        repo.append_message(session_id=sid, role="user", content="hi")
+        repo.append_message(session_id=sid, role="assistant", content="hello")
+
+    assert repo.hard_delete_session(doomed.id) is True
+    assert repo.get_session(doomed.id) is None
+    assert repo.list_messages(doomed.id) == []
+
+    assert repo.get_session(keeper.id) is not None
+    assert len(repo.list_messages(keeper.id)) == 2
+
+    # Deleting what is already gone is not an error, and says so.
+    assert repo.hard_delete_session(doomed.id) is False
+
+
+def test_hard_delete_session_removes_participants(_chat_env):
+    """A co-session's participant rows go with it. On DuckDB they are deleted
+    explicitly (the FK would otherwise block the parent delete); on Postgres the
+    0017 CASCADE does it. Same observable outcome."""
+    repo = _chat_env
+    s = repo.create_session(user_email="owner@example.com", surface=Surface.WEB)
+    repo.add_session_participant(session_id=s.id, user_email="owner@example.com", user_id="u1", role="owner")
+    repo.add_session_participant(session_id=s.id, user_email="mate@example.com", user_id="u2", role="collaborator")
+    assert len(repo.get_session_participants(s.id)) == 2
+
+    assert repo.hard_delete_session(s.id) is True
+    assert repo.get_session(s.id) is None
+    assert repo.get_session_participants(s.id) == []
+    assert repo.list_sessions_for_participant("mate@example.com") == []

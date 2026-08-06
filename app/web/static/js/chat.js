@@ -333,40 +333,69 @@ async function api(path, init = {}) {
 // filter without a round-trip and openSession can resolve titles.
 let _sessionsCache = [];
 
+/** How many recent conversations the RAIL shows under its pinned shelf. The
+ *  rest are reached through "View all chats" → /chats.
+ *
+ *  Duplicated from rail_history.js (which owns the rationale, and renders this
+ *  same list on every page except this one) for the same reason the row
+ *  renderer is duplicated: the two files never load together as modules, and a
+ *  rail whose recent list is five rows on /library and unbounded on /chat is
+ *  one list with two contradictory contracts. Keep the two in step.
+ *  Topnav is unaffected — its conversations column is full-height and uncapped. */
+const RAIL_RECENT_LIMIT = 5;
+
 async function loadSidebar() {
   const list = await api("/api/chat/sessions");
   _sessionsCache = list;
   const ul = $("chat-list");
+  // The rail gives pinned conversations a SECTION of their own above the feed
+  // (<ul id="pinned-chat-list">, _app_rail.html) — so when that list is present
+  // the pinned rows go there and _groupSessionsByDate is asked not to hoist a
+  // "Pinned" group into this one. The topnav sidebar has no such list, keeps the
+  // hoisted group, and is untouched by any of this.
+  const pinnedUl = $("pinned-chat-list");
   // The row menu is body-appended, not a child of the row — so a panel left
   // open across a re-render would hover over a row it no longer belongs to.
   if (window.chatRowMenu) window.chatRowMenu.close();
   ul.innerHTML = "";
-  // Group by recency before rendering — see _groupSessionsByDate. The groups
-  // come back in display order; each one that carries a label gets a small
-  // section header above it. Not all of them do: the rail runs a two-bucket
-  // set whose recent group is deliberately unlabelled.
-  for (const group of _groupSessionsByDate(list)) {
-    // A null label is a deliberate no-header bucket (the rail's unlabelled
-    // recent group — see _groupSessionsByDate). The rail's "Older" is further
-    // dropped when nothing renders above it: it is a BOUNDARY label, and a
-    // boundary with nothing on the near side is just a word telling someone
-    // returning after a month that all their work is old. Only the rail marks
-    // a bucket `boundaryLabel`, so topnav's leading "Today" — and "Pinned" in
-    // either layout — always render.
-    if (group.label && !(group.boundaryLabel && ul.childElementCount === 0)) {
-      const header = document.createElement("li");
-      header.className = "cloud-chat-list-group-header";
-      // Marks the hoisted "Pinned" group so rail.css can style that header
-      // differently from the date ones.
-      if (group.pinnedGroup) header.classList.add("is-pinned-group");
-      header.setAttribute("role", "presentation");
-      header.textContent = group.label;
-      ul.appendChild(header);
+  if (pinnedUl) {
+    pinnedUl.innerHTML = "";
+    for (const s of list.filter(s => s.pinned)) pinnedUl.appendChild(_makeSidebarItem(s));
+  }
+  if (pinnedUl) {
+    // RAIL — the presence of the Pinned section's own list is what identifies
+    // it. A capped, ungrouped "Recent" feed: the server already sorts
+    // pinned-first then most-recent-first, so the head of the list is the most
+    // recent work, and the rest lives on /chats behind the rail's
+    // "View all chats" link. See RAIL_RECENT_LIMIT for why a cap is right here
+    // and was wrong before that page existed. Pins are above and uncapped.
+    const recent = list.filter(s => !s.pinned).slice(0, RAIL_RECENT_LIMIT);
+    for (const s of recent) ul.appendChild(_makeSidebarItem(s));
+  } else {
+    // TOPNAV — the full-height conversations column, unchanged: five date
+    // buckets with pinned hoisted into a leading labelled group, because
+    // twenty titles at once are what the labels make scannable.
+    for (const group of _groupSessionsByDate(list)) {
+      if (group.label) {
+        const header = document.createElement("li");
+        header.className = "cloud-chat-list-group-header";
+        // Marks the hoisted "Pinned" group so the sheet can style that header
+        // differently from the date ones.
+        if (group.pinnedGroup) header.classList.add("is-pinned-group");
+        header.setAttribute("role", "presentation");
+        header.textContent = group.label;
+        ul.appendChild(header);
+      }
+      for (const s of group.items) ul.appendChild(_makeSidebarItem(s));
     }
-    for (const s of group.items) ul.appendChild(_makeSidebarItem(s));
   }
   const empty = $("cloud-chat-empty-state");
   if (empty) empty.hidden = list.length > 0;
+  // The rail's section chrome (reveal Pinned once it has rows, stand Chats down
+  // when everything is pinned, re-apply each section's persisted open state) has
+  // ONE owner — rail_history.js, loaded on every rail page including this one.
+  // Absent under topnav, hence the guard.
+  if (window.railChatSections) window.railChatSections.sync();
   // If the user collapsed the sidebar earlier, re-swap each newly
   // rendered label for its initial. ``applySidebarCollapse`` is a
   // no-op when the persisted state is "expanded", so safe to always
@@ -480,37 +509,26 @@ function _makeSidebarItem(s) {
 }
 
 /** Group a flat sessions list into [{label, items}, …] buckets
- *  ordered most-recent-first.
+ *  ordered most-recent-first. TOPNAV ONLY.
  *
- *  TWO bucket sets, because the two layouts put this list in very
- *  different amounts of space:
+ *  Topnav's conversations column is full-height and exists to hold
+ *  conversations and nothing else, so five date buckets (Today /
+ *  Yesterday / Earlier this week / Earlier this month / Older) are
+ *  worth their rows: you can see twenty titles at once, and the labels
+ *  are what let you scan for "the one from Tuesday".
  *
- *  - topnav — a full-height column that exists to hold conversations
- *    and nothing else. Five date buckets (Today / Yesterday / Earlier
- *    this week / Earlier this month / Older) are worth their rows
- *    there: you can see twenty titles at once, so the labels are what
- *    let you scan for "the one from Tuesday".
+ *  The rail deliberately does NOT come through here. It shows the pinned
+ *  shelf plus RAIL_RECENT_LIMIT recent rows and sends the rest to
+ *  /chats, and at five rows a date header is labelling a boundary the
+ *  list is too short to have. It once had a two-bucket variant of this
+ *  function (an unlabelled recent bucket + "Older"); that went with the
+ *  headers. See loadSidebar's rail branch and rail_history.js.
  *
- *  - rail — roughly seven rows of free space between two fixed zones.
- *    The same five labels put THREE headers among five titles, so more
- *    than a third of the visible list was chrome, and each header cost
- *    a full row (14px margin + line + 4px, ≈ the 34px row height). They
- *    were also telling you what the ordering already tells you: the
- *    list is strictly most-recent-first, so "Yesterday" over a single
- *    row is a label, not a group. The rail therefore gets ONE date
- *    boundary — an unlabelled recent bucket (rolling 7 days, no Monday
- *    cliff that would drop Friday's work into the archive) and "Older"
- *    for the rest. That single label marks the one thing the ordering
- *    can't say: past here, search rather than scroll.
- *
- *  A label of `null` renders no header at all (see _renderSidebar).
- *
- *  User-pinned sessions are HOISTED out of their date bucket into a
- *  leading "Pinned" group (never duplicated — a chat appears under
- *  Pinned or under its date, not both), ordered most-recently-pinned
- *  first by the server. Pinned keeps its label in BOTH layouts: it is
- *  the only group that breaks the chronology, so it is the only one a
- *  reader cannot infer from position.
+ *  User-pinned sessions are taken OUT of their date bucket and hoisted
+ *  into a leading "Pinned" group — a chat appears under Pinned or under
+ *  its date, never both. Pinned keeps its label: it is the only group
+ *  that breaks the chronology, so it is the only one a reader cannot
+ *  infer from position.
  *
  *  Buckets with no items are dropped so the sidebar doesn't render
  *  an empty header. Sort within each bucket is by last_message_at
@@ -528,24 +546,18 @@ function _groupSessionsByDate(sessions) {
   startOfWeek.setDate(startOfWeek.getDate() - dow);
   const startOfMonth = new Date(startOfToday);
   startOfMonth.setDate(startOfMonth.getDate() - 30);
-  const startOfRecent = new Date(startOfToday);
-  startOfRecent.setDate(startOfRecent.getDate() - 6); // rolling 7 days, today included
 
-  const isRail = document.documentElement.getAttribute("data-ui-layout") === "rail";
-  const groups = isRail
-    ? [
-        { label: null,    items: [], threshold: startOfRecent },
-        { label: "Older", items: [], threshold: new Date(0), boundaryLabel: true },
-      ]
-    : [
-        { label: "Today",              items: [], threshold: startOfToday },
-        { label: "Yesterday",          items: [], threshold: startOfYesterday },
-        { label: "Earlier this week",  items: [], threshold: startOfWeek },
-        { label: "Earlier this month", items: [], threshold: startOfMonth },
-        { label: "Older",              items: [], threshold: new Date(0) },
-      ];
+  const groups = [
+    { label: "Today",              items: [], threshold: startOfToday },
+    { label: "Yesterday",          items: [], threshold: startOfYesterday },
+    { label: "Earlier this week",  items: [], threshold: startOfWeek },
+    { label: "Earlier this month", items: [], threshold: startOfMonth },
+    { label: "Older",              items: [], threshold: new Date(0) },
+  ];
   const pinned = { label: "Pinned", items: [], pinnedGroup: true };
   for (const s of sessions) {
+    // Pinned rows never fall through to a date bucket — they are hoisted into
+    // the leading group instead, so a conversation is never listed twice.
     if (s.pinned) { pinned.items.push(s); continue; }
     const ts = s.last_message_at || s.started_at;
     const d = ts ? new Date(ts) : new Date(0);
@@ -653,11 +665,25 @@ async function deleteSession(chatId) {
  *  conversation currently visible in the main panel. Safe to call when
  *  ``chatId`` is null — clears every highlight. */
 function markActiveSidebar(chatId) {
-  const ul = document.getElementById("chat-list");
-  if (!ul) return;
-  for (const li of ul.querySelectorAll("li")) {
+  // Both lists: under rail the open conversation may be a pinned one, living in
+  // the rail's Pinned section rather than in #chat-list (see loadSidebar).
+  for (const li of _sidebarRows()) {
     li.classList.toggle("is-active", li.dataset.id === chatId);
   }
+}
+
+/** Every conversation row currently in the sidebar, across both lists —
+ *  #chat-list plus the rail's #pinned-chat-list when that section is
+ *  rendered. Anything that looks a row up by id has to go through this,
+ *  or pinned conversations silently stop responding to it (highlight,
+ *  live rename, collapse-to-initials). */
+function _sidebarRows() {
+  const rows = [];
+  for (const id of ["chat-list", "pinned-chat-list"]) {
+    const ul = document.getElementById(id);
+    if (ul) rows.push(...ul.querySelectorAll("li[data-id]"));
+  }
+  return rows;
 }
 
 async function newChat() {
@@ -946,8 +972,9 @@ function applySessionRename(frame) {
   // Cache update — Cmd+K palette reads from here.
   const cached = _sessionsCache.find(s => s.id === id);
   if (cached) cached.title = title;
-  // Live sidebar item.
-  const li = document.querySelector(`#chat-list li[data-id="${id}"]`);
+  // Live sidebar item — in either list (a pinned conversation lives in the
+  // rail's Pinned section, not in #chat-list).
+  const li = _sidebarRows().find(row => row.dataset.id === id);
   if (li) {
     const label = li.querySelector(".cloud-chat-list-label");
     if (label) {
@@ -2663,8 +2690,7 @@ function applySidebarCollapse(collapsed) {
   // because no pure-CSS rule can extract the first character of an
   // arbitrary string. Cached titles are preserved in data-full-title
   // so we can restore them losslessly without re-reading the API.
-  const items = document.querySelectorAll("#chat-list li[data-id]");
-  for (const li of items) {
+  for (const li of _sidebarRows()) {
     const label = li.querySelector(".cloud-chat-list-label");
     if (!label) continue;
     if (collapsed) {

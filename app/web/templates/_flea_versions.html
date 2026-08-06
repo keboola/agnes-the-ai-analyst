@@ -1,4 +1,15 @@
-{# Versions card — owner + admin only.
+{# Versions — owner + admin only.
+
+   TWO renderings, one behaviour. Under the redesign the history is a rail
+   timeline drawn by `detail.version_timeline()` (version history IS activity,
+   so it uses the shared timeline component rather than a fourth table), and
+   this file contributes only `restoreVersion()` plus the delegated click
+   handler that the timeline's buttons need. Everywhere else it renders the
+   bordered card below, unchanged.
+
+   Restore is the same call, with the same error vocabulary, either way —
+   which is the point of keeping it in one file rather than duplicating the
+   handler next to each rendering.
 
    Renders entity.version_history (oldest-first) reversed so newest
    appears at top. Each row gets:
@@ -18,6 +29,7 @@
 #}
 
 {% if (is_owner or is_admin) and entity and entity.version_history and entity.version_history|length >= 1 %}
+{% if not is_paper() %}
 <style>
   .versions-card {
     margin: 16px 0; padding: 14px 18px; background: var(--surface, #fff);
@@ -137,8 +149,17 @@
     </tbody>
   </table>
 </div>
+{% endif %}{# not is_paper() — the redesign draws this as a rail timeline #}
 
 <script>
+// The redesign's timeline buttons carry `data-restore-version`; the legacy
+// table's carry an inline onclick. One delegated listener serves the first
+// without the second having to change.
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-restore-version]');
+  if (btn) restoreVersion(Number(btn.dataset.restoreVersion));
+});
+
 async function restoreVersion(versionNo) {
   const currentVersionNo = {{ entity.version_no | tojson }};
   const ok = await confirmModal({

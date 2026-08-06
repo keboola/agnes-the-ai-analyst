@@ -163,6 +163,360 @@
 .fbar-view__btn.is-active { background: var(--ds-primary-light); color: var(--ds-primary); }
 .fbar-view__btn svg { width: 17px; height: 17px; }
 
+/* =====================================================================
+   .fbar-dock — the floating toolbar dock
+   =====================================================================
+   The toolbar pinned to the bottom of the viewport rather than a strip in the
+   flow. Used by /library and /chats; /stack still renders the plain in-flow
+   bar, which is why everything here is opt-in markup.
+
+   Two reasons a scrolling index wants this. The controls that narrow a list
+   are wanted at row 200 as much as at row 1, and a bar parked under the header
+   scrolls away exactly when the list is long enough to need it. And on a page
+   whose group bands are already sticky, a second sticky layer at the top edge
+   would have to queue behind them — pinning to the bottom sidesteps that.
+
+   Three elements, deliberately:
+     `.fbar-dock`        a full-width fixed FRAME that only centres. It is
+                         `pointer-events: none`, so the empty strip either side
+                         of the card doesn't eat clicks on the rows beneath.
+     `.fbar-dock__veil`  the frosted band behind it, which positions itself
+                         against the VIEWPORT rather than the frame (see below).
+     `.fbar-dock__card`  the visible surface, which turns pointer events back
+                         on for itself.
+
+   Centring is `left/right` + flex, never `translateX`: a transform here would
+   make the frame the containing block for the `position: fixed` category
+   popovers inside it, and filter_toolbar.js places those with plain viewport
+   arithmetic (see `placeSubmenu`). Under the rail layout the frame starts at
+   the rail's edge so the card centres on the CONTENT, not the window; at the
+   rail's own breakpoint the rail unpins and the offset goes with it. */
+.fbar-dock {
+  --fbar-dock-inset: 26px;   /* gap between the card and the viewport floor */
+  --fbar-dock-reach: 48px;   /* how far the veil's fade extends above the card */
+  --fbar-dock-card: 62px;    /* the card's resting height, one control row tall */
+  position: fixed;
+  left: 0; right: 0; bottom: var(--fbar-dock-inset);
+  /* Above the rail (40) and the sticky group bands (3–4), below row-level
+     popovers (60) and modals (100) — a control that is always on screen must
+     never be the thing covering a dialog. */
+  z-index: 55;
+  display: flex; justify-content: center;
+  padding: 0 16px;
+  pointer-events: none;
+}
+html[data-ui-layout="rail"] .fbar-dock { left: 240px; }
+@media (max-width: 760px) { html[data-ui-layout="rail"] .fbar-dock { left: 0; } }
+
+/* ── The frosted veil ──
+   A band of progressive blur across the foot of the viewport, strongest at the
+   very bottom and dissolving to nothing as it rises. The card sits inside it,
+   so content approaching the toolbar softens instead of colliding with its edge.
+
+   ── Where the visible edge came from, twice ──
+   1. The ramp SATURATED ON SCREEN. The band used to end at the card's top edge,
+      which meant full-strength blur below that line and none above it, with
+      live rows either side of the card showing exactly where the boundary was.
+      The band is now anchored to the viewport FLOOR (`position: fixed`, not
+      against the frame) and reaches full strength there — off the bottom of the
+      screen, where there is nothing beside it to compare against. Its only
+      on-screen transition is the long dissolve at the top.
+   2. Fading one masked layer's OPACITY. A single `backdrop-filter` element
+      samples its whole region at ONE radius; masking then fades that
+      uniformly-blurred result's alpha, compositing a fully blurred copy at
+      partial opacity over the sharp page beneath. The eye reads that as
+      ghosting, and the point where it saturates as a line.
+
+   Fading the RADIUS needs more than one radius. Three layers share the band,
+   each a stronger blur admitted over a shorter distance, so they overlap into a
+   true gradient: at the top only the weakest is present and already at zero; at
+   the floor all three compound. Radii add in quadrature, so 1.4 + 2.8 + 3.6
+   lands at ≈4.8px against the floor — properly glassy where the card sits,
+   and still nothing at all by the top of the band.
+
+   Every ramp is a SMOOTHSTEP, shallow at both ends. The ends are the whole
+   point: a ramp arriving steeply at either end has a slope discontinuity, and
+   over a short distance that is precisely what reads as a drawn line. An earlier
+   back-loaded ease put 90% of its alpha into 2.5px and looked like one.
+
+   The stops are PERCENTAGES of the band here, not lengths: the band's height is
+   a formula (fade + gap + card + chips row), so proportional stops keep the
+   dissolve's shape when the chips row makes the card taller.
+
+   `position: fixed` on the veil, never `backdrop-filter` on the frame or the
+   card: the filter, like a transform, makes an element the containing block for
+   `position: fixed` descendants, and the Filter menu's category popovers are
+   fixed. A self-positioned sibling of the card carries it without them noticing.
+   Under the rail layout the band starts at the rail's edge — the dock's stacking
+   context sits above the rail, so a band at `left: 0` would blur the sidebar. */
+.fbar-dock__veil {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  /* Tall enough for the dissolve to have room, and it needs it: the fade is what
+     keeps a band this size imperceptible. Most of the height is behind the card
+     and the gap below it; `--fbar-dock-reach` is the part that shows above. */
+  height: calc(var(--fbar-dock-reach) + var(--fbar-dock-inset)
+             + var(--fbar-dock-card) + var(--fbar-dock-chips, 0px));
+  z-index: 0;
+  pointer-events: none;
+  /* Layer 1 — the whole band at the weakest radius, and the only layer carrying
+     a tint. The wash is what makes the band read as a soft ground for the card
+     rather than only as a loss of focus, and it carries most of the "the page
+     recedes here" impression: blur alone softens without settling anything.
+
+     The wash is `--ds-bg` — the PAGE CANVAS, the same grey the detail pages sit
+     on. That choice is what bounds it: the strongest thing the band can do is
+     resolve a row toward the colour the page already is, so it cannot read as a
+     dark overlay however far the gradient runs. Over the canvas itself it is a
+     no-op, and over a white row it settles the row back toward the page. Ink was
+     tried here and read as a shadow cast up the list; the sunken surface was
+     tried and, being a near-white, only made a light band lighter.
+
+     It also needs no per-theme handling: `--ds-bg` is the dark canvas under the
+     dark theme, so the band recedes in the same direction there. */
+  background: linear-gradient(to bottom,
+    transparent 0,
+    color-mix(in srgb, var(--ds-bg) 12%, transparent) 35%,
+    color-mix(in srgb, var(--ds-bg) 34%, transparent) 68%,
+    color-mix(in srgb, var(--ds-bg) 60%, transparent) 100%);
+  -webkit-backdrop-filter: blur(1.4px);
+          backdrop-filter: blur(1.4px);
+  -webkit-mask-image: linear-gradient(to bottom,
+            transparent 0,
+            color-mix(in srgb, black 8%, transparent) 30%,
+            color-mix(in srgb, black 45%, transparent) 60%,
+            color-mix(in srgb, black 88%, transparent) 85%,
+            black 100%);
+          mask-image: linear-gradient(to bottom,
+            transparent 0,
+            color-mix(in srgb, black 8%, transparent) 30%,
+            color-mix(in srgb, black 45%, transparent) 60%,
+            color-mix(in srgb, black 88%, transparent) 85%,
+            black 100%);
+}
+html[data-ui-layout="rail"] .fbar-dock__veil { left: 240px; }
+@media (max-width: 760px) { html[data-ui-layout="rail"] .fbar-dock__veil { left: 0; } }
+
+.fbar-dock__veil::before,
+.fbar-dock__veil::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Layer 2 — mid radius, absent from the top third, then its own smoothstep. */
+.fbar-dock__veil::before {
+  -webkit-backdrop-filter: blur(2.8px);
+          backdrop-filter: blur(2.8px);
+  -webkit-mask-image: linear-gradient(to bottom,
+            transparent 0,
+            transparent 35%,
+            color-mix(in srgb, black 25%, transparent) 60%,
+            color-mix(in srgb, black 80%, transparent) 85%,
+            black 100%);
+          mask-image: linear-gradient(to bottom,
+            transparent 0,
+            transparent 35%,
+            color-mix(in srgb, black 25%, transparent) 60%,
+            color-mix(in srgb, black 80%, transparent) 85%,
+            black 100%);
+}
+
+/* Layer 3 — the full radius, only in the bottom half, where the card is. This
+   is what makes the ramp a change in blur STRENGTH rather than in opacity. */
+.fbar-dock__veil::after {
+  -webkit-backdrop-filter: blur(3.6px);
+          backdrop-filter: blur(3.6px);
+  -webkit-mask-image: linear-gradient(to bottom,
+            transparent 0,
+            transparent 55%,
+            color-mix(in srgb, black 30%, transparent) 76%,
+            color-mix(in srgb, black 85%, transparent) 92%,
+            black 100%);
+          mask-image: linear-gradient(to bottom,
+            transparent 0,
+            transparent 55%,
+            color-mix(in srgb, black 30%, transparent) 76%,
+            color-mix(in srgb, black 85%, transparent) 92%,
+            black 100%);
+}
+
+/* Callers who ask for less transparency get the readability without the glass:
+   no blur, and the tint alone on the one layer that has one, lifted enough to
+   carry it. Its gradient still dissolves upward, so it gains no edge. */
+@media (prefers-reduced-transparency: reduce) {
+  .fbar-dock__veil {
+    -webkit-backdrop-filter: none;
+            backdrop-filter: none;
+    background: linear-gradient(to bottom,
+      transparent 0,
+      color-mix(in srgb, var(--ds-bg) 45%, transparent) 55%,
+      color-mix(in srgb, var(--ds-bg) 88%, transparent) 100%);
+  }
+  .fbar-dock__veil::before,
+  .fbar-dock__veil::after { display: none; }
+}
+
+/* ── The card ──
+   Chips row on top (state), controls below (machinery): in a bottom-anchored
+   card the row nearer the list is the one that describes it. The chips row is
+   `hidden` until a facet is applied, so the card is a single row at rest and
+   grows upward, never pushing the controls off the bottom.
+
+   The hairline is the page's own `--ds-border` — the same line every card in the
+   list wears. It briefly ran a notch darker, from when the veil was faint enough
+   that the edge had to carry itself; now that the band is properly glassy behind
+   the card, a heavier line just reads as a drawn outline around a floating
+   object. Elevation does the separating; the hairline only closes the shape.
+
+   It HUGS its contents — no definite width, no auto margins, no padded arms. A
+   definite width was tried, with the page-level controls pushed onto the card's
+   edges to keep the list controls on its centre line; what that produced was a
+   fixed-width card with a hole in it, because the auto margins had ~300px of
+   free space to absorb. A floating card has no column grid to align to and
+   nothing beside it to line up with, so there is no centre line to hold. */
+.fbar-dock__card {
+  pointer-events: auto;
+  position: relative;              /* containing block for the Filter menu */
+  z-index: 1;                      /* above the frosted shelf behind it */
+  display: flex; flex-direction: column; gap: 10px;
+  max-width: 100%;
+  padding: 10px 14px;
+  /* NOT `--ds-surface`. The rows this card floats over are `--ds-surface`
+     themselves, so a card of the same fill is white-on-white with the very
+     content it must read against, and no shadow can fully fix a zero-contrast
+     edge. A ~1.5% pull toward the page canvas gives the card its own, slightly
+     cool surface — the Linear/Arc/Raycast move: the floating layer is a
+     *different* white. It also brings the two inset highlights and the white
+     control fills inside the card to life; over a pure-white fill both were
+     mathematically inert. Derived from tokens, so each theme resolves its own
+     version of "just off the surface". */
+  background: color-mix(in srgb, var(--ds-bg) 30%, var(--ds-surface));
+  /* The hairline: defined, not heavy. Full `--ds-border` read as part of the
+     page's own grid of card outlines; a muted-ink notch over it is enough for
+     the edge to be readable on its own if the shadow were gone, without the
+     drawn-outline weight the earlier 30% mix had. */
+  border: 1px solid color-mix(in srgb, var(--ds-text-muted) 9%, var(--ds-border));
+  border-radius: 18px;
+  /* ── Elevation ──
+     Four layers, each with one job. The previous stack tried to do the whole
+     lift with three increasingly dark blurs, topping out at 30% ink, and that
+     is what made it read as a stock drop shadow: the darkness announced the
+     shadow instead of the height.
+
+     The principle here is the opposite — a LOT of spread at very little
+     opacity. A wide, soft, barely-there penumbra is what the eye reads as
+     distance; a tight dark one reads as a border that bled. So the widest layer
+     carries the height at 7% and the deepest tone in the stack is 9%, less than
+     a third of where it was.
+
+     ASYMMETRY is the other half. A surface lit from above throws its shadow
+     DOWN and casts almost nothing upward, so every layer is offset by roughly
+     half its own blur: the penumbra gathers below the card and the top rim stays
+     clear. A vertically centred shadow — equal above and below — is the Material
+     tell, and it reads as a plate lying on the page rather than an object
+     hovering over it. These offsets put the card at ~14px of height.
+
+     Bottom to top:
+       1. ambient — 40px down, 80px blur, negative spread, 6%. Distance, not
+          darkness: pushing the offset well past what an in-flow card would use
+          is what puts the surface at height, and the blur is wide enough that
+          its own edge is never findable. The spread pulls it in so it never
+          puddles out past the card's silhouette.
+       2. mid — 14px down, 28px, 5%. Bridges the ambient wash and the contact
+          line so the falloff stays continuous rather than reading as two
+          discrete clouds.
+       3. contact — 3px down, 6px, tight spread, 8%. The separation layer: a
+          short, close shadow directly beneath the card is what reads as a GAP
+          between two surfaces, and it is what stops the card's own edge
+          dissolving into a row of the same colour under it.
+       4. top highlight — a 1px inset semi-transparent white along the top edge
+          only (`inset 0 1px 0`). Light comes from above, so the upper rim of a
+          raised surface catches it: the cue that says "raised" without spending
+          any darkness. Note what it can and cannot do — the card's fill is
+          `--ds-surface`, which is pure white in the light themes, so there the
+          line is a deliberate no-op and the three shadow layers carry the lift
+          alone. It earns its keep under the dark theme, where the surface is a
+          navy and the rim is what stops the card melting into the frosted band
+          behind it. Semi-transparent rather than a solid mix, so it can never
+          out-light the surface it sits on whatever that surface becomes.
+       5. inner rim — the same white at a quarter strength, all the way round
+          (`inset 0 0 0 1px`). It sits just inside the hairline and is what lets
+          that hairline step back: inert on a light theme like the top highlight,
+          and on dark it turns the border into a soft bevel rather than a line.
+
+     Ink, not black: `--ds-text-primary` is the navy-tinted near-black the page's
+     own shadow tokens use, so this reads as the same light source as everything
+     else rather than as a grey wash. In dark mode it resolves pale, which is
+     why the ambient layers stay this faint — at these opacities a pale halo is
+     imperceptible rather than wrong. */
+  box-shadow:
+    0 40px 80px -24px color-mix(in srgb, var(--ds-text-primary) 6%, transparent),
+    0 14px 28px -12px color-mix(in srgb, var(--ds-text-primary) 5%, transparent),
+    0 3px 6px -2px color-mix(in srgb, var(--ds-text-primary) 8%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 55%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, white 22%, transparent);
+}
+.fbar-dock__card .fbar,
+.fbar-dock__card .fbar-chips { margin: 0; max-width: 100%; }
+
+/* An input has no useful content width, so in the dock search takes a
+   shrinkable basis rather than the in-flow bar's grow-to-fill; every other
+   control is content-sized and the card ends where they do. Below the bar's
+   wrap breakpoint search takes the first line to itself instead of sharing it
+   at a squeezed basis. */
+.fbar-dock__card .fbar__search { flex: 0 1 240px; min-width: 0; max-width: none; }
+@media (max-width: 760px) {
+  .fbar-dock__card .fbar__search { flex: 1 1 100%; }
+}
+
+/* Everything the dock opens, opens UPWARD. The base `.fbar-menu` hangs below
+   its button (`top: calc(100% + 6px)`), which from a card at the bottom of the
+   viewport renders off-screen.
+
+   It stays anchored to its BUTTON, because the row is centred and the button
+   therefore has no fixed x in the card. So the offset has to clear the chips
+   row on its own: `--fbar-dock-chips` is the chips row's height plus the card's
+   row gap, published by the page's dock script whenever the row appears,
+   disappears or rewraps, and 0 while there are no chips. Without it a menu
+   measured from the button opens straight into the chips and covers the very
+   state it is about to change.
+
+   The category popovers beside it need no rule — they are `position: fixed` and
+   filter_toolbar.js already clamps them into the viewport, which from down here
+   resolves upward on its own. */
+.fbar-dock .fbar-menu {
+  top: auto;
+  bottom: calc(100% + 8px + var(--fbar-dock-chips, 0px));
+}
+
+/* ── Footer clearance ──
+   The dock floats over everything, so the page has to end above it — and "the
+   page" includes the site FOOTER, not just the host page's list. Clearance on
+   the list alone leaves the footer as the one element that still slides under
+   the card and stays there, unreachable, at the bottom of the scroll. The
+   margin lives on the footer (the document's last element), so the whole page
+   scrolls naturally behind the dock's reserved space and the footer settles
+   fully visible above the card. Sized for the card's tallest resting state
+   (controls + chips row) plus the viewport inset, with room to spare.
+
+   `body:has()` so the rule ships with the component: any page that renders a
+   dock gets the clearance, and no page that doesn't is touched. */
+body:has(.fbar-dock) footer { margin-bottom: 140px; }
+
+/* Controls fade in rather than appearing mid-animation, so a card that is
+   growing (grid's sort select arriving, the first chip) isn't also popping new
+   pills into existence at full opacity. `@starting-style` is what makes that
+   possible for something arriving from `display: none`; browsers without it get
+   the instant swap, which is the same thing minus the polish. */
+@media (prefers-reduced-motion: no-preference) {
+  .fbar-dock__card > * > * { transition: opacity 160ms var(--ds-ease-standard, ease); }
+  @starting-style {
+    .fbar-dock__card > * > * { opacity: 0; }
+  }
+}
+
 /* Card grid — the grid-view container a FilterToolbar `view` config projects
    into. Cards are built from the (filtered, sorted) table rows, so the table
    stays the single source of truth. */
@@ -413,11 +767,47 @@ button.fbar-card__access--fixed:hover svg { color: var(--ds-text-secondary); }
    viewport arithmetic. The coordinates are never hardcoded. */
 .fbar-cat__pop { position: fixed; top: 0; left: 0; z-index: 41; width: 232px; max-height: 54vh; overflow-y: auto; padding: 6px; background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; box-shadow: var(--ds-shadow-md); }
 .fbar-cat__pop[hidden] { display: none; }
+
+/* Search WITHIN a long category. filter_toolbar.js injects this field (and the
+   "No matches" line) into any category popover holding more than CAT_SEARCH_MIN
+   options — a tag vocabulary of forty is a scroll, and the field is the way out
+   of it. Never authored in a template, so the affordance follows the data.
+
+   It STICKS to the top of the popover's own scrollport: the field must stay
+   reachable while its results scroll, and it is what explains a shortened list.
+   The negative margins plus `top: -6px` cancel the popover's 6px padding so the
+   band is full-bleed and nothing shows through above it (sticky offsets are
+   measured from the scrollport's padding edge, which sits 6px in). */
+.fbar-cat__search {
+    position: sticky; top: -6px; z-index: 1;
+    margin: -6px -6px 5px; padding: 6px;
+    background: var(--ds-surface);
+    border-bottom: 1px solid var(--ds-border-light);
+}
+.fbar-cat__searchinput {
+    display: block; width: 100%; box-sizing: border-box;
+    padding: 6px 9px;
+    font: inherit; font-size: 13px; color: var(--ds-text-primary);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border); border-radius: 8px;
+}
+.fbar-cat__searchinput::placeholder { color: var(--ds-text-muted); }
+.fbar-cat__searchinput:focus-visible { outline: var(--ds-focus-outline); outline-offset: 1px; }
+/* Same quiet register as the toolbar's own empty state: a query that matches
+   nothing is a fact about the query, not a problem to flag. */
+.fbar-cat__none { padding: 8px 10px; font-size: 12.5px; color: var(--ds-text-muted); }
+.fbar-cat__none[hidden] { display: none; }
+.fbar-menu__opt[hidden] { display: none; }
+
 @media (max-width: 760px) {
   /* No room beside the menu on a phone — stack the options underneath. The
      placer detects this (computed position is no longer `fixed`) and leaves the
      popover alone. */
   .fbar-cat__pop { position: static; width: auto; max-height: none; box-shadow: none; border: none; border-top: 1px solid var(--ds-border); border-radius: 0; margin: 2px 0 4px; }
+  /* The popover no longer scrolls here, so there is no scrollport to stick to —
+     pinning would latch onto the PAGE's instead and float the field over the
+     options as the page moves. It rides along as an ordinary first row. */
+  .fbar-cat__search { position: static; margin: 0 0 5px; padding: 0; border-bottom: none; }
 }
 
 /* =====================================================================
@@ -459,6 +849,33 @@ button.fbar-card__access--fixed:hover svg { color: var(--ds-text-secondary); }
 .fbar-group__title { font-weight: 600; font-size: 13.5px; letter-spacing: 0.01em; }
 .fbar-group__n { font-size: 12.5px; color: var(--ds-text-muted); font-variant-numeric: tabular-nums; }
 .fbar-group__hint { margin-left: 6px; font-size: 12px; font-weight: 400; color: var(--ds-text-muted); }
+/* A kind that will land INSIDE this section but does not exist yet — the badge
+   form of what used to be a page-head panel (Library: "Data apps coming soon"
+   on the Files band). Info vocabulary, because a schedule is not a warning:
+   nothing is wrong and there is nothing to act on.
+
+   Deliberately quieter than `.fbar-group__title` and pushed to the end of the
+   header row: it must not compete with the section's own name or with its
+   count, which are what the reader is scanning for. `cursor: help` pairs with
+   the `data-tip` the host template puts on it. */
+.fbar-group__soon {
+    flex: none;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: var(--ds-radius-pill);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-info-ink);
+    background: color-mix(in srgb, var(--ds-info-line) 16%, transparent);
+    cursor: help;
+}
+/* The hint is the first thing to drop when the band runs out of width — the
+   badge is shorter and carries the fact the hint only decorates. */
+@media (max-width: 560px) {
+    .fbar-grouptoggle:has(.fbar-group__soon) .fbar-group__hint { display: none; }
+}
 /* Collapsed → every row of the group folds away except its header. */
 .fbar-group.is-collapsed > tr:not(.fbar-grouprow) { display: none; }
 /* Very subtle "nothing in this group matches" row. */

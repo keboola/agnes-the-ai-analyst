@@ -94,6 +94,26 @@ html[data-theme="paper"] .detail-hero--compact {
     border-radius: 0;
     box-shadow: none;
     color: var(--ds-text-primary);
+    /* The scaffold clips the header because the gradient slab's dot and wave
+       layers bleed past its rounded corners. Paper removes those layers
+       (`.detail-hero__deco { display: none }` below), so the only thing left
+       for `overflow: hidden` to clip is the overflow MENU — a popover
+       absolutely positioned below the trigger, which is inside this box and so
+       got cut off at the header's bottom edge. Nothing here overflows any
+       more; the clip has to go with the layers it existed for. */
+    overflow: visible;
+    /* …and once it escapes the clip it has to WIN, which needs saying out loud.
+       The entrance animation below (`rdet-rise`, fill-mode `both`) leaves this
+       element's computed transform as an identity matrix rather than `none` —
+       and any transform, identity included, creates a stacking context. So the
+       menu panel's own `z-index: 40` is sealed inside the header and cannot
+       compete with anything outside it. `.detail-aside` is a stacking context
+       too (it is `position: sticky`, and carries the same filled matrix), sits
+       at `z-index: auto`, and comes LATER in the DOM — so it painted over the
+       header and everything in it regardless of what the panel asked for.
+       Ordering two accidental stacking contexts by source order is a coin
+       toss; these two declarations are the page stating which is on top. */
+    z-index: 2;
 }
 
 /* Both ambient layers are gone, and this is the deliberate choice rather
@@ -293,6 +313,21 @@ html[data-theme="paper"] .detail-meta svg {
 html[data-theme="paper"] .detail-hero__actions {
     gap: 8px;
     padding-top: 2px;
+    /* The marketplace pages stack their action area into a COLUMN so the
+       post-install hint can sit under the buttons. That predates the overflow
+       menu, and it put the menu trigger on a line of its own below the
+       primary action — the one control every other detail page keeps beside
+       it. Here the header is a row again, and the hint claims a full row of
+       its own instead, which is what it actually wanted. */
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+html[data-theme="paper"] .detail-hero__actions > .stack-hint,
+html[data-theme="paper"] .detail-hero__actions > .helper {
+    flex-basis: 100%;
 }
 
 html[data-theme="paper"] .detail-hero__actions .btn,
@@ -758,6 +793,10 @@ html[data-theme="paper"] .detail-main {
 
 html[data-theme="paper"] .detail-aside {
     position: sticky;
+    /* The other half of the header's `z-index: 2` — see the comment there. The
+       rail stays above the page and below the header, so a popover opened in
+       the header is never covered by it. */
+    z-index: 1;
     top: var(--rdet-aside-top);
     align-self: start;
     min-width: 0;
@@ -979,6 +1018,15 @@ html[data-theme="paper"] .detail-side + .detail-side {
     border-top: 1px solid var(--ds-border-light);
 }
 
+/* Prose in the rail reads at rail scale and takes the full column — the
+   68ch measure the main column uses is wider than the rail itself. */
+html[data-theme="paper"] .detail-side__prose {
+    max-width: none;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ds-text-secondary);
+}
+
 html[data-theme="paper"] .detail-side__title {
     display: flex;
     align-items: center;
@@ -1017,6 +1065,12 @@ html[data-theme="paper"] .detail-side__row {
 
 html[data-theme="paper"] .detail-side__key {
     flex: none;
+    /* The scaffold's baseline reserves a 150px label column — a two-column
+       measure meant for the main content. In a 296px rail that left the value
+       under 100px, so "Customer Insights" and "local · materialized" wrapped
+       onto a second line and the rail read as ragged. The label takes the width
+       of its own words; the value gets the rest. */
+    min-width: 0;
     color: var(--ds-text-muted);
 }
 
@@ -1041,6 +1095,52 @@ html[data-theme="paper"] .detail-side__row--stacked .detail-side__val {
     margin-top: 4px;
     text-align: left;
 }
+
+/* ── Hydrated facts list ──────────────────────────────────────────────
+   The marketplace pages build their metadata client-side as
+   `<dl><div class="row"><dt>…</dt><dd>…</dd></div></dl>`, because the
+   payload only resolves after an XHR. That is the SAME content as a
+   `side_rows()` block, so it gets the same grid rather than a second look:
+   the markup differs only because of who writes it, and a reader should not
+   be able to tell which facts arrived over the wire.
+
+   Mapped here rather than rewritten in JS — the alternative is editing
+   several hundred lines of template strings across two files to change
+   `<dt>` to `<span class="detail-side__key">`, which buys nothing. */
+html[data-theme="paper"] .detail-side__dl {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    margin: 0;
+}
+
+html[data-theme="paper"] .detail-side__dl .row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    font-size: 12.75px;
+}
+
+html[data-theme="paper"] .detail-side__dl dt {
+    flex: none;
+    min-width: 0;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail-side__dl dd {
+    min-width: 0;
+    margin: 0;
+    text-align: right;
+    color: var(--ds-text-primary);
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+
+html[data-theme="paper"] .detail-side__dl dd a { color: var(--ds-text-link); text-decoration: none; }
+html[data-theme="paper"] .detail-side__dl dd a:hover { text-decoration: underline; }
 
 /* Owner — avatar + name, the one place in the rail that gets a face. */
 html[data-theme="paper"] .detail-owner {
@@ -1107,6 +1207,76 @@ html[data-theme="paper"] .detail-side__note {
     font-size: 12.5px;
     line-height: 1.6;
     color: var(--ds-text-muted);
+}
+
+/* ── Rail callout ─────────────────────────────────────────────────────
+   A status and the sentence that says what it means for the reader are ONE
+   answer, so they get one tinted surface. Loose, the chip read as a label and
+   the sentence as unrelated body copy that happened to follow it. `--panel-ink`
+   carries the tone to the status dot only: the words stay in the page's own ink
+   so they are as readable as anything else, and the colour is confined to the
+   6px mark — decoration on top of a state that is always spelled out. */
+html[data-theme="paper"] .detail-side__panel {
+    --panel-ink: var(--ds-text-muted);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border-light);
+}
+
+html[data-theme="paper"] .detail-side__panel--ok {
+    --panel-ink: var(--ds-accent-success-ink);
+    background: var(--ds-accent-success-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-success-line) 45%, transparent);
+}
+
+html[data-theme="paper"] .detail-side__panel--warn {
+    --panel-ink: var(--ds-accent-warn-ink);
+    background: var(--ds-accent-warn-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-warn-line) 45%, transparent);
+}
+
+html[data-theme="paper"] .detail-side__panel--danger {
+    --panel-ink: var(--ds-accent-danger-ink);
+    background: var(--ds-accent-danger-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-danger-line) 45%, transparent);
+}
+
+html[data-theme="paper"] .detail-side__panel--info {
+    --panel-ink: var(--ds-accent-info-ink);
+    background: var(--ds-accent-info-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-info-line) 40%, transparent);
+}
+
+/* The chip loses its own fill and rim: the panel is already the surface, and a
+   pill inside a tinted box is two nested containers saying one thing. */
+html[data-theme="paper"] .detail-side__panel .detail-status {
+    height: auto;
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--ds-text-primary);
+    font-size: 13px;
+    font-weight: 650;
+}
+
+html[data-theme="paper"] .detail-side__panel .detail-status::before {
+    background: var(--panel-ink);
+}
+
+html[data-theme="paper"] .detail-side__panel .detail-side__note {
+    margin: 0;
+    color: var(--ds-text-secondary);
+}
+
+/* Inline code needs to lift off a tinted panel, not off the page. */
+html[data-theme="paper"] .detail-side__panel .detail-side__note code {
+    background: color-mix(in srgb, var(--ds-surface) 72%, transparent);
+    border: 1px solid var(--ds-border-light);
 }
 
 html[data-theme="paper"] .detail-side__note code {
@@ -1444,44 +1614,63 @@ html[data-theme="paper"] .detail-list__body { flex: 1; min-width: 0; }
 /* ══════════════════════════════════════════════════════════════════════
    Data-package page — the tables accordion
    ══════════════════════════════════════════════════════════════════════
-   `catalog_package_detail.html` draws each table as a bordered, rounded,
-   white card with an 8px gap — so the one section that carries the page's
-   actual content was a stack of boxes inside a section that no longer has
-   one. It becomes the same borderless row rhythm as every other list on a
-   detail page: hairline separators, a wash on hover, and the disclosure
-   state carried by a real chevron instead of a `▸` text glyph. */
+   Each table is an EXPANDABLE CARD: the row is a control that opens to reveal
+   documentation, so unlike the read-only lists elsewhere on a detail page it
+   has to look pressable and it has to show where its disclosed body ends. A
+   hairline-only rhythm gave it neither — an opened row bled into the next
+   row's rule, and on a page with no other borders the whole list read as flat
+   text. So: a quiet card per row, one radius, a real chevron instead of the
+   `▸` text glyph, and the accent arriving on hover and while open. */
 
 html[data-theme="paper"] .detail .pkg-table-row {
     margin: 0;
-    background: none;
-    border: 0;
-    border-bottom: 1px solid var(--ds-border-light);
-    border-radius: 10px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    transition: border-color var(--rdet-motion), box-shadow var(--rdet-motion);
 }
 
-html[data-theme="paper"] .detail .pkg-table-row:last-of-type { border-bottom: 0; }
+html[data-theme="paper"] .detail .pkg-table-row + .pkg-table-row { margin-top: 10px; }
 
+/* Hover is the product's ONE card hover: the border holds and a soft shadow
+   lifts the card (the Agents page's `.ag-card` does exactly this). An accent
+   rim on hover would make a table row look like it had changed state, and the
+   accent is reserved for things that carry meaning — glyphs, badges, status. */
+html[data-theme="paper"] .detail .pkg-table-row:hover,
+html[data-theme="paper"] .detail .pkg-table-row[open] {
+    border-color: var(--ds-border);
+    box-shadow: var(--ds-shadow-md);
+}
+
+/* No fill on hover. The CARD responds (see the shadow above) — filling the
+   summary as well greyed the row's own surface, which on a page whose every
+   other card stays white read as "this row is disabled" rather than "this row
+   is under the pointer". One card, one hover signal. */
 html[data-theme="paper"] .detail .pkg-table-row > summary {
     align-items: flex-start;
-    gap: 12px;
-    padding: 14px 12px;
-    margin: 0 -12px;
-    border-radius: 10px;
-    transition: background var(--rdet-motion);
+    gap: 11px;
+    padding: 13px 14px;
+    margin: 0;
+    border-radius: 12px;
+    background: none;
 }
 
-html[data-theme="paper"] .detail .pkg-table-row > summary:hover {
-    background: var(--ds-surface-dim);
+html[data-theme="paper"] .detail .pkg-table-row > summary:focus-visible {
+    outline: 2px solid var(--kind);
+    outline-offset: -2px;
 }
 
 /* A real chevron: a rotating box drawn from two borders, so it inherits ink
-   and needs no extra markup or SVG in the row. */
+   and needs no extra markup or SVG in the row. Aligned to the middle of the
+   glyph tile beside it rather than to the text, so the row's three leading
+   marks (chevron, tile, name) sit on one line however many lines of
+   description follow. */
 html[data-theme="paper"] .detail .pkg-table-row > summary::before {
     content: "";
     flex: none;
     width: 6px;
     height: 6px;
-    margin: 6px 2px 0 0;
+    margin: 11px 1px 0 0;
     border-right: 1.6px solid var(--ds-text-muted);
     border-bottom: 1.6px solid var(--ds-text-muted);
     transform: rotate(-45deg);
@@ -1492,12 +1681,35 @@ html[data-theme="paper"] .detail .pkg-table-row[open] > summary::before {
     transform: rotate(45deg);
 }
 
+/* Table tile at row scale — a plain tinted square, no rim. At 30px a border
+   drawn in the accent doubles the glyph's own outline and reads as a second,
+   heavier icon; the tint alone is enough to hold the shape. */
+html[data-theme="paper"] .detail .pkg-table-row__glyph {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    background: var(--kind-soft);
+    border: 0;
+    color: var(--kind);
+}
+
+html[data-theme="paper"] .detail .pkg-table-row__glyph svg {
+    width: 16px;
+    height: 16px;
+}
+
 html[data-theme="paper"] .detail .pkg-table-row__text {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 3px;
+    /* Matches the 30px glyph tile, so the name's cap-height lands on the
+       tile's centre line and the meta column can align to the same line. */
+    padding-top: 5px;
 }
 
 html[data-theme="paper"] .detail .pkg-table-row__head {
@@ -1519,8 +1731,13 @@ html[data-theme="paper"] .detail .pkg-table-row__name {
     transition: color var(--rdet-motion);
 }
 
-html[data-theme="paper"] .detail .pkg-table-row > summary:hover .pkg-table-row__name {
+/* The name is a link to the table's own page, and it tints when the pointer is
+   on THE LINK — not when it is anywhere in the row. Row-wide, the tint made a
+   link look armed while the click would actually have opened the accordion. */
+html[data-theme="paper"] .detail .pkg-table-row__name:hover {
     color: var(--kind);
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }
 
 /* The description gets the full row width on its own line, and two lines of
@@ -1540,8 +1757,10 @@ html[data-theme="paper"] .detail .pkg-table-row__meta {
     flex: none;
     display: flex;
     align-items: baseline;
-    gap: 14px;
-    padding-top: 1px;
+    gap: 18px;
+    /* On the name's line, not the row's middle: a two-line row would otherwise
+       float its numbers between the name and the description. */
+    padding-top: 7px;
     font-size: 12px;
     color: var(--ds-text-muted);
     font-variant-numeric: tabular-nums;
@@ -1581,17 +1800,90 @@ html[data-theme="paper"] .detail .qm-badge.qm-remote {
     color: var(--ds-accent-info-ink);
 }
 
-/* The expanded body — no dashed rule, and it lines up under the row's text
-   column rather than under the chevron. */
+/* The expanded body sits inside the card, as its own inset surface. It is a
+   different KIND of content from the row above it — reference documentation,
+   not a summary — and giving it a visible edge answers the two questions a
+   bare run of blocks left open: which row does this belong to, and where does
+   it stop. The dashed rule the scaffold drew is gone; the panel's own top edge
+   is the separator. */
 html[data-theme="paper"] .detail .pkg-table-detail {
-    padding: 4px 0 16px 20px;
+    padding: 0 14px 14px;
     border-top: 0;
 }
 
+html[data-theme="paper"] .detail .pkg-table-panel {
+    padding: 15px 18px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border-light);
+    border-radius: 10px;
+}
+
+/* Two readings side by side: what this table IS on the left, what you can ASK
+   it on the right, divided by one rule. They are independent — neither is a
+   continuation of the other — so stacking them made the questions look like a
+   fifth definition-list entry. */
+html[data-theme="paper"] .detail .pkg-table-panel--split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0;
+}
+
+html[data-theme="paper"] .detail .pkg-table-panel--split > .pkg-table-panel__ask {
+    margin-left: 22px;
+    padding-left: 22px;
+    border-left: 1px solid var(--ds-border);
+}
+
+/* A caveat qualifies both columns, so it spans them. */
+html[data-theme="paper"] .detail .pkg-table-panel__notes,
+html[data-theme="paper"] .detail .pkg-table-panel__empty {
+    grid-column: 1 / -1;
+}
+
+html[data-theme="paper"] .detail .pkg-table-panel__empty {
+    padding: 0;
+    font-size: 13px;
+    font-style: normal;
+    color: var(--ds-text-muted);
+}
+
 html[data-theme="paper"] .detail .pkg-table-detail dl {
-    grid-template-columns: 132px minmax(0, 1fr);
-    gap: 8px 16px;
-    margin: 4px 0 0;
+    /* Narrower than the full-width version: the labels are short and the
+       column now lives in half a panel. */
+    grid-template-columns: 104px minmax(0, 1fr);
+    gap: 9px 14px;
+    margin: 0;
+}
+
+/* One column below the split's comfortable width — at half of a 640px panel
+   the questions wrap to three lines each and stop being scannable. */
+@media (max-width: 860px) {
+    html[data-theme="paper"] .detail .pkg-table-panel--split {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    html[data-theme="paper"] .detail .pkg-table-panel--split > .pkg-table-panel__ask {
+        margin: 16px 0 0;
+        padding: 16px 0 0;
+        border-left: 0;
+        border-top: 1px solid var(--ds-border);
+    }
+}
+
+/* Narrow: the numbers move under the row's text rather than squeezing the
+   name into an ellipsis. */
+@media (max-width: 620px) {
+    html[data-theme="paper"] .detail .pkg-table-row > summary {
+        flex-wrap: wrap;
+    }
+    html[data-theme="paper"] .detail .pkg-table-row__meta {
+        width: 100%;
+        padding: 2px 0 0 41px;
+        gap: 14px;
+    }
+    html[data-theme="paper"] .detail .pkg-table-row__size {
+        min-width: 0;
+        text-align: left;
+    }
 }
 
 html[data-theme="paper"] .detail .pkg-table-detail dt {
@@ -1610,6 +1902,16 @@ html[data-theme="paper"] .detail .pkg-table-detail dd {
 /* Gotchas — a caveat is a note, not a slab. The generic one loses its fill
    for a leading rule; the KEY one keeps a tint, because "this will make your
    number wrong" is the single thing on the page worth an amber signal. */
+/* The notes strip carries its own separation from the columns above it, so the
+   first gotcha inside it does not need to add its own. */
+html[data-theme="paper"] .detail .pkg-table-panel__notes {
+    margin-top: 15px;
+    padding-top: 14px;
+    border-top: 1px solid var(--ds-border);
+}
+
+html[data-theme="paper"] .detail .pkg-table-panel__notes > .pkg-gotcha:first-child { margin-top: 0; }
+
 html[data-theme="paper"] .detail .pkg-gotcha {
     margin: 10px 0 0;
     padding: 0 0 0 12px;
@@ -1637,7 +1939,9 @@ html[data-theme="paper"] .detail .pkg-gotcha__label {
     color: var(--ds-accent-warn-ink);
 }
 
-html[data-theme="paper"] .detail .pkg-questions { margin-top: 16px; }
+/* Inside the panel the questions head their own column, so the eyebrow sits at
+   the top of it — level with GRAIN across the rule. */
+html[data-theme="paper"] .detail .pkg-questions { margin-top: 0; }
 
 html[data-theme="paper"] .detail .pkg-questions__label {
     font-size: 11px;
@@ -1647,15 +1951,40 @@ html[data-theme="paper"] .detail .pkg-questions__label {
     color: var(--ds-text-muted);
 }
 
+/* Each question becomes its own card on the panel's tint. A question is a
+   thing you might pick up and use, and a bulleted list of them reads as prose
+   about the table; a surface per question makes them individually addressable
+   at a glance. The dot survives as the marker, drawn rather than listed, so no
+   list-style indent fights the card's padding. */
 html[data-theme="paper"] .detail .pkg-questions-list {
-    margin: 6px 0 0;
-    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
 }
 
 html[data-theme="paper"] .detail .pkg-questions-list li {
-    font-size: 13.5px;
-    line-height: 1.6;
+    position: relative;
+    padding: 8px 12px 8px 25px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border-light);
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
     color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail .pkg-questions-list li::before {
+    content: "";
+    position: absolute;
+    top: 15px;
+    left: 12px;
+    width: 4px;
+    height: 4px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-text-disabled);
 }
 
 /* ── Table page — the Columns table ───────────────────────────────────
@@ -1802,25 +2131,70 @@ html[data-theme="paper"] .detail .file .status-pill.blocked {
     color: var(--ds-accent-danger-ink);
 }
 
-/* ── Example-question chips ───────────────────────────────────────────
-   Kept as rows, lightened: hairline instead of a filled chip, and the
-   accent arrives on hover. */
-html[data-theme="paper"] .detail-questions { gap: 6px; }
+/* ── Suggested questions ──────────────────────────────────────────────
+   One component, two surfaces. On the chat home these rows are borderless
+   items under the composer; on a detail page they are cards on the paper
+   canvas — but the icon tile, the prompt's weight and ink, and the trailing
+   "Start →" are the chat page's, token for token (css/chat_dashboard.css
+   `.rdb-action*`). That recognition is the point: the reader has already
+   learned on the home screen that a row shaped like this hands its prompt to
+   Agnes, and nothing about arriving on a data package should make them learn
+   it again. Hover is the shared card hover — shadow, no colour shift. */
+html[data-theme="paper"] .detail-questions { gap: 8px; }
 
-html[data-theme="paper"] .detail-questions a {
-    padding: 12px 14px;
+html[data-theme="paper"] .detail-question {
+    gap: 11px;
+    padding: 11px 14px;
     border-radius: 10px;
-    border: 1px solid var(--ds-border-light);
+    border: 1px solid var(--ds-border);
     background: var(--ds-surface);
-    font-size: 14px;
-    transition: border-color var(--rdet-motion), background var(--rdet-motion),
-                transform var(--rdet-motion);
+    transition: box-shadow var(--rdet-motion), border-color var(--rdet-motion);
 }
 
-html[data-theme="paper"] .detail-questions a:hover {
+html[data-theme="paper"] .detail-question:hover {
     background: var(--ds-surface);
-    border-color: color-mix(in srgb, var(--kind) 42%, transparent);
-    transform: translateY(-1px);
+    border-color: var(--ds-border);
+    box-shadow: var(--ds-shadow-md);
+}
+
+html[data-theme="paper"] .detail-question:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+html[data-theme="paper"] .detail-question__icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+}
+
+/* A hair larger than the chat page's 15px: `spark` is a filled star that only
+   fills the middle of its viewBox, so at 15px it reads lighter than the outline
+   glyphs the chat rows use. Same optical weight, different path. */
+html[data-theme="paper"] .detail-question__icon svg { width: 16px; height: 16px; }
+
+html[data-theme="paper"] .detail-question__title {
+    font-size: 13.5px;
+    font-weight: 550;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+    color: var(--ds-text-primary);
+}
+
+html[data-theme="paper"] .detail-question__cta {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ds-primary-dark);
+}
+
+html[data-theme="paper"] .detail-question__cta svg { width: 14px; height: 14px; }
+
+/* Narrow: the CTA label goes, the arrow stays — the row still says "this
+   leads somewhere" without pushing the prompt into a third line. */
+@media (max-width: 560px) {
+    html[data-theme="paper"] .detail-question__cta { font-size: 0; gap: 0; }
 }
 
 /* ── Empty states ─────────────────────────────────────────────────────
@@ -1893,4 +2267,607 @@ html[data-theme="paper"] .detail-hero .detail-hero__icon:hover { transform: tran
     html[data-theme="paper"] .detail-aside { position: static; max-height: none; }
     html[data-theme="paper"] .detail-hero__deco,
     html[data-theme="paper"] .detail-menu { display: none; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   `.detail--panels` — ONE container language for a whole detail page
+   ══════════════════════════════════════════════════════════════════════
+   Everything above builds an editorial page: borderless sections separated
+   by whitespace and a hairline. That reads well when a section is prose.
+   It falls apart the moment a section's content is itself a LIST of
+   objects, because the list has to draw its own containers to be legible —
+   so the page ends up with three surface languages at once: unbordered
+   sections, bordered cards inside them, and a bordered rail beside them.
+   Nothing is wrong individually and the whole thing reads as assembled
+   from parts.
+
+   This variant settles it with one rule, applied everywhere: **a section is
+   a panel; everything inside a panel is whitespace.** One surface, one
+   radius, one padding, one border — for the main column's sections and for
+   the rail alike. Inside a panel nothing draws a box: list rows, key/value
+   rows and suggestion rows are separated by space and aligned to a shared
+   grid, which is where the density comes from. Exactly two hairlines
+   survive on the page, both dividing columns rather than decorating: the
+   split inside an expanded table, and nothing else.
+
+   Opt-in per page via `detail.hero(cls='detail--panels')`, so adopting it
+   is a design decision per surface rather than a global reflow of nine
+   pages. Every selector stays paper-scoped, like the rest of this sheet. */
+
+html[data-theme="paper"] .detail--panels {
+    /* The page's whole spacing and shape vocabulary, declared once. */
+    --rdp-radius: 14px;          /* panels */
+    --rdp-radius-inner: 10px;    /* surfaces nested inside a panel */
+    --rdp-radius-tile: 9px;      /* icon tiles */
+    --rdp-pad: 22px 24px;        /* panel padding */
+    --rdp-gap: 16px;             /* between panels */
+    --rdp-block: 18px;           /* between blocks inside a panel */
+    --rdp-rail-w: 320px;
+    --rdp-col-gap: 24px;
+    --rdp-control-h: 34px;       /* every button, every menu trigger */
+}
+
+/* ── Header ───────────────────────────────────────────────────────────
+   Lighter than the shared editorial header: the closing hairline goes
+   (the panels below supply the page's structure, so a rule under the
+   header is one separator doing a job whitespace already does), the glyph
+   tile loses its rim to match the tiles inside the panels, and the title
+   drops three points because at 30px it was the only element on the page
+   at display scale. */
+/* The header is inset by exactly one panel's padding, so its first mark — the
+   back chevron, then the glyph tile — sits on the SAME vertical line as every
+   panel heading below it. Full-bleed, the header's marks aligned with the
+   panels' borders instead of their content, which left nothing on the page
+   sharing a left edge with anything else. */
+html[data-theme="paper"] .detail--panels .detail-back {
+    padding-left: 24px;
+    margin-bottom: 16px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero {
+    padding: 0 24px;
+    margin-bottom: 22px;
+    border-bottom: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__bar {
+    gap: 14px;
+    align-items: flex-start;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero .detail-hero__icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    border: 0;
+    background: var(--kind-soft);
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero .detail-hero__icon svg {
+    width: 22px;
+    height: 22px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero .detail-hero__icon:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+/* Title row — badges centred on the title's optical centre, one pill
+   height between all of them so the row has a single baseline. */
+html[data-theme="paper"] .detail--panels .detail-hero__title-row {
+    gap: 8px;
+    margin-top: 0;
+    row-gap: 6px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__title-row h1 {
+    font-size: 27px;
+    font-weight: 650;
+    line-height: 1.2;
+    letter-spacing: -0.024em;
+}
+
+html[data-theme="paper"] .detail--panels .detail-type,
+html[data-theme="paper"] .detail--panels .detail-badge,
+html[data-theme="paper"] .detail--panels .detail-hero__title-row .ds-trust {
+    height: 20px;
+    padding: 0 8px;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+}
+
+html[data-theme="paper"] .detail--panels .detail-type svg,
+html[data-theme="paper"] .detail--panels .detail-hero__title-row .ds-trust svg {
+    width: 11px;
+    height: 11px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__desc {
+    margin-top: 9px;
+    max-width: 62ch;
+    font-size: 14.5px;
+    line-height: 1.55;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────
+   One button system: a single height, a single radius, one type size, one
+   icon size, one gap. Previously the primary came from the design system
+   (9px radius), Ask Agnes from its own rule, and the overflow trigger was
+   a 34px circle — three radii in a row of three controls. */
+html[data-theme="paper"] .detail--panels .detail-hero__actions {
+    gap: 8px;
+    padding-top: 3px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__actions .btn,
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-ask,
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-menu > summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--rdp-control-h);
+    padding: 0 14px;
+    border-radius: var(--ds-radius-btn);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__actions .btn svg,
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-ask svg {
+    width: 15px;
+    height: 15px;
+}
+
+/* The overflow trigger is the same control with no label, so it is square
+   at the shared height rather than a circle at its own size. */
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-menu > summary {
+    width: var(--rdp-control-h);
+    padding: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-menu > summary svg {
+    width: 15px;
+    height: 15px;
+}
+
+/* ── The two columns ──────────────────────────────────────────────────
+   Tighter gutter (24px, not 48px) and a wider rail (320px). At 48px the
+   two columns read as two pages; the rail at 296px minus its padding left
+   values wrapping. Panels supply the separation now, so the gutter only
+   has to be a gutter. */
+html[data-theme="paper"] .detail--panels .detail-cols {
+    grid-template-columns: minmax(0, 1fr) var(--rdp-rail-w);
+    gap: var(--rdp-col-gap);
+}
+
+html[data-theme="paper"] .detail--panels .detail-main {
+    gap: var(--rdp-gap);
+}
+
+/* ── The panel ────────────────────────────────────────────────────────
+   The single container. Main-column sections and the rail get IDENTICAL
+   surface, border, radius and padding — that identity is the whole point,
+   so they are declared together and can never drift apart. No shadow at
+   rest: a page of six shadowed cards reads as a dashboard, and none of
+   these panels is interactive. */
+html[data-theme="paper"] .detail--panels .detail-main > .detail-section,
+html[data-theme="paper"] .detail--panels .detail-aside {
+    padding: var(--rdp-pad);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--rdp-radius);
+    box-shadow: none;
+}
+
+/* The editorial layout separated sections with a rule above the heading.
+   Panels separate themselves; the rule would be a second separator drawn
+   inside the first. */
+html[data-theme="paper"] .detail--panels .detail-main > .detail-section + .detail-section {
+    padding-top: 22px;
+    border-top: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-main > .detail-section:hover {
+    box-shadow: none;
+    border-color: var(--ds-border);
+}
+
+html[data-theme="paper"] .detail--panels .detail-aside {
+    top: 20px;
+    gap: var(--rdp-block);
+    max-height: calc(100vh - 40px);
+}
+
+/* Panel heading — one step down from the old 19px, because a panel's own
+   edge already announces "new section" and the heading no longer has to. */
+html[data-theme="paper"] .detail--panels .detail-section__title {
+    gap: 8px;
+    margin: 0 0 16px;
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.012em;
+}
+
+html[data-theme="paper"] .detail--panels .detail-section__title svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* ── Inside the rail ──────────────────────────────────────────────────
+   A compact information panel, not a stack of unrelated blocks: the
+   between-block rules go, the eyebrows shrink so they label without
+   competing, and the facts sit on a tight two-column grid with nothing
+   drawn between them. Whitespace does the grouping. */
+html[data-theme="paper"] .detail--panels .detail-side + .detail-side {
+    padding-top: 0;
+    border-top: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__title {
+    gap: 6px;
+    margin: 0 0 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__title svg {
+    width: 12px;
+    height: 12px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__rows {
+    gap: 9px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__row {
+    font-size: 12.75px;
+    padding: 0;
+    border: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__key { min-width: 0; }
+
+html[data-theme="paper"] .detail--panels .detail-side__val {
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__prose {
+    font-size: 12.75px;
+    line-height: 1.6;
+}
+
+/* Availability keeps its tinted callout — it is the one state on the page a
+   reader can act on — but slimmer, and on the panel's inner radius. */
+html[data-theme="paper"] .detail--panels .detail-side__panel {
+    gap: 5px;
+    padding: 10px 12px;
+    border-radius: var(--rdp-radius-inner);
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__panel .detail-status {
+    font-size: 12.5px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__panel .detail-side__note {
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+html[data-theme="paper"] .detail--panels .detail-owner__avatar {
+    width: 28px;
+    height: 28px;
+    border: 0;
+    font-size: 11px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-owner__name { font-size: 12.75px; }
+html[data-theme="paper"] .detail--panels .detail-owner__sub { font-size: 11.5px; }
+
+/* ── Best for / Avoid when, inside a panel ────────────────────────────
+   The 40px column gap was tuned for a full-bleed section; inside a panel it
+   pushes the two lists to the edges. */
+html[data-theme="paper"] .detail--panels .detail-use-skip { gap: 28px; }
+html[data-theme="paper"] .detail--panels .detail-use-skip li { font-size: 13.5px; }
+
+/* ── Object rows, inside a panel ──────────────────────────────────────
+   `detail.objects()` — the shared "what is inside this" list. Deliberately
+   the SAME rhythm as the data-package table rows below: 28px glyph tile,
+   name and type on the first line, description full-width beneath, numbers
+   right-aligned into their own column, and the row's hit area reaching the
+   panel's padding edge so a borderless list still reads as rows.
+
+   That is the point of the component. Before it, "the tables in a package"
+   was a list and "the skills in a plugin" was a grid of photo cards, so two
+   pages answered the same question in two visual languages. */
+html[data-theme="paper"] .detail--panels .detail-object {
+    gap: 12px;
+    padding: 10px 12px;
+    margin: 0 -12px;
+    border: 0;
+    border-radius: var(--rdp-radius-inner);
+    transition: background var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail--panels .detail-object:hover {
+    background: color-mix(in srgb, var(--ds-surface-dim) 62%, var(--ds-surface));
+}
+
+html[data-theme="paper"] .detail--panels .detail-object__glyph {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--rdp-radius-tile);
+}
+
+html[data-theme="paper"] .detail--panels .detail-object__glyph svg { width: 15px; height: 15px; }
+html[data-theme="paper"] .detail--panels .detail-object__name { font-size: 13.25px; }
+
+html[data-theme="paper"] .detail--panels .detail-object__desc {
+    font-size: 12.75px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+}
+
+/* On the name's line, not the row's middle — a two-line row would otherwise
+   float its numbers between the name and the description. */
+html[data-theme="paper"] .detail--panels .detail-object__meta {
+    padding-top: 6px;
+    font-size: 12px;
+}
+
+/* The group heading inside the structure panel ("Skills", "Agents"): an
+   eyebrow, not a second card heading, so one panel can hold several groups
+   without reading as several boxes. The group itself gives up its card —
+   a card inside a panel is the nesting this variant removes. */
+html[data-theme="paper"] .detail--panels .substruct {
+    background: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+}
+
+html[data-theme="paper"] .detail--panels .substruct + .substruct { margin-top: 18px; }
+
+html[data-theme="paper"] .detail--panels .substruct > .head {
+    padding-bottom: 0;
+    border-bottom: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 6px;
+}
+
+html[data-theme="paper"] .detail--panels .substruct > .head h3 {
+    margin: 0;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail--panels .substruct > .head .count {
+    font-size: 11.5px;
+    color: var(--ds-text-muted);
+}
+
+/* ── Table rows, inside a panel ───────────────────────────────────────
+   No longer cards. A card inside a panel is the nesting this variant exists
+   to remove — and once the panel holds them, a row needs no border to be a
+   row: the glyph tile anchors the left edge, the name sets the baseline, and
+   the numbers land in a fixed right-hand column. Density comes from losing
+   the borders and the 10px inter-card gaps. */
+html[data-theme="paper"] .detail--panels .pkg-table-row {
+    margin: 0;
+    background: none;
+    border: 0;
+    border-radius: var(--rdp-radius-inner);
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row + .pkg-table-row { margin-top: 2px; }
+
+html[data-theme="paper"] .detail--panels .pkg-table-row:hover,
+html[data-theme="paper"] .detail--panels .pkg-table-row[open] {
+    border: 0;
+    box-shadow: none;
+}
+
+/* Negative margin so the row's own hit area reaches the panel's padding
+   edge, which is what makes a borderless list feel like rows rather than
+   floating text. */
+html[data-theme="paper"] .detail--panels .pkg-table-row > summary {
+    gap: 12px;
+    padding: 11px 12px;
+    margin: 0 -12px;
+    border-radius: var(--rdp-radius-inner);
+    background: none;
+    transition: background var(--rdet-motion);
+}
+
+/* The whisper — `--ds-surface-dim` at 62%, the SAME wash the suggestion rows
+   in the panel below use, so every hoverable row on the page answers the
+   pointer identically. This is not the flat grey a bordered card used to take:
+   there the fill covered a framed object and read as "disabled", where here it
+   is what tells a borderless row apart from the text around it. */
+html[data-theme="paper"] .detail--panels .pkg-table-row > summary:hover {
+    background: color-mix(in srgb, var(--ds-surface-dim) 62%, var(--ds-surface));
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row > summary::before {
+    margin: 10px 0 0 0;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row[open] > summary::before,
+html[data-theme="paper"] .detail--panels .pkg-table-row > summary:hover::before {
+    border-color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__glyph {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--rdp-radius-tile);
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__glyph svg {
+    width: 15px;
+    height: 15px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__text {
+    gap: 2px;
+    padding-top: 4px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__name { font-size: 13px; }
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__desc {
+    max-width: 68ch;
+    font-size: 12.75px;
+    line-height: 1.5;
+}
+
+/* The numbers are a column, not a suffix: one tabular size, fixed widths,
+   right-aligned, so three rows of metadata scan vertically. */
+html[data-theme="paper"] .detail--panels .pkg-table-row__meta {
+    gap: 20px;
+    padding-top: 6px;
+    font-size: 11.75px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__size {
+    min-width: 52px;
+}
+
+/* ── Expanded table body ──────────────────────────────────────────────
+   An inset surface on the panel's inner radius, no border — the tint alone
+   separates it, and a border here would be a box inside a box inside a
+   panel. Aligned to the row's TEXT column, so the documentation starts
+   where the name starts. */
+/* 60px is not a round number, it is a measured one: chevron + gap + 28px tile
+   + gap, i.e. exactly where the table's NAME starts. The documentation begins
+   on the same line as the thing it documents. */
+html[data-theme="paper"] .detail--panels .pkg-table-detail {
+    padding: 0 0 6px 60px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-panel {
+    padding: 14px 16px;
+    background: color-mix(in srgb, var(--ds-surface-dim) 62%, var(--ds-surface));
+    border: 0;
+    border-radius: var(--rdp-radius-inner);
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-panel--split > .pkg-table-panel__ask {
+    margin-left: 20px;
+    padding-left: 20px;
+    border-left: 1px solid var(--ds-border);
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-detail dl {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 8px 12px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-detail dt { font-size: 10px; }
+html[data-theme="paper"] .detail--panels .pkg-table-detail dd { font-size: 12.75px; }
+
+html[data-theme="paper"] .detail--panels .pkg-questions-list li {
+    padding: 7px 11px;
+    padding-left: 23px;
+    background: var(--ds-surface);
+    border-color: var(--ds-border-light);
+    border-radius: 8px;
+    font-size: 12.5px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-questions-list li::before { top: 14px; left: 11px; }
+
+html[data-theme="paper"] .detail--panels .pkg-table-panel__notes {
+    margin-top: 13px;
+    padding-top: 12px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-gotcha { font-size: 12.75px; }
+
+/* ── Suggested questions, inside a panel ──────────────────────────────
+   Borderless rows — which is what they are on the chat home too, so inside
+   a panel the component matches its origin exactly rather than approximating
+   it with a card. */
+html[data-theme="paper"] .detail--panels .detail-questions { gap: 2px; }
+
+html[data-theme="paper"] .detail--panels .detail-question {
+    padding: 9px 12px;
+    margin: 0 -12px;
+    background: none;
+    border: 0;
+    border-radius: var(--rdp-radius-inner);
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail--panels .detail-question:hover {
+    background: color-mix(in srgb, var(--ds-surface-dim) 62%, var(--ds-surface));
+    border: 0;
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail--panels .detail-question__icon {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--rdp-radius-tile);
+}
+
+html[data-theme="paper"] .detail--panels .detail-question__icon svg { width: 14px; height: 14px; }
+html[data-theme="paper"] .detail--panels .detail-question__title { font-size: 13px; }
+html[data-theme="paper"] .detail--panels .detail-question__cta { font-size: 12.5px; }
+
+/* ── Narrow ───────────────────────────────────────────────────────────
+   The rail becomes the last panel in a single column. Panel padding tightens
+   on a phone, where 24px of it on both sides is a quarter of the screen. */
+@media (max-width: 1080px) {
+    html[data-theme="paper"] .detail--panels .detail-cols {
+        grid-template-columns: 1fr;
+        gap: var(--rdp-gap);
+    }
+}
+
+/* The split's divider has to be re-answered here: the base rule flips it from
+   a left border to a top one at this width, but the panels variant re-declares
+   `border-left` further down the sheet and at higher specificity, so without
+   this the stacked columns would carry both. */
+@media (max-width: 860px) {
+    html[data-theme="paper"] .detail--panels .pkg-table-panel--split > .pkg-table-panel__ask {
+        margin: 14px 0 0;
+        padding: 14px 0 0;
+        border-left: 0;
+    }
+}
+
+@media (max-width: 620px) {
+    /* Same measured indent as the expanded body: the numbers drop below the
+       row and line up under the name, not under the chevron. */
+    html[data-theme="paper"] .detail--panels .pkg-table-row__meta {
+        padding: 3px 0 0 60px;
+        gap: 14px;
+    }
+}
+
+@media (max-width: 560px) {
+    html[data-theme="paper"] .detail--panels {
+        --rdp-pad: 18px 16px;
+    }
+    html[data-theme="paper"] .detail--panels .detail-back,
+    html[data-theme="paper"] .detail--panels .detail-hero { padding-left: 16px; padding-right: 16px; }
+    html[data-theme="paper"] .detail--panels .detail-hero__title-row h1 { font-size: 23px; }
+    html[data-theme="paper"] .detail--panels .pkg-table-detail { padding-left: 0; }
 }

@@ -31,67 +31,60 @@
   <span class="fbar-group__title">{{ sec.label }}</span>
   <span class="fbar-group__n" data-sec-count>{{ sec.count }}</span>
   {% if sec.hint %}<span class="fbar-group__hint">{{ sec.hint }}</span>{% endif %}
+  {# A kind that will land inside THIS section, stated on the section's own
+     label. Data apps ship into Files first, so the schedule belongs where the
+     thing will appear rather than in a panel above the whole inventory. One
+     macro serves the table band and the grid band, so both layouts carry it.
+
+     The sentence rides `data-tip` + `aria-label` (the page's fast tooltip, not
+     `title`) so it is reachable by keyboard and read by a screen reader — a
+     badge whose meaning exists only in a hover bubble is a badge half the
+     readers can't resolve. #}
+  {% if sec.soon %}<span class="fbar-group__soon"
+        {% if sec.soon_tip %}data-tip="{{ sec.soon_tip }}" aria-label="{{ sec.soon }} — {{ sec.soon_tip }}"{% endif %}
+        >{{ sec.soon }}</span>{% endif %}
 </button>
 {% endmacro %}
-{# ── Data apps — the kind that does not exist yet ──────────────────────────────
-   An INFO BANNER in the page head, under the connect banner. It used to wear the
-   band chrome of the list itself, sitting inside the frame as the list's last
-   band — which made a roadmap note look like a sixth kind you could open: same
-   fill, same metrics, same glyph column as the five real bands above it, so the
-   only thing saying "there is nothing here" was a badge. A reader scanning bands
-   read it as a section whose rows had failed to load.
+{# ── More is coming ───────────────────────────────────────────────────────────
+   A note beside the ITEM COUNT, not a banner above the list. Three homes so
+   far, and each move was a correction of what the note was actually saying:
 
-   So it states its own genre instead: the info vocabulary (`--ds-info-*`, the
-   same tint `.callout-hint` uses), which says "read this, nothing to do" in one
-   glance and cannot be mistaken for inventory. That genre is what lets it sit in
-   the head rather than after the inventory — it closes the block of page-level
-   notes under the header, where the caveats about the page as a whole belong,
-   and it cannot be read as the head opening on a kind you cannot have.
+     a `.pnote` panel, then two stacked tinted banners (~200px of chrome above
+     the inventory), then one amber row. All three dressed it as a CAVEAT — the
+     amber vocabulary, a warning glyph, "may be incomplete", and a "what this
+     means" escape hatch, which together say "be careful, this data might be
+     wrong."
 
-   Rendered ONCE for both states of the page (a stocked Library and an empty
-   one), and unconditionally, independent of `data_apps.enabled` — it is a note
-   about the Library's roadmap, not a view of the /apps feature. #}
-{% macro data_apps_soon() %}
-<div class="lib-soon" role="note" aria-label="Data apps — coming soon">
-  <span class="lib-soon__icon" aria-hidden="true">
-    <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.7"/><path d="M3 9h18" stroke="currentColor" stroke-width="1.7"/><path d="M6.5 6.5h.01M9 6.5h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-  </span>
-  <span class="lib-soon__body">
-    <span class="lib-soon__title">Data apps <span class="lib-soon__badge">Coming soon</span></span>
-    {# The old notice's copy in full, not a trimmed version of it: what the kind
-       is, that it is still being built, what you will be able to do with it, and
-       — the part a badge alone cannot say — that there is nothing to do now. #}
-    <span class="lib-soon__text">Hosted apps that run next to your data will live here too. This is still in the works — you'll be able to build them with {{ instance_brand_short or 'Agnes' }} or link an existing one. Nothing to do yet.</span>
-  </span>
-</div>
-{% endmacro %}
-{# ── The Library's content is still being filled ───────────────────────────────
-   The same banner component, in its WARN variant. Two notes of the same shape
-   under the header, distinguished by vocabulary alone, so a reader takes both in
-   at one glance and still reads them as different kinds of statement:
+   That was never the message. The Library is being FILLED: more useful things
+   are arriving, which is good news and needs no hedging. So the note takes the
+   growth vocabulary instead — a sparkle rather than a warning triangle, muted
+   text rather than amber fill, and a promise rather than a disclaimer. Sitting
+   next to the count makes it list metadata, which is what it is: a fact about
+   how many things are here, and that the number is going up.
 
-     info (blue) — Data apps: a SCHEDULE. Nothing is wrong, nothing to act on.
-     warn (amber) — this one: a CAVEAT ABOUT WHAT IS ON SCREEN. The inventory
-       below is incomplete, so what the reader is about to trust may be missing
-       pieces. That is the one thing on this page worth an amber signal.
+   Two mechanical notes:
+     * It is a SIBLING of `#lib-item-count`, never a child. The toolbar's filter
+       code rewrites that element's text on every filter change (see
+       `count: { el: '#lib-item-count' }` further down), so anything nested
+       inside it is destroyed on the first click of a facet.
+     * The elaboration rides `data-tip` + `aria-label` (the page's fast tooltip,
+       never `title`). At this size the phrase carries the meaning on its own, so
+       the tooltip is genuinely optional detail — which is what lets the visible
+       "what this means" cue go away.
 
-   It sits ABOVE the Data apps note: it qualifies the list the reader came for,
-   while the Data apps note is about a kind that is not in the list at all. #}
-{# TODO (temporary): this banner is a PRODUCT STATEMENT while the content backlog
-   is being filled, shown to everyone and gated on nothing. It deliberately
-   reverses the earlier decision that the Library shows no standing caveat (see
-   tests/test_web_library_sharing.py::test_library_title_carries_no_setup_caveat,
-   narrowed to the two bans that still apply: never a `.pnote` panel, never a pill
-   on the h1). Delete this macro and its single call site in `.lib-headnotes` once
-   the inventory is complete — nothing else depends on it. #}
-{% macro library_prep_warning() %}
-<div class="lib-soon lib-soon--warn" role="note" aria-label="Library content is still being prepared">
-  <span class="lib-soon__icon">{{ _lib_ico.icon('warning', 19) }}</span>
-  <span class="lib-soon__body">
-    <span class="lib-soon__title">Library content is still being prepared</span>
-    <span class="lib-soon__text">Some items and information may be incomplete or change while we finish loading them.</span>
-  </span>
-</div>
+   TODO (temporary): shown to everyone, gated on nothing, while the content
+   backlog is filled. It still honours the two bans that survived the original
+   no-standing-caveat decision (see
+   tests/test_web_library_sharing.py::test_library_title_carries_no_setup_caveat):
+   never a `.pnote` panel, never a pill on the h1. Delete this macro and its
+   single call site in `.lib-section-head` once the Library is stocked. #}
+{% macro library_more_coming() %}
+{%- set _tip = "We're still adding to the Library — expect more skills, plugins and data here soon." %}
+<span class="lib-count-note" role="note" data-tip="{{ _tip }}"
+      aria-label="More coming soon. {{ _tip }}">
+  <span class="lib-count-note__icon" aria-hidden="true">{{ _lib_ico.icon('sparkle', 14) }}</span>
+  <span>More coming soon</span>
+</span>
 {% endmacro %}
 {% macro library_row(c, child=False, last_child=False) %}
             {# `draggable` is a FILE affordance: a file moves into a collection,
@@ -518,24 +511,20 @@
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
 <link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
+{# The sharing dialog is a component now (js/components/share_dialog.js) —
+   this page opens the same dialog the Library/collection/file detail pages
+   open, rather than the page-local copy it used to carry. #}
+<link rel="stylesheet" href="{{ static_url('css/share_dialog.css') }}">
 <style>
   /* Page chrome only — the table rides the shared .data-table primitive
      (style-custom.css), the toolbar + card grid ride .fbar-* (filter_toolbar.css);
      all colors come from --ds-* tokens. */
-  /* Title block left, the page's own controls (search + "+ Add") right, on ONE
-     row. `flex-start` keeps the controls level with the h1 rather than centring
-     them against the whole title block, which would drop them beside the lede.
-     The title block may shrink (`min-width: 0`) so a long lede never pushes the
-     controls off the row; below the wrap breakpoint the controls take a full row
-     of their own under the title. */
-  .lib-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px 20px; flex-wrap: wrap; margin: 8px 0 0; }
-  .lib-head__titles { flex: 1 1 320px; min-width: 0; }
-  /* Column kept for the search box + "+ Add". It used to carry a second row —
-     a "Metrics & glossary →" link to the definitions browser (#1108) — which is
-     retired: the semantic layer is a BAND of the list now (the Definitions
-     section), so it has a count, a facet and the page's own search, none of
-     which a header link beside the inventory could ever have. */
-  .lib-actions-col { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
+  /* The title block, alone on its row. It used to share the row with the page's
+     own controls (search + "+ Add") on the right; both live in the toolbar dock
+     now, so the header holds nothing but the name and the lede and needs no
+     flex machinery to keep two blocks level. */
+  .lib-head { margin: 8px 0 0; }
+  .lib-head__titles { min-width: 0; }
   /* Page-level notes close the head: this banner, then the two `.pnote`
      caveats. The gap BELOW comes from padding, not margin — the first notice
      has no top margin of its own, and margin here would collapse-adjoin it.
@@ -546,25 +535,9 @@
   .lib-head h1 { font-size: 24px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
   .lib-head .lede { color: var(--ds-text-secondary); font-size: 15px; margin: 0; max-width: 68ch; }
 
-  /* Header actions — the search field plus a single "+ Add" primary button whose
-     chevron opens the per-kind menu, so the page keeps one call to action as the
-     Library grows more kinds. Rides `.lib-head`, level with the title. */
-  /* `min-height` reserves the row even while the two controls are away in the
-     dock (see the relocation script). Two reasons: the header must not collapse
-     and yank the page under a scroll that is already in motion, and the
-     IntersectionObserver watches THIS element — an emptied box with no height
-     would stop reporting the position it is supposed to track. */
-  .lib-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-height: 38px; }
-  /* The search reuses `.fbar__search` (which carries the icon, the input chrome
-     and the focus ring) and only re-states its flex sizing for this host: a
-     ~280px field that may shrink but not grow, instead of the toolbar's
-     grow-to-fill. It goes full-width once the actions wrap to their own row. */
-  .lib-head__search { flex: 0 1 280px; }
-  @media (max-width: 760px) {
-    .lib-actions-col { width: 100%; }
-    .lib-actions { width: 100%; }
-    .lib-head__search { flex: 1 1 auto; max-width: none; }
-  }
+  /* "+ Add" — a single primary button whose chevron opens the per-kind menu, so
+     the page keeps one call to action as the Library grows more kinds. Rides the
+     dock's controls row (see `.fbar-dock` in filter_toolbar.css). */
   .lib-new { position: relative; }
   .lib-new__btn { display: inline-flex; align-items: center; gap: 7px; }
   .lib-new__caret { width: 15px; height: 15px; transition: transform .15s ease; }
@@ -577,147 +550,28 @@
   .lib-new__item svg { width: 17px; height: 17px; flex-shrink: 0; color: var(--ds-text-secondary); }
   .lib-new__item:hover svg { color: var(--ds-primary); }
 
-  /* ── Floating toolbar dock ──
-     The filter/sort controls are pinned to the bottom of the viewport instead
-     of sitting in the flow above the list. On a scrolling inventory the
-     controls that narrow the list are wanted at row 200 as much as at row 1,
-     and a strip parked under the header scrolls away exactly when the list is
-     long enough to need it.
+  /* ── The dock ──
+     Frame, frosted shelf, card, footer clearance and the upward-opening menus
+     all live in the shared component (`.fbar-dock` in filter_toolbar.css),
+     because /chats renders the same dock. What stays here is only what is
+     specific to THIS toolbar: the "+ Add" menu, a page-local control rather
+     than one of the `.fbar-*` family. */
 
-     Two elements, deliberately: `.lib-dock` is a full-width fixed FRAME that
-     does nothing but centre, and `.lib-dock__card` is the visible surface. The
-     frame is `pointer-events: none` so the strip of empty space either side of
-     the card doesn't eat clicks on the rows underneath — the card turns them
-     back on for itself.
+  /* "+ Add" is content-sized like every other control in the row. */
+  .fbar-dock .lib-new { flex: 0 0 auto; }
 
-     Centring is done with `left/right` + flex, never `translateX`: a transform
-     on this element would make it the containing block for the `position:
-     fixed` category popovers inside it, and filter_toolbar.js positions those
-     with plain viewport arithmetic (see `placeSubmenu`). Under the rail layout
-     the frame starts at the rail's edge so the card centres on the CONTENT, not
-     on the window; at the rail's own 760px breakpoint the rail unpins and that
-     offset goes with it. */
-  .lib-dock {
-    position: fixed;
-    left: 0; right: 0; bottom: 20px;
-    /* Above the rail (40) and the sticky group bands (3–4), below the row-level
-       "move to collection" popover (60) and the modals (100) — a control that
-       is always on screen must never be the thing covering a dialog. */
-    z-index: 55;
-    display: flex; justify-content: center;
-    padding: 0 16px;
-    pointer-events: none;
-  }
-  html[data-ui-layout="rail"] .lib-dock { left: 240px; }
-  @media (max-width: 760px) { html[data-ui-layout="rail"] .lib-dock { left: 0; } }
-
-  /* The card. Chips row on top (state), controls below (machinery) — in a
-     bottom-anchored card the row nearer the list is the one that describes it.
-     The chips row is `hidden` until a facet is applied, so the card is a single
-     row at rest and grows upward, never pushing the controls off the bottom. */
-  .lib-dock__card {
-    pointer-events: auto;
-    position: relative;              /* containing block for the Filter menu */
-    display: flex; flex-direction: column; gap: 10px;
-    max-width: 100%;
-    padding: 10px 14px;
-    background: var(--ds-surface);
-    border: 1px solid var(--ds-border);
-    border-radius: 18px;
-    /* Three layers, not one: a hairline contact shadow so the card's edge reads
-       against a row of the same surface colour directly under it, a mid ambient
-       layer for the body of the lift, and a wide, heavily-spread-in bottom layer
-       that does the actual "this is off the page" work. A single blur can have
-       one of those jobs, not all three, and the token shadows are all tuned for
-       cards sitting IN the flow — this one has to float over live content. */
-    box-shadow:
-      0 1px 2px color-mix(in srgb, var(--ds-text-primary) 10%, transparent),
-      0 8px 20px -4px color-mix(in srgb, var(--ds-text-primary) 20%, transparent),
-      0 26px 52px -14px color-mix(in srgb, var(--ds-text-primary) 30%, transparent);
-  }
-  .lib-dock__card .fbar,
-  .lib-dock__card .fbar-chips { margin: 0; }
-  /* Both rows stay CENTRED inside the card at every width — that is what makes
-     the dock read as one object rather than as a strip of controls that happens
-     to have a border. `--center` already does it; nothing here may override it. */
-  .lib-dock__card .fbar-chips { max-width: 100%; }
-
-  /* Everything the dock opens, opens UPWARD. The base `.fbar-menu` hangs below
-     its button (`top: calc(100% + 6px)`), which from a card at the bottom of
-     the viewport would render off-screen.
-
-     It stays anchored to its BUTTON, because the row is centred and the button
-     therefore has no fixed x in the card. That means the offset has to clear the
-     chips row on its own: `--lib-dock-chips` is the chips row's height plus the
-     card's row gap, published by the dock script whenever the row appears,
-     disappears or rewraps, and 0 while there are no chips. Without it a menu
-     measured from the button opens straight into the chips and covers the very
-     state it is about to change.
-
-     The category popovers beside it need no rule — they are `position: fixed`
-     and filter_toolbar.js already clamps them into the viewport, which from
-     down here resolves upward on its own. */
-  .lib-dock .fbar-menu {
+  /* Its menu opens upward too, clearing the chips row on the same variable the
+     shared component publishes. */
+  .fbar-dock .lib-new__menu {
     top: auto;
-    bottom: calc(100% + 8px + var(--lib-dock-chips, 0px));
+    bottom: calc(100% + 6px + var(--fbar-dock-chips, 0px));
   }
 
-  /* ── The page's own controls, docked ──
-     Once the header scrolls away, search and "+ Add" are relocated into the
-     controls row (the real nodes, not copies — ids, listeners and the open menu
-     all travel with them). They keep the header's reading order: search LEFT,
-     the call to action RIGHT.
-
-     The card HUGS its controls in this state as in every other — no definite
-     width, no auto margins, no padded arms. It used to take `min(900px, 100%)`
-     here and push the two page-level controls onto the card's edges with a pair
-     of auto margins, on the theory that the list controls should stay on the
-     card's centre line. What that actually produced was a fixed-width card with
-     a hole in it: with a handful of middle controls the auto margins had ~300px
-     of free space to absorb, and the dock read as a wide empty bar with a button
-     stranded at each end. A floating card has no column grid to align to and
-     nothing beside it to line up with, so there is no centre line to hold —
-     only its own contents, which should sit at one consistent gap from each
-     other and let the card end where they do.
-
-     Removing the definite width is also what lets the resize animation do its
-     job: the card now has an intrinsic size in every state, so `animateDockResize`
-     has a real from-box and a real to-box to interpolate between, and the card
-     grows and shrinks into each shape instead of snapping between two fixed
-     ones. Search keeps a shrinkable basis because an input has no useful
-     content width; "+ Add" is content-sized like every other control. */
-  .lib-dock .lib-head__search { flex: 0 1 240px; min-width: 0; max-width: none; }
-  .lib-dock .lib-new { flex: 0 0 auto; }
-  /* Its menu opens upward too, clearing the chips row on the same variable. */
-  .lib-dock .lib-new__menu {
-    top: auto;
-    bottom: calc(100% + 6px + var(--lib-dock-chips, 0px));
-  }
-
-  /* ── Moving between states ──
-     Every one of the dock's states is reached by adding or removing a control:
-     the sort select on the way into grid view, the chips row on the first
-     filter, search and "+ Add" when the header scrolls off. Each of those
-     changes the card's intrinsic size, and an intrinsic size change fires no
-     transition — the `width` property never changes value, only its used
-     result does — so the card snapped between shapes. The dock script animates
-     it explicitly (see `animateDockResize`); these are the pieces CSS can own.
-
-     The controls themselves fade in rather than appearing mid-animation, so a
-     growing card isn't also popping new pills into existence at full opacity.
-     `@starting-style` is what makes that possible for something arriving from
-     `display: none`; browsers without it just get today's instant swap, which
-     is the same thing minus the polish. */
+  /* ── The view swap ──
+     Only the ARRIVING view animates: transitioning the leaving one out would
+     keep it displayed for the duration, and for a moment the page would carry
+     both a table and a grid — a far bigger jump than the one being smoothed. */
   @media (prefers-reduced-motion: no-preference) {
-    .lib-dock__card > * > * { transition: opacity 160ms var(--ds-ease-standard, ease); }
-    @starting-style {
-      .lib-dock__card > * > * { opacity: 0; }
-    }
-
-    /* The view swap itself. Only the ARRIVING view animates: transitioning the
-       leaving one out would keep it displayed for the duration, and for a
-       moment the page would carry both a table and a grid — a far bigger jump
-       than the one being smoothed. */
     .lib-group > .lib-tablewrap,
     .lib-group > .fbar-grid {
       transition: opacity 200ms var(--ds-ease-standard, ease),
@@ -730,13 +584,15 @@
   }
 
   /* ── Section scaffolding ── */
-  /* The dock floats over the page, so the list has to end above it or its last
-     rows sit under the card forever. Clears the tallest resting state (card +
-     chips row + the 20px inset) with room to spare. */
-  .lib-section { margin: 0; padding-bottom: 132px; }
-  /* Just the count now that "+ Add" sits in the page header — so the row loses
-     the 38px min-height that reserved a button's box and closes up to the type
-     bands it heads. */
+  /* End-of-page clearance for the dock lives on the FOOTER now (see the shared
+     component's `body:has(.fbar-dock) footer` rule) — the page's last element,
+     so the footer itself scrolls fully above the card instead of being the one
+     thing left under it. This padding is only the ordinary gap between the list
+     and the definitions block below it. */
+  .lib-section { margin: 0; padding-bottom: 32px; }
+  /* Just the count and its note now that "+ Add" rides the toolbar dock — so the
+     row loses the 38px min-height that reserved a button's box and closes up to
+     the type bands it heads. */
   .lib-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
   .lib-section-head .lib-count { font-size: 13px; color: var(--ds-text-muted); }
 
@@ -833,24 +689,68 @@
   .lib-group + .lib-group { margin-top: 0; }
   .lib-table { border: 0; border-radius: 0; }
 
-  /* ── Grid view: no frame, the groups stand alone ──
+  /* ── Grid view: card chrome, not table chrome ──
      The frame and the filled band are TABLE chrome: the frame is what fuses the
-     per-group tables into one list, and the band names the group whose rows are
-     currently passing under it. Cards already carry a border and a background
-     of their own, so in grid view that frame is a box drawn around boxes and
-     the band a filled bar over unfilled cards — the group header can drop to
-     bare type on the page. Which view is on is read off the projected grid
-     being visible: `applyView()` (filter_toolbar.js) hides the table wrapper
-     the moment the view flips, so this follows the toolbar without either side
-     having to know about the other. */
+     per-group tables into one list, and the fill is what makes the band read as
+     that list's header. Cards already carry a border and a background of their
+     own, so in grid view the frame is a box drawn around boxes and the band a
+     filled bar over unfilled cards — the group header can drop to bare type on
+     the page. Which view is on is read off the projected grid being visible:
+     `applyView()` (filter_toolbar.js) hides the table wrapper the moment the
+     view flips, so this follows the toolbar without either side having to know
+     about the other.
+
+     What does NOT come off is the pinning. Naming the group you are reading is
+     the band's job in both views, and a card grid is exactly as long as the
+     table it was projected from — see the sticky block below for the offset and
+     the handoff. */
   .lib-list:has(> .lib-group > .fbar-grid:not([hidden])) {
     border: 0; border-radius: 0; background: none; overflow: visible;
   }
   .lib-group:has(> .fbar-grid:not([hidden])) > .lib-band {
-    position: static; background: none; border-bottom: 0; box-shadow: none;
-    /* = the grid's own gap, so the header stands off its cards by exactly the
-       distance the cards stand off each other. */
-    margin-bottom: 14px;
+    background: none; border-bottom: 0; box-shadow: none;
+  }
+  /* ── Both gaps belong to the GRID, not to the band and not to the next group ──
+     The header stands off its cards by the grid's own gap, and the group stands
+     off the next group by a little more. Both are padding on the grid, and that
+     is load-bearing rather than stylistic.
+
+     A sticky box is confined to its containing block, which for an in-flow child
+     is the parent's CONTENT box — padding on `.lib-group` does not extend it
+     (measured), and the band's own bottom margin shortens it, because the margin
+     box is what gets confined. Either one unpins the outgoing header early and
+     leaves a strip of page with no header on it at all.
+
+     With both gaps inside the grid, the group's content box ends exactly where
+     the next group's band begins: the outgoing header's last pixel of travel is
+     the incoming one's first. One header on screen, never two, never none. */
+  .lib-group:has(> .fbar-grid:not([hidden])) > .fbar-grid {
+    padding-top: var(--lib-band-gap);
+    padding-bottom: var(--lib-group-gap);
+  }
+  /* Nothing follows the last group, so it keeps only the page's own clearance. */
+  .lib-group:has(> .fbar-grid:not([hidden])):last-child > .fbar-grid { padding-bottom: 0; }
+  /* ── Folded: the band carries a gap of its own ──
+     Folding hides the grid, and with it both gaps — a run of folded groups would
+     close up to bare headings 40px apart, which is the one place this view
+     cannot borrow the table's spacing: the table separates its folded bands with
+     a fill and a hairline, and bare type has neither.
+
+     So the band takes over while the grid is away — at `--lib-band-gap` rather
+     than the full `--lib-group-gap`, and deliberately: the wider gap exists to
+     clear the bottom edge of a bordered card, and a folded group has no card to
+     clear. Type wants less air than a box does, so a folded run reads a notch
+     tighter than the open groups around it without reading cramped.
+
+     As PADDING, for the same reason as above: a margin sits outside the content
+     box, so it would hand the header off a full gap early and leave that strip
+     bare. As padding it is part of the band, the group's content box ends at the
+     band's own bottom edge, and the next band lands exactly there. */
+  .lib-group.is-collapsed:has(> .fbar-grid:not([hidden])) > .lib-band {
+    padding-bottom: var(--lib-band-gap);
+  }
+  .lib-group.is-collapsed:has(> .fbar-grid:not([hidden])):last-child > .lib-band {
+    padding-bottom: 0;
   }
   /* Flush with the cards' leading edge, and no hover fill — a fill would put
      back the filled bar this view just dropped. Hover still reads: the title
@@ -863,11 +763,9 @@
   .lib-group:has(> .fbar-grid:not([hidden])) > .lib-band .fbar-grouptoggle:focus-visible {
     outline-offset: 2px;
   }
-  /* A folded group is a header and nothing else — the gap it keeps for its
-     cards would otherwise read as a gap under a heading with no content. */
-  .lib-group.is-collapsed:has(> .fbar-grid:not([hidden])) > .lib-band { margin-bottom: 0; }
-  /* Separate blocks on the page now, not bands of one continuous list. */
-  .lib-group:has(> .fbar-grid:not([hidden])) + .lib-group { margin-top: 28px; }
+  /* A folded group is a header and nothing else — the gap it kept for its cards
+     folds away with the grid that held it, leaving only the group gap the band
+     picks up (see the folded rule above). */
 
   /* ── Sticky per-group header ──
      Sticky resolves against the nearest SCROLL CONTAINER, so any scrollable
@@ -899,7 +797,21 @@
      border-bottom adds is deliberately NOT counted — the column header then
      overlaps that hairline by a fraction of a pixel instead of leaving a gap,
      and a gap would let a row show through between the two. */
-  .lib-group { --lib-bandh: 40px; }
+  .lib-group {
+    --lib-bandh: 40px;
+    /* Grid view's counterparts. `--lib-band-gap` is the distance the header
+       stands off its cards — the grid's own gap (`.fbar-grid`), which the
+       veil's lower ramp also spans, so the two cannot drift apart.
+       `--lib-group-gap` is the distance from one group to the next. A FOLDED
+       group falls back to `--lib-band-gap` for that job (see the folded rule
+       below): the wider gap is sized to clear a card's bottom edge, and a folded
+       group has no card. */
+    --lib-band-gap: 14px;
+    --lib-group-gap: 22px;
+  }
+  /* ONE rule for both views. The offset is the viewport top in each, so a reader
+     switching view finds the header in the same place; what differs below is
+     only what the band is dressed in. */
   .lib-band { position: sticky; top: 0; z-index: 4; }
   .lib-group .fbar-grouptoggle { height: var(--lib-bandh); padding-top: 0; padding-bottom: 0; }
   /* The column header carries the SAME surface as the rows under it — white in
@@ -925,21 +837,69 @@
   .lib-group.is-collapsed .lib-tablewrap,
   .lib-group.is-collapsed .fbar-grid { display: none; }
 
-  /* ── Grid view: card chrome, not table chrome ──
-     The frame and the filled band belong to the TABLE — they are what makes rows
-     read as one list. Cards bring their own border and background, so inside a
-     frame they read as boxes in a box, and a filled full-width bar above them
-     reads as a header for a table that isn't there. So in grid view the frame is
-     dropped, the band goes quiet and unpinned (there are no rows for it to head)
-     and stands off its cards by the grid's own gap, and the groups separate into
-     blocks. Keyed off the projected grid being visible — the view toggle already
-     sets that, so this needs no state of its own. */
-  .lib-list:has(> .lib-group > .fbar-grid:not([hidden])) { border: 0; border-radius: 0; overflow: visible; background: none; }
-  .lib-group:has(> .fbar-grid:not([hidden])) > .lib-band { position: static; background: none; border-bottom: 0; box-shadow: none; margin-bottom: 14px; }
-  .lib-group:has(> .fbar-grid:not([hidden])) > .lib-band .fbar-grouptoggle { padding-left: 0; padding-right: 0; background: none; }
-  /* Folded: header only — no gap held open for cards that aren't rendered. */
-  .lib-group.is-collapsed:has(> .fbar-grid:not([hidden])) > .lib-band { margin-bottom: 0; }
-  .lib-group:has(> .fbar-grid:not([hidden])) + .lib-group { margin-top: 22px; }
+  /* ── The grid header's veil ──
+     A pinned band needs something between its type and whatever is passing
+     under it. In table view that is a fill: rows are a continuous ruled surface,
+     so a strip of the same surface reads as part of the list. Cards are not —
+     they are discrete objects on the page background, and an opaque bar over
+     them is the filled header this view deliberately dropped.
+
+     So the grid gets the same answer the floating toolbar gets (`.fbar-dock` in
+     filter_toolbar.css): a wash of the page's own surface plus a soft blur,
+     ramped out at both ends so it never gains an edge of its own. A card
+     scrolling under the header doesn't disappear behind a bar, it dissolves back
+     into the page — which is the honest description of what is happening to it.
+
+     The wash MUST be the colour the page actually paints behind the list, or the
+     whole thing reads as a grey bar laid over a white page. On this page that is
+     `--ds-surface`, not `--ds-bg`: the index shell paints `.idx` / `.idx-band`
+     `--ds-surface` edge to edge so the header zone reads as one surface with the
+     body (see style-custom.css), and `--ds-bg` never shows through here at all.
+
+     On a pseudo-element, never on the band: `backdrop-filter` makes an element
+     the containing block for `position: fixed` descendants, and the row menus
+     the cards open are fixed. A childless pseudo-element carries the filter
+     without them noticing. `z-index: -1` keeps it behind the band's own type but
+     still inside the band's stacking context, so it stays over the cards.
+
+     Absolute lengths in the ramps, not percentages: both ends are fixed
+     distances (the air above, the card gap below) while the strip's height is
+     the band's, so a percentage would slide if either changed.
+
+     The top ramp is also what makes the handoff read: the arriving band's veil
+     reaches 10px past its own top edge, so it crossfades over the outgoing
+     header's last few pixels of travel rather than wiping it. */
+  .lib-group:has(> .fbar-grid:not([hidden])) > .lib-band {
+    --lib-veil-up: 10px;                    /* air above the type, already veiled */
+    --lib-veil-down: var(--lib-band-gap);   /* the card gap, where it ramps out */
+  }
+  .lib-group:has(> .fbar-grid:not([hidden])) > .lib-band::before {
+    content: "";
+    position: absolute;
+    top: calc(var(--lib-veil-up) * -1);
+    bottom: calc(var(--lib-veil-down) * -1);
+    /* Past the grid's edges so the strip has no vertical seam where a card ends.
+       Invisible either side — the wash IS the surface it overhangs onto — and
+       safe because grid view drops the list's `overflow: clip`. */
+    left: -12px; right: -12px;
+    z-index: -1;
+    pointer-events: none;
+    background: color-mix(in srgb, var(--ds-surface) 92%, transparent);
+    -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, black var(--lib-veil-up), black calc(100% - var(--lib-veil-down)), transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0, black var(--lib-veil-up), black calc(100% - var(--lib-veil-down)), transparent 100%);
+  }
+  /* Same bargain the dock strikes: callers who ask for less transparency get the
+     readability without the glass — no blur, and a tint solid enough to carry it
+     alone. The ramps stay, so it still gains no edge. */
+  @media (prefers-reduced-transparency: reduce) {
+    .lib-group:has(> .fbar-grid:not([hidden])) > .lib-band::before {
+      -webkit-backdrop-filter: none;
+              backdrop-filter: none;
+      background: var(--ds-surface);
+    }
+  }
   /* Name takes whatever is left — it carries the title AND its second line, so
      it earns the slack the metadata columns don't need, including the 128px the
      retired Type column used to hold. Each fixed column is sized for the LONGEST
@@ -1201,7 +1161,7 @@
      unlike anything in the list on purpose: no card fill, no border box, just
      a hairline above it and a roomy row — a place the page ENDS on rather
      than a thing that could be mistaken for another kind you own. (It also
-     avoids the `.lib-soon` notice vocabulary, which says "read this, nothing
+     avoids the notice vocabulary, which says "read this, nothing
      to do"; this block is somewhere to GO.) */
   .lib-defs {
     display: flex;
@@ -1264,62 +1224,49 @@
     .lib-defs__links { width: 100%; flex-direction: row; gap: 16px; align-items: flex-start; }
   }
 
-  /* ── Page-level note banners ──
-     One component for both notes under the header: the whole-Library "still
-     being prepared" caveat (warn) and the Data apps "Coming soon" note (info).
-     Earlier homes for these were wrong for different reasons: `.pnote` panels
-     that read as two unrelated slabs, and — for Data apps — a band inside the
-     list, which dressed a roadmap note in the chrome of the inventory, right
-     down to the glyph column, so it read as a sixth openable section.
+  /* ── "More coming soon", beside the item count ──
+     The last of three homes for this note, and the first that matches what it
+     says. As a panel — and then as an amber row — it wore the caveat vocabulary:
+     warning glyph, warn fill, "may be incomplete", plus a cue to explain itself.
+     The actual message is that the Library is being FILLED, which is good news;
+     dressing good news as a warning is what made it feel like something to
+     dismiss.
 
-     Both now wear the status vocabulary the design system uses for asides (as
-     `.callout-hint` does): tinted fill, a 3px leading rule that no band or card
-     on this page has, and its own rounded box outside the frame. A reader can
-     tell one apart from a section before reading a word of it, which is the
-     whole job. The rule is what makes it read as an aside rather than as one
-     more surface — the tint alone, at this width, is just another block.
+     So: growth vocabulary, at metadata scale. A sparkle rather than a triangle,
+     muted ink rather than amber, and no explanatory cue — at four words the
+     phrase carries its own meaning and the tooltip is optional detail. It sits
+     on the count row because that is what it qualifies: how many things are
+     here, and that the number is going up.
 
-     The base is INFO blue, the Data apps case: "not built yet" is a schedule,
-     not a warning — nothing is wrong and there is nothing to act on. */
-  .lib-soon {
-    display: flex; align-items: flex-start; gap: 11px;
-    padding: 13px 16px;
-    background: var(--ds-info-bg);
-    border: 1px solid color-mix(in srgb, var(--ds-info-line) 35%, transparent);
-    border-left: 3px solid var(--ds-info-line);
-    border-radius: 12px;
+     `cursor: help` + the dotted rule are the only hints that more text exists.
+     Deliberately faint: a reader who never hovers has still got the point. */
+  .lib-count-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12.5px;
+    color: var(--ds-text-muted);
+    cursor: help;
+    border-bottom: 1px dotted var(--ds-border);
+    padding-bottom: 1px;
   }
-  .lib-soon__icon { flex: none; display: grid; place-items: center; width: 19px; height: 19px; margin-top: 1px; color: var(--ds-info-line); }
-  .lib-soon__icon svg { width: 100%; height: 100%; display: block; }
-  .lib-soon__body { min-width: 0; }
-  .lib-soon__title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; font-weight: 650; letter-spacing: 0.01em; color: var(--ds-info-ink); }
-  /* Inside an info-tinted box the neutral grey chip the band used went muddy, so
-     the badge takes the same family at a stronger tint. */
-  .lib-soon__badge { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ds-info-ink); background: color-mix(in srgb, var(--ds-info-line) 20%, transparent); border-radius: var(--ds-radius-pill); padding: 2px 8px; }
-  .lib-soon__text { display: block; margin-top: 3px; font-size: 12.5px; line-height: 1.55; color: color-mix(in srgb, var(--ds-info-ink) 85%, transparent); max-width: 78ch; }
+  .lib-count-note__icon { flex: none; display: grid; place-items: center; width: 14px; height: 14px; color: var(--ds-primary); }
+  .lib-count-note__icon svg { width: 100%; height: 100%; display: block; }
+  .lib-count-note:hover { color: var(--ds-text-secondary); }
 
-  /* WARN variant — same box, amber vocabulary, for the caveat about the
-     inventory itself. The leading rule and the glyph take `--ds-warn-ink` rather
-     than `--ds-warn-line`: the line token is a pale hairline amber in the light
-     themes (near-invisible as a 3px rule on the warn fill), while the ink reads
-     at every theme. The 1px surround keeps the softer line token, as the info
-     case does with its own. */
-  .lib-soon--warn {
-    background: var(--ds-warn-bg);
-    border-color: color-mix(in srgb, var(--ds-warn-ink) 25%, transparent);
-    border-left-color: var(--ds-warn-ink);
+  /* The count row is `justify-content: space-between`, which would fling the
+     note to the far edge, a screen-width away from the number it belongs to.
+     Pair them at the left and let the row keep its spare width. */
+  .lib-section-head { justify-content: flex-start; }
+  .lib-section-head .lib-count-note { margin-left: 10px; }
+
+  @media (max-width: 480px) {
+    /* Below this the count and the note stop fitting on one line; the note
+       drops to its own line rather than pushing the count into a wrap. */
+    .lib-section-head { flex-wrap: wrap; row-gap: 4px; }
+    .lib-section-head .lib-count-note { margin-left: 0; flex-basis: 100%; }
   }
-  .lib-soon--warn .lib-soon__icon { color: var(--ds-warn-ink); }
-  .lib-soon--warn .lib-soon__title { color: var(--ds-warn-ink); }
-  .lib-soon--warn .lib-soon__badge { color: var(--ds-warn-ink); background: color-mix(in srgb, var(--ds-warn-ink) 16%, transparent); }
-  .lib-soon--warn .lib-soon__text { color: color-mix(in srgb, var(--ds-warn-ink) 85%, transparent); }
 
-  /* The notes as a group, closing the page head. All the vertical spacing lives
-     here: `.lib-connect--head` spends its padding on the gap above, this gap
-     spaces the notes from each other, and the shell's `.idx-head > :last-child`
-     rule flushes the group against the content band. The banners carry no margin
-     of their own, so nothing here has to be undone. */
-  .lib-headnotes { display: flex; flex-direction: column; gap: 10px; }
 
   /* ── Modals (upload + share) ── */
   .lib-modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
@@ -1343,19 +1290,15 @@
   .lib-btn-danger:hover { background: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-ink); color: var(--ds-text-inverse); }
   .lib-modal-subject { font-size: 13.5px; color: var(--ds-text-primary); margin: 0 0 6px; }
 
-  /* Share dialog — the group checklist. */
-  .lib-share-subject { font-size: 13px; color: var(--ds-text-secondary); margin: 0 0 14px; }
-  .lib-share-subject b { color: var(--ds-text-primary); }
-  .lib-groups { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow-y: auto; margin: 0 0 14px; }
+  /* One ticked-list row, shared by the dialogs on this page. The share
+     dialog's own chrome moved out with it (css/share_dialog.css) — its group
+     checklist uses `.share-dialog__grp`, styled identically there. */
   .lib-grp { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 9px; font-size: 13.5px; color: var(--ds-text-primary); cursor: pointer; }
   .lib-grp:hover { background: color-mix(in srgb, var(--ds-text-primary) 5%, transparent); }
   .lib-grp input { accent-color: var(--ds-primary); width: 15px; height: 15px; flex-shrink: 0; }
-  .lib-grp__hint { margin-left: auto; font-size: 11.5px; color: var(--ds-text-muted); }
-  .lib-share-note { font-size: 12.5px; line-height: 1.5; color: var(--ds-text-secondary); background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: 9px; padding: 10px 12px; margin: 0 0 14px; }
-  .lib-share-loading { font-size: 13px; color: var(--ds-text-muted); padding: 8px 0 14px; }
 
-  /* New-collection dialog — the file checklist. Same row idiom as the group
-     checklist above (`.lib-grp`), because it is the same act: ticking which of
+  /* New-collection dialog — the file checklist. Same row idiom as the ticked
+     list above (`.lib-grp`), because it is the same act: ticking which of
      a listed set this applies to. A fieldset rather than a bare div, so the
      checkboxes are announced under one name; the legend is styled to match a
      `.lib-field` label so the dialog reads as two fields, not a field and a
@@ -1716,67 +1659,22 @@
 {% endblock %}
 
 {% block page_head %}
-{# The header row carries the page's two WHOLE-PAGE controls on its right, level
-   with the title: SEARCH and the "+ Add" menu. Neither one narrows or reorders
-   the list the way the toolbar below does — search is the way INTO a library of
-   any size, "+ Add" the way to add to it — so they read as the page's own
-   controls, at a fixed spot in the header, rather than as two more chips in the
-   filter row. Search leaves `.fbar` entirely (it is the only control that ever
-   grew there, so the rest of the bar can then centre under the header) and
-   `#lib-search` keeps its id: filter_toolbar.js resolves it off `document`, so
-   the engine is indifferent to where in the page it sits. #}
+{# The header is the page's NAME and nothing else — no controls level with the
+   title. Search and "+ Add" used to sit here, on the reasoning that they act on
+   the whole Library rather than on the list the toolbar narrows. In practice
+   that split cost more than it explained: the two controls a caller reaches for
+   most were in the one place that scrolls away, so the page needed a script to
+   ferry the real nodes into the floating dock and back on every scroll — and
+   until it fired, "find something" and "add something" lived in a different
+   part of the screen from every other control.
+
+   Both now ride the dock unconditionally (see `page_surface`), which is on
+   screen at row 1 and at row 200 alike. `#lib-search` keeps its id wherever it
+   sits: filter_toolbar.js resolves it off `document`. #}
 <div class="lib-head">
   <div class="lib-head__titles">
     <h1>Library</h1>
     <p class="lede">Knowledge shared by your organization, plus everything you upload or generate — all in one place. Share it with your team and make it searchable by your agents.</p>
-  </div>
-  <div class="lib-actions-col">
-  <div class="lib-actions">
-    {# Same `.fbar__search` control the toolbar used, carrying its own
-       `role="search"` landmark now that it no longer sits inside the bar's. #}
-    <div class="fbar__search lib-head__search" role="search">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
-      <input type="search" id="lib-search" placeholder="Search library…" autocomplete="off" aria-label="Search library">
-    </div>
-
-    {# Every "add something" path lives behind ONE primary button + chevron, so
-       the page carries a single call to action however many kinds the Library
-       grows. Click (not hover) so it works on touch + keyboard.
-
-       All three authored kinds now go to the one builder at /skills, which
-       deep-links past its type picker via ?type=. Plugins used to fork off to
-       the /store/new upload wizard because a plugin is a zip bundle rather
-       than a markdown body; the builder absorbs that difference internally,
-       so the menu no longer has to. #}
-    <div class="lib-new">
-      <button type="button" class="cc-btn cc-btn--primary lib-new__btn" id="lib-new-btn"
-              aria-haspopup="true" aria-expanded="false">
-        <span>+ Add</span>
-        <svg class="lib-new__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <div class="lib-new__menu" id="lib-new-menu" role="menu" aria-label="Add to your library" hidden>
-        <a class="lib-new__item" href="/skills?type=skill" role="menuitem">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4.6a2 2 0 0 1 4 0c0 .5.4 1 1 1h2.4V8c0 .6.4 1 1 1a2 2 0 0 1 0 4c-.6 0-1 .4-1 1v2.4H15c-.6 0-1 .4-1 1a2 2 0 0 1-4 0c0-.6-.4-1-1-1H6.6V14c0-.6-.5-1-1-1a2 2 0 0 1 0-4c.5 0 1-.4 1-1V5.6H9c.6 0 1-.5 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-          <span>Build a skill</span>
-        </a>
-        <a class="lib-new__item" href="/skills?type=plugin" role="menuitem">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 20 7v10l-8 4-8-4V7l8-4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 11 20 7M12 11v10M12 11 4 7" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-          <span>Build a plugin</span>
-        </a>
-        {# A SHAREABLE agent — a Library resource other people install. The
-           personal agents a user configures for themselves live on /agents and
-           are reached from the rail, never from this menu. #}
-        <a class="lib-new__item" href="/skills?type=agent" role="menuitem">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
-          <span>Build a shareable agent</span>
-        </a>
-        <button type="button" class="lib-new__item" role="menuitem" data-new-upload>
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V5m0 0L8 9m4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          <span>Upload a file</span>
-        </button>
-      </div>
-    </div>
-  </div>
   </div>
 </div>
 
@@ -1788,15 +1686,13 @@
        copy='Connect your AI tools to give them access to the same knowledge.') }}
 </div>
 
-{# The page-level notes, in one stack directly under the connect banner: what to
-   distrust about the list below (warn), then what the list does not hold yet
-   (info). Both wear the same banner component, so the head closes on one block
-   of asides rather than on two unrelated-looking panels; the vocabulary is what
-   separates a caveat from a schedule. #}
-<div class="lib-headnotes">
-  {{ library_prep_warning() }}
-  {{ data_apps_soon() }}
-</div>
+{# The page head now closes on the connect banner — NOTHING stands between the
+   header and the inventory. It used to close on two stacked tinted panels (the
+   prep caveat and the Data apps schedule, ~200px of chrome the reader could act
+   on in neither case). Both statements moved to where they are facts ABOUT
+   something rather than announcements: the schedule onto the Files band's label
+   (the kind ships into that section), and "more coming soon" beside the item
+   count (a fact about the count). #}
 {% endblock %}
 
 {% block page_surface %}
@@ -1814,24 +1710,36 @@
            list should be the one describing the list. (The stack toggle is
            excluded here — its own button shows its state.) Hidden when empty,
            so the card is a single row until a filter is applied.
-         Row 2 (.fbar) — Filter menu (Optional/Required, Tags, Owner, Source
-           facets) · "In stack only" toggle · sort · table⇄grid view toggle.
+         Row 2 (.fbar) — search · Filter menu (Optional/Required, Tags, Owner,
+           Source facets) · "In stack only" toggle · sort · table⇄grid view
+           toggle · the "+ Add" menu.
 
        Both are client-side (static/js/filter_toolbar.js) over the
        server-rendered rows; the engine is untouched by the move — it only ever
        reads the ids.
 
-       Search is NOT here — it rides the page header (see `page_head`), which is
-       why both rows take `--center`: with the one flex-grow control gone, the
-       remaining pills would hug the left edge of the card. The bar is a
-       `group`, not a `search` landmark, now that the input it fronted lives
-       elsewhere.
+       Search and "+ Add" are the two ENDS of that row, and they are here rather
+       than in the page header because the header scrolls away: a caller at row
+       200 wants to find something and add something exactly as much as a caller
+       at row 1. They keep their old reading order — search LEFT (the way into a
+       library of any size), the call to action RIGHT — with the controls that
+       narrow the list between them. The bar carries no `--center` for the same
+       reason it used to: search is a flex control, so there is no free space
+       left for centring to distribute.
 
-       Everything the dock opens (the Filter menu, its category popovers) opens
-       UPWARD — see `.lib-dock` in the head block. ── #}
-  <div class="lib-dock"><div class="lib-dock__card">
+       Everything the dock opens (the Filter menu, its category popovers, the
+       "+ Add" menu) opens UPWARD — see `.fbar-dock` in filter_toolbar.css. ── #}
+  <div class="fbar-dock"><span class="fbar-dock__veil" aria-hidden="true"></span><div class="fbar-dock__card">
   <div class="fbar-chips fbar-chips--center" id="lib-chips" hidden></div>
-  <div class="fbar fbar--center" role="group" aria-label="Filter and sort library">
+  <div class="fbar" role="group" aria-label="Search, filter and sort library">
+    {# The bar's own `role="search"` landmark. It sits inside a `group` rather
+       than fronting one, which is why the landmark rides this box: a search
+       field with no landmark of its own is unreachable by landmark navigation. #}
+    <div class="fbar__search" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+      <input type="search" id="lib-search" placeholder="Search library…" autocomplete="off" aria-label="Search library">
+    </div>
+
     {# Filter menu — CATEGORIES, each revealing its options in a secondary
        popover on hover/focus (see .fbar-cat in filter_toolbar.css). Type is
        absent by design: items are GROUPED by type into collapsible sections
@@ -1942,12 +1850,51 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>
       </button>
     </div>
+
+    {# Every "add something" path lives behind ONE primary button + chevron, so
+       the page carries a single call to action however many kinds the Library
+       grows. Last in the row, and the only filled control in it: the one thing
+       here that changes the Library rather than the view of it. Click (not
+       hover) so it works on touch + keyboard.
+
+       All three authored kinds now go to the one builder at /skills, which
+       deep-links past its type picker via ?type=. Plugins used to fork off to
+       the /store/new upload wizard because a plugin is a zip bundle rather
+       than a markdown body; the builder absorbs that difference internally,
+       so the menu no longer has to. #}
+    <div class="lib-new">
+      <button type="button" class="cc-btn cc-btn--primary lib-new__btn" id="lib-new-btn"
+              aria-haspopup="true" aria-expanded="false">
+        <span>+ Add</span>
+        <svg class="lib-new__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="lib-new__menu" id="lib-new-menu" role="menu" aria-label="Add to your library" hidden>
+        <a class="lib-new__item" href="/skills?type=skill" role="menuitem">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4.6a2 2 0 0 1 4 0c0 .5.4 1 1 1h2.4V8c0 .6.4 1 1 1a2 2 0 0 1 0 4c-.6 0-1 .4-1 1v2.4H15c-.6 0-1 .4-1 1a2 2 0 0 1-4 0c0-.6-.4-1-1-1H6.6V14c0-.6-.5-1-1-1a2 2 0 0 1 0-4c.5 0 1-.4 1-1V5.6H9c.6 0 1-.5 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          <span>Build a skill</span>
+        </a>
+        <a class="lib-new__item" href="/skills?type=plugin" role="menuitem">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 20 7v10l-8 4-8-4V7l8-4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 11 20 7M12 11v10M12 11 4 7" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span>Build a plugin</span>
+        </a>
+        {# A SHAREABLE agent — a Library resource other people install. The
+           personal agents a user configures for themselves live on /agents and
+           are reached from the rail, never from this menu. #}
+        <a class="lib-new__item" href="/skills?type=agent" role="menuitem">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
+          <span>Build a shareable agent</span>
+        </a>
+        <button type="button" class="lib-new__item" role="menuitem" data-new-upload>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V5m0 0L8 9m4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span>Upload a file</span>
+        </button>
+      </div>
+    </div>
   </div>
   </div></div>
 
-  {# The row that opens the list, now carrying only the count: "+ Add" moved up
-     to the page header, level with the title, since it acts on the Library as a
-     whole rather than on the list the toolbar has narrowed.
+  {# The row that opens the list, now carrying only the count: "+ Add" sits in
+     the toolbar dock, which is on screen wherever the reader has scrolled to.
 
      No cross-link to /stack here: the toolbar's "In stack only" toggle already
      answers "what can the default agent use?" against this same list, and the
@@ -1981,7 +1928,11 @@
   </div>
 
   <div class="lib-section-head">
+    {# The count and the note are SIBLINGS — see `library_more_coming()`: the
+       filter code rewrites the count element's text wholesale, so a child would
+       not survive the first facet click. #}
     <span class="lib-count" id="lib-item-count">{{ library_items|length }} item{{ '' if library_items|length == 1 else 's' }}</span>
+    {{ library_more_coming() }}
   </div>
 
   {% if library_sections %}
@@ -2220,27 +2171,11 @@
   </div>
 </div>
 
-{# ── Share modal — a checklist of the groups the caller may share into
-     (their own memberships + "Everyone (workspace)"), hydrated from
-     GET /api/sharing/groups and saved with a single idempotent PUT. ── #}
-<div class="lib-modal" id="shareModal" hidden>
-  <div class="lib-modal-backdrop" data-close-share></div>
-  <div class="lib-modal-card" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle">
-    <div class="lib-modal-head">
-      <h2 id="shareModalTitle">Share</h2>
-      <button type="button" class="lib-modal-x" data-close-share aria-label="Close">&times;</button>
-    </div>
-    <p class="lib-share-subject" id="shareSubject"></p>
-    <div class="lib-share-loading" id="shareLoading">Loading groups…</div>
-    <div class="lib-groups" id="shareGroups"></div>
-    <p class="lib-share-note" id="shareNote" hidden></p>
-    <div class="lib-modal-err" id="shareErr" hidden></div>
-    <div class="lib-modal-foot">
-      <button type="button" class="cc-btn" data-close-share>Cancel</button>
-      <button type="button" class="cc-btn cc-btn--primary" id="shareSubmit">Save</button>
-    </div>
-  </div>
-</div>
+{# The share dialog is NOT page markup any more — js/components/share_dialog.js
+   builds it (a checklist of the groups the caller may share into, hydrated
+   from GET /api/sharing/groups and saved with one idempotent PUT). The Library
+   and every detail page open the same dialog, so they can no longer disagree
+   about what sharing looks like or which words it uses. #}
 
 {# ── Discard-draft confirmation — a draft lives in localStorage only, so
      deleting it is unrecoverable: there is no copy on the server to restore
@@ -2264,6 +2199,7 @@
 
 {% block scripts %}
 <script src="{{ static_url('js/filter_toolbar.js') }}"></script>
+<script src="{{ static_url('js/components/share_dialog.js') }}"></script>
 <script>
 (function () {
   'use strict';
@@ -3036,8 +2972,8 @@
 
   // ── "In my stack" deep link: /library?stack=in_stack arrives with the
   //    toolbar's "In stack only" toggle already pressed. The chat empty state's
-  //    Stack status line ("Agnes is using N knowledge sources and M
-  //    capabilities from your Stack") lands here — /stack is no longer a rail
+  //    Stack status line ("Using N knowledge sources and M capabilities
+  //    from your Stack") lands here — /stack is no longer a rail
   //    destination (#1088) and this list already spans every kind it rendered.
   //
   //    Flipped by CLICKING the toolbar's own control rather than by poking at
@@ -3964,85 +3900,20 @@
   });
 
   // ── Share dialog ─────────────────────────────────────────────────────────
-  //    Groups come from GET /api/sharing/groups (the caller's memberships +
-  //    Everyone); the current state from GET /api/sharing/{type}/{id}; saving
-  //    is one idempotent PUT of the desired group set. The server preserves
-  //    grants to groups the caller can't share into, so an owner can never
-  //    revoke an admin's grant from here.
-  const shareModal = document.getElementById('shareModal');
-  const shareGroupsEl = document.getElementById('shareGroups');
-  const shareLoading = document.getElementById('shareLoading');
-  const shareSubject = document.getElementById('shareSubject');
-  const shareNote = document.getElementById('shareNote');
-  const shareErr = document.getElementById('shareErr');
-  const shareSubmit = document.getElementById('shareSubmit');
-  let shareRow = null;
-  let groupsCache = null;
-
-  function closeShare() { if (shareModal) shareModal.hidden = true; }
-  function shareShowErr(msg) { shareErr.textContent = msg; shareErr.hidden = false; }
-
-  function loadGroups() {
-    if (groupsCache) return Promise.resolve(groupsCache);
-    return fetch('/api/sharing/groups', { credentials: 'same-origin' })
-      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .then(gs => { groupsCache = gs || []; return groupsCache; });
-  }
-
-  async function openShare(row) {
-    if (!shareModal || !row) return;
-    const type = row.dataset.shareType;
-    const id = row.dataset.itemId;
-    if (!type) return;
-    shareRow = row;
-    shareModal.hidden = false;
-    shareErr.hidden = true;
-    shareNote.hidden = true;
-    shareGroupsEl.innerHTML = '';
-    shareLoading.hidden = false;
-    shareSubmit.disabled = true;
-    shareSubject.innerHTML = 'Choose who can use <b></b>.';
-    shareSubject.querySelector('b').textContent = row.dataset.title || 'this item';
-    try {
-      const [groups, state] = await Promise.all([
-        loadGroups(),
-        fetch('/api/sharing/' + encodeURIComponent(type) + '/' + encodeURIComponent(id),
-              { credentials: 'same-origin' })
-          .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
-      ]);
-      const selected = new Set(state.group_ids || []);
-      shareLoading.hidden = true;
-      if (!groups.length) {
-        shareNote.textContent = "You're not in any groups yet, so there's nobody to share with. Ask an admin to add you to a group.";
-        shareNote.hidden = false;
-        return;
-      }
-      groups.forEach(g => {
-        const label = document.createElement('label');
-        label.className = 'lib-grp';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.value = g.id;
-        cb.checked = selected.has(g.id);
-        const name = document.createElement('span');
-        name.textContent = g.name;
-        label.appendChild(cb);
-        label.appendChild(name);
-        if (g.is_everyone) {
-          const hint = document.createElement('span');
-          hint.className = 'lib-grp__hint';
-          hint.textContent = 'everyone here';
-          label.appendChild(hint);
-        }
-        shareGroupsEl.appendChild(label);
-      });
-      shareNote.textContent = 'Unchecking every group makes this private to you again.';
-      shareNote.hidden = false;
-      shareSubmit.disabled = false;
-    } catch (e) {
-      shareLoading.hidden = true;
-      shareShowErr('Could not load sharing: ' + (e && e.message ? e.message : e));
-    }
+  //    The dialog itself is the shared component (js/components/share_dialog.js)
+  //    — the SAME one a collection's or a file's detail page opens from its
+  //    Sharing badge. This page only says which resource is being shared and
+  //    what to do with the row afterwards, because a row carries more
+  //    sharing-derived state than its badge (the Sharing column's sort label
+  //    and the ownership facet), and it owns updating all of it.
+  function openShare(row) {
+    if (!row || !row.dataset.shareType || !window.openShareDialog) return;
+    window.openShareDialog({
+      resourceType: row.dataset.shareType,
+      resourceId: row.dataset.itemId,
+      title: row.dataset.title,
+      onSaved: state => updateRowVisibility(row, state.visibility),
+    });
   }
 
   // Reflect a saved visibility back onto the row's chip (both views read it).
@@ -4083,40 +3954,6 @@
   }
 
 
-  if (shareSubmit) shareSubmit.addEventListener('click', async () => {
-    if (!shareRow) return;
-    const type = shareRow.dataset.shareType;
-    const id = shareRow.dataset.itemId;
-    const ids = Array.from(shareGroupsEl.querySelectorAll('input[type=checkbox]'))
-      .filter(cb => cb.checked).map(cb => cb.value);
-    shareSubmit.disabled = true;
-    shareSubmit.textContent = 'Saving…';
-    shareErr.hidden = true;
-    try {
-      const resp = await fetch('/api/sharing/' + encodeURIComponent(type) + '/' + encodeURIComponent(id), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ group_ids: ids }),
-      });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const state = await resp.json();
-      updateRowVisibility(shareRow, state.visibility);
-      closeShare();
-      if (window.appToast) {
-        window.appToast({
-          kind: 'success',
-          msg: state.visibility === 'private' ? 'Sharing turned off' : 'Sharing updated',
-        });
-      }
-    } catch (e) {
-      shareShowErr('Could not save: ' + (e && e.message ? e.message : e));
-    } finally {
-      shareSubmit.disabled = false;
-      shareSubmit.textContent = 'Save';
-    }
-  });
-
   // Skills are shared through the Store — once approved a store entity is
   // readable by every authenticated user — so their badge explains that model
   // rather than offering a group grant nothing would read. Named (not inline)
@@ -4150,7 +3987,6 @@
       explainSkillSharing(info.closest('tr'));
     }
   });
-  document.querySelectorAll('[data-close-share]').forEach(b => b.addEventListener('click', closeShare));
 
   // ── "+ Add" menu — one header control for every add-a-thing path. Click
   //    (not hover) so touch + keyboard work; closes on outside click, Escape,
@@ -4173,54 +4009,10 @@
     newMenu.addEventListener('click', () => openNewMenu(false));
   }
 
-  // ── Page controls follow the scroll into the dock ──────────────────────
-  //    Search and "+ Add" live in the page header, which scrolls away on a long
-  //    list — and they are the two controls a caller reaches for from anywhere
-  //    in that list. When the header's action row leaves the viewport they move
-  //    into the floating toolbar (search left, "+ Add" right, list controls
-  //    between); when it comes back they move home.
-  //
-  //    The REAL nodes are relocated, not clones: ids stay unique, every
-  //    listener above still fires because it is bound to the element rather
-  //    than to a position in the document, and a half-typed query or an open
-  //    menu survives the trip. The only state the DOM move itself destroys is
-  //    focus, so the caret is captured and restored around it — someone typing
-  //    in the search box while the page settles must not lose the field.
-  const libHeadActions = document.querySelector('.lib-actions');
-  const libDock = document.querySelector('.lib-dock');
-  const libDockBar = libDock && libDock.querySelector('.fbar');
-  const libSearchBox = document.querySelector('.lib-head__search');
-  const libNewBox = document.querySelector('.lib-new');
-  if (libHeadActions && libDockBar && libSearchBox && libNewBox && 'IntersectionObserver' in window) {
-    let libDocked = false;
-    const relocate = (toDock) => {
-      if (toDock === libDocked) return;
-      const focused = libSearchBox.contains(document.activeElement) ? document.activeElement : null;
-      const at = focused && focused.selectionStart, to = focused && focused.selectionEnd;
-      if (toDock) {
-        libDockBar.insertBefore(libSearchBox, libDockBar.firstChild);
-        libDockBar.appendChild(libNewBox);
-      } else {
-        libHeadActions.insertBefore(libSearchBox, libHeadActions.firstChild);
-        libHeadActions.appendChild(libNewBox);
-      }
-      libDock.classList.toggle('has-page-actions', toDock);
-      libDocked = toDock;
-      if (focused) {
-        focused.focus();
-        try { focused.setSelectionRange(at, to); } catch (_) { /* not a text input */ }
-      }
-    };
-    new IntersectionObserver(
-      (entries) => relocate(!entries[entries.length - 1].isIntersecting),
-      { threshold: 0 },
-    ).observe(libHeadActions);
-  }
-
   // ── The dock changes shape smoothly ────────────────────────────────────
   //    The card's size is intrinsic — it is whatever its controls come to — so
-  //    every state change (grid's sort select arriving, the first chip, the
-  //    header's controls docking, chips rewrapping at a narrow width) resized
+  //    every state change (grid's sort select arriving, the first chip, chips
+  //    rewrapping at a narrow width) resized
   //    it in a single frame. No CSS transition can catch that: the `width` and
   //    `height` properties stay `auto` throughout, and only their used values
   //    move, so there is no property change to transition.
@@ -4231,7 +4023,8 @@
   //    so it is muted while one is running and re-reads the box on the way out
   //    (the card may have changed again mid-flight). Reduced-motion callers get
   //    the instant swap.
-  const libDockCard = libDock && libDock.querySelector('.lib-dock__card');
+  const libDock = document.querySelector('.fbar-dock');
+  const libDockCard = libDock && libDock.querySelector('.fbar-dock__card');
   const libDockChips = document.getElementById('lib-chips');
   if (libDockCard && 'ResizeObserver' in window) {
     const still = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -4240,7 +4033,7 @@
     // BOTTOM row and have to clear the chips row to avoid covering it.
     const publishChipsHeight = () => {
       const h = libDockChips && !libDockChips.hidden ? libDockChips.offsetHeight + 10 : 0;
-      libDock.style.setProperty('--lib-dock-chips', h + 'px');
+      libDock.style.setProperty('--fbar-dock-chips', h + 'px');
     };
     // Armed only once the page has settled. A ResizeObserver fires immediately
     // on observe and again for every reflow that follows — web fonts landing,
@@ -4297,7 +4090,7 @@
     if (newMenu && !newMenu.hidden) openNewMenu(false);
     if (uploadModal && !uploadModal.hidden) closeUpload();
     if (pairModal && !pairModal.hidden) closePair();
-    if (shareModal && !shareModal.hidden) closeShare();
+    // The share dialog handles its own Escape (it is not this page's markup).
     if (draftDelModal && !draftDelModal.hidden) closeDraftDelete();
   });
   if (uploadForm) uploadForm.addEventListener('submit', async e => {
